@@ -372,13 +372,12 @@ fn test_resolve_now() {
     let ctx = BindingContext::new();
     let result = ctx.resolve("now");
 
-    assert!(result.is_some());
-    if let Some(Value::Number(ms)) = result {
-        // Ms-epoch, matching the JS evaluator's Date.now() binding —
-        // sanity-bound to [2020, 2100).
-        assert!(ms > 1_577_836_800_000.0 && ms < 4_102_444_800_000.0);
-    } else {
-        panic!("Expected ms-epoch number timestamp, got {result:?}");
+    match result {
+        Some(Value::String(text)) => {
+            assert!(text.ends_with('Z') && text.len() == 24, "{text}");
+            assert!(text.as_str() > "2020-01-01" && text.as_str() < "2100-01-01", "{text}");
+        }
+        other => panic!("Expected an ISO-8601 instant, got {other:?}"),
     }
 }
 

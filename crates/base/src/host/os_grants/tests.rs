@@ -1146,3 +1146,17 @@ fn a_tree_is_covered_only_by_a_double_star_grant_that_contains_its_root() {
     assert!(!fs_grants("/data/**", &[FsMode::Write]).allows(&need("/data/")));
     assert!(fs_grants("/**", &[FsMode::Read]).allows(&need("/")));
 }
+
+#[test]
+fn a_grant_naming_an_unknown_family_or_field_is_refused() {
+    assert!(serde_json::from_value::<OsGrants>(json!({"files": [{"glob": "/tmp/**", "modes": ["read"]}]})).is_err());
+    assert!(serde_json::from_value::<OsGrants>(json!({"fs": [{"glob": "/tmp/**", "modes": ["read"], "recursive": true}]})).is_err());
+    assert!(serde_json::from_value::<OsGrants>(json!({"anchored": {"files": []}})).is_err());
+}
+
+#[test]
+fn control_known_families_and_fields_still_parse() {
+    let grants = serde_json::from_value::<OsGrants>(json!({"fs": [{"glob": "/tmp/**", "modes": ["read"]}], "env": ["HOME"]}))
+        .expect("known families parse");
+    assert_eq!(grants, OsGrants { env: vec!["HOME".to_string()], ..fs_grants("/tmp/**", &[FsMode::Read]) });
+}

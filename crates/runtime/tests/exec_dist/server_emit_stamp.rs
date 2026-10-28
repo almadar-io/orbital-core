@@ -127,3 +127,39 @@ fn substrate_completion_export_uses_the_native_result_and_failure_envelopes() {
     let inert_site = json!({ "trait": "Worker", "followOn": true, "emit": {} }).to_string();
     assert_eq!(substrate_completion_event_json(&inert_site, "job", "program/read", "[]", "{\"ok\":1}").unwrap(), "null");
 }
+
+#[test]
+fn every_emit_of_a_client_dispatch_carries_its_emitters_orbital() {
+    use orbital_core_runtime::embed::EmbeddedKernel;
+    let kernel = EmbeddedKernel::new(schema(), "c").unwrap();
+    let wire = kernel
+        .dispatch("Emitter", None, "GO", orbital_core_base::value::Value::Null)
+        .unwrap();
+    assert_eq!(wire.response.emitted_events.len(), 2);
+    for emitted in &wire.response.emitted_events {
+        let source = emitted.source.as_ref().unwrap();
+        assert_eq!(source.r#trait.as_deref(), Some("Emitter"), "{emitted:?}");
+        assert_eq!(source.orbital.as_deref(), Some("Main"), "{emitted:?}");
+        assert_eq!(source.orbital_id.as_deref(), Some("orb_A"), "{emitted:?}");
+    }
+}
+
+#[test]
+fn every_stream_item_emit_of_a_server_dispatch_carries_its_emitters_orbital() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server
+        .start_json("Main", &json!({ "event": "GO", "targetTrait": "Emitter" }).to_string())
+        .unwrap();
+    let items: serde_json::Value = serde_json::from_str(&server.dispatch_stream_json().unwrap()).unwrap();
+    let events: Vec<&serde_json::Value> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "event")
+        .collect();
+    assert_eq!(events.len(), 2, "{items}");
+    for item in events {
+        assert_eq!(item["data"]["source"]["orbital"], "Main", "{item}");
+        assert_eq!(item["data"]["source"]["trait"], "Emitter", "{item}");
+    }
+}

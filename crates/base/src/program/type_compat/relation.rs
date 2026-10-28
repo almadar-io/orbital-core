@@ -22,8 +22,6 @@ impl Relation<'_> {
                     | Coercion::Widen(
                         WidenKind::StringToDate
                             | WidenKind::StringToDateTime
-                            | WidenKind::NumericToDate
-                            | WidenKind::NumericToDateTime
                     )
             )
         {
@@ -309,7 +307,6 @@ impl Relation<'_> {
             },
             OirType::Number => match src {
                 OirType::Integer => Some(Coercion::Widen(WidenKind::IntegerNumber)),
-                OirType::Instant => Some(Coercion::Widen(WidenKind::InstantNumber)),
                 OirType::Money => Some(Coercion::Widen(WidenKind::MoneyNumber)),
                 _ => None,
             },
@@ -321,12 +318,10 @@ impl Relation<'_> {
             OirType::Boolean => None,
             OirType::Date => match src {
                 _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDate)),
-                _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDate)),
                 _ => None,
             },
             OirType::DateTime => match src {
                 _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
-                _ if is_number_kind(src) => Some(Coercion::Widen(WidenKind::NumericToDateTime)),
                 _ => None,
             },
             OirType::Email | OirType::Url | OirType::Phone | OirType::Uuid | OirType::Image => {
@@ -380,7 +375,7 @@ impl Relation<'_> {
             OirType::Node => match src {
                 _ if is_string_kind(src)
                     || is_number_kind(src)
-                    || matches!(src, OirType::Boolean) =>
+                    || matches!(src, OirType::Boolean | OirType::Instant) =>
                 {
                     Some(Coercion::Widen(WidenKind::ScalarToNode))
                 }

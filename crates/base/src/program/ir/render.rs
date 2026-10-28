@@ -398,7 +398,8 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
 ) -> R::Out {
     match ty {
         OirType::String => r.string(enum_values),
-        OirType::Number | OirType::Instant => r.number(),
+        OirType::Number => r.number(),
+        OirType::Instant => r.datetime(),
         OirType::Integer => r.integer(),
         OirType::Boolean => r.boolean(),
         OirType::Date => r.date(),
@@ -462,7 +463,8 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
 ) -> TypeMappingClass {
     match ty {
         OirType::String => r.classify_string(enum_values),
-        OirType::Number | OirType::Instant => r.classify_number(),
+        OirType::Number => r.classify_number(),
+        OirType::Instant => r.classify_datetime(),
         OirType::Integer => r.classify_integer(),
         OirType::Boolean => r.classify_boolean(),
         OirType::Date => r.classify_date(),

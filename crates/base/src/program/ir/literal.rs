@@ -135,6 +135,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         | (OirType::Uuid, OirValue::String(s))
         | (OirType::Date, OirValue::String(s))
         | (OirType::DateTime, OirValue::String(s))
+        | (OirType::Instant, OirValue::String(s))
         | (OirType::Image, OirValue::String(s))
         | (OirType::Bytes, OirValue::String(s))
         | (OirType::CallKey, OirValue::String(s))
@@ -142,7 +143,6 @@ pub fn render_default<R: TargetLiteralRenderer>(
         | (OirType::File, OirValue::String(s)) => Ok(Some(r.string(s))),
 
         (OirType::Number, OirValue::Number(n))
-        | (OirType::Instant, OirValue::Number(n))
         | (OirType::Money, OirValue::Number(n)) => {
             Ok(Some(r.number(*n)))
         }

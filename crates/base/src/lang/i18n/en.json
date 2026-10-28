@@ -101,6 +101,7 @@
     "server": "server",
     "browser": "browser",
     "identity": "identity",
+    "self": "self",
     "background": "background",
     "visible": "visible",
     "store": "store"
@@ -547,6 +548,7 @@
     "visual_prompt": "visual_prompt",
     "vocabulary": "vocabulary",
     "whileVisible": "whileVisible",
+    "wired": "wired",
     "seedMock": "seedMock",
     "localeInstances": "localeInstances",
     "diagram": "diagram",

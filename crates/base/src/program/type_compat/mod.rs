@@ -45,12 +45,6 @@ pub enum WidenKind {
     StringToDate,
     /// String-kind value parsed into a DateTime.
     StringToDateTime,
-    /// Numeric value read as a Date.
-    NumericToDate,
-    /// Numeric value read as a DateTime.
-    NumericToDateTime,
-    /// An instant is a number of epoch milliseconds.
-    InstantNumber,
     /// Any scalar renders as a node ("any rendered value is a ReactNode").
     ScalarToNode,
     /// A semantic string domain (email, url, phone, uuid, image) is a string.
@@ -146,6 +140,7 @@ pub fn is_program_data(t: &OirType) -> bool {
         OirType::Tuple { items } => items
             .iter()
             .all(|i| is_program_data(i) || is_object_family(i) || is_json_family(i)),
+        OirType::Instant => true,
         _ => is_string_kind(t) || is_number_kind(t),
     }
 }
@@ -165,7 +160,7 @@ pub fn is_string_kind(t: &OirType) -> bool {
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
 pub fn is_number_kind(t: &OirType) -> bool {
-    matches!(t, OirType::Number | OirType::Integer | OirType::Money | OirType::Instant)
+    matches!(t, OirType::Number | OirType::Integer | OirType::Money)
 }
 
 pub fn semantic_kind(t: &OirType) -> Option<SemanticStringKind> {

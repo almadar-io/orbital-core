@@ -118,8 +118,8 @@ impl ClientKernel {
     pub fn new(
         schema: OrbitalSchema,
         bridge: Option<Arc<dyn ServerBridge>>,
-    ) -> Result<Self, BridgeError> {
-        let embedded = EmbeddedKernel::new(schema, next_client_id()).map_err(BridgeError::Server)?;
+    ) -> Result<Self, crate::kernel::EntryError> {
+        let embedded = EmbeddedKernel::new(schema, next_client_id())?;
         Ok(Self { embedded, bridge })
     }
 

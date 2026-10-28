@@ -65,7 +65,7 @@ fn field(
     outcomes: &[(String, orbital_core_runtime::process_result::ProcessEventResult)],
     trait_name: &str,
     key: &str,
-) -> f64 {
+) -> String {
     let (_, result) = outcomes
         .iter()
         .find(|(t, r)| t == trait_name && r.executed)
@@ -74,10 +74,10 @@ fn field(
         .entity_data
         .to_value()
         .get_path(key)
-        .and_then(Value::as_number)
+        .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| {
             panic!(
-                "{trait_name}.{key} must be a number, got {:?}",
+                "{trait_name}.{key} must be an ISO instant, got {:?}",
                 result.entity_data
             )
         })
@@ -90,15 +90,16 @@ fn go(kernel: &RuntimeKernel) -> Vec<(String, orbital_core_runtime::process_resu
 }
 
 const PINNED: f64 = 1_700_000_000_000.0;
+const PINNED_ISO: &str = "2023-11-14T22:13:20.000Z";
 
 #[test]
 fn a_pinned_clock_stamps_every_dispatch_with_exactly_that_time() {
     let kernel = kernel(Some(PINNED));
     let first = go(&kernel);
-    assert_eq!(field(&first, "Source", "viaOperator"), PINNED);
-    assert_eq!(field(&first, "Source", "viaBinding"), PINNED);
-    assert_eq!(field(&first, "Listener", "heardAt"), PINNED);
-    assert_eq!(field(&go(&kernel), "Source", "viaBinding"), PINNED);
+    assert_eq!(field(&first, "Source", "viaOperator"), PINNED_ISO);
+    assert_eq!(field(&first, "Source", "viaBinding"), PINNED_ISO);
+    assert_eq!(field(&first, "Listener", "heardAt"), PINNED_ISO);
+    assert_eq!(field(&go(&kernel), "Source", "viaBinding"), PINNED_ISO);
 }
 
 #[test]
@@ -117,14 +118,14 @@ fn a_pinned_clock_stamps_the_resumable_dispatch_too() {
         BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(request)
     };
     let outcomes = drive_blocking(&kernel, progress, &answer).unwrap();
-    assert_eq!(field(&outcomes, "Source", "viaBinding"), PINNED);
-    assert_eq!(field(&outcomes, "Listener", "heardAt"), PINNED);
+    assert_eq!(field(&outcomes, "Source", "viaBinding"), PINNED_ISO);
+    assert_eq!(field(&outcomes, "Listener", "heardAt"), PINNED_ISO);
 }
 
 #[test]
 fn control_without_a_clock_the_wall_clock_stamps() {
     let kernel = kernel(None);
     let stamped = field(&go(&kernel), "Source", "viaBinding");
-    assert_ne!(stamped, PINNED);
-    assert!(stamped > PINNED);
+    assert_ne!(stamped, PINNED_ISO);
+    assert!(stamped.as_str() > PINNED_ISO, "an ISO instant orders by its text");
 }

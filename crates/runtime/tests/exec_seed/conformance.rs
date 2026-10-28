@@ -32,7 +32,7 @@ fn stamp_kernel() -> RuntimeKernel {
     }))
 }
 
-fn stamped(outcomes: &Outcomes, trait_name: &str, key: &str) -> f64 {
+fn stamped(outcomes: &Outcomes, trait_name: &str, key: &str) -> String {
     let (_, result) = outcomes
         .iter()
         .find(|(t, r)| t == trait_name && r.executed)
@@ -41,8 +41,8 @@ fn stamped(outcomes: &Outcomes, trait_name: &str, key: &str) -> f64 {
         .entity_data
         .to_value()
         .get_path(key)
-        .and_then(Value::as_number)
-        .unwrap_or_else(|| panic!("{trait_name}.{key} must be a number, got {:?}", result.entity_data))
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| panic!("{trait_name}.{key} must be an ISO instant, got {:?}", result.entity_data))
 }
 
 /// EXEC-SEED-1: `@now`, every `time/*` read and the cascaded listeners come from one stamp per dispatch.

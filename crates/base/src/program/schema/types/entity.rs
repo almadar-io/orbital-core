@@ -259,7 +259,9 @@ pub enum Persistence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDefinition {
     /// `field R T`: the record `R` as a type string (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity or
-    /// alias name, `$r`). A record alias carries its shape in `properties`.
+    /// alias name, `$r`). A record alias carries its shape in `properties`. On an `object` with no `properties`, the
+    /// record is the object's own shape: `@payload(.<sibling>)` is the declared payload of the event the sibling
+    /// member of the same struct names (`.lolo` `payload : @payload event`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -377,6 +379,14 @@ pub struct FieldDefinition {
 }
 
 impl FieldDefinition {
+    /// The sibling member whose value names the event this field is the payload of (`@payload(.<sibling>)`).
+    pub fn payload_sibling(&self) -> Option<&str> {
+        if self.field_type != FieldType::Object || self.properties.is_some() {
+            return None;
+        }
+        self.record.as_deref()?.strip_prefix("@payload(.")?.strip_suffix(')')
+    }
+
     /// The type name this field refers to by name: the recursive back-reference the lolo lowerer leaves where a
     /// self-referential alias would otherwise expand forever (`type Node = { children : [Node] }`). It is a
     /// `union` carrying the one name in `values` and no `properties`; a tagged union carries its variants'

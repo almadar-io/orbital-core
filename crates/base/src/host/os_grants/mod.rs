@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "std")]
 use std::path::{Component, Path, PathBuf};
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FsMode {
@@ -24,6 +25,7 @@ pub enum FsMode {
 }
 
 /// What a `kv/` call does to a store: `read` (get, scan) or `write` (put, delete, batch).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum KvMode {
@@ -31,6 +33,7 @@ pub enum KvMode {
     Write,
 }
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetKind {
@@ -39,6 +42,7 @@ pub enum NetKind {
     Listen,
 }
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StdioKind {
@@ -47,6 +51,7 @@ pub enum StdioKind {
     Err,
 }
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SysKind {
@@ -58,6 +63,7 @@ pub enum SysKind {
     Identity,
 }
 
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DesktopKind {
@@ -83,6 +89,7 @@ macro_rules! named_kinds {
 }
 
 /// What a device call does: read or write a register in an `mmio` window, wait for or acknowledge an `irq` line.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DevKind {
@@ -147,14 +154,18 @@ pub fn os_grant_needs(op: OsOp) -> &'static [OsGrantNeed] {
 }
 
 /// A path glob (`**` any number of segments, `*` and `?` within one) and the modes it grants.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FsGrant {
     pub glob: String,
     pub modes: Vec<FsMode>,
 }
 
 /// An exact `host:port` and the kinds of traffic it grants.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NetGrant {
     pub target: String,
     pub kinds: Vec<NetKind>,
@@ -162,7 +173,9 @@ pub struct NetGrant {
 
 /// A device resource and the kinds of access it grants: `mmio:<base>+<length>` (a register window) or
 /// `irq:<line>`, numbers decimal or `0x` hex.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DevGrant {
     pub target: String,
     pub kinds: Vec<DevKind>,
@@ -204,6 +217,7 @@ pub fn dev_target(target: &str) -> Option<DevTarget> {
 /// Where an anchored grant or path is rooted, resolved once when the host boots: the directory of the running
 /// executable, the directory the program was invoked in, or the value of an environment variable, which must be an
 /// absolute path.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GrantAnchor {
@@ -224,7 +238,9 @@ impl GrantAnchor {
 }
 
 /// A glob relative to its anchor and the modes it grants.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchoredFsGrant {
     pub anchor: GrantAnchor,
     pub glob: String,
@@ -233,7 +249,9 @@ pub struct AnchoredFsGrant {
 
 /// A command at an anchor: `path` under it, or with no `path` the anchor's own value (an `env` anchor naming the
 /// executable itself).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchoredExec {
     pub anchor: GrantAnchor,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,6 +259,7 @@ pub struct AnchoredExec {
 }
 
 /// One half of an anchored `net` target: a literal host or port, or an `env` anchor whose boot value is it.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NetPart {
@@ -258,7 +277,9 @@ impl NetPart {
 }
 
 /// A `net` target whose host, port or both come from an anchor, and the kinds of traffic it grants.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AnchoredNetGrant {
     pub host: NetPart,
     pub port: NetPart,
@@ -273,14 +294,18 @@ impl AnchoredNetGrant {
 
 /// The `fs`, `exec` and `net` entries rooted at an anchor. They match nothing until a host resolves them
 /// ([`OsGrants::resolve_anchors`]) into plain entries.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AnchoredGrants {
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<AnchoredFsGrant>>"))]
     pub fs: Vec<AnchoredFsGrant>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<AnchoredExec>>"))]
     pub exec: Vec<AnchoredExec>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<AnchoredNetGrant>>"))]
     pub net: Vec<AnchoredNetGrant>,
 }
 
@@ -291,22 +316,33 @@ impl AnchoredGrants {
 }
 
 /// Every grant a program declares; the default grants nothing.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OsGrants {
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<FsGrant>>"))]
     pub fs: Vec<FsGrant>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<String>>"))]
     pub exec: Vec<String>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<NetGrant>>"))]
     pub net: Vec<NetGrant>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<String>>"))]
     pub env: Vec<String>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<StdioKind>>"))]
     pub stdio: Vec<StdioKind>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<SysKind>>"))]
     pub sys: Vec<SysKind>,
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<DesktopKind>>"))]
     pub desktop: Vec<DesktopKind>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<DevGrant>>"))]
     pub dev: Vec<DevGrant>,
     /// `kv: { <store>: [read, write] }`: a store name, or a `*`/`?` glob over one, and the modes it grants.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<BTreeMap<String, Vec<KvMode>>>"))]
     pub kv: BTreeMap<String, Vec<KvMode>>,
     #[serde(skip_serializing_if = "AnchoredGrants::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<AnchoredGrants>"))]
     pub anchored: AnchoredGrants,
 }
 

@@ -114,6 +114,7 @@ impl RuntimeKernel {
                 cascade_dropped: Vec::new(),
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
+                emit_source: BusEventSource::default(),
                 failure: None,
                 written: SharedEntity::null(),
                 callsite_payload: None,
@@ -173,6 +174,7 @@ impl RuntimeKernel {
                     cascade_dropped: Vec::new(),
                     cascade_cut: None,
                     consumed_emits: Vec::new(),
+                    emit_source: BusEventSource::default(),
                     failure: None,
                     written: SharedEntity::null(),
                     callsite_payload: None,
@@ -231,6 +233,11 @@ impl RuntimeKernel {
             cascade_dropped: Vec::new(),
             cascade_cut: None,
             consumed_emits: Vec::new(),
+            emit_source: {
+                let mut source = self.emit_source(trait_name);
+                source.tick = Some(tick_name.to_string());
+                source
+            },
             failure,
             written,
             callsite_payload: None,

@@ -60,7 +60,7 @@ fn field(
     outcomes: &[(String, orbital_core_runtime::process_result::ProcessEventResult)],
     trait_name: &str,
     key: &str,
-) -> f64 {
+) -> String {
     let (_, result) = outcomes
         .iter()
         .find(|(t, r)| t == trait_name && r.executed)
@@ -69,10 +69,10 @@ fn field(
         .entity_data
         .to_value()
         .get_path(key)
-        .and_then(Value::as_number)
+        .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_else(|| {
             panic!(
-                "{trait_name}.{key} must be a number, got {:?}",
+                "{trait_name}.{key} must be an ISO instant, got {:?}",
                 result.entity_data
             )
         })
@@ -115,7 +115,7 @@ fn each_tick_firing_is_stamped_on_its_own() {
         r.entity_data
             .to_value()
             .get_path("tickedAt")
-            .and_then(Value::as_number)
+            .and_then(|value| value.as_str().map(str::to_string))
     };
     assert!(
         at(&first).is_some(),

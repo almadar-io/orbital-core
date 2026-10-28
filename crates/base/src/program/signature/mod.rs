@@ -594,6 +594,22 @@ impl<'a> Signature<'a> {
         resolve(self.returns, bindings)
     }
 
+    /// The result with the declared null alternative left out (`T | null` read as the `T` the bindings give),
+    /// for a call that cannot answer null; `None` when the declared result names no null alternative.
+    pub fn result_without_null(&self, bindings: &CallBindings) -> Option<OirType> {
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of }) = self.returns else {
+            return None;
+        };
+        let mut members = of.iter().filter(
+            |m| !matches!(m, OperatorTypeRef::Tagged(OperatorTypeRefKind::Literal { value }) if value.is_null()),
+        );
+        let only = members.next()?;
+        if members.next().is_some() || of.len() < 2 {
+            return None;
+        }
+        resolve(only, bindings)
+    }
+
     pub fn result_with_options(
         &self,
         bindings: &CallBindings,

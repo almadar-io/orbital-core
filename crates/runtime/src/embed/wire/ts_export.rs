@@ -130,6 +130,7 @@ fn kernel_wire_ts() -> String {
     collect.visit::<MutationOpWire>();
     collect.visit::<MutationVerdictWire>();
     collect.visit::<orbital_core_base::viewer::Viewer>();
+    collect.visit::<orbital_core_base::os_grants::OsGrants>();
     collect.visit::<crate::program_machine::MachineRow>();
     collect.visit::<crate::program_machine::PlayedStep>();
 

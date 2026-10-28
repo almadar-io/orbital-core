@@ -24,9 +24,11 @@ fn any_accepts_all() {
 }
 
 #[test]
-fn date_family_accepts_string_or_number() {
+fn date_family_accepts_string_and_no_number() {
     assert!(set_value_type_compatible("date", "string"));
-    assert!(set_value_type_compatible("timestamp", "number"));
+    assert!(set_value_type_compatible("timestamp", "string"));
+    assert!(!set_value_type_compatible("timestamp", "number"));
+    assert!(!set_value_type_compatible("date", "number"));
     assert!(!set_value_type_compatible("date", "boolean"));
     // `timestamp` does not cross-accept `date`/`datetime` names.
     assert!(!set_value_type_compatible("date", "timestamp"));
@@ -423,11 +425,13 @@ fn an_optional_or_listed_call_key_slot_still_needs_the_cast() {
 fn sub_date_family_and_scalars() {
     use super::sub;
     assert_eq!(sub(&String, &Date), Some(C::Widen(WidenKind::StringToDate)));
-    assert_eq!(
-        sub(&Integer, &DateTime),
-        Some(C::Widen(WidenKind::NumericToDateTime))
-    );
-    assert_eq!(sub(&Money, &Date), Some(C::Widen(WidenKind::NumericToDate)));
+    assert_eq!(sub(&Integer, &DateTime), None);
+    assert_eq!(sub(&Number, &DateTime), None);
+    assert_eq!(sub(&Money, &Date), None);
+    assert_eq!(sub(&Number, &Date), None);
+    assert_eq!(sub(&Instant, &Number), None);
+    assert_eq!(sub(&Integer, &Instant), None);
+    assert_eq!(sub(&String, &DateTime), Some(C::Widen(WidenKind::StringToDateTime)));
     assert_eq!(sub(&Date, &DateTime), None);
     assert_eq!(sub(&DateTime, &Date), None);
     assert_eq!(sub(&Boolean, &Date), None);

@@ -98,6 +98,9 @@ pub enum ExpectDeclaration {
         /// `[browser]`: the provider's rows must live in the browser.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         browser: bool,
+        /// `[self]`: the providing entity must be declared by this same orbital body, under this name; checked in every validate.
+        #[serde(default, rename = "self", skip_serializing_if = "std::ops::Not::not")]
+        own: bool,
         /// `@read|@create|@update|@delete <expr>`: the provider's policy must be this expression, structurally.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         read_policy: Option<SExpression>,

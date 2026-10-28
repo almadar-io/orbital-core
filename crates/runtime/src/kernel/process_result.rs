@@ -93,6 +93,9 @@ pub struct ProcessEventResult {
     /// arm for the event, or a listener target. The response marks them `source.dispatched`.
     pub consumed_emits: Vec<usize>,
 
+    /// The `{ orbital, trait }` envelope (plus ids, and `tick` for a tick) every `emit` this step ran leaves under.
+    pub emit_source: orbital_core_base::bus_event::BusEventSource,
+
     /// The message of the first effect that failed the way the JS executor throws (an unevaluable `set`,
     /// a `call-service` or substrate operator with no `emit.failure` route). The new state stands.
     pub failure: Option<String>,

@@ -4,7 +4,7 @@
       "time/parse",
       "1970-01-01"
     ],
-    "expect": 0,
+    "expect": "1970-01-01",
     "source": "epoch"
   },
   {
@@ -12,7 +12,7 @@
       "time/parse",
       "2028-02-29"
     ],
-    "expect": 1835395200000,
+    "expect": "2028-02-29",
     "source": "leap day"
   },
   {
@@ -20,7 +20,7 @@
       "time/parse",
       "2028-03-01"
     ],
-    "expect": 1835481600000,
+    "expect": "2028-03-01",
     "source": "day after leap day"
   },
   {
@@ -28,7 +28,7 @@
       "time/parse",
       "2100-03-01"
     ],
-    "expect": 4107542400000,
+    "expect": "2100-03-01",
     "source": "2100 is not leap"
   },
   {
@@ -36,7 +36,7 @@
       "time/parse",
       "2000-03-01"
     ],
-    "expect": 951868800000,
+    "expect": "2000-03-01",
     "source": "2000 is leap"
   },
   {
@@ -44,7 +44,7 @@
       "time/parse",
       "1969-12-31"
     ],
-    "expect": -86400000,
+    "expect": "1969-12-31",
     "source": "pre-1970"
   },
   {
@@ -52,7 +52,7 @@
       "time/parse",
       "1900-03-01"
     ],
-    "expect": -2203891200000,
+    "expect": "1900-03-01",
     "source": "1900 is not leap"
   },
   {
@@ -60,7 +60,7 @@
       "time/parse",
       "2028-03-01T13:45:10Z"
     ],
-    "expect": 1835531110000,
+    "expect": "2028-03-01T13:45:10.000Z",
     "source": "time of day"
   },
   {
@@ -68,7 +68,7 @@
       "time/parse",
       "2028-03-01T13:45:10.250Z"
     ],
-    "expect": 1835531110250,
+    "expect": "2028-03-01T13:45:10.250Z",
     "source": "fraction ms"
   },
   {
@@ -76,7 +76,7 @@
       "time/parse",
       "2028-03-01T13:45:10.5Z"
     ],
-    "expect": 1835531110500,
+    "expect": "2028-03-01T13:45:10.500Z",
     "source": "short fraction"
   },
   {
@@ -84,7 +84,7 @@
       "time/parse",
       "2028-03-01T13:45:10+02:00"
     ],
-    "expect": 1835523910000,
+    "expect": "2028-03-01T11:45:10.000Z",
     "source": "positive offset"
   },
   {
@@ -92,7 +92,7 @@
       "time/parse",
       "2028-03-01T13:45:10-05:30"
     ],
-    "expect": 1835550910000,
+    "expect": "2028-03-01T19:15:10.000Z",
     "source": "negative offset"
   },
   {
@@ -100,7 +100,7 @@
       "time/parse",
       "2028-03-01T00:30:00+01:00"
     ],
-    "expect": 1835479800000,
+    "expect": "2028-02-29T23:30:00.000Z",
     "source": "offset crosses day"
   },
   {
@@ -108,7 +108,7 @@
       "time/parse",
       "1969-12-31T23:59:59Z"
     ],
-    "expect": -1000,
+    "expect": "1969-12-31T23:59:59.000Z",
     "source": "pre-1970 time"
   },
   {
@@ -116,7 +116,7 @@
       "time/parse",
       "2028-03-01T13:45Z"
     ],
-    "expect": 1835531100000,
+    "expect": "2028-03-01T13:45:00.000Z",
     "source": "no seconds"
   },
   {
@@ -124,16 +124,16 @@
       "time/parse",
       "2028-03-01T13:45:10"
     ],
-    "expect": 1835531110000,
-    "source": "no offset reads as UTC"
+    "source": "no offset reads as UTC (a date-time without a zone is not a datetime)",
+    "null": true
   },
   {
     "expr": [
       "time/parse",
       "2028-03-01T13:45"
     ],
-    "expect": 1835531100000,
-    "source": "datetime-local form, UTC"
+    "source": "datetime-local form, UTC (a date-time without a zone is not a datetime)",
+    "null": true
   },
   {
     "expr": [
@@ -145,7 +145,7 @@
       1,
       "day"
     ],
-    "expect": 1835568000000,
+    "expect": "2028-03-02",
     "source": "leap fix"
   },
   {
@@ -158,7 +158,7 @@
       2,
       "day"
     ],
-    "expect": 1835481600000,
+    "expect": "2028-03-01",
     "source": "through leap day"
   },
   {
@@ -366,16 +366,16 @@
       "time/valid",
       "2028-03-01T13:45:10"
     ],
-    "expect": true,
-    "source": "valid mirror of time/parse: no offset reads as UTC"
+    "expect": false,
+    "source": "valid mirror of time/parse: no offset reads as UTC (now false: a date-time needs a zone)"
   },
   {
     "expr": [
       "time/valid",
       "2028-03-01T13:45"
     ],
-    "expect": true,
-    "source": "valid mirror of time/parse: datetime-local form, UTC"
+    "expect": false,
+    "source": "valid mirror of time/parse: datetime-local form, UTC (now false: a date-time needs a zone)"
   },
   {
     "expr": [
@@ -470,19 +470,19 @@
       "time/parse",
       1705593600000
     ],
-    "expect": 1705593600000,
-    "source": "a date/datetime value held as epoch ms is that number"
+    "source": "a number is not a point in time",
+    "error": true
   },
   {
     "expr": [
       "time/parse",
       [
         "*",
-        1e308,
+        1e+308,
         10
       ]
     ],
-    "null": true,
-    "source": "edge: a number that is not a moment (infinite) answers null; division by zero is null since the failable flip and null operand is refused (null-operands.json)"
+    "source": "a number is not a point in time",
+    "error": true
   }
 ]

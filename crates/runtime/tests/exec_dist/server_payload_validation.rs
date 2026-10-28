@@ -241,7 +241,7 @@ mod native_record_event_admission {
     use orbital_core_base::effect_types::RuntimeEnvironment;
     use orbital_core_base::value::Value;
     use orbital_core_runtime::entity_source::InMemoryEntityCache;
-    use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
+    use orbital_core_runtime::kernel::{EntryError, KernelError, RuntimeKernel};
     use std::sync::Arc;
 
     fn program(version: Option<u32>, field: Json) -> Json {
@@ -315,6 +315,60 @@ mod native_record_event_admission {
         );
         assert!(refused.unwrap_err().to_string().contains("resolve it again from source"));
         let _ = kernel(program(Some(1), field));
+    }
+
+    #[test]
+    fn every_entry_that_runs_a_program_refuses_an_unstamped_one_and_runs_the_stamped_control() {
+        use orbital_core_runtime::client::bridge::KernelBridge;
+        use orbital_core_runtime::client::runtime::OrbitalClientRuntime;
+        use orbital_core_runtime::client::ClientKernel;
+        use orbital_core_runtime::embed::EmbeddedKernel;
+        let field = json!({"name": "value", "type": "string", "required": false});
+        let build = |stamp: Option<u32>| -> OrbitalSchema {
+            serde_json::from_value(program(stamp, field.clone())).unwrap()
+        };
+        let refusal = |error: Option<EntryError>| {
+            assert!(
+                matches!(&error, Some(EntryError::Register(KernelError::UnresolvedProgram { program })) if program == "App"),
+                "{error:?}"
+            );
+        };
+        refusal(EmbeddedServer::new(build(None)).err());
+        refusal(EmbeddedKernel::new(build(None), "c").err());
+        refusal(KernelBridge::new(build(None)).err());
+        refusal(ClientKernel::new(build(None), None).err());
+        let runtime = OrbitalClientRuntime::new();
+        assert!(matches!(
+            runtime.register_schema(build(None)),
+            Err(KernelError::UnresolvedProgram { program }) if program == "App"
+        ));
+        let stamped = EmbeddedServer::new(build(Some(1))).expect("a stamped program runs");
+        let control = |stamp: Option<u32>| -> OrbitalSchema {
+            let mut p = json!({
+                "name": "Control",
+                "orbitals": [{
+                    "name": "ControlOrbital",
+                    "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                    "traits": [{
+                        "name": "NoteTrait", "linkedEntity": "Note",
+                        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [], "transitions": [] }
+                    }]
+                }]
+            });
+            if let Some(stamp) = stamp {
+                p["typeContractVersion"] = json!(stamp);
+            }
+            serde_json::from_value(p).unwrap()
+        };
+        assert!(matches!(
+            stamped.fork_program(control(None)).err(),
+            Some(EntryError::ForkProgram(KernelError::UnresolvedProgram { .. }))
+        ));
+        assert!(stamped.fork_program(control(Some(1))).is_ok());
+        assert!(EmbeddedKernel::new(build(Some(1)), "c").is_ok());
+        assert!(KernelBridge::new(build(Some(1))).is_ok());
+        assert!(ClientKernel::new(build(Some(1)), None).is_ok());
+        assert!(OrbitalClientRuntime::new().register_schema(build(Some(1))).is_ok());
     }
 
     #[test]

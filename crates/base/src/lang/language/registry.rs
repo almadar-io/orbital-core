@@ -421,6 +421,9 @@ pub struct FailableOperator {
     /// validated, so the call cannot fail with a null.
     #[serde(rename = "unlessNominal", default)]
     pub unless_nominal: Vec<usize>,
+    /// Argument positions whose value, typed non-optional, cannot make the call fail (`tree/fold` of a present value).
+    #[serde(rename = "unlessPresent", default)]
+    pub unless_present: Vec<usize>,
     /// Argument positions where a value proved nonzero (a divisor), at least zero (a square root's argument) or above
     /// zero (a logarithm's) cannot make the call fail.
     #[serde(rename = "unlessNonZero", default)]

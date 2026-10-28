@@ -7,13 +7,9 @@ impl BindingContext {
     ///
     /// Returns the value at the specified path, or None if not found.
     pub fn resolve(&self, path: &str) -> Option<Value> {
-        // Handle special @now binding. Ms-epoch NUMBER — the one shape all
-        // three execution surfaces agree on (JS evaluator binds Date.now(),
-        // TS codegen emits Date.now()). The previous RFC3339 string made
-        // every `@now` arithmetic guard (reminder-scheduler / lifecycle /
-        // data-erasure filters) evaluate number-minus-string on this path.
+        // @now is an ISO-8601 instant, the same text `time/now` answers.
         if path == "now" {
-            return Some(Value::Number(self.now_millis()));
+            return crate::evaluator::operators::system::instant_value(self.now_millis()).ok();
         }
 
         // Split the path into root and rest

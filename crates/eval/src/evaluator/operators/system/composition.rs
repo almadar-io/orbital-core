@@ -22,24 +22,6 @@ impl Operator for BehaviorCompositionStubOp {
     }
 }
 
-/// Unix-ms for a Y/M/D at 00:00:00 UTC, using this file's no-chrono date math.
-pub(super) fn date_to_timestamp(year: i32, month: i32, day: i32) -> f64 {
-    let month_days: [i64; 12] = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-    let mut days = days_since_epoch(year);
-    for days_in_month in month_days
-        .iter()
-        .take(((month as usize).saturating_sub(1)).min(11))
-    {
-        days += days_in_month;
-    }
-    days += (day - 1) as i64;
-    (days as f64) * 24.0 * 60.0 * 60.0 * 1000.0
-}
-
 /// Start of the unit-bucket containing `ts`. The single implementation behind
 /// `time/startOf` and `time/isSame`. Weeks start **Monday** (ISO-8601).
 pub(super) fn start_of(ts: f64, unit: TimeUnit) -> f64 {
@@ -75,9 +57,12 @@ pub struct TimeStartOfOp;
 impl Operator for TimeStartOfOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/startOf", >= 2);
-        let ts = eval_expr(&args[0], ctx)?.number()?;
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
         let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
-        Ok(Value::Number(start_of(ts, unit)))
+        if m.shape == Shape::Date && unit.below_a_day() {
+            return Err(needs_time_of_day("time/startOf"));
+        }
+        render_moment(start_of(m.ms, unit), m.shape)
     }
 }
 
@@ -86,8 +71,12 @@ pub struct TimeEndOfOp;
 impl Operator for TimeEndOfOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/endOf", >= 2);
-        let ts = eval_expr(&args[0], ctx)?.number()?;
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let ts = m.ms;
         let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
+        if m.shape == Shape::Date && unit.below_a_day() {
+            return Err(needs_time_of_day("time/endOf"));
+        }
         let day_ms = 24.0 * 60.0 * 60.0 * 1000.0;
         let result = match unit {
             TimeUnit::Millisecond => ts.floor(),
@@ -120,7 +109,7 @@ impl Operator for TimeEndOfOp {
                 date_to_timestamp(y + 1, 1, 1) - 1.0
             }
         };
-        Ok(Value::Number(result))
+        render_moment(result, m.shape)
     }
 }
 
@@ -129,7 +118,7 @@ pub struct TimeRelativeOp;
 impl Operator for TimeRelativeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/relative", 1);
-        let ts = eval_expr(&args[0], ctx)?.number()?;
+        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/relative")?;
         let now = ctx.now_millis();
         let diff = now - ts; // >0 past, <0 future
         let plural = |n: i64| if n == 1 { "" } else { "s" };

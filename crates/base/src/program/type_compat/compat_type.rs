@@ -258,7 +258,6 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         }),
         (_, Timestamp) => match src {
             Ty(t) if is_string_kind(t) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
-            Ty(t) if is_number_kind(t) => Some(Coercion::Widen(WidenKind::NumericToDateTime)),
             Timestamp => Some(Coercion::Identity),
             _ => None,
         },

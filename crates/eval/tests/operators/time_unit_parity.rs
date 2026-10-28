@@ -26,15 +26,43 @@ const MAR_31_2024: f64 = 1_711_888_496_789.0;
 /// 2024-01-15T00:00:00.000Z
 const JAN_15_2024: f64 = 1_705_276_800_000.0;
 
+/// The case table below keeps epoch milliseconds for readability; points in time are ISO text at run time, so
+/// every literal of 12 or more digits is lifted to its instant before evaluation and an instant answer is read back.
+fn lift(json: &str) -> String {
+    let bytes = json.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            let literal = &json[start..i];
+            let whole = literal.trim_end_matches(".0");
+            if whole.len() >= 12 && whole.bytes().all(|b| b.is_ascii_digit()) {
+                let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(whole.parse().unwrap()).unwrap();
+                out.push_str(&format!("\"{}\"", at.format("%Y-%m-%dT%H:%M:%S%.3fZ")));
+            } else {
+                out.push_str(literal);
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn eval(json: &str) -> Value {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = serde_json::from_str(&lift(json)).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap()
 }
 
 fn eval_err(json: &str) -> String {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = serde_json::from_str(&lift(json)).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap_err()
@@ -44,7 +72,8 @@ fn eval_err(json: &str) -> String {
 fn num(json: &str) -> f64 {
     match eval(json) {
         Value::Number(n) => n,
-        other => panic!("expected number from {json}, got {other:?}"),
+        Value::String(text) => chrono::DateTime::parse_from_rfc3339(&text).unwrap().timestamp_millis() as f64,
+        other => panic!("expected number or instant from {json}, got {other:?}"),
     }
 }
 
@@ -257,3 +286,33 @@ fn quarter_is_a_calendar_unit() {
     assert!(!boolean(&format!(r#"["time/isSame", {MAR_31_2024}, {APR_1_2024_SAME_TIME}, "quarter"]"#)));
 }
 
+
+#[test]
+fn a_date_and_a_datetime_never_compare() {
+    for op in ["time/isBefore", "time/isAfter", "time/isSame", "time/diff"] {
+        for (a, b) in [
+            (r#""2024-01-15""#, r#""2024-01-15T00:00:00.000Z""#),
+            (r#""2024-01-15T00:00:00.000Z""#, r#""2024-01-15""#),
+        ] {
+            let msg = eval_err(&format!(r#"["{op}", {a}, {b}]"#));
+            assert!(msg.contains("date and a datetime"), "{op} must refuse a mixed pair: {msg}");
+        }
+    }
+    for (a, s, e) in [
+        (r#""2024-01-15""#, r#""2024-01-01T00:00:00.000Z""#, r#""2024-02-01T00:00:00.000Z""#),
+        (r#""2024-01-15T00:00:00.000Z""#, r#""2024-01-01""#, r#""2024-02-01T00:00:00.000Z""#),
+        (r#""2024-01-15T00:00:00.000Z""#, r#""2024-01-01T00:00:00.000Z""#, r#""2024-02-01""#),
+    ] {
+        let msg = eval_err(&format!(r#"["time/isBetween", {a}, {s}, {e}]"#));
+        assert!(msg.contains("date and a datetime"), "isBetween must refuse a mixed triple: {msg}");
+    }
+}
+
+#[test]
+fn same_shape_pairs_still_compare() {
+    assert!(boolean(r#"["time/isBefore", "2024-01-15", "2024-01-16"]"#));
+    assert!(boolean(r#"["time/isAfter", "2024-01-16T00:00:00.000Z", "2024-01-15T00:00:00.000Z"]"#));
+    assert!(boolean(r#"["time/isSame", "2024-01-15", "2024-01-15"]"#));
+    assert!(boolean(r#"["time/isBetween", "2024-01-15", "2024-01-01", "2024-02-01"]"#));
+    assert_eq!(num(r#"["time/diff", "2024-01-16", "2024-01-15", "day"]"#), 1.0);
+}

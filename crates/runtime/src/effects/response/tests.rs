@@ -242,6 +242,7 @@ fn empty_result(new_state: &str, executed: bool) -> ProcessEventResult {
         cascade_dropped: Vec::new(),
         cascade_cut: None,
         consumed_emits: Vec::new(),
+        emit_source: Default::default(),
         failure: None,
         callsite_payload: None,
         written: crate::shared_entity::SharedEntity::null(),
@@ -377,6 +378,7 @@ fn client_effects_from_render_ui_and_emit_split_correctly() {
             payload: Value::Null,
         }),
     ];
+    result.emit_source = BusEventSource::from_trait("NotePersistor");
     let outcomes = vec![("NotePersistor".to_string(), result)];
     let resp = EventResponse::from_process_results(&outcomes, "NotePersistor", "CREATE_DRAFT");
 

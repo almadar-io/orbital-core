@@ -5,6 +5,15 @@ use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_
 const STAMP: f64 = 1_592_222_400_000.0; // 2020-06-15T12:00:00Z
 const DAY: f64 = 86_400_000.0;
 
+fn iso(ms: f64) -> serde_json::Value {
+    let at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms as i64).unwrap();
+    serde_json::json!(at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
+fn text(ms: f64) -> Value {
+    Value::string(iso(ms).as_str().unwrap())
+}
+
 fn eval_at(now: f64, expr: serde_json::Value) -> Value {
     let ctx = BindingContextBuilder::new().now(now).build();
     let sexpr = serde_json::from_value(expr).unwrap();
@@ -15,11 +24,11 @@ fn eval_at(now: f64, expr: serde_json::Value) -> Value {
 fn now_binding_and_time_now_return_the_stamp() {
     assert_eq!(
         eval_at(STAMP, serde_json::json!("@now")),
-        Value::Number(STAMP)
+        text(STAMP)
     );
     assert_eq!(
         eval_at(STAMP, serde_json::json!(["time/now"])),
-        Value::Number(STAMP)
+        text(STAMP)
     );
 }
 
@@ -32,9 +41,9 @@ fn a_lambda_child_context_inherits_the_stamp() {
     assert_eq!(
         out,
         Value::array(vec![
-            Value::Number(STAMP),
-            Value::Number(STAMP),
-            Value::Number(STAMP)
+            text(STAMP),
+            text(STAMP),
+            text(STAMP)
         ])
     );
 }
@@ -42,23 +51,23 @@ fn a_lambda_child_context_inherits_the_stamp() {
 #[test]
 fn is_past_and_is_future_compare_against_the_stamp() {
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isFuture", STAMP + DAY])),
+        eval_at(STAMP, serde_json::json!(["time/isFuture", iso(STAMP + DAY)])),
         Value::Bool(true)
     );
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isPast", STAMP + DAY])),
+        eval_at(STAMP, serde_json::json!(["time/isPast", iso(STAMP + DAY)])),
         Value::Bool(false)
     );
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isPast", STAMP - 1.0])),
+        eval_at(STAMP, serde_json::json!(["time/isPast", iso(STAMP - 1.0)])),
         Value::Bool(true)
     );
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isPast", STAMP])),
+        eval_at(STAMP, serde_json::json!(["time/isPast", iso(STAMP)])),
         Value::Bool(false)
     );
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isFuture", STAMP])),
+        eval_at(STAMP, serde_json::json!(["time/isFuture", iso(STAMP)])),
         Value::Bool(false)
     );
 }
@@ -66,31 +75,31 @@ fn is_past_and_is_future_compare_against_the_stamp() {
 #[test]
 fn is_today_and_today_are_relative_to_the_stamp_day() {
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/isToday", STAMP + 60_000.0])),
+        eval_at(STAMP, serde_json::json!(["time/isToday", iso(STAMP + 60_000.0)])),
         Value::Bool(true)
     );
     assert_eq!(
         eval_at(
             STAMP,
-            serde_json::json!(["time/isToday", STAMP + 2.0 * DAY])
+            serde_json::json!(["time/isToday", iso(STAMP + 2.0 * DAY)])
         ),
         Value::Bool(false)
     );
     assert_eq!(
         eval_at(STAMP, serde_json::json!(["time/today"])),
-        Value::Number((STAMP / DAY).floor() * DAY)
+        text((STAMP / DAY).floor() * DAY)
     );
 }
 
 #[test]
 fn relative_formatting_measures_from_the_stamp() {
     assert_eq!(
-        eval_at(STAMP, serde_json::json!(["time/relative", STAMP])),
+        eval_at(STAMP, serde_json::json!(["time/relative", iso(STAMP)])),
         Value::string("just now")
     );
     let three_days = eval_at(
         STAMP,
-        serde_json::json!(["time/relative", STAMP - 3.0 * DAY]),
+        serde_json::json!(["time/relative", iso(STAMP - 3.0 * DAY)]),
     );
     assert!(
         matches!(&three_days, Value::String(s) if s.contains("3 days ago")),
@@ -102,9 +111,10 @@ fn relative_formatting_measures_from_the_stamp() {
 fn an_unstamped_context_reads_the_wall_clock() {
     let ctx = BindingContextBuilder::new().build();
     let sexpr = serde_json::from_value(serde_json::json!(["time/now"])).unwrap();
-    let Value::Number(n) = Evaluator::new().evaluate(&sexpr, &ctx).unwrap() else {
-        panic!("number")
+    let Value::String(at) = Evaluator::new().evaluate(&sexpr, &ctx).unwrap() else {
+        panic!("an ISO-8601 instant")
     };
+    let n = chrono::DateTime::parse_from_rfc3339(&at).unwrap().timestamp_millis() as f64;
     assert!(n > STAMP + 365.0 * DAY);
 }
 
@@ -112,7 +122,7 @@ fn an_unstamped_context_reads_the_wall_clock() {
 /// "just now", then minutes, hours, days, weeks, 30-day months and 365-day years, rounded.
 #[test]
 fn relative_formatting_uses_the_runtime_buckets() {
-    let rel = |offset: f64| eval_at(STAMP, serde_json::json!(["time/relative", STAMP + offset]));
+    let rel = |offset: f64| eval_at(STAMP, serde_json::json!(["time/relative", iso(STAMP + offset)]));
     let s = |text: &str| Value::string(text);
     assert_eq!(rel(-30_000.0), s("just now"));
     assert_eq!(rel(-45.0 * 60_000.0), s("45 minutes ago"));

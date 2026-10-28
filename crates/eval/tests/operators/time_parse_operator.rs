@@ -28,7 +28,8 @@ fn eval(expr: &Json) -> Result<Json, String> {
         Value::Number(n) => Ok(Json::from(n as i64)),
         Value::Bool(b) => Ok(Json::Bool(b)),
         Value::Null => Ok(Json::Null),
-        other => Err(format!("not a number or boolean: {other:?}")),
+        Value::String(text) => Ok(Json::String(text.to_string())),
+        other => Err(format!("not a number, boolean or text: {other:?}")),
     }
 }
 

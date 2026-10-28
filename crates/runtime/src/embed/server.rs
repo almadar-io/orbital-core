@@ -12,7 +12,7 @@ use crate::resumable::{completion_event, CallSite, DispatchContinuation, Dispatc
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
-use crate::kernel::{KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
+use crate::kernel::{EntryError, KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
 use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
@@ -175,9 +175,9 @@ fn host_answered() -> (Arc<dyn EntitySource>, KernelConfig) {
 
 impl EmbeddedServer {
     /// Register an already-resolved schema in a fresh server-role kernel.
-    pub fn new(schema: OrbitalSchema) -> Result<Self, String> {
+    pub fn new(schema: OrbitalSchema) -> Result<Self, EntryError> {
         if schema.orbitals.is_empty() {
-            return Err("resolved schema declares no orbitals".to_string());
+            return Err(EntryError::NoOrbitals);
         }
         let orbital_traits = schema
             .orbitals
@@ -195,7 +195,7 @@ impl EmbeddedServer {
         let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, host, config);
         kernel
             .register_schema(schema)
-            .map_err(|e| format!("register_schema: {e}"))?;
+            .map_err(EntryError::Register)?;
         let default_user = kernel.get_current_user();
         Ok(Self {
             kernel,
@@ -215,9 +215,9 @@ impl EmbeddedServer {
 
     /// A server holding this one's registered program and none of its session ([`RuntimeKernel::fork_session`]):
     /// its viewer, mounted ticks and locales carry over, nothing a dispatch left does.
-    pub fn fork_session(&self) -> Result<Self, String> {
+    pub fn fork_session(&self) -> Result<Self, EntryError> {
         let (host, config) = host_answered();
-        let kernel = self.kernel.fork_session(host, config).map_err(|e| format!("fork_session: {e}"))?;
+        let kernel = self.kernel.fork_session(host, config).map_err(EntryError::ForkSession)?;
         Ok(Self {
             kernel,
             orbital_traits: self.orbital_traits.clone(),
@@ -235,9 +235,9 @@ impl EmbeddedServer {
     }
 
     /// A fresh control program using this app's entity policies; app routes, sessions and grants are not inherited.
-    pub fn fork_program(&self, schema: OrbitalSchema) -> Result<Self, String> {
+    pub fn fork_program(&self, schema: OrbitalSchema) -> Result<Self, EntryError> {
         if schema.orbitals.is_empty() {
-            return Err("resolved schema declares no orbitals".to_string());
+            return Err(EntryError::NoOrbitals);
         }
         let orbital_traits = schema
             .orbitals
@@ -257,7 +257,7 @@ impl EmbeddedServer {
         let kernel = self
             .kernel
             .program_context(host, config, schema)
-            .map_err(|e| format!("fork_program: {e}"))?;
+            .map_err(EntryError::ForkProgram)?;
         Ok(Self {
             kernel,
             orbital_traits,
@@ -1214,7 +1214,10 @@ mod program_context_tests {
                 Ok(_) => panic!("collision accepted"),
                 Err(error) => error,
             };
-            assert!(error.contains(&format!("{kind} collision")), "{error}");
+            assert!(
+                matches!(&error, EntryError::ForkProgram(KernelError::Internal(m)) if m.contains(&format!("{kind} collision"))),
+                "{error}"
+            );
             assert!(parent.kernel.get_orbital("ControlOrbital").is_none());
             assert_eq!(parent.get_state("AppTrait", None), "idle");
         }

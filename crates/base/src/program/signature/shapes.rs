@@ -21,9 +21,8 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
     {
         return false;
     }
-    // A date is a string or a number at rest, depending on the host; a static date passes either.
-    let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime)
-        && matches!(expected, OirType::Number | OirType::String);
+    let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime | OirType::Instant)
+        && matches!(expected, OirType::String);
     // A semantic string (email, url, ...) is a string, and a reference to another row is its id string.
     let text_at_rest = matches!(
         unwrap_optional(actual),

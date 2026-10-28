@@ -70,6 +70,20 @@ use tracing::{debug, info};
 /// The most bytes one `random-bytes` may ask for.
 const RANDOM_BYTES_MAX: f64 = 1024.0;
 
+/// Why a shell entry constructor (`EmbeddedServer::new`, `EmbeddedKernel::new`, `KernelBridge::new`,
+/// `ClientKernel::new`, the forks) refused its program.
+#[derive(Debug, thiserror::Error)]
+pub enum EntryError {
+    #[error("resolved schema declares no orbitals")]
+    NoOrbitals,
+    #[error("register_schema: {0}")]
+    Register(#[source] KernelError),
+    #[error("fork_session: {0}")]
+    ForkSession(#[source] KernelError),
+    #[error("fork_program: {0}")]
+    ForkProgram(#[source] KernelError),
+}
+
 /// Errors returned by the runtime kernel.
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {

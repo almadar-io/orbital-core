@@ -510,6 +510,7 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
         ref_id: None,
         forwarded_from: None,
         nested_forwarded_from: Vec::new(),
+        wired: false,
         payload_for: None,
         projected_from: None,
         record: None,
@@ -553,6 +554,7 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
             ref_id: None,
             forwarded_from: None,
             nested_forwarded_from: Vec::new(),
+            wired: false,
             payload_for: None,
             projected_from: None,
             record: None,
@@ -862,6 +864,7 @@ fn orbital_ref_object_roundtrips_through_serde() {
             ref_id: None,
             forwarded_from: None,
             nested_forwarded_from: Vec::new(),
+            wired: false,
             payload_for: None,
             projected_from: None,
             record: None,
@@ -1197,4 +1200,30 @@ fn schema_maps_serialize_in_insertion_order() {
         &a_hints,
         &["uzeta", "ualpha", "umid", "ubeta"]
     )));
+}
+
+#[test]
+fn a_wired_config_entry_is_not_a_declaration_whatever_type_it_carries() {
+    let wired: ConfigField = serde_json::from_value(
+        serde_json::json!({ "type": "string", "wired": true, "default": "@config.k" }),
+    )
+    .unwrap();
+    assert!(!wired.is_declaration_form());
+    assert_eq!(serde_json::to_value(&wired).unwrap()["wired"], true);
+    let declared: ConfigField =
+        serde_json::from_value(serde_json::json!({ "type": "string", "default": "x" })).unwrap();
+    assert!(
+        declared.is_declaration_form(),
+        "control: a typed entry without the mark declares a knob"
+    );
+    assert!(serde_json::to_value(&declared)
+        .unwrap()
+        .get("wired")
+        .is_none());
+    let legacy: ConfigField =
+        serde_json::from_value(serde_json::json!({ "type": "unknown", "default": 1 })).unwrap();
+    assert!(
+        !legacy.is_declaration_form(),
+        "control: hand-written unknown wiring still reads as wiring"
+    );
 }

@@ -1,24 +1,6 @@
-//! Time operators: now, arithmetic, parsing and formatting of instants.
+//! Time operators over ISO-8601 text: a `date` is `YYYY-MM-DD` (a calendar day, no zone), a `datetime` or `instant` is a full date-time with a zone.
 
 use super::*;
-
-// ============================================================================
-// Phase 2.5: Time Operations
-// ============================================================================
-
-/// time/today - Today at midnight UTC
-pub struct TimeTodayOp;
-impl Operator for TimeTodayOp {
-    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let now = ctx.now_millis() as i64;
-
-        // Round down to midnight UTC
-        let ms_per_day = 24 * 60 * 60 * 1000_i64;
-        let today = (now / ms_per_day) * ms_per_day;
-
-        Ok(Value::Number(today as f64))
-    }
-}
 
 /// The one time-unit vocabulary. Every `time/*` operator resolves its unit
 /// argument through `TimeUnit::parse`, and the JS interpreter's
@@ -141,53 +123,194 @@ pub(super) fn shift_time(ts: f64, amount: f64, unit: TimeUnit) -> Result<f64, Or
     }
 }
 
-/// time/add - Add duration to timestamp
+/// Whether a point in time names a calendar day or a moment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shape {
+    Date,
+    DateTime,
+}
+
+/// A parsed ISO-8601 value: epoch milliseconds (a date is its midnight UTC) and the shape it was written in.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Moment {
+    pub ms: f64,
+    pub shape: Shape,
+}
+
+impl Moment {
+    pub(super) fn of(value: &Value) -> Result<Moment, OrbitalError> {
+        match value {
+            Value::String(text) => parse_iso(text)
+                .map(|(ms, shape)| Moment {
+                    ms: ms as f64,
+                    shape,
+                })
+                .ok_or_else(|| {
+                    OrbitalError::Eval(EvalError::TypeMismatch {
+                        expected: "date or datetime (ISO-8601 text)".to_string(),
+                        actual: format!("\"{text}\""),
+                    })
+                }),
+            other => Err(OrbitalError::Eval(
+                other.kind_error("date or datetime (ISO-8601 text)"),
+            )),
+        }
+    }
+
+    /// The milliseconds of a moment that carries a time of day; a bare date refuses.
+    pub(super) fn at_time_of_day(self, op: &str) -> Result<f64, OrbitalError> {
+        match self.shape {
+            Shape::DateTime => Ok(self.ms),
+            Shape::Date => Err(needs_time_of_day(op)),
+        }
+    }
+}
+
+pub(super) fn needs_time_of_day(op: &str) -> OrbitalError {
+    OrbitalError::Eval(EvalError::InvalidArgument(format!(
+        "{op} needs a time of day and a date carries none: pass a datetime"
+    )))
+}
+
+impl TimeUnit {
+    pub(super) fn below_a_day(self) -> bool {
+        matches!(
+            self,
+            TimeUnit::Millisecond | TimeUnit::Second | TimeUnit::Minute | TimeUnit::Hour
+        )
+    }
+}
+
+fn utc(ms: f64) -> Result<chrono::DateTime<chrono::Utc>, OrbitalError> {
+    if ms.is_finite() {
+        if let Some(at) = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ms.floor() as i64)
+        {
+            use chrono::Datelike;
+            if (0..=9999).contains(&at.year()) {
+                return Ok(at);
+            }
+        }
+    }
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+        "{ms} ms is outside the years 0000 to 9999"
+    ))))
+}
+
+/// `YYYY-MM-DD` for a date, `YYYY-MM-DDTHH:MM:SS.mmmZ` for a datetime or instant.
+pub(super) fn render_moment(ms: f64, shape: Shape) -> Result<Value, OrbitalError> {
+    use chrono::{Datelike, Timelike};
+    let at = utc(ms)?;
+    Ok(Value::string(match shape {
+        Shape::Date => format!("{:04}-{:02}-{:02}", at.year(), at.month(), at.day()),
+        Shape::DateTime => format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            at.year(),
+            at.month(),
+            at.day(),
+            at.hour(),
+            at.minute(),
+            at.second(),
+            at.timestamp_subsec_millis()
+        ),
+    }))
+}
+
+/// An epoch-ms clock reading as an ISO-8601 instant.
+pub(crate) fn instant_value(ms: f64) -> Result<Value, OrbitalError> {
+    render_moment(ms, Shape::DateTime)
+}
+
+/// time/today - midnight UTC today, as an instant
+pub struct TimeTodayOp;
+impl Operator for TimeTodayOp {
+    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        let day = 24.0 * 60.0 * 60.0 * 1000.0;
+        render_moment((ctx.now_millis() / day).floor() * day, Shape::DateTime)
+    }
+}
+
+pub struct TimeNowOp;
+impl Operator for TimeNowOp {
+    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        render_moment(ctx.now_millis(), Shape::DateTime)
+    }
+}
+
+fn unit_arg(arg: &SExpression, ctx: &BindingContext) -> Result<TimeUnit, OrbitalError> {
+    TimeUnit::parse(eval_expr(arg, ctx)?.text()?)
+}
+
+/// Shift a moment, keeping its shape. A date shifts by whole days or longer only.
+fn shift_moment(m: Moment, amount: f64, unit: TimeUnit, op: &str) -> EvalResult {
+    if m.shape == Shape::Date {
+        if unit.below_a_day() {
+            return Err(needs_time_of_day(op));
+        }
+        if unit.fixed_millis().is_some() && amount.fract() != 0.0 {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{op} on a date takes a whole amount of days or weeks, got {amount}"
+            ))));
+        }
+    }
+    render_moment(shift_time(m.ms, amount, unit)?, m.shape)
+}
+
+/// time/add - add a duration to a date or datetime
 pub struct TimeAddOp;
 impl Operator for TimeAddOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        // ["time/add", timestamp, amount, unit]
         require_arity!(args, "time/add", >= 3);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
         let amount = require_number!(eval_expr(&args[1], ctx)?);
-        let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
-
-        Ok(Value::Number(shift_time(ts, amount, unit)?))
+        shift_moment(m, amount, unit_arg(&args[2], ctx)?, "time/add")
     }
 }
 
-/// time/subtract - Subtract duration from timestamp
+/// time/subtract - subtract a duration from a date or datetime
 pub struct TimeSubtractOp;
 impl Operator for TimeSubtractOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        // ["time/subtract", timestamp, amount, unit]
         require_arity!(args, "time/subtract", >= 3);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
         let amount = require_number!(eval_expr(&args[1], ctx)?);
-        let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
-
-        Ok(Value::Number(shift_time(ts, -amount, unit)?))
+        shift_moment(m, -amount, unit_arg(&args[2], ctx)?, "time/subtract")
     }
 }
 
-/// time/diff - Difference between timestamps
+fn same_shape(a: Moment, b: Moment, op: &str) -> Result<(), OrbitalError> {
+    if a.shape == b.shape {
+        return Ok(());
+    }
+    Err(OrbitalError::Eval(EvalError::TypeMismatch {
+        expected: "two dates or two datetimes".to_string(),
+        actual: format!("{op} got a date and a datetime: convert one explicitly"),
+    }))
+}
+
+fn pair(
+    args: &[SExpression],
+    ctx: &BindingContext,
+    op: &str,
+) -> Result<(Moment, Moment), OrbitalError> {
+    let (a, b) = (
+        Moment::of(&eval_expr(&args[0], ctx)?)?,
+        Moment::of(&eval_expr(&args[1], ctx)?)?,
+    );
+    same_shape(a, b, op)?;
+    Ok((a, b))
+}
+
+/// time/diff - signed difference in ms, or in whole units of the third argument
 pub struct TimeDiffOp;
 impl Operator for TimeDiffOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        // ["time/diff", ts1, ts2, unit?]
         require_arity!(args, "time/diff", >= 2);
-
-        let ts1 = require_number!(eval_expr(&args[0], ctx)?);
-
-        let ts2 = require_number!(eval_expr(&args[1], ctx)?);
-
-        // Signed, so that diff(a, b) == -diff(b, a). Whole units truncate
-        // toward zero for the same reason.
+        let (a, b) = pair(args, ctx, "time/diff")?;
+        let (ts1, ts2) = (a.ms, b.ms);
         let diff_ms = ts1 - ts2;
 
         if args.len() > 2 {
-            let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
+            let unit = unit_arg(&args[2], ctx)?;
             let result = match unit.fixed_millis() {
                 Some(ms) => (diff_ms / ms).trunc(),
                 None => {
@@ -201,43 +324,34 @@ impl Operator for TimeDiffOp {
             };
             Ok(Value::Number(result))
         } else {
-            // Default to milliseconds
             Ok(Value::Number(diff_ms))
         }
     }
 }
 
-/// time/isBefore - Compare timestamps
+/// time/isBefore
 pub struct TimeIsBeforeOp;
 impl Operator for TimeIsBeforeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isBefore", >= 2);
-
-        let ts1 = require_number!(eval_expr(&args[0], ctx)?);
-
-        let ts2 = require_number!(eval_expr(&args[1], ctx)?);
-
-        Ok(Value::Bool(ts1 < ts2))
+        let (a, b) = pair(args, ctx, "time/isBefore")?;
+        Ok(Value::Bool(a.ms < b.ms))
     }
 }
 
-/// time/isAfter - Compare timestamps
+/// time/isAfter
 pub struct TimeIsAfterOp;
 impl Operator for TimeIsAfterOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isAfter", >= 2);
-
-        let ts1 = require_number!(eval_expr(&args[0], ctx)?);
-
-        let ts2 = require_number!(eval_expr(&args[1], ctx)?);
-
-        Ok(Value::Bool(ts1 > ts2))
+        let (a, b) = pair(args, ctx, "time/isAfter")?;
+        Ok(Value::Bool(a.ms > b.ms))
     }
 }
 
-/// `YYYY-MM-DD[THH:MM[:SS[.f+]][Z|±HH:MM]]` to epoch ms; a date is midnight UTC and a date-time
-/// without an offset is read as UTC. `None` for every other spelling or an out-of-range part.
-pub(super) fn parse_iso_instant(text: &str) -> Option<i64> {
+/// `YYYY-MM-DD` (a date) or `YYYY-MM-DDTHH:MM[:SS[.f+]]` with a `Z` or `±HH:MM` zone (a datetime) to epoch ms and shape.
+/// `None` for every other spelling, a date-time without a zone, or an out-of-range part.
+pub(super) fn parse_iso(text: &str) -> Option<(i64, Shape)> {
     use chrono::{NaiveDate, TimeZone};
     let b = text.as_bytes();
     let num = |from: usize, len: usize| -> Option<u32> {
@@ -256,7 +370,7 @@ pub(super) fn parse_iso_instant(text: &str) -> Option<i64> {
         .from_utc_datetime(&date.and_hms_opt(0, 0, 0)?)
         .timestamp_millis();
     if b.len() == 10 {
-        return Some(ms);
+        return Some((ms, Shape::Date));
     }
     if b.get(10) != Some(&b'T') || b.get(13) != Some(&b':') {
         return None;
@@ -289,48 +403,37 @@ pub(super) fn parse_iso_instant(text: &str) -> Option<i64> {
         }
     }
     match &text[at..] {
-        "" | "Z" => Some(ms),
+        "Z" => Some((ms, Shape::DateTime)),
         zone if zone.len() == 6 && matches!(b[at], b'+' | b'-') && b[at + 3] == b':' => {
             let (oh, om) = (num(at + 1, 2)?, num(at + 4, 2)?);
             if oh > 23 || om > 59 {
                 return None;
             }
             let offset = (i64::from(oh) * 60 + i64::from(om)) * 60_000;
-            Some(if b[at] == b'-' {
-                ms + offset
-            } else {
-                ms - offset
-            })
+            Some((
+                if b[at] == b'-' {
+                    ms + offset
+                } else {
+                    ms - offset
+                },
+                Shape::DateTime,
+            ))
         }
         _ => None,
     }
 }
 
-/// time/parse - RFC 3339 / ISO 8601 date or date-time to epoch ms; a date/datetime value already held as epoch ms is
-/// that number; anything else answers null.
+/// time/parse - ISO text to a `date` (text with no time) or a `datetime` (text with a time and zone); unparseable text answers null
 pub struct TimeParseOp;
 impl Operator for TimeParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/parse", 1);
-
-        let date_str = match eval_expr(&args[0], ctx)? {
-            Value::String(s) => s,
-            Value::Number(ms) => {
-                return Ok(if ms.is_finite() {
-                    Value::Number(ms)
-                } else {
-                    Value::Null
-                })
-            }
-            other => {
-                return Err(OrbitalError::Eval(
-                    other.kind_error("string, date or datetime"),
-                ))
-            }
-        };
-        match parse_iso_instant(&date_str) {
-            Some(ms) => Ok(Value::Number(ms as f64)),
-            None => Ok(Value::Null),
+        match eval_expr(&args[0], ctx)? {
+            Value::String(text) => match parse_iso(&text) {
+                Some((ms, shape)) => render_moment(ms as f64, shape),
+                None => Ok(Value::Null),
+            },
+            other => Err(OrbitalError::Eval(other.kind_error("string"))),
         }
     }
 }
@@ -341,27 +444,138 @@ impl Operator for TimeValidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/valid", 1);
         let input = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(parse_iso_instant(input.text()?).is_some()))
+        Ok(Value::Bool(parse_iso(input.text()?).is_some()))
     }
 }
 
-/// time/format's 2-arg (timestamp, token-string) form: moment/dayjs-style
-/// token replacement (`"MMM D, YYYY"` → `"Sep 18, 2026"`). `require_arity!`
-/// only checks "at least 1 arg", so a 2-arg call silently fell through to
-/// the 1-arg ISO branch below with the format string entirely ignored —
-/// this Evaluator is the ONE canonical definition of every operator's
-/// semantics (orbital-core/src/evaluator), and it simply never implemented
-/// this call shape (C-TIME-FORMAT-TOKEN-ARG-DROPPED). `orbital-shell-
-/// typescript`'s codegen (backend/../codegen/operator.rs,
-/// TIME_FORMAT_TOKEN_TEMPLATE) emits an equivalent single-pass, longest-
-/// token-first substitution for the compiled path — same token
-/// vocabulary, kept in sync by hand since generated JS obviously can't call
-/// back into this Rust function.
-pub(super) fn format_timestamp_tokens(ts_ms: f64, format: &str) -> Option<String> {
-    if !ts_ms.is_finite() {
-        return None;
+/// time/format - format a date or datetime with moment-style tokens, in UTC
+pub struct TimeFormatOp;
+impl Operator for TimeFormatOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/format", >= 2);
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let format = eval_expr(&args[1], ctx)?;
+        Ok(Value::string(format_moment_tokens(m, format.text()?)?))
     }
-    let dt = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(ts_ms as i64)?;
+}
+
+pub(super) fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+macro_rules! calendar_part {
+    ($name:ident, $op:literal, $at:ident, $body:expr) => {
+        #[doc = concat!($op, " - read one calendar part of a date or datetime (UTC)")]
+        pub struct $name;
+        impl Operator for $name {
+            fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+                require_arity!(args, $op, 1);
+                let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+                let $at = utc(m.ms)?;
+                Ok(Value::Number($body as f64))
+            }
+        }
+    };
+}
+
+macro_rules! time_of_day_part {
+    ($name:ident, $op:literal, $at:ident, $body:expr) => {
+        #[doc = concat!($op, " - read the time of day of a datetime (UTC); a date refuses")]
+        pub struct $name;
+        impl Operator for $name {
+            fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+                require_arity!(args, $op, 1);
+                let ms = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day($op)?;
+                let $at = utc(ms)?;
+                Ok(Value::Number($body as f64))
+            }
+        }
+    };
+}
+
+calendar_part!(TimeYearOp, "time/year", at, chrono::Datelike::year(&at));
+calendar_part!(TimeMonthOp, "time/month", at, chrono::Datelike::month(&at));
+calendar_part!(TimeDayOp, "time/day", at, chrono::Datelike::day(&at));
+calendar_part!(
+    TimeWeekdayOp,
+    "time/weekday",
+    at,
+    chrono::Datelike::weekday(&at).num_days_from_sunday()
+);
+time_of_day_part!(TimeHourOp, "time/hour", at, chrono::Timelike::hour(&at));
+time_of_day_part!(
+    TimeMinuteOp,
+    "time/minute",
+    at,
+    chrono::Timelike::minute(&at)
+);
+time_of_day_part!(
+    TimeSecondOp,
+    "time/second",
+    at,
+    chrono::Timelike::second(&at)
+);
+
+/// time/isBetween - start <= date <= end
+pub struct TimeIsBetweenOp;
+impl Operator for TimeIsBetweenOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/isBetween", >= 3);
+        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let start = Moment::of(&eval_expr(&args[1], ctx)?)?;
+        let end = Moment::of(&eval_expr(&args[2], ctx)?)?;
+        same_shape(ts, start, "time/isBetween")?;
+        same_shape(ts, end, "time/isBetween")?;
+        Ok(Value::Bool(ts.ms >= start.ms && ts.ms <= end.ms))
+    }
+}
+
+/// time/isSame - the same moment, or the same unit-bucket with a third argument
+pub struct TimeIsSameOp;
+impl Operator for TimeIsSameOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/isSame", >= 2);
+        let (a, b) = pair(args, ctx, "time/isSame")?;
+        if args.len() > 2 {
+            let unit = unit_arg(&args[2], ctx)?;
+            if unit.below_a_day() && (a.shape == Shape::Date || b.shape == Shape::Date) {
+                return Err(needs_time_of_day("time/isSame"));
+            }
+            Ok(Value::Bool(start_of(a.ms, unit) == start_of(b.ms, unit)))
+        } else {
+            Ok(Value::Bool((a.ms - b.ms).abs() < 1.0))
+        }
+    }
+}
+
+pub(super) fn timestamp_to_date(ts: f64) -> (i32, i32, i32) {
+    let days = (ts / 86_400_000.0).floor() as i64;
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let doe = shifted.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as i32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as i32;
+    let year = (yoe + era * 400 + i64::from(month <= 2)) as i32;
+    (year, month, day)
+}
+
+/// Epoch ms of a calendar day at 00:00:00 UTC.
+pub(super) fn date_to_timestamp(year: i32, month: i32, day: i32) -> f64 {
+    let y = i64::from(year) - i64::from(month <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = i64::from((month + 9) % 12);
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    ((era * 146_097 + doe - 719_468) as f64) * 86_400_000.0
+}
+
+/// Moment-style token replacement (longest token first). A time-of-day token on a date refuses.
+pub(super) fn format_moment_tokens(m: Moment, format: &str) -> Result<String, OrbitalError> {
+    let dt = utc(m.ms)?;
     use chrono::{Datelike, Timelike};
 
     let weekday_short = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -423,6 +637,10 @@ pub(super) fn format_timestamp_tokens(ts_ms: f64, format: &str) -> Option<String
     'outer: while i < bytes.len() {
         for (token, value) in tokens {
             if format[i..].starts_with(token) {
+                if m.shape == Shape::Date && matches!(*token, "HH" | "mm" | "ss" | "H" | "m" | "s")
+                {
+                    return Err(needs_time_of_day("time/format"));
+                }
                 out.push_str(value);
                 i += token.len();
                 continue 'outer;
@@ -434,319 +652,39 @@ pub(super) fn format_timestamp_tokens(ts_ms: f64, format: &str) -> Option<String
         out.push(ch);
         i += ch.len_utf8();
     }
-    Some(out)
+    Ok(out)
 }
 
-/// time/format - Format timestamp to string (basic support)
-pub struct TimeFormatOp;
-impl Operator for TimeFormatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/format", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        if let Some(format_expr) = args.get(1) {
-            let format = eval_expr(format_expr, ctx)?;
-            return Ok(
-                format_timestamp_tokens(ts, format.text()?).map_or(Value::Null, Value::string)
-            );
-        }
-
-        // Basic formatting - convert to ISO date string
-        let total_days = (ts / (24.0 * 60.0 * 60.0 * 1000.0)) as i64;
-        let remaining_ms = (ts % (24.0 * 60.0 * 60.0 * 1000.0)) as i64;
-
-        // Calculate year (approximate)
-        let mut year = 1970 + (total_days / 365) as i32;
-        let mut day_of_year = (total_days % 365) as i32;
-
-        // Adjust for accumulated leap years
-        let leap_years = ((year - 1969) / 4) - ((year - 1901) / 100) + ((year - 1601) / 400);
-        day_of_year -= leap_years;
-        while day_of_year < 0 {
-            year -= 1;
-            day_of_year += if is_leap_year(year) { 366 } else { 365 };
-        }
-
-        // Calculate month and day
-        let month_days = if is_leap_year(year) {
-            [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        } else {
-            [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        };
-
-        let mut month = 1;
-        let mut day = day_of_year + 1;
-        for days in month_days.iter() {
-            if day <= *days {
-                break;
-            }
-            day -= days;
-            month += 1;
-        }
-
-        let hours = (remaining_ms / (60 * 60 * 1000)) % 24;
-        let minutes = (remaining_ms / (60 * 1000)) % 60;
-        let seconds = (remaining_ms / 1000) % 60;
-
-        Ok(Value::string(format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            year,
-            month,
-            day.max(1),
-            hours,
-            minutes,
-            seconds
-        )))
-    }
-}
-
-pub(super) fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
-}
-
-// ============================================================================
-// Phase 3.5: Time Advanced
-// ============================================================================
-
-/// time/year - Extract year from timestamp
-pub struct TimeYearOp;
-impl Operator for TimeYearOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/year", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let total_days = (ts / (24.0 * 60.0 * 60.0 * 1000.0)) as i64;
-        let year = estimate_year_from_days(total_days);
-
-        Ok(Value::Number(year as f64))
-    }
-}
-
-/// time/month - Extract month from timestamp (1-12)
-pub struct TimeMonthOp;
-impl Operator for TimeMonthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/month", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let (_, month, _) = timestamp_to_date(ts);
-        Ok(Value::Number(month as f64))
-    }
-}
-
-/// time/day - Extract day from timestamp (1-31)
-pub struct TimeDayOp;
-impl Operator for TimeDayOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/day", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let (_, _, day) = timestamp_to_date(ts);
-        Ok(Value::Number(day as f64))
-    }
-}
-
-/// time/weekday - Day of week (0-6, Sunday=0)
-pub struct TimeWeekdayOp;
-impl Operator for TimeWeekdayOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/weekday", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        // Days since epoch (Jan 1, 1970 was Thursday = 4)
-        let total_days = (ts / (24.0 * 60.0 * 60.0 * 1000.0)) as i64;
-        let weekday = ((total_days % 7) + 4) % 7; // Adjust for Thursday start
-
-        Ok(Value::Number(weekday as f64))
-    }
-}
-
-/// time/hour - Extract hour (0-23)
-pub struct TimeHourOp;
-impl Operator for TimeHourOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/hour", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let ms_per_day = 24.0 * 60.0 * 60.0 * 1000.0;
-        let remaining_ms = ts % ms_per_day;
-        let hour = (remaining_ms / (60.0 * 60.0 * 1000.0)) as i64 % 24;
-
-        Ok(Value::Number(hour as f64))
-    }
-}
-
-/// time/minute - Extract minute (0-59)
-pub struct TimeMinuteOp;
-impl Operator for TimeMinuteOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/minute", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let minute = ((ts / (60.0 * 1000.0)) as i64) % 60;
-
-        Ok(Value::Number(minute as f64))
-    }
-}
-
-/// time/second - Extract second (0-59)
-pub struct TimeSecondOp;
-impl Operator for TimeSecondOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/second", 1);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let second = ((ts / 1000.0) as i64) % 60;
-
-        Ok(Value::Number(second as f64))
-    }
-}
-
-/// time/isBetween - Check if timestamp is between two others
-pub struct TimeIsBetweenOp;
-impl Operator for TimeIsBetweenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/isBetween", >= 3);
-
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-        let start = require_number!(eval_expr(&args[1], ctx)?);
-        let end = require_number!(eval_expr(&args[2], ctx)?);
-
-        Ok(Value::Bool(ts >= start && ts <= end))
-    }
-}
-
-/// time/isSame - Check if timestamps are the same (optionally by unit)
-pub struct TimeIsSameOp;
-impl Operator for TimeIsSameOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "time/isSame", >= 2);
-
-        let ts1 = require_number!(eval_expr(&args[0], ctx)?);
-        let ts2 = require_number!(eval_expr(&args[1], ctx)?);
-
-        if args.len() > 2 {
-            // Same unit-bucket, i.e. startOf(a, unit) == startOf(b, unit).
-            // Defined in terms of `start_of` so week/month/year cannot drift
-            // back to an exact-millisecond comparison.
-            let unit = TimeUnit::parse(eval_expr(&args[2], ctx)?.text()?)?;
-            Ok(Value::Bool(start_of(ts1, unit) == start_of(ts2, unit)))
-        } else {
-            // Exact match
-            Ok(Value::Bool((ts1 - ts2).abs() < 1.0))
-        }
-    }
-}
-
-// Helper functions for time operations
-pub(super) fn estimate_year_from_days(total_days: i64) -> i32 {
-    // Approximate year from days since epoch
-    let mut year = 1970 + (total_days / 365) as i32;
-    let mut days_remaining = total_days % 365;
-
-    // Adjust for leap years
-    let leap_years = count_leap_years(1970, year);
-    days_remaining -= leap_years as i64;
-
-    while days_remaining < 0 {
-        year -= 1;
-        days_remaining += if is_leap_year(year) { 366 } else { 365 };
-    }
-
-    year
-}
-
-pub(super) fn count_leap_years(from: i32, to: i32) -> i32 {
-    let count_leaps = |y: i32| -> i32 { (y / 4) - (y / 100) + (y / 400) };
-    count_leaps(to - 1) - count_leaps(from - 1)
-}
-
-pub(super) fn timestamp_to_date(ts: f64) -> (i32, i32, i32) {
-    let total_days = (ts / (24.0 * 60.0 * 60.0 * 1000.0)) as i64;
-    let year = estimate_year_from_days(total_days);
-
-    // Calculate day of year
-    let year_start_days = days_since_epoch(year);
-    let day_of_year = (total_days - year_start_days) as i32;
-
-    let month_days = if is_leap_year(year) {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1;
-    let mut day = day_of_year + 1;
-    for days in month_days.iter() {
-        if day <= *days {
-            break;
-        }
-        day -= days;
-        month += 1;
-    }
-
-    (year, month.min(12), day.clamp(1, 31))
-}
-
-pub(super) fn days_since_epoch(year: i32) -> i64 {
-    let years = year - 1970;
-    let leap_years = count_leap_years(1970, year);
-    (years as i64) * 365 + (leap_years as i64)
-}
-
-// ============================================================================
-// Phase 4.5: Time Extras
-// ============================================================================
-
-/// time/isPast - Check if timestamp in past
+/// time/isPast - an instant before now; a date carries no instant and refuses
 pub struct TimeIsPastOp;
 impl Operator for TimeIsPastOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isPast", 1);
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let now = ctx.now_millis();
-
-        Ok(Value::Bool(ts < now))
+        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/isPast")?;
+        Ok(Value::Bool(ts < ctx.now_millis()))
     }
 }
 
-/// time/isFuture - Check if timestamp in future
+/// time/isFuture - an instant after now; a date carries no instant and refuses
 pub struct TimeIsFutureOp;
 impl Operator for TimeIsFutureOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isFuture", 1);
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let now = ctx.now_millis();
-
-        Ok(Value::Bool(ts > now))
+        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/isFuture")?;
+        Ok(Value::Bool(ts > ctx.now_millis()))
     }
 }
 
-/// time/isToday - Check if same day as today
+/// time/isToday - the date or datetime falls on today's UTC date
 pub struct TimeIsTodayOp;
 impl Operator for TimeIsTodayOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isToday", 1);
-        let ts = require_number!(eval_expr(&args[0], ctx)?);
-
-        let now = ctx.now_millis();
-
-        // Convert to days since epoch
+        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.ms;
         const MS_PER_DAY: f64 = 86400000.0;
-        let ts_day = (ts / MS_PER_DAY).floor();
-        let now_day = (now / MS_PER_DAY).floor();
-
-        Ok(Value::Bool((ts_day - now_day).abs() < f64::EPSILON))
+        Ok(Value::Bool(
+            (ts / MS_PER_DAY).floor() == (ctx.now_millis() / MS_PER_DAY).floor(),
+        ))
     }
 }
 
@@ -778,18 +716,5 @@ impl Operator for TimeDurationOp {
         }
 
         Ok(Value::string(parts.join(" ")))
-    }
-}
-
-// ============================================================================
-// Time Operators (Phase 1)
-// ============================================================================
-
-pub struct TimeNowOp;
-impl Operator for TimeNowOp {
-    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        // Return current Unix timestamp in milliseconds
-        let now = ctx.now_millis();
-        Ok(Value::Number(now))
     }
 }

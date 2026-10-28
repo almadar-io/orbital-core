@@ -365,7 +365,9 @@ impl crate::kernel::SessionPending for OsSessionPending {
 /// for the dispatch that deferred K to end; the kernel's dispatch lane then orders it FIFO behind every other
 /// dispatch (EXEC-CONC-1).
 pub struct KernelCompletionSink {
-    kernel: Arc<RuntimeKernel>,
+    /// Weak: the kernel holds this sink (through its completions and session-pending check), so a strong edge back
+    /// would keep an ended kernel, and everything it holds, alive for the life of the process.
+    kernel: std::sync::Weak<RuntimeKernel>,
     answer: Arc<CompletionAnswerer>,
     done: Arc<CompletionDone>,
     owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
@@ -454,7 +456,7 @@ impl KernelCompletionSink {
         done: Arc<CompletionDone>,
     ) -> Self {
         Self {
-            kernel,
+            kernel: Arc::downgrade(&kernel),
             answer,
             done,
             owners: Arc::default(),
@@ -469,10 +471,11 @@ impl KernelCompletionSink {
 
     /// Start tracking one dispatch serving `client_id`; the viewer this thread entered is its requester's.
     pub fn begin_dispatch_for(&self, client_id: Option<&str>) -> DispatchScope {
+        let kernel = self.kernel.upgrade();
         self.scope(Arc::new(Requester {
-            viewer: self.kernel.thread_viewer(),
+            viewer: kernel.as_ref().and_then(|kernel| kernel.thread_viewer()),
             client_id: client_id.map(str::to_string),
-            session: self.kernel.thread_session(),
+            session: kernel.as_ref().and_then(|kernel| kernel.thread_session()),
         }))
     }
 
@@ -509,14 +512,17 @@ impl KernelCompletionSink {
         &self,
         progress: Progress<DispatchOutcomes>,
     ) -> Result<DispatchOutcomes, DispatchError> {
+        let kernel = self.kernel.upgrade().ok_or_else(|| {
+            DispatchError::Kernel(crate::kernel::KernelError::Internal("the kernel this sink served has ended".to_string()))
+        })?;
         let scope = self.begin_dispatch();
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
-        drive_blocking(&self.kernel, progress, &answer)
+        drive_blocking(&kernel, progress, &answer)
     }
 
     /// Wait for the dispatch that deferred `key` to end, when one is still running.
-    fn wait_for_owner(&self, key: &str) {
-        self.kernel.wait_for_parked_key(key);
+    fn wait_for_owner(&self, kernel: &RuntimeKernel, key: &str) {
+        kernel.wait_for_parked_key(key);
         let owner = self.owners.lock().get(key).cloned();
         if let Some(owner) = owner {
             let mut over = owner.over.lock();
@@ -544,14 +550,15 @@ impl OsCompletionSink for KernelCompletionSink {
 impl KernelCompletionSink {
     /// EXEC-QUEUE-10: the completion runs as the viewer that asked, and a key it defers again keeps that requester.
     fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
-        self.wait_for_owner(key);
+        // A completion that outlives its kernel has nothing to dispatch into.
+        let Some(kernel) = self.kernel.upgrade() else { return };
+        self.wait_for_owner(&kernel, key);
         let requester = self.requester_of(key);
-        let _viewer = requester.viewer.as_ref().map(|viewer| self.kernel.enter_viewer((**viewer).clone()));
-        let _session = requester.session.as_ref().map(|session| self.kernel.enter_session(session));
+        let _viewer = requester.viewer.as_ref().map(|viewer| kernel.enter_viewer((**viewer).clone()));
+        let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
-        let result = self
-            .kernel
+        let result = kernel
             .start_dispatch(
                 &site.trait_name,
                 Some(site.entity_id.as_str()),
@@ -560,7 +567,7 @@ impl KernelCompletionSink {
                 None,
                 None,
             )
-            .and_then(|progress| drive_blocking(&self.kernel, progress, &answer));
+            .and_then(|progress| drive_blocking(&kernel, progress, &answer));
         (self.done)(site, &event, &payload, requester.client_id.as_deref(), result);
     }
 }
@@ -719,7 +726,8 @@ mod tests {
         );
     }
 
-    fn lone_sink() -> (Arc<KernelCompletionSink>, std::sync::mpsc::Receiver<String>) {
+    /// The kernel is returned so the test holds it: the sink only borrows it weakly.
+    fn lone_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<String>) {
         use crate::config::KernelConfig;
         use orbital_core_base::effect_types::RuntimeEnvironment;
         let kernel = Arc::new(RuntimeKernel::new(
@@ -733,10 +741,18 @@ mod tests {
         let done: Arc<CompletionDone> = Arc::new(move |_, event, _, _, _| {
             let _ = told.lock().send(event.to_string());
         });
-        (Arc::new(KernelCompletionSink::new(kernel, answer, done)), ran)
+        (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, ran)
     }
 
-    type Asked = std::sync::mpsc::Receiver<(String, Option<String>, Option<Value>)>;
+    #[test]
+    fn a_completion_after_its_kernel_ended_dispatches_nothing() {
+        let (sink, kernel, ran) = lone_sink();
+        drop(kernel);
+        sink.complete(&site(Some("DONE"), None), "k", Ok(exited(0.0)));
+        assert!(ran.try_recv().is_err(), "an ended kernel has nothing to dispatch into");
+    }
+
+        type Asked = std::sync::mpsc::Receiver<(String, Option<String>, Option<Value>)>;
 
     /// A sink whose completion dispatches report the event, the client they were delivered for and the viewer they ran as.
     fn requester_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, Asked) {
@@ -829,7 +845,7 @@ mod tests {
 
     #[test]
     fn a_completion_waits_for_the_dispatch_that_deferred_its_key_and_for_no_other() {
-        let (sink, ran) = lone_sink();
+        let (sink, _kernel, ran) = lone_sink();
         let (a, b) = (sink.begin_dispatch(), sink.begin_dispatch());
         assert!(matches!(a.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
         assert!(matches!(b.answer(&deferred, &defers("k2")), IoAnswer::ServiceDeferred));
@@ -846,7 +862,7 @@ mod tests {
 
     #[test]
     fn control_a_completion_of_a_key_no_dispatch_deferred_runs_at_once_beside_an_open_dispatch() {
-        let (sink, ran) = lone_sink();
+        let (sink, _kernel, ran) = lone_sink();
         let open = sink.begin_dispatch();
         assert!(matches!(open.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
         complete_on_a_thread(&sink, "stranger", "STRANGER").join().expect("stranger");
@@ -865,7 +881,7 @@ mod tests {
 
     #[test]
     fn a_stream_event_waits_for_the_dispatch_that_opened_the_stream_and_a_refused_open_is_not_waited_for() {
-        let (sink, ran) = lone_sink();
+        let (sink, _kernel, ran) = lone_sink();
         let open = sink.begin_dispatch();
         let opened = open.answer(&|_| IoAnswer::Os(Ok(Value::Null)), &listens("s1"));
         assert!(matches!(opened, IoAnswer::Os(Ok(_))));
@@ -902,7 +918,7 @@ mod tests {
 
     #[test]
     fn control_a_key_the_host_did_not_defer_is_not_waited_for() {
-        let (sink, ran) = lone_sink();
+        let (sink, _kernel, ran) = lone_sink();
         let open = sink.begin_dispatch();
         let answered = open.answer(&|_| IoAnswer::Service(Err("no".to_string())), &defers("k1"));
         assert!(!matches!(answered, IoAnswer::ServiceDeferred));

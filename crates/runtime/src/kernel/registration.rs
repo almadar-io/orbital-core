@@ -102,6 +102,11 @@ impl RuntimeKernel {
         orbital_core_base::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
     }
 
+    /// The program registered under `name`, as the kernel holds it.
+    pub fn registered_schema(&self, name: &str) -> Option<Arc<OrbitalSchema>> {
+        self.registry.schemas.read().get(name).cloned()
+    }
+
     /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
     pub fn egress(&self) -> Vec<String> {
         self.grants.egress.read().clone()

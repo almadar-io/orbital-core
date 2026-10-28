@@ -1327,22 +1327,21 @@ fn test_object_keys_null() {
 #[test]
 fn test_time_now() {
     let result = eval(r#"["time/now"]"#);
-    if let Value::Number(ts) = result {
-        // Should be a reasonable Unix timestamp in milliseconds (after year 2020)
-        assert!(ts > 1577836800000.0); // Jan 1, 2020
-        assert!(ts < 4102444800000.0); // Year 2100
+    if let Value::String(ts) = result {
+        assert!(ts.as_str() > "2020-01-01T00:00:00.000Z");
+        assert!(ts.as_str() < "2100-01-01T00:00:00.000Z");
     } else {
-        panic!("Expected number");
+        panic!("Expected an ISO-8601 instant");
     }
 }
 
 #[test]
 fn test_time_now_is_after_2020() {
     let result = eval(r#"["time/now"]"#);
-    if let Value::Number(ts) = result {
-        assert!(ts > 1577836800000.0);
+    if let Value::String(ts) = result {
+        assert!(ts.as_str() > "2020-01-01T00:00:00.000Z");
     } else {
-        panic!("Expected number");
+        panic!("Expected an ISO-8601 instant");
     }
 }
 
@@ -1685,57 +1684,55 @@ fn test_math_sqrt() {
 #[test]
 fn test_time_today() {
     let result = eval(r#"["time/today"]"#);
-    if let Value::Number(ts) = result {
-        // Should be at midnight (divisible by 86400000)
-        assert_eq!(ts % (24.0 * 60.0 * 60.0 * 1000.0), 0.0);
+    if let Value::String(ts) = result {
+        assert!(ts.ends_with("T00:00:00.000Z"), "{ts}");
     } else {
-        panic!("Expected number");
+        panic!("Expected an ISO-8601 instant");
     }
 }
 
 #[test]
 fn test_time_add() {
     // Add 1 day to a known timestamp
-    let base = 1704067200000.0; // Jan 1, 2024 00:00:00 UTC
-    let expr = format!(r#"["time/add", {}, 1, "day"]"#, base);
-    let result = eval(&expr);
-    assert_eq!(result, Value::Number(base + 86400000.0));
+    assert_eq!(
+        eval(r#"["time/add", "2024-01-01T00:00:00Z", 1, "day"]"#),
+        Value::string("2024-01-02T00:00:00.000Z")
+    );
 }
 
 #[test]
 fn test_time_subtract() {
-    let base = 1704067200000.0;
-    let expr = format!(r#"["time/subtract", {}, 1, "hour"]"#, base);
-    let result = eval(&expr);
-    assert_eq!(result, Value::Number(base - 3600000.0));
+    assert_eq!(
+        eval(r#"["time/subtract", "2024-01-01T00:00:00Z", 1, "hour"]"#),
+        Value::string("2023-12-31T23:00:00.000Z")
+    );
 }
 
 #[test]
 fn test_time_diff() {
-    let ts1 = 1704067200000.0; // Jan 1, 2024
-    let ts2 = 1704153600000.0; // Jan 2, 2024 (1 day later)
-    let expr = format!(r#"["time/diff", {}, {}, "days"]"#, ts2, ts1);
-    let result = eval(&expr);
-    assert_eq!(result, Value::Number(1.0));
+    assert_eq!(
+        eval(r#"["time/diff", "2024-01-02T00:00:00Z", "2024-01-01T00:00:00Z", "days"]"#),
+        Value::Number(1.0)
+    );
 }
 
 #[test]
 fn test_time_is_before() {
-    assert_eq!(eval(r#"["time/isBefore", 1000, 2000]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["time/isBefore", 2000, 1000]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["time/isBefore", "2024-01-01", "2024-01-02"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["time/isBefore", "2024-01-02", "2024-01-01"]"#), Value::Bool(false));
 }
 
 #[test]
 fn test_time_is_after() {
-    assert_eq!(eval(r#"["time/isAfter", 2000, 1000]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["time/isAfter", 1000, 2000]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["time/isAfter", "2024-01-02", "2024-01-01"]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["time/isAfter", "2024-01-01", "2024-01-02"]"#), Value::Bool(false));
 }
 
 #[test]
 fn test_time_format() {
     // Format Unix epoch (0)
-    assert!(eval_err(r#"["time/format", 0]"#).contains("Arity mismatch"), "the format is required");
-    let result = eval(r#"["time/format", 0, "YYYY-MM-DD"]"#);
+    assert!(eval_err(r#"["time/format", "1970-01-01"]"#).contains("Arity mismatch"), "the format is required");
+    let result = eval(r#"["time/format", "1970-01-01", "YYYY-MM-DD"]"#);
     if let Value::String(s) = result {
         assert!(s.starts_with("1970-01-01"));
     } else {
@@ -1752,17 +1749,17 @@ fn test_time_format() {
 fn test_time_format_two_arg_token_form() {
     // Epoch 0 = 1970-01-01T00:00:00Z, a Thursday.
     assert_eq!(
-        eval(r#"["time/format", 0, "YYYY-MM-DD"]"#),
+        eval(r#"["time/format", "1970-01-01T00:00:00Z", "YYYY-MM-DD"]"#),
         Value::string("1970-01-01")
     );
     assert_eq!(
-        eval(r#"["time/format", 0, "ddd, MMM D, YYYY"]"#),
+        eval(r#"["time/format", "1970-01-01T00:00:00Z", "ddd, MMM D, YYYY"]"#),
         Value::string("Thu, Jan 1, 1970")
     );
     // Longest-token-first: "MMMM"/"dddd" must not be read as "MM"+"MM"
     // or "M" repeated, and "MM" must not consume the head of "MMM".
     assert_eq!(
-        eval(r#"["time/format", 0, "dddd, MMMM D, YYYY"]"#),
+        eval(r#"["time/format", "1970-01-01T00:00:00Z", "dddd, MMMM D, YYYY"]"#),
         Value::string("Thursday, January 1, 1970")
     );
 }
@@ -1911,10 +1908,13 @@ fn format_and_time_text_operands_are_strings_only() {
     assert_eq!(eval(r#"["format/phone", "5551234567"]"#), Value::string("(555) 123-4567"));
     assert!(eval_err(r#"["time/valid", null]"#).contains("Type mismatch"));
     assert_eq!(eval(r#"["time/valid", "2024-01-18"]"#), Value::Bool(true));
-    assert!(eval_err(r#"["time/format", 0, null]"#).contains("Type mismatch"));
-    assert!(eval_err(r#"["time/add", 0, 1, 5]"#).contains("Type mismatch"));
-    assert!(eval_err(r#"["time/add", 0, 1.5, "month"]"#).contains("whole amount"));
-    assert_eq!(eval(r#"["time/add", 0, 1.5, "second"]"#), Value::Number(1500.0));
+    assert!(eval_err(r#"["time/format", "1970-01-01", null]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["time/add", "1970-01-01T00:00:00Z", 1, 5]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["time/add", "1970-01-01T00:00:00Z", 1.5, "month"]"#).contains("whole amount"));
+    assert_eq!(
+        eval(r#"["time/add", "1970-01-01T00:00:00Z", 1.5, "second"]"#),
+        Value::string("1970-01-01T00:00:01.500Z")
+    );
 }
 
 // =========================================================================
@@ -2262,54 +2262,54 @@ fn test_math_map() {
 
 #[test]
 fn test_time_year() {
-    // 2020-06-15 00:00:00 UTC = 1592179200000 ms
+    // 2020-06-15 00:00:00 UTC = "2020-06-15" ms
     assert_eq!(
-        eval(r#"["time/year", 1592179200000]"#),
+        eval(r#"["time/year", "2020-06-15"]"#),
         Value::Number(2020.0)
     );
 }
 
 #[test]
 fn test_time_month() {
-    // 2020-06-15 00:00:00 UTC = 1592179200000 ms (June = 6)
-    assert_eq!(eval(r#"["time/month", 1592179200000]"#), Value::Number(6.0));
+    // 2020-06-15 00:00:00 UTC = "2020-06-15" ms (June = 6)
+    assert_eq!(eval(r#"["time/month", "2020-06-15"]"#), Value::Number(6.0));
 }
 
 #[test]
 fn test_time_day() {
-    // 2020-06-15 00:00:00 UTC = 1592179200000 ms
-    assert_eq!(eval(r#"["time/day", 1592179200000]"#), Value::Number(15.0));
+    // 2020-06-15 00:00:00 UTC = "2020-06-15" ms
+    assert_eq!(eval(r#"["time/day", "2020-06-15"]"#), Value::Number(15.0));
 }
 
 #[test]
 fn test_time_weekday() {
     // 2020-06-15 was a Monday = 1
     assert_eq!(
-        eval(r#"["time/weekday", 1592179200000]"#),
+        eval(r#"["time/weekday", "2020-06-15"]"#),
         Value::Number(1.0)
     );
 }
 
 #[test]
 fn test_time_hour() {
-    // 2020-06-15 14:30:00 UTC = 1592231400000 ms
-    assert_eq!(eval(r#"["time/hour", 1592231400000]"#), Value::Number(14.0));
+    // 2020-06-15 14:30:00 UTC = "2020-06-15T14:30:00Z" ms
+    assert_eq!(eval(r#"["time/hour", "2020-06-15T14:30:00Z"]"#), Value::Number(14.0));
 }
 
 #[test]
 fn test_time_minute() {
-    // 2020-06-15 14:30:00 UTC = 1592231400000 ms
+    // 2020-06-15 14:30:00 UTC = "2020-06-15T14:30:00Z" ms
     assert_eq!(
-        eval(r#"["time/minute", 1592231400000]"#),
+        eval(r#"["time/minute", "2020-06-15T14:30:00Z"]"#),
         Value::Number(30.0)
     );
 }
 
 #[test]
 fn test_time_second() {
-    // 2020-06-15 14:30:45 UTC = 1592231445000 ms
+    // 2020-06-15 14:30:45 UTC = "2020-06-15T14:30:45Z" ms
     assert_eq!(
-        eval(r#"["time/second", 1592231445000]"#),
+        eval(r#"["time/second", "2020-06-15T14:30:45Z"]"#),
         Value::Number(45.0)
     );
 }
@@ -2318,11 +2318,11 @@ fn test_time_second() {
 fn test_time_is_between() {
     // Check if time is between two other times
     assert_eq!(
-        eval(r#"["time/isBetween", 1592179200000, 1592000000000, 1593000000000]"#),
+        eval(r#"["time/isBetween", "2020-06-15T00:00:00Z", "2020-06-12T22:13:20Z", "2020-06-24T12:00:00Z"]"#),
         Value::Bool(true)
     );
     assert_eq!(
-        eval(r#"["time/isBetween", 1590000000000, 1592000000000, 1593000000000]"#),
+        eval(r#"["time/isBetween", "2020-05-20T18:40:00Z", "2020-06-12T22:13:20Z", "2020-06-24T12:00:00Z"]"#),
         Value::Bool(false)
     );
 }
@@ -2331,12 +2331,12 @@ fn test_time_is_between() {
 fn test_time_is_same() {
     // Same day check - both timestamps are 2020-06-15
     assert_eq!(
-        eval(r#"["time/isSame", 1592179200000, 1592231400000, "day"]"#),
+        eval(r#"["time/isSame", "2020-06-15T00:00:00Z", "2020-06-15T14:30:00Z", "day"]"#),
         Value::Bool(true)
     );
     // Different days
     assert_eq!(
-        eval(r#"["time/isSame", 1592179200000, 1592265600000, "day"]"#),
+        eval(r#"["time/isSame", "2020-06-15", "2020-06-16", "day"]"#),
         Value::Bool(false)
     );
 }
@@ -2645,14 +2645,14 @@ fn test_math_random_int() {
 #[test]
 fn test_time_is_past() {
     // A timestamp from year 2000 should be in the past
-    assert_eq!(eval(r#"["time/isPast", 946684800000]"#), Value::Bool(true));
+    assert_eq!(eval(r#"["time/isPast", "2000-01-01T00:00:00Z"]"#), Value::Bool(true));
 }
 
 #[test]
 fn test_time_is_future() {
     // A timestamp from year 2100 should be in the future
     assert_eq!(
-        eval(r#"["time/isFuture", 4102444800000]"#),
+        eval(r#"["time/isFuture", "2100-01-01T00:00:00Z"]"#),
         Value::Bool(true)
     );
 }
@@ -3775,4 +3775,164 @@ fn a_filter_lambda_binds_its_parameter_to_each_item() {
         Value::array(vec![Value::string("b")]),
         "control: the same chain through map"
     );
+}
+
+// =========================================================================
+// time/*: points in time are ISO-8601 text (date, datetime, instant); durations are ms
+// =========================================================================
+
+#[test]
+fn time_iso_a_number_is_not_a_point_in_time() {
+    for expr in [
+        r#"["time/year", 1592179200000]"#,
+        r#"["time/month", 1592179200000]"#,
+        r#"["time/add", 0, 1, "day"]"#,
+        r#"["time/startOf", 0, "day"]"#,
+        r#"["time/endOf", 0, "day"]"#,
+        r#"["time/diff", 0, 1]"#,
+        r#"["time/isBefore", 0, 1]"#,
+        r#"["time/isToday", 0]"#,
+        r#"["time/relative", 0]"#,
+        r#"["time/format", 0, "YYYY"]"#,
+        r#"["time/parse", 1592179200000]"#,
+    ] {
+        assert!(eval_err(expr).contains("Type mismatch"), "{expr}");
+    }
+    assert!(eval_err(r#"["time/year", "not a date"]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["time/year", "2024-01-18T09:30:00"]"#).contains("Type mismatch"), "a date-time needs a zone");
+    assert!(eval_err(r#"["time/year", null]"#).contains("Type mismatch"));
+}
+
+#[test]
+fn time_iso_parse_answers_by_the_shape_the_text_carries() {
+    assert_eq!(eval(r#"["time/parse", "2024-01-18"]"#), Value::string("2024-01-18"));
+    assert_eq!(
+        eval(r#"["time/parse", "2024-01-18T09:30:00Z"]"#),
+        Value::string("2024-01-18T09:30:00.000Z")
+    );
+    assert_eq!(
+        eval(r#"["time/parse", "2024-01-18T09:30:00.5+02:00"]"#),
+        Value::string("2024-01-18T07:30:00.500Z")
+    );
+    assert_eq!(eval(r#"["time/parse", "2024-01-18T09:30:00"]"#), Value::Null);
+    assert_eq!(eval(r#"["time/parse", "2024-13-40"]"#), Value::Null);
+    assert_eq!(eval(r#"["time/parse", "yesterday"]"#), Value::Null);
+    assert_eq!(eval(r#"["time/valid", "2024-01-18T09:30:00"]"#), Value::Bool(false));
+    assert_eq!(eval(r#"["time/valid", "2024-01-18T09:30:00Z"]"#), Value::Bool(true));
+    assert!(eval_err(r#"["time/parse", null]"#).contains("Type mismatch"));
+}
+
+#[test]
+fn time_iso_now_and_today_are_instants() {
+    for expr in [r#"["time/now"]"#, r#"["time/today"]"#] {
+        let Value::String(text) = eval(expr) else { panic!("{expr}") };
+        assert_eq!(text.len(), 24, "{text}");
+        assert!(text.ends_with('Z'), "{text}");
+    }
+}
+
+#[test]
+fn time_iso_calendar_parts_read_a_date_and_a_datetime() {
+    assert_eq!(eval(r#"["time/year", "2020-06-15"]"#), Value::Number(2020.0));
+    assert_eq!(eval(r#"["time/year", "2020-06-15T23:59:59-05:00"]"#), Value::Number(2020.0));
+    assert_eq!(eval(r#"["time/month", "2020-06-15T23:59:59-05:00"]"#), Value::Number(6.0));
+    assert_eq!(eval(r#"["time/day", "2020-06-15T23:59:59-05:00"]"#), Value::Number(16.0), "read in UTC");
+    assert_eq!(eval(r#"["time/weekday", "1969-12-31"]"#), Value::Number(3.0), "before the epoch");
+    assert_eq!(eval(r#"["time/year", "1969-12-31T23:59:59Z"]"#), Value::Number(1969.0));
+}
+
+#[test]
+fn time_iso_time_of_day_parts_refuse_a_bare_date() {
+    for part in ["hour", "minute", "second"] {
+        let err = eval_err(&format!(r#"["time/{part}", "2020-06-15"]"#));
+        assert!(err.contains("needs a time of day"), "{part}: {err}");
+    }
+    assert_eq!(eval(r#"["time/hour", "2020-06-15T14:30:45Z"]"#), Value::Number(14.0));
+    assert_eq!(eval(r#"["time/second", "1969-12-31T23:59:59Z"]"#), Value::Number(59.0));
+    assert!(eval_err(r#"["time/isPast", "2000-01-01"]"#).contains("needs a time of day"));
+    assert!(eval_err(r#"["time/isFuture", "2100-01-01"]"#).contains("needs a time of day"));
+    assert!(eval_err(r#"["time/relative", "2000-01-01"]"#).contains("needs a time of day"));
+}
+
+#[test]
+fn time_iso_add_and_subtract_keep_the_shape() {
+    assert_eq!(eval(r#"["time/add", "2024-01-31", 1, "month"]"#), Value::string("2024-02-29"));
+    assert_eq!(eval(r#"["time/subtract", "2024-03-01", 1, "day"]"#), Value::string("2024-02-29"));
+    assert_eq!(eval(r#"["time/add", "2024-01-01", 2, "week"]"#), Value::string("2024-01-15"));
+    assert_eq!(
+        eval(r#"["time/add", "2024-01-31T10:00:00Z", 1, "month"]"#),
+        Value::string("2024-02-29T10:00:00.000Z")
+    );
+    assert_eq!(
+        eval(r#"["time/add", "2024-01-01T00:00:00Z", 90, "minute"]"#),
+        Value::string("2024-01-01T01:30:00.000Z")
+    );
+    assert_eq!(eval(r#"["time/subtract", "1970-01-01", 1, "day"]"#), Value::string("1969-12-31"));
+    assert!(eval_err(r#"["time/add", "2024-01-01", 1, "hour"]"#).contains("needs a time of day"));
+    assert!(eval_err(r#"["time/add", "2024-01-01", 1.5, "day"]"#).contains("whole amount"));
+}
+
+#[test]
+fn time_iso_diff_is_a_number_of_ms_or_whole_units() {
+    assert_eq!(
+        eval(r#"["time/diff", "2024-01-02T00:00:00Z", "2024-01-01T00:00:00Z"]"#),
+        Value::Number(86_400_000.0)
+    );
+    assert_eq!(eval(r#"["time/diff", "2024-01-01", "2024-01-03", "day"]"#), Value::Number(-2.0));
+    assert_eq!(eval(r#"["time/diff", "2024-03-31", "2024-01-31", "month"]"#), Value::Number(2.0));
+    assert_eq!(
+        eval(r#"["time/diff", "2024-01-01T12:00:00Z", "2024-01-01T00:00:00Z", "hour"]"#),
+        Value::Number(12.0)
+    );
+}
+
+#[test]
+fn time_iso_start_and_end_of_keep_the_shape() {
+    assert_eq!(eval(r#"["time/startOf", "2024-03-14", "month"]"#), Value::string("2024-03-01"));
+    assert_eq!(eval(r#"["time/endOf", "2024-02-10", "month"]"#), Value::string("2024-02-29"));
+    assert_eq!(eval(r#"["time/startOf", "2024-03-14", "week"]"#), Value::string("2024-03-11"));
+    assert_eq!(eval(r#"["time/endOf", "2024-03-14", "day"]"#), Value::string("2024-03-14"));
+    assert_eq!(
+        eval(r#"["time/startOf", "2024-03-14T15:45:10Z", "hour"]"#),
+        Value::string("2024-03-14T15:00:00.000Z")
+    );
+    assert_eq!(
+        eval(r#"["time/endOf", "2024-03-14T15:45:10Z", "day"]"#),
+        Value::string("2024-03-14T23:59:59.999Z")
+    );
+    assert!(eval_err(r#"["time/startOf", "2024-03-14", "hour"]"#).contains("needs a time of day"));
+    assert!(eval_err(r#"["time/endOf", "2024-03-14", "minute"]"#).contains("needs a time of day"));
+}
+
+#[test]
+fn time_iso_comparisons_and_formatting() {
+    assert_eq!(
+        eval(r#"["time/isBefore", "2024-01-01T23:59:59Z", "2024-01-02T00:00:00Z"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["time/isBetween", "2024-06-01", "2024-01-01", "2024-12-31"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["time/isSame", "2024-01-01T08:00:00Z", "2024-01-01T20:00:00Z", "day"]"#),
+        Value::Bool(true)
+    );
+    assert!(eval_err(r#"["time/isSame", "2024-01-01", "2024-01-01", "hour"]"#)
+        .contains("needs a time of day"));
+    assert_eq!(
+        eval(r#"["time/format", "2024-03-14", "ddd, MMM D, YYYY"]"#),
+        Value::string("Thu, Mar 14, 2024")
+    );
+    assert_eq!(
+        eval(r#"["time/format", "2024-03-14T15:04:05Z", "HH:mm:ss"]"#),
+        Value::string("15:04:05")
+    );
+    assert!(eval_err(r#"["time/format", "2024-03-14", "HH:mm"]"#).contains("needs a time of day"));
+}
+
+#[test]
+fn time_iso_duration_stays_a_number_of_ms() {
+    assert_eq!(eval(r#"["time/duration", 9000000]"#), Value::string("2h 30m"));
+    assert!(eval_err(r#"["time/duration", "2h"]"#).contains("Type mismatch"));
 }

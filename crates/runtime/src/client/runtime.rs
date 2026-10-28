@@ -12,7 +12,6 @@ use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_eval::state_machine::types::TraitState;
 use orbital_core_base::value::Value;
 use std::sync::Arc;
-use tracing::debug;
 
 /// Orbital event
 #[derive(Debug, Clone)]
@@ -99,10 +98,11 @@ impl OrbitalClientRuntime {
     }
 
     /// Register a schema with the runtime
-    pub fn register_schema(&self, schema: orbital_core_base::schema::types::OrbitalSchema) {
-        if let Err(err) = self.kernel.register_schema(schema) {
-            debug!(error = %err, "Failed to register schema");
-        }
+    pub fn register_schema(
+        &self,
+        schema: orbital_core_base::schema::types::OrbitalSchema,
+    ) -> Result<(), crate::kernel::KernelError> {
+        self.kernel.register_schema(schema)
     }
 
     /// Process an orbital event
@@ -248,7 +248,7 @@ mod tests {
         let runtime = OrbitalClientRuntime::new();
         let schema = create_test_schema();
 
-        runtime.register_schema(schema);
+        runtime.register_schema(schema).unwrap();
 
         let stats = runtime.stats();
         assert_eq!(stats.registered_schemas, 1);
@@ -259,7 +259,7 @@ mod tests {
     fn test_process_event() {
         let runtime = OrbitalClientRuntime::new();
         let schema = create_test_schema();
-        runtime.register_schema(schema);
+        runtime.register_schema(schema).unwrap();
 
         let event = OrbitalEvent::new("CounterManagement", "START").with_entity("counter-1");
 
@@ -274,7 +274,7 @@ mod tests {
     fn test_get_state() {
         let runtime = OrbitalClientRuntime::new();
         let schema = create_test_schema();
-        runtime.register_schema(schema);
+        runtime.register_schema(schema).unwrap();
 
         let event = OrbitalEvent::new("CounterManagement", "START").with_entity("counter-1");
         runtime.process_event(&event).unwrap();

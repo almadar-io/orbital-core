@@ -2055,7 +2055,7 @@ fn at_run_time_a_shape_argument_is_a_string() {
 }
 
 #[test]
-fn a_nominal_std_type_is_not_checked_and_a_date_takes_a_string_or_a_number() {
+fn a_nominal_std_type_is_not_checked_and_a_date_takes_a_string_and_no_number() {
     let nominal = op(
         json!([p("x", json!("tensor")), p("d", json!("date"))]),
         json!("boolean"),
@@ -2072,7 +2072,7 @@ fn a_nominal_std_type_is_not_checked_and_a_date_takes_a_string_or_a_number() {
         &[ty(OirType::Boolean), ty(OirType::Number)],
         Mode::Static
     )
-    .is_ok());
+    .is_err());
     assert!(call(
         &nominal,
         &[ty(OirType::Boolean), ty(OirType::Boolean)],
@@ -3052,7 +3052,7 @@ fn a_proof_binds_only_what_every_value_of_the_argument_type_fits() {
     assert!(refused.contains("time/parse") && refused.contains("declare the field `date`"), "{refused}");
     assert!(bind_date(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_err());
     assert!(bind_date(OirType::Date, Mode::Proof).is_ok(), "control: a date-typed value passes a date position");
-    assert!(bind_date(OirType::Number, Mode::Proof).is_ok(), "control: (time/parse s) answers epoch ms, which a date position takes");
+    assert!(bind_date(OirType::Number, Mode::Proof).is_err(), "epoch ms is not a date: a point in time is ISO text");
     assert!(bind_date(OirType::String, Mode::Static).is_ok(), "control: only a strict call refuses a string at a date position");
     assert!(matches!(bind(OirType::Json, Mode::Proof), Err(Mismatch::Undetermined { .. })));
     assert!(bind(OirType::String, Mode::Proof).is_ok());
@@ -3163,4 +3163,23 @@ fn a_number_path_is_an_index_only_into_a_list() {
     let record = OirType::Struct { fields: vec![OirField::new("a", OirType::Number)].into(), additional: None };
     assert!(bind(record.clone(), OirType::Number).is_err());
     assert!(bind(record, OirType::String).is_ok());
+}
+
+#[test]
+fn the_null_alternative_left_out_keeps_an_optional_the_variable_itself_binds() {
+    let nullable = json!({ "kind": "union", "of": [var("R"), { "kind": "literal", "value": null }] });
+    let operator = op(json!([p("x", var("R"))]), nullable, Some(1));
+    let sig = Signature::of(&operator);
+    let result = |bound: OirType| {
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(bound), Mode::Static).unwrap();
+        (sig.result(&b), sig.result_without_null(&b))
+    };
+    assert_eq!(result(OirType::Number), (Some(OirType::optional(OirType::Number)), Some(OirType::Number)));
+    let both = OirType::optional(OirType::Number);
+    assert_eq!(result(both.clone()).1, Some(both), "an optional the variable holds survives");
+    let plain = op(json!([p("x", var("R"))]), var("R"), Some(1));
+    let mut b = CallBindings::new();
+    Signature::of(&plain).bind(&mut b, 0, &ty(OirType::Number), Mode::Static).unwrap();
+    assert_eq!(Signature::of(&plain).result_without_null(&b), None, "control: no null alternative declared");
 }

@@ -138,7 +138,7 @@ pub struct KernelBridge {
 
 impl KernelBridge {
     /// Register a resolved schema in a fresh server-environment kernel.
-    pub fn new(schema: orbital_core_base::schema::types::OrbitalSchema) -> Result<Self, BridgeError> {
+    pub fn new(schema: orbital_core_base::schema::types::OrbitalSchema) -> Result<Self, crate::kernel::EntryError> {
         use {crate::entity_source::{EntitySource, InMemoryEntityCache}, crate::config::KernelConfig, crate::kernel::RuntimeKernel};
         use std::sync::Arc;
 
@@ -152,7 +152,7 @@ impl KernelBridge {
         );
         kernel
             .register_schema(schema.clone())
-            .map_err(|e| BridgeError::Server(format!("register_schema: {e}")))?;
+            .map_err(crate::kernel::EntryError::Register)?;
         Ok(Self {
             kernel,
             schema,

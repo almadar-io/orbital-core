@@ -22,7 +22,7 @@ use crate::effects::response::{EventRequest, EventResponse};
 use crate::effects::response::{MountSeed, TransitionHop};
 use crate::entity_source::EntitySource;
 use crate::entity_source::InMemoryEntityCache;
-use crate::kernel::{already_delivered_from, ClientDispatch, RuntimeKernel, TraitSnapshot};
+use crate::kernel::{already_delivered_from, ClientDispatch, EntryError, RuntimeKernel, TraitSnapshot};
 use crate::process_result::ProcessEventResult;
 use crate::server_leg::ServerLegCollector;
 use crate::tick_clock::{Calendar, TickClock};
@@ -149,9 +149,9 @@ pub fn parse_theme_mode(mode: &str) -> Result<ThemeMode, String> {
 impl EmbeddedKernel {
     /// Register an already-resolved schema (what `orb compile` embeds) in a fresh client kernel
     /// whose delegate is the one `ServerLegCollector`.
-    pub fn new(schema: OrbitalSchema, client_id: impl Into<String>) -> Result<Self, String> {
+    pub fn new(schema: OrbitalSchema, client_id: impl Into<String>) -> Result<Self, EntryError> {
         if schema.orbitals.is_empty() {
-            return Err("resolved schema declares no orbitals".to_string());
+            return Err(EntryError::NoOrbitals);
         }
         let ticks = TickClock::from_schema(&schema);
         let entities = Arc::new(InMemoryEntityCache::new());
@@ -168,7 +168,7 @@ impl EmbeddedKernel {
         );
         kernel
             .register_schema(schema)
-            .map_err(|e| format!("register_schema: {e}"))?;
+            .map_err(EntryError::Register)?;
         let trait_owners = TraitOwners::from_kernel(&kernel);
         Ok(Self {
             kernel,

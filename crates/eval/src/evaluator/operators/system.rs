@@ -27,6 +27,7 @@ pub use time::{
     TimeMinuteOp, TimeMonthOp, TimeNowOp, TimeParseOp, TimeSecondOp, TimeSubtractOp, TimeTodayOp,
     TimeUnit, TimeValidOp, TimeWeekdayOp, TimeYearOp, TIME_UNIT_VOCABULARY,
 };
+pub(crate) use time::instant_value;
 pub use validation::{
     matches_semantic_pattern, semantic_string_value_valid, ValidateArrayOp, ValidateBooleanOp,
     ValidateCheckOp, ValidateCreditCardOp, ValidateDateOp, ValidateEmailOp, ValidateEqualsOp,

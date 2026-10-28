@@ -751,24 +751,28 @@ pub struct ConfigField {
     /// any config field that was never a `@payload(<knob>)` sentinel.
     #[serde(rename = "payloadFor", skip_serializing_if = "Option::is_none")]
     pub payload_for: Option<String>,
+    /// A call-site entry that wires a value into a knob the trait declares (never a declaration of its own).
+    /// `field_type` then carries the SOURCE knob's declared type for an `@config.<knob>` wiring, and `"unknown"`
+    /// for a literal value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wired: bool,
 }
 
 impl ConfigField {
     /// True when this entry is a fully-annotated DECLARATION (a NEW typed
     /// knob) rather than a plain call-site wiring/override of an already
-    /// declared knob. Mirrors the `is_plain_wiring` structural check the
-    /// lowerer applies when building a trait Reference's `config` map
-    /// (`orbital-lolo/src/lower/trait.rs::lower_trait_reference`): a plain
-    /// wiring entry always lowers to `field_type == "unknown"` with no
-    /// label/description/synonyms/tier annotations; anything else — a real
-    /// type tag or any annotation — only comes from a `.lolo` declaration
-    /// (`key : Type = default @label "..."`), never from a plain override
-    /// value.
+    /// declared knob. A wiring entry is marked `wired` by the lowerer
+    /// (`orbital-lolo/src/lower/trait.rs::lower_trait_reference`); an unmarked
+    /// entry of type `"unknown"` with no label/description/synonyms/tier is
+    /// the same wiring in hand-written IR. Anything else — a real type tag or
+    /// any annotation — only comes from a `.lolo` declaration
+    /// (`key : Type = default @label "..."`).
     pub fn is_declaration_form(&self) -> bool {
-        !(self.field_type == "unknown"
-            && self.label.is_none()
-            && self.description.is_none()
-            && self.synonyms.is_none()
-            && self.tier.is_none())
+        !(self.wired
+            || (self.field_type == "unknown"
+                && self.label.is_none()
+                && self.description.is_none()
+                && self.synonyms.is_none()
+                && self.tier.is_none()))
     }
 }

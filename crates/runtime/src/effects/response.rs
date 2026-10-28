@@ -871,7 +871,7 @@ impl EventResponse {
                         source: Some(BusEventSource {
                             dispatched: result.consumed_emits.contains(&index).then_some(true),
                             persist_success: er.persist_success.then_some(true),
-                            ..BusEventSource::from_trait(trait_name)
+                            ..result.emit_source.clone()
                         }),
                     });
                     effect_results.push(ServerEffectResult {

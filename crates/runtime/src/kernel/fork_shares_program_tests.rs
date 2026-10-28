@@ -89,3 +89,16 @@ fn control_two_kernels_registering_the_same_program_hold_their_own_definitions()
     let theirs = second.registry.trait_definitions.read()["NoteView"].clone();
     assert!(!Arc::ptr_eq(&ours, &theirs));
 }
+
+#[test]
+fn the_registered_program_is_the_kernels_own_copy() {
+    let kernel = kernel_with_program();
+    let first = kernel.registered_schema("Notes").expect("registered");
+    let held = kernel.registry.schemas.read()["Notes"].clone();
+    assert!(Arc::ptr_eq(&first, &held));
+}
+
+#[test]
+fn control_an_unregistered_program_is_none() {
+    assert!(kernel_with_program().registered_schema("Elsewhere").is_none());
+}
