@@ -201,13 +201,13 @@ fn os_host_effects_are_the_installed_tables_host_os_operators() {
 #[test]
 fn emit_capable_operators_are_the_ones_whose_parameters_take_an_emit_options_object() {
     for op in [
-        "fetch", "persist", "ref", "call-service", "http", "redis", "postgres", "random-bytes", "credential-status",
+        "fetch", "persist", "call-service", "http", "redis", "postgres", "random-bytes", "credential-status",
         "credential-forget", "credential-set", "access-check", "oauth-authorize", "oauth-connection-status",
-        "oauth-connection-forget", "os/read-file", "kv/get", "watch",
+        "oauth-connection-forget", "os/read-file", "kv/get",
     ] {
         assert!(takes_emit_options(op), "{op} takes emit options");
     }
-    for op in ["deref", "emit", "agent/invoke", "+", "no/such"] {
+    for op in ["emit", "agent/invoke", "+", "no/such"] {
         assert!(!takes_emit_options(op), "control: {op} takes none");
     }
 }

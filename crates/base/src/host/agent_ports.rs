@@ -1191,9 +1191,10 @@ mod tests {
     #[test]
     fn the_emit_slots_are_every_emit_option_field_the_operator_table_declares() {
         let slots = crate::language::registry::emit_slots();
-        for slot in ["success", "failure", "cancelled", "onMessage", "onChange"] {
+        for slot in ["success", "failure", "cancelled", "onMessage"] {
             assert!(slots.contains(slot), "{slot}: {slots:?}");
         }
+        assert!(!slots.contains("onChange"), "control: the retired `ref` slot is no slot: {slots:?}");
         assert!(!slots.contains("onSave"), "control: a name no emit options declare is no slot: {slots:?}");
     }
 

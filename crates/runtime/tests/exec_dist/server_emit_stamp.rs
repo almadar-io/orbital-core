@@ -99,14 +99,13 @@ fn the_embedded_stream_preserves_effect_order_and_does_not_replay_the_previous_d
     }
     let items: serde_json::Value = serde_json::from_str(&server.dispatch_stream_json().unwrap()).unwrap();
     let types: Vec<&str> = items.as_array().unwrap().iter().map(|item| item["type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["event", "effect", "event", "complete"]);
+    assert_eq!(types, ["event", "effect", "event"], "the response crosses once, in the dispatch's own answer: the stream carries no complete");
     assert_eq!(items[0]["data"]["event"], "PING");
     assert_eq!(items[1]["data"], json!(["navigate", "/next"]));
     assert_eq!(items[2]["data"]["event"], "PONG");
     server.start_json("Main", &json!({ "event": "MISSING", "traits": [] }).to_string()).unwrap();
     let control: serde_json::Value = serde_json::from_str(&server.dispatch_stream_json().unwrap()).unwrap();
-    assert_eq!(control.as_array().unwrap().len(), 1);
-    assert_eq!(control[0]["type"], "complete");
+    assert!(control.as_array().unwrap().is_empty(), "control: a dispatch with no emit or client effect leaves no stream item and clones no response: {control}");
 }
 
 #[test]

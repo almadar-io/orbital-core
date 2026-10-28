@@ -33,9 +33,9 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | Fsync | Copy | Rename | Remove | Link | Symlink | Readlink | WatchFiles | Mkdir
         | Rmdir | ListDir | Glob | Mktemp | Realpath | Cwd | Chdir | Stat | Lstat | Access
         | Exists | Chmod | Chown | Utimes => OsFamily::Fs,
-        Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv | Setenv
-        | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite | Isatty
-        | TtySize => OsFamily::Process,
+        Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv
+        | Setenv | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite
+        | Isatty | TtySize => OsFamily::Process,
         TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
         | Shutdown | WatchPort => OsFamily::Net,
         ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
@@ -47,7 +47,6 @@ pub fn family_of(op: OsOp) -> OsFamily {
         MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
     }
 }
-
 
 macro_rules! os_ops {
     ($( $variant:ident => ($name:literal, $min:literal, $max:literal, $shape:ident) ),+ $(,)?) => {
@@ -196,7 +195,10 @@ os_ops! {
 impl OsOp {
     /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
     pub fn is_kv(self) -> bool {
-        matches!(self, OsOp::KvGet | OsOp::KvPut | OsOp::KvDelete | OsOp::KvScan | OsOp::KvBatch)
+        matches!(
+            self,
+            OsOp::KvGet | OsOp::KvPut | OsOp::KvDelete | OsOp::KvScan | OsOp::KvBatch
+        )
     }
 
     /// Whether the operation streams events to its call site's route.
@@ -208,7 +210,15 @@ impl OsOp {
     /// asked it, its outcome arriving later as an event of the route (EXEC-QUEUE-10).
     pub fn defers_completion(self) -> bool {
         (family_of(self) == OsFamily::Fs && self.shape() == OsShape::Single && self != OsOp::Cwd)
-            || matches!(self, OsOp::Wait | OsOp::Send | OsOp::Recv | OsOp::Recvfrom | OsOp::StdinRead | OsOp::IrqWait)
+            || matches!(
+                self,
+                OsOp::Wait
+                    | OsOp::Send
+                    | OsOp::Recv
+                    | OsOp::Recvfrom
+                    | OsOp::StdinRead
+                    | OsOp::IrqWait
+            )
     }
 }
 
@@ -319,6 +329,35 @@ mod tests {
     }
 
     #[test]
+    fn os_ops_are_exactly_the_table_operators_hosted_by_os_or_kv() {
+        use crate::language::registry::operators;
+        let mut declared: Vec<&str> = operators()
+            .iter()
+            .filter(|(_, operator)| matches!(operator.host.as_deref(), Some("os" | "kv")))
+            .map(|(name, _)| name.as_str())
+            .collect();
+        declared.sort_unstable();
+        let mut coded: Vec<&str> = OsOp::ALL.iter().map(|op| op.name()).collect();
+        coded.sort_unstable();
+        assert_eq!(coded, declared);
+        let mut unhosted_os: Vec<(&str, bool)> = operators()
+            .iter()
+            .filter(|(name, operator)| name.starts_with("os/") && operator.host.is_none())
+            .map(|(name, operator)| (name.as_str(), operator.has_side_effects))
+            .collect();
+        unhosted_os.sort_unstable();
+        assert!(unhosted_os
+            .iter()
+            .all(|(name, _)| OsOp::from_name(name).is_none()));
+        let effectful: Vec<&str> = unhosted_os
+            .iter()
+            .filter(|(_, effect)| *effect)
+            .map(|(name, _)| *name)
+            .collect();
+        assert_eq!(effectful, vec!["os/watch-http"], "the pure os/path-* operators are evaluated in eval; os/watch-http is the legacy trigger the compiler validates");
+    }
+
+    #[test]
     fn names_are_unique_and_unknown_names_are_not_ops() {
         let mut names: Vec<&str> = OsOp::ALL.iter().map(|op| op.name()).collect();
         names.sort_unstable();
@@ -333,32 +372,85 @@ mod tests {
 
     #[test]
     fn finite_filesystem_answers_and_existing_blocking_operations_defer_their_completion() {
-        for op in OsOp::ALL.iter().copied().filter(|op| family_of(*op) == OsFamily::Fs) {
-            assert_eq!(op.defers_completion(), op.shape() == OsShape::Single && op != OsOp::Cwd, "{}", op.name());
+        for op in OsOp::ALL
+            .iter()
+            .copied()
+            .filter(|op| family_of(*op) == OsFamily::Fs)
+        {
+            assert_eq!(
+                op.defers_completion(),
+                op.shape() == OsShape::Single && op != OsOp::Cwd,
+                "{}",
+                op.name()
+            );
         }
-        let other: Vec<_> = OsOp::ALL.iter().copied()
-            .filter(|op| family_of(*op) != OsFamily::Fs && op.defers_completion()).collect();
-        assert_eq!(other, vec![OsOp::Wait, OsOp::StdinRead, OsOp::Send, OsOp::Recv, OsOp::Recvfrom, OsOp::IrqWait]);
+        let other: Vec<_> = OsOp::ALL
+            .iter()
+            .copied()
+            .filter(|op| family_of(*op) != OsFamily::Fs && op.defers_completion())
+            .collect();
+        assert_eq!(
+            other,
+            vec![
+                OsOp::Wait,
+                OsOp::StdinRead,
+                OsOp::Send,
+                OsOp::Recv,
+                OsOp::Recvfrom,
+                OsOp::IrqWait
+            ]
+        );
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
         assert!(!OsOp::Spawn.defers_completion() && !OsOp::Sendto.defers_completion());
     }
 
     #[test]
     fn the_device_family_is_exactly_the_four_device_ops() {
-        let dev: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Dev).map(|op| op.name()).collect();
-        assert_eq!(dev, vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]);
-        assert_eq!((OsOp::MmioRead.min_args(), OsOp::MmioRead.max_args()), (3, 3));
-        assert_eq!((OsOp::MmioWrite.min_args(), OsOp::MmioWrite.max_args()), (4, 4));
+        let dev: Vec<&str> = OsOp::ALL
+            .iter()
+            .filter(|op| family_of(**op) == OsFamily::Dev)
+            .map(|op| op.name())
+            .collect();
+        assert_eq!(
+            dev,
+            vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]
+        );
+        assert_eq!(
+            (OsOp::MmioRead.min_args(), OsOp::MmioRead.max_args()),
+            (3, 3)
+        );
+        assert_eq!(
+            (OsOp::MmioWrite.min_args(), OsOp::MmioWrite.max_args()),
+            (4, 4)
+        );
         assert_eq!((OsOp::IrqWait.min_args(), OsOp::IrqAck.max_args()), (1, 1));
-        assert!(dev.iter().all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
+        assert!(dev
+            .iter()
+            .all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
         assert!(OsOp::IrqWait.defers_completion());
-        assert!(!OsOp::MmioRead.defers_completion() && !OsOp::IrqAck.defers_completion(), "control: register access answers at once");
-        assert_eq!(family_of(OsOp::StdoutWrite), OsFamily::Process, "control: stdio stays in process");
+        assert!(
+            !OsOp::MmioRead.defers_completion() && !OsOp::IrqAck.defers_completion(),
+            "control: register access answers at once"
+        );
+        assert_eq!(
+            family_of(OsOp::StdoutWrite),
+            OsFamily::Process,
+            "control: stdio stays in process"
+        );
     }
 
     #[test]
     fn an_error_kind_name_round_trips() {
-        for kind in [OsErrorKind::Denied, OsErrorKind::NotFound, OsErrorKind::Exists, OsErrorKind::Invalid, OsErrorKind::Io, OsErrorKind::Timeout, OsErrorKind::Unsupported, OsErrorKind::Closed] {
+        for kind in [
+            OsErrorKind::Denied,
+            OsErrorKind::NotFound,
+            OsErrorKind::Exists,
+            OsErrorKind::Invalid,
+            OsErrorKind::Io,
+            OsErrorKind::Timeout,
+            OsErrorKind::Unsupported,
+            OsErrorKind::Closed,
+        ] {
             assert_eq!(OsErrorKind::from_name(kind.as_str()), Some(kind));
         }
         assert_eq!(OsErrorKind::from_name("unheard-of"), None);
@@ -470,6 +562,9 @@ mod tests {
         assert_eq!(OsOp::CurrentExe.name(), "os/current-exe");
         assert!(!OsOp::CurrentExe.is_stream() && !OsOp::CurrentExe.defers_completion());
         assert!(accepts_arity(OsOp::CurrentExe, 0));
-        assert!(!accepts_arity(OsOp::CurrentExe, 1), "control: it takes no path");
+        assert!(
+            !accepts_arity(OsOp::CurrentExe, 1),
+            "control: it takes no path"
+        );
     }
 }

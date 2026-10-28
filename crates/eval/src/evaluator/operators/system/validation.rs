@@ -76,7 +76,9 @@ impl Operator for ValidateObjectOp {
 /// (`validate/email`, `validate/url`, `validate/phone`, `validate/uuid`). The pattern is `@almadar/core`
 /// `SEMANTIC_STRING_PATTERNS`, carried by the table; a table that lacks it is an error, never a fallback.
 pub fn matches_semantic_pattern(operator: &str, value: &str) -> Result<bool, OrbitalError> {
-    static COMPILED: orbital_core_base::sync::OnceLock<orbital_core_base::sync::Mutex<std::collections::HashMap<String, regex::Regex>>> = orbital_core_base::sync::OnceLock::new();
+    static COMPILED: orbital_core_base::sync::OnceLock<
+        orbital_core_base::sync::Mutex<std::collections::HashMap<String, regex::Regex>>,
+    > = orbital_core_base::sync::OnceLock::new();
     let cache = COMPILED.get_or_init(Default::default);
     let mut cache = cache.lock();
     if !cache.contains_key(operator) {
@@ -116,7 +118,10 @@ impl Operator for ValidateEmailOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/email", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-        Ok(Value::Bool(matches_semantic_pattern("validate/email", &val)?))
+        Ok(Value::Bool(matches_semantic_pattern(
+            "validate/email",
+            &val,
+        )?))
     }
 }
 
@@ -171,7 +176,6 @@ impl Operator for ValidatePatternOp {
     }
 }
 
-
 // ============================================================================
 // Phase 3.6: Validation Advanced
 // ============================================================================
@@ -182,7 +186,10 @@ impl Operator for ValidateUuidOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/uuid", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-        Ok(Value::Bool(matches_semantic_pattern("validate/uuid", &val)?))
+        Ok(Value::Bool(matches_semantic_pattern(
+            "validate/uuid",
+            &val,
+        )?))
     }
 }
 
@@ -284,7 +291,6 @@ impl Operator for ValidateEqualsOp {
     }
 }
 
-
 // ============================================================================
 // Phase 4.6: Validation Extras
 // ============================================================================
@@ -295,7 +301,10 @@ impl Operator for ValidatePhoneOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/phone", 1);
         let val = eval_expr(&args[0], ctx)?.to_string_value();
-        Ok(Value::Bool(matches_semantic_pattern("validate/phone", &val)?))
+        Ok(Value::Bool(matches_semantic_pattern(
+            "validate/phone",
+            &val,
+        )?))
     }
 }
 
@@ -387,7 +396,10 @@ pub(super) fn rule_list(field: &str, list: Vec<Value>) -> Result<FieldRules, Orb
 
 /// The rules argument of `validate/check`: an object of field to rule list. A literal object is read as data, so
 /// a rule `["minLength", 2]` is a rule and not a call of `validate/minLength`; its rule arguments are evaluated.
-pub(super) fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result<Vec<(String, FieldRules)>, OrbitalError> {
+pub(super) fn rules_by_field(
+    expr: &SExpression,
+    ctx: &BindingContext,
+) -> Result<Vec<(String, FieldRules)>, OrbitalError> {
     let mismatch = |actual: &str| {
         OrbitalError::Eval(EvalError::TypeMismatch {
             expected: "rules by field (an object of rule lists)".to_string(),
@@ -404,7 +416,9 @@ pub(super) fn rules_by_field(expr: &SExpression, ctx: &BindingContext) -> Result
                 let evaluated = rules
                     .iter()
                     .map(|rule| match rule {
-                        SExpression::Array(parts) if matches!(parts.first(), Some(SExpression::String(_))) => {
+                        SExpression::Array(parts)
+                            if matches!(parts.first(), Some(SExpression::String(_))) =>
+                        {
                             let mut out = vec![eval_literal_head(&parts[0])];
                             for part in &parts[1..] {
                                 out.push(eval_expr(part, ctx)?);
@@ -438,7 +452,11 @@ pub(super) fn eval_literal_head(head: &SExpression) -> Value {
     }
 }
 
-pub(super) fn rule_holds(name: &str, value: &Value, args: &[Value]) -> Result<Option<bool>, OrbitalError> {
+pub(super) fn rule_holds(
+    name: &str,
+    value: &Value,
+    args: &[Value],
+) -> Result<Option<bool>, OrbitalError> {
     let number = |at: usize| match args.get(at) {
         Some(Value::Number(n)) => Some(*n),
         _ => None,
@@ -449,7 +467,10 @@ pub(super) fn rule_holds(name: &str, value: &Value, args: &[Value]) -> Result<Op
         _ => None,
     };
     let holds = match name {
-        "required" => !matches!(value, Value::Null) && !matches!(value, Value::String(text) if text.is_empty()),
+        "required" => {
+            !matches!(value, Value::Null)
+                && !matches!(value, Value::String(text) if text.is_empty())
+        }
         "string" => matches!(value, Value::String(_)),
         "number" => matches!(value, Value::Number(n) if !n.is_nan()),
         "boolean" => matches!(value, Value::Bool(_)),
@@ -461,14 +482,18 @@ pub(super) fn rule_holds(name: &str, value: &Value, args: &[Value]) -> Result<Op
         "maxLength" => length().zip(number(0)).is_some_and(|(len, max)| len <= max),
         "min" => matches!(value, Value::Number(n) if number(0).is_some_and(|min| *n >= min)),
         "max" => matches!(value, Value::Number(n) if number(0).is_some_and(|max| *n <= max)),
-        "range" => matches!(value, Value::Number(n) if number(0).zip(number(1)).is_some_and(|(lo, hi)| *n >= lo && *n <= hi)),
+        "range" => {
+            matches!(value, Value::Number(n) if number(0).zip(number(1)).is_some_and(|(lo, hi)| *n >= lo && *n <= hi))
+        }
         "pattern" => match (value, args.first()) {
             (Value::String(text), Some(Value::String(pattern))) => {
                 super::string::compile_shared_regex(pattern).is_some_and(|re| re.is_match(text))
             }
             _ => false,
         },
-        "oneOf" => matches!(args.first(), Some(Value::Array(options)) if options.iter().any(|opt| opt.loose_eq(value))),
+        "oneOf" => {
+            matches!(args.first(), Some(Value::Array(options)) if options.iter().any(|opt| opt.loose_eq(value)))
+        }
         _ => return Ok(None),
     };
     Ok(Some(holds))

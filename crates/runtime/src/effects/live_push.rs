@@ -49,7 +49,7 @@ pub struct StreamItem {
 }
 
 impl StreamItem {
-    pub fn of_outcomes(outcomes: &[(String, crate::ProcessEventResult)], response: &EventResponse) -> Vec<Self> {
+    pub fn of_outcomes(outcomes: &[(String, crate::ProcessEventResult)]) -> Vec<Self> {
         let mut items = Vec::new();
         for (trait_name, result) in outcomes {
             for effect_result in &result.effect_results {
@@ -64,7 +64,6 @@ impl StreamItem {
                 }
             }
         }
-        items.push(Self::complete(response.clone()));
         items
     }
 

@@ -22,19 +22,32 @@ struct Decimal {
 impl Decimal {
     fn of(abs: f64) -> Self {
         if abs == 0.0 {
-            return Self { digits: Vec::new(), point: 0 };
+            return Self {
+                digits: Vec::new(),
+                point: 0,
+            };
         }
         let text = format!("{abs:e}");
         let (mantissa, exponent) = text.split_once('e').unwrap_or((&text, "0"));
-        let digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).map(|b| b - b'0').collect();
-        Self { digits, point: exponent.parse::<i32>().unwrap_or(0) + 1 }
+        let digits: Vec<u8> = mantissa
+            .bytes()
+            .filter(u8::is_ascii_digit)
+            .map(|b| b - b'0')
+            .collect();
+        Self {
+            digits,
+            point: exponent.parse::<i32>().unwrap_or(0) + 1,
+        }
     }
 
     /// Round half away from zero at `fraction` digits after the point.
     fn rounded(mut self, fraction: i32) -> Self {
         let keep = self.point + fraction;
         if keep < 0 {
-            return Self { digits: Vec::new(), point: 0 };
+            return Self {
+                digits: Vec::new(),
+                point: 0,
+            };
         }
         let keep = keep as usize;
         if keep >= self.digits.len() {
@@ -43,10 +56,20 @@ impl Decimal {
         let up = self.digits[keep] >= 5;
         self.digits.truncate(keep);
         if !up {
-            return if self.digits.is_empty() { Self { digits: Vec::new(), point: 0 } } else { self };
+            return if self.digits.is_empty() {
+                Self {
+                    digits: Vec::new(),
+                    point: 0,
+                }
+            } else {
+                self
+            };
         }
         if keep == 0 {
-            return Self { digits: vec![1], point: 1 - fraction };
+            return Self {
+                digits: vec![1],
+                point: 1 - fraction,
+            };
         }
         let mut at = keep;
         while at > 0 {
@@ -58,7 +81,10 @@ impl Decimal {
                 return self;
             }
         }
-        Self { digits: vec![1], point: self.point + 1 }
+        Self {
+            digits: vec![1],
+            point: self.point + 1,
+        }
     }
 
     fn shifted(mut self, places: i32) -> Self {
@@ -73,7 +99,9 @@ impl Decimal {
             return "0".to_string();
         }
         let point = self.point as usize;
-        (0..point).map(|i| char::from(b'0' + self.digits.get(i).copied().unwrap_or(0))).collect()
+        (0..point)
+            .map(|i| char::from(b'0' + self.digits.get(i).copied().unwrap_or(0)))
+            .collect()
     }
 
     fn fraction(&self, min: usize, max: usize) -> String {
@@ -101,38 +129,116 @@ pub struct Locale {
     minus: &'static str,
 }
 
-const EN: Locale = Locale { group: ",", decimal: ".", min_group: 1, minus: "-" };
-const DE: Locale = Locale { group: ".", decimal: ",", min_group: 1, minus: "-" };
-const FR: Locale = Locale { group: "\u{202f}", decimal: ",", min_group: 1, minus: "-" };
-const ES: Locale = Locale { group: ".", decimal: ",", min_group: 2, minus: "-" };
-const SL: Locale = Locale { group: ".", decimal: ",", min_group: 2, minus: "\u{2212}" };
-const AR: Locale = Locale { group: ",", decimal: ".", min_group: 1, minus: "\u{200e}-" };
-const RU: Locale = Locale { group: "\u{a0}", decimal: ",", min_group: 1, minus: "-" };
+const EN: Locale = Locale {
+    group: ",",
+    decimal: ".",
+    min_group: 1,
+    minus: "-",
+};
+const DE: Locale = Locale {
+    group: ".",
+    decimal: ",",
+    min_group: 1,
+    minus: "-",
+};
+const FR: Locale = Locale {
+    group: "\u{202f}",
+    decimal: ",",
+    min_group: 1,
+    minus: "-",
+};
+const ES: Locale = Locale {
+    group: ".",
+    decimal: ",",
+    min_group: 2,
+    minus: "-",
+};
+const SL: Locale = Locale {
+    group: ".",
+    decimal: ",",
+    min_group: 2,
+    minus: "\u{2212}",
+};
+const AR: Locale = Locale {
+    group: ",",
+    decimal: ".",
+    min_group: 1,
+    minus: "\u{200e}-",
+};
+const RU: Locale = Locale {
+    group: "\u{a0}",
+    decimal: ",",
+    min_group: 1,
+    minus: "-",
+};
 
 /// The locales `format/number` knows: the number conventions of these tags, as `Intl.NumberFormat` writes them.
 const LOCALES: &[(&str, &Locale)] = &[
-    ("en", &EN), ("en-US", &EN), ("en-GB", &EN), ("en-CA", &EN), ("en-AU", &EN), ("ja", &EN), ("ja-JP", &EN),
-    ("de", &DE), ("de-DE", &DE), ("pt", &DE), ("pt-BR", &DE), ("nl", &DE), ("nl-NL", &DE),
-    ("fr", &FR), ("fr-FR", &FR),
-    ("es", &ES), ("es-ES", &ES), ("it", &ES), ("it-IT", &ES),
-    ("sl", &SL), ("sl-SI", &SL),
+    ("en", &EN),
+    ("en-US", &EN),
+    ("en-GB", &EN),
+    ("en-CA", &EN),
+    ("en-AU", &EN),
+    ("ja", &EN),
+    ("ja-JP", &EN),
+    ("de", &DE),
+    ("de-DE", &DE),
+    ("pt", &DE),
+    ("pt-BR", &DE),
+    ("nl", &DE),
+    ("nl-NL", &DE),
+    ("fr", &FR),
+    ("fr-FR", &FR),
+    ("es", &ES),
+    ("es-ES", &ES),
+    ("it", &ES),
+    ("it-IT", &ES),
+    ("sl", &SL),
+    ("sl-SI", &SL),
     ("ar", &AR),
-    ("ru", &RU), ("ru-RU", &RU),
+    ("ru", &RU),
+    ("ru-RU", &RU),
 ];
 
 pub fn locale_of(tag: &str) -> Option<&'static Locale> {
-    LOCALES.iter().find(|(known, _)| *known == tag).map(|(_, locale)| *locale)
+    LOCALES
+        .iter()
+        .find(|(known, _)| *known == tag)
+        .map(|(_, locale)| *locale)
 }
 
 /// ISO code, the symbol written before the amount in English, and the minor units the currency has.
 const CURRENCIES: &[(&str, &str, usize)] = &[
-    ("USD", "$", 2), ("EUR", "\u{20ac}", 2), ("GBP", "\u{a3}", 2), ("JPY", "\u{a5}", 0), ("CNY", "CN\u{a5}", 2),
-    ("INR", "\u{20b9}", 2), ("KRW", "\u{20a9}", 0), ("CAD", "CA$", 2), ("AUD", "A$", 2), ("CHF", "CHF\u{a0}", 2),
-    ("MXN", "MX$", 2), ("BRL", "R$", 2), ("SEK", "SEK\u{a0}", 2), ("NOK", "NOK\u{a0}", 2), ("DKK", "DKK\u{a0}", 2),
-    ("PLN", "PLN\u{a0}", 2), ("CZK", "CZK\u{a0}", 2), ("ZAR", "ZAR\u{a0}", 2), ("NZD", "NZ$", 2),
-    ("SGD", "SGD\u{a0}", 2), ("HKD", "HK$", 2), ("AED", "AED\u{a0}", 2), ("SAR", "SAR\u{a0}", 2),
-    ("ILS", "\u{20aa}", 2), ("TRY", "TRY\u{a0}", 2), ("RUB", "RUB\u{a0}", 2), ("KWD", "KWD\u{a0}", 3),
-    ("BHD", "BHD\u{a0}", 3), ("CLP", "CLP\u{a0}", 0), ("VND", "\u{20ab}", 0),
+    ("USD", "$", 2),
+    ("EUR", "\u{20ac}", 2),
+    ("GBP", "\u{a3}", 2),
+    ("JPY", "\u{a5}", 0),
+    ("CNY", "CN\u{a5}", 2),
+    ("INR", "\u{20b9}", 2),
+    ("KRW", "\u{20a9}", 0),
+    ("CAD", "CA$", 2),
+    ("AUD", "A$", 2),
+    ("CHF", "CHF\u{a0}", 2),
+    ("MXN", "MX$", 2),
+    ("BRL", "R$", 2),
+    ("SEK", "SEK\u{a0}", 2),
+    ("NOK", "NOK\u{a0}", 2),
+    ("DKK", "DKK\u{a0}", 2),
+    ("PLN", "PLN\u{a0}", 2),
+    ("CZK", "CZK\u{a0}", 2),
+    ("ZAR", "ZAR\u{a0}", 2),
+    ("NZD", "NZ$", 2),
+    ("SGD", "SGD\u{a0}", 2),
+    ("HKD", "HK$", 2),
+    ("AED", "AED\u{a0}", 2),
+    ("SAR", "SAR\u{a0}", 2),
+    ("ILS", "\u{20aa}", 2),
+    ("TRY", "TRY\u{a0}", 2),
+    ("RUB", "RUB\u{a0}", 2),
+    ("KWD", "KWD\u{a0}", 3),
+    ("BHD", "BHD\u{a0}", 3),
+    ("CLP", "CLP\u{a0}", 0),
+    ("VND", "\u{20ab}", 0),
 ];
 
 fn group(integer: &str, locale: &Locale) -> String {
@@ -144,7 +250,11 @@ fn group(integer: &str, locale: &Locale) -> String {
     if first > 0 {
         parts.push(&integer[..first]);
     }
-    parts.extend((first..integer.len()).step_by(3).map(|at| &integer[at..at + 3]));
+    parts.extend(
+        (first..integer.len())
+            .step_by(3)
+            .map(|at| &integer[at..at + 3]),
+    );
     parts.join(locale.group)
 }
 
@@ -153,7 +263,11 @@ fn render(n: f64, locale: &Locale, min: usize, max: usize, shift: i32) -> String
     if n.is_nan() {
         return "NaN".to_string();
     }
-    let sign = if n.is_sign_negative() { locale.minus } else { "" };
+    let sign = if n.is_sign_negative() {
+        locale.minus
+    } else {
+        ""
+    };
     if n.is_infinite() {
         return format!("{sign}\u{221e}");
     }
@@ -180,9 +294,14 @@ enum Digits {
 fn fraction_digits(options: &ValueMap, key: &str) -> Result<Digits, OrbitalError> {
     match options.get(key) {
         None | Some(Value::Null) => Ok(Digits::Absent),
-        Some(Value::Number(n)) if n.fract() == 0.0 && (0.0..=100.0).contains(n) => Ok(Digits::Set(*n as usize)),
+        Some(Value::Number(n)) if n.fract() == 0.0 && (0.0..=100.0).contains(n) => {
+            Ok(Digits::Set(*n as usize))
+        }
         Some(Value::Number(_)) => Ok(Digits::OutOfRange),
-        Some(other) => Err(invalid(format!("format/number: `{key}` must be a whole number from 0 to 100, got {}", other.to_string_value()))),
+        Some(other) => Err(invalid(format!(
+            "format/number: `{key}` must be a whole number from 0 to 100, got {}",
+            other.to_string_value()
+        ))),
     }
 }
 
@@ -211,15 +330,24 @@ impl Operator for FormatNumberOp {
                 Some(locale) => locale,
                 None => return Ok(Value::Null),
             },
-            Some(other) => return Err(invalid(format!("format/number: `locale` must be a string, got {}", other.to_string_value()))),
+            Some(other) => {
+                return Err(invalid(format!(
+                    "format/number: `locale` must be a string, got {}",
+                    other.to_string_value()
+                )))
+            }
         };
         let decimals = fraction_digits(&options, "decimals")?;
         let minimum = fraction_digits(&options, "minimumFractionDigits")?;
         let maximum = fraction_digits(&options, "maximumFractionDigits")?;
         let (min, max) = match (decimals, minimum, maximum) {
-            (Digits::OutOfRange, _, _) | (_, Digits::OutOfRange, _) | (_, _, Digits::OutOfRange) => return Ok(Value::Null),
+            (Digits::OutOfRange, _, _)
+            | (_, Digits::OutOfRange, _)
+            | (_, _, Digits::OutOfRange) => return Ok(Value::Null),
             (Digits::Set(decimals), _, _) => (decimals, decimals),
-            (Digits::Absent, Digits::Set(min), Digits::Set(max)) if max < min => return Ok(Value::Null),
+            (Digits::Absent, Digits::Set(min), Digits::Set(max)) if max < min => {
+                return Ok(Value::Null)
+            }
             (Digits::Absent, Digits::Set(min), Digits::Set(max)) => (min, max),
             (Digits::Absent, Digits::Set(min), Digits::Absent) => (min, min.max(3)),
             (Digits::Absent, Digits::Absent, Digits::Set(max)) => (0, max),
@@ -245,7 +373,10 @@ impl Operator for FormatPercentOp {
             }
             None => 0,
         };
-        Ok(Value::string(format!("{}%", render(n, &EN, decimals, decimals, 2))))
+        Ok(Value::string(format!(
+            "{}%",
+            render(n, &EN, decimals, decimals, 2)
+        )))
     }
 }
 
@@ -263,7 +394,8 @@ impl Operator for FormatCurrencyOp {
         if !matches!(locale.as_str(), "en" | "en-US") {
             return Ok(Value::Null);
         }
-        let Some((_, symbol, digits)) = CURRENCIES.iter().find(|(known, _, _)| *known == code) else {
+        let Some((_, symbol, digits)) = CURRENCIES.iter().find(|(known, _, _)| *known == code)
+        else {
             return Ok(Value::Null);
         };
         let amount = render(n, &EN, *digits, *digits, 0);
@@ -278,7 +410,11 @@ impl Operator for FormatCurrencyOp {
 fn to_fixed(x: f64, digits: usize) -> String {
     let exact = format!("{x:.60}");
     let (whole, fraction) = exact.split_once('.').unwrap_or((&exact, ""));
-    let mut kept: Vec<u8> = whole.bytes().chain(fraction.bytes().take(digits)).map(|b| b - b'0').collect();
+    let mut kept: Vec<u8> = whole
+        .bytes()
+        .chain(fraction.bytes().take(digits))
+        .map(|b| b - b'0')
+        .collect();
     let up = fraction.as_bytes().get(digits).is_some_and(|d| *d >= b'5');
     if up {
         let mut at = kept.len();
@@ -298,12 +434,20 @@ fn to_fixed(x: f64, digits: usize) -> String {
     }
     let split = kept.len() - digits;
     let text: String = kept.iter().map(|d| char::from(b'0' + d)).collect();
-    if digits == 0 { text } else { format!("{}.{}", &text[..split], &text[split..]) }
+    if digits == 0 {
+        text
+    } else {
+        format!("{}.{}", &text[..split], &text[split..])
+    }
 }
 
 /// A JavaScript number as `String(n)` writes a finite one below 1e21.
 fn js_number(n: f64) -> String {
-    if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") }
+    if n.fract() == 0.0 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
 }
 
 /// format/bytes - a size in B, KB, MB, GB, TB or PB (1024 steps), one decimal below ten, none from ten
@@ -354,7 +498,11 @@ impl Operator for FormatListOp {
             0 => String::new(),
             1 => items[0].to_string(),
             2 => format!("{} {style} {}", items[0], items[1]),
-            _ => format!("{}, {style} {}", items[..items.len() - 1].join(", "), items[items.len() - 1]),
+            _ => format!(
+                "{}, {style} {}",
+                items[..items.len() - 1].join(", "),
+                items[items.len() - 1]
+            ),
         }))
     }
 }

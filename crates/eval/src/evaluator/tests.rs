@@ -56,7 +56,11 @@ fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
 
 #[test]
 fn random_int_with_max_below_min_answers_null_not_a_panic() {
-    for call in [r#"["math/randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#, r#"["math/randomInt", 3, null]"#] {
+    for call in [
+        r#"["math/randomInt", 5, 1]"#,
+        r#"["math/randomInt", 1, 0]"#,
+        r#"["math/randomInt", 3, null]"#,
+    ] {
         assert_eq!(eval(call), Value::Null, "{call}");
     }
 }
@@ -65,7 +69,9 @@ fn random_int_with_max_below_min_answers_null_not_a_panic() {
 fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
     assert_eq!(eval(r#"["math/randomInt", 3, 3]"#), Value::Number(3.0));
     for _ in 0..20 {
-        let Value::Number(n) = eval(r#"["math/randomInt", -2, 2]"#) else { panic!("not a number") };
+        let Value::Number(n) = eval(r#"["math/randomInt", -2, 2]"#) else {
+            panic!("not a number")
+        };
         assert!((-2.0..=2.0).contains(&n) && n.fract() == 0.0, "{n}");
     }
 }
@@ -158,17 +164,35 @@ fn test_equality() {
 
 #[test]
 fn a_list_is_equal_to_the_empty_list_only_when_it_is_empty() {
-    assert_eq!(eval(r#"["!=", ["list", 1, 2], ["list"]]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["=", ["list", 1, 2], ["list"]]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["=", ["list"], ["list", "a"]]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["!=", ["list", 1, 2], ["list"]]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["=", ["list", 1, 2], ["list"]]"#),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        eval(r#"["=", ["list"], ["list", "a"]]"#),
+        Value::Bool(false)
+    );
     assert_eq!(eval(r#"["=", ["list"], ["list"]]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["!=", ["list", 1, 2], ["list", 1, 2]]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["!=", ["list", 1, 2], ["list", 1, 2]]"#),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn control_lists_of_other_lengths_compare_as_before() {
-    assert_eq!(eval(r#"["=", ["list", 1, 2], ["list", 3]]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["=", ["list", 1, 2], ["list", 1, 2]]"#), Value::Bool(true));
+    assert_eq!(
+        eval(r#"["=", ["list", 1, 2], ["list", 3]]"#),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        eval(r#"["=", ["list", 1, 2], ["list", 1, 2]]"#),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -264,14 +288,8 @@ fn test_not() {
 
 #[test]
 fn test_if() {
-    assert_eq!(
-        eval(r#"["if", true, "yes", "no"]"#),
-        Value::string("yes")
-    );
-    assert_eq!(
-        eval(r#"["if", false, "yes", "no"]"#),
-        Value::string("no")
-    );
+    assert_eq!(eval(r#"["if", true, "yes", "no"]"#), Value::string("yes"));
+    assert_eq!(eval(r#"["if", false, "yes", "no"]"#), Value::string("no"));
     assert_eq!(eval(r#"["if", false, "yes"]"#), Value::Null); // No else
 }
 
@@ -297,14 +315,23 @@ fn test_first_last() {
 
 #[test]
 fn test_nth() {
-    assert_eq!(eval(r#"["array/nth", [10, 20, 30], 1]"#), Value::Number(20.0));
+    assert_eq!(
+        eval(r#"["array/nth", [10, 20, 30], 1]"#),
+        Value::Number(20.0)
+    );
     assert_eq!(eval(r#"["array/nth", [10, 20, 30], 5]"#), Value::Null);
 }
 
 #[test]
 fn test_includes() {
-    assert_eq!(eval(r#"["array/includes", [1, 2, 3], 2]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["array/includes", [1, 2, 3], 5]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["array/includes", [1, 2, 3], 2]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["array/includes", [1, 2, 3], 5]"#),
+        Value::Bool(false)
+    );
     assert_eq!(
         eval_err(r#"["array/includes", "hello", "ell"]"#),
         "Evaluation error: Type mismatch: expected array, got string"
@@ -360,19 +387,16 @@ fn concat_conformance_bare_concat_errors() {
 
 #[test]
 fn test_upper_lower() {
-    assert_eq!(
-        eval(r#"["str/upper", "hello"]"#),
-        Value::string("HELLO")
-    );
-    assert_eq!(
-        eval(r#"["str/lower", "HELLO"]"#),
-        Value::string("hello")
-    );
+    assert_eq!(eval(r#"["str/upper", "hello"]"#), Value::string("HELLO"));
+    assert_eq!(eval(r#"["str/lower", "HELLO"]"#), Value::string("hello"));
 }
 
 #[test]
 fn as_call_key_is_the_identity_on_a_non_empty_string() {
-    assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::string("search"));
+    assert_eq!(
+        eval(r#"["as", "search", "CallKey"]"#),
+        Value::string("search")
+    );
 }
 
 #[test]
@@ -380,7 +404,10 @@ fn as_call_key_rejects_an_empty_string_a_non_string_and_an_unknown_target() {
     assert!(eval_err(r#"["as", "", "CallKey"]"#).contains("empty"));
     assert!(eval_err(r#"["as", 7, "CallKey"]"#).contains("string"));
     assert!(eval_err(r#"["as", "k", "Nope"]"#).contains("unknown target"));
-    assert!(eval_err(r#"["as", "k"]"#).contains("as"), "control: arity is two");
+    assert!(
+        eval_err(r#"["as", "k"]"#).contains("as"),
+        "control: arity is two"
+    );
 }
 
 #[test]
@@ -388,10 +415,25 @@ fn an_empty_string_is_a_present_value_and_not_null() {
     assert_eq!(eval(r#"["=", "", null]"#), Value::Bool(false));
     assert_eq!(eval(r#"["=", null, ""]"#), Value::Bool(false));
     assert_eq!(eval(r#"["!=", "", null]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["=", null, null]"#), Value::Bool(true), "control: null is null");
-    assert_eq!(eval(r#"["=", "", ""]"#), Value::Bool(true), "control: an empty string is itself");
-    assert_eq!(eval(r#"["array/includes", ["a"], null]"#), Value::Bool(false));
-    assert_eq!(eval(r#"["validate/required", ""]"#), Value::Bool(false), "the one empty-or-absent test");
+    assert_eq!(
+        eval(r#"["=", null, null]"#),
+        Value::Bool(true),
+        "control: null is null"
+    );
+    assert_eq!(
+        eval(r#"["=", "", ""]"#),
+        Value::Bool(true),
+        "control: an empty string is itself"
+    );
+    assert_eq!(
+        eval(r#"["array/includes", ["a"], null]"#),
+        Value::Bool(false)
+    );
+    assert_eq!(
+        eval(r#"["validate/required", ""]"#),
+        Value::Bool(false),
+        "the one empty-or-absent test"
+    );
     assert_eq!(eval(r#"["validate/required", null]"#), Value::Bool(false));
 }
 
@@ -400,21 +442,41 @@ fn the_semantic_validators_read_the_one_pattern_table() {
     let yes = |op: &str, v: &str| eval(&format!(r#"["{op}", "{v}"]"#)) == Value::Bool(true);
     assert!(yes("validate/url", "http://x.y"), "a short host is a URL");
     assert!(yes("validate/url", "https://example.com/a?b=1"));
-    assert!(!yes("validate/url", "ftp://example.com"), "control: only http and https");
-    assert!(!yes("validate/url", "http://a b.com"), "control: no whitespace");
+    assert!(
+        !yes("validate/url", "ftp://example.com"),
+        "control: only http and https"
+    );
+    assert!(
+        !yes("validate/url", "http://a b.com"),
+        "control: no whitespace"
+    );
     assert!(yes("validate/email", "ann@example.com"));
-    assert!(!yes("validate/email", "ann@localhost"), "control: the domain needs a dot");
+    assert!(
+        !yes("validate/email", "ann@localhost"),
+        "control: the domain needs a dot"
+    );
     assert!(!yes("validate/email", "a@b@c.com"), "control: one at sign");
     assert!(yes("validate/phone", "+1 (555) 123-4567"));
-    assert!(!yes("validate/phone", "12345"), "control: seven characters at least");
+    assert!(
+        !yes("validate/phone", "12345"),
+        "control: seven characters at least"
+    );
     assert!(yes("validate/uuid", "550E8400-e29b-41d4-a716-446655440000"));
-    assert!(!yes("validate/uuid", "550e8400e29b41d4a716446655440000"), "control: dashes are part of it");
+    assert!(
+        !yes("validate/uuid", "550e8400e29b41d4a716446655440000"),
+        "control: dashes are part of it"
+    );
     assert_eq!(
-        crate::evaluator::operators::system::semantic_string_value_valid("image", "https://picsum.photos/seed/a/400/400").unwrap(),
+        crate::evaluator::operators::system::semantic_string_value_valid(
+            "image",
+            "https://picsum.photos/seed/a/400/400"
+        )
+        .unwrap(),
         true
     );
     assert_eq!(
-        crate::evaluator::operators::system::semantic_string_value_valid("image", "Cover Image").unwrap(),
+        crate::evaluator::operators::system::semantic_string_value_valid("image", "Cover Image")
+            .unwrap(),
         false,
         "control: the entity-default check reads the same table"
     );
@@ -459,7 +521,10 @@ fn json_parse_object_array_scalar_nested() {
     row.insert("id".to_string(), Value::Number(1.0));
     row.insert("tags".to_string(), tags);
     let mut rows = ValueMap::default();
-    rows.insert("rows".to_string(), Value::array(vec![Value::Object(row.into())]));
+    rows.insert(
+        "rows".to_string(),
+        Value::array(vec![Value::Object(row.into())]),
+    );
     assert_eq!(
         eval(r#"["json/parse", "{\"rows\": [{\"id\": 1, \"tags\": [\"a\", \"b\"]}]}", "Row"]"#),
         Value::object(rows)
@@ -501,18 +566,41 @@ fn row_shape() -> serde_json::Value {
 fn json_parse_value_of_its_shape_is_returned() {
     assert_eq!(parse_as("42", "number".into()), Value::Number(42.0));
     let row = parse_as(r#"{"id": 1, "tags": ["a"]}"#, row_shape());
-    assert!(matches!(row, Value::Object(ref m) if m.get("id") == Some(&Value::Number(1.0))), "{row:?}");
+    assert!(
+        matches!(row, Value::Object(ref m) if m.get("id") == Some(&Value::Number(1.0))),
+        "{row:?}"
+    );
 }
 
 #[test]
 fn json_parse_value_not_of_its_shape_takes_the_failure_path() {
     assert_eq!(parse_as(r#""abc""#, "number".into()), Value::Null);
-    assert_eq!(parse_as(r#"{"tags": ["a"]}"#, row_shape()), Value::Null, "missing required field");
-    assert_eq!(parse_as(r#"[{"id": 1, "tags": []}]"#, row_shape()), Value::Null, "bare array for a record");
-    assert_eq!(parse_as(r#"{"id": 1, "tags": ["a", 2]}"#, row_shape()), Value::Null, "nested element");
+    assert_eq!(
+        parse_as(r#"{"tags": ["a"]}"#, row_shape()),
+        Value::Null,
+        "missing required field"
+    );
+    assert_eq!(
+        parse_as(r#"[{"id": 1, "tags": []}]"#, row_shape()),
+        Value::Null,
+        "bare array for a record"
+    );
+    assert_eq!(
+        parse_as(r#"{"id": 1, "tags": ["a", 2]}"#, row_shape()),
+        Value::Null,
+        "nested element"
+    );
     let rows = serde_json::json!({ "kind": "array", "inner": row_shape() });
-    assert_eq!(parse_as(r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#, rows.clone()), Value::Null);
-    assert!(matches!(parse_as(r#"[{"id": 1, "tags": []}]"#, rows), Value::Array(ref v) if v.len() == 1));
+    assert_eq!(
+        parse_as(
+            r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#,
+            rows.clone()
+        ),
+        Value::Null
+    );
+    assert!(
+        matches!(parse_as(r#"[{"id": 1, "tags": []}]"#, rows), Value::Array(ref v) if v.len() == 1)
+    );
 }
 
 /// `(as value T)` to a declared shape answers what the text round trip `(json/parse (json/stringify value) T)` answers.
@@ -527,7 +615,10 @@ fn as_a_declared_shape_narrows_exactly_like_the_json_round_trip() {
         (r#"{"tags": ["a"]}"#, row_shape()),
         (r#"[{"id": 1, "tags": []}]"#, row_shape()),
         (r#"{"id": 1, "tags": ["a", 2]}"#, row_shape()),
-        (r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#, rows.clone()),
+        (
+            r#"[{"id": 1, "tags": []}, {"id": "2", "tags": []}]"#,
+            rows.clone(),
+        ),
         (r#"[{"id": 1, "tags": []}]"#, rows),
         ("null", row_shape()),
     ];
@@ -544,8 +635,14 @@ fn as_a_declared_shape_narrows_exactly_like_the_json_round_trip() {
 
 #[test]
 fn as_call_key_keeps_its_meaning_beside_the_narrowing() {
-    assert_eq!(eval(r#"["as", "search", "CallKey"]"#), Value::string("search"));
-    assert!(eval_err(r#"["as", "", "CallKey"]"#).contains("empty"), "a CallKey still refuses, never nulls");
+    assert_eq!(
+        eval(r#"["as", "search", "CallKey"]"#),
+        Value::string("search")
+    );
+    assert!(
+        eval_err(r#"["as", "", "CallKey"]"#).contains("empty"),
+        "a CallKey still refuses, never nulls"
+    );
 }
 
 #[test]
@@ -582,14 +679,20 @@ fn parse_in_program(text: &str, shape: &str) -> Value {
 fn parse_as_resolved(
     text: &str,
     shape: &str,
-    aliases: &std::collections::BTreeMap<String, Vec<orbital_core_base::schema::types::PayloadField>>,
+    aliases: &std::collections::BTreeMap<
+        String,
+        Vec<orbital_core_base::schema::types::PayloadField>,
+    >,
 ) -> Value {
     let recorded = match orbital_core_base::ir::types::DeclaredShape::of_alias(shape, aliases) {
         Some(declared) => serde_json::to_string(&declared).unwrap(),
         None => shape.to_string(),
     };
-    let expr: SExpression = serde_json::from_value(serde_json::json!(["json/parse", text, recorded])).unwrap();
-    Evaluator::new().evaluate(&expr, &BindingContext::new()).unwrap()
+    let expr: SExpression =
+        serde_json::from_value(serde_json::json!(["json/parse", text, recorded])).unwrap();
+    Evaluator::new()
+        .evaluate(&expr, &BindingContext::new())
+        .unwrap()
 }
 
 #[test]
@@ -604,30 +707,46 @@ fn json_parse_program_alias_record_given_a_bare_array_fails() {
 
 #[test]
 fn json_parse_program_alias_checks_through_nested_and_recursive_aliases() {
-    assert_eq!(parse_in_program(r#"{"rows": [{"a": true}], "changes": []}"#, "RowFile"), Value::Null);
     assert_eq!(
-        parse_in_program(r#"{"rows": [], "changes": [{"id": "c", "row": {"a": [1, [false]]}}]}"#, "RowFile"),
+        parse_in_program(r#"{"rows": [{"a": true}], "changes": []}"#, "RowFile"),
         Value::Null
     );
-    assert_eq!(parse_in_program(r#"{"a": 1}"#, "Row"), Value::object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))])));
+    assert_eq!(
+        parse_in_program(
+            r#"{"rows": [], "changes": [{"id": "c", "row": {"a": [1, [false]]}}]}"#,
+            "RowFile"
+        ),
+        Value::Null
+    );
+    assert_eq!(
+        parse_in_program(r#"{"a": 1}"#, "Row"),
+        Value::object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))]))
+    );
 }
 
 #[test]
 fn json_parse_recursive_alias_checks_every_level() {
-    assert_eq!(parse_in_program(r#"[1, ["x", true]]"#, "RowCell"), Value::Null);
+    assert_eq!(
+        parse_in_program(r#"[1, ["x", true]]"#, "RowCell"),
+        Value::Null
+    );
     assert_eq!(parse_in_program("true", "RowCell"), Value::Null);
 }
 
 #[test]
 fn control_json_parse_recursive_alias_accepts_a_member_at_every_level() {
-    assert!(matches!(parse_in_program(r#"[1, ["x", [2]]]"#, "RowCell"), Value::Array(ref v) if v.len() == 2));
+    assert!(
+        matches!(parse_in_program(r#"[1, ["x", [2]]]"#, "RowCell"), Value::Array(ref v) if v.len() == 2)
+    );
     assert_eq!(parse_in_program(r#""x""#, "RowCell"), Value::string("x"));
 }
 
 #[test]
 fn json_parse_program_alias_matching_value_passes() {
     let text = r#"{"rows": [{"a": "x", "n": [1, ["y"]]}], "changes": [{"id": "c1", "row": {"a": 1}}, {"id": "c2"}]}"#;
-    assert!(matches!(parse_in_program(text, "RowFile"), Value::Object(ref m) if m.contains_key("rows")));
+    assert!(
+        matches!(parse_in_program(text, "RowFile"), Value::Object(ref m) if m.contains_key("rows"))
+    );
 }
 
 fn parse_manifest(text: &str) -> Value {
@@ -646,19 +765,30 @@ fn parse_manifest(text: &str) -> Value {
 
 #[test]
 fn json_parse_program_alias_refuses_a_value_outside_a_closed_string_set() {
-    assert_eq!(parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": "watercolor"}]}"#), Value::Null);
-    assert_eq!(parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": 3}]}"#), Value::Null);
+    assert_eq!(
+        parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": "watercolor"}]}"#),
+        Value::Null
+    );
+    assert_eq!(
+        parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": 3}]}"#),
+        Value::Null
+    );
 }
 
 #[test]
 fn control_json_parse_program_alias_accepts_a_member_of_a_closed_string_set() {
-    let ok = parse_manifest(r#"{"pack": "p", "assets": [{"key": "a", "style": "vector"}, {"key": "b"}]}"#);
+    let ok = parse_manifest(
+        r#"{"pack": "p", "assets": [{"key": "a", "style": "vector"}, {"key": "b"}]}"#,
+    );
     assert!(matches!(ok, Value::Object(_)), "{ok:?}");
 }
 
 #[test]
 fn control_json_parse_undeclared_alias_name_stays_unchecked() {
-    assert_eq!(parse_in_program("[1]", "Other"), Value::array(vec![Value::Number(1.0)]));
+    assert_eq!(
+        parse_in_program("[1]", "Other"),
+        Value::array(vec![Value::Number(1.0)])
+    );
     assert_eq!(parse_in_program(r#""abc""#, "Other"), Value::string("abc"));
 }
 
@@ -677,16 +807,27 @@ fn map_len_of_orb_values(items: serde_json::Value) -> Result<Value, String> {
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
         .payload(serde_json::from_value(serde_json::json!({ "items": items })).unwrap())
         .build();
-    let list = orbital_core_base::ir::types::OirType::array(orbital_core_base::ir::types::OirType::TypeRef {
-        name: "OrbValue".to_string(),
-    });
-    let declared =
-        serde_json::to_string(&orbital_core_base::ir::types::DeclaredShape::with_named(None, list, &aliases)).unwrap();
-    let expr: SExpression = serde_json::from_value(serde_json::json!(
-        ["array/len", ["array/map", ["typed", "@payload.items", declared], ["fn", "i", 1]]]
+    let list = orbital_core_base::ir::types::OirType::array(
+        orbital_core_base::ir::types::OirType::TypeRef {
+            name: "OrbValue".to_string(),
+        },
+    );
+    let declared = serde_json::to_string(&orbital_core_base::ir::types::DeclaredShape::with_named(
+        None, list, &aliases,
     ))
     .unwrap();
-    Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
+    let expr: SExpression = serde_json::from_value(serde_json::json!([
+        "array/len",
+        [
+            "array/map",
+            ["typed", "@payload.items", declared],
+            ["fn", "i", 1]
+        ]
+    ]))
+    .unwrap();
+    Evaluator::new()
+        .evaluate(&expr, &ctx)
+        .map_err(|e| e.to_string())
 }
 
 #[test]
@@ -698,21 +839,39 @@ fn union_list_mixed_elements_each_match_a_member() {
         serde_json::json!([[1], "a"]),
         serde_json::json!([1, "a"]),
     ] {
-        assert_eq!(map_len_of_orb_values(items.clone()), Ok(Value::Number(2.0)), "{items}");
+        assert_eq!(
+            map_len_of_orb_values(items.clone()),
+            Ok(Value::Number(2.0)),
+            "{items}"
+        );
     }
 }
 
 #[test]
 fn control_union_list_homogeneous_elements_match() {
-    for items in [serde_json::json!(["a", "b"]), serde_json::json!([{"k": 1}, {"k": 2}]), serde_json::json!([[1], [2, [3]]])] {
-        assert_eq!(map_len_of_orb_values(items.clone()), Ok(Value::Number(2.0)), "{items}");
+    for items in [
+        serde_json::json!(["a", "b"]),
+        serde_json::json!([{"k": 1}, {"k": 2}]),
+        serde_json::json!([[1], [2, [3]]]),
+    ] {
+        assert_eq!(
+            map_len_of_orb_values(items.clone()),
+            Ok(Value::Number(2.0)),
+            "{items}"
+        );
     }
 }
 
 #[test]
 fn edge_union_list_refuses_a_value_outside_the_union() {
-    assert!(map_len_of_orb_values(serde_json::json!("abc")).is_err(), "not a list");
-    assert!(map_len_of_orb_values(serde_json::json!([{"k": {"deep": [true, "x", {"no": null}]}}, 1])).is_ok());
+    assert!(
+        map_len_of_orb_values(serde_json::json!("abc")).is_err(),
+        "not a list"
+    );
+    assert!(map_len_of_orb_values(
+        serde_json::json!([{"k": {"deep": [true, "x", {"no": null}]}}, 1])
+    )
+    .is_ok());
 }
 
 #[test]
@@ -721,15 +880,30 @@ fn json_stringify_sorted_and_pretty_options() {
         Value::String(s) => s,
         other => panic!("expected string, got {other:?}"),
     };
-    assert_eq!(text(r#"["json/stringify", {"b": 1, "a": {"d": 2, "c": [3]}}, {"sorted": true}]"#), r#"{"a":{"c":[3],"d":2},"b":1}"#);
-    assert_eq!(text(r#"["json/stringify", {"a": [1, 2.5]}, {"pretty": true}]"#), "{\n  \"a\": [\n    1,\n    2.5\n  ]\n}");
-    assert_eq!(text(r#"["json/stringify", {"b": 1, "a": 2}, {"pretty": true, "sorted": true}]"#), "{\n  \"a\": 2,\n  \"b\": 1\n}");
+    assert_eq!(
+        text(r#"["json/stringify", {"b": 1, "a": {"d": 2, "c": [3]}}, {"sorted": true}]"#),
+        r#"{"a":{"c":[3],"d":2},"b":1}"#
+    );
+    assert_eq!(
+        text(r#"["json/stringify", {"a": [1, 2.5]}, {"pretty": true}]"#),
+        "{\n  \"a\": [\n    1,\n    2.5\n  ]\n}"
+    );
+    assert_eq!(
+        text(r#"["json/stringify", {"b": 1, "a": 2}, {"pretty": true, "sorted": true}]"#),
+        "{\n  \"a\": 2,\n  \"b\": 1\n}"
+    );
 }
 
 #[test]
 fn control_json_stringify_without_options_keeps_insertion_order_compact() {
-    assert_eq!(eval(r#"["json/stringify", {"b": 1, "a": 2}]"#), Value::string(r#"{"b":1,"a":2}"#.to_string()));
-    assert_eq!(eval(r#"["json/stringify", {"b": 1}, {"pretty": false}]"#), Value::string(r#"{"b":1}"#.to_string()));
+    assert_eq!(
+        eval(r#"["json/stringify", {"b": 1, "a": 2}]"#),
+        Value::string(r#"{"b":1,"a":2}"#.to_string())
+    );
+    assert_eq!(
+        eval(r#"["json/stringify", {"b": 1}, {"pretty": false}]"#),
+        Value::string(r#"{"b":1}"#.to_string())
+    );
 }
 
 #[test]
@@ -760,10 +934,7 @@ fn json_stringify_round_trip() {
 
 #[test]
 fn test_trim() {
-    assert_eq!(
-        eval(r#"["str/trim", "  hello  "]"#),
-        Value::string("hello")
-    );
+    assert_eq!(eval(r#"["str/trim", "  hello  "]"#), Value::string("hello"));
 }
 
 #[test]
@@ -815,9 +986,15 @@ fn test_floor_ceil_round() {
 
 #[test]
 fn round_honours_its_decimals_argument() {
-    assert_eq!(eval(r#"["math/round", 3.14159, 3]"#), Value::Number(3142.0 / 1000.0));
+    assert_eq!(
+        eval(r#"["math/round", 3.14159, 3]"#),
+        Value::Number(3142.0 / 1000.0)
+    );
     assert_eq!(eval(r#"["math/round", 3.456, 2]"#), Value::Number(3.46));
-    assert_eq!(eval(r#"["math/round", 343.55749, 1]"#), Value::Number(343.6));
+    assert_eq!(
+        eval(r#"["math/round", 343.55749, 1]"#),
+        Value::Number(343.6)
+    );
 }
 
 #[test]
@@ -837,10 +1014,7 @@ fn test_do() {
 
 #[test]
 fn test_when() {
-    assert_eq!(
-        eval(r#"["when", true, "yes"]"#),
-        Value::string("yes")
-    );
+    assert_eq!(eval(r#"["when", true, "yes"]"#), Value::string("yes"));
     assert_eq!(eval(r#"["when", false, "yes"]"#), Value::Null);
 }
 
@@ -865,10 +1039,7 @@ fn test_let() {
 fn test_binding_resolution() {
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
-    data.insert(
-        "email".to_string(),
-        Value::string("test@example.com"),
-    );
+    data.insert("email".to_string(), Value::string("test@example.com"));
     data.insert("connectionSlots".to_string(), Value::Number(10.0));
     payload.insert("data".to_string(), Value::object(data));
 
@@ -896,10 +1067,7 @@ fn test_complex_guard_from_orbital_pattern() {
     // Guard: ["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
-    data.insert(
-        "email".to_string(),
-        Value::string("test@example.com"),
-    );
+    data.insert("email".to_string(), Value::string("test@example.com"));
     data.insert("name".to_string(), Value::string("Test User"));
     payload.insert("data".to_string(), Value::object(data));
 
@@ -907,8 +1075,7 @@ fn test_complex_guard_from_orbital_pattern() {
         .payload(Value::object(payload))
         .build();
 
-    let guard =
-        r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#;
+    let guard = r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#;
     assert_eq!(eval_with_ctx(guard, &ctx), Value::Bool(true));
 
     // Test with empty email
@@ -956,10 +1123,7 @@ fn test_dunbar_number_guard() {
     let connections: Vec<Value> = (0..50)
         .map(|i| {
             let mut c = ValueMap::default();
-            c.insert(
-                "requesterId".to_string(),
-                Value::string("user-1"),
-            );
+            c.insert("requesterId".to_string(), Value::string("user-1"));
             c.insert(
                 "status".to_string(),
                 Value::string(if i < 30 { "accepted" } else { "pending" }.to_string()),
@@ -1260,7 +1424,10 @@ fn test_array_unique() {
 
 #[test]
 fn test_array_index_of() {
-    assert_eq!(eval(r#"["array/indexOf", [10, 20, 30], 20]"#), Value::Number(1.0));
+    assert_eq!(
+        eval(r#"["array/indexOf", [10, 20, 30], 20]"#),
+        Value::Number(1.0)
+    );
     assert_eq!(
         eval(r#"["array/indexOf", [10, 20, 30], 99]"#),
         Value::Number(-1.0)
@@ -1293,7 +1460,10 @@ fn test_array_some() {
 
 #[test]
 fn test_array_sum() {
-    assert_eq!(eval(r#"["array/sum", [1, 2, 3, 4, 5]]"#), Value::Number(15.0));
+    assert_eq!(
+        eval(r#"["array/sum", [1, 2, 3, 4, 5]]"#),
+        Value::Number(15.0)
+    );
     assert_eq!(eval(r#"["array/sum", []]"#), Value::Number(0.0));
 }
 
@@ -1351,7 +1521,10 @@ fn test_array_nearest() {
 
     // Empty candidates, or a candidate with no similarity, answer null.
     assert_eq!(eval(r#"["array/nearest", [1, 0], []]"#), Value::Null);
-    assert_eq!(eval(r#"["array/nearest", [1, 0], [[1, 0], [0, 0]]]"#), Value::Null);
+    assert_eq!(
+        eval(r#"["array/nearest", [1, 0], [[1, 0], [0, 0]]]"#),
+        Value::Null
+    );
 }
 
 // ========================================================================
@@ -1455,7 +1628,10 @@ fn test_object_set() {
 
 #[test]
 fn test_object_has() {
-    assert_eq!(eval(r#"["object/has", {"a": 1, "b": 2}, "a"]"#), Value::Bool(true));
+    assert_eq!(
+        eval(r#"["object/has", {"a": 1, "b": 2}, "a"]"#),
+        Value::Bool(true)
+    );
     assert_eq!(
         eval(r#"["object/has", {"a": 1, "b": 2}, "c"]"#),
         Value::Bool(false)
@@ -1660,13 +1836,22 @@ fn test_validate_url() {
 
 #[test]
 fn test_validate_min_length() {
-    assert_eq!(eval(r#"["validate/minLength", "hello", 3]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["validate/minLength", "hi", 3]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["validate/minLength", "hello", 3]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["validate/minLength", "hi", 3]"#),
+        Value::Bool(false)
+    );
 }
 
 #[test]
 fn test_validate_max_length() {
-    assert_eq!(eval(r#"["validate/maxLength", "hello", 10]"#), Value::Bool(true));
+    assert_eq!(
+        eval(r#"["validate/maxLength", "hello", 10]"#),
+        Value::Bool(true)
+    );
     assert_eq!(
         eval(r#"["validate/maxLength", "hello world", 5]"#),
         Value::Bool(false)
@@ -1675,8 +1860,14 @@ fn test_validate_max_length() {
 
 #[test]
 fn test_validate_pattern() {
-    assert_eq!(eval(r#"["validate/pattern", "hello123", "123"]"#), Value::Bool(true));
-    assert_eq!(eval(r#"["validate/pattern", "hello", "xyz"]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["validate/pattern", "hello123", "123"]"#),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        eval(r#"["validate/pattern", "hello", "xyz"]"#),
+        Value::Bool(false)
+    );
 }
 
 // =========================================================================
@@ -1875,10 +2066,7 @@ fn test_str_slice() {
         eval(r#"["str/slice", "hello world", 0, 5]"#),
         Value::string("hello")
     );
-    assert_eq!(
-        eval(r#"["str/slice", "hello", 2]"#),
-        Value::string("llo")
-    );
+    assert_eq!(eval(r#"["str/slice", "hello", 2]"#), Value::string("llo"));
 }
 
 #[test]
@@ -1895,10 +2083,7 @@ fn test_str_pad_start() {
 
 #[test]
 fn test_str_pad_end() {
-    assert_eq!(
-        eval(r#"["str/padEnd", "5", 3, "0"]"#),
-        Value::string("500")
-    );
+    assert_eq!(eval(r#"["str/padEnd", "5", 3, "0"]"#), Value::string("500"));
     assert_eq!(
         eval(r#"["str/padEnd", "hi", 5, "."]"#),
         Value::string("hi...")
@@ -1923,10 +2108,7 @@ fn test_str_truncate() {
         eval(r#"["str/truncate", "hello world", 5]"#),
         Value::string("hello...")
     );
-    assert_eq!(
-        eval(r#"["str/truncate", "hi", 10]"#),
-        Value::string("hi")
-    );
+    assert_eq!(eval(r#"["str/truncate", "hi", 10]"#), Value::string("hi"));
 }
 
 // =========================================================================
@@ -1987,9 +2169,8 @@ fn test_object_map_values() {
 
 #[test]
 fn test_object_filter() {
-    let result = eval(
-        r#"["object/filter", {"a": 1, "b": 5, "c": 3}, ["fn", ["k", "v"], [">", "@v", 2]]]"#,
-    );
+    let result =
+        eval(r#"["object/filter", {"a": 1, "b": 5, "c": 3}, ["fn", ["k", "v"], [">", "@v", 2]]]"#);
     if let Value::Object(obj) = result {
         assert_eq!(obj.len(), 2);
         assert!(obj.contains_key("b"));
@@ -2123,7 +2304,10 @@ fn test_validate_uuid() {
         eval(r#"["validate/uuid", "550e8400-e29b-41d4-a716-446655440000"]"#),
         Value::Bool(true)
     );
-    assert_eq!(eval(r#"["validate/uuid", "not-a-uuid"]"#), Value::Bool(false));
+    assert_eq!(
+        eval(r#"["validate/uuid", "not-a-uuid"]"#),
+        Value::Bool(false)
+    );
 }
 
 #[test]
@@ -2172,7 +2356,10 @@ fn test_validate_one_of() {
         eval(r#"["validate/oneOf", "d", ["a", "b", "c"]]"#),
         Value::Bool(false)
     );
-    assert_eq!(eval(r#"["validate/oneOf", 2, [1, 2, 3]]"#), Value::Bool(true));
+    assert_eq!(
+        eval(r#"["validate/oneOf", 2, [1, 2, 3]]"#),
+        Value::Bool(true)
+    );
 }
 
 #[test]
@@ -2277,18 +2464,12 @@ fn test_str_trim_end() {
 
 #[test]
 fn test_str_repeat() {
-    assert_eq!(
-        eval(r#"["str/repeat", "ab", 3]"#),
-        Value::string("ababab")
-    );
+    assert_eq!(eval(r#"["str/repeat", "ab", 3]"#), Value::string("ababab"));
 }
 
 #[test]
 fn test_str_reverse() {
-    assert_eq!(
-        eval(r#"["str/reverse", "hello"]"#),
-        Value::string("olleh")
-    );
+    assert_eq!(eval(r#"["str/reverse", "hello"]"#), Value::string("olleh"));
 }
 
 #[test]
@@ -2498,11 +2679,20 @@ fn test_validate_none_of() {
 
 #[test]
 fn test_validate_check() {
-    let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [["number"]]}]"#) else { panic!("not an object") };
+    let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [["number"]]}]"#)
+    else {
+        panic!("not an object")
+    };
     assert_eq!(passed["valid"], Value::Bool(true));
-    let Value::Object(failed) = eval(r#"["validate/check", {"n": "x"}, {"n": [["number"]]}]"#) else { panic!("not an object") };
+    let Value::Object(failed) = eval(r#"["validate/check", {"n": "x"}, {"n": [["number"]]}]"#)
+    else {
+        panic!("not an object")
+    };
     assert_eq!(failed["valid"], Value::Bool(false));
-    assert!(eval_err(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#).contains("rules by field"));
+    assert!(
+        eval_err(r#"["validate/check", 10, ["fn", ["x"], [">", "@x", 5]]]"#)
+            .contains("rules by field")
+    );
 }
 
 // ========================================================================
@@ -2518,8 +2708,7 @@ fn nums(values: &[f64]) -> Value {
 #[test]
 fn map_fn_lambda_also_binds_index_like_the_ts_evaluator() {
     // std-stats maps metrics with `(fn metric { position: @index … })`.
-    let out =
-        eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
+    let out = eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
     let rows = out.as_array().expect("array");
     assert_eq!(
         rows[0].as_object().and_then(|o| o.get("position")),
@@ -2698,8 +2887,17 @@ fn raw_callback_params_are_absent_for_retired_operator_aliases() {
         assert!(get_operator(alias).is_none(), "{alias} is not an operator");
         assert_eq!(raw_callback_params(alias), None, "{alias}");
     }
-    for canonical in ["array/map", "array/filter", "array/reduce", "array/count", "array/find"] {
-        assert!(raw_callback_params(canonical).is_some(), "control: {canonical}");
+    for canonical in [
+        "array/map",
+        "array/filter",
+        "array/reduce",
+        "array/count",
+        "array/find",
+    ] {
+        assert!(
+            raw_callback_params(canonical).is_some(),
+            "control: {canonical}"
+        );
     }
 }
 
@@ -2755,28 +2953,58 @@ fn array_max_and_min_follow_the_one_contract() {
     );
     for op in ["array/max", "array/min"] {
         let err = eval_err(&format!(r#"["{op}", [3, "7", true, "x"]]"#));
-        assert!(err.contains("number") && err.contains("string"), "{op}: {err}");
+        assert!(
+            err.contains("number") && err.contains("string"),
+            "{op}: {err}"
+        );
     }
 }
 
 fn names(v: Value) -> Vec<String> {
-    let Value::Array(rows) = v else { panic!("expected a list") };
+    let Value::Array(rows) = v else {
+        panic!("expected a list")
+    };
     rows.iter()
-        .map(|r| r.as_object().and_then(|o| o.get("name")).and_then(Value::as_str).unwrap().to_string())
+        .map(|r| {
+            r.as_object()
+                .and_then(|o| o.get("name"))
+                .and_then(Value::as_str)
+                .unwrap()
+                .to_string()
+        })
         .collect()
 }
 
 /// `str/collate` orders by the CLDR root collation: case-insensitive first, accents beside their letter.
 #[test]
 fn str_collate_orders_by_the_root_collation() {
-    assert_eq!(eval(r#"["str/collate", "apple", "Banana"]"#), Value::Number(-1.0));
-    assert_eq!(eval(r#"["str/collate", "Banana", "apple"]"#), Value::Number(1.0));
-    assert_eq!(eval(r#"["str/collate", "\u00e9crou", "Zed"]"#), Value::Number(-1.0));
-    assert_eq!(eval(r#"["str/collate", "same", "same"]"#), Value::Number(0.0));
-    assert_eq!(eval(r#"["str/collate", "a", "A"]"#), Value::Number(-1.0), "lower case first at the third level");
+    assert_eq!(
+        eval(r#"["str/collate", "apple", "Banana"]"#),
+        Value::Number(-1.0)
+    );
+    assert_eq!(
+        eval(r#"["str/collate", "Banana", "apple"]"#),
+        Value::Number(1.0)
+    );
+    assert_eq!(
+        eval(r#"["str/collate", "\u00e9crou", "Zed"]"#),
+        Value::Number(-1.0)
+    );
+    assert_eq!(
+        eval(r#"["str/collate", "same", "same"]"#),
+        Value::Number(0.0)
+    );
+    assert_eq!(
+        eval(r#"["str/collate", "a", "A"]"#),
+        Value::Number(-1.0),
+        "lower case first at the third level"
+    );
     assert_eq!(eval(r#"["str/collate", null, "a"]"#), Value::Null);
     let mistyped = eval_err(r#"["str/collate", 1, "a"]"#);
-    assert!(mistyped.contains("string") && mistyped.contains("number"), "{mistyped}");
+    assert!(
+        mistyped.contains("string") && mistyped.contains("number"),
+        "{mistyped}"
+    );
     eval_err(r#"["str/collate", "a"]"#);
 }
 
@@ -2799,7 +3027,10 @@ fn str_collate_key_sorts_by_collation() {
         eval(r#"["str/collate-key", "a"]"#),
         "deterministic"
     );
-    assert_ne!(eval(r#"["str/collate-key", "a"]"#), eval(r#"["str/collate-key", "b"]"#));
+    assert_ne!(
+        eval(r#"["str/collate-key", "a"]"#),
+        eval(r#"["str/collate-key", "b"]"#)
+    );
 }
 
 fn by_name(shape: &str) -> serde_json::Value {
@@ -2832,13 +3063,26 @@ fn predicate_definition() -> String {
     .to_string()
 }
 
-fn fold_with(value: serde_json::Value, step: serde_json::Value, shape: &str, definition: &str) -> Result<Value, String> {
+fn fold_with(
+    value: serde_json::Value,
+    step: serde_json::Value,
+    shape: &str,
+    definition: &str,
+) -> Result<Value, String> {
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
         .payload(serde_json::from_value(serde_json::json!({ "v": value })).unwrap())
         .build();
-    let expr: SExpression =
-        serde_json::from_value(serde_json::json!(["tree/fold", "@payload.v", step, shape, definition])).unwrap();
-    Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
+    let expr: SExpression = serde_json::from_value(serde_json::json!([
+        "tree/fold",
+        "@payload.v",
+        step,
+        shape,
+        definition
+    ]))
+    .unwrap();
+    Evaluator::new()
+        .evaluate(&expr, &ctx)
+        .map_err(|e| e.to_string())
 }
 
 fn json_value(json: serde_json::Value) -> Value {
@@ -2847,11 +3091,26 @@ fn json_value(json: serde_json::Value) -> Value {
 
 #[test]
 fn tree_fold_translates_a_nested_predicate_bottom_up() {
-    let step = serde_json::json!(["fn", ["node", "kids"],
-        ["if", ["=", "@node.kind", "compare"], ["str/concat", "@node.field", "@node.op", "@node.value"],
-        ["if", ["=", "@node.kind", "all"], ["str/concat", "(", ["str/join", "@kids.of", " AND "], ")"],
-        ["if", ["=", "@node.kind", "any"], ["str/concat", "(", ["str/join", "@kids.of", " OR "], ")"],
-        ["str/concat", "NOT ", "@kids.of"]]]]]);
+    let step = serde_json::json!([
+        "fn",
+        ["node", "kids"],
+        [
+            "if",
+            ["=", "@node.kind", "compare"],
+            ["str/concat", "@node.field", "@node.op", "@node.value"],
+            [
+                "if",
+                ["=", "@node.kind", "all"],
+                ["str/concat", "(", ["str/join", "@kids.of", " AND "], ")"],
+                [
+                    "if",
+                    ["=", "@node.kind", "any"],
+                    ["str/concat", "(", ["str/join", "@kids.of", " OR "], ")"],
+                    ["str/concat", "NOT ", "@kids.of"]
+                ]
+            ]
+        ]
+    ]);
     let pred = serde_json::json!({ "kind": "all", "of": [
         { "kind": "compare", "field": "a", "op": "==", "value": "1" },
         { "kind": "not", "of": { "kind": "any", "of": [
@@ -2899,7 +3158,13 @@ fn tree_fold_child_results_keep_a_single_child_single_and_a_list_child_a_list() 
     let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
     let not_leaf = serde_json::json!({ "kind": "not", "of": { "kind": "compare", "field": "a", "op": "==", "value": "1" } });
     assert_eq!(
-        fold_with(not_leaf, step.clone(), "RowPredicate", &predicate_definition()).unwrap(),
+        fold_with(
+            not_leaf,
+            step.clone(),
+            "RowPredicate",
+            &predicate_definition()
+        )
+        .unwrap(),
         json_value(serde_json::json!({ "of": {} })),
         "a single child field holds one result, not a list"
     );
@@ -2932,7 +3197,13 @@ fn control_tree_fold_over_a_non_recursive_type_folds_once() {
     .to_string();
     let step = serde_json::json!(["fn", ["n", "k"], { "of": "@n.of", "k": "@k" }]);
     assert_eq!(
-        fold_with(serde_json::json!({ "of": ["a", "b"], "Note": "x" }), step, "Note", &definition).unwrap(),
+        fold_with(
+            serde_json::json!({ "of": ["a", "b"], "Note": "x" }),
+            step,
+            "Note",
+            &definition
+        )
+        .unwrap(),
         json_value(serde_json::json!({ "of": ["a", "b"], "k": {} })),
         "a list of strings and a field named like the type are not children"
     );
@@ -2942,17 +3213,47 @@ fn control_tree_fold_over_a_non_recursive_type_folds_once() {
 fn tree_fold_reads_positions_from_the_selected_variant_never_the_value_shape() {
     let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
     let not_with_a_list = serde_json::json!({ "kind": "not", "of": [{ "kind": "compare", "field": "a", "op": "==", "value": "1" }] });
-    let err = fold_with(not_with_a_list, step.clone(), "RowPredicate", &predicate_definition()).unwrap_err();
-    assert!(err.contains("RowPredicate") && err.contains("array"), "{err}");
+    let err = fold_with(
+        not_with_a_list,
+        step.clone(),
+        "RowPredicate",
+        &predicate_definition(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("RowPredicate") && err.contains("array"),
+        "{err}"
+    );
     let untagged = serde_json::json!({ "kind": "xor", "of": [] });
-    assert_eq!(fold_with(untagged, step.clone(), "RowPredicate", &predicate_definition()).unwrap(), Value::Null, "no variant claims it: a missing result");
     assert_eq!(
-        fold_with(serde_json::Value::Null, step.clone(), "RowPredicate", &predicate_definition()).unwrap(),
+        fold_with(
+            untagged,
+            step.clone(),
+            "RowPredicate",
+            &predicate_definition()
+        )
+        .unwrap(),
+        Value::Null,
+        "no variant claims it: a missing result"
+    );
+    assert_eq!(
+        fold_with(
+            serde_json::Value::Null,
+            step.clone(),
+            "RowPredicate",
+            &predicate_definition()
+        )
+        .unwrap(),
         Value::Null,
         "an absent value folds to null"
     );
-    let unbaked: SExpression = serde_json::from_value(serde_json::json!(["tree/fold", null, step, "RowPredicate"])).unwrap();
-    let err = Evaluator::new().evaluate(&unbaked, &BindingContext::new()).unwrap_err().to_string();
+    let unbaked: SExpression =
+        serde_json::from_value(serde_json::json!(["tree/fold", null, step, "RowPredicate"]))
+            .unwrap();
+    let err = Evaluator::new()
+        .evaluate(&unbaked, &BindingContext::new())
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("was not written into the call"), "{err}");
 }
 
@@ -2972,20 +3273,34 @@ fn ir_expr_definition() -> String {
 }
 
 fn fold_kids(value: serde_json::Value) -> Result<Value, String> {
-    fold_with(value, serde_json::json!(["fn", ["n", "k"], "@k"]), "IrExpr", &ir_expr_definition())
+    fold_with(
+        value,
+        serde_json::json!(["fn", ["n", "k"], "@k"]),
+        "IrExpr",
+        &ir_expr_definition(),
+    )
 }
 
 #[test]
 fn tree_fold_reads_an_object_leaf_through_the_unions_map_variant() {
-    assert_eq!(fold_kids(serde_json::json!({ "a": "x", "b": 1 })), Ok(json_value(serde_json::json!({ "a": {}, "b": {} }))));
-    assert_eq!(fold_kids(serde_json::json!({})), Ok(json_value(serde_json::json!({}))), "an empty map has no children");
+    assert_eq!(
+        fold_kids(serde_json::json!({ "a": "x", "b": 1 })),
+        Ok(json_value(serde_json::json!({ "a": {}, "b": {} })))
+    );
+    assert_eq!(
+        fold_kids(serde_json::json!({})),
+        Ok(json_value(serde_json::json!({}))),
+        "an empty map has no children"
+    );
 }
 
 #[test]
 fn tree_fold_reads_an_object_holding_lists_through_the_map_variant() {
     assert_eq!(
         fold_kids(serde_json::json!({ "a": 1, "b": ["x", { "c": true }] })),
-        Ok(json_value(serde_json::json!({ "a": {}, "b": [{}, { "c": {} }] })))
+        Ok(json_value(
+            serde_json::json!({ "a": {}, "b": [{}, { "c": {} }] })
+        ))
     );
 }
 
@@ -2993,7 +3308,9 @@ fn tree_fold_reads_an_object_holding_lists_through_the_map_variant() {
 fn tree_fold_reads_a_mixed_list_holding_an_object() {
     assert_eq!(
         fold_kids(serde_json::json!(["emit", "X", { "id": "@entity.id", "n": [1, "b"] }])),
-        Ok(json_value(serde_json::json!([{}, {}, { "id": {}, "n": [{}, {}] }])))
+        Ok(json_value(
+            serde_json::json!([{}, {}, { "id": {}, "n": [{}, {}] }])
+        ))
     );
     assert_eq!(
         fold_kids(serde_json::json!(["a", [1, "b"], true])),
@@ -3003,9 +3320,38 @@ fn tree_fold_reads_a_mixed_list_holding_an_object() {
 
 #[test]
 fn tree_fold_folds_nested_maps_bottom_up_with_the_node_in_scope() {
-    let step = serde_json::json!(["fn", ["n", "k"],
-        ["if", ["validate/string", "@n"], "@n", ["if", ["validate/array", "@n"], ["str/join", "@k", ","],
-        ["str/join", ["array/map", ["object/entries", "@k"], ["fn", "e", ["str/concat", ["array/nth", "@e", 0], "=", ["array/nth", "@e", 1]]]], ";"]]]]);
+    let step = serde_json::json!([
+        "fn",
+        ["n", "k"],
+        [
+            "if",
+            ["validate/string", "@n"],
+            "@n",
+            [
+                "if",
+                ["validate/array", "@n"],
+                ["str/join", "@k", ","],
+                [
+                    "str/join",
+                    [
+                        "array/map",
+                        ["object/entries", "@k"],
+                        [
+                            "fn",
+                            "e",
+                            [
+                                "str/concat",
+                                ["array/nth", "@e", 0],
+                                "=",
+                                ["array/nth", "@e", 1]
+                            ]
+                        ]
+                    ],
+                    ";"
+                ]
+            ]
+        ]
+    ]);
     let value = serde_json::json!({ "outer": { "inner": { "leaf": "v" } } });
     assert_eq!(
         fold_with(value, step, "IrExpr", &ir_expr_definition()),
@@ -3026,14 +3372,27 @@ fn control_tree_fold_a_closed_shape_still_claims_the_object_before_a_map_variant
     .to_string();
     let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
     let leaf = serde_json::json!({ "kind": "leaf" });
-    assert_eq!(fold_with(leaf.clone(), step.clone(), "Node", &definition), Ok(json_value(serde_json::json!({}))));
     assert_eq!(
-        fold_with(serde_json::json!({ "only": "s", "next": leaf.clone() }), step.clone(), "Node", &definition),
+        fold_with(leaf.clone(), step.clone(), "Node", &definition),
+        Ok(json_value(serde_json::json!({})))
+    );
+    assert_eq!(
+        fold_with(
+            serde_json::json!({ "only": "s", "next": leaf.clone() }),
+            step.clone(),
+            "Node",
+            &definition
+        ),
         Ok(json_value(serde_json::json!({ "next": {} }))),
         "the closed shape reads `next` as a field child and `only` as data"
     );
     assert_eq!(
-        fold_with(serde_json::json!({ "x": leaf, "only": { "kind": "leaf" } }), step, "Node", &definition),
+        fold_with(
+            serde_json::json!({ "x": leaf, "only": { "kind": "leaf" } }),
+            step,
+            "Node",
+            &definition
+        ),
         Ok(json_value(serde_json::json!({ "x": {}, "only": {} }))),
         "a key no closed shape declares falls to the Map variant"
     );
@@ -3050,7 +3409,13 @@ fn control_tree_fold_a_kind_no_variant_declares_still_errors_and_an_unclaimed_sh
     })
     .to_string();
     let step = serde_json::json!(["fn", ["n", "k"], "@k"]);
-    let err = fold_with(serde_json::json!({ "a": true }), step.clone(), "E", &no_boolean).unwrap_err();
+    let err = fold_with(
+        serde_json::json!({ "a": true }),
+        step.clone(),
+        "E",
+        &no_boolean,
+    )
+    .unwrap_err();
     assert!(err.contains("E") && err.contains("bool"), "{err}");
     let two_maps = serde_json::json!({
         "name": "E", "type": "union", "values": ["m1", "m2"],
@@ -3060,8 +3425,28 @@ fn control_tree_fold_a_kind_no_variant_declares_still_errors_and_an_unclaimed_sh
         }
     })
     .to_string();
-    assert_eq!(fold_with(serde_json::json!({ "a": "x" }), step.clone(), "E", &two_maps).unwrap(), Value::Null, "several variants fit: a missing result");
-    assert_eq!(fold_with(serde_json::json!({ "kind": "xor", "of": [] }), step, "RowPredicate", &predicate_definition()).unwrap(), Value::Null, "no Map variant claims the object: a missing result");
+    assert_eq!(
+        fold_with(
+            serde_json::json!({ "a": "x" }),
+            step.clone(),
+            "E",
+            &two_maps
+        )
+        .unwrap(),
+        Value::Null,
+        "several variants fit: a missing result"
+    );
+    assert_eq!(
+        fold_with(
+            serde_json::json!({ "kind": "xor", "of": [] }),
+            step,
+            "RowPredicate",
+            &predicate_definition()
+        )
+        .unwrap(),
+        Value::Null,
+        "no Map variant claims the object: a missing result"
+    );
 }
 
 fn row_matches(pred: &serde_json::Value, row: &serde_json::Value) -> Value {
@@ -3073,25 +3458,53 @@ fn row_matches(pred: &serde_json::Value, row: &serde_json::Value) -> Value {
 
 #[test]
 fn row_matches_decides_a_typed_predicate() {
-    let open = serde_json::json!({ "kind": "compare", "field": "status", "op": "==", "value": "open" });
-    assert_eq!(row_matches(&open, &serde_json::json!({ "id": "t1", "status": "open" })), Value::Bool(true));
-    assert_eq!(row_matches(&open, &serde_json::json!({ "id": "t2", "status": "closed" })), Value::Bool(false));
+    let open =
+        serde_json::json!({ "kind": "compare", "field": "status", "op": "==", "value": "open" });
+    assert_eq!(
+        row_matches(&open, &serde_json::json!({ "id": "t1", "status": "open" })),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        row_matches(
+            &open,
+            &serde_json::json!({ "id": "t2", "status": "closed" })
+        ),
+        Value::Bool(false)
+    );
     let negated = serde_json::json!({ "kind": "not", "of": open });
-    assert_eq!(row_matches(&negated, &serde_json::json!({ "id": "t2", "status": "closed" })), Value::Bool(true));
-    assert_eq!(row_matches(&serde_json::Value::Null, &serde_json::json!({ "id": "t1" })), Value::Null);
+    assert_eq!(
+        row_matches(
+            &negated,
+            &serde_json::json!({ "id": "t2", "status": "closed" })
+        ),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        row_matches(&serde_json::Value::Null, &serde_json::json!({ "id": "t1" })),
+        Value::Null
+    );
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
-        .payload(json_value(serde_json::json!({ "pred": { "kind": "nope" }, "row": { "id": "t1" } })))
+        .payload(json_value(
+            serde_json::json!({ "pred": { "kind": "nope" }, "row": { "id": "t1" } }),
+        ))
         .build();
-    let expr: SExpression = serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
-    assert_eq!(Evaluator::new().evaluate(&expr, &ctx).unwrap(), Value::Null, "not a RowPredicate: a missing result");
+    let expr: SExpression =
+        serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
+    assert_eq!(
+        Evaluator::new().evaluate(&expr, &ctx).unwrap(),
+        Value::Null,
+        "not a RowPredicate: a missing result"
+    );
 }
 
 #[test]
 fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
     use orbital_core::runtime::row_query::{compile_predicate, PredicateRole};
-    let source: Value = json_value(serde_json::json!(["and",
+    let source: Value = json_value(serde_json::json!([
+        "and",
         ["==", "@entity.status", "open"],
-        ["not", [">", "@entity.n", 3]]]));
+        ["not", [">", "@entity.n", 3]]
+    ]));
     let compiled = compile_predicate(
         &source,
         &orbital_core::evaluator::context::BindingContext::new(),
@@ -3105,22 +3518,26 @@ fn control_row_matches_agrees_with_compile_predicate_on_the_same_inputs() {
         serde_json::json!({ "id": "b", "status": "open", "n": 5 }),
         serde_json::json!({ "id": "c", "status": "closed", "n": 1 }),
     ] {
-        assert_eq!(row_matches(&pred, &row), Value::Bool(compiled.matches(&json_value(row.clone()))), "{row}");
+        assert_eq!(
+            row_matches(&pred, &row),
+            Value::Bool(compiled.matches(&json_value(row.clone()))),
+            "{row}"
+        );
     }
 }
 
-
-
 #[test]
 fn tree_index_groups_every_listed_call_by_head_with_its_path() {
-    let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"],[\"if\",true,[\"emit\",\"B\",[\"persist\",\"create\",\"T\",{}]]],{\"k\":[\"emit\",\"C\"]}]"], ["list", "emit", "persist", "fetch"]]"#);
+    let got = eval(
+        r#"["tree/index", ["quote", "[[\"emit\",\"A\"],[\"if\",true,[\"emit\",\"B\",[\"persist\",\"create\",\"T\",{}]]],{\"k\":[\"emit\",\"C\"]}]"], ["list", "emit", "persist", "fetch"]]"#,
+    );
     let want: Value = serde_json::from_value(serde_json::json!({
         "emit": [
-            { "path": "[0]", "node": ["emit", "A"] },
-            { "path": "[1][2]", "node": ["emit", "B", ["persist", "create", "T", {}]] },
-            { "path": "[2].k", "node": ["emit", "C"] }
+            { "path": "[0]", "node": ["emit", "A"], "at": 1 },
+            { "path": "[1][2]", "node": ["emit", "B", ["persist", "create", "T", {}]], "at": 7 },
+            { "path": "[2].k", "node": ["emit", "C"], "at": 16 }
         ],
-        "persist": [{ "path": "[1][2][2]", "node": ["persist", "create", "T", {}] }],
+        "persist": [{ "path": "[1][2][2]", "node": ["persist", "create", "T", {}], "at": 10 }],
         "fetch": []
     }))
     .unwrap();
@@ -3129,9 +3546,11 @@ fn tree_index_groups_every_listed_call_by_head_with_its_path() {
 
 #[test]
 fn tree_index_spells_a_root_key_without_a_leading_dot() {
-    let got = eval(r#"["tree/index", ["quote", "{\"orbitals\":[{\"effects\":[[\"emit\",\"A\"]]}]}"], ["list", "emit"]]"#);
+    let got = eval(
+        r#"["tree/index", ["quote", "{\"orbitals\":[{\"effects\":[[\"emit\",\"A\"]]}]}"], ["list", "emit"]]"#,
+    );
     let want: Value = serde_json::from_value(serde_json::json!({
-        "emit": [{ "path": "orbitals[0].effects[0]", "node": ["emit", "A"] }]
+        "emit": [{ "path": "orbitals[0].effects[0]", "node": ["emit", "A"], "at": 4 }]
     }))
     .unwrap();
     assert_eq!(got, want);
@@ -3140,16 +3559,180 @@ fn tree_index_spells_a_root_key_without_a_leading_dot() {
 #[test]
 fn tree_index_control_an_unlisted_head_and_no_heads_find_nothing() {
     let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list", "persist"]]"#);
-    assert_eq!(got, serde_json::from_value::<Value>(serde_json::json!({ "persist": [] })).unwrap());
+    assert_eq!(
+        got,
+        serde_json::from_value::<Value>(serde_json::json!({ "persist": [] })).unwrap()
+    );
     let none = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list"]]"#);
-    assert_eq!(none, serde_json::from_value::<Value>(serde_json::json!({})).unwrap());
+    assert_eq!(
+        none,
+        serde_json::from_value::<Value>(serde_json::json!({})).unwrap()
+    );
 }
 
 #[test]
 fn tree_index_refuses_heads_that_are_not_a_list_of_strings() {
-    for expr in [r#"["tree/index", ["list"], "emit"]"#, r#"["tree/index", ["list"], ["list", 1]]"#] {
+    for expr in [
+        r#"["tree/index", ["list"], "emit"]"#,
+        r#"["tree/index", ["list"], ["list", 1]]"#,
+    ] {
         let err = eval_err(expr);
-        assert!(err.contains("heads") || err.contains("ype"), "{expr}: {err}");
+        assert!(
+            err.contains("heads") || err.contains("ype"),
+            "{expr}: {err}"
+        );
     }
-    assert_eq!(eval(r#"["tree/index", ["list"], ["list", "emit"]]"#), serde_json::from_value::<Value>(serde_json::json!({ "emit": [] })).unwrap(), "control: a list of strings");
+    assert_eq!(
+        eval(r#"["tree/index", ["list"], ["list", "emit"]]"#),
+        serde_json::from_value::<Value>(serde_json::json!({ "emit": [] })).unwrap(),
+        "control: a list of strings"
+    );
+}
+
+#[test]
+fn tree_index_prefixes_collect_string_leaves_grouped_in_prefix_order() {
+    let got = eval(
+        r#"["tree/index", ["quote", "{\"a\":\"@entity.x\",\"b\":[\"plain\",\"@config.y\",\"@entity.z\"]}"], ["list"], {"prefixes": ["quote", "[\"@entity.\",\"@config.\",\"@none.\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "@entity.": [
+            { "path": "a", "node": "@entity.x", "at": 1 },
+            { "path": "b[2]", "node": "@entity.z", "at": 5 }
+        ],
+        "@config.": [{ "path": "b[1]", "node": "@config.y", "at": 4 }],
+        "@none.": []
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn tree_index_prefixes_do_not_count_a_call_head_as_a_leaf() {
+    let got = eval(
+        r#"["tree/index", ["quote", "[[\"@fn.go\",\"@fn.arg\"],\"@fn.alone\"]"], ["list"], {"prefixes": ["quote", "[\"@fn.\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "@fn.": [
+            { "path": "[0][1]", "node": "@fn.arg", "at": 3 },
+            { "path": "[1]", "node": "@fn.alone", "at": 4 }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn tree_index_prefixes_first_listed_prefix_wins_when_two_overlap() {
+    let got = eval(
+        r#"["tree/index", ["quote", "[\"x\",\"@entity.row\"]"], ["list"], {"prefixes": ["quote", "[\"@entity.\",\"@e\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "@entity.": [{ "path": "[1]", "node": "@entity.row", "at": 2 }],
+        "@e": []
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+    let swapped = eval(
+        r#"["tree/index", ["quote", "[\"x\",\"@entity.row\"]"], ["list"], {"prefixes": ["quote", "[\"@e\",\"@entity.\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "@e": [{ "path": "[1]", "node": "@entity.row", "at": 2 }],
+        "@entity.": []
+    }))
+    .unwrap();
+    assert_eq!(swapped, want);
+}
+
+#[test]
+fn tree_index_at_merges_hits_of_two_heads_back_into_walk_order() {
+    let got = eval(
+        r#"["tree/index", ["quote", "[[\"b\",1],[\"a\",[\"b\"]],[\"a\"]]"], ["list", "a", "b"]]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "a": [
+            { "path": "[1]", "node": ["a", ["b"]], "at": 4 },
+            { "path": "[2]", "node": ["a"], "at": 8 }
+        ],
+        "b": [
+            { "path": "[0]", "node": ["b", 1], "at": 1 },
+            { "path": "[1][1]", "node": ["b"], "at": 6 }
+        ]
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn tree_index_control_empty_options_equal_no_options() {
+    let plain =
+        eval(r#"["tree/index", ["quote", "[[\"emit\",\"@entity.x\"]]"], ["list", "emit"]]"#);
+    let with =
+        eval(r#"["tree/index", ["quote", "[[\"emit\",\"@entity.x\"]]"], ["list", "emit"], {}]"#);
+    assert_eq!(plain, with);
+    assert_eq!(plain, serde_json::from_value::<Value>(serde_json::json!({ "emit": [{ "path": "[0]", "node": ["emit", "@entity.x"], "at": 1 }] })).unwrap());
+}
+
+#[test]
+fn tree_index_refuses_options_that_are_not_a_record_with_prefixes_a_list_of_strings() {
+    for expr in [
+        r#"["tree/index", ["list"], ["list"], "x"]"#,
+        r#"["tree/index", ["list"], ["list"], {"prefixes": "entity."}]"#,
+        r#"["tree/index", ["list"], ["list"], {"prefixes": ["list", 1]}]"#,
+    ] {
+        let err = eval_err(expr);
+        assert!(
+            err.contains("options") || err.contains("object"),
+            "{expr}: {err}"
+        );
+    }
+    assert!(eval_err(
+        r#"["tree/index", ["list"], ["list"], {"prefixes": ["quote", "[\"a\"]"]}, 1]"#
+    )
+    .contains("tree/index"));
+}
+
+#[test]
+fn dispatched_names_are_exactly_the_table_operators_the_kernel_evaluates() {
+    use crate::evaluator::operators::{get_operator, DISPATCHED_NAMES};
+    use orbital_core_base::ir::effects::is_substrate_operator;
+    use orbital_core_base::language::registry::operators;
+
+    let table = operators();
+    let mut unlisted: Vec<&str> = DISPATCHED_NAMES
+        .iter()
+        .copied()
+        .filter(|name| !table.contains_key(*name))
+        .collect();
+    unlisted.sort_unstable();
+    assert!(
+        unlisted.is_empty(),
+        "dispatched but not in the operator table: {unlisted:?}"
+    );
+
+    let mut unreachable: Vec<&str> = DISPATCHED_NAMES
+        .iter()
+        .copied()
+        .filter(|name| get_operator(name).is_none())
+        .collect();
+    unreachable.sort_unstable();
+    assert!(
+        unreachable.is_empty(),
+        "listed but not dispatched: {unreachable:?}"
+    );
+
+    let mut undispatched: Vec<&str> = table
+        .iter()
+        .filter(|(name, operator)| {
+            !operator.has_side_effects
+                && operator.host.is_none()
+                && !is_substrate_operator(name)
+                && get_operator(name).is_none()
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    undispatched.sort_unstable();
+    assert!(
+        undispatched.is_empty(),
+        "pure table operators with no dispatch arm: {undispatched:?}"
+    );
 }

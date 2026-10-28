@@ -188,4 +188,3 @@ impl Operator for FormatCreditCardOp {
         Ok(Value::string(groups.join(" ")))
     }
 }
-

@@ -14,22 +14,41 @@ use crate::evaluator::operators::*;
 use orbital_core_base::schema::sexpr::SExpression;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypePredicate { String, Number, Boolean, Array, Object }
+pub enum TypePredicate {
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+}
 
 impl TypePredicate {
     pub fn matches_value(self, value: &orbital_core_base::value::Value) -> bool {
         use orbital_core_base::value::Value;
-        matches!((self, value),
-            (Self::String, Value::String(_)) | (Self::Number, Value::Number(_)) |
-            (Self::Boolean, Value::Bool(_)) | (Self::Array, Value::Array(_)) |
-            (Self::Object, Value::Object(_)))
+        matches!(
+            (self, value),
+            (Self::String, Value::String(_))
+                | (Self::Number, Value::Number(_))
+                | (Self::Boolean, Value::Bool(_))
+                | (Self::Array, Value::Array(_))
+                | (Self::Object, Value::Object(_))
+        )
     }
 
     pub fn matches_type(self, ty: &orbital_core_base::ir::OirType) -> Option<bool> {
         use orbital_core_base::ir::OirType as T;
         let kind = match ty {
-            T::String | T::Enum { .. } | T::Trait | T::CallKey | T::Bytes |
-            T::Email | T::Url | T::Phone | T::Uuid | T::Image | T::Reference { .. } => Self::String,
+            T::String
+            | T::Enum { .. }
+            | T::Trait
+            | T::CallKey
+            | T::Bytes
+            | T::Email
+            | T::Url
+            | T::Phone
+            | T::Uuid
+            | T::Image
+            | T::Reference { .. } => Self::String,
             T::Number | T::Integer | T::Money => Self::Number,
             T::Boolean => Self::Boolean,
             T::Array { .. } | T::Tuple { .. } => Self::Array,

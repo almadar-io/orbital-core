@@ -110,11 +110,6 @@ pub enum ServerEffectKind {
     Http,
     Fetch,
     FetchStream,
-    Ref,
-    Deref,
-    #[serde(rename = "swap")]
-    Swap,
-    Atomic,
     Emit,
     Substrate,
 }

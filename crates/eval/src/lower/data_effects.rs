@@ -41,7 +41,7 @@ impl NodeLowerer {
         fn as_list(tuple: &SExpression) -> SExpression {
             let mut items = vec![SExpression::string("list")];
             if let SExpression::Array(t) = tuple {
-                items.extend(t.iter().cloned());
+                items.extend(strip_literal_list_marker(t).iter().cloned());
             }
             SExpression::Array(items)
         }

@@ -31,7 +31,12 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::Fetch { id, filter, nearest, .. } => {
+            Self::Fetch {
+                id,
+                filter,
+                nearest,
+                ..
+            } => {
                 if let Some(n) = nearest {
                     n.collect_bindings()
                         .into_iter()
@@ -58,50 +63,6 @@ impl OirEffect {
                 ops.collect_bindings()
                     .into_iter()
                     .for_each(|b| bindings.push(b));
-            }
-            Self::Ref { id, filter, .. } => {
-                if let Some(id_expr) = id {
-                    id_expr
-                        .collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-                if let Some(f) = filter {
-                    f.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::Deref { id, .. } => {
-                if let Some(id_expr) = id {
-                    id_expr
-                        .collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::Swap { id, transform, .. } => {
-                id.collect_bindings()
-                    .into_iter()
-                    .for_each(|b| bindings.push(b));
-                transform
-                    .collect_bindings()
-                    .into_iter()
-                    .for_each(|b| bindings.push(b));
-            }
-            Self::Watch { effects, .. } => {
-                for eff in effects {
-                    eff.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::Atomic { effects } => {
-                for eff in effects {
-                    eff.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
             }
             Self::Navigate {
                 path,
@@ -442,22 +403,6 @@ impl OirEffect {
             }
             Self::Persist { data, .. } => out.push(data),
             Self::PersistBatch { ops, .. } => out.push(ops),
-            Self::Ref {
-                id,
-                filter,
-                order_by,
-                ..
-            } => {
-                push_opt(&mut out, id);
-                push_opt(&mut out, filter);
-                push_opt(&mut out, order_by);
-            }
-            Self::Deref { id, .. } => push_opt(&mut out, id),
-            Self::Swap { id, transform, .. } => {
-                out.push(id);
-                out.push(transform);
-            }
-            Self::Watch { effects, .. } | Self::Atomic { effects } => out.extend(effects.iter()),
             Self::Navigate {
                 path,
                 params,

@@ -15,11 +15,13 @@ fn encode_digest(bytes: &[u8], encoding: &str) -> Option<String> {
 }
 
 fn digest_text(bytes: &[u8], encoding: &str, op: &str) -> EvalResult {
-    encode_digest(bytes, encoding).map(Value::string).ok_or_else(|| {
-        OrbitalError::Eval(EvalError::InvalidArgument(format!(
-            "{op}: encoding must be \"hex\" or \"base64\", got \"{encoding}\""
-        )))
-    })
+    encode_digest(bytes, encoding)
+        .map(Value::string)
+        .ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{op}: encoding must be \"hex\" or \"base64\", got \"{encoding}\""
+            )))
+        })
 }
 
 fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
@@ -214,7 +216,9 @@ impl Operator for HashPbkdf2Op {
         };
         let iterations = count(&args[2], "iterations")?;
         let length = count(&args[3], "length")?;
-        let (Some(password), Some(salt), Some(iterations), Some(length)) = (password, salt, iterations, length) else {
+        let (Some(password), Some(salt), Some(iterations), Some(length)) =
+            (password, salt, iterations, length)
+        else {
             return Ok(Value::Null);
         };
         let key = codec::pbkdf2_hmac_sha256(&password, &salt, iterations, length as usize);
@@ -222,17 +226,36 @@ impl Operator for HashPbkdf2Op {
     }
 }
 
-fn bytes_in(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Option<Vec<u8>>, OrbitalError> {
+fn bytes_in(
+    arg: &SExpression,
+    ctx: &BindingContext,
+    op: &str,
+) -> Result<Option<Vec<u8>>, OrbitalError> {
     let s = string_arg(arg, ctx, op)?;
     Ok(codec::base64_decode(&s).ok())
 }
 
-fn codec_options(args: &[SExpression], index: usize, ctx: &BindingContext, op: &str, keys: &[&str]) -> Result<Option<Value>, OrbitalError> {
-    let value = match args.get(index) { Some(arg) => eval_expr(arg, ctx)?, None => Value::Object(Default::default()) };
-    let Value::Object(fields) = &value else { return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: options must be an object")))); };
+fn codec_options(
+    args: &[SExpression],
+    index: usize,
+    ctx: &BindingContext,
+    op: &str,
+    keys: &[&str],
+) -> Result<Option<Value>, OrbitalError> {
+    let value = match args.get(index) {
+        Some(arg) => eval_expr(arg, ctx)?,
+        None => Value::Object(Default::default()),
+    };
+    let Value::Object(fields) = &value else {
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{op}: options must be an object"
+        ))));
+    };
     for (key, value) in fields {
         if key == "result" && !matches!(value, Value::Bool(_)) {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: invalid option {key}"))));
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{op}: invalid option {key}"
+            ))));
         }
         if !keys.contains(&key.as_str()) {
             return Ok(None);
@@ -241,61 +264,151 @@ fn codec_options(args: &[SExpression], index: usize, ctx: &BindingContext, op: &
     Ok(Some(value))
 }
 
-fn codec_setting(options: &Value, key: &str, default: u32, max: u32, min: u32, op: &str) -> Result<Option<u32>, OrbitalError> {
-    let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else { return Ok(Some(default)); };
+fn codec_setting(
+    options: &Value,
+    key: &str,
+    default: u32,
+    max: u32,
+    min: u32,
+    op: &str,
+) -> Result<Option<u32>, OrbitalError> {
+    let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else {
+        return Ok(Some(default));
+    };
     match value {
-        Value::Number(n) if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) => Ok(Some(*n as u32)),
+        Value::Number(n) if n.fract() == 0.0 && *n >= f64::from(min) && *n <= f64::from(max) => {
+            Ok(Some(*n as u32))
+        }
         Value::Number(_) => Ok(None),
-        _ => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: {key} must be a whole number from {min} to {max}")))),
+        _ => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{op}: {key} must be a whole number from {min} to {max}"
+        )))),
     }
 }
 
-fn codec_answer(answer: Result<codec::CodecDecoded, codec::CodecFailure>, options: &Value) -> EvalResult {
+fn codec_answer(
+    answer: Result<codec::CodecDecoded, codec::CodecFailure>,
+    options: &Value,
+) -> EvalResult {
     if options.as_object().and_then(|fields| fields.get("result")) == Some(&Value::Bool(true)) {
         let (ok, data, crc, code) = match answer {
-            Ok(decoded) => (true, Value::string(codec::base64_encode(&decoded.data)), decoded.crc.map(|crc| Value::Number(f64::from(crc))).unwrap_or(Value::Null), Value::Null),
-            Err(error) => (false, Value::Null, Value::Null, Value::string(error.code().to_string())),
+            Ok(decoded) => (
+                true,
+                Value::string(codec::base64_encode(&decoded.data)),
+                decoded
+                    .crc
+                    .map(|crc| Value::Number(f64::from(crc)))
+                    .unwrap_or(Value::Null),
+                Value::Null,
+            ),
+            Err(error) => (
+                false,
+                Value::Null,
+                Value::Null,
+                Value::string(error.code().to_string()),
+            ),
         };
-        return Ok(Value::Object([("ok", Value::Bool(ok)), ("data", data), ("crc", crc), ("code", code)].into_iter().map(|(key, value)| (key.to_string(), value)).collect()));
+        return Ok(Value::Object(
+            [
+                ("ok", Value::Bool(ok)),
+                ("data", data),
+                ("crc", crc),
+                ("code", code),
+            ]
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
+        ));
     }
-    Ok(answer.map_or(Value::Null, |decoded| Value::string(codec::base64_encode(&decoded.data))))
+    Ok(answer.map_or(Value::Null, |decoded| {
+        Value::string(codec::base64_encode(&decoded.data))
+    }))
 }
 
 fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
     require_arity!(args, op, >= 1);
-    if args.len() > 2 { require_arity!(args, op, == 2); }
+    if args.len() > 2 {
+        require_arity!(args, op, == 2);
+    }
     let data = bytes_in(&args[0], ctx, op)?;
     let gzip = op == "gzip/compress";
-    let options = codec_options(args, 1, ctx, op, if gzip { &["result", "level"] } else { &["result", "quality", "window"] })?;
-    let (Some(data), Some(options)) = (data, options) else { return Ok(Value::Null); };
+    let options = codec_options(
+        args,
+        1,
+        ctx,
+        op,
+        if gzip {
+            &["result", "level"]
+        } else {
+            &["result", "quality", "window"]
+        },
+    )?;
+    let (Some(data), Some(options)) = (data, options) else {
+        return Ok(Value::Null);
+    };
     let packed = if gzip {
-        let Some(level) = codec_setting(&options, "level", 6, 9, 0, op)? else { return Ok(Value::Null); };
+        let Some(level) = codec_setting(&options, "level", 6, 9, 0, op)? else {
+            return Ok(Value::Null);
+        };
         codec::gzip_compress_level(&data, level)
     } else {
-        let (Some(quality), Some(window)) = (codec_setting(&options, "quality", 11, 11, 0, op)?, codec_setting(&options, "window", 22, 24, 10, op)?) else { return Ok(Value::Null); };
+        let (Some(quality), Some(window)) = (
+            codec_setting(&options, "quality", 11, 11, 0, op)?,
+            codec_setting(&options, "window", 22, 24, 10, op)?,
+        ) else {
+            return Ok(Value::Null);
+        };
         brotli_compress(&data, quality as i32, window as i32, op)?
     };
-    let crc = if gzip { Some(u32::from_le_bytes(packed[packed.len() - 8..packed.len() - 4].try_into().expect("gzip trailer"))) } else { None };
+    let crc = if gzip {
+        Some(u32::from_le_bytes(
+            packed[packed.len() - 8..packed.len() - 4]
+                .try_into()
+                .expect("gzip trailer"),
+        ))
+    } else {
+        None
+    };
     codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options)
 }
 
 fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
     require_arity!(args, op, >= 2);
-    if args.len() > 3 { require_arity!(args, op, == 3); }
+    if args.len() > 3 {
+        require_arity!(args, op, == 3);
+    }
     let data = bytes_in(&args[0], ctx, op)?;
     let max = match eval_expr(&args[1], ctx)? {
-        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => Some(n as usize),
+        Value::Number(n) if n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64 => {
+            Some(n as usize)
+        }
         Value::Number(_) => None,
-        other => return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: maxBytes {}: expected a whole number from 0", other.to_text())))),
+        other => {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                "{op}: maxBytes {}: expected a whole number from 0",
+                other.to_text()
+            ))))
+        }
     };
     let options = codec_options(args, 2, ctx, op, &["result"])?;
-    let (Some(data), Some(max), Some(options)) = (data, max, options) else { return Ok(Value::Null); };
-    let answer = if op == "gzip/decompress" { codec::gzip_decode(&data, max) } else { brotli_decode(&data, max, op)? };
+    let (Some(data), Some(max), Some(options)) = (data, max, options) else {
+        return Ok(Value::Null);
+    };
+    let answer = if op == "gzip/decompress" {
+        codec::gzip_decode(&data, max)
+    } else {
+        brotli_decode(&data, max, op)?
+    };
     codec_answer(answer, &options)
 }
 
 #[cfg(feature = "std")]
-fn brotli_compress(data: &[u8], quality: i32, window: i32, _op: &str) -> Result<Vec<u8>, OrbitalError> {
+fn brotli_compress(
+    data: &[u8],
+    quality: i32,
+    window: i32,
+    _op: &str,
+) -> Result<Vec<u8>, OrbitalError> {
     Ok(codec::brotli_compress_options(data, quality, window))
 }
 
@@ -306,30 +419,47 @@ fn brotli_decode(data: &[u8], max: usize, _op: &str) -> Result<codec::CodecResul
 
 /// Brotli runs through the codec's `std::io` streams, which a bare-metal host does not have.
 #[cfg(not(feature = "std"))]
-fn brotli_compress(_data: &[u8], _quality: i32, _window: i32, op: &str) -> Result<Vec<u8>, OrbitalError> {
-    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: brotli is not available on a bare-metal host"))))
+fn brotli_compress(
+    _data: &[u8],
+    _quality: i32,
+    _window: i32,
+    op: &str,
+) -> Result<Vec<u8>, OrbitalError> {
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+        "{op}: brotli is not available on a bare-metal host"
+    ))))
 }
 
 #[cfg(not(feature = "std"))]
 fn brotli_decode(_data: &[u8], _max: usize, op: &str) -> Result<codec::CodecResult, OrbitalError> {
-    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: brotli is not available on a bare-metal host"))))
+    Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+        "{op}: brotli is not available on a bare-metal host"
+    ))))
 }
 
 pub struct GzipCompressOp;
 impl Operator for GzipCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { compress(args, ctx, "gzip/compress") }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        compress(args, ctx, "gzip/compress")
+    }
 }
 pub struct GzipDecompressOp;
 impl Operator for GzipDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { decompress(args, ctx, "gzip/decompress") }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        decompress(args, ctx, "gzip/decompress")
+    }
 }
 pub struct BrotliCompressOp;
 impl Operator for BrotliCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { compress(args, ctx, "brotli/compress") }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        compress(args, ctx, "brotli/compress")
+    }
 }
 pub struct BrotliDecompressOp;
 impl Operator for BrotliDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult { decompress(args, ctx, "brotli/decompress") }
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        decompress(args, ctx, "brotli/decompress")
+    }
 }
 
 /// hmac/sha256 (key, message, encoding)
@@ -470,20 +600,39 @@ mod tests {
             bytes_of(serde_json::json!([decompress, empty, 0])).is_empty(),
             "edge: empty input"
         );
-        assert_eq!(eval(serde_json::json!([decompress, cli, 16])).unwrap(), Value::Null);
+        assert_eq!(
+            eval(serde_json::json!([decompress, cli, 16])).unwrap(),
+            Value::Null
+        );
         let mut corrupt = codec::base64_decode(cli).unwrap();
         corrupt.truncate(corrupt.len() / 2);
         assert_eq!(
-            eval(serde_json::json!([decompress, codec::base64_encode(&corrupt), 1024])).unwrap(),
+            eval(serde_json::json!([
+                decompress,
+                codec::base64_encode(&corrupt),
+                1024
+            ]))
+            .unwrap(),
             Value::Null
         );
         assert_eq!(
-            eval(serde_json::json!([decompress, codec::base64_encode(b"not compressed at all"), 1024])).unwrap(),
+            eval(serde_json::json!([
+                decompress,
+                codec::base64_encode(b"not compressed at all"),
+                1024
+            ]))
+            .unwrap(),
             Value::Null
         );
-        assert_eq!(eval(serde_json::json!([decompress, "%%", 1024])).unwrap(), Value::Null);
+        assert_eq!(
+            eval(serde_json::json!([decompress, "%%", 1024])).unwrap(),
+            Value::Null
+        );
         for max in [serde_json::json!(-1), serde_json::json!(1.5)] {
-            assert_eq!(eval(serde_json::json!([decompress, cli, max])).unwrap(), Value::Null);
+            assert_eq!(
+                eval(serde_json::json!([decompress, cli, max])).unwrap(),
+                Value::Null
+            );
         }
         assert!(
             eval(serde_json::json!([decompress, cli])).is_err(),
@@ -526,19 +675,41 @@ mod tests {
 
     #[test]
     fn control_the_two_formats_do_not_read_each_other() {
-        assert_eq!(eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).unwrap(), Value::Null);
-        assert_eq!(eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).unwrap(), Value::Null);
+        assert_eq!(
+            eval(serde_json::json!(["gzip/decompress", BROTLI_CLI, 1024])).unwrap(),
+            Value::Null
+        );
+        assert_eq!(
+            eval(serde_json::json!(["brotli/decompress", GZIP_CLI, 1024])).unwrap(),
+            Value::Null
+        );
     }
 
     #[test]
     fn structured_codec_results_keep_plain_bytes_and_failure_codes() {
         for family in ["gzip", "brotli"] {
-            let packed = eval(serde_json::json!([format!("{family}/compress"), "aGVsbG8="])).unwrap();
-            let structured = eval(serde_json::json!([format!("{family}/compress"), "aGVsbG8=", { "result": true }])).unwrap();
+            let packed = eval(serde_json::json!([
+                format!("{family}/compress"),
+                "aGVsbG8="
+            ]))
+            .unwrap();
+            let structured = eval(
+                serde_json::json!([format!("{family}/compress"), "aGVsbG8=", { "result": true }]),
+            )
+            .unwrap();
             assert_eq!(structured.as_object().unwrap().get("data"), Some(&packed));
-            let refused = eval(serde_json::json!([format!("{family}/decompress"), packed, 4, { "result": true }])).unwrap();
-            assert_eq!(refused.as_object().unwrap().get("ok"), Some(&Value::Bool(false)));
-            assert_eq!(refused.as_object().unwrap().get("code"), Some(&Value::string("output-limit")));
+            let refused = eval(
+                serde_json::json!([format!("{family}/decompress"), packed, 4, { "result": true }]),
+            )
+            .unwrap();
+            assert_eq!(
+                refused.as_object().unwrap().get("ok"),
+                Some(&Value::Bool(false))
+            );
+            assert_eq!(
+                refused.as_object().unwrap().get("code"),
+                Some(&Value::string("output-limit"))
+            );
             assert_eq!(refused.as_object().unwrap().get("data"), Some(&Value::Null));
         }
         for call in [
@@ -547,8 +718,13 @@ mod tests {
             serde_json::json!(["brotli/compress", "", { "window": 9 }]),
             serde_json::json!(["gzip/compress", "", { "unknown": 1 }]),
             serde_json::json!(["gzip/compress", "%%"]),
-        ] { assert_eq!(eval(call).unwrap(), Value::Null); }
-        assert!(eval(serde_json::json!(["gzip/decompress", GZIP_CLI, 100, { "result": "true" }])).is_err());
+        ] {
+            assert_eq!(eval(call).unwrap(), Value::Null);
+        }
+        assert!(
+            eval(serde_json::json!(["gzip/decompress", GZIP_CLI, 100, { "result": "true" }]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -581,10 +757,20 @@ mod tests {
             (1.0, 2.5),
         ] {
             assert_eq!(
-                eval(serde_json::json!(["hash/pbkdf2", pw, salt, iterations, length])).unwrap(),
+                eval(serde_json::json!([
+                    "hash/pbkdf2",
+                    pw,
+                    salt,
+                    iterations,
+                    length
+                ]))
+                .unwrap(),
                 Value::Null
             );
         }
-        assert_eq!(eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).unwrap(), Value::Null);
+        assert_eq!(
+            eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).unwrap(),
+            Value::Null
+        );
     }
 }

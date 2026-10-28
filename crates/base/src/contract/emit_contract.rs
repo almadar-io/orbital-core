@@ -88,7 +88,7 @@ pub enum CallVariant<'a> {
 /// never the row.
 pub const PERSIST_DELETE_FIELDS: &[&str] = &["id", "deleted"];
 
-/// `fetch` / `ref` wrap their rows: authors read `?data`, and `totalCount` is
+/// `fetch` wraps its rows: authors read `?data`, and `totalCount` is
 /// the pre-pagination count so a paginating consumer needs no second call.
 pub const FETCH_WRAPPER_FIELDS: &[&str] = &["data", "totalCount"];
 
@@ -628,9 +628,7 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
             CallVariant::PersistAction("batch") => ProducedPayload::Fields(PERSIST_BATCH_FIELDS),
             _ => ProducedPayload::Opaque,
         },
-        // `ref` emits the same wrapper as `fetch` but fires it on `on_change`;
-        // see `success_emit_key`.
-        "fetch" | "ref" => ProducedPayload::Fields(FETCH_WRAPPER_FIELDS),
+        "fetch" => ProducedPayload::Fields(FETCH_WRAPPER_FIELDS),
         "http" => match variant {
             CallVariant::HttpPaginate => ProducedPayload::Shape(HTTP_PAGED_SHAPE),
             CallVariant::HttpPresign => ProducedPayload::Shape(HTTP_PRESIGN_SHAPE),
@@ -715,17 +713,6 @@ pub fn message_payload(operator: &str) -> ProducedPayload {
     match operator {
         "http" => ProducedPayload::Shape(HTTP_STREAM_EVENT_SHAPE),
         _ => ProducedPayload::Opaque,
-    }
-}
-
-/// The bus key an operator fires its success payload on.
-///
-/// `ref` uses `onChange` in both executors, so reading `emit.success` for it
-/// inspects a key the runtime never fires.
-pub fn success_emit_key(operator: &str) -> &'static str {
-    match operator {
-        "ref" => "onChange",
-        _ => "success",
     }
 }
 
@@ -956,13 +943,11 @@ mod tests {
     }
 
     #[test]
-    fn fetch_and_ref_emit_the_data_wrapper_and_ref_uses_on_change() {
+    fn fetch_emits_the_data_wrapper() {
         assert_eq!(
             success_payload("fetch", CallVariant::Plain),
             ProducedPayload::Fields(FETCH_WRAPPER_FIELDS)
         );
-        assert_eq!(success_emit_key("fetch"), "success");
-        assert_eq!(success_emit_key("ref"), "onChange");
     }
 
     /// The defect that started this: `persist create` emits the row flat, so a
@@ -1008,7 +993,6 @@ mod tests {
             success_payload("http", CallVariant::HttpPaginate),
             ProducedPayload::Shape(HTTP_PAGED_SHAPE)
         );
-        assert_eq!(success_emit_key("http"), "success");
         assert_eq!(
             undeclared_reads(&["status", "body"], &success_payload("http", CallVariant::Plain), &[]),
             Vec::<&str>::new()

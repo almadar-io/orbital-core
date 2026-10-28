@@ -64,56 +64,6 @@ impl PrettyPrinter {
                 self.write_expr(ops);
                 self.write(")");
             }
-            OirEffect::Ref {
-                entity_type,
-                id,
-                filter,
-                ..
-            } => {
-                self.write(&format!("ref(\"{}\"", entity_type));
-                if let Some(id_expr) = id {
-                    self.write(", id: ");
-                    self.write_expr(id_expr);
-                }
-                if let Some(f) = filter {
-                    self.write(", filter: ");
-                    self.write_expr(f);
-                }
-                self.write(")");
-            }
-            OirEffect::Deref { entity_type, id } => {
-                self.write(&format!("deref(\"{}\"", entity_type));
-                if let Some(id_expr) = id {
-                    self.write(", ");
-                    self.write_expr(id_expr);
-                }
-                self.write(")");
-            }
-            OirEffect::Swap {
-                entity_type,
-                id,
-                transform,
-            } => {
-                self.write(&format!("swap(\"{}\"", entity_type));
-                self.write(", ");
-                self.write_expr(id);
-                self.write(", ");
-                self.write_expr(transform);
-                self.write(")");
-            }
-            OirEffect::Watch {
-                entity_type,
-                effects,
-            } => {
-                self.write(&format!("watch(\"{}\", [", entity_type));
-                self.write_exprs(effects);
-                self.write("])");
-            }
-            OirEffect::Atomic { effects } => {
-                self.write("atomic([");
-                self.write_exprs(effects);
-                self.write("])");
-            }
             OirEffect::Navigate { path, .. } => {
                 self.write("navigate(");
                 self.write_expr(path);

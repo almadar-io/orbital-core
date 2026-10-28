@@ -134,6 +134,14 @@ mod walk;
 mod convert;
 mod json;
 use walk::*;
+/// A `(list …)` literal marker, stripped; any other array unchanged.
+pub fn strip_literal_list_marker(arr: &[SExpression]) -> &[SExpression] {
+    match arr.first() {
+        Some(SExpression::String(s)) if s == "list" => &arr[1..],
+        _ => arr,
+    }
+}
+
 pub use json::{json_value_leaves, json_value_leaves_mut};
 pub use walk::{
     ConditionalNode, MappedChildren, OperatorLookup, OperatorReturn, SequentialBindings, ValueSlot,

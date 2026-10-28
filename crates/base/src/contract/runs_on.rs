@@ -34,7 +34,6 @@ impl RunsOn {
 /// Every effect operator whose site is not `any`, by registry name.
 pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("access-check", RunsOn::Server),
-    ("atomic", RunsOn::Server),
     ("browser/beacon", RunsOn::Client),
     ("browser/clipboard-read", RunsOn::Client),
     ("browser/clipboard-write", RunsOn::Client),
@@ -86,7 +85,6 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("redis", RunsOn::Server),
     ("render-ui", RunsOn::Client),
     ("send-server", RunsOn::Client),
-    ("swap", RunsOn::Server),
 ];
 
 /// Data effects whose site follows their target entity's residence: the index
@@ -409,7 +407,6 @@ fn collect_call_heads(value: &serde_json::Value, heads: &mut std::collections::B
 /// Registry name of an IR effect (its `kind()` except where the IR spells it differently).
 pub fn effect_operator(effect: &OirEffect) -> &'static str {
     match effect.kind() {
-        "swap" => "swap",
         "set-dynamic" => "set",
         kind => kind,
     }
@@ -500,7 +497,7 @@ mod tests {
     #[test]
     fn unlisted_effects_and_non_effects_run_anywhere() {
         for op in [
-            "emit", "set", "ref", "watch", "spawn", "log", "math/ln", "no/such",
+            "emit", "set", "spawn", "log", "math/ln", "no/such",
         ] {
             assert_eq!(runs_on(op), RunsOn::Any, "{op}");
         }
@@ -757,14 +754,7 @@ mod tests {
 
     #[test]
     fn ir_spellings_map_to_registry_names() {
-        use crate::ir::expr::OirExpr;
-        let swap = OirEffect::Swap {
-            entity_type: "Task".into(),
-            id: OirExpr::string("t1"),
-            transform: OirExpr::number(1.0),
-        };
-        assert_eq!(effect_operator(&swap), "swap");
-        assert_eq!(effect_runs_on(&swap), RunsOn::Server);
+        assert_eq!(effect_operator(&OirEffect::fetch("Task")), "fetch");
         assert_eq!(effect_runs_on(&OirEffect::fetch("Task")), RunsOn::Server);
         assert_eq!(effect_runs_on(&OirEffect::emit("X")), RunsOn::Any);
     }

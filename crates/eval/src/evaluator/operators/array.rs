@@ -46,8 +46,14 @@ fn numbers_of(
 /// params and runs its body where it is written, a value that is a lambda binds its own, and any other expression is
 /// a raw body run with `@item`/`@index` bound. Reading it once spares every element a copy of the body.
 pub enum Callback<'a> {
-    Literal { params: Vec<&'a Shared<String>>, body: &'a SExpression },
-    Lambda { params: Vec<String>, body: Arc<SExpression> },
+    Literal {
+        params: Vec<&'a Shared<String>>,
+        body: &'a SExpression,
+    },
+    Lambda {
+        params: Vec<String>,
+        body: Arc<SExpression>,
+    },
     Raw(&'a SExpression),
 }
 
@@ -69,7 +75,10 @@ impl<'a> Callback<'a> {
                     _ => None,
                 };
                 if let Some(params) = params {
-                    return Callback::Literal { params, body: &items[2] };
+                    return Callback::Literal {
+                        params,
+                        body: &items[2],
+                    };
                 }
             }
         }
@@ -88,12 +97,18 @@ impl<'a> Callback<'a> {
             child.set_local_shared(crate::evaluator::LocalName::Fixed("item"), Arc::clone(item));
         }
         if let Some(index) = values.get(1) {
-            child.set_local_shared(crate::evaluator::LocalName::Fixed("index"), Arc::clone(index));
+            child.set_local_shared(
+                crate::evaluator::LocalName::Fixed("index"),
+                Arc::clone(index),
+            );
         }
         match self {
             Callback::Literal { params, body } => {
                 for (param, value) in params.iter().zip(&values) {
-                    child.set_local_shared(crate::evaluator::LocalName::Shared((*param).clone()), Arc::clone(value));
+                    child.set_local_shared(
+                        crate::evaluator::LocalName::Shared((*param).clone()),
+                        Arc::clone(value),
+                    );
                 }
                 eval_expr(body, &child)
             }
@@ -110,7 +125,11 @@ impl<'a> Callback<'a> {
 
 /// Run a higher-order operator's callback on one element, read afresh: an operator that applies it to many elements
 /// reads it once with [`Callback::of`].
-pub fn apply_callback(callable: &SExpression, values: Vec<Value>, ctx: &BindingContext) -> EvalResult {
+pub fn apply_callback(
+    callable: &SExpression,
+    values: Vec<Value>,
+    ctx: &BindingContext,
+) -> EvalResult {
     Callback::of(callable, ctx).apply(values, ctx)
 }
 
@@ -161,7 +180,8 @@ impl Operator for CountOp {
                 let mut count = 0usize;
                 let callback = Callback::of(predicate, ctx);
                 for (i, item) in arr.iter().enumerate() {
-                    if callback.apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                    if callback
+                        .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
                         .is_truthy()
                     {
                         count += 1;
@@ -313,7 +333,10 @@ impl Operator for FilterOp {
                 .filter_map(|(i, item)| {
                     let mut child_ctx = ctx.child();
                     child_ctx.set_local(crate::evaluator::LocalName::Fixed("item"), item.clone());
-                    child_ctx.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(i as f64));
+                    child_ctx.set_local(
+                        crate::evaluator::LocalName::Fixed("index"),
+                        Value::Number(i as f64),
+                    );
                     if !params.is_empty() {
                         child_ctx.set_local(&params[0], item.clone());
                     }
@@ -337,7 +360,10 @@ impl Operator for FilterOp {
             .enumerate()
             .filter_map(|(i, item)| {
                 let mut child_ctx = ctx.with_item(item.clone());
-                child_ctx.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(i as f64));
+                child_ctx.set_local(
+                    crate::evaluator::LocalName::Fixed("index"),
+                    Value::Number(i as f64),
+                );
                 match eval_expr(predicate, &child_ctx) {
                     Ok(v) if v.is_truthy() => Some(Ok(item)),
                     Ok(_) => None,
@@ -361,7 +387,10 @@ impl Operator for FindOp {
 
         let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if callback.apply(vec![item.clone(), Value::Number(i as f64)], ctx)?.is_truthy() {
+            if callback
+                .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                .is_truthy()
+            {
                 return Ok(item);
             }
         }
@@ -583,7 +612,10 @@ impl Operator for ArrayEveryOp {
 
         let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if !callback.apply(vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if !callback
+                .apply(vec![item, Value::Number(i as f64)], ctx)?
+                .is_truthy()
+            {
                 return Ok(Value::Bool(false));
             }
         }
@@ -604,7 +636,10 @@ impl Operator for ArraySomeOp {
 
         let callback = Callback::of(predicate, ctx);
         for (i, item) in array.into_iter().enumerate() {
-            if callback.apply(vec![item, Value::Number(i as f64)], ctx)?.is_truthy() {
+            if callback
+                .apply(vec![item, Value::Number(i as f64)], ctx)?
+                .is_truthy()
+            {
                 return Ok(Value::Bool(true));
             }
         }
@@ -1078,16 +1113,24 @@ fn read_once(body: &SExpression, name: &str) -> bool {
                 let token = format!("@{name}");
                 let found = text
                     .match_indices(&token)
-                    .filter(|(i, _)| !text[i + token.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_'))
+                    .filter(|(i, _)| {
+                        !text[i + token.len()..]
+                            .starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                    })
                     .count();
                 *reads += found;
                 !(in_lambda && found > 0)
             }
             SExpression::Array(items) => {
-                let lambda = matches!(items.first(), Some(SExpression::String(head)) if head == "fn");
-                items.iter().all(|item| walk(item, name, in_lambda || lambda, reads))
+                let lambda =
+                    matches!(items.first(), Some(SExpression::String(head)) if head == "fn");
+                items
+                    .iter()
+                    .all(|item| walk(item, name, in_lambda || lambda, reads))
             }
-            SExpression::Object(fields) => fields.values().all(|value| walk(value, name, in_lambda, reads)),
+            SExpression::Object(fields) => fields
+                .values()
+                .all(|value| walk(value, name, in_lambda, reads)),
             _ => true,
         }
     }
@@ -1423,13 +1466,22 @@ mod sort_tests {
         let mixed = json!([2, "a", true, 1, null, [1], "B", {"x": 1}, false]);
         let message = "Evaluation error: Type mismatch: expected number, got string";
         assert_eq!(sort(json!(["array/sort", mixed])).unwrap_err(), message);
-        assert_eq!(sort(json!(["array/sort", mixed, null, "desc"])).unwrap_err(), message);
+        assert_eq!(
+            sort(json!(["array/sort", mixed, null, "desc"])).unwrap_err(),
+            message
+        );
     }
 
     #[test]
     fn sort_places_null_first_within_one_element_type() {
-        assert_eq!(sort(json!(["array/sort", [2, null, 1]])).unwrap(), json!([null, 1.0, 2.0]));
-        assert_eq!(sort(json!(["array/sort", [false, null, true]])).unwrap(), json!([null, false, true]));
+        assert_eq!(
+            sort(json!(["array/sort", [2, null, 1]])).unwrap(),
+            json!([null, 1.0, 2.0])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [false, null, true]])).unwrap(),
+            json!([null, false, true])
+        );
     }
 
     #[test]

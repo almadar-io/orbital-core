@@ -13,7 +13,9 @@ pub fn is_refused_key(key: &str) -> bool {
 /// [`is_refused_key`] over every key of a value, at any depth.
 pub fn has_refused_key_in(value: &Value) -> bool {
     match value {
-        Value::Object(map) => map.iter().any(|(key, inner)| is_refused_key(key) || has_refused_key_in(inner)),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, inner)| is_refused_key(key) || has_refused_key_in(inner)),
         Value::Array(items) => items.iter().any(has_refused_key_in),
         _ => false,
     }

@@ -441,17 +441,12 @@ fn server_effect_kind_is_kebab_case() {
 }
 
 #[test]
-fn server_effect_kind_swap_is_spelled_like_the_effect_head() {
-    assert_eq!(
-        serde_json::to_value(ServerEffectKind::Swap).unwrap(),
-        serde_json::json!("swap")
-    );
+fn server_effect_kind_is_spelled_like_the_effect_head() {
     assert_eq!(
         serde_json::to_value(ServerEffectKind::FetchStream).unwrap(),
         serde_json::json!("fetch-stream")
     );
-    // The retired spelling (renamed 2026-09-25: `!` is the lexer's required marker).
-    assert!(serde_json::from_value::<ServerEffectKind>(serde_json::json!("swap!")).is_err());
+    assert!(serde_json::from_value::<ServerEffectKind>(serde_json::json!("swap")).is_err());
 }
 
 #[test]

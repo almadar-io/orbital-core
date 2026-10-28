@@ -346,13 +346,7 @@ pub(super) fn target_entity(td: &TraitDefinition, expr: &SExpression) -> Option<
 /// The op tuples of a batch, or `None` when its ops are an expression (or a literal element is not an op tuple).
 pub(super) fn batch_tuples(ops: &SExpression) -> Option<Vec<&[SExpression]>> {
     match classify_ops(ops) {
-        BatchOps::Literal(elements) => elements
-            .iter()
-            .map(|e| match e {
-                SExpression::Array(items) if is_op_tuple(e) => Some(items.as_slice()),
-                _ => None,
-            })
-            .collect(),
+        BatchOps::Literal(elements) => elements.iter().map(op_tuple).collect(),
         BatchOps::Mapped(tuple) => Some(vec![tuple]),
         BatchOps::Expression => None,
     }

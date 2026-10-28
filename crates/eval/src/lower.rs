@@ -46,13 +46,7 @@ pub fn recognized_call_head(sexpr: &SExpression) -> Option<&str> {
     .then_some(op)
 }
 
-/// A `(list …)` literal marker, stripped; any other array unchanged.
-pub fn strip_literal_list_marker(arr: &[SExpression]) -> &[SExpression] {
-    match arr.first() {
-        Some(SExpression::String(s)) if s == "list" => &arr[1..],
-        _ => arr,
-    }
-}
+pub use orbital_core_base::schema::sexpr::strip_literal_list_marker;
 
 /// A callback written as a raw body (`(array/filter xs (== @item.v 1))`, no `(fn …)`) is
 /// evaluated with the operator's raw-callback names bound (orbital-core
@@ -418,13 +412,6 @@ impl NodeLowerer {
             "oauth-authorize" => self.resolve_oauth_authorize_effect(args),
             "oauth-connection-status" => self.resolve_oauth_connection_effect(args, true),
             "oauth-connection-forget" => self.resolve_oauth_connection_effect(args, false),
-
-            // Resource operators
-            "ref" => self.resolve_ref_effect(args),
-            "deref" => self.resolve_deref_effect(args),
-            "swap" => self.resolve_swap_effect(args),
-            "watch" => self.resolve_watch_effect(args),
-            "atomic" => self.resolve_atomic_effect(args),
 
             // OS trigger effects (server-side only)
             //
@@ -835,7 +822,6 @@ impl ExprLowerer {
 mod data_effects;
 mod ui_effects;
 mod io_effects;
-mod refs;
 mod options;
 
 #[cfg(test)]

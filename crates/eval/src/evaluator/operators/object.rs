@@ -196,7 +196,10 @@ impl Operator for ObjectDeepMergeOp {
                     (Some(Value::Object(base_obj)), Value::Object(overlay_obj)) => {
                         result.insert(
                             key,
-                            Value::object(deep_merge((**base_obj).clone(), (**overlay_obj).clone())?),
+                            Value::object(deep_merge(
+                                (**base_obj).clone(),
+                                (**overlay_obj).clone(),
+                            )?),
                         );
                     }
                     _ => {
@@ -375,7 +378,8 @@ impl Operator for ObjectFilterOp {
         let mut result = ValueMap::default();
         let callback = super::array::Callback::of(&args[1], ctx);
         for (key, value) in source {
-            let should_include = callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
+            let should_include =
+                callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
             if should_include.is_truthy() {
                 result.insert(key, value);
             }

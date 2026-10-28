@@ -584,6 +584,12 @@ pub fn is_known_operator(name: &str) -> bool {
     operators().contains_key(name)
 }
 
+/// Whether bare `name` is the basename of a namespaced operator (`delete` of `kv/delete`, `join` of `str/join`):
+/// a list headed by it reads like a call with its namespace dropped.
+pub fn names_operator_basename(name: &str) -> bool {
+    !name.contains('/') && operators().keys().any(|op| op.rsplit_once('/').is_some_and(|(_, base)| base == name))
+}
+
 /// Look up the metadata for an operator by name.
 pub fn get_operator(name: &str) -> Option<&'static EmbeddedOperator> {
     operators().get(name)

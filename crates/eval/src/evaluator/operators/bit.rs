@@ -251,7 +251,10 @@ mod tests {
                 r#"["bit/not", null]"#,
                 "bit/not: invalid operand null: expected a whole number 0..4294967295",
             ),
-            (r#"["bit/xor", "1", 0]"#, "Type mismatch: expected number, got string"),
+            (
+                r#"["bit/xor", "1", 0]"#,
+                "Type mismatch: expected number, got string",
+            ),
         ];
         for (form, message) in cases {
             match eval(form) {

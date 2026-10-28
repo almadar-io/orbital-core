@@ -9,19 +9,18 @@ use super::*;
 
 use super::string;
 
-mod time;
-mod validation;
+mod composition;
 mod formatting;
 mod lambda;
-mod composition;
-use time::*;
+mod time;
+mod validation;
 use composition::*;
 pub use composition::{
-    BehaviorCompositionStubOp, FormatCreditCardOp, TimeEndOfOp, TimeRelativeOp,
-    TimeStartOfOp,
+    BehaviorCompositionStubOp, FormatCreditCardOp, TimeEndOfOp, TimeRelativeOp, TimeStartOfOp,
 };
 pub use formatting::{FormatOrdinalOp, FormatPluralOp};
 pub use lambda::{BehaviorApplyOp, BehaviorRefOp, FnOp, QuasiquoteOp, QuoteOp, UnquoteOp};
+use time::*;
 pub use time::{
     TimeAddOp, TimeDayOp, TimeDiffOp, TimeDurationOp, TimeFormatOp, TimeHourOp, TimeIsAfterOp,
     TimeIsBeforeOp, TimeIsBetweenOp, TimeIsFutureOp, TimeIsPastOp, TimeIsSameOp, TimeIsTodayOp,

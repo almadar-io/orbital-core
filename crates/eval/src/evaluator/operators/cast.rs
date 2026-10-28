@@ -31,16 +31,18 @@ impl Operator for AsOp {
             },
             other => match super::json::run_time_shape(&args[1])? {
                 // A declared shape narrows: the value when it fits, null when it does not (a failable result).
-                Some((shape, declared)) => match super::arg_types::misfit_of_shape(&value, &declared) {
-                    None => Ok(value),
-                    Some((path, actual)) => {
-                        tracing::debug!(
-                            target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
-                            "as: the value is not of the shape {shape}: at `{path}` it is {actual}"
-                        );
-                        Ok(Value::Null)
+                Some((shape, declared)) => {
+                    match super::arg_types::misfit_of_shape(&value, &declared) {
+                        None => Ok(value),
+                        Some((path, actual)) => {
+                            tracing::debug!(
+                                target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                                "as: the value is not of the shape {shape}: at `{path}` it is {actual}"
+                            );
+                            Ok(Value::Null)
+                        }
                     }
-                },
+                }
                 None => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                     "as: unknown target type {other}"
                 )))),
@@ -62,4 +64,3 @@ impl Operator for TypedOp {
         Ok(value)
     }
 }
-

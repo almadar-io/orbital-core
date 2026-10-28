@@ -96,61 +96,14 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
 /// Used by callers (notably `orbital_compiler::phases::resolve`) that need
 /// to disambiguate a Lisp-style call form from a string-array literal in
 /// JSON `.orb` payloads — the only signal at the JSON level is the head
-/// string. Recognises:
-/// - The explicit effect names matched in `parse_effect` above (emit, set,
-///   persist, fetch, call-service, render-ui, navigate, spawn, despawn,
-///   log, notify).
-/// - Namespaced effect ops parsed via `parse_effect`'s `_` arm into
-///   `Effect::Custom`: `agent/*`, `os/*`, and the substrate operator
-///   families (`llm/*`, `memory/*`, `trace/*`, `session/*`,
-///   `workspace/*`) and the named reflection effects
-///   (`behavior/catalog|describe|source`, `program/read|print|eval`).
-///   These don't have explicit arms above but ARE legitimate effect calls;
-///   treat them as operators. `browser/*` device ops are also recognized
-///   here (they lower to dedicated `OirEffect` variants in the compiler).
-///
-/// Keep in sync with `parse_effect`'s explicit arms above and with
-/// `resolve_sexpr_call`'s substrate routing in orbital-compiler.
+/// string. The installed operator table decides: an operator it declares with
+/// side effects or a host, or a substrate operator (`is_substrate_operator`,
+/// which includes the substrate read operators). A name the table does not
+/// declare is not an effect.
 pub fn is_known_effect_name(op: &str) -> bool {
-    if op.starts_with("os/")
-        || OsOp::from_name(op).is_some()
-        || op.starts_with("browser/")
-        || op.starts_with("llm/")
-        || op.starts_with("memory/")
-        || op.starts_with("trace/")
-        || op.starts_with("session/")
-        || op.starts_with("workspace/")
+    crate::language::registry::try_get_operator(op)
+        .is_some_and(|operator| operator.has_side_effects || operator.host.is_some())
         || crate::ir::effects::is_substrate_operator(op)
-        || crate::credential_admin::CredentialAdminOp::from_name(op).is_some()
-    {
-        return true;
-    }
-    matches!(
-        op,
-        "emit"
-            | "set"
-            | "persist"
-            | "fetch"
-            | "call-service"
-            | "http"
-            | "redis"
-            | "postgres"
-            | "cancel-call"
-            | "random-bytes"
-            | "credential-status"
-            | "credential-forget"
-            | "access-check"
-            | "oauth-authorize"
-            | "oauth-connection-status"
-            | "oauth-connection-forget"
-            | "render-ui"
-            | "navigate"
-            | "navigate-back"
-            | "spawn"
-            | "despawn"
-            | "log"
-            | "notify"
-    )
 }
 
 pub(super) fn parse_emit(args: &[SExpression]) -> Option<Effect> {
@@ -184,7 +137,9 @@ pub(super) fn parse_set(args: &[SExpression]) -> Option<Effect> {
 /// literal data token as `id` (C-PERSIST-UPDATE-TRAILING-EMIT-MISPARSED).
 pub fn strip_trailing_emit_options(args: &[SExpression]) -> &[SExpression] {
     match args.last().and_then(|a| a.as_object()) {
-        Some(obj) if obj.contains_key("emit") || obj.contains_key("where") => &args[..args.len() - 1],
+        Some(obj) if obj.contains_key("emit") || obj.contains_key("where") => {
+            &args[..args.len() - 1]
+        }
         _ => args,
     }
 }
@@ -286,39 +241,64 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
     let entity_type = args[0].as_str()?.to_string();
 
     // Parse optional config object
-    let (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit) = if let Some(config) = args.get(1) {
-        let config_value = Value::from(config.clone());
-        if let Some(obj) = config_value.as_object() {
-            let option = |key: &str| obj.get(key).filter(|v| !v.is_null()).cloned();
-            let id = option("id");
-            let filter = obj.get("filter").cloned();
-            let limit = option("limit");
-            let offset = option("offset");
-            let order_by = option("orderBy");
-            let include = obj.get("include").and_then(|v| {
-                v.as_array().map(|arr| {
-                    arr.iter()
-                        .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                        .collect()
-                })
-            });
-            let deliver = match obj.get("deliver").and_then(Value::as_str) {
-                Some("ids") => FetchDeliver::Ids,
-                _ => FetchDeliver::Rows,
-            };
-            let total = match obj.get("total").and_then(Value::as_str) {
-                Some("none") => Some(crate::row_set::RowTotalMode::None),
-                _ => None,
-            };
-            let nearest = option("nearest");
-            let emit = parse_emit_config(&config_value);
-            (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit)
+    let (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit) =
+        if let Some(config) = args.get(1) {
+            let config_value = Value::from(config.clone());
+            if let Some(obj) = config_value.as_object() {
+                let option = |key: &str| obj.get(key).filter(|v| !v.is_null()).cloned();
+                let id = option("id");
+                let filter = obj.get("filter").cloned();
+                let limit = option("limit");
+                let offset = option("offset");
+                let order_by = option("orderBy");
+                let include = obj.get("include").and_then(|v| {
+                    v.as_array().map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                });
+                let deliver = match obj.get("deliver").and_then(Value::as_str) {
+                    Some("ids") => FetchDeliver::Ids,
+                    _ => FetchDeliver::Rows,
+                };
+                let total = match obj.get("total").and_then(Value::as_str) {
+                    Some("none") => Some(crate::row_set::RowTotalMode::None),
+                    _ => None,
+                };
+                let nearest = option("nearest");
+                let emit = parse_emit_config(&config_value);
+                (
+                    id, filter, limit, offset, order_by, include, deliver, total, nearest, emit,
+                )
+            } else {
+                (
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    FetchDeliver::Rows,
+                    None,
+                    None,
+                    None,
+                )
+            }
         } else {
-            (None, None, None, None, None, None, FetchDeliver::Rows, None, None, None)
-        }
-    } else {
-        (None, None, None, None, None, None, FetchDeliver::Rows, None, None, None)
-    };
+            (
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                FetchDeliver::Rows,
+                None,
+                None,
+                None,
+            )
+        };
 
     Some(Effect::Fetch {
         entity_type,
@@ -346,9 +326,9 @@ pub(super) fn parse_call_service(args: &[SExpression]) -> Option<Effect> {
         .map(|e| Value::from(e.clone()))
         .unwrap_or(Value::Null);
     let key = match args.get(3) {
-        Some(SExpression::Object(options)) => options
-            .get("key")
-            .map(|key| Value::from(key.clone())),
+        Some(SExpression::Object(options)) => {
+            options.get("key").map(|key| Value::from(key.clone()))
+        }
         _ => None,
     };
     let emit = args
@@ -534,7 +514,11 @@ pub(super) fn parse_beacon(args: &[SExpression]) -> Option<Effect> {
         key = map.shift_remove("key");
     }
     let options = args.get(2).map(|e| Value::from(e.clone()));
-    if let Some(k) = options.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")) {
+    if let Some(k) = options
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+    {
         key = Some(k.clone());
     }
     let emit = options.as_ref().and_then(parse_emit_config);
@@ -588,7 +572,11 @@ pub(super) fn parse_random_bytes(args: &[SExpression]) -> Option<Effect> {
         return None;
     }
     let trailing = args.get(1).map(|options| Value::from(options.clone()));
-    let key = trailing.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")).cloned();
+    let key = trailing
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .cloned();
     let emit = trailing.as_ref().and_then(parse_emit_config);
     Some(Effect::RandomBytes {
         bytes: Value::from(args[0].clone()),
@@ -623,7 +611,11 @@ pub(super) fn parse_credential_admin(head: &str, args: &[SExpression]) -> Option
     let emit = args
         .get(first)
         .and_then(|options| parse_emit_config(&Value::from(options.clone())));
-    let request = if op.takes_request() { Value::from(args[0].clone()) } else { Value::Null };
+    let request = if op.takes_request() {
+        Value::from(args[0].clone())
+    } else {
+        Value::Null
+    };
     Some(Effect::CredentialAdmin { op, request, emit })
 }
 
@@ -635,7 +627,10 @@ pub(super) fn parse_access_check(args: &[SExpression]) -> Option<Effect> {
     let emit = args
         .get(1)
         .and_then(|options| parse_emit_config(&Value::from(options.clone())));
-    Some(Effect::AccessCheck { request: Value::from(args[0].clone()), emit })
+    Some(Effect::AccessCheck {
+        request: Value::from(args[0].clone()),
+        emit,
+    })
 }
 
 /// `["oauth-authorize", client, options, { key?, emit? }?]`.
@@ -644,7 +639,11 @@ pub(super) fn parse_oauth_authorize(args: &[SExpression]) -> Option<Effect> {
         return None;
     }
     let trailing = args.get(2).map(|options| Value::from(options.clone()));
-    let key = trailing.as_ref().and_then(|o| o.as_object()).and_then(|o| o.get("key")).cloned();
+    let key = trailing
+        .as_ref()
+        .and_then(|o| o.as_object())
+        .and_then(|o| o.get("key"))
+        .cloned();
     let emit = trailing.as_ref().and_then(parse_emit_config);
     Some(Effect::OAuthAuthorize {
         client: Value::from(args[0].clone()),

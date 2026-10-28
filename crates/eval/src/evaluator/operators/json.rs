@@ -63,20 +63,30 @@ impl Operator for JsonParseOp {
 
 /// The shape a `json/parse` names, with the type a run-time check reads, when the evaluator knows it: a declared shape
 /// recorded as JSON (`orb resolve` writes a program alias as its type with the types it names) or a built-in type name.
-pub(super) fn run_time_shape(arg: &SExpression) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
+pub(super) fn run_time_shape(
+    arg: &SExpression,
+) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
     let SExpression::String(text) = arg else {
         return Ok(None);
     };
     if text.starts_with('{') {
         let declared = super::arg_types::declared_shape(arg)?;
-        let shown = declared.name.clone().unwrap_or_else(|| super::arg_types::declared_text(&declared.ty));
+        let shown = declared
+            .name
+            .clone()
+            .unwrap_or_else(|| super::arg_types::declared_text(&declared.ty));
         return Ok(Some((shown, declared)));
     }
     Ok(match parse_compat_type(text) {
         CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
         CompatType::Ty(declared) => Some((
             text.clone().into_inner(),
-            std::rc::Rc::new(DeclaredShape { version: None, name: None, ty: declared, named: Default::default() }),
+            std::rc::Rc::new(DeclaredShape {
+                version: None,
+                name: None,
+                ty: declared,
+                named: Default::default(),
+            }),
         )),
         _ => None,
     })
@@ -124,14 +134,27 @@ impl Operator for JsonNodesOp {
     }
 }
 
-/// `(tree/index value heads)`: every call form in `value` whose head is listed in `heads`, grouped by head in `heads`
-/// order, each with its path from `value`; one pre-order walk that continues inside a hit.
+/// `(tree/index value heads [options])`: every call form in `value` whose head is listed in `heads`, grouped by head in
+/// `heads` order, each with its path from `value` and its position `at` in the walk; one pre-order walk that continues
+/// inside a hit. `options.prefixes` also collects every string leaf starting with a listed prefix, under the first
+/// listed prefix that matches; a string that heads a call form is not a leaf.
 pub struct TreeIndexOp;
 impl Operator for TreeIndexOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "tree/index", == 2);
+        require_arity!(args, "tree/index", >= 2);
+        if args.len() > 3 {
+            return Err(OrbitalError::Eval(EvalError::ArityMismatch {
+                operator: "tree/index".to_string(),
+                expected: 3,
+                actual: args.len(),
+            }));
+        }
         let value = eval_expr(&args[0], ctx)?;
-        let invalid = || OrbitalError::Eval(EvalError::InvalidArgument("tree/index: heads must be a list of strings".to_string()));
+        let invalid = || {
+            OrbitalError::Eval(EvalError::InvalidArgument(
+                "tree/index: heads must be a list of strings".to_string(),
+            ))
+        };
         let Value::Array(listed) = eval_expr(&args[1], ctx)? else {
             return Err(invalid());
         };
@@ -144,32 +167,102 @@ impl Operator for TreeIndexOp {
                 found.push((head.to_string(), Vec::new()));
             }
         }
-        let mut stack = vec![(value, String::new())];
-        while let Some((node, path)) = stack.pop() {
+        let head_count = found.len();
+        let mut prefixes: Vec<String> = Vec::new();
+        if let Some(options) = args.get(2) {
+            let option_error = |what: String| {
+                OrbitalError::Eval(EvalError::InvalidArgument(format!("tree/index: {what}")))
+            };
+            let options = eval_expr(options, ctx)?;
+            let Value::Object(map) = &options else {
+                return Err(option_error(format!(
+                    "options must be a record, not {}",
+                    options.type_name()
+                )));
+            };
+            match map.get("prefixes") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(items)) => {
+                    for item in items.iter() {
+                        let Value::String(prefix) = item else {
+                            return Err(option_error(format!(
+                                "options.prefixes must be a list of strings, found {}",
+                                item.type_name()
+                            )));
+                        };
+                        if !prefixes.iter().any(|listed| listed == prefix.as_str()) {
+                            prefixes.push(prefix.to_string());
+                            if !found.iter().any(|(listed, _)| listed == prefix.as_str()) {
+                                found.push((prefix.to_string(), Vec::new()));
+                            }
+                        }
+                    }
+                }
+                Some(other) => {
+                    return Err(option_error(format!(
+                        "options.prefixes must be a list of strings, not {}",
+                        other.type_name()
+                    )))
+                }
+            }
+        }
+        let hit = |path: &str, node: &Value, at: usize| {
+            let mut hit = ValueMap::new();
+            hit.insert("path".to_string(), Value::string(path.to_string()));
+            hit.insert("node".to_string(), node.clone());
+            hit.insert("at".to_string(), Value::Number(at as f64));
+            Value::object(hit)
+        };
+        let mut visited = 0usize;
+        let mut stack = vec![(value, String::new(), false)];
+        while let Some((node, path, is_head)) = stack.pop() {
+            let at = visited;
+            visited += 1;
             match &node {
                 Value::Array(items) => {
                     if let Some(Value::String(head)) = items.first() {
-                        if let Some((_, list)) = found.iter_mut().find(|(listed, _)| listed == head.as_str()) {
-                            let mut hit = ValueMap::new();
-                            hit.insert("path".to_string(), Value::string(path.clone()));
-                            hit.insert("node".to_string(), node.clone());
-                            list.push(Value::object(hit));
+                        if let Some((_, list)) = found[..head_count]
+                            .iter_mut()
+                            .find(|(listed, _)| listed == head.as_str())
+                        {
+                            list.push(hit(&path, &node, at));
                         }
                     }
                     for (i, item) in items.iter().enumerate().rev() {
-                        stack.push((item.clone(), format!("{path}[{i}]")));
+                        stack.push((item.clone(), format!("{path}[{i}]"), i == 0));
                     }
                 }
                 Value::Object(map) => {
                     for (key, item) in map.iter().rev() {
-                        let at = if path.is_empty() { key.to_string() } else { format!("{path}.{key}") };
-                        stack.push((item.clone(), at));
+                        let child = if path.is_empty() {
+                            key.to_string()
+                        } else {
+                            format!("{path}.{key}")
+                        };
+                        stack.push((item.clone(), child, false));
+                    }
+                }
+                Value::String(text) if !is_head => {
+                    if let Some(prefix) = prefixes
+                        .iter()
+                        .find(|prefix| text.starts_with(prefix.as_str()))
+                    {
+                        if let Some((_, list)) =
+                            found.iter_mut().find(|(listed, _)| listed == prefix)
+                        {
+                            list.push(hit(&path, &node, at));
+                        }
                     }
                 }
                 _ => {}
             }
         }
-        Ok(Value::object(found.into_iter().map(|(head, list)| (head, Value::array(list))).collect::<ValueMap>()))
+        Ok(Value::object(
+            found
+                .into_iter()
+                .map(|(head, list)| (head, Value::array(list)))
+                .collect::<ValueMap>(),
+        ))
     }
 }
 
@@ -183,9 +276,15 @@ impl Operator for JsonStringifyOp {
                 Value::Object(map) => match map.get(key) {
                     None | Some(Value::Null) => Ok(false),
                     Some(Value::Bool(b)) => Ok(*b),
-                    Some(other) => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("json/stringify: options.{key} must be a boolean, not {}", other.type_name())))),
+                    Some(other) => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                        "json/stringify: options.{key} must be a boolean, not {}",
+                        other.type_name()
+                    )))),
                 },
-                other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!("json/stringify: options must be a record, not {}", other.type_name())))),
+                other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                    "json/stringify: options must be a record, not {}",
+                    other.type_name()
+                )))),
             }
         };
         let (pretty, sorted) = match args.get(1) {
@@ -196,7 +295,11 @@ impl Operator for JsonStringifyOp {
             }
         };
         let json = value_to_json(&val);
-        let json = if sorted { crate::util::canonical_json::canonical_json(&json) } else { json };
+        let json = if sorted {
+            crate::util::canonical_json::canonical_json(&json)
+        } else {
+            json
+        };
         Ok(Value::String(if pretty {
             orbital_core_base::json_value::js_json_string_pretty(&json).into()
         } else {

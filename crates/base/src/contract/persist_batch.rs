@@ -36,19 +36,22 @@ pub enum BatchOps<'a> {
     Expression,
 }
 
+/// An array's items, a `(list …)` data marker looked through.
 fn as_items(expr: &SExpression) -> Option<&[SExpression]> {
     match expr {
-        SExpression::Array(items) => Some(items.as_slice()),
+        SExpression::Array(items) => Some(crate::schema::sexpr::strip_literal_list_marker(items)),
         _ => None,
     }
 }
 
+/// The items of an op tuple (an array whose head is a batch action), or `None` for an expression.
+pub fn op_tuple(expr: &SExpression) -> Option<&[SExpression]> {
+    as_items(expr).filter(|items| items.first().and_then(|h| h.as_str()).is_some_and(|h| BATCH_ACTIONS.contains(&h)))
+}
+
 /// An array whose head is a batch action is an op tuple, not an expression.
 pub fn is_op_tuple(expr: &SExpression) -> bool {
-    as_items(expr)
-        .and_then(|items| items.first())
-        .and_then(|h| h.as_str())
-        .is_some_and(|h| BATCH_ACTIONS.contains(&h))
+    op_tuple(expr).is_some()
 }
 
 /// The lambda body of `["fn", <params>, <body>]`.

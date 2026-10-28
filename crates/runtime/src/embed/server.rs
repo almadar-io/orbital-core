@@ -879,7 +879,8 @@ impl EmbeddedServer {
         Ok(item.delivered_to(client_id, |item| viewer.is_null() || self.kernel.live_item_visible_to(item, &viewer)))
     }
 
-    /// The last settled dispatch's ordered items; read before another dispatch starts.
+    /// The last settled dispatch's ordered event and effect items; read before another dispatch starts. The response
+    /// crosses once, in the dispatch's own answer: the stream carries no `complete`.
     pub fn dispatch_stream_json(&self) -> Result<String, String> {
         serde_json::to_string(&*self.dispatch_stream.lock()).map_err(|e| format!("serialize: {e}"))
     }
@@ -901,12 +902,8 @@ impl EmbeddedServer {
         serde_json::to_string(&next).map_err(|e| format!("serialize: {e}"))
     }
 
-    /// The wire form of a dispatch that just started; one that finished at once leaves its stream complete.
+    /// The wire form of a dispatch that just started.
     fn started_wire(&self, progress: &ServerProgress) -> ServerProgressWire {
-        if let ServerProgress::Done(response) = progress {
-            let mut items = self.dispatch_stream.lock();
-            if items.is_empty() { items.push(crate::effects::live_push::StreamItem::complete(response.clone())); }
-        }
         ServerProgressWire::from(progress)
     }
 
@@ -975,7 +972,7 @@ impl EmbeddedServer {
                     response.entity_by_trait.get_or_insert_with(Default::default).extend(rows);
                 }
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
-                *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes, &response);
+                *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes);
                 Ok(ServerProgress::Done(response))
             }
             Progress::Await {

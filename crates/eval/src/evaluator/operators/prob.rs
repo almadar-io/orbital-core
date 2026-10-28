@@ -205,7 +205,10 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
 
 /// Rejection sampling: `n` runs of `model` over a private copy of the entity, keeping the `query` of each run that
 /// no `prob/condition` rejected and `evidence` accepts.
-fn rejection_samples(args: &[SExpression], ctx: &BindingContext) -> Result<(Vec<Value>, f64), OrbitalError> {
+fn rejection_samples(
+    args: &[SExpression],
+    ctx: &BindingContext,
+) -> Result<(Vec<Value>, f64), OrbitalError> {
     let n = number(&args[3], ctx)?;
     let outer = ctx.prob().take_rejected();
     let mut accepted = Vec::new();
@@ -261,10 +264,19 @@ fn mean_of(samples: &[f64]) -> f64 {
     samples.iter().sum::<f64>() / samples.len() as f64
 }
 
-prob_op!(ProbExpectedValueOp, "prob/expected-value", 1, |args, ctx| {
-    let samples = numbers(eval_expr(&args[0], ctx)?)?;
-    Ok(Value::Number(if samples.is_empty() { 0.0 } else { mean_of(&samples) }))
-});
+prob_op!(
+    ProbExpectedValueOp,
+    "prob/expected-value",
+    1,
+    |args, ctx| {
+        let samples = numbers(eval_expr(&args[0], ctx)?)?;
+        Ok(Value::Number(if samples.is_empty() {
+            0.0
+        } else {
+            mean_of(&samples)
+        }))
+    }
+);
 
 prob_op!(ProbVarianceOp, "prob/variance", 1, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
@@ -303,7 +315,11 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     }
     out.insert(
         "binEdges".to_string(),
-        Value::Array((0..=bin_count).map(|i| Value::Number(min + i as f64 * width)).collect()),
+        Value::Array(
+            (0..=bin_count)
+                .map(|i| Value::Number(min + i as f64 * width))
+                .collect(),
+        ),
     );
     out.insert(
         "counts".to_string(),
@@ -333,24 +349,34 @@ prob_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
         return Ok(Value::Number(samples[lo]));
     }
     let frac = idx - lo as f64;
-    Ok(Value::Number(samples[lo] * (1.0 - frac) + samples[hi] * frac))
+    Ok(Value::Number(
+        samples[lo] * (1.0 - frac) + samples[hi] * frac,
+    ))
 });
 
-prob_op!(ProbCredibleIntervalOp, "prob/credible-interval", 2, |args, ctx| {
-    let samples = numbers(eval_expr(&args[0], ctx)?)?;
-    let alpha = number(&args[1], ctx)?;
-    if !(0.0..=1.0).contains(&alpha) {
-        return Ok(Value::Null);
+prob_op!(
+    ProbCredibleIntervalOp,
+    "prob/credible-interval",
+    2,
+    |args, ctx| {
+        let samples = numbers(eval_expr(&args[0], ctx)?)?;
+        let alpha = number(&args[1], ctx)?;
+        if !(0.0..=1.0).contains(&alpha) {
+            return Ok(Value::Null);
+        }
+        if samples.is_empty() {
+            return Ok(Value::array(vec![Value::Number(0.0), Value::Number(0.0)]));
+        }
+        let samples = sorted(samples);
+        let last = (samples.len() - 1) as f64;
+        let lo = ((alpha / 2.0) * last).floor() as usize;
+        let hi = ((1.0 - alpha / 2.0) * last).ceil() as usize;
+        Ok(Value::array(vec![
+            Value::Number(samples[lo]),
+            Value::Number(samples[hi]),
+        ]))
     }
-    if samples.is_empty() {
-        return Ok(Value::array(vec![Value::Number(0.0), Value::Number(0.0)]));
-    }
-    let samples = sorted(samples);
-    let last = (samples.len() - 1) as f64;
-    let lo = ((alpha / 2.0) * last).floor() as usize;
-    let hi = ((1.0 - alpha / 2.0) * last).ceil() as usize;
-    Ok(Value::array(vec![Value::Number(samples[lo]), Value::Number(samples[hi])]))
-});
+);
 
 #[cfg(test)]
 mod tests {
@@ -376,7 +402,10 @@ mod tests {
         .unwrap()
     }
 
-    fn run(expr: &serde_json::Value, entity: &Option<serde_json::Value>) -> Result<serde_json::Value, String> {
+    fn run(
+        expr: &serde_json::Value,
+        entity: &Option<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
         let mut builder = BindingContextBuilder::new();
         if let Some(entity) = entity {
             builder = builder.entity(serde_json::from_value::<Value>(entity.clone()).unwrap());
@@ -459,7 +488,12 @@ mod tests {
                 asked.fetch_add(1, Ordering::SeqCst);
                 Ok(seed)
             }));
-            let expr = serde_json::from_value(serde_json::json!(["prob/sample", 3, ["prob/uniform", 0, 1]])).unwrap();
+            let expr = serde_json::from_value(serde_json::json!([
+                "prob/sample",
+                3,
+                ["prob/uniform", 0, 1]
+            ]))
+            .unwrap();
             serde_json::to_value(Evaluator::new().evaluate(&expr, &ctx).unwrap()).unwrap()
         };
         let a = draw(7);
@@ -468,8 +502,16 @@ mod tests {
         assert_ne!(a, draw(8), "a different answer draws different values");
         let mut ctx = BindingContextBuilder::new().build();
         ctx.set_prob_entropy(EntropySource::new(|| Err("must not be asked".to_string())));
-        let seeded = serde_json::from_value(serde_json::json!(["do", ["prob/seed", 42], ["prob/uniform", 0, 1]])).unwrap();
-        assert!(Evaluator::new().evaluate(&seeded, &ctx).is_ok(), "a prob/seed never asks the source");
+        let seeded = serde_json::from_value(serde_json::json!([
+            "do",
+            ["prob/seed", 42],
+            ["prob/uniform", 0, 1]
+        ]))
+        .unwrap();
+        assert!(
+            Evaluator::new().evaluate(&seeded, &ctx).is_ok(),
+            "a prob/seed never asks the source"
+        );
     }
 
     #[test]

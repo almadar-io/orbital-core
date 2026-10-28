@@ -15,7 +15,7 @@ use std::prelude::v1::*;
 use super::formula::{Sort, VarInfo, Vars};
 use orbital_core_base::effect_types::strip_trailing_emit_options;
 use orbital_core_base::persist_batch::{
-    batch_written_entities, classify_ops, is_op_tuple, BatchOps,
+    batch_written_entities, classify_ops, op_tuple, BatchOps,
 };
 use orbital_core_base::policy::identity_entity_def;
 use orbital_core_base::schema::sexpr::{SExpression, SequentialBindings};

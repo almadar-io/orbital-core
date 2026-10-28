@@ -14,11 +14,11 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use orbital_core_base::sync::OnceLock;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem::{discriminant, Discriminant};
 use std::sync::atomic::{AtomicBool, Ordering};
-use orbital_core_base::sync::OnceLock;
 
 use super::get_operator;
 use crate::evaluator::operators::kind::OperatorKind;
@@ -40,7 +40,10 @@ struct DiscriminantHasher(u64);
 impl std::hash::Hasher for DiscriminantHasher {
     fn write(&mut self, bytes: &[u8]) {
         for byte in bytes {
-            self.0 = self.0.wrapping_mul(0x100_0000_01b3).wrapping_add(u64::from(*byte) + 1);
+            self.0 = self
+                .0
+                .wrapping_mul(0x100_0000_01b3)
+                .wrapping_add(u64::from(*byte) + 1);
         }
     }
 
@@ -49,8 +52,11 @@ impl std::hash::Hasher for DiscriminantHasher {
     }
 }
 
-type SignatureTable =
-    HashMap<Discriminant<OperatorKind>, Signature<'static>, std::hash::BuildHasherDefault<DiscriminantHasher>>;
+type SignatureTable = HashMap<
+    Discriminant<OperatorKind>,
+    Signature<'static>,
+    std::hash::BuildHasherDefault<DiscriminantHasher>,
+>;
 
 /// The signatures of the operators the evaluator checks, by operator.
 static SIGNATURES: OnceLock<SignatureTable> = OnceLock::new();
@@ -114,7 +120,10 @@ fn scalar_known(value: &Value) -> Option<Known> {
         Value::Number(_) => Some(Known::Type(OirType::Number)),
         Value::String(_) => Some(Known::Type(OirType::String)),
         Value::Bool(_) => Some(Known::Type(OirType::Boolean)),
-        Value::Object(_) => Some(Known::Type(OirType::Struct { fields: orbital_core_base::ir::types::no_fields(), additional: None })),
+        Value::Object(_) => Some(Known::Type(OirType::Struct {
+            fields: orbital_core_base::ir::types::no_fields(),
+            additional: None,
+        })),
     }
 }
 
@@ -135,7 +144,9 @@ fn entry_has_position(entry: &Value, ty: &OirType) -> bool {
         Value::Number(_) => matches!(ty, OirType::Number),
         Value::String(_) => matches!(ty, OirType::String),
         Value::Bool(_) => matches!(ty, OirType::Boolean),
-        Value::Object(_) => matches!(ty, OirType::Struct { fields, additional: None } if fields.is_empty()),
+        Value::Object(_) => {
+            matches!(ty, OirType::Struct { fields, additional: None } if fields.is_empty())
+        }
         Value::Null | Value::Lambda { .. } => is_absent_slot(ty),
         Value::Array(_) => false,
     }
@@ -274,12 +285,49 @@ fn list_views<E>(
 /// The positions of a list that is an element of another list, read without a declared type: one type per entry,
 /// an absent slot for a null. `None` for a list with no typed entry.
 fn inner_list_positions(item: &Value) -> Option<Vec<OirType>> {
+    inner_list_positions_at(item, 0)
+}
+
+/// Lists nested deeper than this are read by [`inner_list_positions_iterative`], so a deep value cannot overflow the stack.
+const POSITIONS_RECURSION_LIMIT: usize = 128;
+
+fn inner_list_positions_at(item: &Value, depth: usize) -> Option<Vec<OirType>> {
+    if depth >= POSITIONS_RECURSION_LIMIT {
+        return inner_list_positions_iterative(item);
+    }
+    positions_of(item, &mut |entry| inner_list_positions_at(entry, depth + 1))
+}
+
+/// [`inner_list_positions`] without recursion: every nested list is read once, children before their parent.
+fn inner_list_positions_iterative(root: &Value) -> Option<Vec<OirType>> {
+    let mut order: Vec<&Value> = Vec::new();
+    let mut stack = vec![root];
+    while let Some(value) = stack.pop() {
+        if let Value::Array(entries) = value {
+            order.push(value);
+            stack.extend(entries.iter().filter(|entry| matches!(entry, Value::Array(_))));
+        }
+    }
+    let mut read: HashMap<usize, Option<Vec<OirType>>> = HashMap::new();
+    for value in order.iter().rev() {
+        let positions = positions_of(value, &mut |entry| read.get(&(entry as *const Value as usize)).cloned().flatten());
+        read.insert(*value as *const Value as usize, positions);
+    }
+    read.remove(&(root as *const Value as usize)).flatten()
+}
+
+/// The positions of one list, its nested lists read through `child`.
+fn positions_of(item: &Value, child: &mut dyn FnMut(&Value) -> Option<Vec<OirType>>) -> Option<Vec<OirType>> {
     let Value::Array(entries) = item else {
         return None;
     };
     // A list of lists settles its entries together, as a list of lists does at the top: unlike op tuples are one element type.
-    if !entries.is_empty() && entries.iter().all(|entry| matches!(entry, Value::Array(_) | Value::Null)) {
-        let nested: Vec<Option<Vec<OirType>>> = entries.iter().map(inner_list_positions).collect();
+    if !entries.is_empty()
+        && entries
+            .iter()
+            .all(|entry| matches!(entry, Value::Array(_) | Value::Null))
+    {
+        let nested: Vec<Option<Vec<OirType>>> = entries.iter().map(&mut *child).collect();
         let typed: Vec<Vec<OirType>> = nested.iter().flatten().cloned().collect();
         if !typed.is_empty() {
             if let [element] = settle_inner_lists(typed, Vec::new()).as_slice() {
@@ -298,7 +346,7 @@ fn inner_list_positions(item: &Value) -> Option<Vec<OirType>> {
     let positions: Vec<OirType> = entries
         .iter()
         .map(|entry| match entry {
-            Value::Array(_) => inner_list_positions(entry).map(settle_positions),
+            Value::Array(_) => child(entry).map(settle_positions),
             other => match scalar_known(other) {
                 Some(Known::Type(ty)) => Some(ty),
                 _ => None,
@@ -389,16 +437,19 @@ fn to_eval_error(mismatch: Mismatch) -> OrbitalError {
             actual: reason,
         }),
         // Raised by the static checker only: at run time a missing value is a value, and evaluation is unchanged.
-        Mismatch::NullOperand { operator, operand } => OrbitalError::Eval(EvalError::TypeMismatch {
-            expected: format!("a present operand for `{operator}`"),
-            actual: operand,
-        }),
-        Mismatch::MaybeAbsent { operator, operand } | Mismatch::MissingResult { operator, operand, .. } => {
+        Mismatch::NullOperand { operator, operand } => {
             OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: format!("a present operand for `{operator}`"),
                 actual: operand,
             })
         }
+        Mismatch::MaybeAbsent { operator, operand }
+        | Mismatch::MissingResult {
+            operator, operand, ..
+        } => OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("a present operand for `{operator}`"),
+            actual: operand,
+        }),
     }
 }
 
@@ -449,7 +500,12 @@ impl CallFrame {
                 slot.end = end;
                 slot.signature = signature;
             } else {
-                frames.slots.push(Frame { start, end, signature, bindings: CallBindings::new() });
+                frames.slots.push(Frame {
+                    start,
+                    end,
+                    signature,
+                    bindings: CallBindings::new(),
+                });
             }
             frames.live = at + 1;
         });
@@ -505,22 +561,39 @@ orbital_core_base::kernel_local! {
 /// the definitions of the program types it names (`DeclaredShape`).
 pub fn declared_shape(arg: &SExpression) -> Result<std::rc::Rc<DeclaredShape>, OrbitalError> {
     let SExpression::String(text) = arg else {
-        return Err(OrbitalError::Eval(EvalError::InvalidArgument("typed: the declared type must be JSON text".into())));
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+            "typed: the declared type must be JSON text".into(),
+        )));
     };
     let at = text.as_str().as_ptr() as usize;
-    if let Some(known) = DECLARED_AT.with(|d| d.borrow().get(&at).map(|(_, shape)| std::rc::Rc::clone(shape))) {
+    if let Some(known) = DECLARED_AT.with(|d| {
+        d.borrow()
+            .get(&at)
+            .map(|(_, shape)| std::rc::Rc::clone(shape))
+    }) {
         return Ok(known);
     }
     if let Some(known) = DECLARED.with(|d| d.borrow().get(text.as_str()).cloned()) {
-        DECLARED_AT.with(|d| d.borrow_mut().insert(at, (text.clone(), std::rc::Rc::clone(&known))));
+        DECLARED_AT.with(|d| {
+            d.borrow_mut()
+                .insert(at, (text.clone(), std::rc::Rc::clone(&known)))
+        });
         return Ok(known);
     }
     let shape = DeclaredShape::read(text).map_err(|error| {
-        OrbitalError::Eval(EvalError::InvalidArgument(format!("typed: the declared type is not a type: {error}")))
+        OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "typed: the declared type is not a type: {error}"
+        )))
     })?;
     let shape = std::rc::Rc::new(shape);
-    DECLARED.with(|d| d.borrow_mut().insert(text.clone().into_inner(), std::rc::Rc::clone(&shape)));
-    DECLARED_AT.with(|d| d.borrow_mut().insert(at, (text.clone(), std::rc::Rc::clone(&shape))));
+    DECLARED.with(|d| {
+        d.borrow_mut()
+            .insert(text.clone().into_inner(), std::rc::Rc::clone(&shape))
+    });
+    DECLARED_AT.with(|d| {
+        d.borrow_mut()
+            .insert(at, (text.clone(), std::rc::Rc::clone(&shape)))
+    });
     Ok(shape)
 }
 
@@ -532,7 +605,10 @@ pub fn declared_type(arg: &SExpression) -> Result<OirType, OrbitalError> {
 /// The declared shape of `expr` when it is a `typed` form, shared rather than copied.
 pub fn typed_shape(expr: &SExpression) -> Result<Option<std::rc::Rc<DeclaredShape>>, OrbitalError> {
     match expr {
-        SExpression::Array(items) if items.len() == 3 && matches!(&items[0], SExpression::String(head) if head == "typed") => {
+        SExpression::Array(items)
+            if items.len() == 3
+                && matches!(&items[0], SExpression::String(head) if head == "typed") =>
+        {
             declared_shape(&items[2]).map(Some)
         }
         _ => Ok(None),
@@ -542,7 +618,10 @@ pub fn typed_shape(expr: &SExpression) -> Result<Option<std::rc::Rc<DeclaredShap
 /// The declared type of `expr` when it is a `typed` form.
 pub fn typed_declaration(expr: &SExpression) -> Result<Option<OirType>, OrbitalError> {
     match expr {
-        SExpression::Array(items) if items.len() == 3 && matches!(&items[0], SExpression::String(head) if head == "typed") => {
+        SExpression::Array(items)
+            if items.len() == 3
+                && matches!(&items[0], SExpression::String(head) if head == "typed") =>
+        {
             declared_type(&items[2]).map(Some)
         }
         _ => Ok(None),
@@ -557,13 +636,24 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::Union { variants } => variants
             .iter()
             .map(|v| match &v.field_type {
-                OirType::Struct { .. } | OirType::TypeRef { .. } | OirType::Row { .. } => v.name.clone(),
+                OirType::Struct { .. } | OirType::TypeRef { .. } | OirType::Row { .. } => {
+                    v.name.clone()
+                }
                 other => declared_text(other),
             })
             .collect::<Vec<_>>()
             .join(" | "),
-        OirType::Map { key, value } => format!("Map {} {}", declared_text(key), declared_text(value)),
-        OirType::Tuple { items } => format!("[{}]", items.iter().map(declared_text).collect::<Vec<_>>().join(", ")),
+        OirType::Map { key, value } => {
+            format!("Map {} {}", declared_text(key), declared_text(value))
+        }
+        OirType::Tuple { items } => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(declared_text)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         OirType::SExpr => "SExpr".to_string(),
         OirType::FieldRef { .. } => "string".to_string(),
         OirType::Struct { .. } | OirType::File => "object".to_string(),
@@ -580,29 +670,92 @@ pub fn declared_text(ty: &OirType) -> String {
 /// The type a by-name reference resolves to: a `TypeRef` or `Reference` whose name the recorded shape's `named` table
 /// defines is that definition, through a chain of aliases; `None` when `ty` names no defined type (or a cycle of bare
 /// aliases).
-fn declared_alias<'a>(ty: &'a OirType, named: &'a BTreeMap<String, OirType>) -> Option<&'a OirType> {
-    let mut seen: Vec<&str> = Vec::new();
+fn declared_alias<'a>(
+    ty: &'a OirType,
+    named: &'a BTreeMap<String, OirType>,
+) -> Option<&'a OirType> {
     let mut resolved: Option<&'a OirType> = None;
-    loop {
+    // A chain longer than the names `named` declares repeats one: a cycle.
+    for _ in 0..=named.len() {
         let name = match resolved.unwrap_or(ty) {
             OirType::TypeRef { name } | OirType::Reference { entity: name } => name.as_str(),
             _ => return resolved,
         };
-        if seen.contains(&name) {
-            return None;
-        }
         match named.get(name) {
             Some(next) => resolved = Some(next),
             None => return resolved,
         }
-        seen.push(name);
+    }
+    None
+}
+
+/// Whether `union` admits every JSON-shaped value: it holds string, number and boolean, a list of itself and a map of
+/// itself (each item optionally nullable). Answers how a list and a map item may be null.
+fn json_total(union: &OirType, named: &BTreeMap<String, OirType>) -> Option<(bool, bool)> {
+    let OirType::Union { variants } = union else {
+        return None;
+    };
+    let mut kinds = (false, false, false);
+    let (mut list, mut map) = (None, None);
+    let itself = |inner: &OirType| -> Option<bool> {
+        let (inner, nullable) = match inner {
+            OirType::Optional { inner } => (inner.as_ref(), true),
+            other => (other, false),
+        };
+        declared_alias(inner, named)
+            .is_some_and(|resolved| std::ptr::eq(resolved, union))
+            .then_some(nullable)
+    };
+    for variant in variants.iter() {
+        match &variant.field_type {
+            OirType::String => kinds.0 = true,
+            OirType::Number => kinds.1 = true,
+            OirType::Boolean => kinds.2 = true,
+            OirType::Array { inner } => list = list.or(itself(inner)),
+            OirType::Map { key, value } if matches!(key.as_ref(), OirType::String) => {
+                map = map.or(itself(value))
+            }
+            _ => {}
+        }
+    }
+    match (kinds, list, map) {
+        ((true, true, true), Some(list), Some(map)) => Some((list, map)),
+        _ => None,
+    }
+}
+
+/// A value of a JSON-total union fits unless it holds a lambda or a null where the union admits none.
+fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => true,
+        Value::Array(items) => items.iter().all(|item| {
+            if item.is_null() {
+                list_null
+            } else {
+                json_fits(item, list_null, map_null)
+            }
+        }),
+        Value::Object(fields) => fields.values().all(|item| {
+            if item.is_null() {
+                map_null
+            } else {
+                json_fits(item, list_null, map_null)
+            }
+        }),
+        Value::Lambda { .. } => false,
     }
 }
 
 /// The first mismatch under the explicit legacy or nullable-field contract. A name `named` defines is checked as its definition,
 /// so each item of a list of a recursive union matches a member of the union on its own; a closed string set
 /// (`"a" | "b"`) admits only its members.
-fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, strict: bool) -> Option<(String, &'static str)> {
+fn first_misfit(
+    value: &Value,
+    ty: &OirType,
+    named: &BTreeMap<String, OirType>,
+    strict: bool,
+) -> Option<(String, &'static str)> {
     if value.is_null() && (!strict || matches!(ty, OirType::Optional { .. })) {
         return None;
     }
@@ -611,6 +764,11 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
         return None;
     }
     if let Some(declared) = declared_alias(ty, named) {
+        if let Some((list_null, map_null)) = json_total(declared, named) {
+            if json_fits(value, list_null || !strict, map_null || !strict) {
+                return None;
+            }
+        }
         return first_misfit(value, declared, named, strict);
     }
     let misfit = || Some((String::new(), value.type_name()));
@@ -618,17 +776,29 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
         return misfit();
     }
     // The path is written only for a misfit: a value that fits allocates nothing.
-    let at = |prefix: std::fmt::Arguments<'_>, (path, actual): (String, &'static str)| (format!("{prefix}{path}"), actual);
+    let at = |prefix: std::fmt::Arguments<'_>, (path, actual): (String, &'static str)| {
+        (format!("{prefix}{path}"), actual)
+    };
     let items = |items: &[Value], inner: &OirType| {
-        items.iter().enumerate().find_map(|(i, item)| first_misfit(item, inner, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit)))
+        items.iter().enumerate().find_map(|(i, item)| {
+            first_misfit(item, inner, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit))
+        })
     };
     match ty {
-        OirType::SExpr | OirType::Json | OirType::Node | OirType::Trait | OirType::Orbital | OirType::Behavior => None,
+        OirType::SExpr
+        | OirType::Json
+        | OirType::Node
+        | OirType::Trait
+        | OirType::Orbital
+        | OirType::Behavior => None,
         // An unbound variable admits any value; a bound one was substituted before run time.
         OirType::Var { .. } => None,
         OirType::Optional { inner } => first_misfit(value, inner, named, strict),
         OirType::Union { variants } => {
-            if variants.iter().any(|v| first_misfit(value, &v.field_type, named, strict).is_none()) {
+            if variants
+                .iter()
+                .any(|v| first_misfit(value, &v.field_type, named, strict).is_none())
+            {
                 None
             } else {
                 misfit()
@@ -643,44 +813,71 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
                 .iter()
                 .zip(slots)
                 .enumerate()
-                .find_map(|(i, (item, slot))| first_misfit(item, slot, named, strict).map(|misfit| at(format_args!("[{i}]"), misfit))),
+                .find_map(|(i, (item, slot))| {
+                    first_misfit(item, slot, named, strict)
+                        .map(|misfit| at(format_args!("[{i}]"), misfit))
+                }),
             _ => misfit(),
         },
         OirType::Map { value: inner, .. } => match value {
-            Value::Object(map) => {
-                map.iter().find_map(|(k, item)| first_misfit(item, inner, named, strict).map(|misfit| at(format_args!(".{k}"), misfit)))
-            }
+            Value::Object(map) => map.iter().find_map(|(k, item)| {
+                first_misfit(item, inner, named, strict)
+                    .map(|misfit| at(format_args!(".{k}"), misfit))
+            }),
             _ => misfit(),
         },
         OirType::Struct { fields, additional } => match value {
-            Value::Object(map) => fields.iter().find_map(|field| match map.get(&field.name) {
-                None => field.required.then(|| (format!(".{}", field.name), "absent")),
-                Some(item) => first_misfit(item, &field.field_type, named, strict).map(|misfit| at(format_args!(".{}", field.name), misfit)),
-            }).or_else(|| additional.as_deref().and_then(|additional| {
-                map.iter().filter(|(key, _)| !fields.iter().any(|field| field.name.as_str() == key.as_str()))
-                    .find_map(|(key, item)| first_misfit(item, additional, named, strict).map(|misfit| at(format_args!(".{key}"), misfit)))
-            })),
+            Value::Object(map) => fields
+                .iter()
+                .find_map(|field| match map.get(&field.name) {
+                    None => field
+                        .required
+                        .then(|| (format!(".{}", field.name), "absent")),
+                    Some(item) => first_misfit(item, &field.field_type, named, strict)
+                        .map(|misfit| at(format_args!(".{}", field.name), misfit)),
+                })
+                .or_else(|| {
+                    additional.as_deref().and_then(|additional| {
+                        map.iter()
+                            .filter(|(key, _)| {
+                                !fields
+                                    .iter()
+                                    .any(|field| field.name.as_str() == key.as_str())
+                            })
+                            .find_map(|(key, item)| {
+                                first_misfit(item, additional, named, strict)
+                                    .map(|misfit| at(format_args!(".{key}"), misfit))
+                            })
+                    })
+                }),
             _ => misfit(),
         },
         OirType::File | OirType::Row { .. } | OirType::TypeRef { .. } => {
             (!matches!(value, Value::Object(_))).then(|| (String::new(), value.type_name()))
         }
-        OirType::Reference { .. } => {
-            (!matches!(value, Value::Object(_) | Value::String(_))).then(|| (String::new(), value.type_name()))
-        }
+        OirType::Reference { .. } => (!matches!(value, Value::Object(_) | Value::String(_)))
+            .then(|| (String::new(), value.type_name())),
         OirType::Number | OirType::Integer | OirType::Money | OirType::Instant => {
             (!matches!(value, Value::Number(_))).then(|| (String::new(), value.type_name()))
         }
-        OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| (String::new(), value.type_name())),
+        OirType::Boolean => {
+            (!matches!(value, Value::Bool(_))).then(|| (String::new(), value.type_name()))
+        }
         OirType::Date | OirType::DateTime => {
-            (!matches!(value, Value::String(_) | Value::Number(_))).then(|| (String::new(), value.type_name()))
+            (!matches!(value, Value::String(_) | Value::Number(_)))
+                .then(|| (String::new(), value.type_name()))
         }
         OirType::Bytes => match value {
             Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,
             _ => misfit(),
         },
-        OirType::Enum { name } => match (value, orbital_core_base::type_compat::decode_literal_union(name)) {
-            (Value::String(text), Ok(Some(members))) => (!members.contains(text)).then(|| (String::new(), "string")),
+        OirType::Enum { name } => match (
+            value,
+            orbital_core_base::type_compat::decode_literal_union(name),
+        ) {
+            (Value::String(text), Ok(Some(members))) => {
+                (!members.contains(text)).then(|| (String::new(), "string"))
+            }
             (Value::String(_), Ok(None)) => None,
             (Value::String(_), Err(_)) if !strict => None,
             _ => misfit(),
@@ -691,12 +888,20 @@ fn first_misfit(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>, 
 
 /// Where `value` departs from the declared `ty` (`""` for the value itself, `.rows[2].id` inside it) and what kind of
 /// value is there, when it does; a by-name reference reads its definition from `named`.
-pub fn misfit_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Option<(String, &'static str)> {
+pub fn misfit_of_declared(
+    value: &Value,
+    ty: &OirType,
+    named: &BTreeMap<String, OirType>,
+) -> Option<(String, &'static str)> {
     first_misfit(value, ty, named, false)
 }
 
 /// `value` is of the declared `ty`, kind by kind, and a record's declared fields field by field.
-pub fn value_of_declared(value: &Value, ty: &OirType, named: &BTreeMap<String, OirType>) -> Result<(), OrbitalError> {
+pub fn value_of_declared(
+    value: &Value,
+    ty: &OirType,
+    named: &BTreeMap<String, OirType>,
+) -> Result<(), OrbitalError> {
     match first_misfit(value, ty, named, false) {
         None => Ok(()),
         Some((_, actual)) => Err(OrbitalError::Eval(EvalError::TypeMismatch {
@@ -710,7 +915,12 @@ pub fn misfit_of_shape(value: &Value, declared: &DeclaredShape) -> Option<(Strin
     if declared.version.is_some_and(|version| version != 1) {
         return Some((String::new(), "unsupported declared-shape version"));
     }
-    first_misfit(value, &declared.ty, &declared.named, declared.version == Some(1))
+    first_misfit(
+        value,
+        &declared.ty,
+        &declared.named,
+        declared.version == Some(1),
+    )
 }
 
 pub fn value_of_shape(value: &Value, declared: &DeclaredShape) -> Result<(), OrbitalError> {
@@ -732,7 +942,12 @@ pub fn check_declared_argument(index: usize, declared: &OirType) -> Result<(), O
         };
         let signature = top.signature;
         signature
-            .bind(&mut top.bindings, index, &actual_of_known(Some(Known::Type(declared.clone()))), Mode::Runtime)
+            .bind(
+                &mut top.bindings,
+                index,
+                &actual_of_known(Some(Known::Type(declared.clone()))),
+                Mode::Runtime,
+            )
             .map_err(to_eval_error)
     })
 }
@@ -744,16 +959,29 @@ fn names_variable(ty: &OperatorTypeRef, name: &str) -> bool {
         return false;
     };
     match kind {
-        OperatorTypeRefKind::Var { name: own, bound, .. } => {
-            own == name || bound.as_deref().is_some_and(|bound| names_variable(bound, name))
+        OperatorTypeRefKind::Var {
+            name: own, bound, ..
+        } => {
+            own == name
+                || bound
+                    .as_deref()
+                    .is_some_and(|bound| names_variable(bound, name))
         }
         OperatorTypeRefKind::Union { of } => of.iter().any(|member| names_variable(member, name)),
         OperatorTypeRefKind::Array { of } => names_variable(of, name),
         OperatorTypeRefKind::Tuple { items } => items.iter().any(|item| names_variable(item, name)),
-        OperatorTypeRefKind::Map { key, value } => names_variable(key, name) || names_variable(value, name),
-        OperatorTypeRefKind::Object { fields, .. } => fields.values().any(|field| names_variable(field, name)),
-        OperatorTypeRefKind::Binding { shape } => shape.as_deref().is_some_and(|shape| names_variable(shape, name)),
-        OperatorTypeRefKind::Sexpr { of } => of.as_deref().is_some_and(|of| names_variable(of, name)),
+        OperatorTypeRefKind::Map { key, value } => {
+            names_variable(key, name) || names_variable(value, name)
+        }
+        OperatorTypeRefKind::Object { fields, .. } => {
+            fields.values().any(|field| names_variable(field, name))
+        }
+        OperatorTypeRefKind::Binding { shape } => shape
+            .as_deref()
+            .is_some_and(|shape| names_variable(shape, name)),
+        OperatorTypeRefKind::Sexpr { of } => {
+            of.as_deref().is_some_and(|of| names_variable(of, name))
+        }
         OperatorTypeRefKind::Fn { params, returns } => {
             params.iter().any(|param| names_variable(param, name)) || names_variable(returns, name)
         }
@@ -792,22 +1020,33 @@ fn object_binds_nothing(signature: &Signature<'static>, index: usize) -> bool {
     };
     let (name, bound) = match kind {
         OperatorTypeRefKind::Record => return true,
-        OperatorTypeRefKind::Var { name, bound, each: false } => (name, bound.as_deref()),
+        OperatorTypeRefKind::Var {
+            name,
+            bound,
+            each: false,
+        } => (name, bound.as_deref()),
         _ => return false,
     };
     if signature.semantics().is_some() {
         return false;
     }
-    let admits_record = |ty: &OperatorTypeRef| matches!(ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::Record));
+    let admits_record =
+        |ty: &OperatorTypeRef| matches!(ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::Record));
     let admits = match bound {
         None => true,
-        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of })) => of.iter().any(admits_record),
+        Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of })) => {
+            of.iter().any(admits_record)
+        }
         Some(bound) => admits_record(bound),
     };
     if !admits {
         return false;
     }
-    let same_as = |at: usize| signature.formal(at).is_some_and(|other| std::ptr::eq(other, formal));
+    let same_as = |at: usize| {
+        signature
+            .formal(at)
+            .is_some_and(|other| std::ptr::eq(other, formal))
+    };
     if same_as(index + 1) || (index > 0 && same_as(index - 1)) {
         return false;
     }
@@ -840,7 +1079,9 @@ pub fn check_argument(index: usize, value: &Value) -> Result<(), OrbitalError> {
         // A primitive of the declared kind binds no variable and cannot disagree: the common call, answered without the binder.
         if let Some(OperatorTypeRef::Primitive(kind)) = signature.formal(index) {
             match (kind.as_str(), value) {
-                ("number", Value::Number(_)) | ("string", Value::String(_)) | ("boolean", Value::Bool(_)) => return Ok(()),
+                ("number", Value::Number(_))
+                | ("string", Value::String(_))
+                | ("boolean", Value::Bool(_)) => return Ok(()),
                 _ => {}
             }
         }
@@ -928,7 +1169,7 @@ mod tests {
     #[test]
     fn strict_record_contract_checks_null_presence_and_catchall_on_both_value_entries() {
         use crate::evaluator::context::BindingContext;
-        use crate::evaluator::operators::{Operator, cast::TypedOp, json::JsonParseOp};
+        use crate::evaluator::operators::{cast::TypedOp, json::JsonParseOp, Operator};
         let context = BindingContext::new();
         let shape = serde_json::json!({"version":1,"type":{"kind":"struct","fields":[
             {"name":"id","fieldType":{"kind":"string"},"required":false},
@@ -948,32 +1189,74 @@ mod tests {
             let quoted = orbital_core_base::schema::quote::quote_expr(&literal);
             let typed = TypedOp.evaluate(&[quoted, declaration.clone()], &context);
             assert_eq!(typed.is_ok(), accepted, "typed {value}: {typed:?}");
-            let parsed = JsonParseOp.evaluate(&[SExpression::string(value.to_string()), declaration.clone()], &context).unwrap();
+            let parsed = JsonParseOp
+                .evaluate(
+                    &[SExpression::string(value.to_string()), declaration.clone()],
+                    &context,
+                )
+                .unwrap();
             assert_eq!(!parsed.is_null(), accepted, "parse {value}: {parsed:?}");
         }
         let legacy = SExpression::string(serde_json::json!({"type":{"kind":"string"}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::Null, legacy], &context).is_ok(), "old unmarked null semantics remain");
-        let strict = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::Null, strict], &context).is_err(), "new nonnull root refuses null");
+        assert!(
+            TypedOp
+                .evaluate(&[SExpression::Null, legacy], &context)
+                .is_ok(),
+            "old unmarked null semantics remain"
+        );
+        let strict = SExpression::string(
+            serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string(),
+        );
+        assert!(
+            TypedOp
+                .evaluate(&[SExpression::Null, strict], &context)
+                .is_err(),
+            "new nonnull root refuses null"
+        );
     }
 
     #[test]
     fn malformed_quoted_enum_is_not_a_nominal_type_in_a_strict_descriptor() {
         use crate::evaluator::context::BindingContext;
-        use crate::evaluator::operators::{Operator, cast::TypedOp, json::JsonParseOp};
+        use crate::evaluator::operators::{cast::TypedOp, json::JsonParseOp, Operator};
         let context = BindingContext::new();
         for name in [r#""bad\q""#, r#""unterminated"#, r#""a" |"#] {
-            let declaration = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":name}}).to_string());
-            assert!(TypedOp.evaluate(&[SExpression::string("anything"), declaration.clone()], &context).is_err(), "{name}");
-            let parsed = JsonParseOp.evaluate(&[SExpression::string("\"anything\""), declaration], &context).unwrap();
+            let declaration = SExpression::string(
+                serde_json::json!({"version":1,"type":{"kind":"enum","name":name}}).to_string(),
+            );
+            assert!(
+                TypedOp
+                    .evaluate(
+                        &[SExpression::string("anything"), declaration.clone()],
+                        &context
+                    )
+                    .is_err(),
+                "{name}"
+            );
+            let parsed = JsonParseOp
+                .evaluate(
+                    &[SExpression::string("\"anything\""), declaration],
+                    &context,
+                )
+                .unwrap();
             assert!(parsed.is_null(), "{name}: {parsed:?}");
-            let legacy = SExpression::string(serde_json::json!({"type":{"kind":"enum","name":name}}).to_string());
-            assert!(TypedOp.evaluate(&[SExpression::string("anything"), legacy], &context).is_ok());
+            let legacy = SExpression::string(
+                serde_json::json!({"type":{"kind":"enum","name":name}}).to_string(),
+            );
+            assert!(TypedOp
+                .evaluate(&[SExpression::string("anything"), legacy], &context)
+                .is_ok());
         }
-        let nominal = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":"Status"}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::string("ready"), nominal], &context).is_ok());
+        let nominal = SExpression::string(
+            serde_json::json!({"version":1,"type":{"kind":"enum","name":"Status"}}).to_string(),
+        );
+        assert!(TypedOp
+            .evaluate(&[SExpression::string("ready"), nominal], &context)
+            .is_ok());
         let old_quoted = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"enum","name":"\"line1\nline2\" | \"ready\""}}).to_string());
-        assert!(TypedOp.evaluate(&[SExpression::string("line1\nline2"), old_quoted], &context).is_ok());
+        assert!(TypedOp
+            .evaluate(&[SExpression::string("line1\nline2"), old_quoted], &context)
+            .is_ok());
     }
 
     #[test]
@@ -982,7 +1265,10 @@ mod tests {
             serde_json::json!({"version":2,"kind":"string"}),
             serde_json::json!({"version":2,"type":{"kind":"string"},"kind":"string"}),
         ] {
-            assert!(declared_shape(&SExpression::string(wire.to_string())).is_err(), "{wire}");
+            assert!(
+                declared_shape(&SExpression::string(wire.to_string())).is_err(),
+                "{wire}"
+            );
         }
     }
 
@@ -1007,23 +1293,155 @@ mod tests {
         Value::string(t.to_string())
     }
 
+    fn total_union(item: &str) -> BTreeMap<String, OirType> {
+        let nullable = item == "V?";
+        let item = |nullable: bool| {
+            let v = OirType::TypeRef { name: "V".into() };
+            if nullable {
+                OirType::optional(v)
+            } else {
+                v
+            }
+        };
+        let union = OirType::Union {
+            variants: vec![
+                orbital_core_base::ir::types::OirField::new("string", OirType::String),
+                orbital_core_base::ir::types::OirField::new("number", OirType::Number),
+                orbital_core_base::ir::types::OirField::new("boolean", OirType::Boolean),
+                orbital_core_base::ir::types::OirField::new("list", OirType::array(item(nullable))),
+                orbital_core_base::ir::types::OirField::new(
+                    "map",
+                    OirType::map(OirType::String, item(nullable)),
+                ),
+            ]
+            .into(),
+        };
+        BTreeMap::from([("V".to_string(), union)])
+    }
+
+    fn v() -> OirType {
+        OirType::TypeRef { name: "V".into() }
+    }
+
+    fn lambda() -> Value {
+        Value::Lambda {
+            params: Vec::new(),
+            body: std::sync::Arc::new(SExpression::Null),
+        }
+    }
+
+    #[test]
+    fn a_json_total_union_admits_nested_data_and_reports_a_lambda_at_its_path() {
+        let named = total_union("V?");
+        let data: Value = serde_json::from_value(
+            serde_json::json!({ "a": [1, "x", { "b": [true, null] }], "c": null }),
+        )
+        .unwrap();
+        assert_eq!(
+            misfit_of_declared(&data, &v(), &named),
+            None,
+            "nested JSON data fits"
+        );
+        let mut fields = ValueMap::new();
+        fields.insert("f".to_string(), Value::array(vec![num(1.0), lambda()]));
+        let bad = Value::object(fields);
+        assert_eq!(
+            misfit_of_declared(&bad, &v(), &named),
+            Some((String::new(), "object")),
+            "a lambda is not data: no member fits the record"
+        );
+    }
+
+    #[test]
+    fn control_a_non_nullable_item_null_misfits_only_under_the_strict_contract() {
+        let named = total_union("V");
+        let data: Value = serde_json::from_value(serde_json::json!([1, null])).unwrap();
+        assert_eq!(
+            first_misfit(&data, &v(), &named, false),
+            None,
+            "the legacy contract admits a null item"
+        );
+        assert!(
+            first_misfit(&data, &v(), &named, true).is_some(),
+            "the strict contract refuses it"
+        );
+        let nullable = total_union("V?");
+        assert_eq!(
+            first_misfit(&data, &v(), &nullable, true),
+            None,
+            "control: a nullable item admits it"
+        );
+    }
+
+    #[test]
+    fn an_alias_cycle_resolves_to_nothing_without_looping() {
+        let named = BTreeMap::from([
+            ("A".to_string(), OirType::TypeRef { name: "B".into() }),
+            ("B".to_string(), OirType::TypeRef { name: "A".into() }),
+        ]);
+        assert!(declared_alias(&OirType::TypeRef { name: "A".into() }, &named).is_none());
+        let chain = BTreeMap::from([
+            ("A".to_string(), OirType::TypeRef { name: "B".into() }),
+            ("B".to_string(), OirType::Number),
+        ]);
+        assert_eq!(
+            declared_alias(&OirType::TypeRef { name: "A".into() }, &chain),
+            Some(&OirType::Number),
+            "control: a chain resolves"
+        );
+    }
+
     #[test]
     fn declared_bytes_require_the_canonical_base64_wire_encoding() {
         let named = BTreeMap::new();
         for valid in ["", "AA==", "AP9h", "aGVsbG8="] {
-            assert!(value_of_declared(&s(valid), &OirType::Bytes, &named).is_ok(), "{valid}");
+            assert!(
+                value_of_declared(&s(valid), &OirType::Bytes, &named).is_ok(),
+                "{valid}"
+            );
         }
         for invalid in ["plain text", "AA", "AA-_", "!!", "AB=="] {
-            assert!(value_of_declared(&s(invalid), &OirType::Bytes, &named).is_err(), "{invalid}");
+            assert!(
+                value_of_declared(&s(invalid), &OirType::Bytes, &named).is_err(),
+                "{invalid}"
+            );
             assert!(value_of_declared(&s(invalid), &OirType::String, &named).is_ok());
         }
         assert!(value_of_declared(&num(1.0), &OirType::Bytes, &named).is_err());
         let bytes = OirType::array(OirType::Bytes);
         assert!(value_of_declared(&Value::array(vec![s("AA==")]), &bytes, &named).is_ok());
         assert_eq!(
-            misfit_of_declared(&Value::array(vec![s("AA=="), s("invalid bytes")]), &bytes, &named),
+            misfit_of_declared(
+                &Value::array(vec![s("AA=="), s("invalid bytes")]),
+                &bytes,
+                &named
+            ),
             Some(("[1]".to_string(), "string"))
         );
+    }
+
+    fn nested(depth: usize) -> Value {
+        let mut value = Value::array(vec![s("leaf"), num(1.0)]);
+        for _ in 0..depth {
+            value = Value::array(vec![s("not"), value, Value::array(vec![num(2.0)])]);
+        }
+        value
+    }
+
+    #[test]
+    fn a_deep_list_reads_the_same_positions_without_recursing_past_the_limit() {
+        for depth in [0, 3, POSITIONS_RECURSION_LIMIT + 5] {
+            let value = nested(depth);
+            assert_eq!(inner_list_positions_iterative(&value), positions_of(&value, &mut |entry| inner_list_positions_at(entry, 1)), "depth {depth}");
+        }
+        let deep = nested(1000);
+        let read = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || inner_list_positions(&deep).is_some())
+            .expect("spawns")
+            .join()
+            .expect("no stack overflow at depth 1000");
+        assert!(read, "control: a deep list still has positions");
     }
 
     #[test]
@@ -1234,16 +1652,29 @@ mod tests {
                 Some(1),
             )
         };
-        let create = Value::array(vec![s("create"), s("Row"), Value::Object(ValueMap::default().into())]);
+        let create = Value::array(vec![
+            s("create"),
+            s("Row"),
+            Value::Object(ValueMap::default().into()),
+        ]);
         let rekey = Value::array(vec![op_tuple("delete", 3), create]);
         let set = Value::array(vec![op_tuple("update", 4)]);
-        let groups = Value::array(vec![Value::Array(vec![rekey].into()), Value::Array(vec![set].into())]);
-        assert_eq!(check_rt(flatten(), &[groups]).map_err(|e| e.to_string()), Ok(()));
+        let groups = Value::array(vec![
+            Value::Array(vec![rekey].into()),
+            Value::Array(vec![set].into()),
+        ]);
+        assert_eq!(
+            check_rt(flatten(), &[groups]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let unlike = Value::array(vec![
             Value::Array(vec![Value::Array(vec![num(1.0)].into())].into()),
             Value::Array(vec![Value::Array(vec![s("x")].into())].into()),
         ]);
-        assert!(check_rt(flatten(), &[unlike]).is_err(), "control: lists of unlike scalars stay two types");
+        assert!(
+            check_rt(flatten(), &[unlike]).is_err(),
+            "control: lists of unlike scalars stay two types"
+        );
     }
 
     #[test]
@@ -1270,18 +1701,30 @@ mod tests {
     #[test]
     fn a_pair_of_unlike_types_is_indexed_by_array_nth() {
         let entry = Value::array(vec![s("a"), Value::Object(ValueMap::default().into())]);
-        assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
+        assert_eq!(
+            check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let entry = Value::array(vec![s("a"), num(1.0)]);
-        assert_eq!(check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()), Ok(()));
+        assert_eq!(
+            check_rt(nth(), &[entry, num(1.0)]).map_err(|e| e.to_string()),
+            Ok(())
+        );
         let numbers = Value::array(vec![num(1.0), num(2.0)]);
-        assert_eq!(check_rt(nth(), &[numbers, num(0.0)]).map_err(|e| e.to_string()), Ok(()));
+        assert_eq!(
+            check_rt(nth(), &[numbers, num(0.0)]).map_err(|e| e.to_string()),
+            Ok(())
+        );
     }
 
     #[test]
     fn control_an_operator_without_the_each_position_still_refuses_an_unlike_pair() {
         let entry = Value::array(vec![s("a"), num(1.0)]);
         assert!(check_rt(list_of_var(), &[entry]).is_err());
-        assert!(check_rt(nth(), &[Value::array(vec![s("a")]), s("0")]).is_err(), "a non-number index is refused");
+        assert!(
+            check_rt(nth(), &[Value::array(vec![s("a")]), s("0")]).is_err(),
+            "a non-number index is refused"
+        );
     }
 
     #[test]
@@ -1304,7 +1747,10 @@ mod tests {
             )
         };
         assert!(check_rt(op(), &[Value::array(vec![pair(s("a"), num(1.0))])]).is_ok());
-        let short = Value::array(vec![pair(s("a"), num(1.0)), Value::Array(vec![s("b")].into())]);
+        let short = Value::array(vec![
+            pair(s("a"), num(1.0)),
+            Value::Array(vec![s("b")].into()),
+        ]);
         assert!(check_rt(op(), &[short]).is_err());
         let mismatched = Value::array(vec![pair(s("a"), num(1.0)), pair(s("b"), s("x"))]);
         assert!(check_rt(op(), &[mismatched]).is_err());
@@ -1396,7 +1842,11 @@ mod tests {
         let strings = Value::Array((0..500).map(|i| s(&i.to_string())).collect());
         let numbers = Value::Array((0..500).map(|i| num(i as f64)).collect());
         let bools = Value::Array((0..500).map(|i| Value::Bool(i % 2 == 0)).collect());
-        let records = Value::Array((0..500).map(|_| Value::object(ValueMap::default())).collect());
+        let records = Value::Array(
+            (0..500)
+                .map(|_| Value::object(ValueMap::default()))
+                .collect(),
+        );
         for list in [strings, numbers, bools, records] {
             assert!(check_rt(list_of_var(), &[list]).is_ok());
         }
@@ -1409,7 +1859,9 @@ mod tests {
         long.push(num(1.0));
         long.push(s("tail"));
         let expected = check_rt(list_of_var(), &[short]).unwrap_err().to_string();
-        let got = check_rt(list_of_var(), &[Value::array(long)]).unwrap_err().to_string();
+        let got = check_rt(list_of_var(), &[Value::array(long)])
+            .unwrap_err()
+            .to_string();
         assert_eq!(got, expected);
     }
 
@@ -1442,7 +1894,11 @@ mod tests {
         let row = || pair(s("a"), num(1.0));
         let rows = Value::Array((0..200).map(|_| row()).collect());
         assert!(check_rt(list_of_var(), &[rows]).is_ok());
-        let with_null = Value::array(vec![pair(s("a"), Value::Null), pair(s("b"), Value::Null), pair(s("c"), Value::Null)]);
+        let with_null = Value::array(vec![
+            pair(s("a"), Value::Null),
+            pair(s("b"), Value::Null),
+            pair(s("c"), Value::Null),
+        ]);
         assert!(check_rt(list_of_var(), &[with_null]).is_ok());
         let mut unlike: Vec<Value> = (0..200).map(|_| Value::array(vec![s("a")])).collect();
         unlike.push(Value::array(vec![num(1.0)]));
@@ -1519,7 +1975,9 @@ mod tests {
     fn a_scalar_at_the_record_or_list_position_still_raises_the_binder_message() {
         let op = object_get();
         for value in [num(1.0), s("x"), Value::Bool(true)] {
-            let err = check_rt(op.clone(), &[value.clone(), s("a")]).unwrap_err().to_string();
+            let err = check_rt(op.clone(), &[value.clone(), s("a")])
+                .unwrap_err()
+                .to_string();
             assert!(err.contains("Type mismatch"), "{err}");
             same_verdict(&op, &[value, s("a")]);
         }
@@ -1561,7 +2019,10 @@ mod tests {
 
     #[test]
     fn a_plain_record_position_takes_an_object_and_refuses_the_rest() {
-        let op = operator(json!([{ "name": "r", "type": { "kind": "record" } }]), Some(1));
+        let op = operator(
+            json!([{ "name": "r", "type": { "kind": "record" } }]),
+            Some(1),
+        );
         assert!(check_rt(op.clone(), &[object()]).is_ok());
         same_verdict(&op, &[num(1.0)]);
         same_verdict(&op, &[Value::array(vec![])]);

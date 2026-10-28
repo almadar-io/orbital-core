@@ -33,7 +33,11 @@ impl Operator for StrToNumberOp {
         match eval_expr(&args[0], ctx)? {
             Value::String(text) => {
                 let n = orbital_core_base::str_utils::js_number_from_text(&text);
-                Ok(if n.is_nan() { Value::Null } else { Value::Number(n) })
+                Ok(if n.is_nan() {
+                    Value::Null
+                } else {
+                    Value::Number(n)
+                })
             }
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
@@ -947,7 +951,8 @@ mod tests {
     use super::*;
 
     fn to_int(text: &str) -> Value {
-        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/to-int", text])).expect("s-expression");
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["str/to-int", text])).expect("s-expression");
         eval_expr(&expr, &BindingContext::default()).expect("evaluates")
     }
 
@@ -959,16 +964,38 @@ mod tests {
         assert_eq!(to_int("+5"), Value::Number(5.0));
         assert_eq!(to_int("007"), Value::Number(7.0));
         assert_eq!(to_int("-0"), Value::Number(0.0));
-        assert_eq!(to_int("9007199254740991"), Value::Number(9_007_199_254_740_991.0));
-        assert_eq!(to_int("-9007199254740991"), Value::Number(-9_007_199_254_740_991.0));
+        assert_eq!(
+            to_int("9007199254740991"),
+            Value::Number(9_007_199_254_740_991.0)
+        );
+        assert_eq!(
+            to_int("-9007199254740991"),
+            Value::Number(-9_007_199_254_740_991.0)
+        );
     }
 
     #[test]
     fn to_int_control_answers_null_for_anything_else() {
-        for text in ["", "-", "+", " 5", "5 ", "1e3", "1.0", "0x10", "--1", "+-1", "١٢", "9007199254740992", "-9007199254740992", "99999999999999999999999"] {
+        for text in [
+            "",
+            "-",
+            "+",
+            " 5",
+            "5 ",
+            "1e3",
+            "1.0",
+            "0x10",
+            "--1",
+            "+-1",
+            "١٢",
+            "9007199254740992",
+            "-9007199254740992",
+            "99999999999999999999999",
+        ] {
             assert_eq!(to_int(text), Value::Null, "{text:?}");
         }
-        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/to-int", 5])).unwrap();
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["str/to-int", 5])).unwrap();
         assert!(eval_expr(&expr, &BindingContext::default()).is_err());
     }
 }

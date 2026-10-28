@@ -106,8 +106,6 @@ fn a_client_runs_client_and_any_effects_itself() {
             slot: "main".into(),
             content: Value::Null,
         },
-        custom("ref"),
-        custom("watch"),
         custom("browser/clipboard-read"),
     ];
     assert_eq!(
@@ -126,7 +124,7 @@ fn a_server_never_delegates() {
 #[test]
 fn without_a_delegate_a_client_skips_a_server_effect_by_name() {
     let exec = EffectExecutor::new(RuntimeEnvironment::Client);
-    let result = exec.execute(&custom("swap"), &BindingContext::new());
+    let result = exec.execute(&custom("random-bytes"), &BindingContext::new());
     assert!(result.is_noop(), "{result:?}");
-    assert!(format!("{:?}", result.outcome).contains("swap is server-only"));
+    assert!(format!("{:?}", result.outcome).contains("random-bytes is server-only"));
 }

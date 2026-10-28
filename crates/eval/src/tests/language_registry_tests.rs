@@ -89,25 +89,6 @@ fn fetch_operator_produces_the_data_wrapper_it_actually_emits() {
 }
 
 #[test]
-fn ref_operator_produces_the_same_wrapper_as_fetch() {
-    // `ref` emits the identical wrapper — and fires it on `on_change`, not
-    // `success` (EffectExecutor.ts:919-923, codegen server.rs:248-253).
-    let r = get_operator("ref").expect("ref must exist");
-    let produces = r
-        .effect
-        .as_ref()
-        .expect("ref effect")
-        .produces
-        .as_ref()
-        .expect("ref produces");
-    let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = produces else {
-        panic!("ref produces should be an Object wrapper, got {produces:?}");
-    };
-    assert!(fields.contains_key("data"));
-    assert!(fields.contains_key("totalCount"));
-}
-
-#[test]
 fn math_operators_have_no_effect_block() {
     // Operators that aren't in the V2 Phase 0 scope keep effect = None.
     // Confirms #[serde(default)] falls through cleanly for pre-v2 entries.

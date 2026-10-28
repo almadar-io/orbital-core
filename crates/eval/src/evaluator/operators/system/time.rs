@@ -310,7 +310,13 @@ impl Operator for TimeParseOp {
 
         let date_str = match eval_expr(&args[0], ctx)? {
             Value::String(s) => s,
-            Value::Number(ms) => return Ok(if ms.is_finite() { Value::Number(ms) } else { Value::Null }),
+            Value::Number(ms) => {
+                return Ok(if ms.is_finite() {
+                    Value::Number(ms)
+                } else {
+                    Value::Null
+                })
+            }
             other => {
                 return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
                     "time/parse: expected a string argument, got {}",
@@ -498,7 +504,6 @@ impl Operator for TimeFormatOp {
 pub(super) fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
-
 
 // ============================================================================
 // Phase 3.5: Time Advanced
@@ -697,7 +702,6 @@ pub(super) fn days_since_epoch(year: i32) -> i64 {
     (years as i64) * 365 + (leap_years as i64)
 }
 
-
 // ============================================================================
 // Phase 4.5: Time Extras
 // ============================================================================
@@ -776,7 +780,6 @@ impl Operator for TimeDurationOp {
         Ok(Value::string(parts.join(" ")))
     }
 }
-
 
 // ============================================================================
 // Time Operators (Phase 1)

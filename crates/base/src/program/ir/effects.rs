@@ -20,7 +20,6 @@ use crate::os::OsOp;
 /// Payload convention:
 /// - `success`    → the effect's result (fetched entity, persisted record, etc.)
 /// - `failure`    → `{ error: string, code?: string }`
-/// - `on_change`  → the new data (for `ref` reactive updates)
 /// - `on_message` → the incoming message (for `os/watch-*` streams)
 /// - `cancelled`  → `{ key: string }` (for a keyed `call-service` aborted by `cancel-call`)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -30,8 +29,6 @@ pub struct OirEmitConfig {
     pub success: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_change: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_message: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,18 +40,16 @@ impl OirEmitConfig {
     pub fn is_empty(&self) -> bool {
         self.success.is_none()
             && self.failure.is_none()
-            && self.on_change.is_none()
             && self.on_message.is_none()
             && self.cancelled.is_none()
     }
 
     /// Iterate over all set event names in a stable order
-    /// (success, failure, on_change, on_message, cancelled).
+    /// (success, failure, on_message, cancelled).
     pub fn event_names(&self) -> impl Iterator<Item = &str> {
         [
             self.success.as_deref(),
             self.failure.as_deref(),
-            self.on_change.as_deref(),
             self.on_message.as_deref(),
             self.cancelled.as_deref(),
         ]
@@ -138,53 +133,6 @@ pub enum OirEffect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
-
-    // ── Resource operators (ref/deref/swap/watch/atomic) ──
-    /// Ref: reactive subscription to entity data.
-    /// Server: initial DB query (same as Fetch). Client: subscribes to EntityStore.
-    Ref {
-        entity_type: String,
-        /// Subscribe to a single entity by ID
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<OirExpr>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        filter: Option<OirExpr>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        order_by: Option<OirExpr>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        limit: Option<OirExpr>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        include: Option<Vec<String>>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// Deref: snapshot read from entity store (pure, no subscription).
-    /// Returns current value. Usable in guards and expressions.
-    Deref {
-        entity_type: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        id: Option<OirExpr>,
-    },
-
-    /// Swap: atomic read-modify-write with CAS retry.
-    /// Server: CAS loop (read, transform, write WHERE version=N, retry on conflict).
-    Swap {
-        entity_type: String,
-        id: OirExpr,
-        transform: OirExpr,
-    },
-
-    /// Watch: register side effects to run when entity data changes.
-    /// Client-only. Callback fires on EntityStore advance.
-    Watch {
-        entity_type: String,
-        effects: Vec<OirExpr>,
-    },
-
-    /// Atomic: transaction grouping (all-or-nothing).
-    /// Server: DB transaction. Client: advances EntityStore once for whole group.
-    Atomic { effects: Vec<OirExpr> },
 
     /// Navigate to a path
     Navigate {
@@ -575,25 +523,26 @@ impl PageFactField {
     }
 }
 
-/// The canonical set of substrate-operator prefixes. A substrate operator is
-/// a `Custom` effect (e.g. `llm/embed`, `memory/put`) that is routed to the
-/// substrate service instead of being compiled as a plain call — see
-/// `OirEffect::Custom` and C-EMIT-SUBSTRATE-OPS-MARKER.
-///
-/// This is the single source of truth: the compiler (`resolve.rs`), the TS
-/// shell (`operator_names.rs`), and the Python shell (`trait_generator.rs`)
-/// all delegate here instead of keeping private in-sync copies.
-const SUBSTRATE_OPERATOR_PREFIXES: &[&str] =
-    &["llm/", "memory/", "trace/", "session/", "workspace/"];
+/// The operator-table categories that declare the substrate families (`std-llm`, `std-memory`, `std-trace`,
+/// `std-session`, `std-workspace`). A substrate operator is a `Custom` effect (e.g. `llm/embed`, `memory/store`)
+/// routed to the substrate service instead of being compiled as a plain call — see `OirEffect::Custom` and
+/// C-EMIT-SUBSTRATE-OPS-MARKER.
+const SUBSTRATE_CATEGORIES: &[&str] = &[
+    "std-llm",
+    "std-memory",
+    "std-trace",
+    "std-session",
+    "std-workspace",
+];
 
-/// Whether `name` is a substrate operator (one of the `SUBSTRATE_OPERATOR_PREFIXES`
-/// prefixes, or an effect the installed operator table routes to the program host). The canonical predicate —
-/// shells and the compiler must call this rather than re-deriving the set.
+/// Whether `name` is a substrate operator: one the installed operator table declares in a substrate category, or
+/// routes to the program host (`host: "program"`). The canonical predicate — shells and the compiler must call this
+/// rather than re-deriving the set.
 pub fn is_substrate_operator(name: &str) -> bool {
-    SUBSTRATE_OPERATOR_PREFIXES
-        .iter()
-        .any(|p| name.starts_with(p))
-        || crate::language::registry::is_program_host_effect(name)
+    crate::language::registry::try_get_operator(name).is_some_and(|operator| {
+        operator.host.as_deref() == Some("program")
+            || SUBSTRATE_CATEGORIES.contains(&operator.category.as_str())
+    })
 }
 
 impl OirEffect {
@@ -607,11 +556,6 @@ impl OirEffect {
             Self::Emit { .. } => "emit",
             Self::Fetch { .. } => "fetch",
             Self::Persist { .. } | Self::PersistBatch { .. } => "persist",
-            Self::Ref { .. } => "ref",
-            Self::Deref { .. } => "deref",
-            Self::Swap { .. } => "swap",
-            Self::Watch { .. } => "watch",
-            Self::Atomic { .. } => "atomic",
             Self::Navigate { .. } => "navigate",
             Self::NavigateBack => "navigate-back",
             Self::RenderUi { .. } => "render-ui",

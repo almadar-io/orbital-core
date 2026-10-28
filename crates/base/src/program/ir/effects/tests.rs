@@ -33,8 +33,7 @@ fn test_effect_classification() {
     assert_eq!(class.client_action, ClientAction::Ignore);
     assert_eq!(class.server_action, ServerAction::Execute);
 
-    let render =
-        OirEffect::render_ui("main", crate::ir::types::OirPattern::new("entity-table"));
+    let render = OirEffect::render_ui("main", crate::ir::types::OirPattern::new("entity-table"));
     let class = render.classify();
     assert_eq!(class.client_action, ClientAction::Execute);
     assert_eq!(class.server_action, ServerAction::ReturnToClient);
@@ -60,7 +59,6 @@ fn emit_config_roundtrip_success_failure() {
     let cfg = OirEmitConfig {
         success: Some("LOADED".into()),
         failure: Some("LOAD_FAILED".into()),
-        on_change: None,
         on_message: None,
         cancelled: None,
     };
@@ -77,7 +75,6 @@ fn emit_config_roundtrip_watch_shape() {
     let cfg = OirEmitConfig {
         success: None,
         failure: Some("SUBSCRIBE_FAILED".into()),
-        on_change: None,
         on_message: Some("PUSH_RECEIVED".into()),
         cancelled: None,
     };
@@ -100,7 +97,6 @@ fn emit_config_event_names_iter_is_stable() {
     let cfg = OirEmitConfig {
         success: Some("A".into()),
         failure: Some("B".into()),
-        on_change: None,
         on_message: Some("C".into()),
         cancelled: Some("D".into()),
     };

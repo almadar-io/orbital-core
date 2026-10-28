@@ -102,59 +102,6 @@ impl OirEffect {
         }
     }
 
-    // ── Resource operator constructors ──
-
-    /// Create a ref effect (reactive entity subscription)
-    pub fn ref_entity(entity_type: impl Into<String>) -> Self {
-        Self::Ref {
-            entity_type: entity_type.into(),
-            id: None,
-            filter: None,
-            order_by: None,
-            limit: None,
-            include: None,
-            emit: None,
-        }
-    }
-
-    /// Create a deref effect (snapshot read)
-    pub fn deref_entity(entity_type: impl Into<String>) -> Self {
-        Self::Deref {
-            entity_type: entity_type.into(),
-            id: None,
-        }
-    }
-
-    /// Create a deref effect with ID (single-record read)
-    pub fn deref_by_id(entity_type: impl Into<String>, id: OirExpr) -> Self {
-        Self::Deref {
-            entity_type: entity_type.into(),
-            id: Some(id),
-        }
-    }
-
-    /// Create a swap effect (atomic CAS)
-    pub fn swap(entity_type: impl Into<String>, id: OirExpr, transform: OirExpr) -> Self {
-        Self::Swap {
-            entity_type: entity_type.into(),
-            id,
-            transform,
-        }
-    }
-
-    /// Create a watch effect (react to entity changes)
-    pub fn watch(entity_type: impl Into<String>, effects: Vec<OirExpr>) -> Self {
-        Self::Watch {
-            entity_type: entity_type.into(),
-            effects,
-        }
-    }
-
-    /// Create an atomic effect (transaction group)
-    pub fn atomic(effects: Vec<OirExpr>) -> Self {
-        Self::Atomic { effects }
-    }
-
     /// Create a persist batch effect
     pub fn persist_batch(ops: OirExpr, entities: Vec<String>) -> Self {
         Self::PersistBatch {

@@ -5,7 +5,7 @@ use super::*;
 impl NodeLowerer {
     /// Extract the `emit:` config from an options object, if present.
     ///
-    /// The stream keys are spelled `onChange` and `onMessage`, as the runtime routes them. All five keys (with `cancelled`) are optional; the
+    /// The stream key is spelled `onMessage`, as the runtime routes it. All four keys (with `cancelled`) are optional; the
     /// validator enforces which ones are allowed per operator.
     ///
     /// Returns `None` if no `emit:` key is present, so the caller stores
@@ -36,13 +36,11 @@ impl NodeLowerer {
             }
         };
 
-        let on_change = read_str("onChange")?;
         let on_message = read_str("onMessage")?;
 
         let cfg = OirEmitConfig {
             success: read_str("success")?,
             failure: read_str("failure")?,
-            on_change,
             on_message,
             cancelled: read_str("cancelled")?,
         };

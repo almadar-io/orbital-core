@@ -264,6 +264,23 @@ fn the_list_marker_is_stripped_and_nothing_else() {
     assert_eq!(strip_literal_list_marker(&bare), &bare[..]);
 }
 
+#[test]
+fn a_marked_batch_tuple_is_an_op_tuple_and_lowers_with_one_marker() {
+    use orbital_core_base::persist_batch::{is_op_tuple, op_tuple};
+    let marked: SExpression = serde_json::from_value(serde_json::json!(["list", "delete", "E", "@r.id"])).unwrap();
+    let bare: SExpression = serde_json::from_value(serde_json::json!(["delete", "E", "@r.id"])).unwrap();
+    assert!(is_op_tuple(&marked), "a data-marked tuple is an op tuple");
+    assert_eq!(op_tuple(&marked).map(|t| t.len()), Some(3), "its items are read without the marker");
+    assert!(is_op_tuple(&bare), "control: a bare tuple still is");
+    let batch = |tuple: serde_json::Value| -> String {
+        let call: SExpression = serde_json::from_value(serde_json::json!(["persist", "batch", ["array/map", "@payload.xs", ["fn", "r", tuple]]])).unwrap();
+        format!("{:?}", lower_sexpr(&call).expect("lowers"))
+    };
+    let lowered = batch(serde_json::json!(["list", "delete", "E", "@r.id"]));
+    assert!(!lowered.contains("\"list\", \"list\"") && lowered.matches("\"list\"").count() <= 1, "one marker: {lowered}");
+    assert_eq!(lowered, batch(serde_json::json!(["delete", "E", "@r.id"])), "control: marked and bare tuples lower alike");
+}
+
 fn redis_call(trailing: Vec<serde_json::Value>) -> SExpression {
     let mut items = vec![serde_json::json!("redis"), serde_json::json!("redis://cache.internal"), serde_json::json!(["GET", "@payload.k"])];
     items.extend(trailing);

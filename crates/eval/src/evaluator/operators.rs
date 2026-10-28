@@ -97,14 +97,27 @@ pub fn callback_index_position(name: &str) -> Option<usize> {
     get_operator(name).and_then(|kind| kind.callback_index_position())
 }
 
-/// Get an operator by name.
-///
-/// Returns an [`OperatorKind`] (a stack value enum) rather than a boxed trait
-/// object: dispatch is a `match` in [`OperatorKind::evaluate`], with no vtable
-/// or per-lookup heap allocation.
-pub fn get_operator(name: &str) -> Option<OperatorKind> {
-    use crate::evaluator::operators::kind::OperatorKind as K;
-    let kind = match name {
+/// Declares the dispatch table once: [`get_operator`] (name to operator, a `match` with no vtable or per-lookup
+/// allocation) and [`DISPATCHED_NAMES`] (every name it answers) are both generated from the same arms.
+macro_rules! operator_dispatch {
+    ($( $($name:literal)|+ => $kind:expr ),+ $(,)?) => {
+        /// Every operator name [`get_operator`] dispatches.
+        pub const DISPATCHED_NAMES: &[&str] = &[ $( $($name),+ ),+ ];
+
+        /// Get an operator by name.
+        ///
+        /// Returns an [`OperatorKind`] (a stack value enum) rather than a boxed trait object.
+        pub fn get_operator(name: &str) -> Option<OperatorKind> {
+            use crate::evaluator::operators::kind::OperatorKind as K;
+            match name {
+                $( $($name)|+ => Some($kind), )+
+                _ => None,
+            }
+        }
+    };
+}
+
+operator_dispatch! {
         // Arithmetic
         "+" => K::AddOp,
         "-" => K::SubOp,
@@ -535,9 +548,6 @@ pub fn get_operator(name: &str) -> Option<OperatorKind> {
         "os/path-relative" => K::OsPathRelativeOp,
         "os/path-is-absolute" => K::OsPathIsAbsoluteOp,
 
-        _ => return None,
-    };
-    Some(kind)
 }
 
 /// Core expression evaluator - used by operators. An operator's argument is checked against the type the
@@ -570,7 +580,10 @@ pub(crate) fn with_operand<R>(
     f: impl FnOnce(&Value) -> Result<R, OrbitalError>,
 ) -> Result<R, OrbitalError> {
     if let SExpression::String(s) = expr {
-        if let Some(value) = s.strip_prefix('@').and_then(|path| ctx.resolve_borrowed(path)) {
+        if let Some(value) = s
+            .strip_prefix('@')
+            .and_then(|path| ctx.resolve_borrowed(path))
+        {
             if let Some(index) = arg_types::argument_slot(expr) {
                 arg_types::check_argument(index, value)?;
             }

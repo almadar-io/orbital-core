@@ -27,7 +27,9 @@ use std::prelude::v1::*;
 
 use super::macros::*;
 use super::*;
-use orbital_core_base::schema::types::{FieldDefinition, FieldType, TagReading, UnionVariantChoice};
+use orbital_core_base::schema::types::{
+    FieldDefinition, FieldType, TagReading, UnionVariantChoice,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -98,7 +100,9 @@ fn is_map(def: &FieldDefinition) -> bool {
 /// The one `Map K V` variant of the union `def`: an object no tag or closed shape claims belongs to it.
 fn map_variant(def: &FieldDefinition) -> Result<Option<&FieldDefinition>, OrbitalError> {
     let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
-        return Err(bad("a union definition declares its variants (values + properties)"));
+        return Err(bad(
+            "a union definition declares its variants (values + properties)",
+        ));
     };
     let maps: Vec<(&String, &FieldDefinition)> = names
         .iter()
@@ -118,7 +122,9 @@ fn kind_variant<'d>(
     value: &Value,
 ) -> Result<Option<&'d FieldDefinition>, OrbitalError> {
     let (Some(names), Some(variants)) = (&def.values, &def.properties) else {
-        return Err(bad("a union definition declares its variants (values + properties)"));
+        return Err(bad(
+            "a union definition declares its variants (values + properties)",
+        ));
     };
     let matching: Vec<(&String, &FieldDefinition)> = names
         .iter()
@@ -128,7 +134,9 @@ fn kind_variant<'d>(
             (Value::Number(_), FieldType::Number) => true,
             (Value::Number(n), FieldType::Int) => n.fract() == 0.0,
             (Value::Bool(_), FieldType::Boolean) => true,
-            (Value::String(s), FieldType::String) => v.values.as_ref().is_none_or(|allowed| allowed.contains(s)),
+            (Value::String(s), FieldType::String) => {
+                v.values.as_ref().is_none_or(|allowed| allowed.contains(s))
+            }
             _ => false,
         })
         .collect();
@@ -189,7 +197,9 @@ impl Fold<'_> {
         let chosen = match (value, &self.def.field_type) {
             (Value::Object(node), FieldType::Union) => select_variant(self.def, node)?,
             (Value::Object(_), FieldType::Object) => Some(self.def),
-            (Value::Object(_), _) => return Err(bad("the definition is not a struct or a tagged union")),
+            (Value::Object(_), _) => {
+                return Err(bad("the definition is not a struct or a tagged union"))
+            }
             (_, FieldType::Union) => kind_variant(self.def, self.shape, value)?,
             (Value::Array(_), FieldType::Array) => Some(self.def),
             (other, _) => return Err(self.mismatch(self.shape.to_string(), other)),
@@ -200,7 +210,12 @@ impl Fold<'_> {
         let mut children = Vec::new();
         let plan = match value {
             Value::Array(items) => {
-                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.root) {
+                if declared
+                    .items
+                    .as_deref()
+                    .and_then(|i| i.by_name_reference())
+                    == Some(self.root)
+                {
                     children.extend(items.iter());
                     Plan::List
                 } else {
@@ -208,7 +223,12 @@ impl Fold<'_> {
                 }
             }
             Value::Object(node) if is_map(declared) => {
-                if declared.items.as_deref().and_then(|i| i.by_name_reference()) == Some(self.root) {
+                if declared
+                    .items
+                    .as_deref()
+                    .and_then(|i| i.by_name_reference())
+                    == Some(self.root)
+                {
                     children.extend(node.values());
                     Plan::Map(node.keys().cloned().collect())
                 } else {
@@ -222,7 +242,8 @@ impl Fold<'_> {
                     .ok_or_else(|| bad("the definition declares no fields"))?;
                 let mut slots = Vec::new();
                 for (key, child) in node {
-                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.root)) else {
+                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.root))
+                    else {
                         continue;
                     };
                     let slot = match (position, child) {
@@ -239,7 +260,9 @@ impl Fold<'_> {
                             children.extend(entries.values());
                             Slot::Map(entries.keys().cloned().collect())
                         }
-                        (ChildPosition::List, other) => return Err(self.mismatch(format!("[{}]", self.shape), other)),
+                        (ChildPosition::List, other) => {
+                            return Err(self.mismatch(format!("[{}]", self.shape), other))
+                        }
                         (ChildPosition::Map, other) => {
                             return Err(self.mismatch(format!("Map string {}", self.shape), other))
                         }
@@ -250,7 +273,12 @@ impl Fold<'_> {
             }
             _ => Plan::Leaf,
         };
-        Ok(Some(Frame { value, plan, children, results: Vec::new() }))
+        Ok(Some(Frame {
+            value,
+            plan,
+            children,
+            results: Vec::new(),
+        }))
     }
 
     fn step(&self, frame: Frame<'_>) -> EvalResult {
@@ -265,7 +293,9 @@ impl Fold<'_> {
                     let result = match slot {
                         Slot::Field => results.next().unwrap_or(Value::Null),
                         Slot::List(n) => Value::Array(results.by_ref().take(n).collect()),
-                        Slot::Map(keys) => Value::Object(keys.into_iter().zip(results.by_ref()).collect()),
+                        Slot::Map(keys) => {
+                            Value::Object(keys.into_iter().zip(results.by_ref()).collect())
+                        }
                     };
                     out.insert(key, result);
                 }
@@ -287,7 +317,9 @@ impl Fold<'_> {
         };
         let mut stack = vec![first];
         loop {
-            let top = stack.last_mut().expect("the walk holds the node in progress");
+            let top = stack
+                .last_mut()
+                .expect("the walk holds the node in progress");
             if let Some(&child) = top.children.get(top.results.len()) {
                 if child.is_null() {
                     top.results.push(Value::Null);
@@ -349,20 +381,41 @@ mod tests {
 
     #[test]
     fn a_fold_alias_uses_the_declared_root_but_keeps_its_authored_error_label() {
-        let declaration = json!({"name":"Value","type":"union","values":["string","array"],"properties":{
-            "string":{"type":"string"},
-            "array":{"type":"array","items":{"type":"union","values":["Value"]}}
-        }}).to_string();
+        let declaration =
+            json!({"name":"Value","type":"union","values":["string","array"],"properties":{
+                "string":{"type":"string"},
+                "array":{"type":"array","items":{"type":"union","values":["Value"]}}
+            }})
+            .to_string();
         let expression = |value| {
             let body: SExpression = serde_json::from_value(value).unwrap();
             let quoted = orbital_core_base::schema::quote::quote_expr(&body);
             serde_json::from_value::<SExpression>(json!([
-                "tree/fold",quoted,["fn",["n","k"],["if",["validate/array","@n"],["array/flatten","@k"],["list","@n"]]],"Alias",declaration
-            ])).unwrap()
+                "tree/fold",
+                quoted,
+                [
+                    "fn",
+                    ["n", "k"],
+                    [
+                        "if",
+                        ["validate/array", "@n"],
+                        ["array/flatten", "@k"],
+                        ["list", "@n"]
+                    ]
+                ],
+                "Alias",
+                declaration
+            ]))
+            .unwrap()
         };
         let context = BindingContext::new();
-        assert_eq!(eval_expr(&expression(json!(["a",["b"]])), &context).unwrap(), serde_json::from_value::<Value>(json!(["a","b"])).unwrap());
-        let error = eval_expr(&expression(json!(3)), &context).unwrap_err().to_string();
+        assert_eq!(
+            eval_expr(&expression(json!(["a", ["b"]])), &context).unwrap(),
+            serde_json::from_value::<Value>(json!(["a", "b"])).unwrap()
+        );
+        let error = eval_expr(&expression(json!(3)), &context)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Alias"), "{error}");
     }
 }
