@@ -235,7 +235,9 @@ mod relation;
 mod compat_type;
 mod oir_kind;
 mod record_binding;
+mod qualified;
 use relation::*;
+pub use qualified::{describe_type_name, qualified_type_name, rename_type_names, short_type_name, split_qualified_type_name, TYPE_QUALIFIER};
 pub use compat_type::{
     decode_literal_union, literal_union_members, literal_union_text, parse_compat_type,
     set_value_type_compatible, sub_compat, tuple_type_slots, CompatType,

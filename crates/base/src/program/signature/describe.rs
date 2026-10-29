@@ -96,7 +96,7 @@ pub fn describe_type(ty: &OirType) -> String {
             .map(|variant| describe_type(&variant.field_type))
             .collect::<Vec<_>>()
             .join(" | "),
-        OirType::TypeRef { name } => name.clone(),
+        OirType::TypeRef { name } => crate::type_compat::describe_type_name(name),
         OirType::Enum { name } => crate::type_compat::literal_union_members(name)
             .map(|members| members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(" | "))
             .unwrap_or_else(|| oir_type_kind(ty)),

@@ -1461,7 +1461,7 @@ fn a_store_with_the_nearest_capability_gets_the_query_and_only_the_page_crosses(
         panic!("{log:?}")
     };
     let nearest = query.nearest.as_ref().expect("nearest travels with the query");
-    assert_eq!((nearest.field.as_str(), nearest.k), ("embedding", 2));
+    assert_eq!((nearest.field.as_str(), nearest.k.get()), ("embedding", 2));
     assert!(query.order.is_none() && query.limit.is_none() && query.offset.is_none());
     assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
 }
@@ -1493,7 +1493,7 @@ fn a_nearest_fetch_delivered_by_reference_carries_the_query_and_counts_what_it_r
     assert_eq!(references.len(), 1, "{references:?}");
     assert_eq!(references[0].ids, vec!["v1", "v3"]);
     assert_eq!(references[0].total, 2);
-    assert_eq!(references[0].query.nearest.as_ref().map(|n| n.k), Some(2));
+    assert_eq!(references[0].query.nearest.as_ref().map(|n| n.k.get()), Some(2));
     // control: the same fetch delivering rows returns the same two rows
     let k = host_kernel();
     let (_, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);

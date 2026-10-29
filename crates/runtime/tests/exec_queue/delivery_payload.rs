@@ -11,10 +11,14 @@ fn kernel(sent: Json) -> RuntimeKernel {
 }
 
 fn kernel_declaring(sent: Json, emits: Json) -> RuntimeKernel {
+    kernel_with_types(sent, emits, json!({}))
+}
+
+fn kernel_with_types(sent: Json, emits: Json, types: Json) -> RuntimeKernel {
     let schema: OrbitalSchema = serde_json::from_value(json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
-            "name": "Main",
+            "name": "Main", "types": types,
             "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
                 { "name": "Sender", "linkedEntity": "Note", "emits": emits, "stateMachine": {
@@ -106,4 +110,24 @@ fn an_inbound_envelope_whose_payload_contradicts_the_event_is_rejected_as_payloa
         "control: a fitting payload under the refused id runs, the refusal was not journaled"
     );
     assert_eq!(kernel.snapshot_trait("Receiver", None).state, "heard");
+}
+
+fn qualified_badge_kernel(sent: Json) -> RuntimeKernel {
+    kernel_with_types(
+        sent,
+        json!([{ "event": "PING", "payloadSchema": [{ "name": "b", "type": "Atom::Badge" }] }]),
+        json!({ "Atom::Badge": [{ "name": "id", "type": "string", "required": true }] }),
+    )
+}
+
+#[test]
+fn an_emit_naming_a_qualified_type_is_checked_against_that_types_shape() {
+    let refused = qualified_badge_kernel(json!({ "b": { "id": 1 } })).dispatch("Sender", None, "GO", Value::Null);
+    assert!(matches!(&refused, Err(KernelError::PayloadInvalid(m)) if m.contains("PING")), "{refused:?}");
+}
+
+#[test]
+fn control_an_emit_fitting_a_qualified_type_is_delivered() {
+    let outcomes = qualified_badge_kernel(json!({ "b": { "id": "x" } })).dispatch("Sender", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().any(|(name, _)| name == "Sender"), "{outcomes:?}");
 }
