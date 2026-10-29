@@ -249,66 +249,6 @@ impl ServiceHandler for IoPort {
 }
 
 impl IoPort {
-    /// One request of the `http` effect. A cancelled verdict is recorded for the kernel's completion route.
-    pub(crate) fn http_send(
-        &self,
-        request: &HttpRequest,
-        key: Option<&str>,
-        delay_ms: Option<u64>,
-    ) -> Result<HttpResponse, TransportError> {
-        match self.ask(|| IoRequest::Http {
-            request: request.clone(),
-            key: key.map(str::to_string),
-            delay_ms,
-            site: self.site.lock().clone(),
-        }) {
-            Asked::Direct => Err(TransportError::Failed(NO_HTTP_HOST.to_string())),
-            Asked::Answer(answer) => self.http_answer(answer),
-            Asked::Withheld => Err(TransportError::Failed(AWAITING_HOST.to_string())),
-        }
-    }
-
-    pub(crate) fn http_stream(
-        &self,
-        request: &HttpRequest,
-        key: Option<&str>,
-        framing: StreamFraming,
-        continuation: Option<Box<crate::http_request::HttpCallDriver>>,
-    ) -> Result<HttpResponse, TransportError> {
-        match self.ask(|| IoRequest::HttpStream {
-            request: request.clone(),
-            key: key.map(str::to_string),
-            framing,
-            site: self.site.lock().clone(),
-            continuation,
-        }) {
-            Asked::Direct => Err(TransportError::Failed(NO_HTTP_HOST.to_string())),
-            Asked::Answer(answer) => self.http_answer(answer),
-            Asked::Withheld => Err(TransportError::Failed(AWAITING_HOST.to_string())),
-        }
-    }
-
-    /// The built request of a beacon, or `None` when no host is attached to answer it.
-    pub(crate) fn http_beacon(
-        &self,
-        request: &HttpRequest,
-        key: Option<&str>,
-    ) -> Option<Result<BeaconOutcome, TransportError>> {
-        match self.ask(|| IoRequest::HttpBeacon {
-            request: request.clone(),
-            key: key.map(str::to_string),
-            site: self.site.lock().clone(),
-        }) {
-            Asked::Direct => None,
-            Asked::Answer(IoAnswer::HttpBeacon(out)) => Some(out),
-            Asked::Answer(IoAnswer::ServiceCancelled) => {
-                *self.verdict.lock() = Some(CallVerdict::Cancelled);
-                Some(Err(TransportError::Failed(CALL_CANCELLED.to_string())))
-            }
-            Asked::Answer(_) | Asked::Withheld => Some(Err(TransportError::Failed(AWAITING_HOST.to_string()))),
-        }
-    }
-
     pub(crate) fn page_facts(&self, fields: &[PageFactField]) -> Result<PageFacts, String> {
         match self.ask(|| IoRequest::PageFacts { fields: fields.to_vec() }) {
             Asked::Direct => Err(NO_PAGE_FACTS_HOST.to_string()),
@@ -360,21 +300,6 @@ impl IoPort {
         }
     }
 
-    pub(super) fn http_answer(&self, answer: IoAnswer) -> Result<HttpResponse, TransportError> {
-        match answer {
-            IoAnswer::Http(out) => out,
-            IoAnswer::ServiceDeferred => {
-                *self.verdict.lock() = Some(CallVerdict::Deferred);
-                Err(TransportError::Failed(AWAITING_HOST.to_string()))
-            }
-            IoAnswer::ServiceCancelled => {
-                *self.verdict.lock() = Some(CallVerdict::Cancelled);
-                Err(TransportError::Failed(CALL_CANCELLED.to_string()))
-            }
-            _ => Err(TransportError::Failed(AWAITING_HOST.to_string())),
-        }
-    }
-
     pub(crate) fn secret(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
         match self.ask(|| IoRequest::Secret {
             name: name.to_string(),
@@ -417,17 +342,6 @@ impl IoPort {
         }
     }
 
-    /// One OAuth ask, journaled; a kernel with no host to answer has no OAuth state.
-    pub(crate) fn oauth(&self, ask: &OAuthAsk, principal: Option<&str>) -> Result<OAuthReply, String> {
-        match self.ask(|| IoRequest::OAuth { ask: ask.clone(), principal: principal.map(str::to_string) }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
-            Asked::Answer(IoAnswer::OAuth(out)) => out.and_then(|reply| {
-                if ask.accepts(&reply) { Ok(reply) } else { Err("the host answered an OAuth ask with the wrong reply".to_string()) }
-            }),
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
-        }
-    }
-
     /// One `os/<op>` ask, journaled. A streaming op, and a keyed op that defers its completion under a declared
     /// route, carries the call site its events dispatch to; the host may answer the latter `ServiceDeferred`.
     pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>) -> Result<Value, OsError> {
@@ -451,7 +365,11 @@ impl IoPort {
         }
     }
 
-    pub(super) fn os_site(&self, op: OsOp, key: Option<&str>) -> Option<CallSite> {
+    pub(crate) fn peek_call_verdict(&self) -> Option<CallVerdict> {
+        *self.verdict.lock()
+    }
+
+    pub(crate) fn os_site(&self, op: OsOp, key: Option<&str>) -> Option<CallSite> {
         let site = self.site.lock().clone()?;
         let routed = site.emit.success.is_some() || site.emit.failure.is_some();
         ((op.is_stream() && (op != OsOp::StdinRead || key.is_some()))

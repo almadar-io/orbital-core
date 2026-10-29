@@ -203,14 +203,6 @@ pub trait SecretSource: Send + Sync {
     fn rotate_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no rotatable credentials".to_string())
     }
-    /// Answer what an `oauth-client` flow asks a host to keep (pending grants, connections, metadata, clock).
-    fn oauth_of(
-        &self,
-        _ask: &orbital_core_base::oauth_ask::OAuthAsk,
-        _principal: Option<&str>,
-    ) -> Result<orbital_core_base::oauth_ask::OAuthReply, String> {
-        Err("this host keeps no OAuth state".to_string())
-    }
     /// Drop the credential `name` of `principal` (or the app-wide one when `None`).
     fn forget_of(&self, _name: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no credentials to forget".to_string())

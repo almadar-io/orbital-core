@@ -134,8 +134,6 @@ impl BlockingHost<'_> {
                 }),
             }),
             IoRequest::Http { .. }
-            | IoRequest::HttpStream { .. }
-            | IoRequest::HttpBeacon { .. }
             | IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
@@ -155,7 +153,6 @@ impl BlockingHost<'_> {
             | IoRequest::CredentialStoreRotate
             | IoRequest::CredentialModeRead
             | IoRequest::CredentialModeWrite { .. }
-            | IoRequest::OAuth { .. }
             | IoRequest::Deliver { .. } => answer_http(None, request),
         }
     }
@@ -164,8 +161,6 @@ impl BlockingHost<'_> {
     pub fn answer_with_http(&self, http: &HttpHost<'_>, request: &IoRequest) -> IoAnswer {
         match request {
             IoRequest::Http { .. }
-            | IoRequest::HttpStream { .. }
-            | IoRequest::HttpBeacon { .. }
             | IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
@@ -185,7 +180,6 @@ impl BlockingHost<'_> {
             | IoRequest::CredentialStoreRotate
             | IoRequest::CredentialModeRead
             | IoRequest::CredentialModeWrite { .. }
-            | IoRequest::OAuth { .. }
             | IoRequest::Deliver { .. } => answer_http(Some(http), request),
             IoRequest::CancelCall { key } if os_completion_cancelled(http, key) => IoAnswer::Cancelled(Ok(())),
             other => self.answer(other),

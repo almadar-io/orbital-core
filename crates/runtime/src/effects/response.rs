@@ -107,7 +107,6 @@ pub enum ServerEffectKind {
     Set,
     Persist,
     CallService,
-    Http,
     Fetch,
     FetchStream,
     Emit,
@@ -148,7 +147,7 @@ pub struct ServerEffectResult {
     /// Coded failure reason for a persist that resolved no target row, or created on a taken id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<ServerEffectCode>,
-    /// What an `http` effect reached, `"<METHOD> <origin><path>"`; only on `ServerEffectKind::Http`.
+    /// The event an `emit` effect targets; only on `ServerEffectKind::Emit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
     /// The declared `emit.failure` event a failed effect was routed to (the kernel fired it, so the failure is handled); absent when it declares none.
@@ -972,7 +971,6 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
             None,
             Some(format!("{service}.{method}")),
         ),
-        Effect::Http { .. } => (ServerEffectKind::Http, None, None),
         Effect::Fetch { entity_type, .. } => {
             (ServerEffectKind::Fetch, Some(entity_type.clone()), None)
         }
@@ -985,12 +983,12 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
         action,
         entity_type,
         name: None,
-        data: (kind != ServerEffectKind::Http).then(|| er.return_value.clone()).flatten(),
+        data: er.return_value.clone(),
         success,
         denied: if denied { Some(true) } else { None },
         error: er.error.clone(),
         code: er.code,
-        target: er.effect.http_target(),
+        target: None,
         routed: er.routed_failure(),
     })
 }

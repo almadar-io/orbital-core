@@ -250,26 +250,6 @@ impl Completions {
         }
     }
 
-    pub(crate) fn defer_http(
-        this: &Arc<Self>,
-        key: &str,
-        site: &CallSite,
-        work: impl FnOnce(u64) -> Result<Value, Value> + Send + 'static,
-    ) -> IoAnswer {
-        match Self::spawn_later(this, key, site, work, |completions, key, site, outcome| {
-            completions.deliver_with(key, |sink| sink.settle(site, key, outcome))
-        }) {
-            Ok(()) => IoAnswer::ServiceDeferred,
-            Err(error) => {
-                let message = match error {
-                    RunLaterError::KeyPending => format!("key {key} already has a completion pending"),
-                    RunLaterError::Spawn(error) => error.to_string(),
-                };
-                IoAnswer::Http(Err(crate::http_service::TransportError::Failed(message)))
-            }
-        }
-    }
-
     pub(super) fn spawn_later<T: Send + 'static>(
         this: &Arc<Self>,
         key: &str,
@@ -410,8 +390,7 @@ impl DispatchScope {
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let (key, stream) = match request {
             IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
-            IoRequest::Substrate { key: Some(key), site: Some(_), .. }
-            | IoRequest::HttpStream { key: Some(key), site: Some(_), .. } => (key, false),
+            IoRequest::Substrate { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         self.owners.lock().insert(key.clone(), self.ended.clone());
@@ -535,6 +514,7 @@ impl KernelCompletionSink {
 
 impl OsCompletionSink for KernelCompletionSink {
     fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+        let outcome = self.finish_tls(key, outcome);
         if let Some((event, payload)) = completion_event(site, key, outcome) {
             self.dispatch_completion(site, key, event, payload);
         }
@@ -548,6 +528,36 @@ impl OsCompletionSink for KernelCompletionSink {
 }
 
 impl KernelCompletionSink {
+    /// A deferred raw ask the kernel parked a TLS operation on (EXEC-HTTP-7) ends in the kernel: it decrypts or
+    /// encrypts the host's raw outcome and answers the next raw ask through the sink's answerer until the program's
+    /// outcome is known. Any other key's outcome is returned as it stands.
+    #[cfg(feature = "wire-drivers")]
+    fn finish_tls(&self, key: &str, outcome: Result<Value, OsError>) -> Result<Value, OsError> {
+        use crate::kernel::TlsCompletion;
+        let Some(kernel) = self.kernel.upgrade() else { return outcome };
+        let mut raw = outcome;
+        let mut parked = false;
+        loop {
+            match kernel.tls_complete(key, raw.clone()) {
+                None if !parked => return raw,
+                None => return Err(OsError::new(orbital_core_base::os::OsErrorKind::Tls, "the TLS operation vanished")),
+                Some(TlsCompletion::Done(done)) => return done,
+                Some(TlsCompletion::Ask { op, args }) => {
+                    parked = true;
+                    raw = match (self.answer)(&IoRequest::Os { op, args, key: None, site: None }) {
+                        IoAnswer::Os(answer) => answer,
+                        other => Err(OsError::new(orbital_core_base::os::OsErrorKind::Io, format!("unexpected host answer {other:?}"))),
+                    };
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "wire-drivers"))]
+    fn finish_tls(&self, _key: &str, outcome: Result<Value, OsError>) -> Result<Value, OsError> {
+        outcome
+    }
+
     /// EXEC-QUEUE-10: the completion runs as the viewer that asked, and a key it defers again keeps that requester.
     fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
         // A completion that outlives its kernel has nothing to dispatch into.

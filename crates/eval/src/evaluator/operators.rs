@@ -355,6 +355,7 @@ operator_dispatch! {
         "bit/rotr" => K::BitRotrOp,
         "bytes/from-string" => K::BytesFromStringOp,
         "bytes/to-string" => K::BytesToStringOp,
+        "bytes/valid-utf8" => K::BytesValidUtf8Op,
         "bytes/from-base64" => K::BytesFromBase64Op,
         "bytes/to-base64" => K::BytesToBase64Op,
         "bytes/length" => K::BytesLengthOp,

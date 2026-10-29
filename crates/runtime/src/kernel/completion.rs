@@ -32,12 +32,8 @@ pub(super) fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::Navigate { .. }
         | Effect::Emit { .. } => true,
         Effect::CallService { emit, .. }
-        | Effect::Http { emit, .. }
-        | Effect::Redis { emit, .. }
-        | Effect::Postgres { emit, .. }
         | Effect::Custom { emit, .. }
         | Effect::BrowserPageFacts { emit, .. }
-        | Effect::BrowserBeacon { emit, .. }
         | Effect::BrowserPrompt { emit, .. }
         | Effect::BrowserEmbed { emit, .. }
         | Effect::BrowserTab { emit, .. }
@@ -46,10 +42,7 @@ pub(super) fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::CredentialStatus { emit, .. }
         | Effect::CredentialForget { emit, .. }
         | Effect::CredentialAdmin { emit, .. }
-        | Effect::AccessCheck { emit, .. }
-        | Effect::OAuthAuthorize { emit, .. }
-        | Effect::OAuthConnectionStatus { emit, .. }
-        | Effect::OAuthConnectionForget { emit, .. } => !routed(emit),
+        | Effect::AccessCheck { emit, .. } => !routed(emit),
         _ => false,
     }
 }
@@ -349,18 +342,6 @@ mod absent_not_null_tests {
         assert_no_null(
             &emitted(persist_completion_emit(&routes(), &delete, &done, &ctx)),
             "persist delete without id",
-        );
-
-        assert_no_null(
-            &crate::redis::failure_payload("e", "failed", None, None, &None),
-            "redis/postgres failure",
-        );
-        assert_no_null(
-            &crate::redis::refusal_payload(
-                &orbital_core_base::http_wire::HttpRefusal::CredentialMissing("T".into()),
-                &None,
-            ),
-            "redis/postgres refusal",
         );
     }
 }

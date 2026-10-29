@@ -1,5 +1,4 @@
 use super::*;
-use crate::http_request::StreamFraming;
 use std::time::Duration;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -72,83 +71,6 @@ fn port() -> IoPort {
     IoPort::new(Arc::new(HostAnswered), None, None)
 }
 
-fn recorded(request: &HttpRequest) -> Vec<Exchange> {
-    vec![Exchange::new(
-        IoRequest::Http {
-            request: request.clone(),
-            key: None,
-            delay_ms: None,
-            site: None,
-        },
-        IoAnswer::Http(Ok(HttpResponse {
-            status: 200,
-            headers: Vec::new(),
-            body: b"ok".to_vec(),
-        })),
-    )]
-}
-
-#[test]
-fn a_replayed_step_is_served_its_recorded_reply_and_asks_nothing() {
-    let request = get("https://a.example.com/x");
-    let port = port();
-    let (reply, end) = port.run_step(recorded(&request), || port.http_send(&request, None, None));
-    assert_eq!(reply.map(|r| r.status), Ok(200));
-    assert!(end.pending.is_empty() && end.diverged.is_none());
-}
-
-#[test]
-fn a_replayed_step_that_asks_a_changed_request_diverges() {
-    let port = port();
-    let (_, end) = port.run_step(recorded(&get("https://a.example.com/x")), || {
-        port.http_send(&get("https://a.example.com/y"), None, None)
-    });
-    assert!(
-        matches!(end.diverged, Some(ResumeError::Diverged { .. })),
-        "{:?}",
-        end.diverged
-    );
-    assert!(end.pending.is_empty());
-}
-
-#[test]
-fn a_changed_key_or_a_stream_in_place_of_a_send_also_diverges() {
-    let request = get("https://a.example.com/x");
-    let port = port();
-    let (_, end) = port.run_step(recorded(&request), || port.http_send(&request, Some("k"), None));
-    assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
-    let (_, end) = port.run_step(recorded(&request), || {
-        port.http_stream(&request, None, StreamFraming::Sse, None)
-    });
-    assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
-}
-
-#[test]
-fn a_replayed_step_is_compared_with_its_delay() {
-    let request = get("https://a.example.com/x");
-    let port = port();
-    let delayed = vec![Exchange::new(
-        IoRequest::Http { request: request.clone(), key: None, delay_ms: Some(500), site: None },
-        IoAnswer::Http(Ok(HttpResponse { status: 200, headers: Vec::new(), body: b"ok".to_vec() })),
-    )];
-    let (reply, end) = port.run_step(delayed.clone(), || port.http_send(&request, None, Some(500)));
-    assert_eq!(reply.map(|r| r.status), Ok(200));
-    assert!(end.pending.is_empty() && end.diverged.is_none());
-    // Controls: the same request asked with another delay, or with none, diverges.
-    for asked in [Some(501), None] {
-        let (_, end) = port.run_step(delayed.clone(), || port.http_send(&request, None, asked));
-        assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })), "{asked:?}");
-    }
-}
-
-#[test]
-fn a_step_with_no_record_leaves_the_request_pending() {
-    let request = get("https://a.example.com/x");
-    let port = port();
-    let (_, end) = port.run_step(Vec::new(), || port.http_send(&request, None, None));
-    assert!(matches!(end.pending.as_slice(), [IoRequest::Http { .. }]));
-}
-
 struct Canned(Vec<u8>);
 
 impl Transport for Canned {
@@ -167,54 +89,6 @@ impl SecretSource for Vaulted {
     fn secret(&self, _: &str) -> Result<Option<String>, String> {
         Ok(Some("sk-live-999".to_string()))
     }
-}
-
-fn streamed(key: Option<&str>) -> Vec<Value> {
-    let transport = Canned(b"data: a\n\ndata: b".to_vec());
-    let seen = Mutex::new(Vec::new());
-    let on_event = |_: Option<&CallSite>, event: Value| seen.lock().push(event);
-    let host = HttpHost {
-        transport: &transport,
-        secrets: &Vaulted,
-        egress: &[],
-        on_event: &on_event,
-        os: None,
-    };
-    let request = IoRequest::HttpStream {
-        request: get("https://8.8.8.8/x"),
-        key: key.map(str::to_string),
-        framing: StreamFraming::Sse,
-        site: None,
-        continuation: None,
-    };
-    let IoAnswer::Http(Ok(reply)) = answer_http(Some(&host), &request) else {
-        panic!("expected an Http reply")
-    };
-    assert!(reply.body.is_empty());
-    let out = seen.lock().clone();
-    out
-}
-
-fn keys(events: &[Value]) -> Vec<Value> {
-    events
-        .iter()
-        .map(|e| match e {
-            Value::Object(fields) => fields.get("key").cloned().unwrap_or(Value::string("absent")),
-            other => panic!("event is not an object: {other:?}"),
-        })
-        .collect()
-}
-
-#[test]
-fn a_blocking_stream_answer_carries_the_key_the_framer_adds_flush_included() {
-    let events = streamed(Some("job"));
-    assert_eq!(keys(&events), vec![Value::string("job"); 2]);
-}
-
-#[test]
-fn control_an_unkeyed_blocking_stream_carries_no_key() {
-    let events = streamed(None);
-    assert_eq!(keys(&events), vec![Value::string("absent"); 2], "a field without `!` is absent, never null");
 }
 
 #[test]
@@ -518,15 +392,6 @@ fn a_default_secret_source_keeps_no_user_credentials() {
     assert!(user.is_err(), "{user:?}");
     assert_eq!(Vaulted.secret_of("t", None), Ok(Some("sk-live-999".to_string())));
     assert!(Vaulted.forget_of("t", Some("u1")).is_err());
-}
-
-#[test]
-fn outside_a_step_an_http_ask_fails_for_want_of_a_host() {
-    let port = port();
-    assert_eq!(
-        port.http_send(&get("https://a.example.com/x"), None, None).map(|r| r.status),
-        Err(TransportError::Failed(NO_HTTP_HOST.to_string()))
-    );
 }
 
 fn keyed(key: &str) -> IoRequest {

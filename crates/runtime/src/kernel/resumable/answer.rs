@@ -15,7 +15,7 @@ pub(super) fn address_refusal(url: &str, egress: &[String]) -> Option<String> {
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         let listed = egress
             .iter()
-            .any(|e| http_request::origin_allowed(url, std::slice::from_ref(e)));
+            .any(|e| orbital_core_base::http_wire::origin_allowed(url, std::slice::from_ref(e)));
         return (!listed && !orbital_core_base::http_wire::is_public_address(ip))
             .then(|| format!("refused: {ip} is not a public address"));
     }
@@ -81,7 +81,7 @@ pub(super) fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest)
     IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
 }
 
-/// Answer an [`IoRequest::Http`] / `HttpStream` / `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` /
+/// Answer an [`IoRequest::Http`] / `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` /
 /// `CredentialForget` with `host`; with no host an `http` request fails.
 pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
     match (request, host) {
@@ -94,37 +94,6 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             let _ = delay_ms;
             IoAnswer::Http(blocking_send(host, request))
         }
-        (
-            IoRequest::HttpStream {
-                request,
-                key,
-                framing,
-                site,
-                ..
-            },
-            Some(host),
-        ) => IoAnswer::Http((|| {
-            if let Some(refusal) = address_refusal(&request.url, host.egress) {
-                return Err(TransportError::Refused(refusal));
-            }
-            let mut decoder = http_request::StreamDecoder::new(*framing, key.as_deref());
-            let reply = host.transport.stream(request, &mut |bytes| {
-                for event in decoder.push(bytes) {
-                    (host.on_event)(site.as_ref(), event);
-                }
-                Ok(())
-            })?;
-            for event in decoder.finish() {
-                (host.on_event)(site.as_ref(), event);
-            }
-            Ok(reply)
-        })()),
-        (IoRequest::HttpBeacon { request, .. }, Some(host)) => IoAnswer::HttpBeacon(
-            blocking_send(host, request).map(|reply| BeaconOutcome::Fetched { status: reply.status }),
-        ),
-        (IoRequest::HttpBeacon { .. }, None) => {
-            IoAnswer::HttpBeacon(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
-        }
         (IoRequest::PageFacts { .. }, _) => IoAnswer::PageFacts(Ok(PageFacts {
             available: false,
             hostname: String::new(),
@@ -134,7 +103,7 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
         (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
         (IoRequest::Tab { .. }, _) => IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST))),
-        (IoRequest::Http { .. } | IoRequest::HttpStream { .. }, None) => {
+        (IoRequest::Http { .. }, None) => {
             IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
         }
         (IoRequest::Secret { name, principal }, Some(host)) => {
@@ -171,10 +140,6 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         (IoRequest::CredentialForget { name, principal }, Some(host)) => {
             IoAnswer::CredentialForget(host.secrets.forget_of(name, principal.as_deref()))
         }
-        (IoRequest::OAuth { ask, principal }, Some(host)) => {
-            IoAnswer::OAuth(host.secrets.oauth_of(ask, principal.as_deref()))
-        }
-        (IoRequest::OAuth { .. }, None) => IoAnswer::OAuth(Err(NO_HTTP_HOST.to_string())),
         (IoRequest::Deliver { envelope, .. }, _) => IoAnswer::Deliver(Err(DeliverRefusal {
             kind: DeliverRefusalKind::Down,
             id: envelope.id.clone(),

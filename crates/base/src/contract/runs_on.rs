@@ -7,7 +7,6 @@
 use std::prelude::v1::*;
 
 use crate::ir::effects::OirEffect;
-use crate::ir::expr::OirExpr;
 
 /// Execution site of an effect operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +33,6 @@ impl RunsOn {
 /// Every effect operator whose site is not `any`, by registry name.
 pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("access-check", RunsOn::Server),
-    ("browser/beacon", RunsOn::Client),
     ("browser/clipboard-read", RunsOn::Client),
     ("browser/clipboard-write", RunsOn::Client),
     ("browser/embed", RunsOn::Client),
@@ -66,12 +64,8 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("credential-test", RunsOn::Server),
     ("fetch", RunsOn::Server),
     ("fetch-stream", RunsOn::Server),
-    ("http", RunsOn::Server),
     ("navigate", RunsOn::Client),
     ("navigate-back", RunsOn::Client),
-    ("oauth-authorize", RunsOn::Server),
-    ("oauth-connection-forget", RunsOn::Server),
-    ("oauth-connection-status", RunsOn::Server),
     ("os/watch-cron", RunsOn::Server),
     ("os/watch-env", RunsOn::Server),
     ("os/watch-files", RunsOn::Server),
@@ -79,9 +73,7 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("os/watch-process", RunsOn::Server),
     ("os/watch-signal", RunsOn::Server),
     ("persist", RunsOn::Server),
-    ("postgres", RunsOn::Server),
     ("random-bytes", RunsOn::Server),
-    ("redis", RunsOn::Server),
     ("render-ui", RunsOn::Client),
     ("send-server", RunsOn::Client),
 ];
@@ -166,42 +158,6 @@ pub fn is_browser_only(runtimes: &[String]) -> bool {
     declares_runtime(runtimes, "browser") && !declares_runtime(runtimes, "node")
 }
 
-/// The request argument of an `http` call: `(http METHOD origin path request? options?)`.
-pub const HTTP_REQUEST_ARG: usize = 3;
-
-/// What a static `http` call's `request` says about credentials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HttpAuth {
-    /// No request, or a literal request without an `auth` key: the call may run where its trait runs.
-    Keyless,
-    /// A literal request with an `auth` key (even a null one): the call is server-only.
-    Keyed,
-    /// A request that is not a literal object: nothing is known, so the call is server-only.
-    Opaque,
-}
-
-/// Classify an `http` call's arguments (after the `http` head).
-pub fn http_auth(args: &[crate::schema::sexpr::SExpression]) -> HttpAuth {
-    use crate::schema::sexpr::SExpression;
-    match args.get(HTTP_REQUEST_ARG) {
-        None | Some(SExpression::Null) => HttpAuth::Keyless,
-        Some(SExpression::Object(request)) if request.contains_key("auth") => HttpAuth::Keyed,
-        Some(SExpression::Object(_)) => HttpAuth::Keyless,
-        Some(_) => HttpAuth::Opaque,
-    }
-}
-
-/// Whether a resolved `http` request carries no `auth` key: the runtime twin of [`http_auth`], over the
-/// request value the effect holds once its bindings are resolved.
-pub fn resolved_http_is_keyless(request: &crate::value::Value) -> bool {
-    use crate::value::Value;
-    match request {
-        Value::Null => true,
-        Value::Object(map) => !map.contains_key("auth"),
-        _ => false,
-    }
-}
-
 /// The compile error for a `call-service` its target cannot host.
 pub const SERVICE_RUNTIME_UNSUPPORTED: &str = "ORB_SHELL_SERVICE_RUNTIME_UNSUPPORTED";
 
@@ -215,8 +171,7 @@ pub fn entity_arg(operator: &str) -> Option<usize> {
 
 /// Where one call runs: its registry site, except a data effect whose target
 /// entity (a literal name, never a binding) lives in the client, a
-/// `call-service` to a browser-only service, or an `http` call whose literal
-/// request has no `auth` key, runs there.
+/// `call-service` to a browser-only service runs there.
 /// Twin of `@almadar/std` `effectSiteFor`.
 pub fn effect_site(
     operator: &str,
@@ -233,12 +188,6 @@ pub fn effect_site(
                 RunsOn::Client
             }
             _ => RunsOn::Server,
-        };
-    }
-    if operator == "http" {
-        return match http_auth(args) {
-            HttpAuth::Keyless => RunsOn::Client,
-            HttpAuth::Keyed | HttpAuth::Opaque => RunsOn::Server,
         };
     }
     if operator == "persist" {
@@ -265,13 +214,6 @@ pub fn ir_effect_site(effect: &OirEffect, residence: &Residence) -> RunsOn {
             RunsOn::Client
         } else {
             RunsOn::Server
-        };
-    }
-    if let OirEffect::Http { request, .. } = effect {
-        return match request {
-            None | Some(OirExpr::Null) => RunsOn::Client,
-            Some(OirExpr::Object { fields }) if !fields.contains_key("auth") => RunsOn::Client,
-            Some(_) => RunsOn::Server,
         };
     }
     let site = effect_runs_on(effect);
@@ -618,122 +560,6 @@ mod tests {
         module.browser_services = vec!["browser-svc".to_string()];
         assert!(Residence::of_module(&module).is_browser_service("browser-svc"));
         assert!(!Residence::of_module(&module).is_browser_service("webhook"));
-    }
-
-    fn http(request: serde_json::Value) -> Vec<crate::schema::sexpr::SExpression> {
-        serde_json::from_value(serde_json::json!([
-            "GET",
-            "https://api.example.com",
-            "/x",
-            request
-        ]))
-        .expect("args")
-    }
-
-    #[test]
-    fn a_keyless_http_call_runs_where_it_is_placed() {
-        let r = Residence::none();
-        assert_eq!(
-            effect_site("http", &http(serde_json::json!({})), &r),
-            RunsOn::Client
-        );
-        assert_eq!(
-            effect_site(
-                "http",
-                &http(serde_json::json!({ "query": { "q": "a" }, "timeoutMs": 5 })),
-                &r
-            ),
-            RunsOn::Client
-        );
-        let bare: Vec<crate::schema::sexpr::SExpression> =
-            serde_json::from_value(serde_json::json!(["GET", "https://api.example.com", "/x"]))
-                .expect("args");
-        assert_eq!(
-            effect_site("http", &bare, &r),
-            RunsOn::Client,
-            "no request is keyless"
-        );
-        assert_eq!(
-            effect_site("http", &http(serde_json::Value::Null), &r),
-            RunsOn::Client
-        );
-    }
-
-    #[test]
-    fn any_auth_key_or_an_undecidable_request_keeps_http_on_the_server() {
-        let r = Residence::none();
-        for request in [
-            serde_json::json!({ "auth": { "scheme": "bearer", "credential": "@config.k" } }),
-            serde_json::json!({ "auth": null }),
-            serde_json::json!({ "auth": "@config.auth" }),
-            serde_json::json!("@payload.request"),
-        ] {
-            assert_eq!(
-                effect_site("http", &http(request.clone()), &r),
-                RunsOn::Server,
-                "{request}"
-            );
-        }
-    }
-
-    #[test]
-    fn the_ir_http_call_follows_the_same_rule() {
-        use crate::ir::expr::OirFields;
-        let r = Residence::none();
-        let mut keyless = OirEffect::http(
-            crate::http_wire::HttpMethod::Get,
-            OirExpr::string("https://api.example.com"),
-            OirExpr::string("/x"),
-        );
-        assert_eq!(ir_effect_site(&keyless, &r), RunsOn::Client);
-        if let OirEffect::Http { request, .. } = &mut keyless {
-            *request = Some(OirExpr::object(OirFields::default()));
-        }
-        assert_eq!(ir_effect_site(&keyless, &r), RunsOn::Client);
-        assert!(
-            OirExpr::effect(keyless.clone()).runs_browser_data_effect(&r),
-            "a keyless call is a browser leg"
-        );
-        assert!(!OirExpr::effect(keyless.clone()).runs_server_effect(&r));
-        let mut keyed = keyless;
-        if let OirEffect::Http { request, .. } = &mut keyed {
-            let mut fields = OirFields::default();
-            fields.insert("auth".to_string(), OirExpr::object(OirFields::default()));
-            *request = Some(OirExpr::object(fields));
-        }
-        assert_eq!(ir_effect_site(&keyed, &r), RunsOn::Server);
-        assert!(OirExpr::effect(keyed).runs_server_effect(&r));
-    }
-
-    #[test]
-    fn a_resolved_request_is_keyless_without_an_auth_key() {
-        use crate::value::Value;
-        let of = |json: serde_json::Value| serde_json::from_value::<Value>(json).expect("value");
-        assert!(resolved_http_is_keyless(&Value::Null));
-        assert!(resolved_http_is_keyless(&of(
-            serde_json::json!({ "query": { "q": "a" } })
-        )));
-        assert!(!resolved_http_is_keyless(&of(
-            serde_json::json!({ "auth": { "scheme": "bearer" } })
-        )));
-        assert!(
-            !resolved_http_is_keyless(&of(serde_json::json!({ "auth": null }))),
-            "an auth key at all is keyed"
-        );
-        assert!(!resolved_http_is_keyless(&of(serde_json::json!("opaque"))));
-    }
-
-    #[test]
-    fn http_auth_classifies_the_request() {
-        assert_eq!(http_auth(&http(serde_json::json!({}))), HttpAuth::Keyless);
-        assert_eq!(
-            http_auth(&http(serde_json::json!({ "auth": {} }))),
-            HttpAuth::Keyed
-        );
-        assert_eq!(
-            http_auth(&http(serde_json::json!("@payload.r"))),
-            HttpAuth::Opaque
-        );
     }
 
     #[test]

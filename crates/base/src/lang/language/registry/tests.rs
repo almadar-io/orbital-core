@@ -201,31 +201,14 @@ fn os_host_effects_are_the_installed_tables_host_os_operators() {
 #[test]
 fn emit_capable_operators_are_the_ones_whose_parameters_take_an_emit_options_object() {
     for op in [
-        "fetch", "persist", "call-service", "http", "redis", "postgres", "random-bytes", "credential-status",
-        "credential-forget", "credential-set", "access-check", "oauth-authorize", "oauth-connection-status",
-        "oauth-connection-forget", "os/read-file", "kv/get",
+        "fetch", "persist", "call-service", "random-bytes", "credential-status",
+        "credential-forget", "credential-set", "access-check", "os/read-file", "kv/get",
     ] {
         assert!(takes_emit_options(op), "{op} takes emit options");
     }
     for op in ["emit", "agent/invoke", "+", "no/such"] {
         assert!(!takes_emit_options(op), "control: {op} takes none");
     }
-}
-
-#[test]
-fn the_oauth_vocabulary_is_the_installed_tables_and_only_http_carries_it() {
-    let oauth = oauth_vocabulary();
-    assert_eq!(oauth.endpoint_target, "oauth-endpoint");
-    assert_eq!(oauth.endpoint_kinds, ["token", "revocation", "userinfo"]);
-    let names: Vec<&str> = oauth.ops.iter().map(|op| op.name.as_str()).collect();
-    assert_eq!(names, ["discovery", "code", "connect", "refresh", "revoke", "userinfo"]);
-    let connect = oauth.ops.iter().find(|op| op.name == "connect").expect("connect");
-    assert_eq!(connect.required, ["code", "state", "provider"]);
-    assert_eq!(connect.endpoint.as_deref(), Some("token"));
-    assert_eq!(oauth.ops[0].endpoint, None, "control: discovery goes to a literal origin");
-    assert_eq!(oauth_client_keys(), ["clientAuth", "clientId", "clientSecret", "endpoints", "issuer", "mode", "tag"]);
-    let carriers: Vec<&str> = operators().iter().filter(|(_, op)| op.oauth.is_some()).map(|(name, _)| name.as_str()).collect();
-    assert_eq!(carriers, ["http"]);
 }
 
 #[test]
@@ -271,12 +254,6 @@ fn tcp_default_ports_are_the_tables_per_scheme() {
     }
     assert_eq!(get_operator("redis").map(|op| op.default_ports.len()), Some(2));
     assert_eq!(get_operator("fetch").map(|op| op.default_ports.is_empty()), Some(true));
-}
-
-#[test]
-fn oauth_authorize_options_take_a_key() {
-    let (keys, _) = get_operator("oauth-authorize").and_then(|op| op.option_keys()).expect("options");
-    assert_eq!(keys, ["emit", "key"]);
 }
 
 #[test]

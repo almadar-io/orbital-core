@@ -292,7 +292,6 @@ impl RuntimeKernel {
         let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) else {
             return;
         };
-        let principal = || ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
         match &effect {
             Effect::Set { path, value } => {
                 let Some(evaluated_value) =
@@ -334,30 +333,6 @@ impl RuntimeKernel {
             Effect::CallService { emit, .. } => {
                 self.exec_call_service(&effect, emit, ctx, effect_results)
             }
-            Effect::Http { emit, .. } => self.exec_call(
-                &effect,
-                emit.as_ref(),
-                ctx,
-                effect_results,
-                CallShape::HTTP,
-                |e, _| self.run_http(e, principal().as_deref(), ctx.now),
-            ),
-            Effect::Redis { emit, .. } => self.exec_call(
-                &effect,
-                emit.as_ref(),
-                ctx,
-                effect_results,
-                CallShape::DATABASE,
-                |e, _| self.run_redis(e, principal().as_deref()),
-            ),
-            Effect::Postgres { emit, .. } => self.exec_call(
-                &effect,
-                emit.as_ref(),
-                ctx,
-                effect_results,
-                CallShape::DATABASE,
-                |e, _| self.run_postgres(e, principal().as_deref()),
-            ),
             Effect::Os { emit, .. } => self.exec_call(
                 &effect,
                 emit.as_ref(),
@@ -365,14 +340,6 @@ impl RuntimeKernel {
                 effect_results,
                 CallShape::OS,
                 |e, _| self.run_os(e),
-            ),
-            Effect::BrowserBeacon { emit, .. } => self.exec_call(
-                &effect,
-                emit.as_ref(),
-                ctx,
-                effect_results,
-                CallShape::BEACON,
-                |e, _| self.run_beacon(e),
             ),
             Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => self
                 .exec_call(
@@ -427,10 +394,7 @@ impl RuntimeKernel {
             Effect::RandomBytes { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
-            | Effect::CredentialAdmin { emit, .. }
-            | Effect::OAuthAuthorize { emit, .. }
-            | Effect::OAuthConnectionStatus { emit, .. }
-            | Effect::OAuthConnectionForget { emit, .. } => self.exec_call(
+            | Effect::CredentialAdmin { emit, .. } => self.exec_call(
                 &effect,
                 emit.as_ref(),
                 ctx,
@@ -662,26 +626,8 @@ struct CallShape {
 }
 
 impl CallShape {
-    const HTTP: CallShape = CallShape {
-        client_executes: true,
-        at_call_site: true,
-        settles: Some(&[CallVerdict::Cancelled, CallVerdict::Deferred]),
-        echoes_key: true,
-    };
-    const DATABASE: CallShape = CallShape {
-        client_executes: true,
-        at_call_site: true,
-        settles: None,
-        echoes_key: true,
-    };
     const OS: CallShape = CallShape {
         client_executes: true,
-        at_call_site: true,
-        settles: Some(&[CallVerdict::Cancelled]),
-        echoes_key: true,
-    };
-    const BEACON: CallShape = CallShape {
-        client_executes: false,
         at_call_site: true,
         settles: Some(&[CallVerdict::Cancelled]),
         echoes_key: true,

@@ -72,6 +72,16 @@ impl Operator for BytesToStringOp {
     }
 }
 
+/// bytes/valid-utf8 - whether the bytes are well-formed UTF-8
+pub struct BytesValidUtf8Op;
+impl Operator for BytesValidUtf8Op {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/valid-utf8", == 1);
+        let data = bytes_arg(&args[0], ctx, "bytes/valid-utf8")?;
+        Ok(Value::Bool(std::str::from_utf8(&data).is_ok()))
+    }
+}
+
 /// bytes/from-base64 - standard padded base64 text as the bytes it encodes; other text answers null
 pub struct BytesFromBase64Op;
 impl Operator for BytesFromBase64Op {
@@ -328,6 +338,35 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("invalid"), "{e}"),
             Ok(v) => panic!("expected an error, got {v:?}"),
         }
+    }
+
+    #[test]
+    fn valid_utf8_tells_text_from_binary() {
+        assert_eq!(
+            eval(serde_json::json!(["bytes/valid-utf8", "aGVsbG8="])).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(serde_json::json!(["bytes/valid-utf8", ""])).unwrap(),
+            Value::Bool(true),
+            "empty is valid text"
+        );
+        assert_eq!(
+            eval(serde_json::json!(["bytes/valid-utf8", "w6k="])).unwrap(),
+            Value::Bool(true),
+            "a two-byte scalar"
+        );
+        assert_eq!(
+            eval(serde_json::json!(["bytes/valid-utf8", "/w=="])).unwrap(),
+            Value::Bool(false),
+            "0xFF is never UTF-8"
+        );
+        assert_eq!(
+            eval(serde_json::json!(["bytes/valid-utf8", "wQ=="])).unwrap(),
+            Value::Bool(false),
+            "a truncated sequence"
+        );
+        fails_invalid(serde_json::json!(["bytes/valid-utf8", "%%"]));
     }
 
     #[test]

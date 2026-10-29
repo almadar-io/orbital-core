@@ -524,13 +524,19 @@ impl RuntimeKernel {
 
     /// A kernel holding this one's registered program and none of its session: every trait at its initial state,
     /// no frames, rows, deliveries or renders, and the program's declared instances seeded again. A stateless host
-    /// registers a program once and serves each request a fork (EXEC-DIST-5).
+    /// registers a program once and serves each request a fork (EXEC-DIST-5). The fork shares the TLS socket table: a
+    /// socket is the host's, so a parked operation of a request completes on whichever handle the host holds.
     pub fn fork_session(
         &self,
         entity_source: Arc<dyn EntitySource>,
         config: KernelConfig,
     ) -> Result<RuntimeKernel, KernelError> {
-        let fork = RuntimeKernel::new(config.environment, entity_source, config);
+        #[cfg_attr(not(feature = "wire-drivers"), allow(unused_mut))]
+        let mut fork = RuntimeKernel::new(config.environment, entity_source, config);
+        #[cfg(feature = "wire-drivers")]
+        {
+            fork.tls = self.tls.clone();
+        }
         fork.view_records.keep_none();
         fork.host_fans_out.store(
             self.host_fans_out.load(std::sync::atomic::Ordering::SeqCst),

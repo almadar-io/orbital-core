@@ -88,58 +88,6 @@ impl PrettyPrinter {
                 self.write_expr(args);
                 self.write(")");
             }
-            OirEffect::Http {
-                method,
-                origin,
-                path,
-                request,
-                ..
-            } => {
-                self.write(&format!("http({}, ", format!("{method:?}").to_uppercase()));
-                self.write_expr(origin);
-                self.write(", ");
-                self.write_expr(path);
-                if let Some(request) = request {
-                    self.write(", ");
-                    self.write_expr(request);
-                }
-                self.write(")");
-            }
-            OirEffect::Redis {
-                origin,
-                command,
-                options,
-                ..
-            } => {
-                self.write("redis(");
-                self.write_expr(origin);
-                self.write(", ");
-                self.write_expr(command);
-                if let Some(options) = options {
-                    self.write(", ");
-                    self.write_expr(options);
-                }
-                self.write(")");
-            }
-            OirEffect::Postgres {
-                origin,
-                sql,
-                params,
-                options,
-                ..
-            } => {
-                self.write("postgres(");
-                self.write_expr(origin);
-                self.write(", ");
-                self.write_expr(sql);
-                self.write(", ");
-                self.write_expr(params);
-                if let Some(options) = options {
-                    self.write(", ");
-                    self.write_expr(options);
-                }
-                self.write(")");
-            }
             OirEffect::CancelCall { key } => {
                 self.write("cancel-call(");
                 self.write_expr(key);
@@ -179,25 +127,6 @@ impl PrettyPrinter {
             OirEffect::AccessCheck { request, .. } => {
                 self.write("access-check(");
                 self.write_expr(request);
-                self.write(")");
-            }
-            OirEffect::OAuthAuthorize {
-                client, options, ..
-            } => {
-                self.write("oauth-authorize(");
-                self.write_expr(client);
-                self.write(", ");
-                self.write_expr(options);
-                self.write(")");
-            }
-            OirEffect::OAuthConnectionStatus { provider: expr, .. } => {
-                self.write("oauth-connection-status(");
-                self.write_expr(expr);
-                self.write(")");
-            }
-            OirEffect::OAuthConnectionForget { provider: expr, .. } => {
-                self.write("oauth-connection-forget(");
-                self.write_expr(expr);
                 self.write(")");
             }
             OirEffect::Spawn { entity_type, props } => {
@@ -347,19 +276,6 @@ impl PrettyPrinter {
             OirEffect::BrowserTab { op, request, key, .. } => {
                 self.write(op.name());
                 self.write("(");
-                self.write_expr(request);
-                if let Some(k) = key {
-                    self.write(", ");
-                    self.write_expr(k);
-                }
-                self.write(")");
-            }
-            OirEffect::BrowserBeacon {
-                url, request, key, ..
-            } => {
-                self.write("browser/beacon(");
-                self.write_expr(url);
-                self.write(", ");
                 self.write_expr(request);
                 if let Some(k) = key {
                     self.write(", ");

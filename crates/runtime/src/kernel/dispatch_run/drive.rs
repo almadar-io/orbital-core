@@ -78,11 +78,15 @@ impl RuntimeKernel {
                 (p, moved)
             });
             let journal = std::mem::take(&mut c.journal);
+            #[cfg(feature = "wire-drivers")]
+            self.tls_begin_pass();
             let (result, end) =
                 self.io
                     .run_step_reading(journal, std::mem::take(&mut c.reads), || {
                         self.unit(&mut c.run)
                     });
+            #[cfg(feature = "wire-drivers")]
+            self.tls_end_pass(end.pending.is_empty() && end.store_asks.is_empty() && end.diverged.is_none());
             let committed = self.suspended_commit.write().take();
             let suspended = !end.pending.is_empty() || !end.store_asks.is_empty();
             match replay {

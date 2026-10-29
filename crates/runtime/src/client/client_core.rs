@@ -99,6 +99,9 @@ pub struct ClientCore {
     awaiting: Vec<AwaitingEntry>,
     next_await_token: u64,
     awaiting_motion: Option<std::time::Duration>,
+    /// The kernel's one tick clock over this schema: `drive_ticks_blocking` asks it which declared ticks are due.
+    ticks: crate::tick_clock::TickClock,
+    ticks_started: web_time::Instant,
 }
 
 struct AwaitingEntry {
@@ -123,6 +126,7 @@ impl ClientCore {
             .unwrap_or_else(|| "Unknown".to_string());
         let embedded = embedded_traits(&schema);
         let current_page = initial_page(&schema, 0);
+        let ticks = crate::tick_clock::TickClock::from_schema(&schema);
 
         Self {
             schema,
@@ -147,6 +151,8 @@ impl ClientCore {
             awaiting: Vec::new(),
             next_await_token: 0,
             awaiting_motion: None,
+            ticks,
+            ticks_started: web_time::Instant::now(),
         }
     }
 
@@ -427,26 +433,21 @@ impl ClientCore {
         }
     }
 
-    /// Read-only `(trait_name, tick_name, interval_ms)` schedule for every tick declared on
-    /// the active orbital's traits. `interval_ms` = `None` means a per-frame tick. Sourced
-    /// from the resolved schema (`TraitDefinition.ticks`) the client already holds — the
-    /// scheduler needs no extra round trip.
-    pub fn tick_schedule(&self) -> Vec<(String, String, Option<u64>)> {
-        use orbital_core_base::schema::types::TraitReference;
-        let Some(orbital) = self.schema.orbitals.get(self.current_orbital_idx) else {
-            return Vec::new();
-        };
-        let mut out = Vec::new();
-        for tr in &orbital.traits {
-            if let TraitReference::Inline(td) = tr {
-                if let Some(ticks) = &td.ticks {
-                    for tick in ticks {
-                        out.push((td.name.clone(), tick.name.clone(), tick.interval_ms()));
-                    }
-                }
-            }
+    /// Whether the schema declares any tick: a host requests continuous repaint then, since the client is otherwise
+    /// event-reactive and `set`-effect loops (`gameflowTick every 33ms`) would never advance.
+    pub fn has_ticks(&self) -> bool {
+        !self.ticks.is_empty()
+    }
+
+    /// One host frame of the kernel's tick clock: every declared tick that is due runs once through
+    /// [`Self::drive_tick_blocking`]. Answers whether any ran, so the host repaints only when state may have advanced.
+    pub fn drive_ticks_blocking(&mut self) -> bool {
+        let now_ms = u64::try_from(self.ticks_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let due = self.ticks.due(now_ms, crate::tick_clock::Calendar::local_now);
+        for (trait_name, tick_name) in &due {
+            self.drive_tick_blocking(trait_name, tick_name);
         }
-        out
+        !due.is_empty()
     }
 
     /// Drive and display `trait_name` (its orbital and page), clearing what was shown.

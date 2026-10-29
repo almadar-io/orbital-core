@@ -9,12 +9,12 @@ use std::prelude::v1::*;
 use rustls::RootCertStore;
 
 use orbital_core_base::codec;
-use orbital_core_base::os::OsOp;
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::value::Value;
 
-use super::session::{web_roots, Poll, TlsClient};
+use super::session::{web_roots, Poll, Recorded, Replayed, TlsClient};
 use crate::driver::{Driver, DriverAnswer, DriverAsk, DriverStep};
-use crate::http_request::tcp_target_allowed;
+use orbital_core_base::os_grants::tcp_target_allowed;
 
 const RECV_BYTES: f64 = 16384.0;
 
@@ -31,6 +31,8 @@ pub enum TlsEvent {
     Eof,
     /// The close_notify was sent and the socket closed.
     Closed,
+    /// A receive timed out on a stream that survives timeouts: nothing was consumed and the session is intact.
+    TimedOut(OsError),
     Failed(String),
 }
 
@@ -57,6 +59,7 @@ enum Goal {
 pub struct TlsStream {
     host: String,
     roots: Option<RootCertStore>,
+    alpn: Vec<Vec<u8>>,
     sock: Value,
     seed: [u8; 32],
     client: Option<TlsClient>,
@@ -65,6 +68,10 @@ pub struct TlsStream {
     inbox: Vec<u8>,
     eof_seen: bool,
     after_close: Option<TlsEvent>,
+    now: u64,
+    record: bool,
+    survive_timeout: bool,
+    host_error: Option<OsError>,
 }
 
 fn os_ask(op: OsOp, args: Vec<Value>) -> TlsEvent {
@@ -89,6 +96,7 @@ impl TlsStream {
         let mut stream = Self {
             host: String::new(),
             roots: Some(roots),
+            alpn: Vec::new(),
             sock: Value::Null,
             seed: [0u8; 32],
             client: None,
@@ -97,6 +105,10 @@ impl TlsStream {
             inbox: Vec::new(),
             eof_seen: false,
             after_close: None,
+            now: 0,
+            record: false,
+            survive_timeout: false,
+            host_error: None,
         };
         let target = match tcp_target_allowed(origin, egress) {
             Ok(target) => target,
@@ -121,6 +133,7 @@ impl TlsStream {
         let stream = Self {
             host: host.to_string(),
             roots: Some(web_roots()),
+            alpn: Vec::new(),
             sock,
             seed: [0u8; 32],
             client: None,
@@ -129,8 +142,109 @@ impl TlsStream {
             inbox: Vec::new(),
             eof_seen: false,
             after_close: None,
+            now: 0,
+            record: false,
+            survive_timeout: false,
+            host_error: None,
         };
         (stream, TlsEvent::Ask(DriverAsk::Random { bytes: 32 }))
+    }
+
+    /// [`TlsStream::upgrade`] under `roots` (a program's own CA) offering `alpn` protocol names in order.
+    pub fn upgrade_with(
+        host: &str,
+        sock: Value,
+        roots: RootCertStore,
+        alpn: Vec<Vec<u8>>,
+    ) -> (Self, TlsEvent) {
+        let (mut stream, event) = Self::upgrade(host, sock);
+        stream.roots = Some(roots);
+        stream.alpn = alpn;
+        (stream, event)
+    }
+
+    /// Record the session's events from the handshake on, so the kernel can rebuild it ([`TlsStream::transcript`]).
+    pub fn recorded(mut self) -> Self {
+        self.record = true;
+        self
+    }
+
+    /// A receive that times out leaves the session intact ([`TlsEvent::TimedOut`]) instead of ending the stream.
+    pub fn surviving_timeouts(mut self) -> Self {
+        self.survive_timeout = true;
+        self
+    }
+
+    /// An established session rebuilt from its transcript (see [`TlsClient::replay_with_alpn`]) over `sock`, with
+    /// the plaintext it decrypted but the caller has not yet taken, and whether the peer's end of stream was seen.
+    pub fn established(
+        host: &str,
+        sock: Value,
+        seed: [u8; 32],
+        now: u64,
+        replayed: Replayed,
+        undelivered: usize,
+        eof_seen: bool,
+    ) -> Self {
+        let skip = replayed.plaintext.len().saturating_sub(undelivered);
+        Self {
+            host: host.to_string(),
+            roots: None,
+            alpn: Vec::new(),
+            sock,
+            seed,
+            client: Some(replayed.client),
+            awaiting: None,
+            goal: Goal::Idle,
+            inbox: replayed.plaintext[skip..].to_vec(),
+            eof_seen,
+            after_close: None,
+            now,
+            record: true,
+            survive_timeout: true,
+            host_error: None,
+        }
+    }
+
+    pub fn sock(&self) -> &Value {
+        &self.sock
+    }
+
+    pub fn seed(&self) -> [u8; 32] {
+        self.seed
+    }
+
+    /// The unix second the session's clock read at the handshake.
+    pub fn now_secs(&self) -> u64 {
+        self.now
+    }
+
+    pub fn transcript(&self) -> Option<&[Recorded]> {
+        self.client.as_ref().and_then(TlsClient::transcript)
+    }
+
+    /// The ALPN protocol the peer chose.
+    pub fn alpn_protocol(&self) -> Option<Vec<u8>> {
+        self.client.as_ref().and_then(TlsClient::alpn_protocol)
+    }
+
+    pub fn eof_seen(&self) -> bool {
+        self.eof_seen
+    }
+
+    /// The plaintext decrypted but not yet handed on.
+    pub fn undelivered(&self) -> usize {
+        self.inbox.len()
+    }
+
+    /// The host's own failure when the stream ended because an `os/send` or `os/recv` it asked failed.
+    pub fn host_error(&self) -> Option<&OsError> {
+        self.host_error.as_ref()
+    }
+
+    /// The server name the session verifies.
+    pub fn host(&self) -> &str {
+        &self.host
     }
 
     /// Whether an ask of this stream is outstanding, so the next answer belongs to it.
@@ -228,9 +342,10 @@ impl TlsStream {
                     return self.fail("tls: the stream began a second handshake".to_string());
                 };
                 let now = u64::try_from(value / 1000).unwrap_or(0);
-                match TlsClient::new(&self.host, self.seed, now, roots) {
+                self.now = now;
+                match TlsClient::new_with_alpn(&self.host, self.seed, now, roots, &self.alpn) {
                     Ok(client) => {
-                        self.client = Some(client);
+                        self.client = Some(if self.record { client.recording() } else { client });
                         self.goal = Goal::Handshake;
                         self.pump()
                     }
@@ -246,8 +361,16 @@ impl TlsStream {
             }
             (Awaiting::Send, DriverAnswer::Os(Ok(_))) => self.pump(),
             (Awaiting::Recv, DriverAnswer::Os(Ok(reply))) => self.received(reply),
+            (Awaiting::Recv, DriverAnswer::Os(Err(error)))
+                if self.survive_timeout && error.kind == OsErrorKind::Timeout =>
+            {
+                self.goal = Goal::Idle;
+                TlsEvent::TimedOut(error)
+            }
             (Awaiting::Send | Awaiting::Recv, DriverAnswer::Os(Err(error))) => {
-                self.fail(error.message)
+                let message = error.message.clone();
+                self.host_error = Some(error);
+                self.fail(message)
             }
             (_, other) => self.fail(format!("tls: unexpected answer {other:?}")),
         }
@@ -359,7 +482,10 @@ impl TlsStream {
         self.awaiting = Some(Awaiting::Alert);
         os_ask(
             OsOp::Send,
-            vec![self.sock.clone(), Value::string(codec::base64_encode(&alert))],
+            vec![
+                self.sock.clone(),
+                Value::string(codec::base64_encode(&alert)),
+            ],
         )
     }
 }
@@ -376,13 +502,14 @@ impl Driver for TlsStream {
             TlsEvent::Data(bytes) => {
                 DriverStep::Done(Ok(Value::string(codec::base64_encode(&bytes))))
             }
+            TlsEvent::TimedOut(error) => DriverStep::Done(Err(Value::string(error.message))),
             TlsEvent::Failed(message) => DriverStep::Done(Err(Value::string(message))),
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use rand_chacha::ChaCha20Rng;
@@ -401,17 +528,17 @@ mod tests {
     use crate::tls::session::{Poll, Recorded, TlsClient};
     use orbital_core_base::value::ValueMap;
 
-    const CERT: &[u8] = include_bytes!("testdata/cert.der");
+    pub(crate) const CERT: &[u8] = include_bytes!("testdata/cert.der");
     const KEY: &[u8] = include_bytes!("testdata/key.der");
     const NOT_BEFORE: u64 = 1_792_209_645;
-    const NOW: u64 = 1_792_209_700;
+    pub(crate) const NOW: u64 = 1_792_209_700;
     const ORIGIN: &str = "rediss://localhost:6379";
 
     fn egress() -> Vec<String> {
         vec![ORIGIN.to_string()]
     }
 
-    fn roots() -> RootCertStore {
+    pub(crate) fn roots() -> RootCertStore {
         let mut roots = RootCertStore::empty();
         roots
             .add(CertificateDer::from(CERT.to_vec()))
@@ -475,7 +602,7 @@ mod tests {
         }
     }
 
-    struct FakeServer {
+    pub(crate) struct FakeServer {
         conn: UnbufferedServerConnection,
         rng: Option<ChaCha20Rng>,
         inbound: Vec<u8>,
@@ -486,7 +613,7 @@ mod tests {
     }
 
     impl FakeServer {
-        fn new(seed: u8) -> Self {
+        pub(crate) fn new(seed: u8) -> Self {
             let provider = CryptoProvider {
                 key_provider: &TestKeys,
                 ..provider()
@@ -502,6 +629,7 @@ mod tests {
                 .expect("server config");
             let mut config = config;
             config.send_tls13_tickets = 0;
+            config.alpn_protocols = vec![b"http/1.1".to_vec()];
             Self {
                 conn: UnbufferedServerConnection::new(Arc::new(config)).expect("server"),
                 rng: Some(random::drbg([seed; 32])),
@@ -513,7 +641,7 @@ mod tests {
             }
         }
 
-        fn receive(&mut self, bytes: &[u8]) {
+        pub(crate) fn receive(&mut self, bytes: &[u8]) {
             self.inbound.extend_from_slice(bytes);
             let Self {
                 conn,
@@ -581,7 +709,7 @@ mod tests {
             }
         }
 
-        fn take(&mut self, want: usize) -> Vec<u8> {
+        pub(crate) fn take(&mut self, want: usize) -> Vec<u8> {
             let n = want.min(self.outbound.len());
             self.outbound.drain(..n).collect()
         }
@@ -704,6 +832,7 @@ mod tests {
                     String::from_utf8_lossy(&self.got).into_owned().into(),
                 ))),
                 TlsEvent::Eof => DriverStep::Done(Err(Value::string("eof"))),
+                TlsEvent::TimedOut(error) => DriverStep::Done(Err(Value::string(error.message))),
                 TlsEvent::Failed(message) => DriverStep::Done(Err(Value::string(message))),
             }
         }
@@ -761,10 +890,7 @@ mod tests {
     #[test]
     fn a_handshake_and_an_app_data_exchange_replay_to_identical_sent_bytes() {
         let run = live(7, NOW);
-        assert_eq!(
-            run.end,
-            DriveEnd::Done(Ok(Value::string("pong")))
-        );
+        assert_eq!(run.end, DriveEnd::Done(Ok(Value::string("pong"))));
         assert!(
             run.sent.len() >= 3,
             "client hello, finished and the app write"
@@ -788,10 +914,7 @@ mod tests {
     fn control_a_different_seed_changes_the_wire_bytes_and_diverges_a_replay() {
         let run = live(7, NOW);
         let other = live(8, NOW);
-        assert_eq!(
-            other.end,
-            DriveEnd::Done(Ok(Value::string("pong")))
-        );
+        assert_eq!(other.end, DriveEnd::Done(Ok(Value::string("pong"))));
         assert_ne!(run.sent[0], other.sent[0]);
 
         let mut forged = run.journal.clone();
@@ -827,10 +950,7 @@ mod tests {
     #[test]
     fn control_a_certificate_at_the_valid_time_connects() {
         let run = live(7, NOT_BEFORE + 1);
-        assert_eq!(
-            run.end,
-            DriveEnd::Done(Ok(Value::string("pong")))
-        );
+        assert_eq!(run.end, DriveEnd::Done(Ok(Value::string("pong"))));
     }
 
     #[test]
@@ -881,5 +1001,50 @@ mod tests {
         let (_, replayed) =
             TlsClient::replay("localhost", [7u8; 32], NOW, roots(), &transcript).expect("replay");
         assert_eq!(replayed, sent);
+    }
+
+    fn client_hello(alpn: Vec<Vec<u8>>) -> Vec<u8> {
+        let (mut stream, first) =
+            TlsStream::upgrade_with("localhost", Value::Number(5.0), roots(), alpn);
+        assert_eq!(first, TlsEvent::Ask(DriverAsk::Random { bytes: 32 }));
+        stream.resume(DriverAnswer::Random(Ok(vec![7u8; 32])));
+        match stream.resume(DriverAnswer::Clock(Ok((NOW * 1000) as i64))) {
+            TlsEvent::Ask(DriverAsk::Os {
+                op: OsOp::Send,
+                args,
+                ..
+            }) => {
+                let Value::String(text) = &args[1] else {
+                    panic!("send data")
+                };
+                codec::base64_decode(text).expect("base64")
+            }
+            other => panic!("the handshake begins with a raw os/send, got {other:?}"),
+        }
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+
+    #[test]
+    fn an_upgrade_offers_exactly_the_alpn_protocols_it_was_given() {
+        let offered = client_hello(vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
+        assert!(
+            contains(&offered, b"h2") && contains(&offered, b"http/1.1"),
+            "both names are in the hello"
+        );
+        assert!(
+            offered.len() > client_hello(Vec::new()).len(),
+            "control: no ALPN, a smaller hello"
+        );
+        assert!(
+            !contains(&client_hello(Vec::new()), b"http/1.1"),
+            "control: none offered, none on the wire"
+        );
+        assert!(
+            !contains(&client_hello(vec![b"h2".to_vec()]), b"http/1.1"),
+            "control: only what was named"
+        );
     }
 }

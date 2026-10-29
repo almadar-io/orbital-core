@@ -183,8 +183,8 @@ impl OrbitalSchema {
         grants
     }
 
-    /// The raw TCP targets the app's `egress` declares (`redis://`, `rediss://`, `postgres://`, `postgresql://`
-    /// origins) as `net` grants: the one declaration a protocol driver's `os/tcp-connect` is authorized by, so the
+    /// The raw TCP targets the app's `egress` declares (`<scheme>://` origins of the schemes the operator
+    /// table declares) as `net` grants: the one declaration a protocol driver's `os/tcp-connect` is authorized by, so the
     /// host's net check, the validator and the io-gate manifest all see the target without a second `net` entry.
     pub fn egress_net_grants(&self) -> crate::os_grants::OsGrants {
         let net = self

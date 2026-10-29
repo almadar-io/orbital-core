@@ -662,6 +662,11 @@ pub(super) fn answer(
         OsOp::DnsResolve => dns_resolve(args, host),
         OsOp::Shutdown => shutdown(args, host),
         OsOp::Close => return close(args, &host.handles.net),
+        OsOp::TlsUpgrade => Err(err(
+            op,
+            OsErrorKind::Unsupported,
+            "a kernel op: the kernel owns TLS and a host implements none",
+        )),
         OsOp::WatchPort => Err(err(
             op,
             OsErrorKind::Unsupported,

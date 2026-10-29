@@ -36,8 +36,8 @@ pub fn family_of(op: OsOp) -> OsFamily {
         Spawn | Wait | Kill | Pid | Ppid | CurrentExe | WatchProcess | WatchSignal | Getenv
         | Setenv | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite
         | Isatty | TtySize => OsFamily::Process,
-        TcpConnect | TcpListen | Send | Recv | UdpBind | Sendto | Recvfrom | DnsResolve
-        | Shutdown | WatchPort => OsFamily::Net,
+        TcpConnect | TcpListen | TlsUpgrade | Send | Recv | UdpBind | Sendto | Recvfrom
+        | DnsResolve | Shutdown | WatchPort => OsFamily::Net,
         ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
         | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
@@ -132,6 +132,7 @@ os_ops! {
     TtySize => ("os/tty-size", Single),
     TcpConnect => ("os/tcp-connect", Single),
     TcpListen => ("os/tcp-listen", Stream),
+    TlsUpgrade => ("os/tls-upgrade", Single),
     Send => ("os/send", Single),
     Recv => ("os/recv", Single),
     UdpBind => ("os/udp-bind", Single),
@@ -208,6 +209,11 @@ impl OsOp {
         )
     }
 
+    /// Whether the kernel owns the operation: it answers it itself and a host implements no part of it.
+    pub fn is_kernel_owned(self) -> bool {
+        self == OsOp::TlsUpgrade
+    }
+
     /// Whether the operation streams events to its call site's route.
     pub fn is_stream(self) -> bool {
         self.shape() == OsShape::Stream
@@ -243,6 +249,7 @@ pub enum OsErrorKind {
     Timeout,
     Unsupported,
     Closed,
+    Tls,
 }
 
 impl OsErrorKind {
@@ -257,6 +264,7 @@ impl OsErrorKind {
             OsErrorKind::Timeout => "timeout",
             OsErrorKind::Unsupported => "unsupported",
             OsErrorKind::Closed => "closed",
+            OsErrorKind::Tls => "tls",
         }
     }
 
@@ -271,6 +279,7 @@ impl OsErrorKind {
             OsErrorKind::Timeout,
             OsErrorKind::Unsupported,
             OsErrorKind::Closed,
+            OsErrorKind::Tls,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == name)
@@ -331,7 +340,7 @@ mod tests {
             assert!(op.name().starts_with("os/") || op.is_kv());
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 100);
+        assert_eq!(OsOp::ALL.len(), 101);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -469,6 +478,7 @@ mod tests {
             OsErrorKind::Timeout,
             OsErrorKind::Unsupported,
             OsErrorKind::Closed,
+            OsErrorKind::Tls,
         ] {
             assert_eq!(OsErrorKind::from_name(kind.as_str()), Some(kind));
         }
@@ -523,6 +533,7 @@ mod tests {
             OsErrorKind::Timeout,
             OsErrorKind::Unsupported,
             OsErrorKind::Closed,
+            OsErrorKind::Tls,
         ] {
             assert_eq!(
                 serde_json::to_value(kind).expect("ser"),

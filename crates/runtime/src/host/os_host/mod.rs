@@ -265,6 +265,7 @@ mod tests {
         ("os/isatty", "depends on how the test process is attached"),
         ("os/tty-size", "needs a terminal"),
         ("os/tcp-listen", "a stream: its first answer arrives through the completion sink (net/tests.rs)"),
+        ("os/tls-upgrade", "a kernel op: the kernel answers it and a host implements no TLS (kernel/tls_sockets.rs)"),
         ("os/dns-resolve", "needs a resolver"),
         ("os/mmio-read", "no devices on this host"),
         ("os/mmio-write", "no devices on this host"),
@@ -685,7 +686,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 10, 31, 5, 4]);
+        assert_eq!(counts, [32, 18, 11, 31, 5, 4]);
     }
 
     #[test]

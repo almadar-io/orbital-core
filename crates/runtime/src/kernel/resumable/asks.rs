@@ -87,22 +87,6 @@ pub enum IoRequest {
         delay_ms: Option<u64>,
         site: Option<CallSite>,
     },
-    /// A request of the `http` effect whose reply is a stream: the host dispatches each event to `site`'s
-    /// `onMessage` route as it arrives, then answers [`IoAnswer::Http`] with the final reply, body empty.
-    HttpStream {
-        request: HttpRequest,
-        key: Option<String>,
-        framing: StreamFraming,
-        site: Option<CallSite>,
-        /// In-process continuation; the wire contract never carries held credentials.
-        continuation: Option<Box<crate::http_request::HttpCallDriver>>,
-    },
-    /// The built request of a `browser/beacon`: the host queues it or sends one keepalive fetch, and answers how.
-    HttpBeacon {
-        request: HttpRequest,
-        key: Option<String>,
-        site: Option<CallSite>,
-    },
     /// The page facts a `browser/page-facts` asks for, in read order.
     PageFacts {
         fields: Vec<PageFactField>,
@@ -131,7 +115,7 @@ pub enum IoRequest {
         name: String,
         principal: Option<String>,
     },
-    /// Keep a derived secret (an OAuth token) in the host's store.
+    /// Keep a derived secret in the host's store.
     SecretSet {
         name: String,
         value: String,
@@ -192,11 +176,6 @@ pub enum IoRequest {
     /// Switch the host's integrations mode flag to `mock` or `real`; the host may refuse.
     CredentialModeWrite {
         mode: String,
-    },
-    /// What an OAuth flow asks the host to persist (`principal` is set by the kernel, never by the program).
-    OAuth {
-        ask: OAuthAsk,
-        principal: Option<String>,
     },
     /// An `emit` whose declared listener runs in another deployment unit (EXEC-QUEUE-9). `site` is the emitting
     /// trait's call site; `key` lets `cancel-call` withdraw the ask.
@@ -308,7 +287,6 @@ pub enum IoAnswer {
     Cancelled(Result<(), String>),
     Substrate(Result<Value, SubstrateFailure>),
     Http(Result<HttpResponse, TransportError>),
-    HttpBeacon(Result<BeaconOutcome, TransportError>),
     PageFacts(Result<PageFacts, String>),
     Prompt(Result<String, ModelFailure>),
     Embed(Result<Vec<Vec<f64>>, ModelFailure>),
@@ -328,7 +306,6 @@ pub enum IoAnswer {
     CredentialStoreRotate(Result<RotateCounts, String>),
     CredentialModeRead(Result<Option<String>, String>),
     CredentialModeWrite(Result<String, String>),
-    OAuth(Result<OAuthReply, String>),
     Deliver(Result<Accepted, DeliverRefusal>),
 }
 
@@ -457,25 +434,6 @@ impl std::fmt::Debug for IoRequest {
                 .field("delay_ms", delay_ms)
                 .field("site", site)
                 .finish(),
-            Self::HttpStream {
-                request,
-                key,
-                framing,
-                site,
-                ..
-            } => f
-                .debug_struct("HttpStream")
-                .field("request", request)
-                .field("key", key)
-                .field("framing", framing)
-                .field("site", site)
-                .finish(),
-            Self::HttpBeacon { request, key, site } => f
-                .debug_struct("HttpBeacon")
-                .field("request", request)
-                .field("key", key)
-                .field("site", site)
-                .finish(),
             Self::PageFacts { fields } => f.debug_struct("PageFacts").field("fields", fields).finish(),
             Self::Prompt { text, schema, key } => f
                 .debug_struct("Prompt")
@@ -539,11 +497,6 @@ impl std::fmt::Debug for IoRequest {
             Self::CredentialStoreRotate => f.write_str("CredentialStoreRotate"),
             Self::CredentialModeRead => f.write_str("CredentialModeRead"),
             Self::CredentialModeWrite { mode } => f.debug_struct("CredentialModeWrite").field("mode", mode).finish(),
-            Self::OAuth { ask, principal } => f
-                .debug_struct("OAuth")
-                .field("ask", ask)
-                .field("principal", principal)
-                .finish(),
             Self::Deliver { envelope, key, site } => f
                 .debug_struct("Deliver")
                 .field("envelope", envelope)
@@ -572,7 +525,6 @@ impl std::fmt::Debug for IoAnswer {
             Self::Cancelled(r) => f.debug_tuple("Cancelled").field(r).finish(),
             Self::Substrate(r) => f.debug_tuple("Substrate").field(r).finish(),
             Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
-            Self::HttpBeacon(r) => f.debug_tuple("HttpBeacon").field(r).finish(),
             Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
             Self::Prompt(r) => f.debug_tuple("Prompt").field(r).finish(),
             Self::Embed(r) => f.debug_tuple("Embed").field(r).finish(),
@@ -616,7 +568,6 @@ impl std::fmt::Debug for IoAnswer {
             Self::CredentialStoreRotate(r) => f.debug_tuple("CredentialStoreRotate").field(r).finish(),
             Self::CredentialModeRead(r) => f.debug_tuple("CredentialModeRead").field(r).finish(),
             Self::CredentialModeWrite(r) => f.debug_tuple("CredentialModeWrite").field(r).finish(),
-            Self::OAuth(r) => f.debug_tuple("OAuth").field(r).finish(),
             Self::Deliver(r) => f.debug_tuple("Deliver").field(r).finish(),
         }
     }
@@ -627,7 +578,7 @@ impl IoAnswer {
         if let (IoRequest::Os { op, key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && (site.is_some() || !op.defers_completion());
         }
-        if let (IoRequest::Http { key, .. } | IoRequest::HttpStream { key, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+        if let (IoRequest::Http { key, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some();
         }
         if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
@@ -668,12 +619,8 @@ impl IoAnswer {
                 | (IoRequest::CancelCall { .. }, IoAnswer::Cancelled(_))
                 | (IoRequest::Substrate { .. }, IoAnswer::Substrate(_))
                 | (
-                    IoRequest::Http { .. } | IoRequest::HttpStream { .. },
+                    IoRequest::Http { .. },
                     IoAnswer::Http(_) | IoAnswer::ServiceCancelled
-                )
-                | (
-                    IoRequest::HttpBeacon { .. },
-                    IoAnswer::HttpBeacon(_) | IoAnswer::ServiceCancelled
                 )
                 | (IoRequest::PageFacts { .. }, IoAnswer::PageFacts(_))
                 | (IoRequest::Prompt { .. }, IoAnswer::Prompt(_) | IoAnswer::ServiceCancelled)
@@ -694,7 +641,6 @@ impl IoAnswer {
                 | (IoRequest::CredentialStoreRotate, IoAnswer::CredentialStoreRotate(_))
                 | (IoRequest::CredentialModeRead, IoAnswer::CredentialModeRead(_))
                 | (IoRequest::CredentialModeWrite { .. }, IoAnswer::CredentialModeWrite(_))
-                | (IoRequest::OAuth { .. }, IoAnswer::OAuth(_))
                 | (IoRequest::Deliver { .. }, IoAnswer::Deliver(_))
         )
     }

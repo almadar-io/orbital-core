@@ -231,200 +231,8 @@ impl RuntimeKernel {
                     }
                 }
             }
-            Effect::OAuthAuthorize {
-                client, options, ..
-            } => self.run_oauth_authorize(effect, client, options, principal.as_deref()),
-            Effect::OAuthConnectionStatus { provider, .. }
-            | Effect::OAuthConnectionForget { provider, .. } => {
-                self.run_oauth_connection(effect, provider, principal.as_deref())
-            }
             other => EffectResult::noop(other.clone(), "not a host effect"),
         }
-    }
-
-    /// Run an `http` effect on the shared driver loop; the `HttpCallDriver` owns credentials, OAuth, pagination and
-    /// streaming, and every ask it makes is journaled.
-    pub(super) fn run_http(
-        &self,
-        effect: &Effect,
-        principal: Option<&str>,
-        now_ms: Option<f64>,
-    ) -> EffectResult {
-        use crate::{
-            driver::{drive, DriveContext, DriveEnd},
-            http_request::HttpCallDriver,
-        };
-        let Effect::Http {
-            method,
-            origin,
-            path,
-            request,
-            key,
-            ..
-        } = effect
-        else {
-            return EffectResult::noop(effect.clone(), "not an http effect");
-        };
-        let key = match key
-            .as_ref()
-            .map(orbital_core_base::effect_types::call_key_text)
-            .transpose()
-        {
-            Ok(key) => key,
-            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-        };
-        let spec = match http_request::parse_http_call(
-            *method,
-            &origin.to_string_value(),
-            &path.to_string_value(),
-            request,
-        ) {
-            Ok(spec) => spec,
-            Err(refusal) => {
-                return http_failure(
-                    effect,
-                    http_request::with_key(
-                        http_request::refusal_payload(&refusal),
-                        &key.map(str::to_string),
-                    ),
-                )
-            }
-        };
-        let egress = self.grants.egress.read().clone();
-        let (mut driver, step) = HttpCallDriver::start_as(
-            spec,
-            egress,
-            key.map(str::to_string),
-            now_ms,
-            principal.map(str::to_string),
-        );
-        match drive(&self.io, &mut driver, step, DriveContext { principal, key }) {
-            DriveEnd::Done(Ok(payload)) => {
-                EffectResult::executed_with_value(effect.clone(), payload)
-            }
-            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
-            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => {
-                EffectResult::failed(effect.clone(), "an http call asked for a beacon")
-            }
-        }
-    }
-
-    #[cfg(feature = "wire-drivers")]
-    /// Run a `redis` effect on the shared driver loop; the `RedisDriver` owns the RESP protocol, the handshake and the
-    /// credential, and every ask it makes is a journaled `os/*` or secret ask.
-    pub(super) fn run_redis(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
-        use crate::{
-            driver::{drive, DriveContext, DriveEnd},
-            redis::{self, RedisDriver},
-        };
-        let Effect::Redis {
-            origin,
-            command,
-            options,
-            key,
-            ..
-        } = effect
-        else {
-            return EffectResult::noop(effect.clone(), "not a redis effect");
-        };
-        let key = match key
-            .as_ref()
-            .map(orbital_core_base::effect_types::call_key_text)
-            .transpose()
-        {
-            Ok(key) => key.map(str::to_string),
-            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-        };
-        let spec = match redis::parse_redis_call(origin, command, options) {
-            Ok(spec) => spec,
-            Err(refusal) => return http_failure(effect, redis::refusal_payload(&refusal, &key)),
-        };
-        let egress = self.grants.egress.read().clone();
-        let (mut driver, step) = RedisDriver::start(spec, egress, key.clone());
-        match drive(
-            &self.io,
-            &mut driver,
-            step,
-            DriveContext {
-                principal,
-                key: None,
-            },
-        ) {
-            DriveEnd::Done(Ok(payload)) => {
-                EffectResult::executed_with_value(effect.clone(), payload)
-            }
-            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
-            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => {
-                EffectResult::failed(effect.clone(), "a redis call asked for a beacon")
-            }
-        }
-    }
-
-    #[cfg(not(feature = "wire-drivers"))]
-    pub(super) fn run_redis(&self, effect: &Effect, _principal: Option<&str>) -> EffectResult {
-        EffectResult::failed(effect.clone(), WIRE_DRIVERS_UNAVAILABLE)
-    }
-
-    #[cfg(feature = "wire-drivers")]
-    /// Run a `postgres` effect on the shared driver loop; the `PostgresDriver` owns the Postgres protocol, the login
-    /// and the result decoding, and every ask it makes is a journaled `os/*`, secret, random or clock ask.
-    pub(super) fn run_postgres(&self, effect: &Effect, principal: Option<&str>) -> EffectResult {
-        use crate::{
-            driver::{drive, DriveContext, DriveEnd},
-            postgres::{self, PostgresDriver},
-        };
-        let Effect::Postgres {
-            origin,
-            sql,
-            params,
-            options,
-            key,
-            ..
-        } = effect
-        else {
-            return EffectResult::noop(effect.clone(), "not a postgres effect");
-        };
-        let key = match key
-            .as_ref()
-            .map(orbital_core_base::effect_types::call_key_text)
-            .transpose()
-        {
-            Ok(key) => key.map(str::to_string),
-            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-        };
-        let spec = match postgres::parse_postgres_call(origin, sql, params, options) {
-            Ok(spec) => spec,
-            Err(refusal) => {
-                return http_failure(effect, crate::redis::refusal_payload(&refusal, &key))
-            }
-        };
-        let egress = self.grants.egress.read().clone();
-        let (mut driver, step) = PostgresDriver::start(spec, egress, key.clone());
-        match drive(
-            &self.io,
-            &mut driver,
-            step,
-            DriveContext {
-                principal,
-                key: None,
-            },
-        ) {
-            DriveEnd::Done(Ok(payload)) => {
-                EffectResult::executed_with_value(effect.clone(), payload)
-            }
-            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
-            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => {
-                EffectResult::failed(effect.clone(), "a postgres call asked for a beacon")
-            }
-        }
-    }
-
-    #[cfg(not(feature = "wire-drivers"))]
-    pub(super) fn run_postgres(&self, effect: &Effect, _principal: Option<&str>) -> EffectResult {
-        EffectResult::failed(effect.clone(), WIRE_DRIVERS_UNAVAILABLE)
     }
 
     /// Run an `os/<op>` effect through one journaled ask. A streaming op needs a key, so `cancel-call` can end it.
@@ -465,82 +273,21 @@ impl RuntimeKernel {
             ])),
             (None, payload) => payload,
         };
-        match self.io.os(*op, args, key) {
+        #[cfg(feature = "wire-drivers")]
+        let outcome = self.tls_os(*op, args, key).unwrap_or_else(|| self.io.os(*op, args, key));
+        #[cfg(not(feature = "wire-drivers"))]
+        let outcome = if op.is_kernel_owned() {
+            Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
+        } else {
+            self.io.os(*op, args, key)
+        };
+        match outcome {
             Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),
             Err(error) => {
                 let mut result = os_failure(effect, &error);
                 result.return_value = result.return_value.take().map(keyed);
                 result
             }
-        }
-    }
-
-    /// Run a `browser/beacon`: the one http driver parses, builds and egress-checks the request, and only the
-    /// built request reaches the host's beacon port. A kernel with no host to answer fails `unavailable`.
-    pub(super) fn run_beacon(&self, effect: &Effect) -> EffectResult {
-        use crate::{
-            driver::{drive, DriveContext, DriveEnd},
-            http_request::HttpCallDriver,
-        };
-        let Effect::BrowserBeacon {
-            url, request, key, ..
-        } = effect
-        else {
-            return EffectResult::noop(effect.clone(), "not a beacon effect");
-        };
-        let key = match key
-            .as_ref()
-            .map(orbital_core_base::effect_types::call_key_text)
-            .transpose()
-        {
-            Ok(key) => key.map(str::to_string),
-            Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-        };
-        let Value::String(url) = url else {
-            return http_failure(
-                effect,
-                http_request::with_key(
-                    http_request::refusal_payload(
-                        &orbital_core_base::http_wire::HttpRefusal::Invalid(
-                            "a beacon URL must be a string".to_string(),
-                        ),
-                    ),
-                    &key,
-                ),
-            );
-        };
-        let spec = match http_request::parse_beacon_call(url, request) {
-            Ok(spec) => spec,
-            Err(refusal) => {
-                return http_failure(
-                    effect,
-                    http_request::with_key(http_request::refusal_payload(&refusal), &key),
-                )
-            }
-        };
-        let egress = self.grants.egress.read().clone();
-        let (mut driver, step) = HttpCallDriver::start(spec, egress, key.clone());
-        match drive(
-            &self.io,
-            &mut driver,
-            step,
-            DriveContext {
-                principal: None,
-                key: key.as_deref(),
-            },
-        ) {
-            DriveEnd::Done(Ok(payload)) => {
-                EffectResult::executed_with_value(effect.clone(), payload)
-            }
-            DriveEnd::Done(Err(payload)) => http_failure(effect, payload),
-            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => http_failure(
-                effect,
-                http_request::with_key(
-                    http_request::unavailable_payload("browser/beacon: no host answers beacons"),
-                    &key,
-                ),
-            ),
         }
     }
 
@@ -620,36 +367,16 @@ impl RuntimeKernel {
         }
     }
 
-    /// Run a `browser/tab-<op>` effect: the request is validated and the result shaped here, the host is asked
-    /// only for raw tab and page operations, each one a journaled ask on the shared driver loop.
+    /// A `browser/tab-<op>` effect: the request is validated here; the kernel has no tab driver, so a valid one fails
+    /// until a std atom shapes the results of the raw tab asks the host answers.
     pub(super) fn run_browser_tab(&self, effect: &Effect) -> EffectResult {
-        use crate::{
-            driver::{drive, DriveContext, DriveEnd},
-            tab::{refusal_payload, TabDriver},
-        };
         use orbital_core_base::tab_call::{parse_tab_call, WatchScope};
-        let Effect::BrowserTab {
-            op, request, key, ..
-        } = effect
-        else {
+        let Effect::BrowserTab { op, request, key, .. } = effect else {
             return EffectResult::noop(effect.clone(), "not a browser tab effect");
         };
-        let key = match key
-            .as_ref()
-            .map(orbital_core_base::effect_types::call_key_text)
-            .transpose()
-        {
+        let key = match key.as_ref().map(orbital_core_base::effect_types::call_key_text).transpose() {
             Ok(key) => key.map(str::to_string),
             Err(error) => return EffectResult::failed(effect.clone(), &error.to_string()),
-        };
-        let failed = |payload: Value| {
-            let message = payload
-                .get_path("error")
-                .map(Value::to_string_value)
-                .unwrap_or_default();
-            let mut result = EffectResult::failed(effect.clone(), &message);
-            result.return_value = Some(payload);
-            result
         };
         let (caller_orbital, caller_trait) = self.caller_position();
         let inputs = self.external_inputs();
@@ -658,28 +385,9 @@ impl RuntimeKernel {
             caller_trait: &caller_trait,
             inputs: &inputs,
         };
-        let call = match parse_tab_call(*op, request, Some(&scope), key.as_deref()) {
-            Ok(call) => call,
-            Err(message) => return failed(refusal_payload(&message, key.as_deref())),
-        };
-        let (mut driver, step) = TabDriver::start(call);
-        match drive(
-            &self.io,
-            &mut driver,
-            step,
-            DriveContext {
-                principal: None,
-                key: key.as_deref(),
-            },
-        ) {
-            DriveEnd::Done(Ok(payload)) => {
-                EffectResult::executed_with_value(effect.clone(), payload)
-            }
-            DriveEnd::Done(Err(payload)) => failed(payload),
-            DriveEnd::AwaitingHost => EffectResult::failed(effect.clone(), AWAITING_HOST),
-            DriveEnd::NoBeaconHost => {
-                EffectResult::failed(effect.clone(), "a browser tab call asked for a beacon")
-            }
+        match parse_tab_call(*op, request, Some(&scope), key.as_deref()) {
+            Ok(_) => EffectResult::failed(effect.clone(), "browser/tab-*: the kernel has no tab driver"),
+            Err(message) => EffectResult::failed(effect.clone(), &message),
         }
     }
 

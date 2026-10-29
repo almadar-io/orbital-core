@@ -94,46 +94,6 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::Http {
-                origin,
-                path,
-                request,
-                key,
-                ..
-            } => {
-                for expr in [origin, path].into_iter().chain(request).chain(key) {
-                    expr.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::Redis {
-                origin,
-                command,
-                options,
-                key,
-                ..
-            } => {
-                for expr in [origin, command].into_iter().chain(options).chain(key) {
-                    expr.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::Postgres {
-                origin,
-                sql,
-                params,
-                options,
-                key,
-                ..
-            } => {
-                for expr in [origin, sql, params].into_iter().chain(options).chain(key) {
-                    expr.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
             Self::CancelCall { key } => {
                 key.collect_bindings()
                     .into_iter()
@@ -141,21 +101,6 @@ impl OirEffect {
             }
             Self::Os { args, key, .. } => {
                 for expr in args.iter().chain(key) {
-                    expr.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
-            Self::OAuthAuthorize {
-                client,
-                options,
-                key,
-                ..
-            } => {
-                for expr in [Some(client), Some(options), key.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
                     expr.collect_bindings()
                         .into_iter()
                         .for_each(|b| bindings.push(b));
@@ -175,9 +120,7 @@ impl OirEffect {
                 credential: expr, ..
             }
             | Self::CredentialAdmin { request: expr, .. }
-            | Self::AccessCheck { request: expr, .. }
-            | Self::OAuthConnectionStatus { provider: expr, .. }
-            | Self::OAuthConnectionForget { provider: expr, .. } => {
+            | Self::AccessCheck { request: expr, .. } => {
                 expr.collect_bindings()
                     .into_iter()
                     .for_each(|b| bindings.push(b));
@@ -298,18 +241,6 @@ impl OirEffect {
                         .for_each(|b| bindings.push(b));
                 }
             }
-            Self::BrowserBeacon {
-                url, request, key, ..
-            } => {
-                for e in [Some(url), Some(request), key.as_ref()]
-                    .into_iter()
-                    .flatten()
-                {
-                    e.collect_bindings()
-                        .into_iter()
-                        .for_each(|b| bindings.push(b));
-                }
-            }
             Self::BrowserPrompt {
                 text, schema, key, ..
             } => {
@@ -403,44 +334,6 @@ impl OirEffect {
                 out.push(args);
                 push_opt(&mut out, key);
             }
-            Self::Http {
-                origin,
-                path,
-                request,
-                key,
-                ..
-            } => {
-                out.push(origin);
-                out.push(path);
-                push_opt(&mut out, request);
-                push_opt(&mut out, key);
-            }
-            Self::Redis {
-                origin,
-                command,
-                options,
-                key,
-                ..
-            } => {
-                out.push(origin);
-                out.push(command);
-                push_opt(&mut out, options);
-                push_opt(&mut out, key);
-            }
-            Self::Postgres {
-                origin,
-                sql,
-                params,
-                options,
-                key,
-                ..
-            } => {
-                out.push(origin);
-                out.push(sql);
-                out.push(params);
-                push_opt(&mut out, options);
-                push_opt(&mut out, key);
-            }
             Self::CancelCall { key } => out.push(key),
             Self::Os { args, key, .. } => {
                 out.extend(args.iter());
@@ -457,19 +350,7 @@ impl OirEffect {
                 credential: expr, ..
             }
             | Self::CredentialAdmin { request: expr, .. }
-            | Self::AccessCheck { request: expr, .. }
-            | Self::OAuthConnectionStatus { provider: expr, .. }
-            | Self::OAuthConnectionForget { provider: expr, .. } => out.push(expr),
-            Self::OAuthAuthorize {
-                client,
-                options,
-                key,
-                ..
-            } => {
-                out.push(client);
-                out.push(options);
-                push_opt(&mut out, key);
-            }
+            | Self::AccessCheck { request: expr, .. } => out.push(expr),
             Self::Spawn { props, .. } => out.push(props),
             Self::Despawn { entity_id } => out.push(entity_id),
             Self::Log { message, .. } => out.push(message),
@@ -505,13 +386,6 @@ impl OirEffect {
             Self::BrowserGeolocationCurrent { options, .. } => push_opt(&mut out, options),
             Self::BrowserPushSubscribe { .. } => {}
             Self::BrowserPageFacts { key, .. } => push_opt(&mut out, key),
-            Self::BrowserBeacon {
-                url, request, key, ..
-            } => {
-                out.push(url);
-                out.push(request);
-                push_opt(&mut out, key);
-            }
             Self::BrowserPrompt {
                 text, schema, key, ..
             } => {

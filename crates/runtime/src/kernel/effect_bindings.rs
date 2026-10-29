@@ -59,49 +59,6 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
-        Effect::Http {
-            method,
-            origin,
-            path,
-            request,
-            key,
-            emit,
-        } => Effect::Http {
-            method,
-            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
-            path: ctx.resolve_value_checked(&path)?.into_owned(),
-            request: resolve_http_request(&request, ctx)?,
-            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
-            emit,
-        },
-        Effect::Postgres {
-            origin,
-            sql,
-            params,
-            options,
-            key,
-            emit,
-        } => Effect::Postgres {
-            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
-            sql: ctx.resolve_value_checked(&sql)?.into_owned(),
-            params: ctx.resolve_value_checked(&params)?.into_owned(),
-            options: ctx.resolve_value_checked(&options)?.into_owned(),
-            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
-            emit,
-        },
-        Effect::Redis {
-            origin,
-            command,
-            options,
-            key,
-            emit,
-        } => Effect::Redis {
-            origin: ctx.resolve_value_checked(&origin)?.into_owned(),
-            command: ctx.resolve_value_checked(&command)?.into_owned(),
-            options: ctx.resolve_value_checked(&options)?.into_owned(),
-            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
-            emit,
-        },
         Effect::BrowserPageFacts { fields, key, emit } => Effect::BrowserPageFacts {
             fields: ctx.resolve_value_checked(&fields)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
@@ -131,17 +88,6 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
         },
         Effect::BrowserEmbed { texts, key, emit } => Effect::BrowserEmbed {
             texts: ctx.resolve_value_checked(&texts)?.into_owned(),
-            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
-            emit,
-        },
-        Effect::BrowserBeacon {
-            url,
-            request,
-            key,
-            emit,
-        } => Effect::BrowserBeacon {
-            url: ctx.resolve_value_checked(&url)?.into_owned(),
-            request: ctx.resolve_value_checked(&request)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
@@ -188,25 +134,6 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
         },
         Effect::AccessCheck { request, emit } => Effect::AccessCheck {
             request: ctx.resolve_value_checked(&request)?.into_owned(),
-            emit,
-        },
-        Effect::OAuthAuthorize {
-            client,
-            options,
-            key,
-            emit,
-        } => Effect::OAuthAuthorize {
-            client: ctx.resolve_value_checked(&client)?.into_owned(),
-            options: ctx.resolve_value_checked(&options)?.into_owned(),
-            key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
-            emit,
-        },
-        Effect::OAuthConnectionStatus { provider, emit } => Effect::OAuthConnectionStatus {
-            provider: ctx.resolve_value_checked(&provider)?.into_owned(),
-            emit,
-        },
-        Effect::OAuthConnectionForget { provider, emit } => Effect::OAuthConnectionForget {
-            provider: ctx.resolve_value_checked(&provider)?.into_owned(),
             emit,
         },
         other => other,
@@ -296,11 +223,7 @@ pub(super) fn resolved_when_run(effect: &Effect) -> bool {
         effect,
         Effect::Emit { .. }
             | Effect::CallService { .. }
-            | Effect::Http { .. }
-            | Effect::Redis { .. }
-            | Effect::Postgres { .. }
             | Effect::Os { .. }
-            | Effect::BrowserBeacon { .. }
             | Effect::BrowserPrompt { .. }
             | Effect::BrowserTab { .. }
             | Effect::BrowserPageFacts { .. }
@@ -333,44 +256,6 @@ pub(super) fn http_failure(effect: &Effect, payload: Value) -> EffectResult {
     let mut result = EffectResult::failed(effect.clone(), &message);
     result.return_value = Some(payload);
     result
-}
-
-/// The request with its bindings resolved, except `paginate.next` and `paginate.collect`: those are
-/// evaluated per page against `@response`.
-pub(super) fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
-    let held = request
-        .as_object()
-        .and_then(|fields| fields.get("paginate"))
-        .and_then(Value::as_object)
-        .map(|paginate| {
-            ["next", "collect"]
-                .into_iter()
-                .filter_map(|k| paginate.get(k).map(|v| (k.to_string(), v.clone())))
-                .collect::<Vec<_>>()
-        })
-        .filter(|held| !held.is_empty());
-    let Some(held) = held else {
-        return Ok(ctx.resolve_value_checked(request)?.into_owned());
-    };
-    let mut stripped = request.clone();
-    if let Some(Value::Object(paginate)) = stripped
-        .as_object_mut()
-        .and_then(|fields| fields.get_mut("paginate"))
-    {
-        for (k, _) in &held {
-            paginate.shift_remove(k);
-        }
-    }
-    let mut resolved = ctx.resolve_value_checked(&stripped)?.into_owned();
-    if let Some(Value::Object(paginate)) = resolved
-        .as_object_mut()
-        .and_then(|fields| fields.get_mut("paginate"))
-    {
-        for (k, v) in held {
-            paginate.insert(k.into(), v);
-        }
-    }
-    Ok(resolved)
 }
 
 /// The fields a `browser/page-facts` asks for: a non-empty, duplicate-free list of the closed words.

@@ -70,29 +70,16 @@ impl EffectExecutor {
                 Ok(key) => self.do_call_service(service, method, args, key, ctx),
                 Err(error) => EffectResult::failed(effect.clone(), &error.to_string()),
             },
-            Effect::Http { .. } => {
-                EffectResult::noop(effect.clone(), "http is run by the kernel, which owns its host I/O")
-            }
-            Effect::Redis { .. } => {
-                EffectResult::noop(effect.clone(), "redis is run by the kernel, which owns its host I/O")
-            }
-            Effect::Postgres { .. } => {
-                EffectResult::noop(effect.clone(), "postgres is run by the kernel, which owns its host I/O")
-            }
             Effect::CancelCall { key } => self.do_cancel_call(key),
             Effect::RandomBytes { .. }
             | Effect::Os { .. }
             | Effect::CredentialStatus { .. }
             | Effect::CredentialForget { .. }
             | Effect::CredentialAdmin { .. }
-            | Effect::AccessCheck { .. }
-            | Effect::OAuthAuthorize { .. }
-            | Effect::OAuthConnectionStatus { .. }
-            | Effect::OAuthConnectionForget { .. } => {
+            | Effect::AccessCheck { .. } => {
                 EffectResult::noop(effect.clone(), "host effects are run by the kernel, which owns its host I/O")
             }
             Effect::BrowserPageFacts { .. }
-            | Effect::BrowserBeacon { .. }
             | Effect::BrowserPrompt { .. }
             | Effect::BrowserEmbed { .. }
             | Effect::BrowserTab { .. } => {

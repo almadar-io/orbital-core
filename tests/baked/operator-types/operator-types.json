@@ -5999,10 +5999,10 @@
       }
     },
     {
-      "name": "time/day: [\"time/day\",1700000000000]",
+      "name": "time/day: [\"time/day\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/day",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 14
@@ -6017,19 +6017,17 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/diff: [\"time/diff\",1700000000000,[\"time/now\"],\"year\"]",
+      "name": "time/diff: [\"time/diff\",\"2023-11-14T22:13:20.000Z\",\"2025-11-14T22:13:20.000Z\",\"year\"]",
       "expr": [
         "time/diff",
-        1700000000000,
-        [
-          "time/now"
-        ],
+        "2023-11-14T22:13:20.000Z",
+        "2025-11-14T22:13:20.000Z",
         "year"
       ],
       "expect": {
@@ -6041,16 +6039,14 @@
       "expr": [
         "time/diff",
         "5",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         "year"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6058,15 +6054,15 @@
       "name": "time/diff: argument 1 is string",
       "expr": [
         "time/diff",
-        1700000000000,
+        "2023-11-14T22:13:20.000Z",
         "5",
         "year"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6074,10 +6070,8 @@
       "name": "time/diff: argument 2 is number",
       "expr": [
         "time/diff",
-        1700000000000,
-        [
-          "time/now"
-        ],
+        "2023-11-14T22:13:20.000Z",
+        "2025-11-14T22:13:20.000Z",
         5
       ],
       "expect": {
@@ -6113,16 +6107,14 @@
       }
     },
     {
-      "name": "time/endOf: [\"time/endOf\",[\"time/now\"],\"month\"]",
+      "name": "time/endOf: [\"time/endOf\",\"2025-11-14T22:13:20.000Z\",\"month\"]",
       "expr": [
         "time/endOf",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         "month"
       ],
       "expect": {
-        "value": 1793491199999
+        "value": "2025-11-30T23:59:59.999Z"
       }
     },
     {
@@ -6135,8 +6127,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6144,9 +6136,7 @@
       "name": "time/endOf: argument 1 is number",
       "expr": [
         "time/endOf",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         5
       ],
       "expect": {
@@ -6158,10 +6148,10 @@
       }
     },
     {
-      "name": "time/format: [\"time/format\",1700000000000,\"MMM DD, YYYY\"]",
+      "name": "time/format: [\"time/format\",\"2023-11-14T22:13:20.000Z\",\"MMM DD, YYYY\"]",
       "expr": [
         "time/format",
-        1700000000000,
+        "2023-11-14T22:13:20.000Z",
         "MMM DD, YYYY"
       ],
       "expect": {
@@ -6178,8 +6168,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6187,7 +6177,7 @@
       "name": "time/format: argument 1 is number",
       "expr": [
         "time/format",
-        1700000000000,
+        "2023-11-14T22:13:20.000Z",
         5
       ],
       "expect": {
@@ -6199,13 +6189,11 @@
       }
     },
     {
-      "name": "time/isAfter: [\"time/isAfter\",[\"time/now\"],1700000000000]",
+      "name": "time/isAfter: [\"time/isAfter\",\"2025-11-14T22:13:20.000Z\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/isAfter",
-        [
-          "time/now"
-        ],
-        1700000000000
+        "2025-11-14T22:13:20.000Z",
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": true
@@ -6216,13 +6204,13 @@
       "expr": [
         "time/isAfter",
         "5",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6230,25 +6218,23 @@
       "name": "time/isAfter: argument 1 is string",
       "expr": [
         "time/isAfter",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         "5"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/isBefore: [\"time/isBefore\",1700000000000,1700086400000]",
+      "name": "time/isBefore: [\"time/isBefore\",\"2023-11-14T22:13:20.000Z\",\"2023-11-15T22:13:20.000Z\"]",
       "expr": [
         "time/isBefore",
-        1700000000000,
-        1700086400000
+        "2023-11-14T22:13:20.000Z",
+        "2023-11-15T22:13:20.000Z"
       ],
       "expect": {
         "value": true
@@ -6259,13 +6245,13 @@
       "expr": [
         "time/isBefore",
         "5",
-        1700086400000
+        "2023-11-15T22:13:20.000Z"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6273,26 +6259,24 @@
       "name": "time/isBefore: argument 1 is string",
       "expr": [
         "time/isBefore",
-        1700000000000,
+        "2023-11-14T22:13:20.000Z",
         "5"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/isBetween: [\"time/isBetween\",[\"time/now\"],1700000000000,2000000000000]",
+      "name": "time/isBetween: [\"time/isBetween\",\"2025-11-14T22:13:20.000Z\",\"2023-11-14T22:13:20.000Z\",\"2033-05-18T03:33:20.000Z\"]",
       "expr": [
         "time/isBetween",
-        [
-          "time/now"
-        ],
-        1700000000000,
-        2000000000000
+        "2025-11-14T22:13:20.000Z",
+        "2023-11-14T22:13:20.000Z",
+        "2033-05-18T03:33:20.000Z"
       ],
       "expect": {
         "value": true
@@ -6303,14 +6287,14 @@
       "expr": [
         "time/isBetween",
         "5",
-        1700000000000,
-        2000000000000
+        "2023-11-14T22:13:20.000Z",
+        "2033-05-18T03:33:20.000Z"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6318,17 +6302,15 @@
       "name": "time/isBetween: argument 1 is string",
       "expr": [
         "time/isBetween",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         "5",
-        2000000000000
+        "2033-05-18T03:33:20.000Z"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6336,26 +6318,24 @@
       "name": "time/isBetween: argument 2 is string",
       "expr": [
         "time/isBetween",
-        [
-          "time/now"
-        ],
-        1700000000000,
+        "2025-11-14T22:13:20.000Z",
+        "2023-11-14T22:13:20.000Z",
         "5"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/isSame: [\"time/isSame\",1700000000000,1700001000000,\"day\"]",
+      "name": "time/isSame: [\"time/isSame\",\"2023-11-14T22:13:20.000Z\",\"2023-11-14T22:30:00.000Z\",\"day\"]",
       "expr": [
         "time/isSame",
-        1700000000000,
-        1700001000000,
+        "2023-11-14T22:13:20.000Z",
+        "2023-11-14T22:30:00.000Z",
         "day"
       ],
       "expect": {
@@ -6367,14 +6347,14 @@
       "expr": [
         "time/isSame",
         "5",
-        1700001000000,
+        "2023-11-14T22:30:00.000Z",
         "day"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6382,15 +6362,15 @@
       "name": "time/isSame: argument 1 is string",
       "expr": [
         "time/isSame",
-        1700000000000,
+        "2023-11-14T22:13:20.000Z",
         "5",
         "day"
       ],
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6398,8 +6378,8 @@
       "name": "time/isSame: argument 2 is number",
       "expr": [
         "time/isSame",
-        1700000000000,
-        1700001000000,
+        "2023-11-14T22:13:20.000Z",
+        "2023-11-14T22:30:00.000Z",
         5
       ],
       "expect": {
@@ -6411,10 +6391,10 @@
       }
     },
     {
-      "name": "time/minute: [\"time/minute\",1700000000000]",
+      "name": "time/minute: [\"time/minute\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/minute",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 13
@@ -6429,16 +6409,16 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/month: [\"time/month\",1700000000000]",
+      "name": "time/month: [\"time/month\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/month",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 11
@@ -6453,8 +6433,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6465,24 +6445,28 @@
         "2024-01-18"
       ],
       "expect": {
-        "value": 1705536000000
+        "value": "2024-01-18"
       }
     },
     {
-      "name": "time/parse: a number is a date value held as epoch ms",
+      "name": "time/parse: a number is refused (dates are ISO-8601 text)",
       "expr": [
         "time/parse",
         5
       ],
       "expect": {
-        "value": 5
+        "error": {
+          "kind": "TypeMismatch",
+          "expected": "string",
+          "actual": "number"
+        }
       }
     },
     {
-      "name": "time/second: [\"time/second\",1700000000000]",
+      "name": "time/second: [\"time/second\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/second",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 20
@@ -6497,22 +6481,20 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/startOf: [\"time/startOf\",[\"time/now\"],\"month\"]",
+      "name": "time/startOf: [\"time/startOf\",\"2025-11-14T22:13:20.000Z\",\"month\"]",
       "expr": [
         "time/startOf",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         "month"
       ],
       "expect": {
-        "value": 1790812800000
+        "value": "2025-11-01T00:00:00.000Z"
       }
     },
     {
@@ -6525,8 +6507,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
@@ -6534,9 +6516,7 @@
       "name": "time/startOf: argument 1 is number",
       "expr": [
         "time/startOf",
-        [
-          "time/now"
-        ],
+        "2025-11-14T22:13:20.000Z",
         5
       ],
       "expect": {
@@ -6548,10 +6528,10 @@
       }
     },
     {
-      "name": "time/weekday: [\"time/weekday\",1700000000000]",
+      "name": "time/weekday: [\"time/weekday\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/weekday",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 2
@@ -6566,16 +6546,16 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },
     {
-      "name": "time/year: [\"time/year\",1700000000000]",
+      "name": "time/year: [\"time/year\",\"2023-11-14T22:13:20.000Z\"]",
       "expr": [
         "time/year",
-        1700000000000
+        "2023-11-14T22:13:20.000Z"
       ],
       "expect": {
         "value": 2023
@@ -6590,8 +6570,8 @@
       "expect": {
         "error": {
           "kind": "TypeMismatch",
-          "expected": "number",
-          "actual": "string"
+          "expected": "date or datetime (ISO-8601 text)",
+          "actual": "\"5\""
         }
       }
     },

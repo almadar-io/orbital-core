@@ -275,6 +275,14 @@ impl OsGrants {
         })
     }
 
+    /// Whether a grant of `kind` names `host` at any port: the check for a TLS server name, which carries no port.
+    pub fn net_names_host(&self, host: &str, kind: NetKind) -> bool {
+        let host = host.trim_start_matches('[').trim_end_matches(']');
+        self.net.iter().any(|g| {
+            g.kinds.contains(&kind) && split_target(&g.target).is_some_and(|(h, _)| h.eq_ignore_ascii_case(host))
+        })
+    }
+
     pub fn env_allows(&self, name: &str) -> bool {
         self.env.iter().any(|n| n == name)
     }

@@ -391,6 +391,9 @@ impl RuntimeKernel {
             let Effect::Emit { event, payload } = &er.effect else {
                 return None;
             };
+            if matches!(er.outcome, orbital_core_base::effect_types::EffectOutcome::Failed) {
+                return None;
+            }
             let schema = declared.iter().find(|emit| &emit.event == event)?.payload_schema.as_deref()?;
             let failures = self.payload_failures(trait_name, event, schema, payload);
             (!failures.is_empty()).then(|| {

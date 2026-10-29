@@ -678,3 +678,83 @@ fn a_navigate_effect_mounts_the_page_it_lands_on() {
     assert_eq!(main_prop(&core, "title"), ["9"]);
     assert!(!core.page_entered, "the blocking dispatch mounted it");
 }
+
+struct TickRecorder(std::sync::Mutex<Vec<(String, String)>>);
+
+impl crate::client::bridge::ServerBridge for TickRecorder {
+    fn send_event_with_options(
+        &self,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+        _: orbital_core_base::value::Value,
+    ) -> Result<EventResponse, crate::client::http::BridgeError> {
+        Ok(EventResponse::success(""))
+    }
+
+    fn tick(
+        &self,
+        _: &str,
+        trait_name: &str,
+        tick_name: &str,
+        _: Option<&str>,
+    ) -> Result<EventResponse, crate::client::http::BridgeError> {
+        self.0.lock().unwrap().push((trait_name.to_string(), tick_name.to_string()));
+        Ok(EventResponse::success(""))
+    }
+}
+
+fn ticking_schema(ticks: serde_json::Value) -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "t",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "O",
+            "entity": { "name": "E", "persistence": "runtime", "fields": [] },
+            "traits": [{
+                "name": "T",
+                "linkedEntity": "E",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "events": [],
+                    "transitions": []
+                },
+                "ticks": ticks
+            }],
+            "pages": []
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_frame_tick_runs_through_the_kernel_tick_clock_on_every_host_frame() {
+    let recorder = Arc::new(TickRecorder(Default::default()));
+    let mut core = ClientCore::new(
+        ticking_schema(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }])),
+        Some(recorder.clone()),
+    );
+    assert!(core.has_ticks());
+    assert!(core.drive_ticks_blocking());
+    assert!(core.drive_ticks_blocking());
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        [("T".to_string(), "f".to_string()), ("T".to_string(), "f".to_string())]
+    );
+}
+
+#[test]
+fn control_an_interval_tick_waits_out_its_interval_and_a_tickless_orbital_runs_nothing() {
+    let recorder = Arc::new(TickRecorder(Default::default()));
+    let mut slow = ClientCore::new(
+        ticking_schema(serde_json::json!([{ "name": "slow", "interval": "1h", "effects": [] }])),
+        Some(recorder.clone()),
+    );
+    assert!(slow.has_ticks());
+    assert!(!slow.drive_ticks_blocking());
+    assert!(!slow.drive_ticks_blocking(), "still inside the hour");
+    let mut tickless = ClientCore::new(ticking_schema(serde_json::json!([])), Some(recorder.clone()));
+    assert!(!tickless.has_ticks());
+    assert!(!tickless.drive_ticks_blocking());
+    assert!(recorder.0.lock().unwrap().is_empty());
+}

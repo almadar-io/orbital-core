@@ -98,6 +98,22 @@ fn store_program_querying(bound: bool, seeded: bool, query: Option<bool>) -> Orb
     serde_json::from_value(store_program_json(bound, seeded, query)).unwrap()
 }
 
+fn mirror_batch_field() -> serde_json::Value {
+    let text = || serde_json::json!({ "type": "string" });
+    let record = |properties: serde_json::Value| serde_json::json!({ "type": "object", "properties": properties });
+    let op = record(serde_json::json!({
+        "kind": text(), "entityType": text(), "id": text(),
+        "data": record(serde_json::json!({ "id": text(), "used": { "type": "boolean" }, "status": text(), "owner": text(), "createdAt": text(), "updatedAt": text() })),
+        "guard": record(serde_json::json!({ "kind": text(), "field": text(), "op": text(), "value": { "type": "boolean" } })),
+    }));
+    let index = record(serde_json::json!({ "fields": { "type": "array", "items": text() }, "orderBy": text() }));
+    serde_json::json!({ "name": "batch", "type": "object", "properties": {
+        "ops": { "type": "array", "items": op },
+        "entityType": text(),
+        "indexes": { "type": "array", "items": index },
+    } })
+}
+
 fn store_program_json(bound: bool, seeded: bool, query: Option<bool>) -> serde_json::Value {
     let mut ticket = serde_json::json!({ "name": "Ticket", "persistence": "persistent",
         "fields": [{ "name": "id", "type": "string" }, { "name": "used", "type": "boolean" }] });
@@ -124,7 +140,7 @@ fn store_program_json(bound: bool, seeded: bool, query: Option<bool>) -> serde_j
                         { "id": "@payload.id", "emit": { "success": "SEEN", "failure": "UNSEEN" } }]] }
                 ] } }] },
         { "name": "Rows", "pages": [], "entity": { "name": "Mirror", "persistence": "persistent",
-            "fields": [{ "name": "id", "type": "string" }, { "name": "batch", "type": "object" }] },
+            "fields": [{ "name": "id", "type": "string" }, mirror_batch_field()] },
           "traits": [{ "name": "RowsDriver", "linkedEntity": "Mirror",
             "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
                 "events": [{ "key": "ROW_READ", "name": "ROW_READ" }, { "key": "ROW_LIST", "name": "ROW_LIST" }, { "key": "ROWS_QUERY", "name": "ROWS_QUERY" }, { "key": "ROWS_WRITE", "name": "ROWS_WRITE" }],

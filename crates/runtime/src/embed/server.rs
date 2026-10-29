@@ -854,6 +854,27 @@ impl EmbeddedServer {
         self.resume(flight, replies.into_iter().map(IoReply::from).collect())
     }
 
+    /// Finish a TLS operation the kernel parked on a deferred raw ask (EXEC-HTTP-7): `outcome_json` is the host's
+    /// `Settled<_, OsError>` for the raw ask under `key`. Answers `null` when `key` parks nothing, `{ "ask": { op,
+    /// args } }` when the host must answer one more raw ask (call again with its outcome), or `{ "done": Settled }`
+    /// with the program's outcome.
+    pub fn tls_complete_json(&self, key: &str, outcome_json: &str) -> Result<String, String> {
+        let outcome: Result<Value, OsError> = serde_json::from_str::<Settled<Value, OsError>>(outcome_json)
+            .map_err(|e| format!("parse outcome_json: {e}"))?
+            .into();
+        #[cfg(feature = "wire-drivers")]
+        let step = self.kernel.tls_complete(key, outcome).map(|completion| match completion {
+            crate::kernel::TlsCompletion::Ask { op, args } => serde_json::json!({ "ask": { "op": op, "args": args } }),
+            crate::kernel::TlsCompletion::Done(done) => serde_json::json!({ "done": Settled::from(done) }),
+        });
+        #[cfg(not(feature = "wire-drivers"))]
+        let step: Option<serde_json::Value> = {
+            let _ = (key, outcome);
+            None
+        };
+        serde_json::to_string(&step).map_err(|e| format!("serialize: {e}"))
+    }
+
     /// The program's `os/` grants the kernel holds.
     /// The program's grants with every anchored entry resolved under the host's anchors.
     #[cfg(feature = "std")]

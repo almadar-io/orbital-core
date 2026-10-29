@@ -322,8 +322,8 @@ mod tests {
     fn rename_rules_follow_serde() {
         assert_eq!(renamed("entity_type", "camelCase", false), "entityType");
         assert_eq!(renamed("ReadRow", "camelCase", true), "readRow");
-        assert_eq!(renamed("OAuth", "camelCase", true), "oAuth");
-        assert_eq!(renamed("HttpStream", "snake_case", true), "http_stream");
+        assert_eq!(renamed("PageFacts", "camelCase", true), "pageFacts");
+        assert_eq!(renamed("PageFacts", "snake_case", true), "page_facts");
         assert_eq!(renamed("ttl_ms", "kebab-case", false), "ttl-ms");
         assert_eq!(renamed("Google", "lowercase", true), "google");
         assert_eq!(renamed("entity_type", "PascalCase", false), "EntityType");
@@ -338,7 +338,5 @@ mod tests {
         assert!(fields.iter().any(|f| f.key == "timeoutMs"));
         let Some(TypeInfo::Struct { deny, .. }) = all["OsGrants"].first() else { panic!("a struct") };
         assert!(*deny, "OsGrants denies unknown fields");
-        assert!(matches!(all["Pending"].first(), Some(TypeInfo::Struct { fields, .. })
-            if fields.iter().any(|f| f.key == "scopes" && matches!(f.default, DefaultKind::Trait))));
     }
 }

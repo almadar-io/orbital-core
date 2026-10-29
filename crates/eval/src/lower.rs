@@ -4,7 +4,6 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::http_wire::HttpMethod;
 use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
 use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr};
 use orbital_core_base::ir::types::{OirPattern, OirValue};
@@ -382,9 +381,6 @@ impl NodeLowerer {
             "notify" => self.resolve_notify_effect(args),
             "log" => self.resolve_log_effect(args),
             "call-service" => self.resolve_call_service_effect(args),
-            "http" => self.resolve_http_effect(args),
-            "redis" => self.resolve_redis_effect(args),
-            "postgres" => self.resolve_postgres_effect(args),
             "cancel-call" => self.resolve_cancel_call_effect(args),
             "random-bytes" => self.resolve_random_bytes_effect(args),
             "credential-status" => self.resolve_credential_effect(args, true),
@@ -393,9 +389,6 @@ impl NodeLowerer {
                 self.resolve_credential_admin_effect(admin, args)
             }
             "access-check" => self.resolve_access_check_effect(args),
-            "oauth-authorize" => self.resolve_oauth_authorize_effect(args),
-            "oauth-connection-status" => self.resolve_oauth_connection_effect(args, true),
-            "oauth-connection-forget" => self.resolve_oauth_connection_effect(args, false),
 
             // OS trigger effects (server-side only)
             //
@@ -525,42 +518,6 @@ impl NodeLowerer {
                 };
                 Ok(OirExpr::effect(OirEffect::BrowserPageFacts {
                     fields,
-                    key,
-                    emit: emit_cfg,
-                }))
-            }
-            "browser/beacon" => {
-                if !(1..=3).contains(&args.len()) {
-                    return Err(LowerError::InvalidSExpr(
-                        "browser/beacon takes a URL, then a request and options".to_string(),
-                    ));
-                }
-                let url = self.resolve_sexpr(&args[0])?;
-                let request_expr = args.get(1).ok_or_else(|| {
-                    LowerError::InvalidSExpr(
-                        "browser/beacon requires a request carrying `text`".to_string(),
-                    )
-                })?;
-                let mut request = request_expr.clone();
-                let mut key = None;
-                if let SExpression::Object(fields) = &mut request {
-                    if let Some(k) = fields.shift_remove("key") {
-                        key = Some(self.resolve_owned(k)?);
-                    }
-                }
-                let request = self.resolve_owned(request)?;
-                let emit_cfg = match args.get(2) {
-                    Some(SExpression::Object(options)) => {
-                        if let Some(k) = options.get("key") {
-                            key = Some(self.resolve_sexpr(k)?);
-                        }
-                        self.extract_emit_config(options)?
-                    }
-                    _ => None,
-                };
-                Ok(OirExpr::effect(OirEffect::BrowserBeacon {
-                    url,
-                    request,
                     key,
                     emit: emit_cfg,
                 }))

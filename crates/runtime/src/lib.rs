@@ -68,12 +68,8 @@ pub(crate) mod render_store;
 pub mod client;
 
 // server — the server-role embedding and its HTTP seam
-#[path = "server/auth.rs"]
-pub mod auth;
 #[path = "server/http_service.rs"]
 pub mod http_service;
-#[path = "server/stream_ticket.rs"]
-pub mod stream_ticket;
 
 // stores — row stores: kernel drivers over raw ports (EXEC-STORE)
 #[path = "stores/entity_access.rs"]
@@ -91,22 +87,9 @@ pub mod store_driver;
 #[path = "stores/vector_store.rs"]
 pub mod vector_store;
 
-// drivers — the sans-I/O step machines stores speak over (§3: `http` is one primitive)
-#[cfg(feature = "wire-drivers")]
-#[path = "drivers/byte_stream.rs"]
-pub mod byte_stream;
+// drivers — the sans-I/O step machines stores speak over
 #[path = "drivers/driver.rs"]
 pub mod driver;
-#[path = "drivers/http_request/mod.rs"]
-pub mod http_request;
-#[cfg(feature = "wire-drivers")]
-#[path = "drivers/postgres.rs"]
-pub mod postgres;
-#[cfg(feature = "wire-drivers")]
-#[path = "drivers/redis.rs"]
-pub mod redis;
-#[path = "drivers/tab.rs"]
-pub mod tab;
 #[cfg(feature = "wire-drivers")]
 #[path = "drivers/tls/mod.rs"]
 pub mod tls;
@@ -124,14 +107,6 @@ pub mod credentials;
 pub mod jwt;
 #[path = "security/lenient.rs"]
 pub mod lenient;
-#[path = "security/oauth/mod.rs"]
-pub mod oauth;
-#[path = "security/oauth_flow.rs"]
-pub mod oauth_flow;
-#[path = "security/sigv4.rs"]
-pub mod sigv4;
-#[path = "security/webpush.rs"]
-pub mod webpush;
 
 // host — the native OS hosts and their transports (EXEC-HOST)
 #[path = "host/agent_ports.rs"]

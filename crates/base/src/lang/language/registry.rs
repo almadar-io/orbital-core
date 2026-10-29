@@ -344,9 +344,6 @@ pub struct EmbeddedOperator {
     /// a call on a handle, `None` on every other operator.
     #[serde(default)]
     pub grant: Option<Vec<crate::os_grants::OsGrantNeed>>,
-    /// The `oauth-client` auth vocabulary (`oauth` in the operator table, on `http`).
-    #[serde(default)]
-    pub oauth: Option<EmbeddedOAuth>,
     /// Set on the host effects (`closedCall` in the operator table): the validator holds the call to its declared
     /// arity, options and request.
     #[serde(rename = "closedCall", default)]
@@ -403,30 +400,6 @@ impl EmbeddedOperator {
         let required = declared.iter().copied().filter(|name| !optional.iter().any(|o| o == name)).collect();
         Some((declared, required))
     }
-}
-
-/// One `oauth-client` auth op: its input keys and the `oauth-endpoint` word it is sent to.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddedOAuthOp {
-    pub name: String,
-    #[serde(default)]
-    pub required: Vec<String>,
-    #[serde(default)]
-    pub optional: Vec<String>,
-    /// Absent for an op sent to a literal origin and path (`discovery`).
-    #[serde(default)]
-    pub endpoint: Option<String>,
-}
-
-/// The `oauth-client` auth vocabulary the operator table declares on `http`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct EmbeddedOAuth {
-    /// The word that stands where an origin goes; the URL comes from the client's metadata.
-    #[serde(rename = "endpointTarget")]
-    pub endpoint_target: String,
-    #[serde(rename = "endpointKinds")]
-    pub endpoint_kinds: Vec<String>,
-    pub ops: Vec<EmbeddedOAuthOp>,
 }
 
 /// When a failable operator's result is not optional.
@@ -520,7 +493,7 @@ pub fn emit_slots() -> &'static HashSet<String> {
     })
 }
 
-/// The default port the installed operator table declares for a raw TCP URL scheme (`redis`, `postgres`, …); `None`
+/// The default port the installed operator table declares for a raw TCP URL scheme ; `None`
 /// for any other scheme, or before a table is installed.
 pub fn tcp_scheme_default_port(scheme: &str) -> Option<u16> {
     static PORTS: OnceLock<HashMap<String, u16>> = OnceLock::new();
@@ -534,26 +507,6 @@ pub fn tcp_scheme_default_port(scheme: &str) -> Option<u16> {
 /// The host effects the installed operator table holds to a closed call shape (`closedCall`).
 pub fn closed_call_effects() -> impl Iterator<Item = &'static str> {
     operators().iter().filter(|(_, op)| op.closed_call.is_some()).map(|(name, _)| name.as_str())
-}
-
-/// The installed operator table's `oauth-client` vocabulary (declared on `http`).
-pub fn oauth_vocabulary() -> &'static EmbeddedOAuth {
-    get_operator("http")
-        .and_then(|op| op.oauth.as_ref())
-        .expect("the operator table declares the oauth-client vocabulary on `http`")
-}
-
-/// The keys of an OAuth client object, sorted: the fields of the `client` parameter of `oauth-authorize`.
-pub fn oauth_client_keys() -> Vec<&'static str> {
-    let param = get_operator("oauth-authorize")
-        .and_then(|op| op.params.iter().find(|p| p.name == "client"))
-        .expect("the operator table declares the `client` parameter of `oauth-authorize`");
-    let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = &param.ty else {
-        panic!("the `client` parameter of `oauth-authorize` is an object");
-    };
-    let mut keys: Vec<&'static str> = fields.keys().map(String::as_str).collect();
-    keys.sort_unstable();
-    keys
 }
 
 /// Whether the installed operator table gives `name` an options parameter with an `emit` entry: the operators whose

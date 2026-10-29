@@ -350,6 +350,8 @@ mod matching;
 mod anchors;
 mod entries;
 mod requirements;
+mod tcp_target;
+pub use tcp_target::tcp_target_allowed;
 use matching::*;
 use anchors::*;
 pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};

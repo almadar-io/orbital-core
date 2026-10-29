@@ -63,24 +63,7 @@ fn child_failures_keep_the_canonical_argument_order() {
 }
 
 #[test]
-fn synthesized_beacon_and_batch_requests_keep_their_lowered_contracts() {
-    let beacon: SExpression = serde_json::from_value(serde_json::json!([
-        "browser/beacon", "https://example.com/e",
-        {"text":"@entity.text", "key":"@entity.key"},
-        {"key":"@payload.key", "emit":{"success":"SENT"}}
-    ])).expect("beacon input");
-    let OirExpr::Effect { effect } = lower_sexpr(&beacon).expect("beacon lowers") else {
-        panic!("beacon effect");
-    };
-    let OirEffect::BrowserBeacon { request, key, emit, .. } = *effect else {
-        panic!("beacon effect");
-    };
-    let mut fields = orbital_core_base::ir::expr::OirFields::default();
-    fields.insert("text".into(), OirExpr::binding(OirBinding::parse("@entity.text").unwrap()));
-    assert_eq!(request, OirExpr::object(fields));
-    assert_eq!(key, Some(OirExpr::binding(OirBinding::parse("@payload.key").unwrap())));
-    assert_eq!(emit.and_then(|routes| routes.success), Some("SENT".into()));
-
+fn synthesized_batch_requests_keep_their_lowered_contracts() {
     let batch: SExpression = serde_json::from_value(serde_json::json!([
         "persist", "batch", [["create", "Task", {"id":"@entity.id"}]]
     ])).expect("batch input");
@@ -96,35 +79,6 @@ fn synthesized_beacon_and_batch_requests_keep_their_lowered_contracts() {
     assert_eq!(ops, OirExpr::array(vec![OirExpr::call("list", vec![
         OirExpr::string("create"), OirExpr::string("Task"), OirExpr::object(row),
     ])]));
-}
-
-#[test]
-fn synthesized_http_pagination_keeps_quoted_callbacks_and_request_fields() {
-    let raw: SExpression = serde_json::from_value(serde_json::json!([
-        "http", "GET", "https://example.com", "/items",
-        {"headers":{"x-id":"@entity.id"}, "paginate":{
-            "next":["get", "@response", "next"],
-            "collect":["quote", "[]"], "maxPages":3
-        }}
-    ])).expect("http input");
-    let OirExpr::Effect { effect } = lower_sexpr(&raw).expect("http lowers") else {
-        panic!("http effect");
-    };
-    let OirEffect::Http { request: Some(OirExpr::Object { fields }), .. } = *effect else {
-        panic!("http request object");
-    };
-    let OirExpr::Object { fields: paginate } = &fields["paginate"] else {
-        panic!("pagination object");
-    };
-    assert_eq!(paginate["next"], OirExpr::call("quote", vec![
-        OirExpr::string(r#"["get","\u0040response","next"]"#),
-    ]));
-    assert_eq!(paginate["collect"], OirExpr::call("quote", vec![OirExpr::string("[]")]));
-    assert_eq!(paginate["maxPages"], OirExpr::number(3.0));
-    let OirExpr::Object { fields: headers } = &fields["headers"] else {
-        panic!("headers object");
-    };
-    assert_eq!(headers["x-id"], OirExpr::binding(OirBinding::parse("@entity.id").unwrap()));
 }
 
 fn call(op: &str, args: Vec<SExpression>) -> SExpression {
@@ -290,67 +244,6 @@ fn a_marked_batch_tuple_is_an_op_tuple_and_lowers_with_one_marker() {
     let lowered = batch(serde_json::json!(["list", "delete", "E", "@r.id"]));
     assert!(!lowered.contains("\"list\", \"list\"") && lowered.matches("\"list\"").count() <= 1, "one marker: {lowered}");
     assert_eq!(lowered, batch(serde_json::json!(["delete", "E", "@r.id"])), "control: marked and bare tuples lower alike");
-}
-
-fn redis_call(trailing: Vec<serde_json::Value>) -> SExpression {
-    let mut items = vec![serde_json::json!("redis"), serde_json::json!("redis://cache.internal"), serde_json::json!(["GET", "@payload.k"])];
-    items.extend(trailing);
-    serde_json::from_value(serde_json::Value::Array(items)).expect("s-expression")
-}
-
-#[test]
-fn a_redis_call_lowers_to_the_redis_effect_with_options_key_and_routes() {
-    let lowered = lower_sexpr(&redis_call(vec![
-        serde_json::json!({ "auth": "@config.pw", "db": 1 }),
-        serde_json::json!({ "key": "@payload.k", "emit": { "success": "GOT", "failure": "FAILED" } }),
-    ]))
-    .expect("lowers");
-    let OirExpr::Effect { effect } = lowered else { panic!("not an effect: {lowered:?}") };
-    let OirEffect::Redis { options, key, emit, command, .. } = *effect else { panic!("not redis") };
-    assert!(matches!(options, Some(OirExpr::Object { ref fields }) if fields.contains_key("auth") && fields.contains_key("db") && !fields.contains_key("key")));
-    assert!(key.is_some());
-    let emit = emit.expect("routes");
-    assert_eq!((emit.success.as_deref(), emit.failure.as_deref()), (Some("GOT"), Some("FAILED")));
-    assert!(command.collect_bindings().iter().any(|b| b.root == OirBindingRoot::Payload));
-}
-
-#[test]
-fn control_a_redis_call_with_no_trailing_object_has_no_options_key_or_routes() {
-    let lowered = lower_sexpr(&redis_call(Vec::new())).expect("lowers");
-    let OirExpr::Effect { effect } = lowered else { panic!("not an effect") };
-    let OirEffect::Redis { options, key, emit, .. } = *effect else { panic!("not redis") };
-    assert!(options.is_none() && key.is_none() && emit.is_none());
-}
-
-#[test]
-fn a_postgres_call_lowers_with_params_options_key_and_routes_and_a_bare_one_has_none() {
-    let call = |trailing: Vec<serde_json::Value>| {
-        let mut items = vec![serde_json::json!("postgres"), serde_json::json!("postgres://db.internal"), serde_json::json!("SELECT $1::int"), serde_json::json!([1])];
-        items.extend(trailing);
-        serde_json::from_value::<SExpression>(serde_json::Value::Array(items)).expect("s-expression")
-    };
-    let lowered = lower_sexpr(&call(vec![
-        serde_json::json!({ "auth": "@config.pw", "database": "main" }),
-        serde_json::json!({ "key": "@payload.k", "emit": { "success": "ROWS", "failure": "FAILED" } }),
-    ]))
-    .expect("lowers");
-    let OirExpr::Effect { effect } = lowered else { panic!("not an effect") };
-    let OirEffect::Postgres { options, key, emit, params, .. } = *effect else { panic!("not postgres") };
-    assert!(matches!(options, Some(OirExpr::Object { ref fields }) if fields.contains_key("auth") && !fields.contains_key("key")));
-    assert!(key.is_some() && matches!(params, OirExpr::Array { .. }));
-    assert_eq!(emit.expect("routes").success.as_deref(), Some("ROWS"));
-    let OirExpr::Effect { effect } = lower_sexpr(&call(Vec::new())).expect("lowers") else { panic!("not an effect") };
-    let OirEffect::Postgres { options, key, emit, .. } = *effect else { panic!("not postgres") };
-    assert!(options.is_none() && key.is_none() && emit.is_none());
-    let short: SExpression = serde_json::from_value(serde_json::json!(["postgres", "postgres://h", "SELECT 1"])).expect("s-expression");
-    assert!(lower_sexpr(&short).is_err());
-}
-
-#[test]
-fn a_redis_call_with_the_wrong_arity_or_a_non_object_trailer_is_invalid() {
-    let bare: SExpression = serde_json::from_value(serde_json::json!(["redis", "redis://h"])).expect("s-expression");
-    assert!(lower_sexpr(&bare).is_err());
-    assert!(lower_sexpr(&redis_call(vec![serde_json::json!("x")])).is_err());
 }
 
 #[test]

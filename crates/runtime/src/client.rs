@@ -13,7 +13,6 @@ pub mod http;
 pub mod recurse;
 pub mod render_probe;
 pub mod runtime;
-pub mod tick;
 
 pub use client_kernel::ClientKernel;
 #[cfg(feature = "client-http")]

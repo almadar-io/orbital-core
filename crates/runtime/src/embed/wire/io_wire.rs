@@ -65,23 +65,6 @@ pub enum IoRequestWire {
         site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
-    HttpStream {
-        request: HttpRequestWire,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
-        framing: StreamFramingWire,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        site: Option<CallSiteWire>,
-    },
-    #[serde(rename_all = "camelCase")]
-    HttpBeacon {
-        request: HttpRequestWire,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        site: Option<CallSiteWire>,
-    },
-    #[serde(rename_all = "camelCase")]
     PageFacts { fields: Vec<PageFactFieldWire> },
     #[serde(rename_all = "camelCase")]
     Prompt {
@@ -122,12 +105,6 @@ pub enum IoRequestWire {
         name: String,
         #[cfg_attr(test, ts(type = "string"))]
         value: SecretText,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        principal: Option<String>,
-    },
-    #[serde(rename = "oauth", rename_all = "camelCase")]
-    OAuth {
-        ask: OAuthAsk,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
     },
@@ -263,64 +240,6 @@ pub struct PageFactsWire {
     pub screen_width: Option<f64>,
 }
 
-/// How a host took a beacon: its queue accepted it, or one keepalive fetch answered `status`.
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "via", rename_all = "camelCase")]
-pub enum BeaconOutcomeWire {
-    Queue,
-    Fetch { status: u16 },
-    /// The host has no beacon port.
-    Unavailable { message: String },
-}
-
-impl From<BeaconOutcome> for BeaconOutcomeWire {
-    fn from(outcome: BeaconOutcome) -> Self {
-        match outcome {
-            BeaconOutcome::Queued => Self::Queue,
-            BeaconOutcome::Fetched { status } => Self::Fetch { status },
-            BeaconOutcome::Unavailable { message } => Self::Unavailable { message },
-        }
-    }
-}
-
-impl From<BeaconOutcomeWire> for BeaconOutcome {
-    fn from(outcome: BeaconOutcomeWire) -> Self {
-        match outcome {
-            BeaconOutcomeWire::Queue => Self::Queued,
-            BeaconOutcomeWire::Fetch { status } => Self::Fetched { status },
-            BeaconOutcomeWire::Unavailable { message } => Self::Unavailable { message },
-        }
-    }
-}
-
-/// How a streamed `http` reply is framed.
-#[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum StreamFramingWire {
-    Sse,
-    JsonLines,
-}
-
-impl From<StreamFraming> for StreamFramingWire {
-    fn from(framing: StreamFraming) -> Self {
-        match framing {
-            StreamFraming::Sse => Self::Sse,
-            StreamFraming::JsonLines => Self::JsonLines,
-        }
-    }
-}
-
-impl From<StreamFramingWire> for StreamFraming {
-    fn from(framing: StreamFramingWire) -> Self {
-        match framing {
-            StreamFramingWire::Sse => Self::Sse,
-            StreamFramingWire::JsonLines => Self::JsonLines,
-        }
-    }
-}
-
 /// A host's answer to one request; `kind` must be the one the request calls for.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -373,9 +292,6 @@ pub enum IoAnswerWire {
     },
     Http {
         result: Settled<HttpResponseWire, HttpFailureWire>,
-    },
-    HttpBeacon {
-        result: Settled<BeaconOutcomeWire, HttpFailureWire>,
     },
     PageFacts {
         result: Settled<PageFactsWire, String>,
@@ -437,10 +353,6 @@ pub enum IoAnswerWire {
     },
     CredentialModeWrite {
         result: Settled<String, String>,
-    },
-    #[serde(rename = "oauth")]
-    OAuth {
-        result: Settled<OAuthReply, String>,
     },
     Deliver {
         result: Settled<Accepted, DeliverRefusal>,

@@ -17,6 +17,6 @@ pub use live_push::{HostDispatch, LiveBroadcastItem, LiveTarget, StreamItem};
 pub use frame_delta::{FrameDelta, FrameOp};
 pub use response::{delivery_record_value, ClientEffectByTrait, DeliveryRecord, DispatchLog, EventRequest, EventResponse, ExternalInputRequest, HopEffect, HopEffectStatus, LifecycleEvent, MountSeed, RepaintReason, RunTick, ServerEffectKind, ServerEffectResult, TraitFrom, TransitionHop, TransitionRejection, TransitionRejectionCode};
 pub use orbital_core_base::bus_event::{tick_event_key, BusEventSource, EmittedEvent, ServerEffectCode, BUS_EVENT_SOURCE_FIELDS};
-pub use orbital_core_base::runs_on::{effect_operator, effect_runs_on, effect_site, entity_arg, http_auth, ir_effect_site, resolved_http_is_keyless, runs_on, sexpr_runs_server_effect, HttpAuth, Residence, RunsOn, EFFECT_SITES, ENTITY_ARGS};
+pub use orbital_core_base::runs_on::{effect_operator, effect_runs_on, effect_site, entity_arg, ir_effect_site, runs_on, sexpr_runs_server_effect, Residence, RunsOn, EFFECT_SITES, ENTITY_ARGS};
 pub use orbital_core_base::effect_types::{is_known_effect_name, parse_effect, Effect, EffectOutcome, EffectResult, FetchDeliver, FetchEmit, LogLevel, PersistOperation, RuntimeEnvironment, CLIENT_EFFECT_KINDS};
 

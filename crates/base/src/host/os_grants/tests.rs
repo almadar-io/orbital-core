@@ -1007,7 +1007,7 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
     let mut expected = vec![
         "os/close", "os/read", "os/write", "os/seek", "os/fsync", "os/cwd", "os/wait", "os/kill", "os/pid", "os/ppid",
         "os/current-exe", "os/watch-process", "os/watch-signal", "os/environ", "os/isatty", "os/tty-size", "os/send",
-        "os/recv", "os/recvfrom", "os/shutdown", "os/watch-port", "os/clock-monotonic", "os/watch-cron",
+        "os/recv", "os/recvfrom", "os/shutdown", "os/tls-upgrade", "os/watch-port", "os/clock-monotonic", "os/watch-cron",
     ];
     expected.sort_unstable();
     assert_eq!(handle_calls, expected, "only the handle and clock calls need nothing");

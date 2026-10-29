@@ -105,23 +105,6 @@ impl From<IoRequestWire> for IoRequest {
                 delay_ms,
                 site: site.map(CallSite::from),
             },
-            IoRequestWire::HttpStream {
-                request,
-                key,
-                framing,
-                site,
-            } => Self::HttpStream {
-                request: request.into(),
-                key,
-                framing: framing.into(),
-                site: site.map(CallSite::from),
-                continuation: None,
-            },
-            IoRequestWire::HttpBeacon { request, key, site } => Self::HttpBeacon {
-                request: request.into(),
-                key,
-                site: site.map(CallSite::from),
-            },
             IoRequestWire::PageFacts { fields } => Self::PageFacts {
                 fields: fields.into_iter().map(PageFactField::from).collect(),
             },
@@ -168,7 +151,6 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::CredentialStoreRotate => Self::CredentialStoreRotate,
             IoRequestWire::CredentialModeRead => Self::CredentialModeRead,
             IoRequestWire::CredentialModeWrite { mode } => Self::CredentialModeWrite { mode },
-            IoRequestWire::OAuth { ask, principal } => Self::OAuth { ask, principal },
             IoRequestWire::Deliver { envelope, key, site } => Self::Deliver {
                 envelope,
                 key,
@@ -251,23 +233,6 @@ impl From<&IoRequest> for IoRequestWire {
                 delay_ms: *delay_ms,
                 site: site.as_ref().map(CallSiteWire::from),
             },
-            IoRequest::HttpStream {
-                request,
-                key,
-                framing,
-                site,
-                ..
-            } => Self::HttpStream {
-                request: HttpRequestWire::from(request),
-                key: key.clone(),
-                framing: StreamFramingWire::from(*framing),
-                site: site.as_ref().map(CallSiteWire::from),
-            },
-            IoRequest::HttpBeacon { request, key, site } => Self::HttpBeacon {
-                request: HttpRequestWire::from(request),
-                key: key.clone(),
-                site: site.as_ref().map(CallSiteWire::from),
-            },
             IoRequest::PageFacts { fields } => Self::PageFacts {
                 fields: fields.iter().copied().map(PageFactFieldWire::from).collect(),
             },
@@ -331,7 +296,6 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::CredentialStoreRotate => Self::CredentialStoreRotate,
             IoRequest::CredentialModeRead => Self::CredentialModeRead,
             IoRequest::CredentialModeWrite { mode } => Self::CredentialModeWrite { mode: mode.clone() },
-            IoRequest::OAuth { ask, principal } => Self::OAuth { ask: ask.clone(), principal: principal.clone() },
             IoRequest::Deliver { envelope, key, site } => Self::Deliver {
                 envelope: envelope.clone(),
                 key: key.clone(),
@@ -408,13 +372,6 @@ impl From<&IoAnswer> for IoAnswerWire {
                     .map_err(HttpFailureWire::from)
                     .into(),
             },
-            IoAnswer::HttpBeacon(r) => Self::HttpBeacon {
-                result: r
-                    .as_ref()
-                    .map(|outcome| BeaconOutcomeWire::from(outcome.clone()))
-                    .map_err(HttpFailureWire::from)
-                    .into(),
-            },
             IoAnswer::PageFacts(r) => Self::PageFacts {
                 result: r
                     .as_ref()
@@ -469,7 +426,6 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::CredentialStoreRotate(r) => Self::CredentialStoreRotate { result: r.clone().into() },
             IoAnswer::CredentialModeRead(r) => Self::CredentialModeRead { result: r.clone().into() },
             IoAnswer::CredentialModeWrite(r) => Self::CredentialModeWrite { result: r.clone().into() },
-            IoAnswer::OAuth(r) => Self::OAuth { result: r.clone().into() },
             IoAnswer::Deliver(r) => Self::Deliver { result: r.clone().into() },
         }
     }
@@ -504,10 +460,6 @@ impl From<IoAnswerWire> for IoAnswer {
             IoAnswerWire::Http { result } => {
                 let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
                 Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
-            }
-            IoAnswerWire::HttpBeacon { result } => {
-                let result: Result<BeaconOutcomeWire, HttpFailureWire> = result.into();
-                Self::HttpBeacon(result.map(BeaconOutcome::from).map_err(TransportError::from))
             }
             IoAnswerWire::PageFacts { result } => {
                 let result: Result<PageFactsWire, String> = result.into();
@@ -553,7 +505,6 @@ impl From<IoAnswerWire> for IoAnswer {
             IoAnswerWire::CredentialStoreRotate { result } => Self::CredentialStoreRotate(result.into()),
             IoAnswerWire::CredentialModeRead { result } => Self::CredentialModeRead(result.into()),
             IoAnswerWire::CredentialModeWrite { result } => Self::CredentialModeWrite(result.into()),
-            IoAnswerWire::OAuth { result } => Self::OAuth(result.into()),
             IoAnswerWire::Deliver { result } => Self::Deliver(result.into()),
         }
     }

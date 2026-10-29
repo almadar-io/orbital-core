@@ -4,11 +4,9 @@
 use std::prelude::v1::*;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use orbital_core_base::oauth_ask::{OAuthAsk, OAuthReply};
-use crate::oauth::store::CredentialOAuthStore;
 use crate::credential_store::EncryptedCredentialStore;
 use orbital_core_base::credential_admin as admin;
 use crate::http_service::SecretSource;
@@ -23,7 +21,7 @@ struct UserSlots {
 
 const POISONED: &str = "credential cache lock poisoned";
 
-/// The service label a kernel-persisted credential (an OAuth connection) carries in the encrypted store.
+/// The service label a kernel-persisted credential carries in the encrypted store.
 const PERSISTED_SERVICE: &str = "kernel";
 
 #[derive(Clone, Default)]
@@ -32,7 +30,6 @@ pub struct Credentials {
     store: HashMap<String, String>,
     minted: Arc<Mutex<HashMap<String, (String, Instant)>>>,
     users: Arc<Mutex<UserSlots>>,
-    oauth: Arc<OnceLock<CredentialOAuthStore>>,
     encrypted: Option<Arc<EncryptedCredentialStore>>,
     /// `ALMADAR_CREDENTIALS_SOURCE=store`: every credential but a host setting answers from the store alone.
     store_source: bool,
@@ -56,7 +53,6 @@ impl Credentials {
             store: HashMap::new(),
             minted: Arc::default(),
             users: Arc::default(),
-            oauth: Arc::default(),
             encrypted: None,
         }
     }
@@ -99,22 +95,7 @@ impl Credentials {
         self.store = store;
         self.minted = Arc::default();
         self.users = Arc::default();
-        self.oauth = Arc::default();
         self
-    }
-
-    /// The value for `name`: a store entry wins over the env; an empty value counts as absent.
-    /// This host's credentials with no OAuth state of their own: the set the OAuth store persists into.
-    fn without_oauth(&self) -> Self {
-        Self {
-            env: self.env.clone(),
-            store: self.store.clone(),
-            minted: self.minted.clone(),
-            users: self.users.clone(),
-            oauth: Arc::default(),
-            encrypted: self.encrypted.clone(),
-            store_source: self.store_source,
-        }
     }
 
     pub fn get(&self, name: &str) -> Option<&str> {
@@ -351,100 +332,6 @@ mod tests {
             .unwrap();
         std::thread::sleep(Duration::from_millis(5));
         assert_eq!(creds.take_secret_of("grant", Some("alice")), Ok(None));
-    }
-
-    #[test]
-    fn the_native_host_keeps_oauth_grants_and_connections_as_credentials() {
-        use orbital_core_base::oauth_ask::{OAuthProvider, OAuthTokenGrant, PendingTake};
-        use orbital_core_base::oauth_wire::Pending;
-        let creds = Credentials::default();
-        let grant = Pending {
-            provider: "google".into(),
-            redirect_uri: "https://app/cb".into(),
-            verifier: "v".into(),
-            subject: None,
-            scopes: Vec::new(),
-        };
-        let put = OAuthAsk::PendingPut {
-            state: "s".into(),
-            grant: grant.clone(),
-            ttl_ms: 600_000,
-        };
-        assert_eq!(creds.oauth_of(&put, Some("alice")), Ok(OAuthReply::Done));
-        let take = OAuthAsk::PendingTake { state: "s".into() };
-        assert_eq!(
-            creds.oauth_of(&take, Some("bob")),
-            Ok(OAuthReply::Taken {
-                taken: PendingTake::Grant {
-                    grant: grant.clone()
-                }
-            })
-        );
-        assert_eq!(
-            creds.oauth_of(&take, Some("alice")),
-            Ok(OAuthReply::Taken {
-                taken: PendingTake::Missing
-            })
-        );
-        assert_eq!(
-            creds.oauth_of(&take, Some("alice")),
-            Ok(OAuthReply::Taken {
-                taken: PendingTake::Missing
-            })
-        );
-        let save = OAuthAsk::ConnectionSave {
-            provider: OAuthProvider::Google,
-            grant: OAuthTokenGrant {
-                access_token: "AT".into(),
-                refresh_token: None,
-                expires_in: 1.0,
-                token_type: "bearer".into(),
-                scope: None,
-                subject: Some("acct".into()),
-            },
-        };
-        assert!(
-            matches!(creds.oauth_of(&save, Some("alice")), Ok(OAuthReply::Row { row }) if row.connected)
-        );
-        let status = OAuthAsk::ConnectionStatus {
-            provider: OAuthProvider::Google,
-        };
-        assert!(
-            matches!(creds.oauth_of(&status, Some("alice")), Ok(OAuthReply::Row { row }) if row.connected && row.account == "acct")
-        );
-        assert!(
-            matches!(creds.oauth_of(&status, Some("bob")), Ok(OAuthReply::Row { row }) if !row.connected)
-        );
-        assert!(creds.oauth_of(&status, None).is_err());
-    }
-
-    #[test]
-    fn a_pending_oauth_grant_survives_a_host_restart_when_the_store_is_enabled_and_is_taken_once() {
-        use crate::credential_store::MemoryCredentialRows;
-        use orbital_core_base::oauth_ask::PendingTake;
-        use orbital_core_base::oauth_wire::Pending;
-        let rows = Arc::new(MemoryCredentialRows::default());
-        let host = || Credentials::default().with_encrypted_store(encrypted(rows.clone())).unwrap();
-        let grant = Pending {
-            provider: "google".into(),
-            redirect_uri: "https://app/cb".into(),
-            verifier: "VERIFIER-SECRET".into(),
-            subject: None,
-            scopes: Vec::new(),
-        };
-        let put = OAuthAsk::PendingPut { state: "s".into(), grant: grant.clone(), ttl_ms: 600_000 };
-        assert_eq!(host().oauth_of(&put, Some("alice")), Ok(OAuthReply::Done));
-        let kept = crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap();
-        assert_eq!(kept.len(), 1);
-        assert!(!kept[0].to_string().contains("VERIFIER-SECRET"), "the held grant is sealed in the rows");
-        let take = OAuthAsk::PendingTake { state: "s".into() };
-        let restarted = host();
-        assert_eq!(
-            restarted.oauth_of(&take, Some("bob")),
-            Ok(OAuthReply::Taken { taken: PendingTake::Grant { grant } })
-        );
-        assert_eq!(host().oauth_of(&take, Some("alice")), Ok(OAuthReply::Taken { taken: PendingTake::Missing }), "a take consumes it on every host");
-        assert!(crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap().is_empty());
     }
 
     #[test]
@@ -701,20 +588,6 @@ impl SecretSource for Credentials {
 
     fn durable_credentials(&self) -> bool {
         true
-    }
-
-    fn oauth_of(&self, ask: &OAuthAsk, principal: Option<&str>) -> Result<OAuthReply, String> {
-        self.oauth
-            .get_or_init(|| {
-                CredentialOAuthStore::new(Arc::new(self.without_oauth()), || {
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(0, |elapsed| {
-                            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
-                        })
-                })
-            })
-            .answer(ask, principal)
     }
 
     fn credential_store_list(&self) -> Result<Option<crate::credential_admin::StoreListing>, String> {

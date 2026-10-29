@@ -47,44 +47,6 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
-    /// One HTTP request. `request` is resolved except `paginate.next`/`collect`, which stay
-    /// S-expressions the kernel evaluates per page against `@response`.
-    Http {
-        method: HttpMethod,
-        origin: Value,
-        path: Value,
-        request: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
-    /// One redis command. `command` is the list of text items; `options` holds `auth`, `user` and `db`, checked when
-    /// the call runs.
-    Redis {
-        origin: Value,
-        command: Value,
-        options: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
-    /// One read-only SQL statement on Postgres. `params` is the list of bind values; `options` holds `auth`, `user`,
-    /// `database`, `tls` and `timeoutMs`, checked when the call runs.
-    Postgres {
-        origin: Value,
-        sql: Value,
-        params: Value,
-        options: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
     /// Abort the in-flight keyed call-service or http started with `key`: one key, or a list of keys
     /// cancelled in turn (a binding or operator call until the kernel resolves it).
     CancelCall { key: Value },
@@ -138,31 +100,6 @@ pub enum Effect {
     /// `{ entity, action, row, viewer }`; success carries `{ allowed }`. Server-only, answered with no host ask.
     AccessCheck {
         request: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
-    /// Start an OAuth authorization: success carries `{ authUrl, state }`.
-    OAuthAuthorize {
-        client: Value,
-        options: Value,
-        /// Names the call: evaluated to a non-empty string and echoed in the success and failure payloads.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
-    /// The signed-in user's connection to `provider`; success carries the connection row.
-    OAuthConnectionStatus {
-        provider: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
-    /// Drop the signed-in user's connection to `provider`.
-    OAuthConnectionForget {
-        provider: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<FetchEmit>,
     },
@@ -252,17 +189,6 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
-    /// POST `request.text` to the absolute `url` through the host's beacon port (client-site). Built and
-    /// egress-checked by the one http driver.
-    BrowserBeacon {
-        url: Value,
-        request: Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<Value>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<FetchEmit>,
-    },
-
     /// Ask the host's on-device model for a reply to `text` that satisfies the JSON Schema text `schema`
     /// (client-site, keyed and cancellable like `call-service`).
     BrowserPrompt {
@@ -320,21 +246,14 @@ impl Effect {
             Effect::Persist { emit, .. }
             | Effect::PersistBatch { emit, .. }
             | Effect::CallService { emit, .. }
-            | Effect::Http { emit, .. }
-            | Effect::Redis { emit, .. }
-            | Effect::Postgres { emit, .. }
             | Effect::RandomBytes { emit, .. }
             | Effect::Os { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
             | Effect::AccessCheck { emit, .. }
-            | Effect::OAuthAuthorize { emit, .. }
-            | Effect::OAuthConnectionStatus { emit, .. }
-            | Effect::OAuthConnectionForget { emit, .. }
             | Effect::Fetch { emit, .. }
             | Effect::BrowserPageFacts { emit, .. }
-            | Effect::BrowserBeacon { emit, .. }
             | Effect::BrowserPrompt { emit, .. }
             | Effect::BrowserEmbed { emit, .. }
             | Effect::BrowserTab { emit, .. }
@@ -357,21 +276,14 @@ impl Effect {
             Effect::Persist { emit, .. }
             | Effect::PersistBatch { emit, .. }
             | Effect::CallService { emit, .. }
-            | Effect::Http { emit, .. }
-            | Effect::Redis { emit, .. }
-            | Effect::Postgres { emit, .. }
             | Effect::RandomBytes { emit, .. }
             | Effect::Os { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
             | Effect::AccessCheck { emit, .. }
-            | Effect::OAuthAuthorize { emit, .. }
-            | Effect::OAuthConnectionStatus { emit, .. }
-            | Effect::OAuthConnectionForget { emit, .. }
             | Effect::Fetch { emit, .. }
             | Effect::BrowserPageFacts { emit, .. }
-            | Effect::BrowserBeacon { emit, .. }
             | Effect::BrowserPrompt { emit, .. }
             | Effect::BrowserEmbed { emit, .. }
             | Effect::BrowserTab { emit, .. }
@@ -392,14 +304,9 @@ impl Effect {
     pub fn call_key(&self) -> Option<&str> {
         match self {
             Effect::CallService { key, .. }
-            | Effect::Http { key, .. }
-            | Effect::Redis { key, .. }
-            | Effect::Postgres { key, .. }
             | Effect::RandomBytes { key, .. }
             | Effect::Os { key, .. }
-            | Effect::OAuthAuthorize { key, .. }
             | Effect::BrowserPageFacts { key, .. }
-            | Effect::BrowserBeacon { key, .. }
             | Effect::BrowserPrompt { key, .. }
             | Effect::BrowserEmbed { key, .. }
             | Effect::BrowserTab { key, .. }
@@ -410,8 +317,6 @@ impl Effect {
             | Effect::CredentialForget { .. }
             | Effect::CredentialAdmin { .. }
             | Effect::AccessCheck { .. }
-            | Effect::OAuthConnectionStatus { .. }
-            | Effect::OAuthConnectionForget { .. }
             | Effect::Fetch { .. }
             | Effect::Emit { .. }
             | Effect::Set { .. }
@@ -425,16 +330,6 @@ impl Effect {
         }
     }
 
-    /// What an `http` effect reaches, `"<METHOD> <origin><path>"`: the one spelling every verifier and host reads.
-    pub fn http_target(&self) -> Option<String> {
-        match self {
-            Effect::Http { method, origin, path, .. } => {
-                Some(format!("{} {}{}", method.as_str(), origin.to_string_value(), path.to_string_value()))
-            }
-            _ => None,
-        }
-    }
-
     /// Registry name of the operator this effect came from.
     pub fn operator(&self) -> &str {
         match self {
@@ -442,9 +337,6 @@ impl Effect {
             Effect::Set { .. } => "set",
             Effect::Persist { .. } | Effect::PersistBatch { .. } => "persist",
             Effect::CallService { .. } => "call-service",
-            Effect::Http { .. } => "http",
-            Effect::Redis { .. } => "redis",
-            Effect::Postgres { .. } => "postgres",
             Effect::CancelCall { .. } => "cancel-call",
             Effect::RandomBytes { .. } => "random-bytes",
             Effect::Os { op, .. } => op.name(),
@@ -452,9 +344,6 @@ impl Effect {
             Effect::CredentialForget { .. } => "credential-forget",
             Effect::CredentialAdmin { op, .. } => op.name(),
             Effect::AccessCheck { .. } => "access-check",
-            Effect::OAuthAuthorize { .. } => "oauth-authorize",
-            Effect::OAuthConnectionStatus { .. } => "oauth-connection-status",
-            Effect::OAuthConnectionForget { .. } => "oauth-connection-forget",
             Effect::RenderUi { .. } => "render-ui",
             Effect::Navigate { .. } => "navigate",
             Effect::NavigateBack => "navigate-back",
@@ -463,7 +352,6 @@ impl Effect {
             Effect::Log { .. } => "log",
             Effect::Fetch { .. } => "fetch",
             Effect::BrowserPageFacts { .. } => "browser/page-facts",
-            Effect::BrowserBeacon { .. } => "browser/beacon",
             Effect::BrowserPrompt { .. } => "browser/prompt",
             Effect::BrowserEmbed { .. } => "browser/embed",
             Effect::BrowserTab { op, .. } => op.name(),

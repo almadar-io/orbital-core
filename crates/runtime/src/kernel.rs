@@ -8,14 +8,13 @@ use super::entity_access::{
     apply_read_access, scope_fetched_rows, EntityAccessPolicies, EntityAccessTable,
 };
 use super::entity_source::{EntitySource, QueryAnswer};
-use super::http_request;
 use super::listener::{ListenerManager, TriggerCallback};
 use super::process_result::{
     DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo,
     null_payload, store_row_id, ProcessEventResult, RuntimeStats, RUNTIME_SINGLETON,
 };
 use super::render_store::RenderStore;
-use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort, AWAITING_HOST};
+use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort};
 use orbital_core_base::dispatch_mode::DispatchMode;
 
 #[cfg(not(feature = "wire-drivers"))]
@@ -42,7 +41,6 @@ use orbital_core_base::effect_types::{
 };
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
-use orbital_core_base::oauth_ask::{OAuthFailureReason, OAuthReply};
 use orbital_core_base::os::{OsError, OsErrorKind};
 use orbital_core_base::os_grants::OsGrants;
 use orbital_core_base::row_set::{
@@ -420,6 +418,8 @@ pub struct RuntimeKernel {
     lane: Arc<lane::DispatchLane>,
     /// Keys of the keyed calls whose asking dispatch is parked without the lane (EXEC-CONC-0/1).
     pub(crate) keyed_parks: Arc<lane::KeyedParks>,
+    #[cfg(feature = "wire-drivers")]
+    tls: Arc<tls_sockets::TlsSockets>,
 }
 
 impl std::fmt::Debug for RuntimeKernel {
@@ -680,6 +680,8 @@ impl RuntimeKernel {
             inbound_views: Default::default(),
             lane: Arc::default(),
             keyed_parks: Arc::default(),
+            #[cfg(feature = "wire-drivers")]
+            tls: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
@@ -865,9 +867,6 @@ fn browser_data_effect(effect: &Effect, residence: &orbital_core_base::runs_on::
         Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
             residence.is_client(entity_type)
         }
-        Effect::Http { request, .. } => {
-            orbital_core_base::runs_on::resolved_http_is_keyless(request)
-        }
         _ => false,
     }
 }
@@ -996,6 +995,10 @@ use super::row_query;
 
 mod source_handler;
 mod registration;
+#[cfg(feature = "wire-drivers")]
+mod tls_sockets;
+#[cfg(feature = "wire-drivers")]
+pub use tls_sockets::TlsCompletion;
 pub mod lazy;
 mod dispatch;
 mod ticks;
@@ -1004,7 +1007,6 @@ mod frames;
 mod cascade;
 mod step_effects;
 mod host_effects;
-mod oauth_effects;
 mod repaint;
 mod viewer_scope;
 mod session_life;

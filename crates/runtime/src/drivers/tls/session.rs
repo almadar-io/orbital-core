@@ -58,6 +58,15 @@ pub fn client_config(
     roots: RootCertStore,
     now_unix_secs: u64,
 ) -> Result<Arc<ClientConfig>, TlsError> {
+    client_config_alpn(roots, now_unix_secs, &[])
+}
+
+/// [`client_config`] offering `alpn` protocol names in order (none: no ALPN extension).
+pub fn client_config_alpn(
+    roots: RootCertStore,
+    now_unix_secs: u64,
+    alpn: &[Vec<u8>],
+) -> Result<Arc<ClientConfig>, TlsError> {
     let mut config = ClientConfig::builder_with_details(
         Arc::new(provider()),
         Arc::new(FixedTime(now_unix_secs)),
@@ -66,6 +75,7 @@ pub fn client_config(
     .with_root_certificates(roots)
     .with_no_client_auth();
     config.resumption = Resumption::disabled();
+    config.alpn_protocols = alpn.to_vec();
     Ok(Arc::new(config))
 }
 
@@ -200,6 +210,17 @@ impl TlsClient {
         Self::with_config(host, seed, client_config(roots, now_unix_secs)?)
     }
 
+    /// [`TlsClient::new`] offering `alpn` protocol names in order.
+    pub fn new_with_alpn(
+        host: &str,
+        seed: [u8; 32],
+        now_unix_secs: u64,
+        roots: RootCertStore,
+        alpn: &[Vec<u8>],
+    ) -> Result<Self, TlsError> {
+        Self::with_config(host, seed, client_config_alpn(roots, now_unix_secs, alpn)?)
+    }
+
     /// A session under `config` (see [`client_config`], [`encrypt_only_config`]).
     pub fn with_config(
         host: &str,
@@ -224,6 +245,11 @@ impl TlsClient {
             eof: false,
             record: None,
         })
+    }
+
+    /// The protocol the peer chose from the ALPN names offered, once the handshake has settled it.
+    pub fn alpn_protocol(&self) -> Option<Vec<u8>> {
+        self.conn.alpn_protocol().map(<[u8]>::to_vec)
     }
 
     pub fn recording(mut self) -> Self {
@@ -403,8 +429,24 @@ impl TlsClient {
         roots: RootCertStore,
         transcript: &[Recorded],
     ) -> Result<(Self, Vec<u8>), TlsError> {
-        let mut client = Self::new(host, seed, now_unix_secs, roots)?.recording();
-        let mut sent = client.settle()?;
+        let replayed = Self::replay_with_alpn(host, seed, now_unix_secs, roots, &[], transcript)?;
+        Ok((replayed.client, replayed.sent))
+    }
+
+    /// [`TlsClient::replay`] for a session that offered `alpn`, also returning every plaintext byte the transcript
+    /// decrypted, in order, so a caller can tell which of them it has already handed on.
+    pub fn replay_with_alpn(
+        host: &str,
+        seed: [u8; 32],
+        now_unix_secs: u64,
+        roots: RootCertStore,
+        alpn: &[Vec<u8>],
+        transcript: &[Recorded],
+    ) -> Result<Replayed, TlsError> {
+        let mut client = Self::new_with_alpn(host, seed, now_unix_secs, roots, alpn)?.recording();
+        let mut sent = Vec::new();
+        let mut plaintext = Vec::new();
+        client.settle(&mut sent, &mut plaintext)?;
         for event in transcript {
             match event {
                 Recorded::Inbound(bytes) => client.feed(bytes),
@@ -412,19 +454,27 @@ impl TlsClient {
                 Recorded::Close => client.close(),
                 Recorded::Eof => client.feed_eof(),
             }
-            sent.extend(client.settle()?);
+            client.settle(&mut sent, &mut plaintext)?;
         }
-        Ok((client, sent))
+        Ok(Replayed { client, sent, plaintext })
     }
 
-    fn settle(&mut self) -> Result<Vec<u8>, TlsError> {
-        let mut sent = Vec::new();
+    fn settle(&mut self, sent: &mut Vec<u8>, plaintext: &mut Vec<u8>) -> Result<(), TlsError> {
         loop {
             match self.poll()? {
                 Poll::Transmit(bytes) => sent.extend(bytes),
-                Poll::Plaintext(_) => {}
-                Poll::NeedInbound | Poll::Idle | Poll::Closed => return Ok(sent),
+                Poll::Plaintext(bytes) => plaintext.extend(bytes),
+                Poll::NeedInbound | Poll::Idle | Poll::Closed => return Ok(()),
             }
         }
     }
+}
+
+/// A session rebuilt from its transcript.
+pub struct Replayed {
+    pub client: TlsClient,
+    /// The ciphertext the session sent while replaying.
+    pub sent: Vec<u8>,
+    /// Every plaintext byte the transcript decrypted, in order.
+    pub plaintext: Vec<u8>,
 }

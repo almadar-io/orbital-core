@@ -33,9 +33,6 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         "persist" => parse_persist(args),
         "fetch" => parse_fetch(args),
         "call-service" => parse_call_service(args),
-        "http" => parse_http(args),
-        "redis" => parse_redis(args),
-        "postgres" => parse_postgres(args),
         "cancel-call" => parse_cancel_call(args),
         "random-bytes" => parse_random_bytes(args),
         "credential-status" => parse_credential(args, true),
@@ -44,11 +41,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
             parse_credential_admin(admin, args)
         }
         "access-check" => parse_access_check(args),
-        "oauth-authorize" => parse_oauth_authorize(args),
-        "oauth-connection-status" => parse_oauth_connection(args, true),
-        "oauth-connection-forget" => parse_oauth_connection(args, false),
         "browser/page-facts" => parse_page_facts(args),
-        "browser/beacon" => parse_beacon(args),
         "browser/prompt" => parse_prompt(args),
         "browser/embed" => parse_embed(args),
         "render-ui" => parse_render_ui(args),
@@ -343,108 +336,6 @@ pub(super) fn parse_call_service(args: &[SExpression]) -> Option<Effect> {
     })
 }
 
-/// `["http", METHOD, origin, path, request?, { key?, emit? }?]`.
-pub(super) fn parse_http(args: &[SExpression]) -> Option<Effect> {
-    if !(3..=5).contains(&args.len()) {
-        return None;
-    }
-    let method: HttpMethod =
-        serde_json::from_value(serde_json::Value::String(args[0].as_str()?.to_string())).ok()?;
-    let origin = Value::from(args[1].clone());
-    let path = Value::from(args[2].clone());
-    let request = args
-        .get(3)
-        .map(|e| Value::from(e.clone()))
-        .unwrap_or_else(|| Value::object(ValueMap::default()));
-    let options = args.get(4).map(|e| Value::from(e.clone()));
-    let key = options
-        .as_ref()
-        .and_then(|o| o.as_object())
-        .and_then(|o| o.get("key"))
-        .cloned();
-    let emit = options.as_ref().and_then(parse_emit_config);
-    Some(Effect::Http {
-        method,
-        origin,
-        path,
-        request,
-        key,
-        emit,
-    })
-}
-
-/// `["redis", origin, command, { auth?, user?, db?, key?, emit? }?, { key?, emit? }?]`: the trailing objects
-/// share one namespace, `key` and `emit` going to the call and every other key to the connection `options`.
-pub(super) fn parse_redis(args: &[SExpression]) -> Option<Effect> {
-    if !(2..=4).contains(&args.len()) {
-        return None;
-    }
-    let mut options = ValueMap::default();
-    let mut key = None;
-    let mut routes = ValueMap::default();
-    for trailing in &args[2..] {
-        let SExpression::Object(fields) = trailing else {
-            return None;
-        };
-        for (name, value) in fields.iter() {
-            let value = Value::from(value.clone());
-            match name.as_str() {
-                "key" => key = Some(value),
-                "emit" => {
-                    routes.insert("emit".into(), value);
-                }
-                _ => {
-                    options.insert(name.to_string().into(), value);
-                }
-            }
-        }
-    }
-    Some(Effect::Redis {
-        origin: Value::from(args[0].clone()),
-        command: Value::from(args[1].clone()),
-        options: Value::object(options),
-        key,
-        emit: parse_emit_config(&Value::object(routes)),
-    })
-}
-
-/// `["postgres", origin, sql, params, { auth?, user?, database?, tls?, timeoutMs?, key?, emit? }?, { key?, emit? }?]`:
-/// the trailing objects share one namespace, `key` and `emit` going to the call and every other key to the connection
-/// `options`.
-pub(super) fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
-    if !(3..=5).contains(&args.len()) {
-        return None;
-    }
-    let mut options = ValueMap::default();
-    let mut key = None;
-    let mut routes = ValueMap::default();
-    for trailing in &args[3..] {
-        let SExpression::Object(fields) = trailing else {
-            return None;
-        };
-        for (name, value) in fields.iter() {
-            let value = Value::from(value.clone());
-            match name.as_str() {
-                "key" => key = Some(value),
-                "emit" => {
-                    routes.insert("emit".into(), value);
-                }
-                _ => {
-                    options.insert(name.to_string().into(), value);
-                }
-            }
-        }
-    }
-    Some(Effect::Postgres {
-        origin: Value::from(args[0].clone()),
-        sql: Value::from(args[1].clone()),
-        params: Value::from(args[2].clone()),
-        options: Value::object(options),
-        key,
-        emit: parse_emit_config(&Value::object(routes)),
-    })
-}
-
 /// `["browser/page-facts", [field, …], { emit? }?]`.
 pub(super) fn parse_page_facts(args: &[SExpression]) -> Option<Effect> {
     if !(1..=2).contains(&args.len()) {
@@ -498,33 +389,6 @@ pub(super) fn parse_embed(args: &[SExpression]) -> Option<Effect> {
     let (key, emit) = keyed_options(args.get(1));
     Some(Effect::BrowserEmbed {
         texts: Value::from(args[0].clone()),
-        key,
-        emit,
-    })
-}
-
-/// `["browser/beacon", url, { text, key? }, { key?, emit? }?]`; `key` may ride either object.
-pub(super) fn parse_beacon(args: &[SExpression]) -> Option<Effect> {
-    if !(2..=3).contains(&args.len()) {
-        return None;
-    }
-    let mut request = Value::from(args[1].clone());
-    let mut key = None;
-    if let Value::Object(map) = &mut request {
-        key = map.shift_remove("key");
-    }
-    let options = args.get(2).map(|e| Value::from(e.clone()));
-    if let Some(k) = options
-        .as_ref()
-        .and_then(|o| o.as_object())
-        .and_then(|o| o.get("key"))
-    {
-        key = Some(k.clone());
-    }
-    let emit = options.as_ref().and_then(parse_emit_config);
-    Some(Effect::BrowserBeacon {
-        url: Value::from(args[0].clone()),
-        request,
         key,
         emit,
     })
@@ -630,42 +494,6 @@ pub(super) fn parse_access_check(args: &[SExpression]) -> Option<Effect> {
     Some(Effect::AccessCheck {
         request: Value::from(args[0].clone()),
         emit,
-    })
-}
-
-/// `["oauth-authorize", client, options, { key?, emit? }?]`.
-pub(super) fn parse_oauth_authorize(args: &[SExpression]) -> Option<Effect> {
-    if !(2..=3).contains(&args.len()) {
-        return None;
-    }
-    let trailing = args.get(2).map(|options| Value::from(options.clone()));
-    let key = trailing
-        .as_ref()
-        .and_then(|o| o.as_object())
-        .and_then(|o| o.get("key"))
-        .cloned();
-    let emit = trailing.as_ref().and_then(parse_emit_config);
-    Some(Effect::OAuthAuthorize {
-        client: Value::from(args[0].clone()),
-        options: Value::from(args[1].clone()),
-        key,
-        emit,
-    })
-}
-
-/// `["oauth-connection-status" | "oauth-connection-forget", provider, { emit? }?]`.
-pub(super) fn parse_oauth_connection(args: &[SExpression], status: bool) -> Option<Effect> {
-    if !(1..=2).contains(&args.len()) {
-        return None;
-    }
-    let provider = Value::from(args[0].clone());
-    let emit = args
-        .get(1)
-        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
-    Some(if status {
-        Effect::OAuthConnectionStatus { provider, emit }
-    } else {
-        Effect::OAuthConnectionForget { provider, emit }
     })
 }
 

@@ -44,8 +44,6 @@ pub mod client_effect;
 pub mod effect_types;
 #[path = "wire/http_wire.rs"]
 pub mod http_wire;
-#[path = "wire/oauth_wire.rs"]
-pub mod oauth_wire;
 #[path = "wire/row_set.rs"]
 pub mod row_set;
 #[path = "wire/tab.rs"]
@@ -110,8 +108,6 @@ pub mod dispatch_mode;
 pub mod inbound;
 #[path = "contract/credential_admin.rs"]
 pub mod credential_admin;
-#[path = "contract/sql_guard.rs"]
-pub mod sql_guard;
 #[path = "contract/events/mod.rs"]
 pub mod events;
 
@@ -142,10 +138,6 @@ pub mod project;
 // security — token & secret shapes (the kernel signs; base holds the wire types)
 #[path = "security/jwt_alg.rs"]
 pub mod jwt_alg;
-#[path = "security/oauth_ask.rs"]
-pub mod oauth_ask;
-#[path = "security/oauth_client.rs"]
-pub mod oauth_client;
 #[path = "security/secrets.rs"]
 pub mod secrets;
 

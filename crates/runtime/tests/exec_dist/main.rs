@@ -7,7 +7,6 @@ mod conformance;
 mod client_browser_leg;
 mod client_core_server_resolve;
 mod client_fetch_success_emit;
-mod client_keyless_http;
 mod client_only_ignores_host_state;
 mod client_stateful_leg;
 mod embed_fold_follow_on;

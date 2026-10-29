@@ -6,7 +6,6 @@ use std::prelude::v1::*;
 
 use serde::{Deserialize, Serialize};
 
-use crate::http_wire::HttpMethod;
 use crate::ir::expr::{OirBinding, OirExpr};
 use crate::ir::types::OirPattern;
 use crate::os::OsOp;
@@ -166,48 +165,6 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
-    /// One HTTP request (`runtime::http_request`). `origin` is a literal or a `url` knob, `request`
-    /// carries `query`/`headers`/one body/`auth`/`timeoutMs`/`responseAs`/`paginate`/`stream`.
-    /// Server-only, keyed and routed like `call-service`.
-    Http {
-        method: HttpMethod,
-        origin: OirExpr,
-        path: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        request: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// One redis command (`runtime::redis`): `origin` is a literal or a `url` knob, `command` the list of text
-    /// items, `options` the connection options (`auth`, `user`, `db`). Server-only, keyed and routed like `http`.
-    Redis {
-        origin: OirExpr,
-        command: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        options: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// One read-only SQL statement (`runtime::postgres`): `origin` is a literal or a `url` knob, `sql` the statement,
-    /// `params` the bind values, `options` the connection options. Server-only, keyed and routed like `http`.
-    Postgres {
-        origin: OirExpr,
-        sql: OirExpr,
-        params: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        options: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
     /// Abort the in-flight keyed `call-service` or `http` started with this key. A
     /// no-op when none is in flight. Server-only, like `call-service`.
     CancelCall { key: OirExpr },
@@ -261,30 +218,6 @@ pub enum OirEffect {
     /// `{ allowed }`. Server-only.
     AccessCheck {
         request: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// Start an OAuth authorization for `client`; success carries `{ authUrl, state }`. Server-only.
-    OAuthAuthorize {
-        client: OirExpr,
-        options: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// The signed-in user's connection to the provider word `provider`. Server-only.
-    OAuthConnectionStatus {
-        provider: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
-    /// Drop the signed-in user's connection to the provider word `provider`. Server-only.
-    OAuthConnectionForget {
-        provider: OirExpr,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
@@ -432,17 +365,6 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
-    /// POST `request.text` (the request object) to the absolute `url` as `text/plain` through the browser's beacon queue,
-    /// falling back to one `keepalive` fetch. Built and egress-checked by the one http driver.
-    BrowserBeacon {
-        url: OirExpr,
-        request: OirExpr,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<OirExpr>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        emit: Option<OirEmitConfig>,
-    },
-
     /// Ask the host's on-device model for a reply to `text` that satisfies the JSON Schema text `schema`. Success
     /// `result` is `PROMPT_SHAPE`: `{ reply, key }`; failure is `MODEL_FAILURE_SHAPE`: `{ error, kind, key }`.
     BrowserPrompt {
@@ -539,9 +461,6 @@ impl OirEffect {
             Self::NavigateBack => "navigate-back",
             Self::RenderUi { .. } => "render-ui",
             Self::CallService { .. } => "call-service",
-            Self::Http { .. } => "http",
-            Self::Redis { .. } => "redis",
-            Self::Postgres { .. } => "postgres",
             Self::CancelCall { .. } => "cancel-call",
             Self::RandomBytes { .. } => "random-bytes",
             Self::Os { op, .. } => op.name(),
@@ -549,9 +468,6 @@ impl OirEffect {
             Self::CredentialForget { .. } => "credential-forget",
             Self::CredentialAdmin { op, .. } => op.name(),
             Self::AccessCheck { .. } => "access-check",
-            Self::OAuthAuthorize { .. } => "oauth-authorize",
-            Self::OAuthConnectionStatus { .. } => "oauth-connection-status",
-            Self::OAuthConnectionForget { .. } => "oauth-connection-forget",
             Self::Spawn { .. } => "spawn",
             Self::Despawn { .. } => "despawn",
             Self::Log { .. } => "log",
@@ -570,7 +486,6 @@ impl OirEffect {
             Self::BrowserGeolocationCurrent { .. } => "browser/geolocation-current",
             Self::BrowserPushSubscribe { .. } => "browser/push-subscribe",
             Self::BrowserPageFacts { .. } => "browser/page-facts",
-            Self::BrowserBeacon { .. } => "browser/beacon",
             Self::BrowserPrompt { .. } => "browser/prompt",
             Self::BrowserEmbed { .. } => "browser/embed",
             Self::BrowserTab { op, .. } => op.name(),

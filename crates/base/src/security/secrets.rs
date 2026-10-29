@@ -16,12 +16,6 @@ pub const CREDENTIAL_NOT_SECRET_CODE: &str = "ORB_HTTP_AUTH_CREDENTIAL_NOT_SECRE
 pub const SECRET_OUTSIDE_AUTH_CODE: &str = "ORB_SECRET_OUTSIDE_AUTH";
 pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLOT_INVALID";
 
-/// The slot name of a `redis` call's `auth` option in a [`SecretFlowViolation::CredentialNotSecret`].
-pub const REDIS_AUTH_SLOT: &str = "redis.auth";
-
-/// The slot name of a `postgres` call's `auth` option.
-pub const POSTGRES_AUTH_SLOT: &str = "postgres.auth";
-
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretFlowViolation {
@@ -57,17 +51,11 @@ impl SecretFlowViolation {
             Self::CredentialNotSecret { slot, .. } if slot.starts_with("credential-") => {
                 format!("`{slot}` takes a `secret`-typed config knob (@config.<knob>)")
             }
-            Self::CredentialNotSecret { slot, .. } if slot == REDIS_AUTH_SLOT => {
-                "`redis` options.auth must be a `secret`-typed config knob (@config.<knob>)".to_string()
-            }
-            Self::CredentialNotSecret { slot, .. } if slot == POSTGRES_AUTH_SLOT => {
-                "`postgres` options.auth must be a `secret`-typed config knob (@config.<knob>)".to_string()
-            }
             Self::CredentialNotSecret { slot, .. } => format!(
                 "`http` auth.{slot} must be a `secret`-typed config knob (@config.<knob>)"
             ),
             Self::OutsideAuth { .. } => {
-                "a `secret`-typed knob is read outside an `http` auth, `redis` or `postgres` options.auth credential slot".to_string()
+                "a `secret`-typed knob is read outside an `http` auth credential slot".to_string()
             }
         }
     }
@@ -92,7 +80,7 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
     match scheme {
         "bearer" | "api-key" | "hmac-sha256" => &["credential"],
         "basic" => &["user", "credential"],
-        "oauth2-client" | "token-exchange" => &["clientId", "clientSecret"],
+        "token-exchange" => &["clientId", "clientSecret"],
         "jwt-bearer" => &["key"],
         "aws-sigv4" => &["accessKeyId", "secretAccessKey", "sessionToken"],
         "vapid" => &["privateKey"],
@@ -186,25 +174,6 @@ fn is_http(items: &[Value]) -> bool {
     items.first().and_then(Value::as_str) == Some("http")
 }
 
-fn is_redis(items: &[Value]) -> bool {
-    items.first().and_then(Value::as_str) == Some("redis")
-}
-
-fn is_postgres(items: &[Value]) -> bool {
-    items.first().and_then(Value::as_str) == Some("postgres")
-}
-
-/// The index of a driver call's first options object: after `origin` and `command` for redis, after `origin`, `sql`
-/// and `params` for postgres.
-fn driver_options_from(items: &[Value]) -> usize {
-    if is_postgres(items) { 4 } else { 3 }
-}
-
-/// The `auth` credential slot of a `redis` or `postgres` call: the option may sit in either trailing object.
-fn redis_auth_slots(items: &[Value]) -> impl Iterator<Item = &Value> {
-    items.iter().skip(driver_options_from(items)).filter_map(Value::as_object).filter_map(|options| options.get("auth"))
-}
-
 /// `credential-status` / `credential-forget`: their first argument is a credential slot.
 fn credential_effect(items: &[Value]) -> Option<&str> {
     items
@@ -229,11 +198,6 @@ fn http_request(items: &[Value]) -> Option<&Map<String, Value>> {
 
 fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     each_http_call(expr, &mut |items| check_credential_slots(items, secrets, path, out));
-    each_oauth_authorize(expr, &mut |items| {
-        if let Some(client) = items.get(1) {
-            check_oauth_client(client, secrets, path, out);
-        }
-    });
     each_scrypt_salt(expr, &mut |salt| {
         let is_secret_knob = salt
             .as_str()
@@ -280,48 +244,10 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
     }
 }
 
-/// `oauth-authorize`: its first argument is an OAuth client object whose `clientId` / `clientSecret` are credential slots.
-fn is_oauth_authorize(items: &[Value]) -> bool {
-    items.first().and_then(Value::as_str) == Some("oauth-authorize")
-}
-
-/// The credential slots of an OAuth client object (`oauth-client` auth, `oauth-authorize`).
-const OAUTH_CLIENT_SLOTS: [&str; 2] = ["clientId", "clientSecret"];
-
-fn check_oauth_client(client: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
-    let Some(client) = client.as_object() else { return };
-    for slot in OAUTH_CLIENT_SLOTS {
-        let Some(value) = client.get(slot) else { continue };
-        let is_secret_knob = slot_credential(value)
-            .and_then(config_knob)
-            .is_some_and(|knob| secrets.contains(&knob));
-        if !is_secret_knob {
-            out.push(SecretFlowViolation::CredentialNotSecret {
-                path: path.to_string(),
-                slot: format!("client.{slot}"),
-            });
-        }
-    }
-}
-
-/// Reads of a secret inside an OAuth client object other than its credential slots.
-fn scan_oauth_client_reads(client: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
-    match client {
-        Value::Object(fields) => {
-            for (key, value) in fields {
-                if !OAUTH_CLIENT_SLOTS.contains(&key.as_str()) {
-                    scan_reads(value, secrets, path, out);
-                }
-            }
-        }
-        other => scan_reads(other, secrets, path, out),
-    }
-}
-
 fn each_http_call<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
     match expr {
         Value::Array(items) => {
-            if is_http(items) || is_redis(items) || is_postgres(items) {
+            if is_http(items) {
                 visit(items);
             }
             for item in items {
@@ -331,25 +257,6 @@ fn each_http_call<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
         Value::Object(map) => {
             for value in map.values() {
                 each_http_call(value, visit);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn each_oauth_authorize<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
-    match expr {
-        Value::Array(items) => {
-            if is_oauth_authorize(items) {
-                visit(items);
-            }
-            for item in items {
-                each_oauth_authorize(item, visit);
-            }
-        }
-        Value::Object(map) => {
-            for value in map.values() {
-                each_oauth_authorize(value, visit);
             }
         }
         _ => {}
@@ -378,31 +285,12 @@ fn each_credential_effect<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a str, &'
 /// Every credential slot of an `http` call, named by slot, in the order the secret-flow rules check them.
 fn credential_slot_values(items: &[Value]) -> Vec<(String, &Value)> {
     let mut out = Vec::new();
-    if is_redis(items) || is_postgres(items) {
-        let name = if is_postgres(items) { POSTGRES_AUTH_SLOT } else { REDIS_AUTH_SLOT };
-        out.extend(redis_auth_slots(items).map(|slot| (name.to_string(), slot)));
-        return out;
-    }
     let Some(Value::Object(auth)) = http_request(items).and_then(|r| r.get("auth")) else {
         return out;
     };
     let Some(scheme) = auth.get("scheme").and_then(Value::as_str) else {
         return out;
     };
-    if scheme == "oauth-client" {
-        let clients = auth
-            .get("client")
-            .into_iter()
-            .chain(auth.get("clients").and_then(Value::as_object).into_iter().flat_map(Map::values));
-        for client in clients.filter_map(Value::as_object) {
-            for slot in OAUTH_CLIENT_SLOTS {
-                if let Some(value) = client.get(slot) {
-                    out.push((format!("client.{slot}"), value));
-                }
-            }
-        }
-        return out;
-    }
     for slot in credential_slots(scheme) {
         if let Some(value) = auth.get(*slot) {
             out.push(((*slot).to_string(), value));
@@ -493,17 +381,12 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         }
         Value::Array(items) => {
             let http = is_http(items);
-            let redis = is_redis(items) || is_postgres(items);
-            let options_from = driver_options_from(items);
             let credential = credential_effect(items).is_some();
-            let authorize = is_oauth_authorize(items);
             let scrypt = items.first().and_then(Value::as_str) == Some("hash/scrypt");
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
                     _ if scrypt && index == 2 && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
-                    _ if authorize && index == 1 => scan_oauth_client_reads(item, secrets, path, out),
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
-                    (_, Value::Object(options)) if redis && index >= options_from => scan_redis_option_reads(options, secrets, path, out),
                     _ if credential && index == 1 => {
                         if matches!(items.first().and_then(Value::as_str), Some("credential-status")) {
                             if let Value::Object(selection) = item {
@@ -533,23 +416,6 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
     }
 }
 
-/// A `redis` call's option object: its `auth` credential slot is the one place a secret knob may be read.
-fn scan_redis_option_reads(options: &Map<String, Value>, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
-    for (key, value) in options {
-        match (key.as_str(), value) {
-            ("auth", Value::String(_)) => {}
-            ("auth", Value::Object(slot)) => {
-                for (name, entry) in slot {
-                    if name != "credential" {
-                        scan_reads(entry, secrets, path, out);
-                    }
-                }
-            }
-            _ => scan_reads(value, secrets, path, out),
-        }
-    }
-}
-
 fn scan_request_reads(request: &Map<String, Value>, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     for (key, value) in request {
         match (key.as_str(), value) {
@@ -561,12 +427,6 @@ fn scan_request_reads(request: &Map<String, Value>, secrets: &[&str], path: &str
                         continue;
                     }
                     match (scheme, slot.as_str(), slot_value) {
-                        (Some("oauth-client"), "client", client) => scan_oauth_client_reads(client, secrets, path, out),
-                        (Some("oauth-client"), "clients", Value::Object(clients)) => {
-                            for client in clients.values() {
-                                scan_oauth_client_reads(client, secrets, path, out);
-                            }
-                        }
                         (Some("token-exchange"), "body", Value::Object(body)) => {
                             for fields in body.values() {
                                 for (_, field) in fields.as_object().into_iter().flatten() {
@@ -672,43 +532,10 @@ mod tests {
             json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.plain", "secretAccessKey": "@config.apiKey" }),
             json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.apiKey", "secretAccessKey": "@config.apiKey", "sessionToken": "@config.plain" }),
             json!({ "scheme": "basic", "user": "alice", "credential": "@config.apiKey" }),
-            json!({ "scheme": "oauth2-client", "tokenUrl": "https://a.example", "clientId": "@config.apiKey", "clientSecret": "@payload.s" }),
         ] {
             let found = codes(&program(config(), call(json!({ "auth": auth.clone() }))));
             assert_eq!(found, vec![CREDENTIAL_NOT_SECRET_CODE], "{auth}");
         }
-    }
-
-    fn redis_call(options: Value) -> Value {
-        json!([["redis", "redis://h", ["PING"], options, { "emit": { "success": "OK" } }]])
-    }
-
-    #[test]
-    fn a_redis_auth_slot_must_be_a_secret_knob_and_may_not_leak_it_elsewhere() {
-        for auth in [json!("@config.plain"), json!("LITERAL"), json!({ "credential": "@config.plain", "scope": "user" })] {
-            let found = codes(&program(config(), redis_call(json!({ "auth": auth.clone() }))));
-            assert_eq!(found, vec![CREDENTIAL_NOT_SECRET_CODE], "{auth}");
-        }
-        let leaked = codes(&program(config(), redis_call(json!({ "auth": "@config.apiKey", "user": "@config.apiKey" }))));
-        assert!(leaked.contains(&SECRET_OUTSIDE_AUTH_CODE), "{leaked:?}");
-    }
-
-    #[test]
-    fn postgres_auth_is_a_secret_slot_after_the_params_and_other_reads_of_it_are_outside_auth() {
-        let call = |options: Value| json!([["postgres", "postgres://h", "SELECT 1", [], options, { "emit": { "success": "OK" } }]]);
-        let bad = codes(&program(config(), call(json!({ "auth": "@config.plain" }))));
-        assert_eq!(bad, vec![CREDENTIAL_NOT_SECRET_CODE]);
-        let leaked = codes(&program(config(), call(json!({ "auth": "@config.apiKey", "user": "@config.apiKey" }))));
-        assert!(leaked.contains(&SECRET_OUTSIDE_AUTH_CODE), "{leaked:?}");
-        assert!(codes(&program(config(), call(json!({ "auth": "@config.apiKey", "database": "main" })))).is_empty());
-    }
-
-    #[test]
-    fn control_a_secret_knob_in_a_redis_auth_slot_is_clean() {
-        for auth in [json!("@config.apiKey"), json!({ "credential": "@config.apiKey", "scope": "app" })] {
-            assert!(codes(&program(config(), redis_call(json!({ "auth": auth.clone(), "db": 1 })))).is_empty(), "{auth}");
-        }
-        assert!(codes(&program(config(), redis_call(json!({ "db": 1 })))).is_empty());
     }
 
     #[test]
@@ -916,30 +743,6 @@ mod tests {
     #[test]
     fn a_program_without_orbitals_has_no_violations() {
         assert!(secret_flow_violations(&json!({})).is_empty());
-    }
-
-    fn oauth_client(id: &str, secret: &str) -> Value {
-        json!({ "tag": "google", "mode": "real", "issuer": "https://idp.example.com", "clientId": id, "clientSecret": secret, "clientAuth": "post" })
-    }
-
-    fn oauth_call(client: Value, code: &str) -> Value {
-        json!([["http", "POST", "oauth-endpoint", "token",
-            { "auth": { "scheme": "oauth-client", "op": "code", "client": client, "code": code, "state": "@payload.state" } },
-            { "emit": { "success": "OK" } }]])
-    }
-
-    #[test]
-    fn oauth_client_and_authorize_slots_must_be_secret_knobs_and_nothing_else_may_read_one() {
-        let clean = program(config(), oauth_call(oauth_client("@config.apiKey", "@config.apiKey"), "@payload.code"));
-        assert!(codes(&clean).is_empty(), "{:?}", secret_flow_violations(&clean));
-        let bad = secret_flow_violations(&program(config(), oauth_call(oauth_client("@config.plain", "@config.apiKey"), "@payload.code")));
-        assert!(matches!(&bad[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "client.clientId"), "{bad:?}");
-        let leaked = codes(&program(config(), oauth_call(oauth_client("@config.apiKey", "@config.apiKey"), "@config.apiKey")));
-        assert_eq!(leaked, vec![SECRET_OUTSIDE_AUTH_CODE]);
-        let authorize = |client: Value| program(config(), json!([["oauth-authorize", client, { "redirectUri": "https://a/cb" }, { "emit": { "success": "OK" } }]]));
-        assert!(codes(&authorize(oauth_client("@config.apiKey", "@config.apiKey"))).is_empty());
-        let bad = secret_flow_violations(&authorize(oauth_client("@config.apiKey", "LITERAL")));
-        assert!(matches!(&bad[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "client.clientSecret"), "{bad:?}");
     }
 
     #[test]

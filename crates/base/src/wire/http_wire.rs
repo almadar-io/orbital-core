@@ -784,3 +784,30 @@ mod retry_backoff_tests {
         assert_eq!(delay_at(&backoff(0), 0), Some(0));
     }
 }
+
+/// Exact scheme + host + port match against an `egress` entry.
+pub fn origin_allowed(url_or_origin: &str, egress: &[String]) -> bool {
+    let Some((target, _)) = split_url(url_or_origin) else {
+        return false;
+    };
+    egress
+        .iter()
+        .filter_map(|entry| parse_egress_entry(entry))
+        .any(|allowed| allowed == target)
+}
+
+/// A TCP connect target (`<scheme>://host[:port]`, a scheme the operator table declares a default port for) against `egress`:
+/// exact scheme, host and port, the default port of the scheme when none is written. Refuses with
+/// [`HttpRefusal::EgressDenied`]; an `http(s)` entry never authorizes a TCP target.
+pub fn tcp_target_allowed(origin: &str, egress: &[String]) -> Result<OriginParts, HttpRefusal> {
+    let denied = || HttpRefusal::EgressDenied(origin.to_string());
+    let (target, rest) = split_tcp_url(origin).ok_or_else(denied)?;
+    if !rest.is_empty() {
+        return Err(denied());
+    }
+    if egress.iter().filter_map(|entry| parse_egress_entry(entry)).any(|allowed| allowed == target) {
+        Ok(target)
+    } else {
+        Err(denied())
+    }
+}

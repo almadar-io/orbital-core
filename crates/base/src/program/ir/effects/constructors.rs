@@ -236,41 +236,6 @@ impl OirEffect {
         }
     }
 
-    /// Create an http effect
-    pub fn http(method: HttpMethod, origin: OirExpr, path: OirExpr) -> Self {
-        Self::Http {
-            method,
-            origin,
-            path,
-            request: None,
-            key: None,
-            emit: None,
-        }
-    }
-
-    /// Create a redis effect
-    pub fn redis(origin: OirExpr, command: OirExpr) -> Self {
-        Self::Redis {
-            origin,
-            command,
-            options: None,
-            key: None,
-            emit: None,
-        }
-    }
-
-    /// Create a postgres effect
-    pub fn postgres(origin: OirExpr, sql: OirExpr, params: OirExpr) -> Self {
-        Self::Postgres {
-            origin,
-            sql,
-            params,
-            options: None,
-            key: None,
-            emit: None,
-        }
-    }
-
     /// Create a cancel-call effect
     pub fn cancel_call(key: OirExpr) -> Self {
         Self::CancelCall { key }

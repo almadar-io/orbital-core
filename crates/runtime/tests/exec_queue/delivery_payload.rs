@@ -49,6 +49,17 @@ fn an_emit_that_contradicts_its_emitters_declaration_refuses_the_dispatch() {
 }
 
 #[test]
+fn an_emit_whose_payload_fails_to_evaluate_reports_that_failure_not_a_check_of_the_unevaluated_expression() {
+    let outcomes = kernel(json!({ "n": ["+", 1, "x"] })).dispatch("Sender", None, "GO", Value::Null);
+    let outcomes = outcomes.unwrap_or_else(|e| panic!("the dispatch must carry the evaluation failure, got {e:?}"));
+    let failed = outcomes
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .find(|er| er.error.as_deref().is_some_and(|e| e.contains("Type mismatch")));
+    assert!(failed.is_some(), "{outcomes:?}");
+}
+
+#[test]
 fn a_listeners_narrower_view_is_not_checked_at_delivery() {
     let outcomes = kernel_declaring(json!({ "n": "one" }), json!([])).dispatch("Sender", None, "GO", Value::Null).unwrap();
     assert!(outcomes.iter().any(|(name, r)| name == "Receiver" && r.new_state == "heard"), "{outcomes:?}");

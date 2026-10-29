@@ -268,6 +268,7 @@ operator_kind! {
     BytesSliceOp => BytesSliceOp,
     BytesConcatOp => BytesConcatOp,
     BytesEqualsOp => BytesEqualsOp,
+    BytesValidUtf8Op => BytesValidUtf8Op,
     BytesIndexOfOp => BytesIndexOfOp,
     BytesAtOp => BytesAtOp,
     BytesReadUintOp => BytesReadUintOp,

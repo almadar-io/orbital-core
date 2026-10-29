@@ -235,8 +235,6 @@ fn resource_arg_index(kind: &str) -> Option<usize> {
         "despawn" => Some(0),
         // (call-service <service> <method> <args>) — joined below, both parts matter
         "call-service" => Some(0),
-        // (http <METHOD> <origin> <path> ...) — the origin is the resource
-        "http" => Some(1),
         _ => None,
     }
 }
