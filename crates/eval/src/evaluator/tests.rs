@@ -3634,14 +3634,16 @@ fn tree_index_prefixes_collect_string_leaves_grouped_in_prefix_order() {
 }
 
 #[test]
-fn tree_index_prefixes_do_not_count_a_call_head_as_a_leaf() {
+fn tree_index_prefixes_count_a_list_head_string_with_its_path() {
     let got = eval(
-        r#"["tree/index", ["quote", "[[\"@fn.go\",\"@fn.arg\"],\"@fn.alone\"]"], ["list"], {"prefixes": ["quote", "[\"@fn.\"]"]}]"#,
+        r#"["tree/index", ["quote", "[[\"@fn.go\",\"@fn.arg\"],[\"plain\",\"@fn.b\"],\"@fn.alone\"]"], ["list"], {"prefixes": ["quote", "[\"@fn.\"]"]}]"#,
     );
     let want: Value = serde_json::from_value(serde_json::json!({
         "@fn.": [
+            { "path": "[0][0]", "node": "@fn.go", "at": 2 },
             { "path": "[0][1]", "node": "@fn.arg", "at": 3 },
-            { "path": "[1]", "node": "@fn.alone", "at": 4 }
+            { "path": "[1][1]", "node": "@fn.b", "at": 6 },
+            { "path": "[2]", "node": "@fn.alone", "at": 7 }
         ]
     }))
     .unwrap();

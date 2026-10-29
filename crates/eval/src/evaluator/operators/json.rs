@@ -145,7 +145,7 @@ impl Operator for JsonNodesOp {
 /// `(tree/index value heads [options])`: every call form in `value` whose head is listed in `heads`, grouped by head in
 /// `heads` order, each with its path from `value` and its position `at` in the walk; one pre-order walk that continues
 /// inside a hit. `options.prefixes` also collects every string leaf starting with a listed prefix, under the first
-/// listed prefix that matches; a string that heads a call form is not a leaf.
+/// listed prefix that matches, including a string that heads a list (its path ends `[0]`).
 pub struct TreeIndexOp;
 impl Operator for TreeIndexOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -222,8 +222,8 @@ impl Operator for TreeIndexOp {
             Value::object(hit)
         };
         let mut visited = 0usize;
-        let mut stack = vec![(value, String::new(), false)];
-        while let Some((node, path, is_head)) = stack.pop() {
+        let mut stack = vec![(value, String::new())];
+        while let Some((node, path)) = stack.pop() {
             let at = visited;
             visited += 1;
             match &node {
@@ -237,7 +237,7 @@ impl Operator for TreeIndexOp {
                         }
                     }
                     for (i, item) in items.iter().enumerate().rev() {
-                        stack.push((item.clone(), format!("{path}[{i}]"), i == 0));
+                        stack.push((item.clone(), format!("{path}[{i}]")));
                     }
                 }
                 Value::Object(map) => {
@@ -247,10 +247,10 @@ impl Operator for TreeIndexOp {
                         } else {
                             format!("{path}.{key}")
                         };
-                        stack.push((item.clone(), child, false));
+                        stack.push((item.clone(), child));
                     }
                 }
-                Value::String(text) if !is_head => {
+                Value::String(text) => {
                     if let Some(prefix) = prefixes
                         .iter()
                         .find(|prefix| text.starts_with(prefix.as_str()))
