@@ -50,6 +50,9 @@ pub enum Known {
     /// The argument is the null value: it is absent, passes every declared type and binds nothing, but the
     /// variable it is passed to may then hold null.
     Absent,
+    /// The argument is an object literal some of whose values are the null literal: `present` is the record of the
+    /// fields that have a type, `nulls` the keys written as null.
+    RecordWithNulls { present: OirType, nulls: Vec<String> },
 }
 
 /// A lambda's result type given its parameters' types. A lambda whose declared type has a `children-of` parameter

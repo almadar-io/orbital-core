@@ -69,10 +69,6 @@ pub(crate) mod render_store;
 #[cfg(feature = "std")]
 pub mod client;
 
-// server — the server-role embedding and its HTTP seam
-#[path = "server/http_service.rs"]
-pub mod http_service;
-
 // stores — row stores: kernel drivers over raw ports (EXEC-STORE)
 #[path = "stores/entity_access.rs"]
 pub mod entity_access;
@@ -97,6 +93,8 @@ pub mod driver;
 pub mod tls;
 
 // security — auth, tokens and secrets (the kernel signs; hosts verify)
+#[path = "security/secret_source.rs"]
+pub mod secret_source;
 #[path = "security/credential_admin.rs"]
 pub mod credential_admin;
 #[cfg(feature = "std")]
@@ -120,9 +118,6 @@ pub mod native_host;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/memory_release.rs"]
 pub mod memory_release;
-#[cfg(feature = "native-transport")]
-#[path = "host/native_transport.rs"]
-pub mod native_transport;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/os_host/mod.rs"]
 pub mod os_host;
@@ -145,7 +140,7 @@ pub use orbital_core_base::entity_vocabulary::{identity_field, user_field_of, vo
 pub use entity_source::{EntitySource, InMemoryEntityCache, QueryAnswer};
 pub use kernel::{
     already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
-    StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP,
+    StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP,
 };
 pub use kernel::lazy::{LazyObserver, LazyProgram, LazySource};
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};

@@ -11,7 +11,6 @@ default = ["wire-drivers"]
 wire-drivers = ["orbital-core-runtime/wire-drivers"]
 async = ["orbital-core-base/async"]
 client-http = ["orbital-core-runtime/client-http"]
-native-transport = ["orbital-core-runtime/native-transport"]
 
 [dependencies]
 orbital-core-base = { path = "crates/base" }

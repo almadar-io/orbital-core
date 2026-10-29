@@ -33,7 +33,7 @@ impl RuntimeKernel {
     /// ([`credential_unset`]); a lookup that fails is the answer.
     pub fn inbound_credential(
         route: &InboundRoute,
-        secrets: &dyn crate::http_service::SecretSource,
+        secrets: &dyn crate::secret_source::SecretSource,
     ) -> Result<Option<String>, InboundAnswer> {
         let Some(v) = &route.verifies else {
             return Ok(None);
@@ -69,7 +69,7 @@ impl RuntimeKernel {
         name: &str,
         headers: impl IntoIterator<Item = (&'a str, &'a str)>,
         raw_body: &str,
-        secrets: &dyn crate::http_service::SecretSource,
+        secrets: &dyn crate::secret_source::SecretSource,
     ) -> InboundAnswer {
         let route = match self.inbound_route(name) {
             Ok(route) => route,
@@ -294,7 +294,7 @@ mod tests {
 
     struct Vault(Option<&'static str>);
 
-    impl crate::http_service::SecretSource for Vault {
+    impl crate::secret_source::SecretSource for Vault {
         fn secret(&self, name: &str) -> Result<Option<String>, String> {
             assert_eq!(name, "CHANNEL_TOKEN");
             Ok(self.0.map(str::to_string))
@@ -303,7 +303,7 @@ mod tests {
 
     struct Failing;
 
-    impl crate::http_service::SecretSource for Failing {
+    impl crate::secret_source::SecretSource for Failing {
         fn secret(&self, _: &str) -> Result<Option<String>, String> {
             Err("vault unreachable".to_string())
         }
@@ -314,7 +314,7 @@ mod tests {
         name: &str,
         state: &str,
         token: &str,
-        secrets: &dyn crate::http_service::SecretSource,
+        secrets: &dyn crate::secret_source::SecretSource,
     ) -> InboundAnswer {
         kernel.deliver_inbound(
             name,

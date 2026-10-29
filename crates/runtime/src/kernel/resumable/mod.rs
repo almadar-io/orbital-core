@@ -16,7 +16,7 @@ use crate::credential_admin::{RotateCounts, StoreListing};
 use crate::entity_source::{EntitySource, QueryAnswer};
 use orbital_core_base::ir::effects::PageFactField;
 use orbital_core_base::envelope::{Accepted, DeliverRefusal, DeliverRefusalKind, Envelope};
-use crate::http_service::{HttpRequest, HttpResponse, SecretSource, Transport, TransportError};
+use crate::secret_source::SecretSource;
 use crate::kernel::dispatch_run::DispatchRun;
 use crate::kernel::KernelError;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
@@ -44,7 +44,7 @@ use ledger::*;
 use io_port_calls::*;
 use answer::*;
 pub(crate) use answer::{accept_replies, os_completion_cancelled};
-pub use answer::{answer_batch, answer_http, drive_blocking, drive_concurrent};
+pub use answer::{answer_batch, answer_ports, drive_blocking, drive_concurrent};
 pub use asks::{
     completion_event, substrate_completion_event, CallRoutes, CallSite, CallVerdict, IoAnswer,
     IoRequest, ModelFailure, ModelFailureKind, PageFacts, RequestId,
@@ -54,7 +54,7 @@ pub use continuation::{
     DispatchContinuation, DispatchError, IoReply, PendingRequest, Progress, ResolveContinuation,
     ResolveProgress, ResumeError,
 };
-pub use hosts::{BlockingHost, HostAnswered, HttpHost};
+pub use hosts::{BlockingHost, HostAnswered, PortHost};
 pub(crate) use io_port::IoPort;
 pub(crate) use io_port_calls::DeliverAsk;
 pub(crate) use ledger::{
@@ -63,7 +63,7 @@ pub(crate) use ledger::{
 };
 
 #[cfg(test)]
-mod http_replay_tests;
+mod replay_tests;
 
 #[cfg(test)]
 mod read_cache_tests;

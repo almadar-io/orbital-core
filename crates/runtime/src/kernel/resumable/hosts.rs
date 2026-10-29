@@ -133,8 +133,7 @@ impl BlockingHost<'_> {
                     errors: Vec::new(),
                 }),
             }),
-            IoRequest::Http { .. }
-            | IoRequest::PageFacts { .. }
+            IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
             | IoRequest::Tab { .. }
@@ -153,15 +152,14 @@ impl BlockingHost<'_> {
             | IoRequest::CredentialStoreRotate
             | IoRequest::CredentialModeRead
             | IoRequest::CredentialModeWrite { .. }
-            | IoRequest::Deliver { .. } => answer_http(None, request),
+            | IoRequest::Deliver { .. } => answer_ports(None, request),
         }
     }
 
-    /// [`Self::answer`], with the `http` effect's requests answered by `http`.
-    pub fn answer_with_http(&self, http: &HttpHost<'_>, request: &IoRequest) -> IoAnswer {
+    /// [`Self::answer`], with the host's own asks answered by `ports`.
+    pub fn answer_with_ports(&self, ports: &PortHost<'_>, request: &IoRequest) -> IoAnswer {
         match request {
-            IoRequest::Http { .. }
-            | IoRequest::PageFacts { .. }
+            IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }
             | IoRequest::Tab { .. }
@@ -180,19 +178,16 @@ impl BlockingHost<'_> {
             | IoRequest::CredentialStoreRotate
             | IoRequest::CredentialModeRead
             | IoRequest::CredentialModeWrite { .. }
-            | IoRequest::Deliver { .. } => answer_http(Some(http), request),
-            IoRequest::CancelCall { key } if os_completion_cancelled(http, key) => IoAnswer::Cancelled(Ok(())),
+            | IoRequest::Deliver { .. } => answer_ports(Some(ports), request),
+            IoRequest::CancelCall { key } if os_completion_cancelled(ports, key) => IoAnswer::Cancelled(Ok(())),
             other => self.answer(other),
         }
     }
 }
 
-/// What a blocking host holds to answer the `http` effect's requests.
-pub struct HttpHost<'a> {
-    pub transport: &'a dyn Transport,
+/// What a blocking host holds to answer the kernel's secret, random, clock, credential and `os/` asks.
+pub struct PortHost<'a> {
     pub secrets: &'a dyn SecretSource,
-    /// The program's `egress`: an IP-literal origin listed here may be a private address.
-    pub egress: &'a [String],
     /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
     pub on_event: &'a dyn Fn(Option<&CallSite>, Value),
     /// The native `os/` answerer's grants and handles; `None` denies every `os/` ask.

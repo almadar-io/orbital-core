@@ -2,7 +2,7 @@
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_base::ir::PageFactField;
-use orbital_core_runtime::resumable::{answer_http, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts};
+use orbital_core_runtime::resumable::{answer_ports, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
@@ -243,12 +243,12 @@ fn a_host_with_no_model_fails_prompt_unconfigured_and_a_model_that_cannot_answer
 fn a_blocking_host_with_no_model_or_embedder_answers_unconfigured() {
     let asked = IoRequest::Prompt { text: "t".into(), schema: SCHEMA.into(), key: None };
     assert_eq!(
-        answer_http(None, &asked),
+        answer_ports(None, &asked),
         IoAnswer::Prompt(Err(failure(ModelFailureKind::Unconfigured, "browser/prompt: no on-device model is wired into this host")))
     );
     let asked = IoRequest::Embed { texts: vec!["t".into()], key: None };
     assert_eq!(
-        answer_http(None, &asked),
+        answer_ports(None, &asked),
         IoAnswer::Embed(Err(failure(ModelFailureKind::Unconfigured, "browser/embed: no on-device embedder is wired into this host")))
     );
 }

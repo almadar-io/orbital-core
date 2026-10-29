@@ -333,9 +333,9 @@ mod tests {
     #[test]
     fn the_index_reads_serde_attributes_of_a_wire_type() {
         let all = index();
-        let Some(TypeInfo::Struct { fields, deny, .. }) = all["HttpRequestWire"].first() else { panic!("a struct") };
+        let Some(TypeInfo::Struct { fields, deny, .. }) = all["PageFactsWire"].first() else { panic!("a struct") };
         assert!(!deny);
-        assert!(fields.iter().any(|f| f.key == "timeoutMs"));
+        assert!(fields.iter().any(|f| f.key == "screenWidth"));
         let Some(TypeInfo::Struct { deny, .. }) = all["OsGrants"].first() else { panic!("a struct") };
         assert!(*deny, "OsGrants denies unknown fields");
     }

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::credential_store::EncryptedCredentialStore;
-use crate::http_service::SecretSource;
+use crate::secret_source::SecretSource;
 
 /// One signed-in user's credentials, keyed by `(name, principal)`: derived secrets that expire, and durable ones
 /// that stay until forgotten.

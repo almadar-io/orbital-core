@@ -1,6 +1,6 @@
 use orbital_core_runtime::credential_admin::CredentialStanding;
-use orbital_core_runtime::http_service::{HttpRequest, HttpResponse, SecretSource, Transport, TransportError};
-use orbital_core_runtime::resumable::{answer_http, BlockingHost, CallSite, HostAnswered, HttpHost, IoAnswer, IoRequest};
+use orbital_core_runtime::secret_source::SecretSource;
+use orbital_core_runtime::resumable::{answer_ports, BlockingHost, CallSite, HostAnswered, PortHost, IoAnswer, IoRequest};
 use orbital_core_base::value::Value;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -61,21 +61,11 @@ impl SecretSource for Secrets {
     }
 }
 
-struct NoNetwork;
-
-impl Transport for NoNetwork {
-    fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
-        panic!("credential host requests must not send HTTP")
-    }
-}
-
-fn with_host(secrets: &Secrets, check: impl FnOnce(&HttpHost<'_>)) {
+fn with_host(secrets: &Secrets, check: impl FnOnce(&PortHost<'_>)) {
     let on_event =
         |_: Option<&CallSite>, _: Value| panic!("credential host requests emit no stream");
-    let host = HttpHost {
-        transport: &NoNetwork,
+    let host = PortHost {
         secrets,
-        egress: &[],
         on_event: &on_event,
         os: None,
     };
@@ -112,12 +102,12 @@ fn app_status_requires_nonempty_presence_without_changing_raw_secret_resolution(
         }
         with_host(&secrets, |host| {
             assert_eq!(
-                answer_http(Some(host), &status(None)),
+                answer_ports(Some(host), &status(None)),
                 IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected))),
                 "app value {value:?}"
             );
             assert_eq!(
-                answer_http(Some(host), &secret(None)),
+                answer_ports(Some(host), &secret(None)),
                 IoAnswer::Secret(Ok(value.map(str::to_string))),
                 "status must not rewrite the stored value"
             );
@@ -138,13 +128,13 @@ fn user_status_keeps_empty_presence_and_never_falls_back_to_the_app() {
     with_host(&secrets, |host| {
         for (principal, connected) in [("u1", true), ("u2", true), ("missing-user", false)] {
             assert_eq!(
-                answer_http(Some(host), &status(Some(principal))),
+                answer_ports(Some(host), &status(Some(principal))),
                 IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected))),
                 "principal {principal}"
             );
         }
         assert_eq!(
-            answer_http(Some(host), &secret(Some("u1"))),
+            answer_ports(Some(host), &secret(Some("u1"))),
             IoAnswer::Secret(Ok(Some(String::new())))
         );
     });
@@ -172,12 +162,12 @@ fn blocking_host_reuses_the_same_status_policy_and_preserves_scopes() {
     with_host(&secrets, |host| {
         for (principal, connected) in [(None, false), (Some("u1"), true), (Some("u2"), false)] {
             assert_eq!(
-                blocking.answer_with_http(host, &status(principal)),
+                blocking.answer_with_ports(host, &status(principal)),
                 IoAnswer::CredentialStatus(Ok(CredentialStanding::of(connected)))
             );
         }
         assert_eq!(
-            blocking.answer_with_http(host, &secret(None)),
+            blocking.answer_with_ports(host, &secret(None)),
             IoAnswer::Secret(Ok(Some(String::new())))
         );
     });
@@ -192,11 +182,11 @@ fn credential_storage_errors_are_not_converted_to_disconnected() {
     with_host(&secrets, |host| {
         for principal in [None, Some("u1")] {
             assert_eq!(
-                answer_http(Some(host), &status(principal)),
+                answer_ports(Some(host), &status(principal)),
                 IoAnswer::CredentialStatus(Err("fixture credential storage failed".to_string()))
             );
             assert_eq!(
-                answer_http(Some(host), &forget(principal)),
+                answer_ports(Some(host), &forget(principal)),
                 IoAnswer::CredentialForget(Err("fixture credential storage failed".to_string()))
             );
         }
@@ -211,27 +201,27 @@ fn forget_still_delegates_the_exact_requested_identity_without_fallback() {
     secrets.put("KEY", Some("u2"), "second-user-token");
     with_host(&secrets, |host| {
         assert_eq!(
-            answer_http(Some(host), &forget(Some("u1"))),
+            answer_ports(Some(host), &forget(Some("u1"))),
             IoAnswer::CredentialForget(Ok(()))
         );
         assert_eq!(
-            answer_http(Some(host), &status(Some("u1"))),
+            answer_ports(Some(host), &status(Some("u1"))),
             IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
         );
         assert_eq!(
-            answer_http(Some(host), &secret(None)),
+            answer_ports(Some(host), &secret(None)),
             IoAnswer::Secret(Ok(Some("app-token".to_string())))
         );
         assert_eq!(
-            answer_http(Some(host), &secret(Some("u2"))),
+            answer_ports(Some(host), &secret(Some("u2"))),
             IoAnswer::Secret(Ok(Some("second-user-token".to_string())))
         );
         assert_eq!(
-            answer_http(Some(host), &forget(None)),
+            answer_ports(Some(host), &forget(None)),
             IoAnswer::CredentialForget(Ok(()))
         );
         assert_eq!(
-            answer_http(Some(host), &secret(None)),
+            answer_ports(Some(host), &secret(None)),
             IoAnswer::Secret(Ok(None))
         );
     });
@@ -245,18 +235,18 @@ fn forget_still_delegates_the_exact_requested_identity_without_fallback() {
 }
 
 #[test]
-fn no_http_host_still_reports_unavailable_for_status_and_forget() {
+fn no_port_host_still_reports_unavailable_for_status_and_forget() {
     for principal in [None, Some("u1")] {
         assert_eq!(
-            answer_http(None, &status(principal)),
+            answer_ports(None, &status(principal)),
             IoAnswer::CredentialStatus(Err(
-                "no HTTP host is configured for this kernel".to_string()
+                "no port host is configured for this kernel".to_string()
             ))
         );
         assert_eq!(
-            answer_http(None, &forget(principal)),
+            answer_ports(None, &forget(principal)),
             IoAnswer::CredentialForget(Err(
-                "no HTTP host is configured for this kernel".to_string()
+                "no port host is configured for this kernel".to_string()
             ))
         );
     }
@@ -269,14 +259,14 @@ fn status_carries_the_non_secret_label_stored_beside_the_credential_and_never_th
     secrets.label("KEY", None, "ada@example.com");
     secrets.put("KEY", Some("u1"), "user-refresh-token");
     with_host(&secrets, |host| {
-        let app = answer_http(Some(host), &status(None));
+        let app = answer_ports(Some(host), &status(None));
         assert_eq!(
             app,
             IoAnswer::CredentialStatus(Ok(CredentialStanding { connected: true, label: Some("ada@example.com".to_string()) }))
         );
         assert!(!format!("{app:?}").contains("app-refresh-token"), "the answer never carries the value");
         assert_eq!(
-            answer_http(Some(host), &status(Some("u1"))),
+            answer_ports(Some(host), &status(Some("u1"))),
             IoAnswer::CredentialStatus(Ok(CredentialStanding::of(true))),
             "a user credential without a label reads no label, and never borrows the app one"
         );
@@ -290,7 +280,7 @@ fn control_a_credential_that_is_not_connected_reports_no_label_and_a_label_failu
     secrets.label("KEY", None, "stale@example.com");
     with_host(&secrets, |host| {
         assert_eq!(
-            answer_http(Some(host), &status(None)),
+            answer_ports(Some(host), &status(None)),
             IoAnswer::CredentialStatus(Ok(CredentialStanding::of(false)))
         );
     });
@@ -298,7 +288,7 @@ fn control_a_credential_that_is_not_connected_reports_no_label_and_a_label_failu
     broken.put("KEY", None, "token");
     with_host(&broken, |host| {
         assert_eq!(
-            answer_http(Some(host), &status(None)),
+            answer_ports(Some(host), &status(None)),
             IoAnswer::CredentialStatus(Err("label store failed".to_string()))
         );
     });

@@ -1,4 +1,4 @@
-//! The native answerer of [`IoRequest::Os`]: one place every native host reaches through `answer_http`.
+//! The native answerer of [`IoRequest::Os`]: one place every native host reaches through `answer_ports`.
 //! Wasm hosts answer `Os` themselves, as they do `Random`. The grant check and handle ownership live in the
 //! family modules; this file routes an op to its family and owns the handle tables.
 #[cfg(not(feature = "std"))]

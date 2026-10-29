@@ -159,12 +159,11 @@ pub fn with_step_config(
         .map_err(|e| e.to_string())
 }
 
-/// A replayed step's host answer: a keyed os/* or http ask is left pending (its answer event is a later step's to
+/// A replayed step's host answer: a keyed os/* ask is left pending (its answer event is a later step's to
 /// play, G-ORB-459); every other ask is answered as a kernel with no host answers it.
 pub fn step_answer(kernel: &RuntimeKernel, request: &IoRequest) -> IoAnswer {
     match request {
         IoRequest::Os { key: Some(_), .. }
-        | IoRequest::Http { key: Some(_), .. }
         | IoRequest::Substrate {
             key: Some(_),
             site: Some(_),

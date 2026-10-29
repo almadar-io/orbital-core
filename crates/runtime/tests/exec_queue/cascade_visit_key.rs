@@ -1,6 +1,6 @@
 // Runtime Spec Clause 5.3: a cascade delivery is `(trait, event, from, payload)`; only an exact repeat is a cycle.
 
-use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::{RuntimeKernel, CROSS_TRAIT_CASCADE_CAP}};
+use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::{RuntimeKernel, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP}};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
@@ -470,4 +470,21 @@ fn control_a_pass_that_never_drains_is_still_cut_at_the_cap() {
 fn control_one_pass_under_the_cap_is_not_cut() {
     let (steps, cut) = passer_run(&passer(true), 1);
     assert!(steps > 400 && steps < CROSS_TRAIT_CASCADE_CAP && !cut, "{steps} {cut}");
+}
+
+#[test]
+fn a_fan_out_runaway_that_drains_every_pass_is_cut_at_the_dispatch_total() {
+    let kernel = passer(true);
+    let payload: Value = serde_json::from_value(json!({ "pass": 100_000 })).unwrap();
+    let outcomes = kernel.dispatch("Passer", None, "ROUND", payload).unwrap();
+    let steps = outcomes.iter().filter(|(t, r)| t == "Passer" && r.executed).count();
+    let cut = outcomes.iter().find_map(|(_, r)| r.cascade_cut.as_ref()).expect("the dispatch is cut");
+    assert_eq!(cut.cap, CROSS_TRAIT_DISPATCH_CAP);
+    assert!(steps > CROSS_TRAIT_DISPATCH_CAP * 9 / 10 && steps <= CROSS_TRAIT_DISPATCH_CAP + 1, "{steps}");
+}
+
+#[test]
+fn control_a_dispatch_of_many_passes_under_the_total_is_not_cut() {
+    let (steps, cut) = passer_run(&passer(true), 50);
+    assert!(steps > CROSS_TRAIT_CASCADE_CAP && steps < CROSS_TRAIT_DISPATCH_CAP && !cut, "{steps} {cut}");
 }

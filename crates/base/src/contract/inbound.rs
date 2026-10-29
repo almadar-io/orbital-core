@@ -157,13 +157,17 @@ pub fn inbound_unanswered_after(trait_name: &str, event: &str, failures: &[Strin
 }
 
 /// Equality in time that depends on the length of the longer value only, never on where they differ.
-pub fn constant_time_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
+pub fn constant_time_eq_bytes(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();
     for i in 0..a.len().max(b.len()) {
         diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0));
     }
     diff == 0
+}
+
+/// [`constant_time_eq_bytes`] over the UTF-8 bytes of two strings.
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    constant_time_eq_bytes(a.as_bytes(), b.as_bytes())
 }
 
 /// Whether the sender passed the route's `verifies` check. `None` when the route declares none. An
@@ -452,6 +456,10 @@ mod tests {
         assert!(constant_time_eq("", ""));
         assert!(constant_time_eq("tökén", "tökén"));
         assert!(!constant_time_eq("tökén", "token"));
+        assert!(constant_time_eq_bytes(&[0, 1, 255], &[0, 1, 255]));
+        assert!(!constant_time_eq_bytes(&[0, 1, 255], &[0, 1, 254]));
+        assert!(!constant_time_eq_bytes(&[0, 1], &[0, 1, 0]));
+        assert!(constant_time_eq_bytes(&[], &[]));
     }
 
     #[test]

@@ -2,50 +2,6 @@
 
 use super::*;
 
-/// A request whose resolved address is not public is refused unless its origin is an IP literal listed in egress.
-pub(super) fn address_refusal(url: &str, egress: &[String]) -> Option<String> {
-    let rest = url.split_once("://").map(|(_, rest)| rest)?;
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    let default_port = if url.starts_with("https://") { 443 } else { 80 };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) if !p.contains(']') => (h, p.parse::<u16>().unwrap_or(default_port)),
-        _ => (authority, default_port),
-    };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let listed = egress
-            .iter()
-            .any(|e| orbital_core_base::http_wire::origin_allowed(url, std::slice::from_ref(e)));
-        return (!listed && !orbital_core_base::http_wire::is_public_address(ip))
-            .then(|| format!("refused: {ip} is not a public address"));
-    }
-    #[cfg(feature = "std")]
-    {
-        use std::net::ToSocketAddrs;
-        match (host, port).to_socket_addrs() {
-            Ok(mut addrs) => addrs
-                .find(|a| !orbital_core_base::http_wire::is_public_address(a.ip()))
-                .map(|a| format!("refused: {host} resolves to {}, not a public address", a.ip())),
-            Err(e) => Some(format!("{host} did not resolve: {e}")),
-        }
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        let _ = port;
-        Some(format!("refused: {host} cannot be resolved on a bare-metal host"))
-    }
-}
-
-pub(super) fn blocking_send(
-    host: &HttpHost<'_>,
-    request: &HttpRequest,
-) -> Result<HttpResponse, TransportError> {
-    if let Some(refusal) = address_refusal(&request.url, host.egress) {
-        return Err(TransportError::Refused(refusal));
-    }
-    host.transport.send(request)
-}
-
 /// `bytes` of operating-system CSPRNG output; wasm hosts answer `Random` themselves.
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub(super) fn os_random(bytes: u32) -> Result<Vec<u8>, String> {
@@ -61,39 +17,29 @@ pub(super) fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
 
 /// `cancel-call` of a deferred keyed `os/` call: its pending completion is dropped, so its outcome never fires a route.
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub(crate) fn os_completion_cancelled(host: &HttpHost<'_>, key: &str) -> bool {
+pub(crate) fn os_completion_cancelled(host: &PortHost<'_>, key: &str) -> bool {
     host.os.is_some_and(|os| os.handles.cancel_completion(key))
 }
 
 #[cfg(any(target_arch = "wasm32", not(feature = "std")))]
-pub(crate) fn os_completion_cancelled(_host: &HttpHost<'_>, _key: &str) -> bool {
+pub(crate) fn os_completion_cancelled(_host: &PortHost<'_>, _key: &str) -> bool {
     false
 }
 
 /// An [`IoRequest::Os`] answered by the native answerer; wasm hosts answer `Os` themselves.
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-pub(super) fn answer_os_host(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
+pub(super) fn answer_os_host(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswer {
     crate::os_host::answer_os(host.and_then(|h| h.os), request)
 }
 
 #[cfg(any(target_arch = "wasm32", not(feature = "std")))]
-pub(super) fn answer_os_host(_host: Option<&HttpHost<'_>>, _request: &IoRequest) -> IoAnswer {
+pub(super) fn answer_os_host(_host: Option<&PortHost<'_>>, _request: &IoRequest) -> IoAnswer {
     IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, "os: the host must answer Os")))
 }
 
-/// Answer an [`IoRequest::Http`] / `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` /
-/// `CredentialForget` with `host`; with no host an `http` request fails.
-pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer {
+/// Answer a `Secret` / `SecretSet` / `Random` / `Os` / `CredentialStatus` / `CredentialForget` ask with `host`.
+pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswer {
     match (request, host) {
-        (IoRequest::Http { request, delay_ms, .. }, Some(host)) => {
-            #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-            if let Some(ms) = delay_ms {
-                std::thread::sleep(std::time::Duration::from_millis(*ms));
-            }
-            #[cfg(any(target_arch = "wasm32", not(feature = "std")))]
-            let _ = delay_ms;
-            IoAnswer::Http(blocking_send(host, request))
-        }
         (IoRequest::PageFacts { .. }, _) => IoAnswer::PageFacts(Ok(PageFacts {
             available: false,
             hostname: String::new(),
@@ -103,13 +49,10 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
         (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
         (IoRequest::Tab { .. }, _) => IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST))),
-        (IoRequest::Http { .. }, None) => {
-            IoAnswer::Http(Err(TransportError::Failed(NO_HTTP_HOST.to_string())))
-        }
         (IoRequest::Secret { name, principal }, Some(host)) => {
             IoAnswer::Secret(host.secrets.secret_of(name, principal.as_deref()))
         }
-        (IoRequest::Secret { .. }, None) => IoAnswer::Secret(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::Secret { .. }, None) => IoAnswer::Secret(Err(NO_PORT_HOST.to_string())),
         (
             IoRequest::SecretSet {
                 name,
@@ -119,17 +62,17 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             },
             Some(host),
         ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value, *ttl_ms, principal.as_deref())),
-        (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_PORT_HOST.to_string())),
         (IoRequest::SecretRotate { name, value, principal }, Some(host)) => {
             IoAnswer::SecretRotate(host.secrets.rotate_secret_of(name, value, principal.as_deref()))
         }
-        (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_PORT_HOST.to_string())),
         (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
         (IoRequest::Clock, _) => IoAnswer::Clock(Ok(orbital_core_base::time_util::now_millis())),
         (IoRequest::Os { .. }, _) => answer_os_host(host, request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
             IoAnswer::CredentialStatus(host.secrets.secret_of(name, principal.as_deref()).and_then(|value| {
-                let connected = crate::http_service::credential_status_connected(
+                let connected = crate::secret_source::credential_status_connected(
                     value.as_deref(),
                     principal.as_deref(),
                 );
@@ -144,8 +87,8 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
             kind: DeliverRefusalKind::Down,
             id: envelope.id.clone(),
         })),
-        (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_PORT_HOST.to_string())),
         (IoRequest::CredentialStoreList, Some(host)) => IoAnswer::CredentialStoreList(host.secrets.credential_store_list()),
         (IoRequest::CredentialStoreRead { name }, Some(host)) => {
             IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name))
@@ -161,13 +104,13 @@ pub fn answer_http(host: Option<&HttpHost<'_>>, request: &IoRequest) -> IoAnswer
         (IoRequest::CredentialModeWrite { mode }, Some(host)) => {
             IoAnswer::CredentialModeWrite(host.secrets.set_credential_mode(mode))
         }
-        (IoRequest::CredentialStoreList, None) => IoAnswer::CredentialStoreList(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialStoreRead { .. }, None) => IoAnswer::CredentialStoreRead(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialStoreWrite { .. }, None) => IoAnswer::CredentialStoreWrite(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialStoreRemove { .. }, None) => IoAnswer::CredentialStoreRemove(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialStoreRotate, None) => IoAnswer::CredentialStoreRotate(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialModeRead, None) => IoAnswer::CredentialModeRead(Err(NO_HTTP_HOST.to_string())),
-        (IoRequest::CredentialModeWrite { .. }, None) => IoAnswer::CredentialModeWrite(Err(NO_HTTP_HOST.to_string())),
+        (IoRequest::CredentialStoreList, None) => IoAnswer::CredentialStoreList(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialStoreRead { .. }, None) => IoAnswer::CredentialStoreRead(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialStoreWrite { .. }, None) => IoAnswer::CredentialStoreWrite(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialStoreRemove { .. }, None) => IoAnswer::CredentialStoreRemove(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialStoreRotate, None) => IoAnswer::CredentialStoreRotate(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialModeRead, None) => IoAnswer::CredentialModeRead(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialModeWrite { .. }, None) => IoAnswer::CredentialModeWrite(Err(NO_PORT_HOST.to_string())),
         _ => IoAnswer::Service(Err("not an HTTP request".to_string())),
     }
 }

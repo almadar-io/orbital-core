@@ -1187,9 +1187,8 @@ mod finite_fs_completion {
     fn native_context(fx: &Fx, handles: Arc<OsHandles>) -> NativeHost {
         NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),
-            Arc::new(crate::native_host::tests::Offline),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
-            Vec::new(), fx.grants.clone(), handles,
+            fx.grants.clone(), handles,
             Arc::new(|_: Option<&CallSite>, _: Value| {}),
         )
     }

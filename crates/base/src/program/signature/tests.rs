@@ -3183,3 +3183,41 @@ fn the_null_alternative_left_out_keeps_an_optional_the_variable_itself_binds() {
     Signature::of(&plain).bind(&mut b, 0, &ty(OirType::Number), Mode::Static).unwrap();
     assert_eq!(Signature::of(&plain).result_without_null(&b), None, "control: no null alternative declared");
 }
+
+fn map_param(value: serde_json::Value) -> EmbeddedOperator {
+    op(
+        json!([p("env", json!({ "kind": "map", "key": "string", "value": value }))]),
+        json!("void"),
+        None,
+    )
+}
+
+fn with_nulls(present: &[(&str, OirType)], nulls: &[&str]) -> Actual<'static> {
+    Actual {
+        known: Some(Known::RecordWithNulls {
+            present: struct_of(present),
+            nulls: nulls.iter().map(|n| (*n).to_string()).collect(),
+        }),
+        ..Actual::unknown()
+    }
+}
+
+#[test]
+fn a_null_value_in_a_record_literal_fits_a_map_whose_value_type_admits_null() {
+    let nullable = map_param(json!({ "kind": "union", "of": ["string", { "kind": "literal", "value": null }] }));
+    let strict = map_param(json!("string"));
+    let all_null = with_nulls(&[], &["PATH"]);
+    assert!(call(&nullable, &[all_null], Mode::Proof).is_ok(), "every value null, the value type admits null");
+    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
+    assert!(call(&nullable, &[mixed], Mode::Proof).is_ok(), "control: mixed string and null, the value type admits null");
+    let all_null = with_nulls(&[], &["PATH"]);
+    assert!(call(&strict, &[all_null], Mode::Proof).is_err(), "control: a Map string string refuses a null value");
+    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
+    assert!(call(&strict, &[mixed], Mode::Proof).is_err(), "control: mixed is refused when the value type excludes null");
+    assert!(
+        call(&nullable, &[ty(struct_of(&[]))], Mode::Proof).is_ok() && call(&strict, &[ty(struct_of(&[]))], Mode::Proof).is_ok(),
+        "control: the empty record fits either"
+    );
+    let wrong = with_nulls(&[("PATH", OirType::Number)], &["HOME"]);
+    assert!(call(&nullable, &[wrong], Mode::Proof).is_err(), "control: a present value of the wrong type is still refused");
+}

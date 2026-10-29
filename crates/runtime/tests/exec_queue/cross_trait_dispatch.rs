@@ -601,17 +601,6 @@ fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_co
 // behind it, then the completion runs as a third dispatch to the asker. An unkeyed one made on behalf of the parked
 // asker carries its turn and is refused.
 
-struct Offline;
-
-impl orbital_core_runtime::http_service::Transport for Offline {
-    fn send(
-        &self,
-        _: &orbital_core_runtime::http_service::HttpRequest,
-    ) -> Result<orbital_core_runtime::http_service::HttpResponse, orbital_core_runtime::http_service::TransportError> {
-        Err(orbital_core_runtime::http_service::TransportError::Failed("offline".to_string()))
-    }
-}
-
 /// The host half of `program/dispatch`: dispatches the address on the same kernel. Answered in place it acts on
 /// behalf of the asking dispatch and carries its turn; deferred, it is a dispatch of its own and carries none.
 struct Nested {
@@ -703,9 +692,7 @@ fn asking_kernel(keyed: bool) -> Asking {
     let native = Arc::new(
         orbital_core_runtime::native_host::NativeHost::new(
             store,
-            Arc::new(Offline),
             Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
-            Vec::new(),
             orbital_core_runtime::os_host::OsGrants::default(),
             handles.clone(),
             Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
@@ -848,9 +835,7 @@ fn live_kernel() -> Live {
     let native = Arc::new(
         orbital_core_runtime::native_host::NativeHost::new(
             store,
-            Arc::new(Offline),
             Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
-            Vec::new(),
             orbital_core_runtime::os_host::OsGrants::default(),
             handles.clone(),
             Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
@@ -1030,9 +1015,7 @@ fn reading_kernel() -> Reading {
     let native = Arc::new(
         orbital_core_runtime::native_host::NativeHost::new(
             store,
-            Arc::new(Offline),
             Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
-            Vec::new(),
             orbital_core_runtime::os_host::OsGrants::default(),
             handles.clone(),
             Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),

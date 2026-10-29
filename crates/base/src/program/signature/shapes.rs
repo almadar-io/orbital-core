@@ -46,6 +46,7 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
 pub(super) fn is_record(known: &Known, bindings: &CallBindings) -> bool {
     match known {
         Known::Type(ty) => record_of(ty, bindings).is_some() || is_uninformative(ty),
+        Known::RecordWithNulls { .. } => true,
         Known::EmptyList | Known::Absent | Known::Void => false,
     }
 }

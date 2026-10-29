@@ -830,6 +830,34 @@ fn an_unset_relative_or_widening_anchor_grants_nothing_and_is_reported() {
 }
 
 #[test]
+fn an_unset_env_anchor_is_silent_when_the_program_declares_a_home_entry_with_the_same_modes() {
+    let env = |name: &str| GrantAnchor::Env(name.into());
+    let rw = vec![FsMode::Read, FsMode::Write];
+    let mut g = anchored(vec![AnchoredFsGrant { anchor: env("STORE_DIR"), glob: "**".into(), modes: rw.clone() }], Vec::new());
+    g.fs = vec![FsGrant { glob: "~/store/**".into(), modes: vec![FsMode::Read, FsMode::Write, FsMode::Remove] }];
+    let (resolved, problems) = g.resolve_anchors(&boot(None, &[]));
+    assert!(problems.is_empty(), "the declared home entry is the anchor choice: {problems:?}");
+    assert!(resolved.anchored.fs.is_empty(), "the unset anchor still grants nothing");
+
+    let (set, problems) = g.resolve_anchors(&boot(None, &[("STORE_DIR", "/custom")]));
+    assert!(problems.is_empty() && set.fs.iter().any(|f| f.glob == "/custom/**"), "control: a set variable resolves as before: {set:?}");
+
+    let (_, relative) = g.resolve_anchors(&boot(None, &[("STORE_DIR", "rel")]));
+    assert_eq!(relative.len(), 1, "edge: a set but unusable value is still reported: {relative:?}");
+
+    g.fs = vec![FsGrant { glob: "~/store/**".into(), modes: vec![FsMode::Read] }];
+    let (_, narrow) = g.resolve_anchors(&boot(None, &[]));
+    assert_eq!(narrow.len(), 1, "edge: a home entry with fewer modes is no stand-in: {narrow:?}");
+
+    g.fs = vec![FsGrant { glob: "/data/**".into(), modes: rw }];
+    let (_, other) = g.resolve_anchors(&boot(None, &[]));
+    assert_eq!(other.len(), 1, "edge: only a home entry is the declared anchor: {other:?}");
+
+    let (_, none) = anchored(vec![AnchoredFsGrant { anchor: env("STORE_DIR"), glob: "**".into(), modes: vec![FsMode::Read] }], Vec::new()).resolve_anchors(&boot(None, &[]));
+    assert_eq!(none.len(), 1, "control: with no other declaration the unset anchor is reported");
+}
+
+#[test]
 fn a_variable_set_after_boot_never_moves_an_env_anchor() {
     let host = boot(None, &[]);
     std::env::set_var("ORB_GRANT_ANCHOR_TEST_LATE", "/late");

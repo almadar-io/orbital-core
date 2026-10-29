@@ -38,6 +38,7 @@ pub(super) fn kind_of(known: &Option<Known>) -> String {
         Some(Known::EmptyList) => "array".to_string(),
         Some(Known::Absent) => "null".to_string(),
         Some(Known::Void) => "void".to_string(),
+        Some(Known::RecordWithNulls { .. }) => "object".to_string(),
         None => "null".to_string(),
     }
 }

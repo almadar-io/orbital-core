@@ -1629,20 +1629,9 @@ mod os_twin {
         replay(true);
     }
 
-    struct NoNetwork;
-
-    impl orbital_core_runtime::http_service::Transport for NoNetwork {
-        fn send(
-            &self,
-            _: &orbital_core_runtime::http_service::HttpRequest,
-        ) -> Result<orbital_core_runtime::http_service::HttpResponse, orbital_core_runtime::http_service::TransportError> {
-            Err(orbital_core_runtime::http_service::TransportError::Failed("no network".to_string()))
-        }
-    }
-
     struct NoSecrets;
 
-    impl orbital_core_runtime::http_service::SecretSource for NoSecrets {
+    impl orbital_core_runtime::secret_source::SecretSource for NoSecrets {
         fn secret(&self, _: &str) -> Result<Option<String>, String> {
             Ok(None)
         }
@@ -1651,9 +1640,7 @@ mod os_twin {
     fn native_host() -> orbital_core_runtime::native_host::NativeHost {
         orbital_core_runtime::native_host::NativeHost::new(
             Shared::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
-            Shared::new(NoNetwork),
             Shared::new(NoSecrets),
-            Vec::new(),
             OsGrants::default(),
             Shared::new(OsHandles::default()),
             Shared::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
@@ -1730,9 +1717,7 @@ mod os_twin {
         let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
         let native = orbital_core_runtime::native_host::NativeHost::new(
             Shared::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
-            Shared::new(NoNetwork),
             Shared::new(NoSecrets),
-            Vec::new(),
             grants.clone(),
             handles.clone(),
             Shared::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),

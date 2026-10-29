@@ -168,16 +168,13 @@ impl KernelBridge {
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
     pub fn host_natively(
         mut self,
-        transport: std::sync::Arc<dyn crate::http_service::Transport>,
-        secrets: std::sync::Arc<dyn crate::http_service::SecretSource>,
+        secrets: std::sync::Arc<dyn crate::secret_source::SecretSource>,
         handles: std::sync::Arc<crate::os_host::OsHandles>,
         on_event: std::sync::Arc<crate::native_host::StreamEvents>,
     ) -> Self {
         let host = crate::native_host::NativeHost::new(
             std::sync::Arc::clone(&self.entities) as std::sync::Arc<dyn crate::entity_source::EntitySource>,
-            transport,
             secrets,
-            self.kernel.egress(),
             self.kernel.os_grants(),
             handles,
             on_event,
@@ -344,17 +341,8 @@ impl ServerBridge for KernelBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http_service::{HttpRequest, HttpResponse, Transport, TransportError};
     use serde_json::json;
     use std::sync::Arc;
-
-    struct Offline;
-
-    impl Transport for Offline {
-        fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
-            Err(TransportError::Failed("offline".to_string()))
-        }
-    }
 
     fn bridge(granted: &std::path::Path, path: &std::path::Path) -> KernelBridge {
         let (granted, path) = (granted.canonicalize().unwrap(), path.canonicalize().unwrap());
@@ -390,7 +378,6 @@ mod tests {
 
     fn hosted(b: KernelBridge) -> KernelBridge {
         b.host_natively(
-            Arc::new(Offline),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
             Arc::new(crate::os_host::OsHandles::default()),
             Arc::new(|_: Option<&crate::resumable::CallSite>, _: Value| {}),

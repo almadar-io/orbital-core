@@ -18,7 +18,7 @@ impl RequestId {
 
 /// The I/O the kernel needs the host to do. The kernel applies row policy, filters and paging itself
 /// around these, so a host answers plain storage reads and writes. `Debug` shows no secret value
-/// (`SecretSet.value`; an `HttpRequest` redacts its own credentials).
+/// (`SecretSet.value`).
 #[derive(Clone, PartialEq)]
 pub enum IoRequest {
     ReadRow {
@@ -76,15 +76,6 @@ pub enum IoRequest {
         op: String,
         args: Vec<Value>,
         key: Option<String>,
-        site: Option<CallSite>,
-    },
-    /// One request of the `http` effect.
-    Http {
-        request: HttpRequest,
-        /// The effect's key, so `cancel-call` can abort the request in flight.
-        key: Option<String>,
-        /// How long the host waits before sending (a retry's backoff); `None` sends now.
-        delay_ms: Option<u64>,
         site: Option<CallSite>,
     },
     /// The page facts a `browser/page-facts` asks for, in read order.
@@ -286,7 +277,6 @@ pub enum IoAnswer {
     ServiceDeferred,
     Cancelled(Result<(), String>),
     Substrate(Result<Value, SubstrateFailure>),
-    Http(Result<HttpResponse, TransportError>),
     PageFacts(Result<PageFacts, String>),
     Prompt(Result<String, ModelFailure>),
     Embed(Result<Vec<Vec<f64>>, ModelFailure>),
@@ -422,18 +412,6 @@ impl std::fmt::Debug for IoRequest {
                 .field("key", key)
                 .field("site", site)
                 .finish(),
-            Self::Http {
-                request,
-                key,
-                delay_ms,
-                site,
-            } => f
-                .debug_struct("Http")
-                .field("request", request)
-                .field("key", key)
-                .field("delay_ms", delay_ms)
-                .field("site", site)
-                .finish(),
             Self::PageFacts { fields } => f.debug_struct("PageFacts").field("fields", fields).finish(),
             Self::Prompt { text, schema, key } => f
                 .debug_struct("Prompt")
@@ -524,7 +502,6 @@ impl std::fmt::Debug for IoAnswer {
             Self::ServiceDeferred => f.write_str("ServiceDeferred"),
             Self::Cancelled(r) => f.debug_tuple("Cancelled").field(r).finish(),
             Self::Substrate(r) => f.debug_tuple("Substrate").field(r).finish(),
-            Self::Http(r) => f.debug_tuple("Http").field(r).finish(),
             Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
             Self::Prompt(r) => f.debug_tuple("Prompt").field(r).finish(),
             Self::Embed(r) => f.debug_tuple("Embed").field(r).finish(),
@@ -578,9 +555,6 @@ impl IoAnswer {
         if let (IoRequest::Os { op, key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && (site.is_some() || !op.defers_completion());
         }
-        if let (IoRequest::Http { key, .. }, IoAnswer::ServiceDeferred) = (request, self) {
-            return key.is_some();
-        }
         if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && site.is_some();
         }
@@ -618,10 +592,6 @@ impl IoAnswer {
                 )
                 | (IoRequest::CancelCall { .. }, IoAnswer::Cancelled(_))
                 | (IoRequest::Substrate { .. }, IoAnswer::Substrate(_))
-                | (
-                    IoRequest::Http { .. },
-                    IoAnswer::Http(_) | IoAnswer::ServiceCancelled
-                )
                 | (IoRequest::PageFacts { .. }, IoAnswer::PageFacts(_))
                 | (IoRequest::Prompt { .. }, IoAnswer::Prompt(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::Embed { .. }, IoAnswer::Embed(_) | IoAnswer::ServiceCancelled)

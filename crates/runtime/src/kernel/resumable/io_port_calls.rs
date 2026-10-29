@@ -305,7 +305,7 @@ impl IoPort {
             name: name.to_string(),
             principal: principal.map(str::to_string),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Secret(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -324,7 +324,7 @@ impl IoPort {
             ttl_ms,
             principal: principal.map(str::to_string),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretSet(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -336,7 +336,7 @@ impl IoPort {
             value: value.to_string(),
             principal: principal.map(str::to_string),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretRotate(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -351,7 +351,7 @@ impl IoPort {
             key: key.map(str::to_string),
             site: self.os_site(op, key),
         }) {
-            Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_HTTP_HOST)),
+            Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
             Asked::Answer(IoAnswer::Os(out)) => out,
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
@@ -382,7 +382,7 @@ impl IoPort {
             return Ok(clock() as i64);
         }
         match self.ask(|| IoRequest::Clock) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Clock(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -390,7 +390,7 @@ impl IoPort {
 
     pub(crate) fn random(&self, bytes: u32) -> Result<Vec<u8>, String> {
         match self.ask(|| IoRequest::Random { bytes }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Random(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -401,7 +401,7 @@ impl IoPort {
             name: name.to_string(),
             principal: principal.map(str::to_string),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStatus(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -412,7 +412,7 @@ impl IoPort {
             name: name.to_string(),
             principal: principal.map(str::to_string),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialForget(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -420,7 +420,7 @@ impl IoPort {
 
     pub(crate) fn credential_store_list(&self) -> Result<Option<StoreListing>, String> {
         match self.ask(|| IoRequest::CredentialStoreList) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreList(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -428,7 +428,7 @@ impl IoPort {
 
     pub(crate) fn credential_store_read(&self, name: &str) -> Result<Option<String>, String> {
         match self.ask(|| IoRequest::CredentialStoreRead { name: name.to_string() }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRead(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -440,7 +440,7 @@ impl IoPort {
             name: name.to_string(),
             value: value.to_string(),
         }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreWrite(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -448,7 +448,7 @@ impl IoPort {
 
     pub(crate) fn credential_store_remove(&self, name: &str) -> Result<bool, String> {
         match self.ask(|| IoRequest::CredentialStoreRemove { name: name.to_string() }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRemove(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -456,7 +456,7 @@ impl IoPort {
 
     pub(crate) fn credential_store_rotate(&self) -> Result<RotateCounts, String> {
         match self.ask(|| IoRequest::CredentialStoreRotate) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRotate(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -464,7 +464,7 @@ impl IoPort {
 
     pub(crate) fn credential_mode_read(&self) -> Result<Option<String>, String> {
         match self.ask(|| IoRequest::CredentialModeRead) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialModeRead(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -472,7 +472,7 @@ impl IoPort {
 
     pub(crate) fn credential_mode_write(&self, mode: &str) -> Result<String, String> {
         match self.ask(|| IoRequest::CredentialModeWrite { mode: mode.to_string() }) {
-            Asked::Direct => Err(NO_HTTP_HOST.to_string()),
+            Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialModeWrite(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
@@ -502,7 +502,7 @@ pub(crate) enum DeliverAsk {
     Suspended,
 }
 
-pub(super) const NO_HTTP_HOST: &str = "no HTTP host is configured for this kernel";
+pub(super) const NO_PORT_HOST: &str = "no port host is configured for this kernel";
 
 impl SubstrateHandler for IoPort {
     fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {

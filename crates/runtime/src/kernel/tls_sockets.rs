@@ -1244,6 +1244,7 @@ mod tests {
     #[test]
     fn a_bad_tls_argument_is_refused_as_invalid() {
         for tls in [
+            json!(null),
             json!({}),
             json!({ "serverName": "localhost", "extra": 1 }),
             json!({ "serverName": "localhost", "alpn": [""] }),

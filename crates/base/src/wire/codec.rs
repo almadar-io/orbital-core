@@ -350,6 +350,126 @@ pub fn ed25519_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64
     key.verify(message, &ed25519_dalek::Signature::from_bytes(signature)).is_ok()
 }
 
+/// The outcome of an RSASSA-PKCS1-v1_5 / SHA-256 verification: a verdict on a well-formed key and signature, or the
+/// closed reason the key or signature could not be checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RsaVerdict {
+    Valid,
+    Mismatch,
+    KeySize,
+    SignatureLength,
+    SignatureRange,
+}
+
+impl RsaVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RsaVerdict::Valid => "valid",
+            RsaVerdict::Mismatch => "mismatch",
+            RsaVerdict::KeySize => "key-size",
+            RsaVerdict::SignatureLength => "signature-length",
+            RsaVerdict::SignatureRange => "signature-range",
+        }
+    }
+}
+
+/// The smallest accepted RSA modulus, 2048 bits, what JWS RS256 requires.
+pub const RSA_MIN_MODULUS_BYTES: usize = 256;
+
+const SHA256_DIGEST_INFO: [u8; 19] = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+
+/// RSASSA-PKCS1-v1_5 with SHA-256 (RFC 8017 section 8.2.2) over a public key given as big-endian modulus and exponent: the
+/// signature is raised to the exponent modulo the modulus and the block must equal 00 01 FF..FF 00 DigestInfo hash byte for
+/// byte. Public inputs only; nothing here is secret.
+pub fn rsa_pkcs1_sha256_verify(n: &[u8], e: &[u8], message: &[u8], signature: &[u8]) -> RsaVerdict {
+    use rsa::BigUint;
+    if n.len() < RSA_MIN_MODULUS_BYTES || n[0] == 0 || e.is_empty() || e.len() >= n.len() {
+        return RsaVerdict::KeySize;
+    }
+    if signature.len() != n.len() {
+        return RsaVerdict::SignatureLength;
+    }
+    let modulus = BigUint::from_bytes_be(n);
+    let signature_int = BigUint::from_bytes_be(signature);
+    if signature_int >= modulus {
+        return RsaVerdict::SignatureRange;
+    }
+    let recovered = signature_int.modpow(&BigUint::from_bytes_be(e), &modulus).to_bytes_be();
+    let k = n.len();
+    let mut expected = Vec::with_capacity(k);
+    expected.extend_from_slice(&[0x00, 0x01]);
+    expected.resize(k - SHA256_DIGEST_INFO.len() - 32 - 1, 0xff);
+    expected.push(0x00);
+    expected.extend_from_slice(&SHA256_DIGEST_INFO);
+    expected.extend_from_slice(&sha256(message));
+    let mut block = vec![0u8; k - recovered.len().min(k)];
+    block.extend_from_slice(&recovered);
+    if block == expected {
+        RsaVerdict::Valid
+    } else {
+        RsaVerdict::Mismatch
+    }
+}
+
+/// The outcome of an ECDSA P-256 / SHA-256 verification: a verdict on a well-formed key and signature, or the closed reason
+/// the key or signature could not be checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EcdsaVerdict {
+    Valid,
+    Mismatch,
+    Length,
+    Range,
+    Point,
+}
+
+impl EcdsaVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EcdsaVerdict::Valid => "valid",
+            EcdsaVerdict::Mismatch => "mismatch",
+            EcdsaVerdict::Length => "length",
+            EcdsaVerdict::Range => "range",
+            EcdsaVerdict::Point => "point",
+        }
+    }
+}
+
+/// ECDSA over P-256 with SHA-256 (FIPS 186-4 section 6.4.2) for a public key given as two 32-byte big-endian coordinates and
+/// a raw 64-byte r||s signature. r or s of zero is a range refusal before the key is looked at; a coordinate not below the
+/// field prime or a point off the curve is a point refusal; r or s not below the group order is a range refusal.
+pub fn ecdsa_p256_sha256_verify(x: &[u8], y: &[u8], message: &[u8], signature: &[u8]) -> EcdsaVerdict {
+    use p256::ecdsa::signature::Verifier;
+    use p256::elliptic_curve::sec1::FromEncodedPoint;
+    use p256::elliptic_curve::PrimeField;
+    if x.len() != 32 || y.len() != 32 || signature.len() != 64 {
+        return EcdsaVerdict::Length;
+    }
+    let (r_bytes, s_bytes) = signature.split_at(32);
+    if r_bytes.iter().all(|b| *b == 0) || s_bytes.iter().all(|b| *b == 0) {
+        return EcdsaVerdict::Range;
+    }
+    let encoded = p256::EncodedPoint::from_affine_coordinates(p256::FieldBytes::from_slice(x), p256::FieldBytes::from_slice(y), false);
+    let Some(point) = Option::<p256::AffinePoint>::from(p256::AffinePoint::from_encoded_point(&encoded)) else {
+        return EcdsaVerdict::Point;
+    };
+    for half in [r_bytes, s_bytes] {
+        if Option::<p256::Scalar>::from(p256::Scalar::from_repr(*p256::FieldBytes::from_slice(half))).is_none() {
+            return EcdsaVerdict::Range;
+        }
+    }
+    let Ok(signature) = p256::ecdsa::Signature::from_slice(signature) else {
+        return EcdsaVerdict::Range;
+    };
+    let Ok(key) = p256::ecdsa::VerifyingKey::from_affine(point) else {
+        return EcdsaVerdict::Point;
+    };
+    if key.verify(message, &signature).is_ok() {
+        EcdsaVerdict::Valid
+    } else {
+        EcdsaVerdict::Mismatch
+    }
+}
+
 /// One regular file of a tar archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TarFile {
@@ -489,5 +609,98 @@ mod structured_codec_tests {
         ]);
         assert!(tar_files(&archive[..1026]).is_err());
         assert!(tar_files(&[]).unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod signature_verification_tests {
+    use super::*;
+
+    const RSA_N: &str = "pCJTqfijo+dyUDx+uHmap/Y5yXaRg99QNf+AUbAjWRKsgBhvqMknk2SpB9A40VwydKdtoHbWp0z4bHSNmlHooqeFd7mAxpmtsuumAiE+ICdkcPZ63j2OvqlrJna3xB4PX677BZhFYhDhYCjjlLTDwmZRBymA8vSCtDLQZ7MRkX1fxVHML+wJi1LzTwniItB/hoSKx8b4i0w4ZuesAB+/RPTjR8ktRGsUWyzW83Bcfg5IR+8bZLMNyx6XwsAuZ7nQ2+qJXSFXoq2O/a+jdtfagyJBGAD26wx6bnuReRg2x57t6nB3CYYUREhcAJAJR9BLKkNZgk/peUKeb8QHwQBgPw==";
+    const RSA_E: &str = "AQAB";
+    const RSA_SIGNATURE: &str = "RA4mgYzrg/dfjqlRbUcGMN4Vr7k7ChWG3Jsbpkz93OKGJfIJ8D8zpGCOvaMfc1WN0pWnwuPuSxHgsOMaC4bh1qH5tS1FJWFxL//Lg28IIrWHM/olBCAUXbhsqNvf3g7m50XNVmM8RvmMDZOXuBJkLm4GLAptJaSgUyK2pPFV0CCKx4zIFjtoL1ZvtZvwgT6er9VWheX+3wNm7MQwtHKYTH77z4XVi2K/+rkY7QNdh9GohExwK6cDy8sCuLG7Kjb1YykNxEcZxR8k/1X6NqZC1svDj1ghejKGi+Tkkf7nCfVH7lDIzE+FisrCetfZG8eNQ4ROWAmAA4gWv2Hjd+isWg==";
+    const EC_X: &str = "DWCBVhKCGPAV0CVSa7Nu/svWxAWs1ejOo2PZPNjNAHE=";
+    const EC_Y: &str = "786l0mh1J2aMm6STYLEz60poSi5F6aNJi4BnV6yCOMY=";
+    const EC_SIGNATURE: &str = "eAQcvqokeZHzlZ0shvZjYSxtc12OnlR9IZgH9nCRSoqlNKyYQx0YNoLL0SpkJkGsbGfmF1a4OIfG0VncqUiwgQ==";
+    const MESSAGE: &str = "header.payload";
+    const P256_P: &str = "/////wAAAAEAAAAAAAAAAAAAAAD///////////////8=";
+    const P256_N: &str = "/////wAAAAD//////////7zm+q2nF56E87nKwvxjJVE=";
+
+    fn bytes(text: &str) -> Vec<u8> {
+        base64_decode(text).unwrap()
+    }
+
+    fn flip_last_bit(mut data: Vec<u8>) -> Vec<u8> {
+        let last = data.len() - 1;
+        data[last] ^= 1;
+        data
+    }
+
+    fn rsa(n: &[u8], e: &[u8], message: &str, signature: &[u8]) -> RsaVerdict {
+        rsa_pkcs1_sha256_verify(n, e, message.as_bytes(), signature)
+    }
+
+    fn ec(x: &[u8], y: &[u8], message: &str, signature: &[u8]) -> EcdsaVerdict {
+        ecdsa_p256_sha256_verify(x, y, message.as_bytes(), signature)
+    }
+
+    #[test]
+    fn a_real_rs256_signature_verifies_and_its_controls_do_not() {
+        let (n, e, signature) = (bytes(RSA_N), bytes(RSA_E), bytes(RSA_SIGNATURE));
+        assert_eq!(rsa(&n, &e, MESSAGE, &signature), RsaVerdict::Valid);
+        assert_eq!(rsa(&n, &e, MESSAGE, &flip_last_bit(signature.clone())), RsaVerdict::Mismatch);
+        assert_eq!(rsa(&n, &e, "header.payloaD", &signature), RsaVerdict::Mismatch);
+        assert_eq!(rsa(&n, &[3], MESSAGE, &signature), RsaVerdict::Mismatch);
+    }
+
+    #[test]
+    fn an_rsa_key_or_signature_that_cannot_be_checked_is_refused_by_a_closed_reason() {
+        let (n, e, signature) = (bytes(RSA_N), bytes(RSA_E), bytes(RSA_SIGNATURE));
+        assert_eq!(rsa(&n[1..], &e, MESSAGE, &signature[1..]), RsaVerdict::KeySize);
+        let mut padded = vec![0u8];
+        padded.extend_from_slice(&n[1..]);
+        assert_eq!(rsa(&padded, &e, MESSAGE, &signature), RsaVerdict::KeySize);
+        assert_eq!(rsa(&n, &[], MESSAGE, &signature), RsaVerdict::KeySize);
+        assert_eq!(rsa(&n, &n, MESSAGE, &signature), RsaVerdict::KeySize);
+        assert_eq!(rsa(&n, &e, MESSAGE, &signature[1..]), RsaVerdict::SignatureLength);
+        assert_eq!(rsa(&n, &e, MESSAGE, &signature), RsaVerdict::Valid);
+        assert_eq!(rsa(&n, &e, MESSAGE, &n), RsaVerdict::SignatureRange);
+        assert_eq!(rsa(&n, &e, MESSAGE, &vec![0xff; n.len()]), RsaVerdict::SignatureRange);
+        assert_eq!(rsa(&n, &e, MESSAGE, &flip_last_bit(n.clone())), RsaVerdict::Mismatch);
+    }
+
+    #[test]
+    fn a_real_es256_signature_verifies_and_its_controls_do_not() {
+        let (x, y, signature) = (bytes(EC_X), bytes(EC_Y), bytes(EC_SIGNATURE));
+        assert_eq!(ec(&x, &y, MESSAGE, &signature), EcdsaVerdict::Valid);
+        assert_eq!(ec(&x, &y, MESSAGE, &flip_last_bit(signature.clone())), EcdsaVerdict::Mismatch);
+        assert_eq!(ec(&x, &y, "header.payloaD", &signature), EcdsaVerdict::Mismatch);
+        assert_eq!(ec(&y, &x, MESSAGE, &signature), EcdsaVerdict::Point);
+    }
+
+    #[test]
+    fn an_ecdsa_key_or_signature_that_cannot_be_checked_is_refused_by_a_closed_reason() {
+        let (x, y, signature) = (bytes(EC_X), bytes(EC_Y), bytes(EC_SIGNATURE));
+        let (p, order) = (bytes(P256_P), bytes(P256_N));
+        assert_eq!(ec(&x[1..], &y, MESSAGE, &signature), EcdsaVerdict::Length);
+        assert_eq!(ec(&x, &y[1..], MESSAGE, &signature), EcdsaVerdict::Length);
+        assert_eq!(ec(&x, &y, MESSAGE, &signature[1..]), EcdsaVerdict::Length);
+        let mut zero_r = signature.clone();
+        zero_r[..32].fill(0);
+        assert_eq!(ec(&x, &y, MESSAGE, &zero_r), EcdsaVerdict::Range);
+        assert_eq!(ec(&y, &x, MESSAGE, &zero_r), EcdsaVerdict::Range);
+        let mut zero_s = signature.clone();
+        zero_s[32..].fill(0);
+        assert_eq!(ec(&x, &y, MESSAGE, &zero_s), EcdsaVerdict::Range);
+        let mut big_r = signature.clone();
+        big_r[..32].copy_from_slice(&order);
+        assert_eq!(ec(&x, &y, MESSAGE, &big_r), EcdsaVerdict::Range);
+        let mut big_s = signature.clone();
+        big_s[32..].fill(0xff);
+        assert_eq!(ec(&x, &y, MESSAGE, &big_s), EcdsaVerdict::Range);
+        assert_eq!(ec(&p, &y, MESSAGE, &signature), EcdsaVerdict::Point);
+        assert_eq!(ec(&x, &flip_last_bit(y.clone()), MESSAGE, &signature), EcdsaVerdict::Point);
+        assert_eq!(ec(&x, &flip_last_bit(y.clone()), MESSAGE, &big_r), EcdsaVerdict::Point);
+        assert_eq!(ec(&x, &y, MESSAGE, &signature), EcdsaVerdict::Valid);
     }
 }

@@ -281,6 +281,8 @@ operator_kind! {
     HashScryptOp => HashScryptOp,
     HashPbkdf2Op => HashPbkdf2Op,
     HmacSha256Op => HmacSha256Op,
+    RsaVerifyOp => RsaVerifyOp,
+    EcdsaP256VerifyOp => EcdsaP256VerifyOp,
     GzipCompressOp => GzipCompressOp,
     GzipDecompressOp => GzipDecompressOp,
     BrotliCompressOp => BrotliCompressOp,

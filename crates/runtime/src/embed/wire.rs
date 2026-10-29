@@ -8,10 +8,8 @@ use crate::effects::executor::{ServiceCaller, SubstrateFailure};
 use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
 use orbital_core_base::ir::effects::PageFactField;
 use orbital_core_base::envelope::{Accepted, DeliverRefusal, Envelope};
-use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 use orbital_core_base::os::{OsError, OsOp};
 use orbital_core_base::tab::{TabAsk, TabFailure};
-use base64::Engine;
 use crate::row_query::{RowCommit, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
 use orbital_core_base::row_set::RowQuery;
 use crate::kernel::{AwaitingTrait, TraitSnapshot};
@@ -306,8 +304,6 @@ mod serde_index;
 
 mod io_wire;
 mod io_convert;
-mod http;
-pub use http::{HttpBody, HttpFailureWire, HttpRequestWire, HttpResponseWire};
 pub use io_wire::{
     IoAnswerWire, IoReplyWire, IoRequestWire, ModelFailureKindWire,
     ModelFailureWire, PageFactFieldWire, PageFactsWire, PendingRequestWire, ResolveProgressWire,

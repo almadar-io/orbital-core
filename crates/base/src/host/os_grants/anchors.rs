@@ -158,6 +158,16 @@ pub(super) fn rooted(segments: &[String], rest: Option<&str>) -> String {
 
 impl OsGrants {
     #[cfg(feature = "std")]
+    /// An env anchor whose variable is unset is an optional override, not a mistake, when the program also declares a
+    /// `~/` fs entry granting at least the same modes: that entry is the anchor choice the program wrote. A variable that
+    /// is set but unusable, and every other anchor, still report.
+    fn home_entry_stands_in(&self, anchor: &GrantAnchor, modes: &[FsMode], anchors: &OsAnchors) -> bool {
+        let GrantAnchor::Env(name) = anchor else { return false };
+        matches!(anchors.env.get(name), None | Some(""))
+            && self.fs.iter().any(|f| matches!(anchor_of(&f.glob), Some((Anchor::Home, _))) && modes.iter().all(|m| f.modes.contains(m)))
+    }
+
+    #[cfg(feature = "std")]
     /// The plain grant set a host checks against: every anchored entry resolved through `anchors` into an absolute
     /// `fs` glob or `exec` command, with the anchored part emptied. An entry whose anchor this host cannot place, or
     /// whose shape is invalid, grants nothing and is returned as a problem for the host to report.
@@ -172,6 +182,7 @@ impl OsGrants {
             }
             match anchors.anchor_segments(&g.anchor) {
                 Ok(segments) => added.fs.push(FsGrant { glob: rooted(&segments, Some(&g.glob)), modes: g.modes.clone() }),
+                Err(_) if self.home_entry_stands_in(&g.anchor, &g.modes, anchors) => {}
                 Err(why) => problems.push(EntryProblem { path, message: format!("{} {:?} grants nothing: {why}", g.anchor.label(), g.glob) }),
             }
         }

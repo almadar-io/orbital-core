@@ -20,6 +20,9 @@ pub(super) fn bind_type(
     if matches!(known, Known::Void) {
         return bind_void(formal, actual, b);
     }
+    if let Known::RecordWithNulls { present, nulls } = known {
+        return bind_record_with_nulls(formal, present, nulls, actual, b, mode);
+    }
     // A union fits a position that binds no variable only when each of its variants does; it is a loose value there,
     // and `(as x T)` narrows it.
     if let (Mode::Proof, Known::Type(ty)) = (mode, known) {
@@ -133,7 +136,7 @@ pub(super) fn bind_type(
                 _ => Ok(()),
             },
             K::Array { of } => match known {
-                Known::Absent | Known::Void => Ok(()),
+                Known::Absent | Known::Void | Known::RecordWithNulls { .. } => Ok(()),
                 Known::EmptyList => {
                     b.note_empty_element(of);
                     Ok(())
@@ -186,7 +189,7 @@ pub(super) fn bind_type(
                 },
             },
             K::Tuple { items } => match known {
-                Known::EmptyList | Known::Absent | Known::Void => Ok(()),
+                Known::EmptyList | Known::Absent | Known::Void | Known::RecordWithNulls { .. } => Ok(()),
                 Known::Type(ty) => match unwrap_optional(ty) {
                     OirType::Tuple { items: slots } if slots.is_empty() => Ok(()),
                     OirType::Tuple { items: slots } if slots.len() == items.len() => {
@@ -227,7 +230,7 @@ pub(super) fn bind_type(
                     None if is_uninformative(ty) => Err(undetermined(why_uninformative(ty))),
                     None => Err(type_mismatch(formal, actual)),
                 },
-                Known::EmptyList | Known::Absent | Known::Void => {
+                Known::EmptyList | Known::Absent | Known::Void | Known::RecordWithNulls { .. } => {
                     Err(type_mismatch(formal, actual))
                 }
             },
@@ -246,7 +249,7 @@ pub(super) fn bind_type(
                     None if is_uninformative(ty) => Ok(()),
                     None => Err(type_mismatch(formal, actual)),
                 },
-                Known::EmptyList | Known::Absent | Known::Void => {
+                Known::EmptyList | Known::Absent | Known::Void | Known::RecordWithNulls { .. } => {
                     Err(type_mismatch(formal, actual))
                 }
             },
@@ -344,7 +347,7 @@ pub(super) fn bind_type(
                     }
                 }
                 Known::EmptyList => Err(type_mismatch(formal, actual)),
-                Known::Absent | Known::Void => Ok(()),
+                Known::Absent | Known::Void | Known::RecordWithNulls { .. } => Ok(()),
             },
             K::Fn { .. }
             | K::Entity { .. }
@@ -375,7 +378,7 @@ pub(super) fn bind_type(
                             b.defaults
                                 .insert(of.clone(), OirType::Tuple { items: Vec::new() });
                         }
-                        Known::Absent | Known::Void => {}
+                        Known::Absent | Known::Void | Known::RecordWithNulls { .. } => {}
                     }
                     return Ok(());
                 }
@@ -584,6 +587,56 @@ pub(super) fn bind_void(
         | K::UiSlot
         | K::PatternType => Ok(()),
         _ => Err(type_mismatch(formal, actual)),
+    }
+}
+
+/// An object literal with null values reaches `formal`: a Map takes its typed values by its value type, and its
+/// null values only when that type admits null. Any other formal reads the literal as a value of no known type.
+fn bind_record_with_nulls(
+    formal: &OperatorTypeRef,
+    present: &OirType,
+    nulls: &[String],
+    actual: &Actual<'_>,
+    b: &mut CallBindings,
+    mode: Mode,
+) -> Result<(), Mismatch> {
+    use crate::language::registry::OperatorTypeRefKind as K;
+    let OperatorTypeRef::Tagged(kind) = formal else {
+        return bind_unknown(formal, actual, b, mode);
+    };
+    match kind {
+        K::Map { key, value } => {
+            if !value.admits_null() {
+                return Err(Mismatch::Type {
+                    expected: expected_name(formal),
+                    actual: format!(
+                        "an object whose `{}` is null, and {} does not admit null",
+                        nulls.join("`, `"),
+                        expected_name(value)
+                    ),
+                });
+            }
+            bind_type(key, &element(&OirType::String), b, mode)?;
+            match record_of(present, b) {
+                Some(Record::Fields(fields)) => {
+                    for field in fields {
+                        bind_type(value, &element(&field.field_type), b, mode)?;
+                    }
+                    Ok(())
+                }
+                _ => Err(type_mismatch(formal, actual)),
+            }
+        }
+        K::Union { of } => {
+            for member in of.iter().filter(|m| matches!(m, OperatorTypeRef::Tagged(K::Map { .. }))) {
+                let mut trial = b.clone();
+                bind_record_with_nulls(member, present, nulls, actual, &mut trial, mode)?;
+                *b = trial;
+                return Ok(());
+            }
+            bind_unknown(formal, actual, b, mode)
+        }
+        _ => bind_unknown(formal, actual, b, mode),
     }
 }
 

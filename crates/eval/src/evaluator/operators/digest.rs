@@ -419,6 +419,38 @@ impl Operator for HmacSha256Op {
     }
 }
 
+/// rsa/verify (n, e, message, signature) - RSASSA-PKCS1-v1_5 SHA-256; answers the verdict code, a non-canonical base64 operand is invalid
+pub struct RsaVerifyOp;
+impl Operator for RsaVerifyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "rsa/verify", == 4);
+        let n = bytes_in(&args[0], ctx)?;
+        let e = bytes_in(&args[1], ctx)?;
+        let message = string_arg(&args[2], ctx)?;
+        let signature = bytes_in(&args[3], ctx)?;
+        let (Some(n), Some(e), Some(signature)) = (n, e, signature) else {
+            return Ok(Value::string("invalid"));
+        };
+        Ok(Value::string(codec::rsa_pkcs1_sha256_verify(&n, &e, message.as_bytes(), &signature).as_str()))
+    }
+}
+
+/// ecdsa/p256-verify (x, y, message, signature) - ECDSA P-256 SHA-256 over a raw r||s signature; answers the verdict code
+pub struct EcdsaP256VerifyOp;
+impl Operator for EcdsaP256VerifyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ecdsa/p256-verify", == 4);
+        let x = bytes_in(&args[0], ctx)?;
+        let y = bytes_in(&args[1], ctx)?;
+        let message = string_arg(&args[2], ctx)?;
+        let signature = bytes_in(&args[3], ctx)?;
+        let (Some(x), Some(y), Some(signature)) = (x, y, signature) else {
+            return Ok(Value::string("invalid"));
+        };
+        Ok(Value::string(codec::ecdsa_p256_sha256_verify(&x, &y, message.as_bytes(), &signature).as_str()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -729,5 +761,79 @@ mod tests {
             eval(serde_json::json!(["str/uri-component-valid", "%E0%A4%A"])).unwrap(),
             Value::Bool(false)
         );
+    }
+
+    const RSA_N: &str = "pCJTqfijo+dyUDx+uHmap/Y5yXaRg99QNf+AUbAjWRKsgBhvqMknk2SpB9A40VwydKdtoHbWp0z4bHSNmlHooqeFd7mAxpmtsuumAiE+ICdkcPZ63j2OvqlrJna3xB4PX677BZhFYhDhYCjjlLTDwmZRBymA8vSCtDLQZ7MRkX1fxVHML+wJi1LzTwniItB/hoSKx8b4i0w4ZuesAB+/RPTjR8ktRGsUWyzW83Bcfg5IR+8bZLMNyx6XwsAuZ7nQ2+qJXSFXoq2O/a+jdtfagyJBGAD26wx6bnuReRg2x57t6nB3CYYUREhcAJAJR9BLKkNZgk/peUKeb8QHwQBgPw==";
+    const RSA_SIGNATURE: &str = "RA4mgYzrg/dfjqlRbUcGMN4Vr7k7ChWG3Jsbpkz93OKGJfIJ8D8zpGCOvaMfc1WN0pWnwuPuSxHgsOMaC4bh1qH5tS1FJWFxL//Lg28IIrWHM/olBCAUXbhsqNvf3g7m50XNVmM8RvmMDZOXuBJkLm4GLAptJaSgUyK2pPFV0CCKx4zIFjtoL1ZvtZvwgT6er9VWheX+3wNm7MQwtHKYTH77z4XVi2K/+rkY7QNdh9GohExwK6cDy8sCuLG7Kjb1YykNxEcZxR8k/1X6NqZC1svDj1ghejKGi+Tkkf7nCfVH7lDIzE+FisrCetfZG8eNQ4ROWAmAA4gWv2Hjd+isWg==";
+    const EC_X: &str = "DWCBVhKCGPAV0CVSa7Nu/svWxAWs1ejOo2PZPNjNAHE=";
+    const EC_Y: &str = "786l0mh1J2aMm6STYLEz60poSi5F6aNJi4BnV6yCOMY=";
+    const EC_SIGNATURE: &str = "eAQcvqokeZHzlZ0shvZjYSxtc12OnlR9IZgH9nCRSoqlNKyYQx0YNoLL0SpkJkGsbGfmF1a4OIfG0VncqUiwgQ==";
+
+    fn verdict(form: serde_json::Value) -> String {
+        match eval(form) {
+            Ok(Value::String(s)) => s.into_inner(),
+            other => panic!("expected a verdict, got {other:?}"),
+        }
+    }
+
+    fn flipped(signature: &str) -> String {
+        let mut bytes = codec::base64_decode(signature).expect("bytes");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        codec::base64_encode(&bytes)
+    }
+
+    #[test]
+    fn rsa_verify_answers_the_verdict_code() {
+        let call = |n: &str, e: &str, message: &str, signature: &str| verdict(serde_json::json!(["rsa/verify", n, e, message, signature]));
+        assert_eq!(call(RSA_N, "AQAB", "header.payload", RSA_SIGNATURE), "valid");
+        assert_eq!(call(RSA_N, "AQAB", "header.payload", &flipped(RSA_SIGNATURE)), "mismatch");
+        assert_eq!(call(RSA_N, "AQAB", "header.payloaD", RSA_SIGNATURE), "mismatch");
+        assert_eq!(call("AQAB", "AQAB", "header.payload", RSA_SIGNATURE), "key-size");
+        assert_eq!(call(RSA_N, "AQAB", "header.payload", "c2ln"), "signature-length");
+        assert_eq!(call(RSA_N, "AQAB", "header.payload", RSA_N), "signature-range");
+    }
+
+    #[test]
+    fn rsa_verify_refuses_an_operand_that_is_not_canonical_base64_and_raises_on_null() {
+        for form in [
+            serde_json::json!(["rsa/verify", "%%not base64", "AQAB", "header.payload", RSA_SIGNATURE]),
+            serde_json::json!(["rsa/verify", RSA_N, "AR==", "header.payload", RSA_SIGNATURE]),
+            serde_json::json!(["rsa/verify", RSA_N, "AQAB", "header.payload", &RSA_SIGNATURE[..RSA_SIGNATURE.len() - 1]]),
+        ] {
+            assert_eq!(verdict(form.clone()), "invalid", "{form}");
+        }
+        for position in 1..=4 {
+            let mut form = serde_json::json!(["rsa/verify", RSA_N, "AQAB", "header.payload", RSA_SIGNATURE]);
+            form[position] = serde_json::Value::Null;
+            assert!(eval(form.clone()).is_err(), "{form}");
+        }
+        assert!(eval(serde_json::json!(["rsa/verify", RSA_N, "AQAB", "header.payload"])).is_err());
+    }
+
+    #[test]
+    fn ecdsa_p256_verify_answers_the_verdict_code() {
+        let call = |x: &str, y: &str, message: &str, signature: &str| verdict(serde_json::json!(["ecdsa/p256-verify", x, y, message, signature]));
+        assert_eq!(call(EC_X, EC_Y, "header.payload", EC_SIGNATURE), "valid");
+        assert_eq!(call(EC_X, EC_Y, "header.payload", &flipped(EC_SIGNATURE)), "mismatch");
+        assert_eq!(call(EC_X, EC_Y, "header.payloaD", EC_SIGNATURE), "mismatch");
+        assert_eq!(call("AQAB", EC_Y, "header.payload", EC_SIGNATURE), "length");
+        assert_eq!(call(EC_X, EC_Y, "header.payload", "c2ln"), "length");
+        assert_eq!(call(EC_Y, EC_X, "header.payload", EC_SIGNATURE), "point");
+        assert_eq!(call(EC_X, EC_Y, "header.payload", &codec::base64_encode(&[0u8; 64])), "range");
+    }
+
+    #[test]
+    fn ecdsa_p256_verify_refuses_an_operand_that_is_not_canonical_base64_and_raises_on_null() {
+        assert_eq!(
+            verdict(serde_json::json!(["ecdsa/p256-verify", "%%not base64", EC_Y, "header.payload", EC_SIGNATURE])),
+            "invalid"
+        );
+        for position in 1..=4 {
+            let mut form = serde_json::json!(["ecdsa/p256-verify", EC_X, EC_Y, "header.payload", EC_SIGNATURE]);
+            form[position] = serde_json::Value::Null;
+            assert!(eval(form.clone()).is_err(), "{form}");
+        }
+        assert!(eval(serde_json::json!(["ecdsa/p256-verify", EC_X, EC_Y, "header.payload"])).is_err());
     }
 }

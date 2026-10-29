@@ -55,16 +55,6 @@ pub enum IoRequestWire {
         site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
-    Http {
-        request: HttpRequestWire,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        key: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        delay_ms: Option<u64>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        site: Option<CallSiteWire>,
-    },
-    #[serde(rename_all = "camelCase")]
     PageFacts { fields: Vec<PageFactFieldWire> },
     #[serde(rename_all = "camelCase")]
     Prompt {
@@ -289,9 +279,6 @@ pub enum IoAnswerWire {
     },
     Substrate {
         result: Settled<Value, SubstrateFailureWire>,
-    },
-    Http {
-        result: Settled<HttpResponseWire, HttpFailureWire>,
     },
     PageFacts {
         result: Settled<PageFactsWire, String>,

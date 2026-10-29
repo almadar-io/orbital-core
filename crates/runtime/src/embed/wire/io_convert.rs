@@ -94,17 +94,6 @@ impl From<IoRequestWire> for IoRequest {
                 key,
                 site: site.map(CallSite::from),
             },
-            IoRequestWire::Http {
-                request,
-                key,
-                delay_ms,
-                site,
-            } => Self::Http {
-                request: request.into(),
-                key,
-                delay_ms,
-                site: site.map(CallSite::from),
-            },
             IoRequestWire::PageFacts { fields } => Self::PageFacts {
                 fields: fields.into_iter().map(PageFactField::from).collect(),
             },
@@ -220,17 +209,6 @@ impl From<&IoRequest> for IoRequestWire {
                 op: op.clone(),
                 args: args.clone(),
                 key: key.clone(),
-                site: site.as_ref().map(CallSiteWire::from),
-            },
-            IoRequest::Http {
-                request,
-                key,
-                delay_ms,
-                site,
-            } => Self::Http {
-                request: HttpRequestWire::from(request),
-                key: key.clone(),
-                delay_ms: *delay_ms,
                 site: site.as_ref().map(CallSiteWire::from),
             },
             IoRequest::PageFacts { fields } => Self::PageFacts {
@@ -365,13 +343,6 @@ impl From<&IoAnswer> for IoAnswerWire {
                     })
                     .into(),
             },
-            IoAnswer::Http(r) => Self::Http {
-                result: r
-                    .as_ref()
-                    .map(HttpResponseWire::from)
-                    .map_err(HttpFailureWire::from)
-                    .into(),
-            },
             IoAnswer::PageFacts(r) => Self::PageFacts {
                 result: r
                     .as_ref()
@@ -456,10 +427,6 @@ impl From<IoAnswerWire> for IoAnswer {
                     message: f.message,
                     errors: f.errors,
                 }))
-            }
-            IoAnswerWire::Http { result } => {
-                let result: Result<HttpResponseWire, HttpFailureWire> = result.into();
-                Self::Http(result.map(HttpResponse::from).map_err(TransportError::from))
             }
             IoAnswerWire::PageFacts { result } => {
                 let result: Result<PageFactsWire, String> = result.into();

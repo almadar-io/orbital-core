@@ -30,6 +30,7 @@ pub use orbital_core_base::generate;
 pub use orbital_core_base::i18n;
 pub use orbital_core_base::language;
 pub use orbital_core_eval::evaluator;
+pub use orbital_core_eval::proof;
 pub use orbital_core_runtime::embed;
 pub mod language_data {
     pub use orbital_core_base::language_data::*;
@@ -73,7 +74,7 @@ pub mod runtime {
     pub use orbital_core_base::http_wire;
     pub use orbital_core_base::os;
     pub use orbital_core_base::os_grants;
-    pub use orbital_core_runtime::http_service;
+    pub use orbital_core_runtime::secret_source;
     pub use orbital_core_runtime::kernel;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::os_host;
@@ -85,8 +86,6 @@ pub mod runtime {
     pub use orbital_core_runtime::memory_release;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::credentials;
-    #[cfg(feature = "native-transport")]
-    pub use orbital_core_runtime::native_transport;
     pub use orbital_core_runtime::credential_store;
     pub mod listener {
         pub use orbital_core_base::listen_match::matches_listen_source;
@@ -155,6 +154,7 @@ pub mod runtime {
     pub use orbital_core_runtime::kernel::TickEmit;
     pub use orbital_core_runtime::kernel::TraitSnapshot;
     pub use orbital_core_runtime::kernel::CROSS_TRAIT_CASCADE_CAP;
+    pub use orbital_core_runtime::kernel::CROSS_TRAIT_DISPATCH_CAP;
     pub use orbital_core_runtime::kernel::lazy::LazyObserver;
     pub use orbital_core_runtime::kernel::lazy::LazyProgram;
     pub use orbital_core_runtime::kernel::lazy::LazySource;

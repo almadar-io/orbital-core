@@ -1040,9 +1040,6 @@ const GUARDED: &[&str] = &[
     "EventRequest",
     "EventResponse",
     "IoRequestWire",
-    "HttpBody",
-    "HttpRequestWire",
-    "HttpResponseWire",
 ];
 
 
@@ -1153,10 +1150,6 @@ fn every_wire_type_is_declared() {
         "InstanceRef",
         "DeliverRefusal",
         "DeliverRefusalKind",
-        "HttpBody",
-        "HttpRequestWire",
-        "HttpResponseWire",
-        "HttpFailureWire",
         "CallRoutesWire",
         "SubstrateFailureWire",
         "EventRequest",

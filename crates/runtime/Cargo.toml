@@ -58,9 +58,7 @@ std = [
 # The raw-socket store drivers (Postgres, Redis, their TLS stream): a server-role capability the browser kernel build leaves out.
 wire-drivers = ["std"]
 async = ["std", "orbital-core-eval/async"]
-client-http = ["std", "dep:ureq"]
-# The native HTTP(S) transport of a server-role host (ureq + rustls); off for wasm32 and for hosts that bring their own `Transport`.
-native-transport = ["std", "dep:ureq", "ureq/tls"]
+client-http = ["std", "dep:ureq", "ureq/tls"]
 
 [dev-dependencies]
 tempfile = "3.10"

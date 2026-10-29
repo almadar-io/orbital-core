@@ -522,14 +522,15 @@ impl RuntimeKernel {
                 return Ok(true);
             }
         }
-        if cascade.steps >= CROSS_TRAIT_CASCADE_CAP {
+        let cap = if memory.delivered() >= CROSS_TRAIT_DISPATCH_CAP { CROSS_TRAIT_DISPATCH_CAP } else { CROSS_TRAIT_CASCADE_CAP };
+        if cascade.steps >= CROSS_TRAIT_CASCADE_CAP || memory.delivered() >= CROSS_TRAIT_DISPATCH_CAP {
             let at_cap = match visit {
                 Some(v) => v,
                 None => visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)),
             };
             visited.record(at_cap);
             let cut = crate::process_result::CascadeCut {
-                cap: CROSS_TRAIT_CASCADE_CAP,
+                cap,
                 trait_name: item.trait_name.clone(),
                 event: item.event.clone(),
             };
@@ -545,7 +546,7 @@ impl RuntimeKernel {
             }
             tracing::warn!(
                 target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
-                cap = CROSS_TRAIT_CASCADE_CAP,
+                cap,
                 dropped = ?dropped,
                 "cascade:truncated",
             );
@@ -577,6 +578,7 @@ impl RuntimeKernel {
             return Err(Fault::Kernel(KernelError::PayloadInvalid(refusal)));
         }
         cascade.steps += 1;
+        memory.count_delivery();
         if let Some(v) = visit {
             visited.record(v);
         }

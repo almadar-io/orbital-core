@@ -374,6 +374,8 @@ operator_dispatch! {
         "hash/scrypt" => K::HashScryptOp,
         "hash/pbkdf2" => K::HashPbkdf2Op,
         "hmac/sha256" => K::HmacSha256Op,
+        "rsa/verify" => K::RsaVerifyOp,
+        "ecdsa/p256-verify" => K::EcdsaP256VerifyOp,
         "gzip/compress" => K::GzipCompressOp,
         "gzip/decompress" => K::GzipDecompressOp,
         "brotli/compress" => K::BrotliCompressOp,

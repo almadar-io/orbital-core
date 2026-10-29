@@ -30,9 +30,18 @@ impl DispatchView {
 pub struct DispatchMemory {
     deliveries: HashMap<String, SharedLog<Arc<Value>>>,
     left: HashMap<String, SharedLog<String>>,
+    delivered: usize,
 }
 
 impl DispatchMemory {
+    pub fn delivered(&self) -> usize {
+        self.delivered
+    }
+
+    pub fn count_delivery(&mut self) {
+        self.delivered += 1;
+    }
+
     pub fn view(&self, trait_name: &str, delivery: &Arc<Value>) -> DispatchView {
         DispatchView {
             event: Arc::clone(delivery),

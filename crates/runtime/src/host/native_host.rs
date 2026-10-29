@@ -1,15 +1,15 @@
 //! The one native host of a server-role kernel: every ask a dispatch makes, answered in process. Rows come from the
-//! entity source, `http` and `os/` under the program's declared egress and grants, credentials, OAuth, random and clock
-//! from the secret source and the operating system. Each piece is the existing answerer (`BlockingHost`, `HttpHost`,
+//! entity source, `os/` under the program's declared grants, credentials, random and clock from the secret source and
+//! the operating system. Each piece is the existing answerer (`BlockingHost`, `PortHost`,
 //! `answer_os`); this owns them so a host can share one answerer across threads and rebuild it when a program registers.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use crate::entity_source::EntitySource;
-use crate::http_service::{SecretSource, Transport};
+use crate::secret_source::SecretSource;
 use crate::os_host::{OsGrants, OsHandles, OsHost};
-use crate::resumable::{BlockingHost, CallSite, HttpHost, IoAnswer, IoRequest};
+use crate::resumable::{BlockingHost, CallSite, PortHost, IoAnswer, IoRequest};
 use orbital_core_base::value::Value;
 use std::sync::Arc;
 
@@ -47,9 +47,7 @@ impl ServiceHandler for NoProviders {
 #[derive(Clone)]
 pub struct NativeHost {
     source: Arc<dyn EntitySource>,
-    transport: Arc<dyn Transport>,
     secrets: Arc<dyn SecretSource>,
-    egress: Vec<String>,
     grants: OsGrants,
     handles: Arc<OsHandles>,
     on_event: Arc<StreamEvents>,
@@ -61,9 +59,7 @@ pub struct NativeHost {
 impl NativeHost {
     pub fn new(
         source: Arc<dyn EntitySource>,
-        transport: Arc<dyn Transport>,
         secrets: Arc<dyn SecretSource>,
-        egress: Vec<String>,
         grants: OsGrants,
         handles: Arc<OsHandles>,
         on_event: Arc<StreamEvents>,
@@ -74,9 +70,7 @@ impl NativeHost {
         }
         Self {
             source,
-            transport,
             secrets,
-            egress,
             grants,
             handles,
             on_event,
@@ -137,10 +131,8 @@ impl NativeHost {
             handles: &self.handles,
             on_event: &on_event,
         };
-        let http = HttpHost {
-            transport: self.transport.as_ref(),
+        let ports = PortHost {
             secrets: self.secrets.as_ref(),
-            egress: &self.egress,
             on_event: &on_event,
             os: Some(&os),
         };
@@ -149,7 +141,7 @@ impl NativeHost {
             service: Some(&NoProviders),
             substrate: self.substrate.as_deref(),
         }
-        .answer_with_http(&http, request)
+        .answer_with_ports(&ports, request)
     }
 }
 
@@ -158,16 +150,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::effects::executor::SubstrateFailure;
     use crate::entity_source::InMemoryEntityCache;
-    use crate::http_service::{HttpRequest, HttpResponse, TransportError};
 
     struct Echo;
-    pub(crate) struct Offline;
-
-    impl Transport for Offline {
-        fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
-            unreachable!("a substrate ask sends no request")
-        }
-    }
 
     impl SubstrateHandler for Echo {
         fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure> {
@@ -178,9 +162,7 @@ pub(crate) mod tests {
     fn host() -> NativeHost {
         NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),
-            Arc::new(Offline),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
-            Vec::new(),
             OsGrants::default(),
             Arc::new(OsHandles::default()),
             Arc::new(|_: Option<&CallSite>, _: Value| {}),
@@ -196,6 +178,19 @@ pub(crate) mod tests {
         match ask(&host().with_substrate(Some(Arc::new(Echo)))) {
             IoAnswer::Substrate(Ok(Value::String(answer))) => assert_eq!(answer, "program/read/1"),
             other => panic!("expected the handler's answer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_program_prove_ask_reaches_the_handler_and_a_host_without_one_names_it() {
+        let prove = || IoRequest::Substrate { op: "program/prove".to_string(), args: vec![Value::Null, Value::Null], key: None, site: None };
+        match host().with_substrate(Some(Arc::new(Echo))).answer(&prove()) {
+            IoAnswer::Substrate(Ok(Value::String(answer))) => assert_eq!(answer, "program/prove/2"),
+            other => panic!("expected the handler's answer, got {other:?}"),
+        }
+        match host().answer(&prove()) {
+            IoAnswer::Substrate(Err(failure)) => assert_eq!(failure.message, "no substrate host configured for program/prove"),
+            other => panic!("control: expected the refusal, got {other:?}"),
         }
     }
 
@@ -225,9 +220,7 @@ pub(crate) mod tests {
         }
         let host = NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),
-            Arc::new(Offline),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
-            Vec::new(),
             OsGrants::default(),
             handles,
             Arc::new(|_: Option<&CallSite>, _: Value| {}),

@@ -646,17 +646,9 @@ mod tests {
 
     #[test]
     fn cancel_call_of_a_deferred_key_reaches_the_pending_completion_and_an_unknown_key_does_not() {
-        use crate::http_service::{
-            HttpRequest, HttpResponse, SecretSource, Transport, TransportError,
-        };
+        use crate::secret_source::SecretSource;
         use crate::os_host::{OsGrants, OsHandles, OsHost};
-        use crate::resumable::{os_completion_cancelled, HttpHost};
-        struct NoTransport;
-        impl Transport for NoTransport {
-            fn send(&self, _: &HttpRequest) -> Result<HttpResponse, TransportError> {
-                Err(TransportError::Failed("unused".to_string()))
-            }
-        }
+        use crate::resumable::{os_completion_cancelled, PortHost};
         struct NoSecrets;
         impl SecretSource for NoSecrets {
             fn secret(&self, _: &str) -> Result<Option<String>, String> {
@@ -671,10 +663,8 @@ mod tests {
             handles: &handles,
             on_event: &on_event,
         };
-        let host = HttpHost {
-            transport: &NoTransport,
+        let host = PortHost {
             secrets: &NoSecrets,
-            egress: &[],
             on_event: &on_event,
             os: Some(&os),
         };

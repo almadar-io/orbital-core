@@ -158,6 +158,7 @@
 {"operator":"bytes/slice","position":2,"expr":["bytes/slice","aGVsbG8=",1,3]},
 {"operator":"bytes/to-base64","position":0,"expr":["bytes/to-base64","aGVsbG8="]},
 {"operator":"bytes/to-string","position":0,"expr":["bytes/to-string","aGVsbG8="]},
+{"operator":"bytes/valid-utf8","position":0,"expr":["bytes/valid-utf8","aGVsbG8="]},
 {"operator":"bytes/write-uint","position":0,"expr":["bytes/write-uint",4660,2,"be"]},
 {"operator":"bytes/write-uint","position":1,"expr":["bytes/write-uint",4660,2,"be"]},
 {"operator":"bytes/write-uint","position":2,"expr":["bytes/write-uint",4660,2,"be"]},

@@ -159,14 +159,14 @@ impl Operator for BytesConcatOp {
     }
 }
 
-/// bytes/equals - same decoded bytes
+/// bytes/equals - same decoded bytes, compared in constant time (the one `constant_time_eq_bytes`)
 pub struct BytesEqualsOp;
 impl Operator for BytesEqualsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/equals", == 2);
         let a = bytes_arg(&args[0], ctx, "bytes/equals")?;
         let b = bytes_arg(&args[1], ctx, "bytes/equals")?;
-        Ok(Value::Bool(a == b))
+        Ok(Value::Bool(orbital_core_base::inbound::constant_time_eq_bytes(&a, &b)))
     }
 }
 

@@ -122,6 +122,9 @@ pub(crate) use dispatch_run::Fault;
 /// Circuit breaker for one dispatch's cross-trait worklist; twin of the JS `CROSS_TRAIT_CASCADE_CAP`.
 pub const CROSS_TRAIT_CASCADE_CAP: usize = 2000;
 
+/// The hard bound on one dispatch's deliveries in total, across every settle pass (EXEC-QUEUE-4, EXEC-CONC-2).
+pub const CROSS_TRAIT_DISPATCH_CAP: usize = 1_000_000;
+
 /// One queued delivery: the trait it reaches, the event it triggers there, and what `@event` reads.
 struct CascadeItem {
     trait_name: String,
