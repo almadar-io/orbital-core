@@ -153,7 +153,7 @@ impl IoPort {
             None => uuid_v4(&self.random(16)?)?,
         };
         let mut fields = fields.clone();
-        fields.insert("id".to_string(), Value::string(id));
+        fields.insert("id".into(), Value::string(id));
         Ok(std::borrow::Cow::Owned(Value::Object(fields)))
     }
 

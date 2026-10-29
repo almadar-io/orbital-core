@@ -535,7 +535,7 @@ impl ClientCore {
                     .find_map(|p| route_params(&p.path, path).map(|r| (idx, p.name.clone(), r)))
             })
         });
-        let Some((idx, page, mut route)) = found else {
+        let Some((idx, page, mut route)) = found.or_else(|| self.not_found_target()) else {
             tracing::warn!(target: "almadar::client", path = %path, "navigate: no page matches");
             self.status_message = Some((format!("No page at {path}"), true));
             return;
@@ -549,6 +549,15 @@ impl ClientCore {
             params: std::mem::take(&mut self.route_params),
         });
         self.enter_page(idx, Some(page), route);
+    }
+
+    /// The page declared `[notFound]` (the resolver guarantees at most one), searched orbital by orbital.
+    fn not_found_target(&self) -> Option<(usize, String, ValueMap)> {
+        (0..self.schema.orbitals.len()).find_map(|idx| {
+            pages_of(&self.schema, idx)
+                .find(|p| p.is_not_found == Some(true))
+                .map(|p| (idx, p.name.clone(), ValueMap::default()))
+        })
     }
 
     /// Return to the previous page and its params (`navigate-back`); with no history the page stays.
@@ -696,7 +705,7 @@ impl ClientCore {
                 && !content.contains_key(&render.trait_name)
             {
                 if let Some(skeleton) = self.skeleton_content(render) {
-                    content.insert(render.trait_name.clone(), skeleton.props);
+                    content.insert(render.trait_name.clone().into(), skeleton.props);
                 }
             }
         }
@@ -816,9 +825,9 @@ impl ClientCore {
                     }
                 } else if let Some(content) = effect.render_ui_value() {
                     if is_main(slot) {
-                        self.trait_content.insert(src.clone(), content);
+                        self.trait_content.insert(src.clone().into(), content);
                     } else {
-                        self.trait_content.entry(src.clone()).or_insert(content);
+                        self.trait_content.entry(src.clone().into()).or_insert(content);
                     }
                 }
             }
@@ -839,7 +848,7 @@ impl ClientCore {
                     if let Some(obj) = entities[0].as_object() {
                         self.form_data.clear();
                         for (key, value) in obj {
-                            self.form_data.insert(key.clone(), format_value(value));
+                            self.form_data.insert(key.to_string(), format_value(value));
                         }
                     }
                     break;
@@ -994,7 +1003,7 @@ fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
     for (r, a) in route.iter().zip(&actual) {
         match r.strip_prefix(':') {
             Some(name) => {
-                params.insert(name.to_string(), Value::string((*a).to_string()));
+                params.insert(name.to_string().into(), Value::string((*a).to_string()));
             }
             None if r == a => {}
             None => return None,

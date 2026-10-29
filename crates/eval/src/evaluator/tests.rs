@@ -484,8 +484,8 @@ fn the_semantic_validators_read_the_one_pattern_table() {
 #[test]
 fn json_parse_object_array_scalar_nested() {
     let mut obj = ValueMap::default();
-    obj.insert("a".to_string(), Value::Number(1.0));
-    obj.insert("b".to_string(), Value::string("x"));
+    obj.insert("a".into(), Value::Number(1.0));
+    obj.insert("b".into(), Value::string("x"));
     assert_eq!(
         eval(r#"["json/parse", "{\"a\": 1, \"b\": \"x\"}", "Row"]"#),
         Value::object(obj)
@@ -513,11 +513,11 @@ fn json_parse_object_array_scalar_nested() {
         Value::String(("b".to_string()).into()),
     ]);
     let mut row = ValueMap::default();
-    row.insert("id".to_string(), Value::Number(1.0));
-    row.insert("tags".to_string(), tags);
+    row.insert("id".into(), Value::Number(1.0));
+    row.insert("tags".into(), tags);
     let mut rows = ValueMap::default();
     rows.insert(
-        "rows".to_string(),
+        "rows".into(),
         Value::array(vec![Value::Object(row.into())]),
     );
     assert_eq!(
@@ -684,7 +684,7 @@ fn parse_as_resolved(
         Vec<orbital_core_base::schema::types::PayloadField>,
     >,
 ) -> Value {
-    let recorded = match orbital_core_base::ir::types::DeclaredShape::of_alias(shape, aliases) {
+    let recorded = match orbital_core_base::ir::types::DeclaredShape::of_alias(shape, aliases).unwrap() {
         Some(declared) => serde_json::to_string(&declared).unwrap(),
         None => shape.to_string(),
     };
@@ -720,7 +720,7 @@ fn json_parse_program_alias_checks_through_nested_and_recursive_aliases() {
     );
     assert_eq!(
         parse_in_program(r#"{"a": 1}"#, "Row"),
-        Value::object(ValueMap::from_iter([("a".to_string(), Value::Number(1.0))]))
+        Value::object(ValueMap::from_iter([("a".into(), Value::Number(1.0))]))
     );
 }
 
@@ -815,7 +815,7 @@ fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
     );
     let declared = serde_json::to_string(&orbital_core_base::ir::types::DeclaredShape::with_named(
         None, list, &aliases,
-    ))
+    ).unwrap())
     .unwrap();
     let expr: SExpression = serde_json::from_value(serde_json::json!([
         "let",
@@ -1038,9 +1038,9 @@ fn test_let() {
 fn test_binding_resolution() {
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
-    data.insert("email".to_string(), Value::string("test@example.com"));
-    data.insert("connectionSlots".to_string(), Value::Number(10.0));
-    payload.insert("data".to_string(), Value::object(data));
+    data.insert("email".into(), Value::string("test@example.com"));
+    data.insert("connectionSlots".into(), Value::Number(10.0));
+    payload.insert("data".into(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
         .payload(Value::object(payload))
@@ -1066,9 +1066,9 @@ fn test_complex_guard_from_orbital_pattern() {
     // Guard: ["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
-    data.insert("email".to_string(), Value::string("test@example.com"));
-    data.insert("name".to_string(), Value::string("Test User"));
-    payload.insert("data".to_string(), Value::object(data));
+    data.insert("email".into(), Value::string("test@example.com"));
+    data.insert("name".into(), Value::string("Test User"));
+    payload.insert("data".into(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
         .payload(Value::object(payload))
@@ -1080,9 +1080,9 @@ fn test_complex_guard_from_orbital_pattern() {
     // Test with empty email
     let mut payload2 = ValueMap::default();
     let mut data2 = ValueMap::default();
-    data2.insert("email".to_string(), Value::string(""));
-    data2.insert("name".to_string(), Value::string("Test User"));
-    payload2.insert("data".to_string(), Value::object(data2));
+    data2.insert("email".into(), Value::string(""));
+    data2.insert("name".into(), Value::string("Test User"));
+    payload2.insert("data".into(), Value::object(data2));
 
     let ctx2 = BindingContextBuilder::new()
         .payload(Value::object(payload2))
@@ -1097,8 +1097,8 @@ fn test_connection_slots_guard() {
     // Guard: ["<=", "@payload.data.connectionSlots", 100]
     let mut payload = ValueMap::default();
     let mut data = ValueMap::default();
-    data.insert("connectionSlots".to_string(), Value::Number(50.0));
-    payload.insert("data".to_string(), Value::object(data));
+    data.insert("connectionSlots".into(), Value::Number(50.0));
+    payload.insert("data".into(), Value::object(data));
 
     let ctx = BindingContextBuilder::new()
         .payload(Value::object(payload))
@@ -1122,9 +1122,9 @@ fn test_dunbar_number_guard() {
     let connections: Vec<Value> = (0..50)
         .map(|i| {
             let mut c = ValueMap::default();
-            c.insert("requesterId".to_string(), Value::string("user-1"));
+            c.insert("requesterId".into(), Value::string("user-1"));
             c.insert(
-                "status".to_string(),
+                "status".into(),
                 Value::string(if i < 30 { "accepted" } else { "pending" }.to_string()),
             );
             Value::object(c)
@@ -1132,7 +1132,7 @@ fn test_dunbar_number_guard() {
         .collect();
 
     let mut user = ValueMap::default();
-    user.insert("id".to_string(), Value::string("user-1"));
+    user.insert("id".into(), Value::string("user-1"));
 
     let ctx = BindingContextBuilder::new()
         .user(Value::object(user))

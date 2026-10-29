@@ -20,8 +20,8 @@ struct Cell {
 
 fn cell_value(c: Cell) -> Value {
     let mut m = ValueMap::default();
-    m.insert("x".to_string(), Value::Number(c.x as f64));
-    m.insert("y".to_string(), Value::Number(c.y as f64));
+    m.insert("x".into(), Value::Number(c.x as f64));
+    m.insert("y".into(), Value::Number(c.y as f64));
     Value::object(m)
 }
 

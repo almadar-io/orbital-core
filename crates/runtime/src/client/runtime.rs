@@ -289,8 +289,8 @@ mod tests {
         let runtime = OrbitalClientRuntime::new();
 
         let mut data = ValueMap::default();
-        data.insert("id".to_string(), Value::string("test-1"));
-        data.insert("value".to_string(), Value::Number(42.0));
+        data.insert("id".into(), Value::string("test-1"));
+        data.insert("value".into(), Value::Number(42.0));
 
         runtime.cache_entity("Counter", "test-1", Value::object(data));
 
@@ -307,8 +307,8 @@ mod tests {
         let runtime = OrbitalClientRuntime::new();
 
         let mut user = ValueMap::default();
-        user.insert("id".to_string(), Value::string("user-1"));
-        user.insert("name".to_string(), Value::string("Test User"));
+        user.insert("id".into(), Value::string("user-1"));
+        user.insert("name".into(), Value::string("Test User"));
 
         runtime.set_current_user(Value::object(user));
 

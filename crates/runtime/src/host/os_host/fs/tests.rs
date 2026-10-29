@@ -581,7 +581,7 @@ fn stat_reports_the_contract_fields() {
     write(&fx.p("f"), b"12345");
     let stat = fx.ok(OsOp::Stat, vec![fx.s("f")]);
     let Value::Object(map) = &stat else { panic!() };
-    let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+    let keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
     assert_eq!(
         keys,
         ["kind", "size", "mode", "uid", "gid", "atime", "mtime", "ctime"]

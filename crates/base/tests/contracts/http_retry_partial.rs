@@ -75,7 +75,7 @@ fn equivalent(value: serde_json::Value, expand_items: bool) {
     };
     let fields: Vec<_> = map
         .iter()
-        .map(|(name, value)| (name.clone(), concrete_operand(value.clone(), expand_items)))
+        .map(|(name, value)| (name.to_string(), concrete_operand(value.clone(), expand_items)))
         .collect();
     assert_eq!(
         HttpRetry::check_partial(&fields),
@@ -149,7 +149,7 @@ fn concrete_invalid_policies_preserve_runtime_error_order_and_message() {
         };
         let fields: Vec<_> = map
             .iter()
-            .map(|(name, value)| (name.clone(), RetryOperand::Literal(value.clone())))
+            .map(|(name, value)| (name.to_string(), RetryOperand::Literal(value.clone())))
             .collect();
         let expected = HttpRefusal::Invalid(message.into());
         assert_eq!(parse_retry(&value), Err(expected.clone()));
@@ -557,7 +557,7 @@ fn exact_legacy_two_to_64_delay_saturates_but_the_next_float_is_rejected() {
         };
         let fields: Vec<_> = map
             .iter()
-            .map(|(name, value)| (name.clone(), RetryOperand::Literal(value.clone())))
+            .map(|(name, value)| (name.to_string(), RetryOperand::Literal(value.clone())))
             .collect();
         assert_eq!(parse_retry(&value), Ok(expected.clone()));
         assert_eq!(HttpRetry::check_partial(&fields), Ok(Some(expected)));
@@ -577,7 +577,7 @@ fn exact_legacy_two_to_64_delay_saturates_but_the_next_float_is_rejected() {
         };
         let fields: Vec<_> = map
             .iter()
-            .map(|(name, value)| (name.clone(), RetryOperand::Literal(value.clone())))
+            .map(|(name, value)| (name.to_string(), RetryOperand::Literal(value.clone())))
             .collect();
         let expected = HttpRefusal::Invalid(
             if field == "backoffMs" {
@@ -597,23 +597,23 @@ fn typed_tuples_preserve_known_length_and_each_known_or_unknown_slot() {
     deferred(schedule(
         literal(json!(2)),
         RetryOperand::Typed(OirType::Tuple {
-            items: vec![OirType::String, OirType::Json],
+            items: vec![OirType::String, OirType::erased()],
         }),
         RetryOperand::Typed(OirType::Tuple {
-            items: vec![OirType::Number, OirType::Json],
+            items: vec![OirType::Number, OirType::erased()],
         }),
     ));
     invalid(schedule(
         literal(json!(2)),
         RetryOperand::Unresolved,
         RetryOperand::Typed(OirType::Tuple {
-            items: vec![OirType::Json, OirType::String],
+            items: vec![OirType::erased(), OirType::String],
         }),
     ));
     invalid(backoff(
         RetryOperand::Unresolved,
         RetryOperand::Typed(OirType::Tuple {
-            items: vec![OirType::Json, OirType::Boolean],
+            items: vec![OirType::erased(), OirType::Boolean],
         }),
         RetryOperand::Unresolved,
     ));
@@ -621,7 +621,7 @@ fn typed_tuples_preserve_known_length_and_each_known_or_unknown_slot() {
         literal(json!(2)),
         RetryOperand::Unresolved,
         RetryOperand::Typed(OirType::Tuple {
-            items: vec![OirType::Json],
+            items: vec![OirType::erased()],
         }),
     ));
     invalid(schedule(

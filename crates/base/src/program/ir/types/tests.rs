@@ -3,14 +3,14 @@ use super::*;
 #[test]
 fn a_payload_field_of_a_std_value_type_has_the_type_an_entity_field_of_it_has() {
     for (word, ty) in [("orbital", OirType::Orbital), ("behavior", OirType::Behavior), ("trait", OirType::Trait)] {
-        assert_eq!(payload_type_shape(word), ty, "{word}");
-        assert_eq!(payload_type_shape(&format!("[{word}]")), OirType::array(ty.clone()), "[{word}]");
+        assert_eq!(payload_type_shape(word).unwrap(), ty, "{word}");
+        assert_eq!(payload_type_shape(&format!("[{word}]")).unwrap(), OirType::array(ty.clone()), "[{word}]");
         let field: crate::schema::FieldDefinition =
             serde_json::from_value(serde_json::json!({ "name": "f", "type": word })).unwrap();
-        assert_eq!(payload_type_shape(word), field_shape(&field), "payload and entity agree on {word}");
+        assert_eq!(payload_type_shape(word).unwrap(), field_shape(&field).unwrap(), "payload and entity agree on {word}");
     }
     assert_eq!(
-        payload_type_shape("Order"),
+        payload_type_shape("Order").unwrap(),
         OirType::Reference { entity: "Order".to_string() },
         "control: a program name stays a reference"
     );
@@ -19,11 +19,11 @@ fn a_payload_field_of_a_std_value_type_has_the_type_an_entity_field_of_it_has() 
 #[test]
 fn a_program_type_spelled_like_a_builtin_in_another_case_stays_the_programs_type() {
     for name in ["Orbital", "Trait", "Node", "File", "String", "Event"] {
-        assert_eq!(payload_type_shape(name), OirType::Reference { entity: name.to_string() }, "{name}");
+        assert_eq!(payload_type_shape(name).unwrap(), OirType::Reference { entity: name.to_string() }, "{name}");
     }
-    assert_eq!(payload_type_shape("CallKey"), OirType::CallKey, "control: a mixed-case builtin is spelled as the language spells it");
-    assert_eq!(payload_type_shape("SExpr"), OirType::SExpr, "control");
-    assert_eq!(payload_type_shape("orbital"), OirType::Orbital, "control: the builtin itself");
+    assert_eq!(payload_type_shape("CallKey").unwrap(), OirType::CallKey, "control: a mixed-case builtin is spelled as the language spells it");
+    assert_eq!(payload_type_shape("SExpr").unwrap(), OirType::SExpr, "control");
+    assert_eq!(payload_type_shape("orbital").unwrap(), OirType::Orbital, "control: the builtin itself");
 }
 
 #[test]
@@ -34,10 +34,10 @@ fn payload_array_item_type_distinguishes_lists_from_tuples() {
     for non_array in ["[string,number]", "[string,[number]]", "Map<string,number>", "string"] {
         assert_eq!(payload_array_item_type(non_array), None, "{non_array}");
     }
-    assert_eq!(payload_type_shape("[string]"), OirType::array(OirType::String));
+    assert_eq!(payload_type_shape("[string]").unwrap(), OirType::array(OirType::String));
     let tuple = OirType::Tuple { items: vec![OirType::String, OirType::Number] };
-    assert_eq!(payload_type_shape("[string,number]"), tuple);
-    assert_eq!(payload_type_shape("[[string,number]]"), OirType::array(tuple));
+    assert_eq!(payload_type_shape("[string,number]").unwrap(), tuple);
+    assert_eq!(payload_type_shape("[[string,number]]").unwrap(), OirType::array(tuple));
 }
 
 #[test]
@@ -49,8 +49,8 @@ fn declared_shape_resolver_keeps_nullable_recursive_aliases_and_excludes_unrelat
         ("Unused", OirType::Boolean),
     ]);
     let shape = DeclaredShape::with_resolver(Some("Alias".into()), reference("Alias"), |name| {
-        definitions.get(name).cloned()
-    });
+        Ok(definitions.get(name).cloned())
+    }).unwrap();
     assert_eq!(
         shape.named.keys().map(String::as_str).collect::<Vec<_>>(),
         vec!["Alias", "V"]
@@ -116,7 +116,7 @@ fn declared_shape_contract_version_is_explicit_and_legacy_remains_unmarked() {
     assert_eq!(serde_json::to_value(&current).unwrap()["version"], 1);
     assert!(DeclaredShape::parse(r#"{"version":2,"type":{"kind":"string"}}"#).is_none());
     let aliases = std::collections::BTreeMap::new();
-    let built = DeclaredShape::with_named(None, OirType::String, &aliases);
+    let built = DeclaredShape::with_named(None, OirType::String, &aliases).unwrap();
     assert!(serde_json::to_value(&built).unwrap().get("version").is_none());
     let legacy: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({"name":"old","orbitals":[]})).unwrap();
     assert!(serde_json::to_value(legacy).unwrap().get("typeContractVersion").is_none());
@@ -136,7 +136,7 @@ fn payload_container_items_preserve_explicit_nullable_value_contract() {
             "type":container, "nullable":false,
             "items":{"type":"string","nullable":true}
         })).unwrap();
-        let shape = serde_json::to_value(payload_field_shape(&field)).unwrap();
+        let shape = serde_json::to_value(payload_field_shape(&field).unwrap()).unwrap();
         assert_eq!(shape[key]["kind"], "optional", "{container}: {shape}");
         assert_eq!(shape[key]["inner"]["kind"], "string");
         if key == "value" { assert_eq!(shape["key"]["kind"], "string"); }
@@ -157,7 +157,7 @@ fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
     let wire = serde_json::to_value(&field).unwrap();
     assert_eq!(wire["nullable"], false);
     assert_eq!(wire["additionalProperties"]["nullable"], true);
-    let shape = serde_json::to_value(field_shape(&field)).unwrap();
+    let shape = serde_json::to_value(field_shape(&field).unwrap()).unwrap();
     assert_eq!(shape["kind"], "struct");
     assert_eq!(shape["additional"]["kind"], "optional");
     assert_eq!(shape["additional"]["inner"]["kind"], "number");
@@ -174,10 +174,10 @@ fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
     let payload_wire = serde_json::to_value(&payload).unwrap();
     assert_eq!(payload_wire["nullable"], false);
     assert_eq!(payload_wire["additionalProperties"]["nullable"], true);
-    let payload_shape = serde_json::to_value(payload_field_shape(&payload)).unwrap();
+    let payload_shape = serde_json::to_value(payload_field_shape(&payload).unwrap()).unwrap();
     assert_eq!(payload_shape["additional"]["kind"], "optional");
     let catchall = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::TypeRef { name: "Cell".into() })) };
-    let closed = DeclaredShape::with_resolver(None, catchall, |name| (name == "Cell").then_some(OirType::String));
+    let closed = DeclaredShape::with_resolver(None, catchall, |name| Ok((name == "Cell").then_some(OirType::String))).unwrap();
     assert_eq!(closed.named.get("Cell"), Some(&OirType::String));
     let mut variable = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Var { name: "cell".into() })) };
     assert!(variable.substitute_type_vars(&std::collections::BTreeMap::from([("cell".into(), OirType::String)])));
@@ -342,6 +342,20 @@ fn page_initial_marker_round_trips_and_is_omitted_when_unset() {
 }
 
 #[test]
+fn page_not_found_marker_round_trips_is_omitted_when_unset_and_selects_the_declared_page() {
+    let mut page = OirPage::new("Gone", "/gone");
+    assert!(!serde_json::to_string(&page).unwrap().contains("isNotFound"));
+    page.is_not_found = true;
+    let json = serde_json::to_string(&page).unwrap();
+    assert!(json.contains("\"isNotFound\":true"));
+    assert!(serde_json::from_str::<OirPage>(&json).unwrap().is_not_found);
+    let mut module = module_of(&[("A", false), ("B", false)]);
+    assert!(module.not_found_page().is_none(), "control: none declared");
+    module.pages[1].is_not_found = true;
+    assert_eq!(module.not_found_page().map(|p| p.name.as_str()), Some("B"));
+}
+
+#[test]
 fn test_oir_type_array() {
     let arr_type = OirType::array(OirType::String);
     assert!(matches!(arr_type, OirType::Array { .. }));
@@ -402,25 +416,25 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
     typed.items = Some(Box::new(bare_field(FieldType::String)));
     let entity = OirType::Reference { entity: "@entity".to_string() };
     assert_eq!(
-        field_shape(&typed),
+        field_shape(&typed).unwrap(),
         OirType::FieldRef { record: Box::new(entity.clone()), value: Some(Box::new(OirType::String)) }
     );
     // control: a field knob that names any field has no value type.
     typed.items = None;
     assert_eq!(
-        field_shape(&typed),
+        field_shape(&typed).unwrap(),
         OirType::FieldRef { record: Box::new(entity), value: None }
     );
     // a type variable record is a variable; an alias record is its shape.
     typed.record = Some("$r".to_string());
     assert_eq!(
-        field_shape(&typed),
-        OirType::FieldRef { record: Box::new(OirType::Var { name: "r".to_string() }), value: None }
+        field_shape(&typed).unwrap(),
+        OirType::FieldRef { record: Box::new(OirType::Var { name: "r".into() }), value: None }
     );
     let mut alias = bare_field(FieldType::Field);
     alias.record = Some("Point".to_string());
     alias.properties = Some(crate::collections::IndexMap::from([("x".to_string(), bare_field(FieldType::Number))]));
-    let OirType::FieldRef { record, .. } = field_shape(&alias) else { panic!("a field reference") };
+    let OirType::FieldRef { record, .. } = field_shape(&alias).unwrap() else { panic!("a field reference") };
     assert!(matches!(*record, OirType::Struct { ref fields, .. } if fields.len() == 1 && fields[0].name == "x"));
     assert_eq!(serde_json::to_string(&FieldType::Field).unwrap(), "\"field\"");
     assert_eq!(serde_json::from_str::<FieldType>("\"field\"").unwrap(), FieldType::Field);
@@ -429,11 +443,15 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
 }
 
 #[test]
-fn a_bare_payload_object_has_a_record_shape_while_json_stays_unconstrained() {
+fn a_bare_payload_object_has_a_record_shape_while_json_has_no_shape() {
     let object: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "object"})).unwrap();
     let json: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "json"})).unwrap();
-    assert_eq!(payload_field_shape(&object), OirType::Struct { fields: Default::default(), additional: None });
-    assert_eq!(payload_field_shape(&json), OirType::Json);
+    assert_eq!(payload_field_shape(&object).unwrap(), OirType::Struct { fields: Default::default(), additional: None });
+    assert_eq!(
+        payload_field_shape(&json),
+        Err(ShapeError::at(ShapeGap::GenericText("json".into()))),
+        "json is not a type"
+    );
 }
 
 #[test]
@@ -443,40 +461,40 @@ fn field_shape_retains_closed_string_and_enum_values_through_nullable_containers
         let mut field = bare_field(kind);
         field.values = Some(vec!["ready".into(), "done".into()]);
         field.nullable = Some(false);
-        assert_eq!(field_shape(&field), expected);
-        let OirType::Enum { name } = field_shape(&field) else { panic!("closed values retained") };
+        assert_eq!(field_shape(&field).unwrap(), expected);
+        let OirType::Enum { name } = field_shape(&field).unwrap() else { panic!("closed values retained") };
         let members = crate::type_compat::literal_union_members(&name).unwrap();
         assert!(members.iter().any(|member| member == "ready"));
         assert!(!members.iter().any(|member| member == "wrong"));
         field.nullable = Some(true);
         let nullable = OirType::optional(expected.clone());
-        assert_eq!(field_shape(&field), nullable);
+        assert_eq!(field_shape(&field).unwrap(), nullable);
         let mut map = bare_field(FieldType::Object);
         map.items = Some(Box::new(field.clone()));
-        assert_eq!(field_shape(&map), OirType::map(OirType::String, nullable.clone()));
+        assert_eq!(field_shape(&map).unwrap(), OirType::map(OirType::String, nullable.clone()));
         let mut record = bare_field(FieldType::Object);
         record.properties = Some(crate::collections::IndexMap::new());
         record.additional_properties = Some(Box::new(field));
-        assert_eq!(field_shape(&record), OirType::Struct { fields: Default::default(), additional: Some(Box::new(nullable)) });
+        assert_eq!(field_shape(&record).unwrap(), OirType::Struct { fields: Default::default(), additional: Some(Box::new(nullable)) });
     }
-    assert_eq!(field_shape(&bare_field(FieldType::String)), OirType::String);
-    assert_eq!(field_shape(&bare_field(FieldType::Enum)), OirType::enum_type("Enum"));
+    assert_eq!(field_shape(&bare_field(FieldType::String)).unwrap(), OirType::String);
+    assert_eq!(field_shape(&bare_field(FieldType::Enum)).unwrap(), OirType::enum_type("Enum"));
 }
 
 #[test]
 fn field_shape_primitive() {
-    assert_eq!(field_shape(&bare_field(FieldType::String)), OirType::String);
-    assert_eq!(field_shape(&bare_field(FieldType::Number)), OirType::Number);
-    assert_eq!(field_shape(&bare_field(FieldType::Money)), OirType::Money);
+    assert_eq!(field_shape(&bare_field(FieldType::String)).unwrap(), OirType::String);
+    assert_eq!(field_shape(&bare_field(FieldType::Number)).unwrap(), OirType::Number);
+    assert_eq!(field_shape(&bare_field(FieldType::Money)).unwrap(), OirType::Money);
 }
 
 #[test]
 fn field_shape_int_is_integer_and_number_stays_number() {
-    assert_eq!(field_shape(&bare_field(FieldType::Int)), OirType::Integer);
+    assert_eq!(field_shape(&bare_field(FieldType::Int)).unwrap(), OirType::Integer);
     let mut nullable = bare_field(FieldType::Int);
     nullable.nullable = Some(true);
-    assert_eq!(field_shape(&nullable), OirType::optional(OirType::Integer));
-    assert_eq!(field_shape(&bare_field(FieldType::Number)), OirType::Number);
+    assert_eq!(field_shape(&nullable).unwrap(), OirType::optional(OirType::Integer));
+    assert_eq!(field_shape(&bare_field(FieldType::Number)).unwrap(), OirType::Number);
 }
 
 #[test]
@@ -484,7 +502,7 @@ fn field_shape_array_recurses_into_items() {
     let mut f = bare_field(FieldType::Array);
     f.items = Some(Box::new(bare_field(FieldType::String)));
     assert_eq!(
-        field_shape(&f),
+        field_shape(&f).unwrap(),
         OirType::Array {
             inner: Box::new(OirType::String)
         }
@@ -492,13 +510,10 @@ fn field_shape_array_recurses_into_items() {
 }
 
 #[test]
-fn field_shape_bare_array_is_array_of_json() {
-    // No `items` at all — the honest "no element information" shape.
+fn field_shape_bare_array_has_no_shape() {
     assert_eq!(
         field_shape(&bare_field(FieldType::Array)),
-        OirType::Array {
-            inner: Box::new(OirType::Json)
-        }
+        Err(ShapeError::at(ShapeGap::ArrayWithoutItems))
     );
 }
 
@@ -509,7 +524,7 @@ fn field_shape_object_with_properties_is_the_struct_of_them() {
     props.insert("label".to_string(), bare_field(FieldType::String));
     props.insert("count".to_string(), bare_field(FieldType::Number));
     f.properties = Some(props);
-    let OirType::Struct { fields, .. } = field_shape(&f) else {
+    let OirType::Struct { fields, .. } = field_shape(&f).unwrap() else {
         panic!("an object with properties is a struct");
     };
     let named: Vec<(&str, &OirType)> = fields.iter().map(|f| (f.name.as_str(), &f.field_type)).collect();
@@ -520,7 +535,7 @@ fn field_shape_object_with_properties_is_the_struct_of_them() {
 fn field_shape_object_with_items_is_a_map_of_the_item_type() {
     let mut f = bare_field(FieldType::Object);
     f.items = Some(Box::new(bare_field(FieldType::Number)));
-    assert_eq!(field_shape(&f), OirType::map(OirType::String, OirType::Number));
+    assert_eq!(field_shape(&f).unwrap(), OirType::map(OirType::String, OirType::Number));
 }
 
 #[test]
@@ -532,7 +547,7 @@ fn field_shape_keeps_a_recursive_back_reference_as_the_type_it_names() {
     children.items = Some(Box::new(back.clone()));
     assert_eq!(back.by_name_reference(), Some("Node"));
     assert_eq!(
-        field_shape(&children),
+        field_shape(&children).unwrap(),
         OirType::array(OirType::TypeRef { name: "Node".to_string() })
     );
 }
@@ -544,12 +559,16 @@ fn field_shape_of_a_union_carries_its_variants_sorted() {
     props.insert("string".to_string(), bare_field(FieldType::String));
     props.insert("number".to_string(), bare_field(FieldType::Number));
     union.properties = Some(props);
-    let OirType::Union { variants } = field_shape(&union) else {
+    let OirType::Union { variants } = field_shape(&union).unwrap() else {
         panic!("a union with variants is a union");
     };
     let named: Vec<(&str, &OirType)> = variants.iter().map(|v| (v.name.as_str(), &v.field_type)).collect();
     assert_eq!(named, vec![("number", &OirType::Number), ("string", &OirType::String)]);
-    assert_eq!(field_shape(&bare_field(FieldType::Union)), OirType::Json, "no variants, no shape");
+    assert_eq!(
+        field_shape(&bare_field(FieldType::Union)),
+        Err(ShapeError::at(ShapeGap::UnionWithoutVariants)),
+        "no variants, no shape"
+    );
 }
 
 #[test]
@@ -574,9 +593,10 @@ fn field_shape_relation_with_definition_is_reference() {
         entity_id: None,
         cardinality: None,
         on_delete: None,
+        display: None,
     });
     assert_eq!(
-        field_shape(&f),
+        field_shape(&f).unwrap(),
         OirType::Reference {
             entity: "Article".to_string()
         }
@@ -590,6 +610,7 @@ fn relation_field(cardinality: Option<crate::schema::types::Cardinality>) -> Fie
         entity_id: None,
         cardinality,
         on_delete: None,
+        display: None,
     });
     f
 }
@@ -599,7 +620,7 @@ fn field_shape_to_many_relation_is_array_of_reference() {
     use crate::schema::types::Cardinality::*;
     for c in [Many, OneToMany, ManyToMany] {
         assert_eq!(
-            field_shape(&relation_field(Some(c))),
+            field_shape(&relation_field(Some(c))).unwrap(),
             OirType::array(OirType::reference("Revision"))
         );
     }
@@ -611,7 +632,7 @@ fn field_shape_intrinsic_to_many_relation_is_array_of_row() {
     for c in [Many, OneToMany, ManyToMany] {
         let mut f = relation_field(Some(c));
         f.intrinsic = Some(true);
-        assert_eq!(field_shape(&f), OirType::array(OirType::row("Revision")));
+        assert_eq!(field_shape(&f).unwrap(), OirType::array(OirType::row("Revision")));
     }
 }
 
@@ -620,7 +641,7 @@ fn field_shape_explicitly_non_intrinsic_to_many_relation_stays_ids() {
     let mut f = relation_field(Some(crate::schema::types::Cardinality::OneToMany));
     f.intrinsic = Some(false);
     assert_eq!(
-        field_shape(&f),
+        field_shape(&f).unwrap(),
         OirType::array(OirType::reference("Revision"))
     );
 }
@@ -630,7 +651,7 @@ fn field_shape_explicitly_non_intrinsic_to_many_relation_stays_ids() {
 fn field_shape_intrinsic_to_one_relation_is_a_row() {
     let mut f = relation_field(Some(crate::schema::types::Cardinality::ManyToOne));
     f.intrinsic = Some(true);
-    assert_eq!(field_shape(&f), OirType::row("Revision"));
+    assert_eq!(field_shape(&f).unwrap(), OirType::row("Revision"));
 }
 
 #[test]
@@ -651,15 +672,42 @@ fn field_shape_to_one_relation_stays_reference() {
     use crate::schema::types::Cardinality::*;
     for c in [None, Some(One), Some(ManyToOne)] {
         assert_eq!(
-            field_shape(&relation_field(c)),
+            field_shape(&relation_field(c)).unwrap(),
             OirType::reference("Revision")
         );
     }
 }
 
 #[test]
-fn field_shape_relation_without_definition_degrades_to_json() {
-    assert_eq!(field_shape(&bare_field(FieldType::Relation)), OirType::Json);
+fn field_shape_relation_without_definition_has_no_shape() {
+    assert_eq!(field_shape(&bare_field(FieldType::Relation)), Err(ShapeError::at(ShapeGap::RelationWithoutEntity)));
+}
+
+#[test]
+fn a_position_without_a_shape_is_a_typed_error_naming_where() {
+    let field = |json: serde_json::Value| -> FieldDefinition { serde_json::from_value(json).unwrap() };
+    let bare_object = field(serde_json::json!({ "type": "object" }));
+    assert_eq!(field_shape(&bare_object), Err(ShapeError::at(ShapeGap::ObjectWithoutShape)));
+    let bare_array = field(serde_json::json!({ "type": "array" }));
+    assert_eq!(field_shape(&bare_array), Err(ShapeError::at(ShapeGap::ArrayWithoutItems)));
+    let nested = field(serde_json::json!({
+        "type": "object",
+        "properties": { "rows": { "type": "array", "items": { "type": "object", "properties": { "cell": { "type": "object" } } } } }
+    }));
+    let error = field_shape(&nested).unwrap_err();
+    assert_eq!(error.gap, ShapeGap::ObjectWithoutShape);
+    assert_eq!(error.path, vec!["rows".to_string(), "[]".to_string(), "cell".to_string()]);
+    assert_eq!(error.to_string(), "no declared shape at `rows.[].cell`: an object with no properties, items or additionalProperties");
+    let control = field(serde_json::json!({
+        "type": "object",
+        "properties": { "rows": { "type": "array", "items": { "type": "object", "properties": { "cell": { "type": "string" } } } } }
+    }));
+    assert!(field_shape(&control).is_ok(), "control: every position declares its shape");
+    for text in ["array", "list", "json", "tensor", ""] {
+        assert!(payload_type_shape(text).is_err(), "{text:?}");
+    }
+    assert_eq!(payload_type_shape("[array]").unwrap_err().path, vec!["[]".to_string()]);
+    assert!(payload_type_shape("[string]").is_ok(), "control: a typed list has a shape");
 }
 
 #[test]

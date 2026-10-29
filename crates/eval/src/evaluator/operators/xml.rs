@@ -193,7 +193,7 @@ fn to_value(node: Node) -> Value {
     }
     let mut object = ValueMap::default();
     for (key, value) in node.attrs {
-        object.insert(format!("@{key}"), Value::string(value));
+        object.insert(format!("@{key}").into(), Value::string(value));
     }
     let leaf_or_mixed = node.children.is_empty() || own_has_text;
     for (name, child) in node.children {
@@ -205,12 +205,12 @@ fn to_value(node: Node) -> Value {
                 *existing = Value::array(vec![first, value]);
             }
             None => {
-                object.insert(name, value);
+                object.insert(name.into(), value);
             }
         }
     }
     if leaf_or_mixed && !text.is_empty() {
-        object.insert("#text".to_string(), Value::string(text));
+        object.insert("#text".into(), Value::string(text));
     }
     Value::object(object)
 }

@@ -615,7 +615,7 @@ mod tests {
                     op: OsOp::TcpConnect,
                     ..
                 } => IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
-                    "sock".to_string(),
+                    "sock".into(),
                     Value::Number(1.0),
                 )])))),
                 IoRequest::Os {
@@ -630,7 +630,7 @@ mod tests {
                     self.server.receive(&bytes);
                     self.sent.push(bytes);
                     IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
-                        "bytes".to_string(),
+                        "bytes".into(),
                         Value::Number(0.0),
                     )]))))
                 }
@@ -646,10 +646,10 @@ mod tests {
                     assert!(!data.is_empty(), "the client read with nothing to read");
                     IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([
                         (
-                            "data".to_string(),
+                            "data".into(),
                             Value::String(codec::base64_encode(&data).into()),
                         ),
-                        ("eof".to_string(), Value::Bool(false)),
+                        ("eof".into(), Value::Bool(false)),
                     ]))))
                 }
                 IoRequest::Os {

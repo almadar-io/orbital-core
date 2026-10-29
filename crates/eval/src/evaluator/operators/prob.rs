@@ -186,7 +186,7 @@ fn run_model(expr: &SExpression, ctx: &mut BindingContext) -> EvalResult {
                         Value::Object(map) => map.clone(),
                         _ => ValueMap::default().into(),
                     };
-                    entity.insert(field.to_string(), value);
+                    entity.insert(field.to_string().into(), value);
                     ctx.set_entity(Value::Object(entity));
                 }
             }
@@ -263,13 +263,13 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
     let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
     let rate = count / n;
     let mut out = ValueMap::default();
-    out.insert("mean".to_string(), Value::Number(mean));
-    out.insert("variance".to_string(), Value::Number(variance));
+    out.insert("mean".into(), Value::Number(mean));
+    out.insert("variance".into(), Value::Number(variance));
     out.insert(
-        "samples".to_string(),
+        "samples".into(),
         Value::Array(samples.into_iter().map(Value::Number).collect()),
     );
-    out.insert("acceptRate".to_string(), Value::Number(rate));
+    out.insert("acceptRate".into(), Value::Number(rate));
     Ok(Value::object(out))
 });
 
@@ -308,8 +308,8 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     }
     let mut out = ValueMap::default();
     if samples.is_empty() {
-        out.insert("binEdges".to_string(), Value::array(vec![]));
-        out.insert("counts".to_string(), Value::array(vec![]));
+        out.insert("binEdges".into(), Value::array(vec![]));
+        out.insert("counts".into(), Value::array(vec![]));
         return Ok(Value::object(out));
     }
     let min = samples.iter().copied().fold(f64::INFINITY, f64::min);
@@ -325,7 +325,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
         counts[idx] += 1.0;
     }
     out.insert(
-        "binEdges".to_string(),
+        "binEdges".into(),
         Value::Array(
             (0..=bin_count)
                 .map(|i| Value::Number(min + i as f64 * width))
@@ -333,7 +333,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
         ),
     );
     out.insert(
-        "counts".to_string(),
+        "counts".into(),
         Value::Array(counts.into_iter().map(Value::Number).collect()),
     );
     Ok(Value::object(out))

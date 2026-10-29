@@ -471,7 +471,7 @@ pub fn mode_name(mock: bool) -> &'static str {
 }
 
 fn object(pairs: Vec<(&str, Value)>) -> Value {
-    Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Value::Object(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
 
 fn text(value: &str) -> Value {

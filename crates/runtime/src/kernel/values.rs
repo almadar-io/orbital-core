@@ -64,7 +64,7 @@ pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
         SExpression::Object(obj) => {
             let map: ValueMap = obj
                 .iter()
-                .map(|(k, v)| (k.to_string(), sexpr_to_value(v)))
+                .map(|(k, v)| (k.clone(), sexpr_to_value(v)))
                 .collect();
             Value::object(map)
         }

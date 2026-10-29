@@ -46,8 +46,11 @@ fn done(progress: ServerProgress) -> EventResponse {
 }
 
 fn name_in(response: &EventResponse) -> serde_json::Value {
-    let rows = serde_json::to_value(response.entity_by_trait.clone().unwrap_or_default()).unwrap();
-    rows["Editor"]["seen"].clone()
+    let mut frames = std::collections::BTreeMap::new();
+    if let Some(delta) = &response.frames {
+        delta.fold_into(&mut frames);
+    }
+    serde_json::to_value(frames).unwrap()["Editor"]["seen"].clone()
 }
 
 #[test]
@@ -124,7 +127,9 @@ fn exec_dist_9_a_mount_reviving_an_ended_session_keeps_the_carried_copy_and_runs
     done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
     server.close_session_stream(stream);
     let revived = done(server.start("Main", mount("tab-a", Some("kept"))).unwrap());
-    let rows = serde_json::to_value(revived.entity_by_trait.clone().unwrap_or_default()).unwrap();
+    let mut frames = std::collections::BTreeMap::new();
+    revived.frames.as_ref().expect("the revived mount is sealed").fold_into(&mut frames);
+    let rows = serde_json::to_value(frames).unwrap();
     assert_eq!(rows["Editor"]["name"], json!("kept"), "the carried row is echoed");
     assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("kept"));
 }

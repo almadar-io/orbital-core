@@ -106,26 +106,26 @@ impl DeliveryRefused {
     pub fn payload(&self) -> Value {
         let mut to = ValueMap::default();
         to.insert(
-            "instance".to_string(),
+            "instance".into(),
             Value::string(self.to.instance.clone()),
         );
         to.insert(
-            "orbital".to_string(),
+            "orbital".into(),
             Value::string(self.to.orbital.clone()),
         );
         if let Some(trait_name) = &self.to.trait_name {
-            to.insert("trait".to_string(), Value::string(trait_name.clone()));
+            to.insert("trait".into(), Value::string(trait_name.clone()));
         }
         let mut payload = ValueMap::default();
-        payload.insert("id".to_string(), Value::string(self.id.clone()));
-        payload.insert("to".to_string(), Value::object(to));
-        payload.insert("event".to_string(), Value::string(self.event.clone()));
+        payload.insert("id".into(), Value::string(self.id.clone()));
+        payload.insert("to".into(), Value::object(to));
+        payload.insert("event".into(), Value::string(self.event.clone()));
         payload.insert(
-            "reason".to_string(),
+            "reason".into(),
             Value::string(self.reason.as_str().to_string()),
         );
         payload.insert(
-            "causalId".to_string(),
+            "causalId".into(),
             Value::string(self.causal_id.clone()),
         );
         Value::object(payload)

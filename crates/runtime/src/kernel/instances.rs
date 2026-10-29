@@ -22,18 +22,18 @@ pub fn instance_rows(
         .map(|instance| {
             let mut row: ValueMap = instance
                 .iter()
-                .map(|(key, sexpr)| (key.to_string(), super::kernel::sexpr_to_value(sexpr)))
+                .map(|(key, sexpr)| (key.to_string().into(), super::kernel::sexpr_to_value(sexpr)))
                 .collect();
             if row.get("id").is_none_or(is_blank) {
                 minted += 1;
                 row.insert(
-                    "id".to_string(),
+                    "id".into(),
                     Value::string(mock_row_id(entity_name, minted)),
                 );
             }
             for key in ["createdAt", "updatedAt"] {
                 if row.get(key).is_none_or(is_blank) {
-                    row.insert(key.to_string(), Value::string(now_iso.to_string()));
+                    row.insert(key.to_string().into(), Value::string(now_iso.to_string()));
                 }
             }
             Value::object(row)

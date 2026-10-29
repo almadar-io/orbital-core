@@ -310,7 +310,7 @@ pub fn stamp_owner(
         if let Some(map) = row.as_object_mut() {
             for col in &cols {
                 if stamps_row(col, i) {
-                    map.insert((*col).to_string(), Value::string(viewer_id.to_string()));
+                    map.insert((*col).to_string().into(), Value::string(viewer_id.to_string()));
                 }
             }
         }

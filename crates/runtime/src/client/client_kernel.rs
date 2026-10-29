@@ -222,7 +222,7 @@ impl ClientKernel {
         for emit in &ticked.emits {
             outcomes.extend(emit.dispatch.outcomes.iter().cloned());
         }
-        let mut settled = EventResponse::from_process_results(&outcomes, "", "");
+        let mut settled = self.embedded.kernel().response_for(&outcomes, "", "");
         settled.fold_rerenders(&ticked.rerenders);
         settled.emitted_events.clear();
         for emit in &ticked.emits {
@@ -422,11 +422,33 @@ impl ClientKernel {
                 .iter()
                 .flat_map(|(_, b)| already_delivered_from(&b.dispatch))
                 .collect();
-            self.embedded.kernel()
-                .apply_server_response(&response, &already)
-                .map_err(|e| BridgeError::Server(e.to_string()))?;
-            settled = settled.with_server_effect_results(&response);
+            settled = self.fold_answer(bridge.as_ref(), &response, &already, settled)?;
             settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
+        }
+        Ok(settled)
+    }
+
+    /// Fold a posted answer, then post and fold each leg the fold itself owes the host (an own continuation such as
+    /// a refetch after a persist's success), in order, until none is owed (EXEC-DIST-10).
+    fn fold_answer(
+        &self,
+        bridge: &dyn ServerBridge,
+        answer: &EventResponse,
+        already: &std::collections::HashSet<(String, String)>,
+        mut settled: EventResponse,
+    ) -> Result<EventResponse, BridgeError> {
+        let mut owed = std::collections::VecDeque::new();
+        let applied = self.embedded.apply_server_response(answer, already).map_err(BridgeError::Server)?;
+        owed.extend(applied.server_legs);
+        settled = settled.with_server_effect_results(answer);
+        while let Some(routed) = owed.pop_front() {
+            let next = bridge.send_request(&routed.orbital, &routed.leg)?;
+            let applied = self
+                .embedded
+                .apply_server_response(&next, &std::collections::HashSet::new())
+                .map_err(BridgeError::Server)?;
+            owed.extend(applied.server_legs);
+            settled = settled.with_server_effect_results(&next);
         }
         Ok(settled)
     }
@@ -469,10 +491,7 @@ impl ClientKernel {
             match dispatch.mode {
                 DispatchMode::RuntimeOptimistic => match posted {
                     Ok(server_response) if server_response.success => {
-                        self.embedded.kernel()
-                            .apply_server_response(&server_response, &already)
-                            .map_err(|e| BridgeError::Server(e.to_string()))?;
-                        settled = settled.with_server_effect_results(&server_response);
+                        settled = self.fold_answer(bridge.as_ref(), &server_response, &already, settled)?;
                         repainted(&mut settled);
                     }
                     Ok(mut server_response) => {
@@ -495,10 +514,7 @@ impl ClientKernel {
                     // propagate rather than silently presenting the unconfirmed local
                     // response.
                     let server_response = posted?;
-                    self.embedded.kernel()
-                        .apply_server_response(&server_response, &already)
-                        .map_err(|e| BridgeError::Server(e.to_string()))?;
-                    settled = settled.with_server_effect_results(&server_response);
+                    settled = self.fold_answer(bridge.as_ref(), &server_response, &already, settled)?;
                     repainted(&mut settled);
                 }
             }

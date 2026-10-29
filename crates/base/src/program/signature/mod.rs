@@ -31,13 +31,11 @@ use crate::type_compat::{oir_type_kind, sub};
 
 /// The slot of a run-time tuple whose value is null: it is absent, so it passes its declared type and binds nothing.
 pub fn absent_slot() -> OirType {
-    OirType::Optional {
-        inner: Box::new(OirType::Json),
-    }
+    OirType::absent_slot()
 }
 
 pub fn is_absent_slot(ty: &OirType) -> bool {
-    matches!(ty, OirType::Optional { inner } if matches!(**inner, OirType::Json))
+    ty.is_absent_slot()
 }
 
 /// What is known of one argument of a call.

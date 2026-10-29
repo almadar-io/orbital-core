@@ -1227,3 +1227,108 @@ fn a_wired_config_entry_is_not_a_declaration_whatever_type_it_carries() {
         "control: hand-written unknown wiring still reads as wiring"
     );
 }
+
+fn trait_json(extra: serde_json::Value) -> serde_json::Value {
+    let mut base = serde_json::json!({
+        "name": "Counter",
+        "linkedEntity": "Row",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "events": [],
+            "transitions": []
+        }
+    });
+    for (k, v) in extra.as_object().unwrap() {
+        base[k] = v.clone();
+    }
+    base
+}
+
+#[test]
+fn a_retired_trait_key_is_refused_with_its_replacement_and_a_control_parses() {
+    use serde_json::json;
+    let ok: TraitReference = serde_json::from_value(trait_json(json!({}))).unwrap();
+    assert!(matches!(ok, TraitReference::Inline(_)));
+    let ok_dispatch: TraitReference =
+        serde_json::from_value(trait_json(json!({ "dispatch": "client" }))).unwrap();
+    assert!(matches!(ok_dispatch, TraitReference::Inline(_)));
+
+    let category =
+        serde_json::from_value::<TraitReference>(trait_json(json!({ "category": "interaction" })))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        category.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY"),
+        "{category}"
+    );
+    assert!(
+        category.contains("`category`") && category.contains("`dispatch`"),
+        "{category}"
+    );
+    assert!(category.contains("Counter"), "{category}");
+
+    let scope =
+        serde_json::from_value::<TraitReference>(trait_json(json!({ "scope": "instance" })))
+            .unwrap_err()
+            .to_string();
+    assert!(
+        scope.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && scope.contains("`scope`"),
+        "{scope}"
+    );
+
+    let reference = serde_json::from_value::<TraitReference>(
+        json!({ "ref": "Std.Thing", "category": "lifecycle" }),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        reference.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY"),
+        "{reference}"
+    );
+}
+
+#[test]
+fn the_retired_key_scan_lists_each_occurrence_with_its_path() {
+    use serde_json::json;
+    let doc = json!({
+        "orbitals": [
+            { "name": "A", "traits": [
+                trait_json(json!({ "category": "interaction" })),
+                trait_json(json!({ "dispatch": "client" })),
+                { "ref": "Std.Thing", "scope": "collection" }
+            ]},
+            { "name": "B", "traits": [ trait_json(json!({ "category": "lifecycle", "scope": "instance" })) ] }
+        ]
+    });
+    let found = retired_trait_keys(&doc);
+    let rows: Vec<(String, &str)> = found.iter().map(|r| (r.path.clone(), r.key)).collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("orbitals[0].traits[0].category".to_string(), "category"),
+            ("orbitals[0].traits[2].scope".to_string(), "scope"),
+            ("orbitals[1].traits[0].category".to_string(), "category"),
+            ("orbitals[1].traits[0].scope".to_string(), "scope"),
+        ]
+    );
+    let clean = json!({ "orbitals": [ { "name": "A", "traits": [ trait_json(json!({})) ] } ] });
+    assert!(retired_trait_keys(&clean).is_empty());
+}
+
+#[test]
+fn an_unknown_trait_key_is_refused_and_a_known_one_is_not() {
+    use serde_json::json;
+    let err = serde_json::from_value::<TraitReference>(trait_json(json!({ "mystery": 1 })))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown field `mystery`"), "{err}");
+    let err = serde_json::from_value::<TraitReference>(json!({ "ref": "Std.Thing", "mystery": 1 }))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown field `mystery`"), "{err}");
+    let local = serde_json::from_value::<TraitReference>(trait_json(json!({ "local": true })))
+        .unwrap_err()
+        .to_string();
+    assert!(local.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && local.contains("`local`"), "{local}");
+    assert!(serde_json::from_value::<TraitReference>(trait_json(json!({ "dispatch": "client", "description": "d" }))).is_ok());
+}

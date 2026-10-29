@@ -53,7 +53,7 @@ fn text(s: &str) -> Value {
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     let mut map = ValueMap::default();
     for (key, value) in pairs {
-        map.insert(key.to_string(), value);
+        map.insert(key.to_string().into(), value);
     }
     Value::object(map)
 }
@@ -68,10 +68,10 @@ fn through_json<T: serde::Serialize>(value: &T) -> Value {
 /// A refusal the model is answered with: `{ ok: false, error }`.
 fn refusal(error: &str, issues: Option<Vec<Value>>) -> Value {
     let mut map = ValueMap::default();
-    map.insert("ok".to_string(), Value::Bool(false));
-    map.insert("error".to_string(), text(error));
+    map.insert("ok".into(), Value::Bool(false));
+    map.insert("error".into(), text(error));
     if let Some(issues) = issues {
-        map.insert("issues".to_string(), Value::array(issues));
+        map.insert("issues".into(), Value::array(issues));
     }
     Value::object(map)
 }
@@ -81,28 +81,28 @@ fn refusal(error: &str, issues: Option<Vec<Value>>) -> Value {
 pub fn reflect_input(input: &ExternalInput, payload: Option<&[PayloadField]>) -> Value {
     let payload = payload.unwrap_or(&input.payload_schema);
     let mut map = ValueMap::default();
-    map.insert("orbital".to_string(), text(&input.orbital));
-    map.insert("trait".to_string(), text(&input.trait_name));
-    map.insert("event".to_string(), text(&input.event));
+    map.insert("orbital".into(), text(&input.orbital));
+    map.insert("trait".into(), text(&input.trait_name));
+    map.insert("event".into(), text(&input.event));
     map.insert(
-        "address".to_string(),
+        "address".into(),
         text(&format!(
             "{}.{}.{}",
             input.orbital, input.trait_name, input.event
         )),
     );
     if let Some(description) = &input.description {
-        map.insert("description".to_string(), text(description));
+        map.insert("description".into(), text(description));
     }
     if let Some(synonyms) = &input.synonyms {
-        map.insert("synonyms".to_string(), text(synonyms));
+        map.insert("synonyms".into(), text(synonyms));
     }
     if let Some(tier) = &input.tier {
-        map.insert("tier".to_string(), text(tier));
+        map.insert("tier".into(), text(tier));
     }
-    map.insert("payloadSchema".to_string(), through_json(&payload));
+    map.insert("payloadSchema".into(), through_json(&payload));
     map.insert(
-        "parameters".to_string(),
+        "parameters".into(),
         payload_schema_to_json_schema(payload),
     );
     Value::object(map)
@@ -268,19 +268,19 @@ pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
         if field.properties.as_ref().is_some_and(Vec::is_empty) && field.field_type != "union" {
             continue;
         }
-        properties.insert(field.name.clone(), payload_field_to_json_schema(field));
+        properties.insert(field.name.clone().into(), payload_field_to_json_schema(field));
         if field.required == Some(true) {
             required.push(text(&field.name));
         }
     }
     let mut out = ValueMap::default();
-    out.insert("type".to_string(), text("object"));
+    out.insert("type".into(), text("object"));
     if !fields.is_empty() {
-        out.insert("additionalProperties".to_string(), Value::Bool(false));
+        out.insert("additionalProperties".into(), Value::Bool(false));
     }
-    out.insert("properties".to_string(), Value::object(properties));
+    out.insert("properties".into(), Value::object(properties));
     if !required.is_empty() {
-        out.insert("required".to_string(), Value::array(required));
+        out.insert("required".into(), Value::array(required));
     }
     Value::object(out)
 }
@@ -292,14 +292,14 @@ fn payload_field_to_json_schema(field: &PayloadField) -> Value {
         None => {
             let mut base = ValueMap::default();
             if let Some(json) = json_type_of(element) {
-                base.insert("type".to_string(), text(json));
+                base.insert("type".into(), text(json));
             }
             Value::object(base)
         }
     };
     if let (Some(values), Value::Object(map)) = (&field.values, &mut shape) {
         map.insert(
-            "enum".to_string(),
+            "enum".into(),
             Value::Array(values.iter().map(|v| text(v)).collect()),
         );
     }
@@ -514,14 +514,14 @@ pub fn issues_value(issues: &[PayloadIssue], root: &Value) -> Vec<Value> {
         .iter()
         .map(|found| {
             let mut map = ValueMap::default();
-            map.insert("path".to_string(), text(&found.path));
-            map.insert("reason".to_string(), text(found.reason));
+            map.insert("path".into(), text(&found.path));
+            map.insert("reason".into(), text(found.reason));
             if let Some(expected) = &found.expected {
-                map.insert("expected".to_string(), text(expected));
+                map.insert("expected".into(), text(expected));
             }
             if found.reason == "wrong-type" {
                 if let Some(sent) = value_at(root, &found.path) {
-                    map.insert("received".to_string(), text(json_kind(sent)));
+                    map.insert("received".into(), text(json_kind(sent)));
                 }
             }
             Value::object(map)
@@ -777,9 +777,9 @@ pub fn plan_dispatch(
             let Some(orbital) = caller_orbital else {
                 return failed("program/dispatch: a request addressed at the calling trait needs the trait's orbital".to_string());
             };
-            request.insert("orbital".to_string(), Value::string(orbital.to_string()));
-            request.insert("targetTrait".to_string(), Value::string(caller_trait.to_string()));
-            request.insert("event".to_string(), Value::String(address.clone()));
+            request.insert("orbital".into(), Value::string(orbital.to_string()));
+            request.insert("targetTrait".into(), Value::string(caller_trait.to_string()));
+            request.insert("event".into(), Value::String(address.clone()));
             address = format!("{orbital}.{caller_trait}.{address}").into();
         } else if !(request.contains_key("orbital") && request.contains_key("event")) {
             return failed("program/dispatch: an event request names its orbital and event".to_string());

@@ -70,7 +70,7 @@ pub(super) fn keyed_call_completion_emit(
             (
                 emit.cancelled.clone()?,
                 Value::object(ValueMap::from_iter([(
-                    "key".to_string(),
+                    "key".into(),
                     Value::String(key.to_string().into()),
                 )])),
             )
@@ -120,7 +120,7 @@ pub(super) fn custom_key(effect: &Effect) -> Option<String> {
 pub(super) fn with_key(payload: Value, key: Option<&str>) -> Value {
     match (key, payload) {
         (Some(key), Value::Object(mut fields)) => {
-            fields.insert("key".to_string(), Value::string(key.to_string()));
+            fields.insert("key".into(), Value::string(key.to_string()));
             Value::Object(fields)
         }
         (_, payload) => payload,
@@ -159,11 +159,11 @@ pub(super) fn substrate_completion_emit(
 pub(super) fn error_payload(result: &EffectResult, errors: Option<Value>) -> Value {
     let mut payload = ValueMap::default();
     payload.insert(
-        "error".to_string(),
+        "error".into(),
         Value::string(result.error.clone().unwrap_or_default()),
     );
     if let Some(errors) = errors {
-        payload.insert("errors".to_string(), errors);
+        payload.insert("errors".into(), errors);
     }
     Value::object(payload)
 }
@@ -183,9 +183,9 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
                 other => other,
             };
             let mut payload = ValueMap::default();
-            payload.insert("data".to_string(), data);
+            payload.insert("data".into(), data);
             if let Some(total) = result.total_count {
-                payload.insert("totalCount".to_string(), Value::Number(total as f64));
+                payload.insert("totalCount".into(), Value::Number(total as f64));
             }
             (event, Value::object(payload))
         }
@@ -193,7 +193,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
             let mut payload = error_payload(result, None);
             if let Value::Object(fields) = &mut payload {
                 if let Some(c) = result.code {
-                    fields.insert("code".to_string(), Value::string(c.as_str().to_string()));
+                    fields.insert("code".into(), Value::string(c.as_str().to_string()));
                 }
             }
             (emit.failure.clone()?, payload)
@@ -219,18 +219,18 @@ pub(super) fn persist_completion_emit(
         EffectOutcome::Failed => {
             let mut payload = ValueMap::default();
             if let Some(err) = &result.error {
-                payload.insert("error".to_string(), Value::string(err.clone()));
+                payload.insert("error".into(), Value::string(err.clone()));
             }
             if let Some(c) = result.code {
-                payload.insert("code".to_string(), Value::string(c.as_str().to_string()));
+                payload.insert("code".into(), Value::string(c.as_str().to_string()));
             }
             if matches!(effect, Effect::PersistBatch { .. }) {
                 let at = result.batch_failure;
                 if let Some(f) = at {
-                    payload.insert("index".to_string(), Value::Number(f.index as f64));
+                    payload.insert("index".into(), Value::Number(f.index as f64));
                 }
                 payload.insert(
-                    "completedCount".to_string(),
+                    "completedCount".into(),
                     Value::Number(at.map_or(0, |f| f.completed_count) as f64),
                 );
             }
@@ -248,11 +248,11 @@ pub(super) fn persist_completion_emit(
                     // The declared id is a binding (`@payload.id`): the payload carries the id it named.
                     if let Some(id) = id {
                         payload.insert(
-                            "id".to_string(),
+                            "id".into(),
                             ctx.resolve_value(&Value::string(id.clone())).into_owned(),
                         );
                     }
-                    payload.insert("deleted".to_string(), Value::Bool(true));
+                    payload.insert("deleted".into(), Value::Bool(true));
                     Value::object(payload)
                 }
                 _ => result.return_value.clone().unwrap_or(Value::Null),

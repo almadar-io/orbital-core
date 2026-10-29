@@ -48,7 +48,7 @@ impl IoPort {
                     read.push((entity.to_string(), id, row));
                 }
             }
-            let outcomes = apply_write_batch_across(&mut tables, batch, &mut |_| CreateIds::Strict);
+            let outcomes = apply_write_batch_across(&mut tables, batch, &mut |_| CreateIds::Strict, &mut orbital_core_base::intern::KeyVocabulary::default());
             let rows: Vec<RowCommit> = read
                 .iter()
                 .map(|(entity, id, before)| {

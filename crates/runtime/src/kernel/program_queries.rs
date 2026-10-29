@@ -81,6 +81,7 @@ impl RuntimeKernel {
             .flat_map(|schema| schema.orbitals.iter())
             .flat_map(|orbital| orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).filter(|p| p.is_route()))
             .flat_map(|page| page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string))
+            .chain(self.lazy_routed_traits())
             .collect()
     }
 

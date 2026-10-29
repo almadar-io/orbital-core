@@ -82,7 +82,6 @@ fn type_tag(ty: &OirType) -> String {
         OirType::FieldRef { .. } => "fieldref".to_string(),
         OirType::Money => "money".to_string(),
         OirType::File => "file".to_string(),
-        OirType::Json => "json".to_string(),
         OirType::Node => "node".to_string(),
         OirType::Array { .. } => "array".to_string(),
         OirType::Tuple { .. } => "tuple".to_string(),
@@ -165,7 +164,6 @@ pub fn render_default<R: TargetLiteralRenderer>(
         (
             OirType::Struct { .. }
             | OirType::Map { .. }
-            | OirType::Json
             | OirType::Node
             | OirType::Row { .. },
             OirValue::Object(_),
@@ -363,14 +361,13 @@ mod tests {
     }
 
     #[test]
-    fn struct_map_json_node_scalar_defer_to_renderer_object() {
+    fn struct_map_node_scalar_defer_to_renderer_object() {
         let mut fields = crate::ir::types::OirObject::default();
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let value = OirValue::Object(fields);
         for ty in [
             OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
             OirType::map(OirType::String, OirType::Number),
-            OirType::Json,
             OirType::Node,
         ] {
             // The default `TargetLiteralRenderer::object` declines.

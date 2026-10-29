@@ -160,7 +160,7 @@ fn a_keyed_tcp_listen_streams_each_accepted_connection_to_the_message_route_unti
     assert!(port > 0, "an ephemeral port is reported");
     assert_eq!(field(&bound, "address"), s("127.0.0.1"));
     let Value::Object(fields) = &bound else { panic!("listener reply must be an object") };
-    let names: Vec<&str> = fields.keys().map(String::as_str).collect();
+    let names: Vec<&str> = fields.keys().map(|k| k.as_str()).collect();
     let contract = orbital_core_base::emit_contract::success_payload("os/tcp-listen", orbital_core_base::emit_contract::CallVariant::Plain);
     assert!(orbital_core_base::emit_contract::undeclared_reads(&names, &contract, &[]).is_empty(), "the published contract must expose every field the listener returns");
     let connect_grants = tcp_grant(port as u16);

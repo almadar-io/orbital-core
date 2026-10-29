@@ -899,7 +899,7 @@ mod tests {
         let content: Value = serde_json::from_value(content).unwrap();
         let mut trait_content = ValueMap::default();
         trait_content.insert(
-            "Shown".to_string(),
+            "Shown".into(),
             serde_json::from_value(serde_json::json!({ "type": "typography" })).unwrap(),
         );
         let overlay_only: HashSet<String> = ["Drawer".to_string()].into_iter().collect();

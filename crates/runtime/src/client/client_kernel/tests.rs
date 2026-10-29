@@ -283,9 +283,9 @@ fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
 #[test]
 fn client_kernel_persisted_awaited_posts_leg_and_folds() {
     let mut row = ValueMap::default();
-    row.insert("id".to_string(), Value::string("n-1"));
+    row.insert("id".into(), Value::string("n-1"));
     row.insert(
-        "title".to_string(),
+        "title".into(),
         Value::string("From server"),
     );
     let mut data = HashMap::new();
@@ -1000,4 +1000,53 @@ fn a_failed_mount_leg_is_reported() {
         .unwrap();
     assert!(kernel.settle_mount(&begun).is_err());
     assert_eq!(server.sent.lock().len(), 1);
+}
+
+fn books_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "books", "typeContractVersion": 1, "orbitals": [{
+            "name": "Books",
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice",
+                "emits": [{ "event": "ADDED", "scope": "external" }],
+                "stateMachine": {
+                    "states": [{ "name": "browsing", "isInitial": true }, { "name": "loading" }],
+                    "transitions": [
+                        { "from": "browsing", "to": "browsing", "event": "ADD", "effects": [["persist", "create", "Invoice", {}, { "emit": { "success": "ADDED" } }]] },
+                        { "from": "browsing", "to": "loading", "event": "ADDED", "effects": [["fetch", "Invoice", {}]] }] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn added_answer() -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "ADDED".to_string(),
+            payload: None,
+            source: Some(BusEventSource { r#trait: Some("InvoiceList".to_string()), ..Default::default() }),
+        }],
+        ..Default::default()
+    }
+}
+
+/// G-ORB-280: the leg a fold's own arm owes the host (a refetch after a persist's success) is posted, not left for the next dispatch.
+#[test]
+fn a_fold_that_owes_the_host_a_leg_posts_it_in_the_same_dispatch() {
+    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(added_answer()), Ok(EventResponse { success: true, ..Default::default() })]));
+    let kernel = ClientKernel::new(books_schema(), Some(bridge.clone() as Arc<dyn ServerBridge>)).unwrap();
+    kernel.dispatch("InvoiceList", None, "ADD", Value::Null).unwrap();
+    let calls = bridge.calls.lock();
+    assert_eq!(calls.iter().map(|c| c.event.as_str()).collect::<Vec<_>>(), ["ADD", "ADDED"]);
+}
+
+#[test]
+fn control_a_fold_that_owes_nothing_posts_one_leg() {
+    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse { success: true, ..Default::default() })]));
+    let kernel = ClientKernel::new(books_schema(), Some(bridge.clone() as Arc<dyn ServerBridge>)).unwrap();
+    kernel.dispatch("InvoiceList", None, "ADD", Value::Null).unwrap();
+    assert_eq!(bridge.calls.lock().len(), 1);
 }

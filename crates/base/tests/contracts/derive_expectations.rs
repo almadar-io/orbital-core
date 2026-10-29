@@ -59,7 +59,6 @@ fn order_record_fields() -> Value {
 fn build_schema() -> Value {
     let checkout_trait = json!({
         "name": "CheckoutWizard",
-        "scope": "instance",
         "linkedEntity": "Checkout",
         "stateMachine": {
             "states": [{ "name": "editing", "isInitial": true }, { "name": "done" }],
@@ -252,7 +251,7 @@ fn derives_an_existence_only_entity_expectation_from_a_cross_orbital_linked_enti
     orbital_mut(&mut schema, "StandaloneOrbital")["traits"]
         .as_array_mut()
         .unwrap()
-        .push(json!({ "name": "NoteOnCustomer", "scope": "instance", "linkedEntity": "Customer" }));
+        .push(json!({ "name": "NoteOnCustomer", "linkedEntity": "Customer" }));
     assert_eq!(
         expects(&derive(&schema, "StandaloneOrbital")),
         json!([{ "kind": "entity", "name": "Customer" }])
@@ -274,7 +273,6 @@ fn derives_an_identity_expectation_from_a_user_config_default_on_a_trait() {
     let mut schema = build_schema();
     orbital_mut(&mut schema, "ProductOrbital")["traits"].as_array_mut().unwrap().push(json!({
         "name": "ProductAppLayout",
-        "scope": "instance",
         "linkedEntity": "Product",
         "config": { "viewerName": { "type": "string", "default": "@user.name" }, "appName": { "type": "string", "default": "Shop" } }
     }));
@@ -362,7 +360,6 @@ fn mod_queue_behavior() -> Value {
             "auxiliaryEntities": [{ "name": "ModQueueAudit", "fields": [{ "name": "id", "type": "string", "required": true }] }],
             "traits": [{
                 "name": "ModQueueItemReview",
-                "scope": "instance",
                 "linkedEntity": "ModQueueItem",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [{ "key": "OPEN", "name": "Open" }], "transitions": [{ "from": "idle", "to": "idle", "event": "OPEN" }] }
             }],
@@ -389,7 +386,6 @@ fn schema_composing(rebind_to: Option<&str>) -> Value {
                 "entity": { "name": "Thread", "fields": [{ "name": "id", "type": "string", "required": true }] },
                 "traits": [{
                     "name": "FlagBridge",
-                    "scope": "instance",
                     "linkedEntity": "Thread",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
@@ -600,7 +596,6 @@ fn identity_app(reference: &str, from: &str, rename: Option<&str>) -> Value {
                 "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string", "required": true }] },
                 "traits": [{
                     "name": "Greeter",
-                    "scope": "instance",
                     "linkedEntity": "Note",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
@@ -806,14 +801,12 @@ fn schema_with_listen(source: Value) -> Value {
     let mut schema = build_schema();
     orbital_mut(&mut schema, "OrderRecordOrbital")["traits"] = json!([{
         "name": "OrderFeed",
-        "scope": "instance",
         "linkedEntity": "OrderRecord",
         "emits": [{ "event": "ORDER_PLACED" }],
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [{ "key": "INIT", "name": "Init" }], "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] }
     }]);
     orbital_mut(&mut schema, "StandaloneOrbital")["traits"] = json!([{
         "name": "NoteFeed",
-        "scope": "instance",
         "linkedEntity": "Note",
         "listens": [{ "event": "ORDER_PLACED", "source": source, "triggers": "INIT" }],
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [{ "key": "INIT", "name": "Init" }], "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] }

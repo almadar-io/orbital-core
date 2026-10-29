@@ -16,7 +16,6 @@
         "traits": [
           {
             "name": "Src",
-            "scope": "instance",
             "emits": [{ "event": "X" }],
             "stateMachine": {
               "states": [{ "name": "idle", "isInitial": true }],
@@ -36,7 +35,6 @@
           },
           {
             "name": "Sink",
-            "scope": "instance",
             "emits": [{ "event": "ACK" }],
             "listens": [
               { "event": "X", "triggers": "GOT", "source": { "kind": "trait", "trait": "Src" } }

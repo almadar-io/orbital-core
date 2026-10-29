@@ -71,7 +71,7 @@ pub fn parse_csv(text: &str) -> Vec<Value> {
         let mut row = ValueMap::default();
         for (index, name) in header.iter().enumerate() {
             row.insert(
-                name.clone(),
+                name.clone().into(),
                 Value::string(cells.get(index).cloned().unwrap_or_default()),
             );
         }
@@ -100,7 +100,7 @@ mod tests {
                 Value::Object(map) => map
                     .into_iter()
                     .map(|(k, v)| match v {
-                        Value::String(s) => (k, s.into_inner()),
+                        Value::String(s) => (k.to_string(), s.into_inner()),
                         other => panic!("cell is not a string: {other:?}"),
                     })
                     .collect(),

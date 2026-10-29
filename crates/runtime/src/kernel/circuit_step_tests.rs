@@ -36,7 +36,7 @@ fn kernel() -> RuntimeKernel {
 
 fn key(k: &str) -> Value {
     let mut data = ValueMap::default();
-    data.insert("key".to_string(), Value::string(k.to_string()));
+    data.insert("key".into(), Value::string(k.to_string()));
     Value::object(data)
 }
 

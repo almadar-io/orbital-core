@@ -36,6 +36,9 @@ pub struct OirPage {
     /// The page declared `[initial]`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_initial: bool,
+    /// The page declared `[notFound]`: the page a path no page matches shows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_not_found: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -65,6 +68,7 @@ impl OirPage {
             source_page: None,
             translation_of: None,
             is_initial: false,
+            is_not_found: false,
             layout: None,
             view_type: None,
             sections: vec![],

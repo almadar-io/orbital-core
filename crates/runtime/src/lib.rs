@@ -172,6 +172,7 @@ pub use kernel::{
     already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
     StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP,
 };
+pub use kernel::lazy::{LazyObserver, LazyProgram, LazySource};
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};
 pub use persona::{
     default_probe_persona, find_persona_in_roster, identity_roster, persona_from_env_for_schema,

@@ -45,7 +45,7 @@ impl PersistenceHandler for InMemoryPersistence {
 
         let mut record = data.clone();
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::string(id.clone()));
+            obj.insert("id".into(), Value::string(id.clone()));
         }
 
         collection.insert(id.clone(), record.clone());

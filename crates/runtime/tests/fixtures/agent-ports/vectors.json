@@ -37,7 +37,6 @@
         "traits": [
           {
             "name": "Chat",
-            "scope": "instance",
             "linkedEntity": "Note",
             "stateMachine": {
               "states": [
@@ -115,7 +114,6 @@
         "traits": [
           {
             "name": "Bench",
-            "scope": "instance",
             "linkedEntity": "Probe",
             "stateMachine": {
               "states": [

@@ -71,7 +71,7 @@ fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
 
 fn read_with_carried(kernel: &orbital_core_runtime::kernel::RuntimeKernel, carried: serde_json::Value) -> (Option<String>, Option<String>) {
     let mut by_trait = orbital_core_base::value::ValueMap::default();
-    by_trait.insert("Reader".to_string(), serde_json::from_value(carried).unwrap());
+    by_trait.insert("Reader".into(), serde_json::from_value(carried).unwrap());
     kernel.seed_leg(&[], Some(&by_trait), Some("a"));
     let outcomes = kernel.dispatch("Reader", Some("a"), "READ", Value::Null).unwrap();
     assert!(outcomes.iter().any(|(t, r)| t == "Reader" && r.executed), "the read ran");

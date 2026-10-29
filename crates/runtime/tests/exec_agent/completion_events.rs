@@ -19,7 +19,7 @@ impl ServiceHandler for Llm {
             return Err("rate limited".to_string());
         }
         let mut out = ValueMap::new();
-        out.insert("embeddings".to_string(), Value::array(vec![Value::Number(1.0)]));
+        out.insert("embeddings".into(), Value::array(vec![Value::Number(1.0)]));
         Ok(Value::object(out))
     }
     fn cancel(&self, _key: &str) -> Result<(), String> {
@@ -414,6 +414,59 @@ mod agent_ports {
         (key, routed, snapshot.state, norm(entity["got"].clone()))
     }
 
+    /// `GO` runs `effect` against a host answering through `Progress::Await`: the op and arguments of the substrate ask it made.
+    fn substrate_ask_of(effect: Json) -> Option<(String, Vec<Value>)> {
+        use orbital_core_runtime::resumable::{BlockingHost, IoAnswer, IoReply, IoRequest, Progress};
+        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let config = KernelConfig {
+            substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn SubstrateHandler>),
+            ..KernelConfig::default()
+        };
+        let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+        kernel.register_schema(schema_with(&fixture, effect)).unwrap();
+        let mut progress = kernel.start_dispatch("Chat", None, "GO", Value::Null, None, None).unwrap();
+        let mut asked = None;
+        while let Progress::Await { continuation, requests } = progress {
+            let replies = requests
+                .iter()
+                .map(|p| IoReply {
+                    id: p.id,
+                    answer: match &p.request {
+                        IoRequest::Substrate { op, args, .. } => {
+                            asked = Some((op.clone(), args.clone()));
+                            IoAnswer::Substrate(Ok(Value::Null))
+                        }
+                        other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+                    },
+                })
+                .collect();
+            progress = kernel.resume(continuation, replies).unwrap();
+        }
+        asked
+    }
+
+    #[test]
+    fn each_audio_and_sign_out_effect_is_one_substrate_ask_carrying_its_arguments() {
+        let cases = [
+            (json!(["audio/play-sound", "footstep"]), "audio/play-sound", vec![as_value(&json!("footstep"))]),
+            (json!(["audio/stop-sound", "footstep"]), "audio/stop-sound", vec![as_value(&json!("footstep"))]),
+            (json!(["audio/stop-sound"]), "audio/stop-sound", vec![]),
+            (json!(["audio/change-music", "theme"]), "audio/change-music", vec![as_value(&json!("theme"))]),
+            (json!(["audio/change-music"]), "audio/change-music", vec![]),
+            (json!(["audio/stop-music"]), "audio/stop-music", vec![]),
+            (json!(["auth/sign-out"]), "auth/sign-out", vec![]),
+        ];
+        for (effect, op, args) in cases {
+            assert_eq!(substrate_ask_of(effect.clone()), Some((op.to_string(), args)), "{effect}");
+        }
+    }
+
+    #[test]
+    fn control_a_pure_effect_makes_no_substrate_ask() {
+        assert_eq!(substrate_ask_of(json!(["set", "@entity.got", 1])), None);
+    }
+
     #[test]
     fn a_keyed_ask_the_host_defers_commits_without_its_completion() {
         let (key, routed, state, got) = keyed_dispatch_answered(orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
@@ -465,7 +518,7 @@ mod agent_ports {
                     "read_policy": ["=", ["object/get", "@entity", "owner"], "@user.id"]
                 },
                 "traits": [{
-                    "name": "Reader", "scope": "instance", "linkedEntity": "Ticket",
+                    "name": "Reader", "linkedEntity": "Ticket",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
                         "transitions": [

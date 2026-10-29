@@ -13,7 +13,8 @@ use super::row_query::{
 use orbital_core_base::row_set::{row_field, RowCompareOp, RowPredicate, RowQuery};
 use orbital_core_base::schema::types::EntityIndex;
 use orbital_core_base::value::Value;
-use orbital_core_base::sync::RwLock;
+use orbital_core_base::intern::KeyVocabulary;
+use orbital_core_base::sync::{Mutex, RwLock};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -184,6 +185,8 @@ pub struct InMemoryEntityCache {
     indexes: RwLock<HashMap<String, StoreIndexes>>,
     /// Rows offered to a query so far.
     visited: std::sync::atomic::AtomicUsize,
+    /// The field names its rows share.
+    vocabulary: Mutex<KeyVocabulary>,
 }
 
 /// One index key component: a scalar the equality comparison can match (`same_value`).
@@ -460,7 +463,7 @@ impl InMemoryEntityCache {
             let existed = cache.contains_key(&key);
             let table = cache.entry(key.clone()).or_default();
             let mut mint = || self.next_id(&entity);
-            let outcome = apply_write(table, op, &mut CreateIds::Mint(&mut mint));
+            let outcome = apply_write(table, op, &mut CreateIds::Mint(&mut mint), &mut self.vocabulary.lock());
             let applied = outcome.applied();
             if !applied && !existed {
                 cache.remove(&key);
@@ -530,8 +533,9 @@ impl EntitySource for InMemoryEntityCache {
         };
         let mut record = merged;
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::string(id.to_string()));
+            obj.insert("id".into(), Value::string(id.to_string()));
         }
+        let record = self.vocabulary.lock().row(record);
         let row = Arc::new(record.clone());
         let was = type_cache.insert(id.to_string(), row.clone());
         if let Some(key) = index_key {
@@ -551,7 +555,7 @@ impl EntitySource for InMemoryEntityCache {
         let data = match data {
             Value::Object(obj) if !obj.contains_key("id") => {
                 let mut obj = obj.clone();
-                obj.insert("id".to_string(), Value::string(id.clone()));
+                obj.insert("id".into(), Value::string(id.clone()));
                 Value::Object(obj)
             }
             other => other.clone(),
@@ -571,8 +575,9 @@ impl EntitySource for InMemoryEntityCache {
         }
         let mut record = data.clone();
         if let Some(obj) = record.as_object_mut() {
-            obj.insert("id".to_string(), Value::string(id.clone()));
+            obj.insert("id".into(), Value::string(id.clone()));
         }
+        let record = self.vocabulary.lock().row(record);
         let row = Arc::new(record.clone());
         match index_key {
             Some(key) => {

@@ -313,7 +313,7 @@ fn os_ask(op: OsOp, path: &str) -> IoRequest {
 
 fn os_ok() -> IoAnswer {
     IoAnswer::Os(Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([(
-        "data".to_string(),
+        "data".into(),
         Value::String(("hi".to_string()).into()),
     )]))))
 }

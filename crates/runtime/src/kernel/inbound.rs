@@ -141,6 +141,25 @@ impl RuntimeKernel {
         Self::inbound_cut(route, outcomes)
     }
 
+    /// What went wrong in a whole cascade: the effect failure of every trait the dispatch ran (not only the handler's
+    /// own) and the step-cap cut, each named by its trait. A delivery the cascade left unanswered carries these, since
+    /// a sibling trait's failed effect is a per-trait rejection no other trait can observe (EXEC-STEP-7).
+    pub fn cascade_failures(outcomes: &DispatchOutcomes) -> Vec<String> {
+        let mut out = Vec::new();
+        for (trait_name, result) in outcomes {
+            if let Some(message) = &result.failure {
+                out.push(format!("{trait_name}: {message}"));
+            }
+            if let Some(cut) = &result.cascade_cut {
+                out.push(format!(
+                    "{}: cascade-cap: the dispatch reached its {}-step cap before {} handled {}, so the work behind it never ran",
+                    trait_name, cut.cap, cut.trait_name, cut.event
+                ));
+            }
+        }
+        out
+    }
+
     #[cfg(feature = "std")]
     /// The answer of a delivery its delivering dispatch left unanswered ([`Self::inbound_answered`] false), on a host
     /// that waits: the first late answer `late` carries while `open_calls` reports a keyed call still open (a host
@@ -159,9 +178,11 @@ impl RuntimeKernel {
         let deadline = timeout.map(|limit| std::time::Instant::now() + limit);
         loop {
             if !open_calls() {
-                return late
-                    .try_recv()
-                    .unwrap_or_else(|_| inbound_unanswered_after(&route.trait_name, &route.event, &failures()));
+                return late.try_recv().unwrap_or_else(|_| {
+                    let mut all = Self::cascade_failures(outcomes);
+                    all.extend(failures());
+                    inbound_unanswered_after(&route.trait_name, &route.event, &all)
+                });
             }
             let wait = match deadline {
                 Some(deadline) => {
@@ -209,7 +230,14 @@ impl RuntimeKernel {
         }
         match own().find_map(|result| result.failure.as_deref()) {
             Some(message) => dispatch_failed(message),
-            None => Self::inbound_cut(route, outcomes).unwrap_or(answer),
+            None => Self::inbound_cut(route, outcomes).unwrap_or_else(|| {
+                let failures = Self::cascade_failures(outcomes);
+                if failures.is_empty() {
+                    answer
+                } else {
+                    dispatch_failed(&format!("inbound-unanswered; the cascade failed: {}", failures.join("; ")))
+                }
+            }),
         }
     }
 }
@@ -218,6 +246,7 @@ impl RuntimeKernel {
 mod tests {
     use super::*;
     use crate::entity_source::InMemoryEntityCache;
+    use crate::CascadeCut;
     use serde_json::json;
 
     fn kernel(inbound: serde_json::Value) -> RuntimeKernel {
@@ -495,6 +524,45 @@ mod tests {
         assert_eq!(body["failures"].as_array().map(Vec::len), Some(1));
         let quiet = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None);
         assert!(!quiet.body.contains("failures"), "control: no failure, no failures field");
+    }
+
+    #[test]
+    fn an_unanswered_delivery_names_the_failed_effect_of_a_sibling_trait_in_its_cascade() {
+        let (route, mut outcomes) = unanswered_delivery();
+        let (_sender, late) = std::sync::mpsc::channel();
+        let quiet = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None);
+        assert!(!quiet.body.contains("failures"), "control: a clean cascade names nothing");
+        let mut sibling = outcomes[0].1.clone();
+        sibling.failure = Some("set @entity.found: strict or over objects".to_string());
+        outcomes.push(("LintRuleX".to_string(), sibling));
+        let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &|| vec!["Deferred LATER: refused".to_string()], None);
+        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(body["code"].as_str(), Some("inbound-unanswered"));
+        assert_eq!(
+            body["failures"],
+            json!(["LintRuleX: set @entity.found: strict or over objects", "Deferred LATER: refused"])
+        );
+    }
+
+    #[test]
+    fn a_plain_answer_names_the_cascade_failures_and_stays_bare_without_any() {
+        let (route, mut outcomes) = unanswered_delivery();
+        assert_eq!(RuntimeKernel::inbound_answer(&route, &outcomes).body, r#"{"error":"inbound-unanswered"}"#);
+        let mut sibling = outcomes[0].1.clone();
+        sibling.failure = Some("boom".to_string());
+        outcomes.push(("LintRuleX".to_string(), sibling));
+        let body = RuntimeKernel::inbound_answer(&route, &outcomes).body;
+        assert!(body.contains("LintRuleX: boom"), "{body}");
+    }
+
+    #[test]
+    fn a_step_cap_cut_in_a_sibling_trait_is_one_of_the_cascade_failures() {
+        let (_, mut outcomes) = unanswered_delivery();
+        assert!(RuntimeKernel::cascade_failures(&outcomes).is_empty(), "control: no cut, no failure");
+        outcomes[0].1.cascade_cut = Some(CascadeCut { cap: 2000, trait_name: "OrbLintX".to_string(), event: "LINT_FOUND".to_string() });
+        let failures = RuntimeKernel::cascade_failures(&outcomes);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("cascade-cap") && failures[0].contains("2000") && failures[0].contains("LINT_FOUND"), "{failures:?}");
     }
 
     #[test]

@@ -33,7 +33,7 @@ fn unsupported(op: OsOp, what: impl std::fmt::Display) -> OsError {
 fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     let mut map = ValueMap::default();
     for (key, value) in pairs {
-        map.insert(key.to_string(), value);
+        map.insert(key.to_string().into(), value);
     }
     Value::object(map)
 }
@@ -237,11 +237,11 @@ mod procfs {
                 continue;
             }
             let mut mount = ValueMap::default();
-            mount.insert("device".to_string(), text(unescape(parts[0])));
-            mount.insert("mountPoint".to_string(), text(unescape(parts[1])));
-            mount.insert("filesystem".to_string(), text(parts[2]));
+            mount.insert("device".into(), text(unescape(parts[0])));
+            mount.insert("mountPoint".into(), text(unescape(parts[1])));
+            mount.insert("filesystem".into(), text(parts[2]));
             mount.insert(
-                "options".to_string(),
+                "options".into(),
                 Value::Array(parts[3].split(',').map(text).collect()),
             );
             out.push(Value::object(mount));
@@ -283,11 +283,11 @@ mod procfs {
             }
             let at = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
             let mut stat = ValueMap::default();
-            stat.insert("device".to_string(), text(f[2]));
-            stat.insert("readsCompleted".to_string(), Value::Number(at(3)));
-            stat.insert("writesCompleted".to_string(), Value::Number(at(7)));
-            stat.insert("readBytes".to_string(), Value::Number(at(5) * 512.0));
-            stat.insert("writeBytes".to_string(), Value::Number(at(9) * 512.0));
+            stat.insert("device".into(), text(f[2]));
+            stat.insert("readsCompleted".into(), Value::Number(at(3)));
+            stat.insert("writesCompleted".into(), Value::Number(at(7)));
+            stat.insert("readBytes".into(), Value::Number(at(5) * 512.0));
+            stat.insert("writeBytes".into(), Value::Number(at(9) * 512.0));
             out.push(Value::object(stat));
         }
         out
@@ -306,13 +306,13 @@ mod procfs {
             }
             let at = |i: usize| f[i].parse::<f64>().unwrap_or(0.0);
             let mut counters = ValueMap::default();
-            counters.insert("rxBytes".to_string(), Value::Number(at(0)));
-            counters.insert("txBytes".to_string(), Value::Number(at(8)));
-            counters.insert("rxPackets".to_string(), Value::Number(at(1)));
-            counters.insert("txPackets".to_string(), Value::Number(at(9)));
-            counters.insert("rxErrors".to_string(), Value::Number(at(2)));
-            counters.insert("txErrors".to_string(), Value::Number(at(10)));
-            stats.insert(name.to_string(), Value::object(counters));
+            counters.insert("rxBytes".into(), Value::Number(at(0)));
+            counters.insert("txBytes".into(), Value::Number(at(8)));
+            counters.insert("rxPackets".into(), Value::Number(at(1)));
+            counters.insert("txPackets".into(), Value::Number(at(9)));
+            counters.insert("rxErrors".into(), Value::Number(at(2)));
+            counters.insert("txErrors".into(), Value::Number(at(10)));
+            stats.insert(name.to_string().into(), Value::object(counters));
         }
         stats
     }

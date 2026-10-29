@@ -64,7 +64,7 @@ impl SeqBuilder {
             None => array,
             Some(name) => {
                 let mut fields = ValueMap::default();
-                fields.insert(name.to_owned(), array);
+                fields.insert(name.to_owned().into(), array);
                 object(fields, self.canonical)
             }
         }
@@ -136,7 +136,7 @@ impl MapBuilder {
             None => inner,
             Some(name) => {
                 let mut fields = ValueMap::default();
-                fields.insert(name.to_owned(), inner);
+                fields.insert(name.to_owned().into(), inner);
                 object(fields, self.canonical)
             }
         }
@@ -150,7 +150,7 @@ impl MapBuilder {
         let value = value.serialize(ValueSerializer {
             canonical: self.canonical,
         })?;
-        self.fields.insert(key.to_owned(), value);
+        self.fields.insert(key.to_owned().into(), value);
         Ok(())
     }
 }
@@ -170,7 +170,7 @@ impl ser::SerializeMap for MapBuilder {
         let value = value.serialize(ValueSerializer {
             canonical: self.canonical,
         })?;
-        self.fields.insert(key, value);
+        self.fields.insert(key.into(), value);
         Ok(())
     }
     fn end(self) -> Result<Value, Self::Error> {
@@ -302,7 +302,7 @@ impl ser::Serializer for ValueSerializer {
         value: &T,
     ) -> Result<Value, Self::Error> {
         let mut fields = ValueMap::default();
-        fields.insert(variant.to_owned(), value.serialize(self)?);
+        fields.insert(variant.to_owned().into(), value.serialize(self)?);
         Ok(Value::Object(Shared::new(fields)))
     }
     fn serialize_seq(self, len: Option<usize>) -> Result<SeqBuilder, Self::Error> {

@@ -817,7 +817,7 @@ impl Operator for ArrayGroupByOp {
             return Ok(Value::Object(
                 groups
                     .into_iter()
-                    .map(|(k, v)| (k, Value::array(v)))
+                    .map(|(k, v)| (k.into(), Value::array(v)))
                     .collect(),
             ));
         }
@@ -839,7 +839,7 @@ impl Operator for ArrayGroupByOp {
 
         let result: ValueMap = groups
             .into_iter()
-            .map(|(k, v)| (k, Value::array(v)))
+            .map(|(k, v)| (k.into(), Value::array(v)))
             .collect();
 
         Ok(Value::object(result))
@@ -1270,9 +1270,9 @@ impl Operator for ArrayNearestOp {
             best_score - second_best
         };
         let mut result = ValueMap::default();
-        result.insert("index".to_string(), Value::Number(best_idx as f64));
-        result.insert("score".to_string(), Value::Number(best_score));
-        result.insert("margin".to_string(), Value::Number(margin));
+        result.insert("index".into(), Value::Number(best_idx as f64));
+        result.insert("score".into(), Value::Number(best_score));
+        result.insert("margin".into(), Value::Number(margin));
         Ok(Value::object(result))
     }
 }

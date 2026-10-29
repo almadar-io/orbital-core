@@ -141,7 +141,7 @@ pub struct RowQuery {
 pub struct RowNearest {
     pub field: String,
     pub vector: Vec<f64>,
-    pub k: usize,
+    pub k: std::num::NonZeroUsize,
 }
 
 /// A fetched page by reference; `query` re-counts `total` at resolve time (order and window ignored).
@@ -161,9 +161,9 @@ pub const ROW_SET_MARKER: &str = "$rowSet";
 /// The render-prop leaf that carries `reference` (core's `RowSetMarker`): `{ "$rowSet": true, "ref": … }`.
 pub fn row_set_marker(reference: &RowSetRef) -> Value {
     let mut leaf = crate::value::ValueMap::default();
-    leaf.insert(ROW_SET_MARKER.to_string(), Value::Bool(true));
+    leaf.insert(ROW_SET_MARKER.to_string().into(), Value::Bool(true));
     leaf.insert(
-        "ref".to_string(),
+        "ref".into(),
         serde_json::to_value(reference)
             .ok()
             .and_then(|json| serde_json::from_value(json).ok())
@@ -280,14 +280,11 @@ pub fn row_id(row: &Value) -> String {
 /// The one `nearest` selection (EXEC-FETCH-2), run by the kernel and every in-process store: `rows` are already
 /// admitted by the policy and filter. Cosine similarity `dot / (|q| * |r|)`, descending, ties by `id` ascending,
 /// the first `k`. A row whose field is absent, null or of zero norm is skipped; a stored vector that is not a
-/// `[number]` of the query's length, a zero-norm query or `k = 0` fails.
+/// `[number]` of the query's length, or a zero-norm query fails.
 pub fn nearest_rows(
     rows: Vec<Arc<Value>>,
     nearest: &RowNearest,
 ) -> Result<Vec<Arc<Value>>, String> {
-    if nearest.k == 0 {
-        return Err("nearest: k must be a positive integer".to_string());
-    }
     let query_norm = nearest.vector.iter().map(|x| x * x).sum::<f64>().sqrt();
     if query_norm == 0.0 {
         return Err("nearest: the query vector has zero norm".to_string());
@@ -340,7 +337,7 @@ pub fn nearest_rows(
             b.0.partial_cmp(&a.0).unwrap_or(Ordering::Equal)
         }
     });
-    scored.truncate(nearest.k);
+    scored.truncate(nearest.k.get());
     Ok(scored.into_iter().map(|(_, _, row)| row).collect())
 }
 
@@ -350,9 +347,9 @@ mod nearest_tests {
 
     fn row(id: &str, embedding: Option<Value>) -> Arc<Value> {
         let mut map = crate::value::ValueMap::default();
-        map.insert("id".to_string(), Value::string(id.to_string()));
+        map.insert("id".into(), Value::string(id.to_string()));
         if let Some(v) = embedding {
-            map.insert("embedding".to_string(), v);
+            map.insert("embedding".into(), v);
         }
         Arc::new(Value::object(map))
     }
@@ -365,7 +362,7 @@ mod nearest_tests {
         RowNearest {
             field: "embedding".to_string(),
             vector: vector.to_vec(),
-            k,
+            k: std::num::NonZeroUsize::new(k).expect("a positive k"),
         }
     }
 
@@ -400,7 +397,7 @@ mod nearest_tests {
     }
 
     #[test]
-    fn fails_on_dimension_mismatch_zero_query_and_zero_k() {
+    fn fails_on_dimension_mismatch_and_zero_query() {
         let rows = vec![row("a", Some(vec_of(&[1.0, 0.0, 0.0])))];
         assert!(nearest_rows(rows.clone(), &ask(&[1.0, 0.0], 1))
             .unwrap_err()
@@ -408,7 +405,14 @@ mod nearest_tests {
         assert!(nearest_rows(rows.clone(), &ask(&[0.0, 0.0, 0.0], 1))
             .unwrap_err()
             .contains("zero norm"));
-        assert!(nearest_rows(rows.clone(), &ask(&[1.0, 0.0, 0.0], 0)).is_err());
         assert!(nearest_rows(rows, &ask(&[1.0, 0.0, 0.0], 1)).is_ok());
+    }
+
+    #[test]
+    fn a_zero_k_is_refused_at_the_wire_and_a_positive_one_is_read() {
+        let wire = |k: u64| serde_json::json!({ "field": "embedding", "vector": [1.0], "k": k });
+        assert!(serde_json::from_value::<RowNearest>(wire(0)).is_err());
+        assert_eq!(serde_json::from_value::<RowNearest>(wire(1)).unwrap().k.get(), 1);
+        assert!(serde_json::from_value::<RowNearest>(serde_json::json!({ "field": "e", "vector": [1.0], "k": -1 })).is_err());
     }
 }

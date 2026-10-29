@@ -690,10 +690,16 @@ fn a_built_batch_that_never_writes_the_entity_owes_its_invariant_nothing() {
     let opaque = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch", "@payload.ops"]] }]);
     assert!(
         matches!(
-            only(&program(opaque, J::Null, inv)),
-            Verdict::Unproved { .. }
+            only(&program(opaque.clone(), J::Null, inv)),
+            Verdict::Violated { .. }
         ),
-        "control: a batch it cannot follow may write anything"
+        "control: a batch it cannot follow may write any row of the declared shape"
+    );
+    let shaped = row_invariant(json!(["!=", "@entity.status", "archived"]));
+    assert_eq!(
+        only(&program(opaque, J::Null, shaped)),
+        Verdict::Proved,
+        "an invariant the declared enum already guarantees holds for any row"
     );
 }
 
@@ -758,16 +764,27 @@ fn a_config_bound_target_is_resolved_and_an_unknown_one_is_unproved() {
         only(&with_target(json!("Order"), create.clone())),
         Verdict::Violated { .. }
     ));
-    let Verdict::Unproved { reason, .. } =
-        only(&with_target(json!("@config.elsewhere"), create))
-    else {
-        panic!()
-    };
-    assert!(reason.contains("not statically known"), "{reason}");
+    let dynamic = with_target(json!("@config.elsewhere"), create);
+    let found = prove(&dynamic);
+    assert_eq!(found.len(), 1, "{found:#?}");
+    assert!(matches!(found[0].verdict, Verdict::Violated { .. }), "{found:#?}");
+    assert!(
+        found[0].site.contains("Order row through a target chosen at run time"),
+        "{}",
+        found[0].site
+    );
+    let guarded = json!([["persist", "create", "@config.target", { "total": 1 }]]);
+    assert!(
+        matches!(
+            only(&with_target(json!("@config.elsewhere"), guarded)),
+            Verdict::Violated { .. }
+        ),
+        "the row is free, whatever the literal the seed writes"
+    );
     let computed = json!([["persist", "batch", ["array/concat", "@payload.ops", []]]]);
     assert!(matches!(
         only(&with_target(json!("Order"), computed)),
-        Verdict::Unproved { .. }
+        Verdict::Violated { .. }
     ));
     let other = json!([["persist", "create", "@config.target", { "total": -1 }]]);
     assert!(
@@ -1334,4 +1351,37 @@ fn control_a_default_bound_at_run_time_stays_unresolved() {
         None
     )]);
     assert!(matches!(only(&configured(t, enabled)), Verdict::Unproved { .. }));
+}
+
+#[test]
+fn a_verdict_is_a_pure_function_of_the_program() {
+    let stamped = json!(["time/add", "@now", 60000, "ms"]);
+    let transitions = vec![
+        pay(
+            json!([["set", "@entity.paid", stamped.clone()]]),
+            json!([["=", "@entity.paid", stamped.clone()]]),
+            None,
+        ),
+        pay(
+            json!([["if", [">", "@payload.amount", 0], ["set", "@entity.paid", "@payload.amount"]]]),
+            json!([[">=", "@entity.paid", 0]]),
+            None,
+        ),
+        json!({ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }),
+    ];
+    let invariant = row_invariant(json!([">=", "@entity.total", 0]));
+    let keyed = |ts: Vec<J>| -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = verdicts(&program(J::Array(ts), J::Null, invariant.clone()))
+            .into_iter()
+            .map(|(site, v)| (site, format!("{v:?}")))
+            .collect();
+        out.sort();
+        out
+    };
+    let forward = keyed(transitions.clone());
+    assert!(forward.len() >= 3, "{forward:#?}");
+    assert_eq!(forward, keyed(transitions.clone()), "the same program twice");
+    let mut reversed = transitions;
+    reversed.reverse();
+    assert_eq!(forward, keyed(reversed), "the same program with its transitions reordered");
 }

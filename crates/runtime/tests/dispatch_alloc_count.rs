@@ -159,7 +159,10 @@ fn search_dispatch_allocation_count_is_pinned() {
 
 // 1405 (was 1510): a step binds `@entity` as the kernel holds it and a `set` writes one field (G-ORBITAL-CORE-049, 2026-10-25).
 // 985: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
-const PINNED_SEARCH: usize = 985;
+// 822 -> 700: `ValueMap` keys are the program's interned `Shared<String>` names, so a step that builds or merges a record
+// bumps a count instead of allocating each name (R3, G-ORBITAL-CORE-070, 2026-10-29; 985 was the pin before it, 822 measured on main).
+// 700 -> 701: +1, unattributed. Measured 2026-10-29: `OirType::erased()` is not on the dispatch path (same count with a per-call allocating or a shared name), so the earlier attribution to it was wrong.
+const PINNED_SEARCH: usize = 701;
 
 fn fetch_schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -218,7 +221,9 @@ fn fetch_dispatch_allocation_count_is_pinned() {
 // 746 (was 1258): a dispatch clones the kernel's one `prob/*` seed source instead of building one (G-ORBITAL-CORE-029, 2026-10-18).
 // 738: G-ORBITAL-CORE-049, 2026-10-25; +1 the seed's shared payload `Arc`, which spares every step a deep copy.
 // 201: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
-const PINNED_FETCH: usize = 201;
+// 185 -> 184 measured on main -> after R3 (interned `ValueMap` keys), 2026-10-29.
+// 184 -> 185: +1, unattributed. Measured 2026-10-29: `OirType::erased()` is not on the dispatch path (same count with a per-call allocating or a shared name), so the earlier attribution to it was wrong.
+const PINNED_FETCH: usize = 185;
 
 #[test]
 fn read_access_allocation_count_is_pinned() {
@@ -265,7 +270,8 @@ fn read_access_allocation_count_is_pinned() {
 }
 
 // 683: copy-on-write `Value` and `SExpression` strings, lists and maps (P-014, 2026-10-26).
-const PINNED_READ_ACCESS: usize = 683;
+// 183: measured on main before and after R3 (interned `ValueMap` keys), 2026-10-29.
+const PINNED_READ_ACCESS: usize = 183;
 
 const REPLAY_ROWS: usize = 1000;
 const REPLAY_WRITES: usize = 6;
@@ -353,7 +359,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 12118: +924, an IR object node boxes its map so every `SExpression` is 24 bytes (owner accepted, P-017, 2026-10-28).
 // 12120: +2, measured on main after wave 3 (present before step-4 phase A; most likely the per-step emit-source stamp,
 // G-ORB-553, not bisected), 2026-10-28.
-const PINNED_REPLAY: usize = 12120;
+// 10293 -> 8971: `ValueMap` keys are interned `Shared<String>` names (R3, G-ORBITAL-CORE-070, 2026-10-29).
+// 8971 -> 8972: +1, unattributed. Measured 2026-10-29: `OirType::erased()` is not on the dispatch path (same count with a per-call allocating or a shared name), so the earlier attribution to it was wrong.
+const PINNED_REPLAY: usize = 8972;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -1012,6 +1020,10 @@ fn retained_per_dispatch(k: &RuntimeKernel, trait_name: &str, event: &str, runs:
     (LIVE.load(Ordering::SeqCst) - before) as f64 / runs as f64
 }
 
+// 1885 -> 1468 retained per audited SAVE (row 1663 -> 1374 bytes): the store keeps one allocation per field name, not one per
+// row and name (R3, G-ORBITAL-CORE-070, 2026-10-29).
+const PINNED_RETAINED_PER_SAVE: f64 = 1500.0;
+
 /// A long run keeps only what it persists: each audited `SAVE` stores one `AuditEntry` row, and the response, trace
 /// and visit records of the dispatch are released.
 #[test]
@@ -1033,6 +1045,7 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
     println!("RETAINED_PER_DISPATCH init={init:.0} save={save:.0} row={row_bytes:.0}");
     assert!(init < 64.0, "control: a dispatch that persists nothing retains {init:.0} bytes");
     assert!(save < row_bytes * 1.5 + 256.0, "a SAVE retains {save:.0} bytes for a {row_bytes:.0}-byte row");
+    assert!(save <= PINNED_RETAINED_PER_SAVE, "a SAVE retains {save:.0} bytes > {PINNED_RETAINED_PER_SAVE}");
 }
 
 fn session_schema() -> OrbitalSchema {

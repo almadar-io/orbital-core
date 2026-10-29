@@ -328,7 +328,7 @@ impl ServiceHandler for Llm {
         }
         let mut out = ValueMap::new();
         out.insert(
-            "embeddings".to_string(),
+            "embeddings".into(),
             Value::array(vec![Value::Number(1.0)]),
         );
         Ok(Value::object(out))
@@ -1070,14 +1070,8 @@ fn blocking_responses(setup: &Setup) -> Vec<Json> {
                 Step::Mount(list) => list[0],
             };
             // A mount carries whole rows (EXEC-DIST-7); every other dispatch carries only what it wrote.
-            let response = match step {
-                Step::Mount(_) => orbital_core_runtime::effects::response::EventResponse::from_process_results_mount(
-                    &outcomes, t, e,
-                ),
-                Step::Dispatch { .. } => orbital_core_runtime::effects::response::EventResponse::from_process_results(
-                    &outcomes, t, e,
-                ),
-            };
+            let mut response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, t, e);
+            kernel.seal_outcomes(&mut response, &outcomes, None, matches!(step, Step::Mount(_)));
             serde_json::to_value(response).unwrap()
         })
         .collect()

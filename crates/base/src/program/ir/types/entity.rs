@@ -303,6 +303,9 @@ pub struct OirRelation {
     pub cardinality: OirCardinality,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub foreign_key: Option<String>,
+    /// The target field a related record is shown by; the record id when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 /// Relationship cardinality

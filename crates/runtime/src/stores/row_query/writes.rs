@@ -1,6 +1,7 @@
 //! Conditional writes: ops, outcomes, batches and commits applied to rows in memory.
 
 use super::*;
+use orbital_core_base::intern::KeyVocabulary;
 
 // ----- writes ---------------------------------------------------------------------------------
 
@@ -143,6 +144,7 @@ pub fn apply_write(
     table: &mut RowTable,
     op: &RowWriteOp,
     ids: &mut CreateIds<'_>,
+    vocab: &mut KeyVocabulary,
 ) -> RowWriteOutcome {
     match op {
         RowWriteOp::Create { data, .. } => {
@@ -170,8 +172,8 @@ pub fn apply_write(
                 Value::Object(o) => o.clone(),
                 _ => orbital_core_base::value::ValueMap::default().into(),
             };
-            fields.insert("id".to_string(), Value::string(id.clone()));
-            let row = Value::Object(fields);
+            fields.insert("id".into(), Value::string(id.clone()));
+            let row = vocab.row(Value::Object(fields));
             table.insert(id, Arc::new(row.clone()));
             RowWriteOutcome::Created { row }
         }
@@ -191,7 +193,7 @@ pub fn apply_write(
                 Value::Object(o) => o.clone(),
                 _ => orbital_core_base::value::ValueMap::default().into(),
             };
-            fields.insert("id".to_string(), Value::string(id.clone()));
+            fields.insert("id".into(), Value::string(id.clone()));
             let kept = table.get(&id).map(|existing| {
                 existing
                     .as_object()
@@ -199,9 +201,9 @@ pub fn apply_write(
                     .cloned()
             });
             if let Some(Some(created_at)) = &kept {
-                fields.insert("createdAt".to_string(), created_at.clone());
+                fields.insert("createdAt".into(), created_at.clone());
             }
-            let row = Value::Object(fields);
+            let row = vocab.row(Value::Object(fields));
             table.insert(id, Arc::new(row.clone()));
             match kept {
                 Some(_) => RowWriteOutcome::Updated {
@@ -229,8 +231,8 @@ pub fn apply_write(
                     fields.insert(k.clone(), v.clone());
                 }
             }
-            fields.insert("id".to_string(), Value::string(id.clone()));
-            let row = Value::Object(fields);
+            fields.insert("id".into(), Value::string(id.clone()));
+            let row = vocab.row(Value::Object(fields));
             table.insert(id.clone(), Arc::new(row.clone()));
             RowWriteOutcome::Updated {
                 row,
@@ -257,8 +259,8 @@ pub fn apply_write(
                         message: "rekey needs an object row".to_string(),
                     };
                 };
-                moved.insert("id".to_string(), Value::string(new_id.clone()));
-                let moved = Arc::new(Value::Object(moved));
+                moved.insert("id".into(), Value::string(new_id.clone()));
+                let moved = Arc::new(vocab.row(Value::Object(moved)));
                 let original = std::mem::take(table);
                 for (key, row) in original {
                     if key == *id {
@@ -333,13 +335,14 @@ pub fn apply_write_batch_across(
     tables: &mut HashMap<String, RowTable>,
     batch: &RowWriteBatch,
     ids: &mut dyn FnMut(&str) -> CreateIds<'static>,
+    vocab: &mut KeyVocabulary,
 ) -> Vec<RowWriteOutcome> {
     let snapshot = (batch.on_failure == RowWriteFailureMode::Atomic && batch.ops.len() > 1)
         .then(|| tables.clone());
     let mut outcomes: Vec<RowWriteOutcome> = Vec::with_capacity(batch.ops.len());
     for op in &batch.ops {
         let table = tables.entry(op.entity_type().to_string()).or_default();
-        let outcome = apply_write(table, op, &mut ids(op.entity_type()));
+        let outcome = apply_write(table, op, &mut ids(op.entity_type()), vocab);
         let applied = outcome.applied();
         outcomes.push(outcome);
         if !applied {
@@ -365,12 +368,13 @@ pub fn apply_write_batch(
     table: &mut RowTable,
     batch: &RowWriteBatch,
     ids: &mut CreateIds<'_>,
+    vocab: &mut KeyVocabulary,
 ) -> Vec<RowWriteOutcome> {
     let snapshot = (batch.on_failure == RowWriteFailureMode::Atomic && batch.ops.len() > 1)
         .then(|| table.clone());
     let mut outcomes: Vec<RowWriteOutcome> = Vec::with_capacity(batch.ops.len());
     for op in &batch.ops {
-        let outcome = apply_write(table, op, ids);
+        let outcome = apply_write(table, op, ids, vocab);
         let applied = outcome.applied();
         outcomes.push(outcome);
         if !applied {

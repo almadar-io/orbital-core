@@ -30,7 +30,7 @@ fn a_tuple_field_reads_its_slots_in_order() {
         ]
     );
     assert_eq!(
-        field_shape(&f),
+        field_shape(&f).unwrap(),
         OirType::Tuple {
             items: vec![
                 OirType::Number,

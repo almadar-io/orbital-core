@@ -154,6 +154,7 @@ impl TraitReference {
 /// `Deserialize` for `TraitReference` can deserialize the named-reference shape
 /// in one concrete pass (producing real field-level errors).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct TraitReferenceFields {
     #[serde(rename = "ref", default)]
     pub(super) reference: Option<String>,
@@ -269,6 +270,93 @@ impl Serialize for TraitReference {
     }
 }
 
+/// Validation code of a trait that carries a retired key.
+pub const RETIRED_TRAIT_KEY_CODE: &str = "ORB_SCHEMA_RETIRED_TRAIT_KEY";
+
+const RETIRED_TRAIT_KEYS: &[(&str, &str)] = &[
+    (
+        "local",
+        "retired; `\"local\": true` is `\"dispatch\": \"client\"`, and `\"local\": false` is deleted",
+    ),
+    (
+        "category",
+        "retired with P-009; declare `dispatch` (`\"client\"` or `\"optimistic\"`) where the trait runs client-side, otherwise delete the key (a trait without `dispatch` is server-awaited)",
+    ),
+    (
+        "scope",
+        "retired when `TraitScope` became `TraitDispatch`; declare `dispatch` (`\"client\"` or `\"optimistic\"`) where the trait runs client-side, otherwise delete the key",
+    ),
+];
+
+/// One retired key found on a trait of a parsed `.orb` document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetiredTraitKey {
+    pub path: String,
+    pub trait_name: Option<String>,
+    pub key: &'static str,
+    pub replacement: &'static str,
+}
+
+impl RetiredTraitKey {
+    pub fn detail(&self) -> String {
+        let owner = self
+            .trait_name
+            .as_deref()
+            .map(|n| format!("trait `{n}`"))
+            .unwrap_or_else(|| "a trait".to_string());
+        format!(
+            "{owner} carries the retired key `{}` ({})",
+            self.key, self.replacement
+        )
+    }
+
+    pub fn message(&self) -> String {
+        format!("{RETIRED_TRAIT_KEY_CODE}: {}", self.detail())
+    }
+}
+
+fn retired_keys_of(
+    trait_obj: &serde_json::Map<String, serde_json::Value>,
+    path: &str,
+) -> Vec<RetiredTraitKey> {
+    let trait_name = trait_obj
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    RETIRED_TRAIT_KEYS
+        .iter()
+        .filter(|(key, _)| trait_obj.contains_key(*key))
+        .map(|(key, replacement)| RetiredTraitKey {
+            path: format!("{path}.{key}"),
+            trait_name: trait_name.clone(),
+            key,
+            replacement,
+        })
+        .collect()
+}
+
+/// Every retired key on the traits of `orbitals[*].traits[*]`, in document order.
+pub fn retired_trait_keys(doc: &serde_json::Value) -> Vec<RetiredTraitKey> {
+    let mut found = Vec::new();
+    let Some(orbitals) = doc.get("orbitals").and_then(serde_json::Value::as_array) else {
+        return found;
+    };
+    for (oi, orbital) in orbitals.iter().enumerate() {
+        let Some(traits) = orbital.get("traits").and_then(serde_json::Value::as_array) else {
+            continue;
+        };
+        for (ti, trait_value) in traits.iter().enumerate() {
+            if let Some(obj) = trait_value.as_object() {
+                found.extend(retired_keys_of(
+                    obj,
+                    &format!("orbitals[{oi}].traits[{ti}]"),
+                ));
+            }
+        }
+    }
+    found
+}
+
 impl<'de> Deserialize<'de> for TraitReference {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -288,6 +376,10 @@ impl<'de> Deserialize<'de> for TraitReference {
         let obj = value.as_object().ok_or_else(|| {
             D::Error::custom("trait reference must be a JSON object (inline trait or { ref: ... })")
         })?;
+
+        if let Some(retired) = retired_keys_of(obj, "").into_iter().next() {
+            return Err(D::Error::custom(retired.message()));
+        }
 
         let is_reference = obj.contains_key("ref") || !obj.contains_key("stateMachine");
         if is_reference {
@@ -337,6 +429,7 @@ pub struct EntityFieldContract {
 
 /// Full trait definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraitDefinition {
     /// Trait name
     pub name: String,
@@ -455,7 +548,11 @@ pub struct TraitDefinition {
     #[serde(rename = "sourceBehavior", skip_serializing_if = "Option::is_none")]
     pub source_behavior: Option<SourceBehaviorMetadata>,
 
-    #[serde(rename = "sourceDeclaration", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "sourceDeclaration",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub source_declaration: Option<SourceDeclarationMetadata>,
 
     /// Set by the inline phase alongside `source_behavior`. Carries the
@@ -632,7 +729,11 @@ pub struct ConfigField {
     pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
-    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "additionalProperties",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub additional_properties: Option<Box<FieldDefinition>>,
     #[serde(rename = "type")]
     pub field_type: String,

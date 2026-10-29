@@ -328,7 +328,7 @@ pub use events::{
     ListenSource, PayloadField, PayloadTypeWhen, CALLSITE_PAYLOAD_PREFIX, PAYLOAD_PREFIX,
 };
 pub use orbital::{
-    EntityRef, EntityRefExtends, ExpectDeclaration, LazyPage, Orbital, OrbitalRefListen,
+    EntityRef, EntityRefExtends, ExpectDeclaration, LazyPage, LazyTrait, Orbital, OrbitalRefListen,
     OrbitalRefObject, OrbitalRefTraitOverride, PageRef, PageRefObject, UseDeclaration,
 };
 pub use page::{
@@ -356,8 +356,9 @@ pub use theme::{
     TypeWeight, BASE_BUSY_DELAY_MS,
 };
 pub use traits::{
-    ConfigField, DispatchMode, EntityFieldContract, SourceBehaviorMetadata,
-    SourceDeclarationMetadata, TraitDefinition, TraitReference, TraitTypeParamDef,
+    retired_trait_keys, ConfigField, DispatchMode, EntityFieldContract, RetiredTraitKey,
+    SourceBehaviorMetadata, SourceDeclarationMetadata, TraitDefinition, TraitReference,
+    TraitTypeParamDef, RETIRED_TRAIT_KEY_CODE,
 };
 
 #[cfg(test)]

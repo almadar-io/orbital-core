@@ -145,8 +145,9 @@ pub fn is_program_data(t: &OirType) -> bool {
     }
 }
 
+/// The types that say nothing a check can use: the expression type and the erased variable.
 pub fn is_json_family(t: &OirType) -> bool {
-    matches!(t, OirType::Json | OirType::SExpr)
+    matches!(t, OirType::SExpr) || t.is_erased()
 }
 
 /// Kinds the legacy predicate erased to `"string"`: String itself, and the
@@ -182,7 +183,7 @@ pub fn primitive_union_member(dst: &OirType, src: &OirType) -> bool {
     variants.iter().any(|v| {
         !matches!(
             v.field_type,
-            OirType::Struct { .. } | OirType::Union { .. } | OirType::Map { .. } | OirType::Json
+            OirType::Struct { .. } | OirType::Union { .. } | OirType::Map { .. }
         ) && assignable(src, &v.field_type)
     })
 }

@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 use super::dispatch_memory::DispatchView;
 use super::shared_entity::SharedEntity;
 use orbital_core_base::effect_types::{Effect, EffectResult};
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Shared, Value};
 use orbital_core_base::schema::types::{FieldDefinition, PageRef};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_eval::state_machine::types::ArmGuard;
@@ -111,7 +111,7 @@ pub struct ProcessEventResult {
 
 impl ProcessEventResult {
     /// The fields this step wrote, in write order, last write winning.
-    pub fn written_values(&self) -> impl Iterator<Item = (&String, &Value)> {
+    pub fn written_values(&self) -> impl Iterator<Item = (&Shared<String>, &Value)> {
         self.written
             .fields()
             .into_iter()

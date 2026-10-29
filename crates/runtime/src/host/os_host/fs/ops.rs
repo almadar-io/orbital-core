@@ -52,7 +52,7 @@ fn obj<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     Value::Object(
         (pairs
             .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
+            .map(|(k, v)| (k.into(), v))
             .collect::<ValueMap>()).into(),
     )
 }

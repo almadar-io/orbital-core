@@ -118,7 +118,7 @@ fn pg_run(call: PostgresCallSpec, password: Option<&str>, replies: Vec<Vec<u8>>)
         ops.push(ask_name(&ask));
         let answer = match &ask {
             DriverAsk::Secret { .. } => DriverAnswer::Secret(Ok(password.map(str::to_string))),
-            DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
+            DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".into(), Value::Number(5.0))])))),
             DriverAsk::Os { op: OsOp::Send, args, .. } => {
                 let Value::String(b64) = &args[1] else { panic!("os/send carries base64 data") };
                 sent.push(base64_decode(b64).expect("os/send data is base64"));
@@ -129,8 +129,8 @@ fn pg_run(call: PostgresCallSpec, password: Option<&str>, replies: Vec<Vec<u8>>)
                     return PgRun { ops, step, sent };
                 };
                 DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
-                    ("data".to_string(), Value::string(base64_encode(&reply))),
-                    ("eof".to_string(), Value::Bool(false)),
+                    ("data".into(), Value::string(base64_encode(&reply))),
+                    ("eof".into(), Value::Bool(false)),
                 ]))))
             }
             DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::default()))),

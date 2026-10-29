@@ -520,19 +520,19 @@ pub fn result_value(columns: &[Column], rows: &[Vec<Option<Vec<u8>>>], tag: Opti
     for row in rows {
         let mut object = ValueMap::default();
         for (column, cell) in columns.iter().zip(row) {
-            object.insert(column.name.clone(), cell_value(column.type_oid, cell.as_deref())?);
+            object.insert(column.name.clone().into(), cell_value(column.type_oid, cell.as_deref())?);
         }
         out_rows.push(Value::object(object));
     }
     let counted = tag.and_then(|t| t.rsplit(' ').next()).and_then(|n| n.parse::<f64>().ok()).unwrap_or(rows.len() as f64);
     let columns_value = columns
         .iter()
-        .map(|c| Value::object(ValueMap::from_iter([("name".to_string(), Value::String(c.name.clone().into())), ("typeOid".to_string(), Value::Number(f64::from(c.type_oid)))])))
+        .map(|c| Value::object(ValueMap::from_iter([("name".into(), Value::String(c.name.clone().into())), ("typeOid".into(), Value::Number(f64::from(c.type_oid)))])))
         .collect();
     Ok(Value::object(ValueMap::from_iter([
-        ("rows".to_string(), Value::Array(out_rows.into())),
-        ("rowCount".to_string(), Value::Number(counted)),
-        ("columns".to_string(), Value::Array(columns_value)),
+        ("rows".into(), Value::Array(out_rows.into())),
+        ("rowCount".into(), Value::Number(counted)),
+        ("columns".into(), Value::Array(columns_value)),
     ])))
 }
 
@@ -954,7 +954,7 @@ impl PostgresDriver {
         let outcome = match result_value(&self.columns, &self.rows, self.tag.as_deref()) {
             Ok(Value::Object(mut result)) => {
                 if let Some(key) = &self.key {
-                    result.insert("key".to_string(), Value::string(key.clone()));
+                    result.insert("key".into(), Value::string(key.clone()));
                 }
                 Ok(Value::Object(result))
             }
@@ -1202,7 +1202,7 @@ mod tests {
             let answer = match &ask {
                 DriverAsk::Secret { .. } => DriverAnswer::Secret(Ok(password.map(str::to_string))),
                 DriverAsk::Random { bytes } => DriverAnswer::Random(Ok(vec![7u8; *bytes as usize])),
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".into(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Send, args, .. } => {
                     let Value::String(b64) = &args[1] else { panic!("send data") };
                     sent.push(base64_decode(b64).expect("base64"));
@@ -1211,8 +1211,8 @@ mod tests {
                 DriverAsk::Os { op: OsOp::Recv, .. } => {
                     let Some(reply) = replies.next() else { return (asks, step, sent) };
                     DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
-                        ("data".to_string(), text(&base64_encode(&reply(&sent)))),
-                        ("eof".to_string(), Value::Bool(false)),
+                        ("data".into(), text(&base64_encode(&reply(&sent)))),
+                        ("eof".into(), Value::Bool(false)),
                     ]))))
                 }
                 DriverAsk::Os { op: OsOp::Close, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::default()))),
@@ -1285,15 +1285,15 @@ mod tests {
         assert_eq!(field(result, "rowCount"), &Value::Number(1.0));
         let row = field(result, "rows");
         assert_eq!(row, &Value::array(vec![Value::Object(ValueMap::from_iter([
-            ("n".to_string(), Value::Number(42.0)),
-            ("t".to_string(), Value::Null),
-            ("z".to_string(), Value::Null),
+            ("n".into(), Value::Number(42.0)),
+            ("t".into(), Value::Null),
+            ("z".into(), Value::Null),
         ]).into())]));
         assert_eq!(
             field(result, "columns"),
             &Value::Array(vec!["n", "t", "z"].into_iter().zip([23.0, 25.0, 23.0]).map(|(n, o)| Value::object(ValueMap::from_iter([
-                ("name".to_string(), text(n)),
-                ("typeOid".to_string(), Value::Number(o)),
+                ("name".into(), text(n)),
+                ("typeOid".into(), Value::Number(o)),
             ]))).collect())
         );
     }
@@ -1511,7 +1511,7 @@ mod tests {
         for _ in 0..8 {
             let DriverStep::Ask(ask) = step.clone() else { break };
             let answer = match ask {
-                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))])))),
+                DriverAsk::Os { op: OsOp::TcpConnect, .. } => DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".into(), Value::Number(5.0))])))),
                 DriverAsk::Os { op: OsOp::Recv, .. } => DriverAnswer::Os(Err(OsError::new(OsErrorKind::Timeout, "os/recv: timed out"))),
                 DriverAsk::Os { op: OsOp::Close, .. } => {
                     closed = true;
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn the_call_parses_its_options_and_refuses_what_the_guard_or_the_shape_refuses() {
-        let options = |entries: Vec<(&str, Value)>| Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        let options = |entries: Vec<(&str, Value)>| Value::Object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect());
         let ok = parse_postgres_call(
             &text("postgres://h"),
             &text("SELECT $1"),

@@ -160,7 +160,7 @@ impl Operator for ObjectFromEntriesOp {
             if super::util::is_refused_key(&key) {
                 return Ok(Value::Null);
             }
-            result.insert(key, value.clone());
+            result.insert(key.into(), value.clone());
         }
 
         Ok(Value::object(result))
@@ -254,7 +254,7 @@ impl Operator for ObjectPickOp {
         let mut result = ValueMap::default();
         for key in keys {
             if let Some(value) = source.get(&key) {
-                result.insert(key, value.clone());
+                result.insert(key.into(), value.clone());
             }
         }
 
@@ -296,7 +296,7 @@ impl Operator for ObjectOmitOp {
 
         let result: ValueMap = source
             .into_iter()
-            .filter(|(k, _)| !omit_keys.contains(k))
+            .filter(|(k, _)| !omit_keys.contains(k.as_str()))
             .collect();
 
         Ok(Value::object(result))
@@ -411,7 +411,7 @@ impl Operator for ObjectMapKeysOp {
             }
             let new_key = eval_expr(&body, &child_ctx)?.text()?.to_string();
             refused |= super::util::is_refused_key(&new_key);
-            result.insert(new_key, value);
+            result.insert(new_key.into(), value);
         }
 
         if refused {

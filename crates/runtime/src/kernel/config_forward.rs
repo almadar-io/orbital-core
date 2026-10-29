@@ -15,7 +15,7 @@ pub(super) fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
     if let Some(cfg) = &trait_def.config {
         for (k, field) in cfg {
             if let Some(default) = field.default.as_ref() {
-                map.insert(k.clone(), sexpr_to_value(default));
+                map.insert(k.clone().into(), sexpr_to_value(default));
             }
         }
     }
@@ -75,7 +75,7 @@ pub(super) fn resolve_config_forwards<T: std::borrow::Borrow<TraitDefinition>>(
     let forwards: Vec<(String, String)> = map
         .iter()
         .filter_map(|(k, v)| match v {
-            Value::String(s) => forward_key(s).map(|fk| (k.clone(), fk)),
+            Value::String(s) => forward_key(s).map(|fk| (k.to_string(), fk)),
             _ => None,
         })
         .collect();
@@ -85,9 +85,9 @@ pub(super) fn resolve_config_forwards<T: std::borrow::Borrow<TraitDefinition>>(
         if let Some(resolved) = resolve_forward_key(&fwd_key, all_traits, &mut visited) {
             // Expose the host knob under its own name (the token the render-ui
             // reads) without clobbering a same-named local concrete knob…
-            map.entry(fwd_key).or_insert_with(|| resolved.clone());
+            map.entry(fwd_key.into()).or_insert_with(|| resolved.clone());
             // …and collapse the forwarding field itself.
-            map.insert(field, resolved);
+            map.insert(field.into(), resolved);
         }
     }
 }

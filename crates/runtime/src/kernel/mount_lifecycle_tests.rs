@@ -136,7 +136,7 @@ fn a_seed_waits_for_the_receivers_own_init() {
 /// `_awaitingInit` (JS twin: `riya-level-seed-reaches-the-body.test.ts`).
 fn leg(awaiting: &[&str]) -> Value {
     Value::object(ValueMap::from_iter([(
-        "_awaitingInit".to_string(),
+        "_awaitingInit".into(),
         Value::Array(
             awaiting
                 .iter()
@@ -212,4 +212,53 @@ fn an_unmounted_trait_keeps_nothing_held() {
     kernel.unmount_traits(["Body"]);
     kernel.dispatch("Body", None, "INIT", Value::Null).unwrap();
     assert_eq!(body_state(&kernel), "ready");
+}
+
+fn kernel_with_listener_without_a_lifecycle_arm() -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "Boot",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Level",
+            "entity": { "name": "World", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Seeder", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "SEND", "effects": [["emit", "SEED", {}]] }] } },
+                { "name": "Body",
+                  "listens": [{ "event": "SEED", "triggers": "SET", "source": { "kind": "trait", "trait": "Seeder" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "seeded" }],
+                    "transitions": [{ "from": "idle", "to": "seeded", "event": "SET" }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+/// A trait that handles no lifecycle event has none to await: a mount seeds nothing for it, so holding its
+/// deliveries for an INIT that can never run would drop every listen it has.
+#[test]
+fn a_mounted_trait_with_no_lifecycle_arm_hears_its_listens() {
+    let kernel = kernel_with_listener_without_a_lifecycle_arm();
+    kernel.remount_traits(["Seeder", "Body"]);
+    kernel.dispatch("Seeder", None, "INIT", Value::Null).unwrap();
+    kernel.dispatch("Seeder", None, "SEND", Value::Null).unwrap();
+    assert_eq!(body_state(&kernel), "seeded");
+}
+
+#[test]
+fn control_a_mounted_trait_with_a_lifecycle_arm_still_waits_for_it() {
+    let kernel = kernel();
+    kernel.remount_traits(["Seeder", "Body"]);
+    kernel.dispatch("Seeder", None, "INIT", Value::Null).unwrap();
+    assert_eq!(body_state(&kernel), "idle", "Body's delivery is held until its own INIT");
 }

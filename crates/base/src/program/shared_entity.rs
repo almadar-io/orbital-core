@@ -4,14 +4,14 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::value::{path_segments, Value, ValueMap};
+use crate::value::{path_segments, Shared, Value, ValueMap};
 use serde::ser::SerializeMap;
 use serde::{Serialize, Serializer};
 use std::borrow::Cow;
 use crate::sync::OnceLock;
 use std::sync::Arc;
 
-pub type SharedFields = crate::collections::IndexMap<String, Arc<Value>>;
+pub type SharedFields = crate::collections::IndexMap<Shared<String>, Arc<Value>>;
 
 #[derive(Debug, Clone, Default)]
 pub struct SharedEntity(Repr);
@@ -231,7 +231,7 @@ impl SharedEntity {
 
     /// Writes one field; every other field keeps its `Arc`, and the field map is copied only while another holder
     /// shares it. `false` when `self` is not an object.
-    pub fn set_field(&mut self, field: String, value: Value) -> bool {
+    pub fn set_field(&mut self, field: impl Into<Shared<String>>, value: Value) -> bool {
         if let Repr::Other(_) = &self.0 {
             match self.object_fields() {
                 Some(fields) => *self = Self::object(fields.into_owned()),
@@ -240,7 +240,7 @@ impl SharedEntity {
         }
         match &mut self.0 {
             Repr::Object(fields, whole) => {
-                Arc::make_mut(fields).insert(field, Arc::new(value));
+                Arc::make_mut(fields).insert(field.into(), Arc::new(value));
                 *whole = OnceLock::new();
                 true
             }
@@ -256,10 +256,16 @@ impl SharedEntity {
         };
         match self.object_fields() {
             Some(base) => {
-                let mut merged = SharedFields::with_capacity_and_hasher(base.len() + set_fields.len(), Default::default());
+                let added = set_fields.keys().filter(|k| !base.contains_key(k.as_str())).count();
+                let mut merged = SharedFields::with_capacity_and_hasher(base.len() + added, Default::default());
                 merged.extend(base.iter().map(|(k, v)| (k.clone(), Arc::clone(v))));
                 for (k, v) in set_fields.iter() {
-                    merged.insert(k.clone(), Arc::clone(v));
+                    match merged.get_mut(k.as_str()) {
+                        Some(slot) => *slot = Arc::clone(v),
+                        None => {
+                            merged.insert(k.clone(), Arc::clone(v));
+                        }
+                    }
                 }
                 Self::object(merged)
             }
@@ -332,6 +338,17 @@ mod tests {
             merged.to_value(),
             val(json!({ "blob": "x".repeat(64), "n": 2 }))
         );
+    }
+
+    #[test]
+    fn a_merge_keeps_the_base_field_order_and_appends_new_fields() {
+        let base = SharedEntity::from_value(val(json!({ "a": 1, "b": 2, "c": 3 })));
+        let set = SharedEntity::from_value(val(json!({ "c": 30, "d": 4, "a": 10 })));
+        let merged = base.merged(&set);
+        let keys: Vec<&str> = merged.fields().unwrap().keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, ["a", "b", "c", "d"]);
+        assert_eq!(merged.to_value(), val(json!({ "a": 10, "b": 2, "c": 30, "d": 4 })));
+        assert_eq!(base.to_value(), val(json!({ "a": 1, "b": 2, "c": 3 })), "control: the base is untouched");
     }
 
     #[test]
@@ -417,7 +434,7 @@ mod tests {
     fn a_field_write_keeps_every_other_field_allocation() {
         let base = SharedEntity::from_value(val(json!({ "blob": "x".repeat(64), "n": 1 })));
         let mut written = base.clone();
-        assert!(written.set_field("n".into(), val(json!(2))));
+        assert!(written.set_field("n", val(json!(2))));
         assert!(Arc::ptr_eq(
             base.field_arc("blob").unwrap(),
             written.field_arc("blob").unwrap()
@@ -430,9 +447,9 @@ mod tests {
             base.to_value(),
             val(json!({ "blob": "x".repeat(64), "n": 1 }))
         );
-        assert!(!SharedEntity::null().set_field("n".into(), Value::Null));
+        assert!(!SharedEntity::null().set_field("n", Value::Null));
         let mut whole = SharedEntity::whole(val(json!({ "a": 1 })));
-        assert!(whole.set_field("b".into(), val(json!(2))));
+        assert!(whole.set_field("b", val(json!(2))));
         assert_eq!(whole.to_value(), val(json!({ "a": 1, "b": 2 })));
     }
 
@@ -442,7 +459,7 @@ mod tests {
         let first: *const Value = shared.as_value();
         assert!(std::ptr::eq(first, shared.as_value()));
         let mut written = shared.clone();
-        written.set_field("a".into(), val(json!(9)));
+        written.set_field("a", val(json!(9)));
         assert_eq!(written.as_value(), &val(json!({ "a": 9, "b": [true] })));
         assert_eq!(shared.as_value(), &val(json!({ "a": 1, "b": [true] })));
     }

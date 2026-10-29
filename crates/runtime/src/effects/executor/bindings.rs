@@ -100,9 +100,10 @@ impl EffectExecutor {
             })
             .collect::<Result<Vec<f64>, String>>()?;
         let k = match member("k")? {
-            Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => n as usize,
-            _ => return Err("nearest `k` must be a positive integer".to_string()),
-        };
+            Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => std::num::NonZeroUsize::new(n as usize),
+            _ => None,
+        }
+        .ok_or_else(|| "nearest `k` must be a positive integer".to_string())?;
         Ok(Some(Box::new(RowNearest { field: field.into_inner(), vector, k })))
     }
 

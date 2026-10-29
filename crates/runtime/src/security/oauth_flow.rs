@@ -146,7 +146,7 @@ fn refused(message: impl Into<String>) -> FlowStep {
 }
 
 fn object(entries: Vec<(&str, Value)>) -> Value {
-    Value::object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect::<ValueMap>())
+    Value::object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect::<ValueMap>())
 }
 
 /// A connection row as the payload a program reads.
@@ -307,9 +307,9 @@ pub fn plan_authorize(client: &Value, options: &Value) -> Result<AuthorizePlan, 
         Some(Value::Object(params)) => params
             .iter()
             .map(|(name, value)| match value {
-                Value::String(text) => Ok((name.clone(), text.to_string())),
-                Value::Number(n) => Ok((name.clone(), orbital_core_base::str_utils::js_number_string(*n))),
-                Value::Bool(b) => Ok((name.clone(), b.to_string())),
+                Value::String(text) => Ok((name.to_string(), text.to_string())),
+                Value::Number(n) => Ok((name.to_string(), orbital_core_base::str_utils::js_number_string(*n))),
+                Value::Bool(b) => Ok((name.to_string(), b.to_string())),
                 _ => Err(authorize_fault("params must be strings, numbers or booleans")),
             })
             .collect::<Result<Vec<_>, _>>()?,

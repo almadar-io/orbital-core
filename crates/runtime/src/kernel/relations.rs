@@ -103,11 +103,11 @@ pub fn populate_relations(
         };
         let all: ValueMap = listed
             .into_iter()
-            .filter_map(|row| id_of(&row).map(|id| (id, (*row).clone())))
+            .filter_map(|row| id_of(&row).map(|id| (id.into(), (*row).clone())))
             .collect();
         let mut related: ValueMap = wanted
             .iter()
-            .filter_map(|id| all.get(id).map(|row| (id.clone(), row.clone())))
+            .filter_map(|id| all.get(id).map(|row| (id.clone().into(), row.clone())))
             .collect();
 
         let is_self = related_type == entity_type;
@@ -122,7 +122,7 @@ pub fn populate_relations(
                             continue;
                         }
                         if let Some(loaded) = all.get(&id) {
-                            related.insert(id, loaded.clone());
+                            related.insert(id.into(), loaded.clone());
                             next.push(loaded.clone());
                         }
                     }
@@ -153,9 +153,9 @@ pub fn populate_relations(
                                 clone_of(&child, &lineage, related, fk_field, self_tree, is_self)
                             })
                             .collect();
-                        map.insert(fk_field.to_string(), Value::Array(children));
+                        map.insert(fk_field.to_string().into(), Value::Array(children));
                     } else if is_self {
-                        map.insert(fk_field.to_string(), Value::array(Vec::new()));
+                        map.insert(fk_field.to_string().into(), Value::array(Vec::new()));
                     }
                 }
                 Some(copy)
@@ -189,31 +189,43 @@ pub fn populate_relations(
                 }
             };
             if let (Some(attached), Value::Object(map)) = (attached, row) {
-                map.insert(populated.clone(), attached);
+                map.insert(populated.clone().into(), attached);
             }
         }
     }
 }
 
+/// The entity a relation field points at and the field of it the related record is shown by.
+struct RelationTarget {
+    entity: String,
+    display: Option<String>,
+}
+
 /// The relation fields of `entity_type`, by field name, with the entity each points at.
-fn relation_targets(defs: &EntityDefinitions, entity_type: &str) -> HashMap<String, String> {
+fn relation_targets(defs: &EntityDefinitions, entity_type: &str) -> HashMap<String, RelationTarget> {
     let Some(def) = defs.get(entity_type) else {
         return HashMap::new();
     };
     named_fields(def)
         .filter(|(_, field)| matches!(field.field_type, FieldType::Relation))
         .filter_map(|(name, field)| {
-            field
-                .relation
-                .as_ref()
-                .map(|relation| (name.to_string(), relation.entity.clone()))
+            field.relation.as_ref().map(|relation| {
+                (
+                    name.to_string(),
+                    RelationTarget {
+                        entity: relation.entity.clone(),
+                        display: relation.display.clone(),
+                    },
+                )
+            })
         })
         .collect()
 }
 
 /// Walk a `render-ui` pattern tree: every node whose pattern declares a `@fieldsContract` and lists
 /// relation-typed fields among its `fields` / `columns` gets `relationsData: { <field>: [{ value, label }] }`
-/// read from the relation's target entity (label `name || title || id`). Authored `relationsData` is kept.
+/// read from the relation's target entity (label: the relation's declared `display` field, the record id when
+/// it declares none or the row has no value there). Authored `relationsData` is kept.
 /// A target table the source cannot list gives that field no options (the select renders empty); a source
 /// still waiting on its host also lands here, and the caller discards the suspended step.
 pub fn inject_relation_options(
@@ -240,7 +252,7 @@ fn field_name(entry: &Value) -> Option<String> {
     }
 }
 
-fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mut Value) {
+fn visit(source: &dyn EntitySource, targets: &HashMap<String, RelationTarget>, node: &mut Value) {
     match node {
         Value::Array(items) => {
             for item in items {
@@ -264,7 +276,7 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                     let Some(target) = targets.get(&name) else {
                         continue;
                     };
-                    let Ok(rows) = source.list(target) else {
+                    let Ok(rows) = source.list(&target.entity) else {
                         continue;
                     };
                     let options = rows
@@ -276,19 +288,21 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, String>, node: &mu
                                     .map(Value::to_string_value)
                             };
                             let id = text("id").unwrap_or_default();
-                            let label = text("name")
-                                .or_else(|| text("title"))
+                            let label = target
+                                .display
+                                .as_deref()
+                                .and_then(text)
                                 .unwrap_or_else(|| id.clone());
                             Value::object(ValueMap::from_iter([
-                                ("value".to_string(), Value::String(id.into())),
-                                ("label".to_string(), Value::String(label.into())),
+                                ("value".into(), Value::String(id.into())),
+                                ("label".into(), Value::String(label.into())),
                             ]))
                         })
                         .collect();
-                    data.insert(name, Value::Array(options));
+                    data.insert(name.into(), Value::Array(options));
                 }
                 if !data.is_empty() {
-                    map.insert("relationsData".to_string(), Value::object(data));
+                    map.insert("relationsData".into(), Value::object(data));
                 }
             }
             if let Some(children) = map.get_mut("children") {

@@ -179,8 +179,8 @@ mod tests {
             .enumerate()
             .map(|(i, role)| {
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::string(format!("Person-{}", i + 1)));
-                m.insert("role".to_string(), Value::string((*role).to_string()));
+                m.insert("id".into(), Value::string(format!("Person-{}", i + 1)));
+                m.insert("role".into(), Value::string((*role).to_string()));
                 Value::object(m)
             })
             .collect()

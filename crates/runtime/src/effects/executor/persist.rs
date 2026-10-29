@@ -171,7 +171,7 @@ impl EffectExecutor {
                 let mut patch = data.as_object().cloned().unwrap_or_default();
                 for (name, _) in &scope.derived {
                     if let Some(value) = computed.as_object().and_then(|o| o.get(name)) {
-                        patch.insert(name.clone(), value.clone());
+                        patch.insert(name.clone().into(), value.clone());
                     }
                 }
                 view.insert(key, Some(computed));
@@ -463,7 +463,7 @@ impl EffectExecutor {
         };
         let mut row = data.as_object().cloned().unwrap_or_default();
         if let Some(created_at) = existing.as_object().and_then(|o| o.get("createdAt")) {
-            row.insert("createdAt".to_string(), created_at.clone());
+            row.insert("createdAt".into(), created_at.clone());
         }
         persistence.delete(entity_type, id)?;
         persistence.create(entity_type, &Value::object(row))

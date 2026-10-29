@@ -8,6 +8,7 @@ use super::*;
 
 /// Page (route) definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PageDefinition {
     /// Page name
     pub name: String,
@@ -38,6 +39,10 @@ pub struct PageDefinition {
     /// Whether this is the initial page
     #[serde(rename = "isInitial", skip_serializing_if = "Option::is_none")]
     pub is_initial: Option<bool>,
+
+    /// Whether this is the page shown for a path no page matches (`[notFound]`)
+    #[serde(rename = "isNotFound", default, skip_serializing_if = "Option::is_none")]
+    pub is_not_found: Option<bool>,
 
     /// Traits active on this page
     #[serde(skip_serializing_if = "Option::is_none")]

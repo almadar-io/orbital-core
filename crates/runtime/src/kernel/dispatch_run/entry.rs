@@ -305,6 +305,7 @@ impl RuntimeKernel {
         tick_name: &str,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
+        self.ensure_trait_loaded(trait_name)?;
         let defs = self.registry.trait_definitions.read();
         let declared = defs.get(trait_name).ok_or_else(|| {
             DispatchError::Kernel(KernelError::TraitNotFound(trait_name.to_string()))

@@ -353,12 +353,8 @@ impl Relation<'_> {
             | OirType::File
             | OirType::TypeRef { .. }
             | OirType::Row { .. }
-            | OirType::Json
             | OirType::SExpr => match src {
                 _ if is_object_family(src) || is_json_family(src) => {
-                    Some(Coercion::Erase { from: src.clone() })
-                }
-                OirType::Var { .. } if matches!(dst, OirType::Json) => {
                     Some(Coercion::Erase { from: src.clone() })
                 }
                 _ if matches!(dst, OirType::SExpr) && is_program_data(src) => {
@@ -455,7 +451,10 @@ impl Relation<'_> {
             },
             // Opaque: only the same variable (identity, caught above) or an unknowable value.
             OirType::Var { .. } => match src {
-                OirType::Json => Some(Coercion::Erase { from: src.clone() }),
+                _ if src.is_erased() => Some(Coercion::Erase { from: src.clone() }),
+                _ if dst.is_erased() && (is_object_family(src) || is_json_family(src) || matches!(src, OirType::Var { .. })) => {
+                    Some(Coercion::Erase { from: src.clone() })
+                }
                 _ => None,
             },
         }

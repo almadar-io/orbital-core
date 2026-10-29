@@ -6,10 +6,13 @@
 use std::prelude::v1::*;
 
 pub mod eval_wire;
+mod fold_order;
+pub(crate) mod ticket_queue;
 pub mod memory;
 pub mod server;
 pub mod wire;
 
+pub use fold_order::{FoldProgress, FoldedNext};
 pub use server::{
     substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, tab_url_matches,
     EmbeddedServer, ServerProgress, ServerResolve,
@@ -22,7 +25,7 @@ use crate::effects::response::{EventRequest, EventResponse};
 use crate::effects::response::{MountSeed, TransitionHop};
 use crate::entity_source::EntitySource;
 use crate::entity_source::InMemoryEntityCache;
-use crate::kernel::{already_delivered_from, ClientDispatch, EntryError, RuntimeKernel, TraitSnapshot};
+use crate::kernel::{already_delivered_from, ClientDispatch, EntryError, FrameWrite, RuntimeKernel, TraitSnapshot};
 use crate::process_result::ProcessEventResult;
 use crate::server_leg::ServerLegCollector;
 use crate::tick_clock::{Calendar, TickClock};
@@ -72,10 +75,10 @@ pub trait EmbedObserver: Send + Sync {
 fn with_awaiting_init(payload: Value, awaiting: Value) -> Value {
     match payload {
         Value::Object(mut map) => {
-            map.insert("_awaitingInit".to_string(), awaiting);
+            map.insert("_awaitingInit".into(), awaiting);
             Value::Object(map)
         }
-        Value::Null => Value::object(ValueMap::from_iter([("_awaitingInit".to_string(), awaiting)])),
+        Value::Null => Value::object(ValueMap::from_iter([("_awaitingInit".into(), awaiting)])),
         other => other,
     }
 }
@@ -135,6 +138,8 @@ pub struct EmbeddedKernel {
     observer: Option<Arc<dyn EmbedObserver>>,
     /// A frame carries its ticks' `effectResults` only for a host that asked ([`Self::set_frame_effect_results`]).
     frame_effect_results: std::sync::atomic::AtomicBool,
+    /// The flights of the dispatches that owe the host a leg, and the answers waiting for their turn (EXEC-CONC-8).
+    fold_order: fold_order::FoldOrder,
 }
 
 /// Parse the host's light/dark toggle.
@@ -179,6 +184,7 @@ impl EmbeddedKernel {
             mounted: Mutex::new(None),
             observer: None,
             frame_effect_results: std::sync::atomic::AtomicBool::new(false),
+            fold_order: fold_order::FoldOrder::default(),
         })
     }
 
@@ -246,8 +252,10 @@ impl EmbeddedKernel {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let flight = (!server_legs.is_empty() || stateful_leg.is_some()).then(|| self.fold_order.open());
         Ok(DispatchWire {
             orbital: orbital.to_string(),
+            flight,
             seed: SeedWire {
                 trait_name: dispatch.seed.0,
                 event: dispatch.seed.1,
@@ -452,13 +460,17 @@ impl EmbeddedKernel {
             .collect()
     }
 
-    /// Fold a server response, skipping every `(trait, event)` in `already_delivered`.
+    /// Fold a server response, skipping every `(trait, event)` in `already_delivered`, for a host that posts and folds
+    /// synchronously: it has no overlapping dispatch, so the answer ends every flight its dispatches opened. A host
+    /// that posts concurrently folds through [`Self::fold_in_order`] and ends flights itself.
     pub fn apply_server_response(
         &self,
         response: &EventResponse,
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<AppliedWire, String> {
-        self.apply_server_response_since(response, already_delivered, None)
+        let applied = self.apply_server_response_since(response, already_delivered, None);
+        self.fold_order.end_all();
+        applied
     }
 
     /// The mount a reconnecting client posts to rebuild its session (EXEC-DIST-9): `seeds` with the state and the frame this
@@ -473,7 +485,7 @@ impl EmbeddedKernel {
                 traits.push(crate::effects::response::TraitFrom { r#trait: seed.r#trait.clone(), from: held.state, event: None });
             }
             if !held.entity.is_null() {
-                rows.insert(seed.r#trait.clone(), held.entity);
+                rows.insert(seed.r#trait.clone().into(), held.entity);
             }
         }
         EventRequest {
@@ -520,7 +532,7 @@ impl EmbeddedKernel {
             }
             let frame = self.kernel.snapshot_trait(trait_name, entity_id).entity;
             if !frame.is_null() {
-                base.insert(trait_name.clone(), frame);
+                base.insert(trait_name.clone().into(), frame);
             }
         }
         Some(base)
@@ -536,23 +548,31 @@ impl EmbeddedKernel {
         already_delivered: &HashSet<(String, String)>,
         base: Option<&FoldBase>,
     ) -> Result<AppliedWire, String> {
-        let pruned;
-        let response = match base {
-            Some(base) => {
-                pruned = self.changed_since(response, base);
-                &pruned
-            }
-            None => response,
-        };
-        let outcomes = self
+        let by_frame: Option<HashMap<String, ValueMap>> = base.map(|base| {
+            base.iter()
+                .filter_map(|(trait_name, row)| {
+                    Some((self.kernel.trait_frame_key(trait_name), row.as_object()?.clone()))
+                })
+                .collect()
+        });
+        let (outcomes, frames) = self
             .kernel
-            .apply_server_response(response, already_delivered)
+            .apply_server_response_with(response, already_delivered, by_frame.as_ref())
             .map_err(|e| e.to_string())?;
         if let Some(observer) = &self.observer {
             observer.applied(&self.trait_owners, response, &outcomes);
         }
         let mut merged = EventResponse::from_process_results(&outcomes, "", "")
             .with_server_effect_results(response);
+        let painted = self.kernel.diff_frames(frames.writes);
+        self.kernel.seal_outcomes(&mut merged, &outcomes, None, false);
+        if let Some(mut painted) = painted {
+            if let Some(cascade) = merged.frames.take() {
+                painted.ops.extend(cascade.ops);
+                painted.to = cascade.to;
+            }
+            merged.frames = Some(painted);
+        }
         merged.fold_rerenders(&self.kernel.rerender_stale());
         let hops = TransitionHop::of_outcomes(&outcomes);
         merged.transitions = (!hops.is_empty()).then_some(hops);
@@ -577,44 +597,48 @@ impl EmbeddedKernel {
             applied,
             response: merged,
             server_legs,
+            resync: frames.resync,
         })
     }
 
-    fn changed_since(&self, response: &EventResponse, base: &FoldBase) -> EventResponse {
-        let Some(rows) = &response.entity_by_trait else {
-            return response.clone();
-        };
-        let by_frame: HashMap<String, &Value> = base
-            .iter()
-            .map(|(trait_name, row)| (self.kernel.trait_frame_key(trait_name), row))
-            .collect();
-        let delta = |trait_name: &String, row: &Value| -> Value {
-            let own = base.get(trait_name.as_str());
-            let (Some(Value::Object(carried)), Value::Object(fields)) = (
-                own.or_else(|| {
-                    by_frame
-                        .get(&self.kernel.trait_frame_key(trait_name))
-                        .copied()
-                }),
-                row,
-            ) else {
-                return row.clone();
-            };
-            Value::Object(
-                fields
-                    .iter()
-                    .filter(|(field, value)| *field == "id" || carried.get(*field) != Some(*value))
-                    .map(|(field, value)| (field.clone(), value.clone()))
-                    .collect(),
-            )
-        };
-        let mut pruned = response.clone();
-        pruned.entity_by_trait = Some(
-            rows.iter()
-                .map(|(trait_name, row)| (trait_name.clone(), delta(trait_name, row)))
-                .collect(),
-        );
-        pruned
+    /// Open a flight for work the kernel did not wire (a dispatch the host ran on its own, a frame's browser leg).
+    pub fn open_flight(&self) -> u64 {
+        self.fold_order.open()
+    }
+
+    /// [`Self::apply_server_response_since`] in flight order (EXEC-CONC-8): folded now when `flight` is the oldest
+    /// flight still open, else queued behind the older ones and folded by [`Self::next_fold`] once they end.
+    pub fn fold_in_order(
+        &self,
+        flight: u64,
+        response: EventResponse,
+        already_delivered: HashSet<(String, String)>,
+        base: Option<FoldBase>,
+    ) -> Result<FoldProgress, String> {
+        match self.fold_order.admit(flight, response, already_delivered, base)? {
+            Ok(ready) => self
+                .apply_server_response_since(&ready.response, &ready.already_delivered, ready.base.as_ref())
+                .map(|applied| FoldProgress::Applied(Box::new(applied))),
+            Err(ticket) => Ok(FoldProgress::Queued { ticket }),
+        }
+    }
+
+    /// The oldest queued answer that can fold now, folded, with the ticket [`Self::fold_in_order`] queued it under.
+    /// The host calls it after each flight ends until it is `None`.
+    pub fn next_fold(&self) -> Option<FoldedNext> {
+        let (ticket, ready) = self.fold_order.take_next()?;
+        let outcome = self.apply_server_response_since(&ready.response, &ready.already_delivered, ready.base.as_ref());
+        Some(FoldedNext { ticket, outcome })
+    }
+
+    /// `flight` is done (its answers are folded, or the host gave up on them): the next flight's answers may fold.
+    pub fn end_flight(&self, flight: u64) -> bool {
+        self.fold_order.end(flight)
+    }
+
+    /// What a painter at version `since` of this kernel's frames is missing: nothing when current, else the snapshot.
+    pub fn frames_since(&self, since: u64) -> Result<crate::effects::FrameDelta, String> {
+        self.kernel.frames_since(since).ok_or_else(|| "this kernel keeps no frame record".to_string())
     }
 
     /// Roll a trait instance back to `snapshot`; the response carries the repaint it owes.
@@ -624,11 +648,17 @@ impl EmbeddedKernel {
         entity_id: Option<&str>,
         snapshot: TraitSnapshot,
     ) -> EventResponse {
+        let restored_entity = snapshot.entity.as_object().cloned();
         self.kernel.restore_trait(trait_name, entity_id, snapshot);
         if let Some(observer) = &self.observer {
             observer.restored();
         }
         let mut repaint = EventResponse::from_process_results(&[], "", "");
+        let write = match restored_entity {
+            Some(fields) => FrameWrite::Replaced(fields),
+            None => FrameWrite::Removed,
+        };
+        self.kernel.seal_frames(&mut repaint, vec![(self.kernel.trait_frame_key(trait_name), write)]);
         repaint.fold_rerenders(&self.kernel.rerender_stale());
         repaint
     }
@@ -644,7 +674,8 @@ impl EmbeddedKernel {
             .kernel
             .process_tick(trait_name, entity_id, tick_name)
             .map_err(|e| e.to_string())?;
-        let mut response = EventResponse::from_process_result(trait_name, &outcome);
+        let outcomes = [(trait_name.to_string(), outcome)];
+        let mut response = self.kernel.response_for(&outcomes, "", "");
         response.fold_rerenders(&self.kernel.rerender_stale());
         Ok(response)
     }
@@ -670,15 +701,21 @@ impl EmbeddedKernel {
         let mut browser_legs = Vec::new();
         let mut errors = Vec::new();
         let mut dropped_server_effects = 0;
+        // Each tick keeps the server host's order: its own effects, sealed against the view record, then its emit
+        // cascades (whose deltas continue from the record), then the next tick. The frame's response carries the
+        // concatenation of those deltas in order, so no absolute field value from before a cascade is written after it (K5).
+        let mut frames: Option<crate::effects::FrameDelta> = None;
+        let mut sealed = 0;
+        let absorb = |frames: &mut Option<crate::effects::FrameDelta>, delta: crate::effects::FrameDelta| match frames {
+            None => *frames = Some(delta),
+            Some(held) => {
+                held.to = delta.to;
+                held.ops.extend(delta.ops);
+            }
+        };
         for (trait_name, tick) in due {
             let orbital = self.owning_orbital(&trait_name)?;
-            match self.kernel.dispatch_tick_unrepainted(
-                orbital,
-                &trait_name,
-                None,
-                &tick,
-                Some(&self.client_id),
-            ) {
+            match self.kernel.dispatch_tick_own(&trait_name, None, &tick, Some(&self.client_id)) {
                 Ok(dispatched) => {
                     dropped_server_effects += dispatched.discarded_server_effects;
                     if !dispatched.outcome.executed {
@@ -693,47 +730,56 @@ impl EmbeddedKernel {
                             leg,
                         });
                     }
-                    for emit in dispatched.emits {
-                        if let Some(observer) = &self.observer {
-                            observer.dispatched(
-                                &trait_name,
-                                &emit.event,
-                                &emit.payload,
-                                &emit.dispatch,
-                                Some(&tick),
-                            );
-                        }
-                        match self.dispatch_wire(orbital, emit.dispatch) {
-                            Ok(dispatch) => {
-                                dispatch_tick_at.push(fired.len());
-                                dispatches.push(FrameDispatch {
-                                    trait_name: trait_name.clone(),
-                                    dispatch,
-                                });
-                            }
-                            Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
+                    let at = fired.len();
+                    fired.push(FiredTick { trait_name, tick });
+                    let FiredTick { trait_name, tick } = &fired[at];
+                    outcomes.push((trait_name.clone(), dispatched.outcome));
+                    // Own writes are sealed only when a cascade is about to read them, in tick order; ticks with no
+                    // cascade between them seal together.
+                    if outcomes[at].1.effect_results.iter().any(|r| matches!(r.effect, Effect::Emit { .. })) {
+                        let mut own = EventResponse::default();
+                        self.kernel.seal_outcomes(&mut own, &outcomes[sealed..], None, false);
+                        sealed = outcomes.len();
+                        if let Some(delta) = own.frames {
+                            absorb(&mut frames, delta);
                         }
                     }
-                    fired.push(FiredTick {
-                        trait_name: trait_name.clone(),
-                        tick,
-                    });
-                    outcomes.push((trait_name, dispatched.outcome));
-                    for rerender in &dispatched.rerenders {
-                        for effect in &rerender.effects {
-                            if let Effect::RenderUi { slot, .. } = effect {
-                                last_repaint.insert(
-                                    (rerender.trait_name.clone(), slot.clone()),
-                                    fired.len() - 1,
-                                );
+                    match self.kernel.dispatch_tick_emits(orbital, trait_name, None, tick, Some(&self.client_id), &outcomes[at].1) {
+                        Ok(emits) => {
+                            for emit in emits {
+                                if let Some(observer) = &self.observer {
+                                    observer.dispatched(trait_name, &emit.event, &emit.payload, &emit.dispatch, Some(tick));
+                                }
+                                if let Some(delta) = emit.dispatch.response.frames.clone() {
+                                    absorb(&mut frames, delta);
+                                }
+                                match self.dispatch_wire(orbital, emit.dispatch) {
+                                    Ok(dispatch) => {
+                                        dispatch_tick_at.push(at);
+                                        dispatches.push(FrameDispatch {
+                                            trait_name: trait_name.clone(),
+                                            dispatch,
+                                        });
+                                    }
+                                    Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
+                                }
                             }
                         }
+                        Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
                     }
-                    rerenders.extend(dispatched.rerenders);
                 }
                 Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
             }
         }
+        let mut response = EventResponse::from_process_results(&outcomes, "", "");
+        if sealed < outcomes.len() {
+            let mut rest = EventResponse::default();
+            self.kernel.seal_outcomes(&mut rest, &outcomes[sealed..], None, false);
+            if let Some(delta) = rest.frames {
+                absorb(&mut frames, delta);
+            }
+        }
+        response.frames = frames;
         if fired.is_empty() && errors.is_empty() {
             return Ok(None);
         }
@@ -762,7 +808,6 @@ impl EmbeddedKernel {
                 .collect();
             dispatch.dispatch.response.drop_renders_of(&superseded);
         }
-        let mut response = EventResponse::from_process_results(&outcomes, "", "");
         response.fold_rerenders(&rerenders);
         // A frame names only the traits a tick moved; the host holds every other state (P-015).
         response

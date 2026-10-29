@@ -112,7 +112,7 @@ pub struct HttpCallDriver {
 /// A call with no `key` answers with no `key` field: a field without `!` is absent, never null.
 pub(crate) fn with_key(mut payload: Value, key: &Option<String>) -> Value {
     if let (Value::Object(map), Some(key)) = (&mut payload, key) {
-        map.insert("key".to_string(), Value::string(key.clone()));
+        map.insert("key".into(), Value::string(key.clone()));
     }
     payload
 }

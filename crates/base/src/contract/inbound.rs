@@ -204,7 +204,7 @@ pub fn inbound_payload<'a>(
             Some(Value::String(prev)) => format!("{prev}, {value}"),
             _ => value.to_string(),
         };
-        lowered.insert(key, Value::string(joined));
+        lowered.insert(key.into(), Value::string(joined));
     }
     let verified = route.verifies.as_ref().and_then(|v| {
         let seen = lowered.get(&v.header).and_then(Value::as_str).unwrap_or("");
@@ -212,11 +212,11 @@ pub fn inbound_payload<'a>(
     });
     let body = serde_json::from_str::<Value>(raw_body).unwrap_or(Value::Null);
     let mut payload = ValueMap::default();
-    payload.insert("headers".to_string(), Value::object(lowered));
-    payload.insert("body".to_string(), body);
-    payload.insert("rawBody".to_string(), Value::string(raw_body.to_string()));
+    payload.insert("headers".into(), Value::object(lowered));
+    payload.insert("body".into(), body);
+    payload.insert("rawBody".into(), Value::string(raw_body.to_string()));
     if let Some(verified) = verified {
-        payload.insert("verified".to_string(), Value::Bool(verified));
+        payload.insert("verified".into(), Value::Bool(verified));
     }
     Value::object(payload)
 }
@@ -259,7 +259,7 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
         None | Some(Value::Null) => Ok(None),
         Some(Value::Object(map)) => map
             .iter()
-            .map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())).ok_or(()))
+            .map(|(k, v)| v.as_str().map(|v| (k.to_string(), v.to_string())).ok_or(()))
             .collect::<Result<_, _>>()
             .map(Some),
         Some(_) => Err(()),

@@ -14,10 +14,13 @@ use crate::schema::types::FieldDefinition;
 
 /// The language value types by name (`OrbitalValue`, `TraitValue`, `BehaviorRef`), from `text`.
 pub fn parse(text: &str) -> Result<BTreeMap<String, OirType>, String> {
-    Ok(definitions(text)?
+    definitions(text)?
         .into_iter()
-        .map(|(name, field)| (name, field_shape(&field)))
-        .collect())
+        .map(|(name, field)| match field_shape(&field) {
+            Ok(shape) => Ok((name, shape)),
+            Err(error) => Err(format!("program type `{name}`: {error}")),
+        })
+        .collect()
 }
 
 /// The language value types' `.orb` field definitions by name, each checked to be a record.

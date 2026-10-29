@@ -46,7 +46,7 @@ fn client_core_drives_render_through_client_kernel() {
     );
 
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::string("Hello"));
+    payload.insert("title".into(), Value::string("Hello"));
     core.drive_blocking("SHOW", Some("RenderTrait"), Value::object(payload));
 
     assert_eq!(core.current_state, "shown");
@@ -79,11 +79,11 @@ fn peer_main_schema() -> OrbitalSchema {
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
-                { "name": "First", "local": true, "traitEmbedIds": { "Child": "child-id" },
+                { "name": "First", "dispatch": "client", "traitEmbedIds": { "Child": "child-id" },
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }], "transitions": shows("first") } },
-                { "name": "Second", "local": true,
+                { "name": "Second", "dispatch": "client",
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }], "transitions": shows("second") } },
-                { "name": "Child", "id": "child-id", "local": true,
+                { "name": "Child", "id": "child-id", "dispatch": "client",
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }], "transitions": shows("child") } }
             ]
         }]
@@ -259,8 +259,8 @@ fn two_page_schema() -> OrbitalSchema {
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
-                { "name": "ListTrait", "local": true, "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": shows("list") } },
-                { "name": "DetailTrait", "local": true, "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": shows("detail") } }
+                { "name": "ListTrait", "dispatch": "client", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": shows("list") } },
+                { "name": "DetailTrait", "dispatch": "client", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": shows("detail") } }
             ],
             "pages": [
                 { "name": "ListPage", "path": "/notes", "traits": [{ "ref": "ListTrait" }] },
@@ -281,6 +281,30 @@ fn the_page_marked_initial_opens_not_the_first() {
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let core = ClientCore::with_client_kernel(schema, kernel);
     assert_eq!(core.current_page.as_deref(), Some("DetailPage"));
+}
+
+/// R5: a path no page matches enters the page declared `[notFound]` (the unknown path keeps the page only
+/// when the app declares none, which `main_shows_the_current_pages_writers_and_navigate_switches_page` pins).
+#[test]
+fn an_unmatched_path_enters_the_page_declared_not_found() {
+    let mut schema = two_page_schema();
+    let pages = schema.orbitals[0].pages.as_mut().unwrap();
+    pages.push(
+        serde_json::from_value(serde_json::json!(
+            { "name": "MissingPage", "path": "/missing", "isNotFound": true, "traits": [{ "ref": "ListTrait" }] }
+        ))
+        .unwrap(),
+    );
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.navigate_to("/nowhere", None);
+    assert_eq!(core.current_page.as_deref(), Some("MissingPage"));
+    assert!(core.page_entered, "the host mounts the not-found page");
+    assert_eq!(core.status_message, None);
+    core.navigate_back();
+    assert_eq!(core.current_page.as_deref(), Some("ListPage"), "back returns to where the path was left");
+    core.navigate_to("/notes/42", None);
+    assert_eq!(core.current_page.as_deref(), Some("DetailPage"), "control: a matching path never reaches it");
 }
 
 /// The desktop shows one page at a time, like the web and native routers: `main` holds the
@@ -340,7 +364,7 @@ fn emit_listener_schema() -> OrbitalSchema {
             ] },
             "traits": [
                 {
-                    "name": "Emitter", "local": true,
+                    "name": "Emitter", "dispatch": "client",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [
@@ -350,7 +374,7 @@ fn emit_listener_schema() -> OrbitalSchema {
                     }
                 },
                 {
-                    "name": "Listener", "local": true,
+                    "name": "Listener", "dispatch": "client",
                     "listens": [{ "event": "X", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Emitter" } }],
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
@@ -441,7 +465,7 @@ fn an_emitter_handling_its_own_emit_runs_it_once() {
 
 fn peer_buttons_schema() -> OrbitalSchema {
     let peer = |name: &str| {
-        serde_json::json!({ "name": name, "local": true, "stateMachine": {
+        serde_json::json!({ "name": name, "dispatch": "client", "stateMachine": {
             "states": [{ "name": "idle", "isInitial": true }, { "name": "clicked" }],
             "transitions": [
                 { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "button", "label": name, "action": "CLICK" }]] },
@@ -492,7 +516,7 @@ fn two_orbital_schema() -> OrbitalSchema {
         serde_json::json!({
             "name": name,
             "entity": { "name": format!("{name}Row"), "fields": [{ "name": "id", "type": "string" }] },
-            "traits": [{ "name": trait_name, "local": true, "stateMachine": {
+            "traits": [{ "name": trait_name, "dispatch": "client", "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }],
                 "transitions": [
                     { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": trait_name }]] },
@@ -550,10 +574,10 @@ fn routed_schema() -> OrbitalSchema {
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [
-                { "name": "ListTrait", "local": true, "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                { "name": "ListTrait", "dispatch": "client", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                     { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": "list" }]] }
                 ] } },
-                { "name": "DetailTrait", "local": true, "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                { "name": "DetailTrait", "dispatch": "client", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                     { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": "@payload.id", "subtitle": "@payload.tab" }]] }
                 ] } }
             ],
@@ -596,8 +620,8 @@ fn a_page_mount_inits_only_its_traits_with_the_route_params() {
     assert_eq!(main_prop(&core, "title"), ["42"]);
 
     let mut params = ValueMap::default();
-    params.insert("id".to_string(), Value::string("7"));
-    params.insert("tab".to_string(), Value::string("history"));
+    params.insert("id".into(), Value::string("7"));
+    params.insert("tab".into(), Value::string("history"));
     core.navigate_to("/notes/42", Some(&Value::object(params)));
     core.mount_page_blocking();
     assert_eq!(

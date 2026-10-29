@@ -99,7 +99,6 @@ mod tests {
                 "traits": [{
                     "name": "T",
                     "linkedEntity": "E",
-                    "category": "interaction",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "events": [],

@@ -265,7 +265,7 @@ fn opt_text_map(name: &str, map: &ValueMap, field: &str) -> Result<Vec<(String, 
         Some(Value::Object(entries)) => entries
             .iter()
             .map(|(k, v)| match v {
-                Value::String(s) => Ok((k.clone(), s.to_string())),
+                Value::String(s) => Ok((k.to_string(), s.to_string())),
                 _ => Err(format!("{name}: '{field}.{k}' must be a string")),
             })
             .collect(),
@@ -319,7 +319,7 @@ fn parse_fields(name: &str, map: &ValueMap) -> Result<Vec<TabField>, String> {
         let at = format!("{name} fields.{field}");
         closed(&at, spec, &["selector", "attr", "resolve", "template", "required"])?;
         fields.push(TabField {
-            name: field.clone(),
+            name: field.to_string(),
             selector: opt_text(&at, spec, "selector")?,
             attr: opt_text(&at, spec, "attr")?,
             resolve: opt_flag(&at, spec, "resolve")?.unwrap_or(false),

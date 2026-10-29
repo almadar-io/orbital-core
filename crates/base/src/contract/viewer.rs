@@ -66,7 +66,7 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
         ),
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
-                .map(|(key, item)| Ok((key.clone(), json_of(item, &format!("{at}.{key}"))?)))
+                .map(|(key, item)| Ok((key.to_string(), json_of(item, &format!("{at}.{key}"))?)))
                 .collect::<Result<_, String>>()?,
         ),
         Value::Lambda { .. } => return Err(format!("viewer claim {at}: a function is not a claim")),
@@ -101,7 +101,7 @@ impl Viewer {
         for (name, value) in map.iter().filter(|(key, _)| !NAMED.contains(&key.as_str())) {
             if !matches!(value, Value::Null) {
                 claims.push(Claim {
-                    name: name.clone(),
+                    name: name.to_string(),
                     value: json_of(value, name)?,
                 });
             }
@@ -119,19 +119,19 @@ impl Viewer {
     /// The flat `@user` value of this viewer. `Err` when a claim repeats a named field or another claim.
     pub fn to_user(&self) -> Result<Value, String> {
         let mut map = ValueMap::default();
-        map.insert("id".to_string(), Value::string(self.id.clone()));
+        map.insert("id".into(), Value::string(self.id.clone()));
         for (key, field) in [
             ("email", &self.email),
             ("name", &self.name),
             ("role", &self.role),
         ] {
             if let Some(text) = field {
-                map.insert(key.to_string(), Value::string(text.clone()));
+                map.insert(key.to_string().into(), Value::string(text.clone()));
             }
         }
         if let Some(permissions) = &self.permissions {
             map.insert(
-                "permissions".to_string(),
+                "permissions".into(),
                 Value::Array(permissions.iter().cloned().map(Value::string).collect()),
             );
         }
@@ -141,7 +141,7 @@ impl Viewer {
             }
             let value: Value = serde_json::from_value(claim.value.clone())
                 .map_err(|e| format!("viewer claim {}: {e}", claim.name))?;
-            map.insert(claim.name.clone(), value);
+            map.insert(claim.name.clone().into(), value);
         }
         Ok(Value::object(map))
     }
@@ -254,7 +254,7 @@ mod tests {
         assert!(Viewer::from_user(&user(json!({ "id": "u", "permissions": "all" }))).is_err());
         let mut nan = user(json!({ "id": "u" }));
         if let Value::Object(map) = &mut nan {
-            map.insert("score".to_string(), Value::array(vec![Value::Number(f64::NAN)]));
+            map.insert("score".into(), Value::array(vec![Value::Number(f64::NAN)]));
         }
         assert!(Viewer::from_user(&nan).unwrap_err().contains("score"));
         assert!(Viewer::from_user(&user(json!([]))).is_err());

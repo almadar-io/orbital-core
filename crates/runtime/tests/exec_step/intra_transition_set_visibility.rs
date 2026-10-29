@@ -20,7 +20,7 @@ use std::sync::Arc;
 fn obj(pairs: &[(&str, Value)]) -> Value {
     let mut m = ValueMap::new();
     for (k, v) in pairs {
-        m.insert((*k).to_string(), v.clone());
+        m.insert((*k).to_string().into(), v.clone());
     }
     Value::object(m)
 }

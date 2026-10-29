@@ -583,7 +583,7 @@ impl EffectRun {
                 };
                 let field = field.to_string();
                 self.leaf(&rest[1], 2, &[1], move |run, value| {
-                    run.entity.insert(field.clone(), value.clone());
+                    run.entity.insert(field.clone().into(), value.clone());
                     run.writes.push(EntityWriteWire { field, value });
                     run.mirror();
                     Ended::Executed

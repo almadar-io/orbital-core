@@ -639,14 +639,14 @@ mod tests {
         // Try to save with valid data (guard checks @payload.data.email/name)
         let mut inner_data = ValueMap::default();
         inner_data.insert(
-            "email".to_string(),
+            "email".into(),
             Value::string("test@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::string("Test User"));
-        inner_data.insert("id".to_string(), Value::string("user-123"));
+        inner_data.insert("name".into(), Value::string("Test User"));
+        inner_data.insert("id".into(), Value::string("user-123"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::object(inner_data));
+        data.insert("data".into(), Value::object(inner_data));
 
         let save_payload = EventPayload::new("SAVE", Value::object(data));
         let result = manager
@@ -671,11 +671,11 @@ mod tests {
 
         // Try to save with empty email (should fail guard @payload.data.email != "")
         let mut inner_data = ValueMap::default();
-        inner_data.insert("email".to_string(), Value::string(""));
-        inner_data.insert("name".to_string(), Value::string("Test User"));
+        inner_data.insert("email".into(), Value::string(""));
+        inner_data.insert("name".into(), Value::string("Test User"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::object(inner_data));
+        data.insert("data".into(), Value::object(inner_data));
 
         let save_payload = EventPayload::new("SAVE", Value::object(data));
         let result = manager
@@ -807,14 +807,14 @@ mod tests {
         // 3. Submit form with valid data -> browsing (guard checks @payload.data.email/name)
         let mut inner_data = ValueMap::default();
         inner_data.insert(
-            "email".to_string(),
+            "email".into(),
             Value::string("new@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::string("New User"));
-        inner_data.insert("id".to_string(), Value::string("user-new"));
+        inner_data.insert("name".into(), Value::string("New User"));
+        inner_data.insert("id".into(), Value::string("user-new"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::object(inner_data));
+        data.insert("data".into(), Value::object(inner_data));
 
         let result = manager
             .process_event(
@@ -993,10 +993,10 @@ mod tests {
         manager.register_trait(create_gated_trait());
 
         let mut user = ValueMap::default();
-        user.insert("id".to_string(), Value::string("u1"));
-        user.insert("role".to_string(), Value::string("clinician"));
+        user.insert("id".into(), Value::string("u1"));
+        user.insert("role".into(), Value::string("clinician"));
         let mut config = ValueMap::default();
-        config.insert("limit".to_string(), Value::Number(10.0));
+        config.insert("limit".into(), Value::Number(10.0));
 
         let ctx = BindingContextBuilder::new()
             .user(Value::object(user))
@@ -1016,8 +1016,8 @@ mod tests {
 
         // A different role fails the same guard through the same path.
         let mut other_user = ValueMap::default();
-        other_user.insert("id".to_string(), Value::string("u2"));
-        other_user.insert("role".to_string(), Value::string("member"));
+        other_user.insert("id".into(), Value::string("u2"));
+        other_user.insert("role".into(), Value::string("member"));
         let other_ctx = BindingContextBuilder::new()
             .user(Value::object(other_user))
             .build();

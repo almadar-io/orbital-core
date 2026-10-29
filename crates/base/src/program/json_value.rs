@@ -24,7 +24,7 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
         Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .map(|(k, v)| (k.to_string(), value_to_json(v)))
                 .collect(),
         ),
         Value::Lambda { .. } => serde_json::Value::Null,
@@ -209,13 +209,13 @@ mod tests {
     fn a_value_is_written_as_the_tree_route_writes_it() {
         let nested = Value::Object(
             [
-                ("ints".to_string(), Value::array(vec![Value::Number(0.0), Value::Number(-0.0), Value::Number(-7.0), Value::Number(9.2e18)])),
-                ("floats".to_string(), Value::array(vec![Value::Number(0.5), Value::Number(1e21), Value::Number(1e-7), Value::Number(1.7976931348623157e308)])),
-                ("non_finite".to_string(), Value::array(vec![Value::Number(f64::NAN), Value::Number(f64::INFINITY), Value::Number(f64::NEG_INFINITY)])),
-                ("text".to_string(), Value::string("q\"uote \\ \u{1} \n é 💡 /".to_string())),
-                ("empty".to_string(), Value::Object(Default::default())),
-                ("none".to_string(), Value::array(Vec::new())),
-                ("flags".to_string(), Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Null])),
+                ("ints".into(), Value::array(vec![Value::Number(0.0), Value::Number(-0.0), Value::Number(-7.0), Value::Number(9.2e18)])),
+                ("floats".into(), Value::array(vec![Value::Number(0.5), Value::Number(1e21), Value::Number(1e-7), Value::Number(1.7976931348623157e308)])),
+                ("non_finite".into(), Value::array(vec![Value::Number(f64::NAN), Value::Number(f64::INFINITY), Value::Number(f64::NEG_INFINITY)])),
+                ("text".into(), Value::string("q\"uote \\ \u{1} \n é 💡 /".to_string())),
+                ("empty".into(), Value::Object(Default::default())),
+                ("none".into(), Value::array(Vec::new())),
+                ("flags".into(), Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Null])),
             ]
             .into_iter()
             .collect(),
@@ -228,13 +228,13 @@ mod tests {
 
     #[test]
     fn edge_a_value_keeps_its_keys_in_the_order_it_holds_them() {
-        let value = Value::Object([("b".to_string(), Value::Number(1.0)), ("a".to_string(), Value::Number(2.0))].into_iter().collect());
+        let value = Value::Object([("b".into(), Value::Number(1.0)), ("a".into(), Value::Number(2.0))].into_iter().collect());
         assert_eq!(value_json_string(&value, false), "{\"b\":1,\"a\":2}");
     }
 
     #[test]
     fn js_json_pretty_writes_floats_as_ecmascript_inside_indented_containers() {
-        let value = Value::Object([("n".to_string(), Value::Number(1e21)), ("f".to_string(), Value::Number(0.5))].into_iter().collect());
+        let value = Value::Object([("n".into(), Value::Number(1e21)), ("f".into(), Value::Number(0.5))].into_iter().collect());
         assert_eq!(js_json_string_pretty(&value), "{\n  \"n\": 1e+21,\n  \"f\": 0.5\n}");
     }
 

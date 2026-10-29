@@ -63,10 +63,10 @@ impl Operator for AnimSheetRectOp {
             (frame_index / cols).floor() * frame_h,
         );
         let mut m = ValueMap::default();
-        m.insert("sx".to_string(), Value::Number(sx));
-        m.insert("sy".to_string(), Value::Number(sy));
-        m.insert("sw".to_string(), Value::Number(frame_w));
-        m.insert("sh".to_string(), Value::Number(frame_h));
+        m.insert("sx".into(), Value::Number(sx));
+        m.insert("sy".into(), Value::Number(sy));
+        m.insert("sw".into(), Value::Number(frame_w));
+        m.insert("sh".into(), Value::Number(frame_h));
         Ok(Value::object(m))
     }
 }

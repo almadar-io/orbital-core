@@ -146,7 +146,7 @@ impl ListenerManager {
                 let mut mapped = ValueMap::default();
                 for (key, expr) in mapping.as_ref() {
                     if let Ok(value) = evaluator.evaluate(expr, &ctx) {
-                        mapped.insert(key.to_string(), value);
+                        mapped.insert(key.to_string().into(), value);
                     }
                 }
                 Value::object(mapped)
@@ -240,6 +240,21 @@ impl ListenerManager {
             .filter(|l| l.event_pattern == event && l.matches_source(source))
             .cloned()
             .collect()
+    }
+
+    /// The trait names in first-registration order.
+    pub fn order(&self) -> Vec<String> {
+        self.order.read().clone()
+    }
+
+    /// Put the registered traits in `order`'s order, those it does not name after them in their own order: a fork's fan-out
+    /// follows its parent's however its registrations were made.
+    pub fn follow_order(&self, order: &[String]) {
+        let mut mine = self.order.write();
+        let mut next: Vec<String> = order.iter().filter(|n| mine.contains(n)).cloned().collect();
+        let rest: Vec<String> = mine.iter().filter(|n| !next.contains(n)).cloned().collect();
+        next.extend(rest);
+        *mine = next;
     }
 
     /// Get the total count of registered listeners.
@@ -397,13 +412,13 @@ mod tests {
             .unwrap();
 
         let mut payload1 = ValueMap::default();
-        payload1.insert("status".to_string(), Value::string("pending"));
+        payload1.insert("status".into(), Value::string("pending"));
         bus.emit(Event::new("USER_UPDATED", Value::object(payload1)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 0);
 
         let mut payload2 = ValueMap::default();
-        payload2.insert("status".to_string(), Value::string("active"));
+        payload2.insert("status".into(), Value::string("active"));
         bus.emit(Event::new("USER_UPDATED", Value::object(payload2)));
 
         assert_eq!(triggered.load(Ordering::SeqCst), 1);
@@ -446,8 +461,8 @@ mod tests {
             .unwrap();
 
         let mut payload = ValueMap::default();
-        payload.insert("id".to_string(), Value::string("user-123"));
-        payload.insert("name".to_string(), Value::string("John"));
+        payload.insert("id".into(), Value::string("user-123"));
+        payload.insert("name".into(), Value::string("John"));
         bus.emit(Event::new("USER_CREATED", Value::object(payload)));
 
         let received = received_payload.read();

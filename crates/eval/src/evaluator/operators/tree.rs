@@ -30,6 +30,7 @@ use super::*;
 use orbital_core_base::schema::types::{
     FieldDefinition, FieldType, TagReading, UnionVariantChoice,
 };
+use orbital_core_base::value::Shared;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -80,7 +81,7 @@ fn select_variant<'d>(
     def: &'d FieldDefinition,
     node: &ValueMap,
 ) -> Result<Option<&'d FieldDefinition>, OrbitalError> {
-    let keys: Vec<&str> = node.keys().map(String::as_str).collect();
+    let keys: Vec<&str> = node.keys().map(|k| k.as_str()).collect();
     let choice = def.select_union_variant(&keys, |field, tag| match node.get(field) {
         Some(Value::String(s)) if s == tag => TagReading::Equal,
         _ => TagReading::Differs,
@@ -153,18 +154,18 @@ fn kind_variant<'d>(
 /// How a node's children are laid out, in the order they are folded.
 enum Plan {
     /// One entry per child field: the key and where it sits (`Map` carries the map's keys in order).
-    Fields(Vec<(String, Slot)>),
+    Fields(Vec<(Shared<String>, Slot)>),
     /// A list node whose elements are all children.
     List,
     /// A map node whose values are all children, in key order.
-    Map(Vec<String>),
+    Map(Vec<Shared<String>>),
     Leaf,
 }
 
 enum Slot {
     Field,
     List(usize),
-    Map(Vec<String>),
+    Map(Vec<Shared<String>>),
 }
 
 /// A node being folded: its value, its plan, the children still to fold, and the results so far.
@@ -242,7 +243,7 @@ impl Fold<'_> {
                     .ok_or_else(|| bad("the definition declares no fields"))?;
                 let mut slots = Vec::new();
                 for (key, child) in node {
-                    let Some(position) = fields.get(key).and_then(|d| child_position(d, self.root))
+                    let Some(position) = fields.get(key.as_str()).and_then(|d| child_position(d, self.root))
                     else {
                         continue;
                     };
@@ -299,7 +300,7 @@ impl Fold<'_> {
                             Value::Object(keys.into_iter().zip(results.by_ref()).collect())
                         }
                     };
-                    out.insert(key, result);
+                    out.insert(key.into(), result);
                 }
                 Value::object(out)
             }

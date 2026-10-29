@@ -594,7 +594,7 @@ mod tests {
     }
 
     fn exited(code: f64) -> Value {
-        Value::object(ValueMap::from_iter([("code".to_string(), Value::Number(code))]))
+        Value::object(ValueMap::from_iter([("code".into(), Value::Number(code))]))
     }
 
     #[test]
@@ -775,7 +775,7 @@ mod tests {
     }
 
     fn viewer(id: &str) -> Value {
-        Value::object(ValueMap::from_iter([("id".to_string(), Value::String(id.to_string().into()))]))
+        Value::object(ValueMap::from_iter([("id".into(), Value::String(id.to_string().into()))]))
     }
 
     #[test]

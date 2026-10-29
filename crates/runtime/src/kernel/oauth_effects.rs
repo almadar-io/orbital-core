@@ -6,12 +6,12 @@ impl RuntimeKernel {
     pub(super) fn oauth_failed(effect: &Effect, reason: OAuthFailureReason) -> EffectResult {
         let payload = Value::object(ValueMap::from_iter([
             (
-                "error".to_string(),
+                "error".into(),
                 Value::String(reason.message().to_string().into()),
             ),
-            ("code".to_string(), Value::String(reason.code().to_string().into())),
+            ("code".into(), Value::String(reason.code().to_string().into())),
             (
-                "reason".to_string(),
+                "reason".into(),
                 Value::String(reason.as_str().to_string().into()),
             ),
         ]));
@@ -39,15 +39,15 @@ impl RuntimeKernel {
         let mut result = self.authorize_inner(effect, client, options, principal);
         let payload = match result.return_value.take() {
             Some(Value::Object(mut fields)) => {
-                fields.insert("key".to_string(), key);
+                fields.insert("key".into(), key);
                 Value::Object(fields)
             }
             _ => Value::object(ValueMap::from_iter([
                 (
-                    "error".to_string(),
+                    "error".into(),
                     Value::String(result.error.clone().unwrap_or_default().into()),
                 ),
-                ("key".to_string(), key),
+                ("key".into(), key),
             ])),
         };
         result.return_value = Some(payload);
@@ -207,9 +207,9 @@ impl RuntimeKernel {
         EffectResult::executed_with_value(
             effect.clone(),
             Value::object(ValueMap::from_iter([
-                ("authUrl".to_string(), Value::String(auth_url.into())),
-                ("state".to_string(), Value::String(state.into())),
-                ("code".to_string(), Value::String(code.into())),
+                ("authUrl".into(), Value::String(auth_url.into())),
+                ("state".into(), Value::String(state.into())),
+                ("code".into(), Value::String(code.into())),
             ])),
         )
     }

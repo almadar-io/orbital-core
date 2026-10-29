@@ -446,7 +446,7 @@ mod tests {
 
     fn key(k: &str) -> EventPayload {
         let mut data = ValueMap::default();
-        data.insert("key".to_string(), Value::string(k.to_string()));
+        data.insert("key".into(), Value::string(k.to_string()));
         EventPayload::new("KEY", Value::object(data))
     }
 
@@ -596,14 +596,14 @@ mod tests {
         // Guard checks @payload.data.email and @payload.data.name
         let mut inner_data = ValueMap::default();
         inner_data.insert(
-            "email".to_string(),
+            "email".into(),
             Value::string("test@example.com"),
         );
-        inner_data.insert("name".to_string(), Value::string("Test User"));
-        inner_data.insert("id".to_string(), Value::string("user-123"));
+        inner_data.insert("name".into(), Value::string("Test User"));
+        inner_data.insert("id".into(), Value::string("user-123"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::object(inner_data));
+        data.insert("data".into(), Value::object(inner_data));
 
         let payload = EventPayload::new("SAVE", Value::object(data));
         let result = core
@@ -627,11 +627,11 @@ mod tests {
 
         // Empty email should fail the guard (@payload.data.email != "")
         let mut inner_data = ValueMap::default();
-        inner_data.insert("email".to_string(), Value::string(""));
-        inner_data.insert("name".to_string(), Value::string("Test User"));
+        inner_data.insert("email".into(), Value::string(""));
+        inner_data.insert("name".into(), Value::string("Test User"));
 
         let mut data = ValueMap::default();
-        data.insert("data".to_string(), Value::object(inner_data));
+        data.insert("data".into(), Value::object(inner_data));
 
         let payload = EventPayload::new("SAVE", Value::object(data));
         let result = core

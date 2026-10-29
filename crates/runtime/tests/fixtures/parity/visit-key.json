@@ -22,7 +22,6 @@
         "traits": [
           {
             "name": "Fanner",
-            "scope": "instance",
             "emits": [
               {
                 "event": "STEP_NEXT"

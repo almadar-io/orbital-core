@@ -50,6 +50,33 @@ pub struct LazyPage {
     /// so page reachability follows links between lazy pages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<String>,
+    /// The page's protocol (`http`, `stdio`, `boot`); absent for a route. A lazy orbital with an endpoint page is loaded when the host starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    /// The eager orbital that preceded the lazy one in the importer (`None`: it was first): where its listeners sit in registration and fan-out order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// The traits the page places, by name: with a trait's dispatch mode, whether a `[client]` trait is mounted by a browser route.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<String>,
+    /// The traits of the page's orbital as the importer's stub knows them: what the kernel registers before the behavior is
+    /// loaded (EXEC-LOAD-2). Every page of one orbital records the same list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub traits: Vec<LazyTrait>,
+}
+
+/// A trait of a lazily-used orbital, as recorded on its importer: its name, the events it listens to and whether it has a background tick.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LazyTrait {
+    pub name: String,
+    /// The trait's declared dispatch mode: a `[client]` trait never triggers a server load.
+    #[serde(rename = "dispatchMode")]
+    pub dispatch_mode: crate::dispatch_mode::DispatchMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub listens: Vec<ListenDefinition>,
+    /// Whether the trait declares a `[background]` tick: the host runs it with no client mounted, so the orbital loads at boot.
+    #[serde(default, rename = "backgroundTicks", skip_serializing_if = "std::ops::Not::not")]
+    pub background_ticks: bool,
 }
 
 // =============================================================================
@@ -660,6 +687,7 @@ pub struct OrbitalRefListen {
 /// - Alias.theme - The theme definition
 /// - Alias.services.ServiceName - A specific service
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Orbital {
     /// Orbital name
     pub name: String,

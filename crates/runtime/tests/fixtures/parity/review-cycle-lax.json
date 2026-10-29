@@ -166,7 +166,6 @@
                 "resource": "@entity.round"
               }
             ],
-            "category": "lifecycle",
             "linkedEntity": "ReviewItem",
             "linkedEntityId": "ent_01M39WRANGPFG36CFHBFB0ZDBQ",
             "entityRefIds": {
@@ -900,7 +899,6 @@
                 "tier": "policy"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-review-cycle",
               "alias": "Review",
@@ -1068,8 +1066,7 @@
                 "type": "boolean",
                 "default": true
               }
-            },
-            "scope": "instance"
+            }
           }
         ],
         "pages": [

@@ -374,8 +374,7 @@
                   ]
                 }
               ]
-            },
-            "scope": "instance"
+            }
           },
           {
             "name": "NotifyEach",
@@ -474,7 +473,6 @@
                 "resource": "@entity.severity"
               }
             ],
-            "category": "lifecycle",
             "linkedEntity": "NotificationRecord",
             "linkedEntityId": "ent_01KXG04FE9SA0FVQV9VJC8915N",
             "entityRefIds": {
@@ -2984,7 +2982,6 @@
                 "tier": "presentation"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-notify-on-event",
               "alias": "Notify",
@@ -3192,7 +3189,6 @@
                 "resource": "@entity.severity"
               }
             ],
-            "category": "lifecycle",
             "linkedEntity": "NotificationRecord",
             "linkedEntityId": "ent_01KXG04FE9SA0FVQV9VJC8915N",
             "entityRefIds": {
@@ -5702,7 +5698,6 @@
                 "tier": "presentation"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-notify-on-event",
               "alias": "Notify",
@@ -5910,7 +5905,6 @@
                 "resource": "@entity.severity"
               }
             ],
-            "category": "lifecycle",
             "linkedEntity": "NotificationRecord",
             "linkedEntityId": "ent_01KXG04FE9SA0FVQV9VJC8915N",
             "entityRefIds": {
@@ -8420,7 +8414,6 @@
                 "tier": "presentation"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-notify-on-event",
               "alias": "Notify",

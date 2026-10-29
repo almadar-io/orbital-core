@@ -18,7 +18,7 @@ const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 fn canonical_payload(value: &Value) -> Value {
     match value {
         Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
+            let mut keys: Vec<_> = map.keys().collect();
             keys.sort();
             let mut sorted = Map::new();
             for k in keys {
@@ -225,7 +225,7 @@ fn digest_value(h: &mut Xxh3, value: &EvalValue) {
         EvalValue::Object(map) => {
             h.update(b"o");
             digest_len(h, map.len());
-            let mut keys: Vec<&String> = map.keys().collect();
+            let mut keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
             keys.sort();
             for k in keys {
                 digest_str(h, k);
@@ -252,7 +252,7 @@ fn digest_json(h: &mut Xxh3, value: &Value) {
         Value::Object(map) => {
             h.update(b"o");
             digest_len(h, map.len());
-            let mut keys: Vec<&String> = map.keys().collect();
+            let mut keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
             keys.sort();
             for k in keys {
                 digest_str(h, k);
@@ -376,7 +376,7 @@ mod tests {
                 Value::String(s) => EValue::String(s.into()),
                 Value::Array(a) => EValue::Array(a.into_iter().map(conv).collect()),
                 Value::Object(o) => {
-                    EValue::Object(o.into_iter().map(|(k, v)| (k, conv(v))).collect())
+                    EValue::Object(o.into_iter().map(|(k, v)| (k.into(), conv(v))).collect())
                 }
             }
         }

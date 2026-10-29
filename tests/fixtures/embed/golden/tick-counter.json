@@ -13,8 +13,20 @@
         "Ticker": "running"
       },
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {}
+      "frames": {
+        "session": "$program",
+        "from": 0,
+        "to": 1,
+        "ops": [
+          [
+            "clear"
+          ],
+          [
+            "put",
+            "Ticker",
+            {}
+          ]
+        ]
       },
       "clientEffectsByTrait": [
         {
@@ -79,8 +91,17 @@
         "Listener": "idle"
       },
       "emittedEvents": [],
-      "entityByTrait": {
-        "Listener": {}
+      "frames": {
+        "session": "$program",
+        "from": 1,
+        "to": 2,
+        "ops": [
+          [
+            "put",
+            "Listener",
+            {}
+          ]
+        ]
       },
       "transitions": [
         {
@@ -115,10 +136,20 @@
       "transitioned": true,
       "states": {},
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {
-          "frames": 1.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 2,
+        "to": 3,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 1.0
+              }
+            }
+          ]
+        ]
       }
     },
     "dispatches": [],
@@ -138,10 +169,20 @@
       "transitioned": true,
       "states": {},
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {
-          "frames": 2.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 3,
+        "to": 4,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 2.0
+              }
+            }
+          ]
+        ]
       }
     },
     "dispatches": [],
@@ -183,12 +224,37 @@
           }
         }
       ],
-      "entityByTrait": {
-        "Ticker": {
-          "beats": 1.0,
-          "frames": 3.0,
-          "guarded": 1.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 4,
+        "to": 7,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "beats": 1.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Listener": {
+                "heard": 1.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 3.0,
+                "guarded": 1.0
+              }
+            }
+          ]
+        ]
       },
       "clientEffectsByTrait": [
         {
@@ -220,10 +286,20 @@
             "Listener": "idle"
           },
           "emittedEvents": [],
-          "entityByTrait": {
-            "Listener": {
-              "heard": 1.0
-            }
+          "frames": {
+            "session": "$program",
+            "from": 5,
+            "to": 6,
+            "ops": [
+              [
+                "set",
+                {
+                  "Listener": {
+                    "heard": 1.0
+                  }
+                }
+              ]
+            ]
           },
           "effectResults": [
             {
@@ -283,10 +359,20 @@
       "transitioned": true,
       "states": {},
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {
-          "frames": 4.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 7,
+        "to": 8,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 4.0
+              }
+            }
+          ]
+        ]
       }
     },
     "dispatches": [],
@@ -309,10 +395,20 @@
       "transitioned": true,
       "states": {},
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {
-          "frames": 5.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 8,
+        "to": 9,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 5.0
+              }
+            }
+          ]
+        ]
       }
     },
     "dispatches": [],
@@ -354,12 +450,37 @@
           }
         }
       ],
-      "entityByTrait": {
-        "Ticker": {
-          "beats": 2.0,
-          "frames": 6.0,
-          "guarded": 2.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 9,
+        "to": 12,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "beats": 2.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Listener": {
+                "heard": 2.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 6.0,
+                "guarded": 2.0
+              }
+            }
+          ]
+        ]
       },
       "clientEffectsByTrait": [
         {
@@ -391,10 +512,20 @@
             "Listener": "idle"
           },
           "emittedEvents": [],
-          "entityByTrait": {
-            "Listener": {
-              "heard": 2.0
-            }
+          "frames": {
+            "session": "$program",
+            "from": 10,
+            "to": 11,
+            "ops": [
+              [
+                "set",
+                {
+                  "Listener": {
+                    "heard": 2.0
+                  }
+                }
+              ]
+            ]
           },
           "effectResults": [
             {
@@ -463,10 +594,20 @@
         }
       }
     ],
-    "entityByTrait": {
-      "Ticker": {
-        "beats": 3.0
-      }
+    "frames": {
+      "session": "$program",
+      "from": 12,
+      "to": 13,
+      "ops": [
+        [
+          "set",
+          {
+            "Ticker": {
+              "beats": 3.0
+            }
+          }
+        ]
+      ]
     },
     "clientEffectsByTrait": [
       {
@@ -512,9 +653,6 @@
         "Ticker": "stopped"
       },
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {}
-      },
       "clientEffectsByTrait": [
         {
           "traitName": "Ticker",
@@ -593,11 +731,36 @@
           }
         }
       ],
-      "entityByTrait": {
-        "Ticker": {
-          "beats": 4.0,
-          "frames": 7.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 13,
+        "to": 16,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "beats": 4.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Listener": {
+                "heard": 3.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 7.0
+              }
+            }
+          ]
+        ]
       },
       "clientEffectsByTrait": [
         {
@@ -629,10 +792,20 @@
             "Listener": "idle"
           },
           "emittedEvents": [],
-          "entityByTrait": {
-            "Listener": {
-              "heard": 3.0
-            }
+          "frames": {
+            "session": "$program",
+            "from": 14,
+            "to": 15,
+            "ops": [
+              [
+                "set",
+                {
+                  "Listener": {
+                    "heard": 3.0
+                  }
+                }
+              ]
+            ]
           },
           "effectResults": [
             {
@@ -693,9 +866,6 @@
         "Ticker": "running"
       },
       "emittedEvents": [],
-      "entityByTrait": {
-        "Ticker": {}
-      },
       "clientEffectsByTrait": [
         {
           "traitName": "Ticker",
@@ -780,12 +950,37 @@
           }
         }
       ],
-      "entityByTrait": {
-        "Ticker": {
-          "beats": 5.0,
-          "frames": 8.0,
-          "guarded": 3.0
-        }
+      "frames": {
+        "session": "$program",
+        "from": 16,
+        "to": 19,
+        "ops": [
+          [
+            "set",
+            {
+              "Ticker": {
+                "beats": 5.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Listener": {
+                "heard": 4.0
+              }
+            }
+          ],
+          [
+            "set",
+            {
+              "Ticker": {
+                "frames": 8.0,
+                "guarded": 3.0
+              }
+            }
+          ]
+        ]
       },
       "clientEffectsByTrait": [
         {
@@ -817,10 +1012,20 @@
             "Listener": "idle"
           },
           "emittedEvents": [],
-          "entityByTrait": {
-            "Listener": {
-              "heard": 4.0
-            }
+          "frames": {
+            "session": "$program",
+            "from": 17,
+            "to": 18,
+            "ops": [
+              [
+                "set",
+                {
+                  "Listener": {
+                    "heard": 4.0
+                  }
+                }
+              ]
+            ]
           },
           "effectResults": [
             {

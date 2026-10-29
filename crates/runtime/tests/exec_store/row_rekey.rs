@@ -30,7 +30,7 @@ fn rekey(id: &str, new_id: &str) -> RowWriteOp {
     op(json!({"kind":"rekey", "entityType":"Item", "id":id, "newId":new_id}))
 }
 fn apply(table: &mut RowTable, op: &RowWriteOp) -> RowWriteOutcome {
-    apply_write(table, op, &mut CreateIds::Strict)
+    apply_write(table, op, &mut CreateIds::Strict, &mut orbital_core_base::intern::KeyVocabulary::default())
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn rekey_batches_preserve_ordered_prefix_and_restore_exact_atomic_snapshot() {
         on_failure: RowWriteFailureMode::Atomic,
     };
     assert_eq!(
-        apply_write_batch(&mut atomic, &batch, &mut CreateIds::Strict),
+        apply_write_batch(&mut atomic, &batch, &mut CreateIds::Strict, &mut orbital_core_base::intern::KeyVocabulary::default()),
         vec![
             RowWriteOutcome::RolledBack,
             RowWriteOutcome::RolledBack,
@@ -149,6 +149,7 @@ fn rekey_batches_preserve_ordered_prefix_and_restore_exact_atomic_snapshot() {
             on_failure: RowWriteFailureMode::Stop,
         },
         &mut CreateIds::Strict,
+        &mut orbital_core_base::intern::KeyVocabulary::default(),
     );
     assert_eq!(outcomes.len(), 4);
     assert_eq!(outcomes[3], RowWriteOutcome::NotFound);

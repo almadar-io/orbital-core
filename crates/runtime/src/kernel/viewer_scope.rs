@@ -34,7 +34,8 @@ impl RuntimeKernel {
             self.sessions.scratch_sessions.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
         let mut guard = self.enter_session(&id);
-        guard.scratch = Some((Arc::clone(&self.frames), Arc::clone(&self.carried_rows), Arc::clone(&self.state_manager), id));
+        self.view_records.mark_scratch(&id);
+        guard.scratch = Some((Arc::clone(&self.frames), Arc::clone(&self.carried_rows), Arc::clone(&self.state_manager), Arc::clone(&self.view_records), id));
         guard
     }
 

@@ -22,7 +22,6 @@
         "traits": [
           {
             "name": "Src",
-            "scope": "instance",
             "emits": [
               {
                 "event": "X"
@@ -75,7 +74,6 @@
           },
           {
             "name": "Once",
-            "scope": "instance",
             "emits": [
               {
                 "event": "ACK_ONCE"
@@ -144,7 +142,6 @@
           },
           {
             "name": "Twin",
-            "scope": "instance",
             "emits": [
               {
                 "event": "ACK_TWIN"
@@ -213,7 +210,6 @@
           },
           {
             "name": "All",
-            "scope": "instance",
             "emits": [
               {
                 "event": "ACK_ALL"
@@ -262,7 +258,6 @@
           },
           {
             "name": "Prov",
-            "scope": "instance",
             "emits": [
               {
                 "event": "ACK_PROV"
@@ -364,7 +359,6 @@
           },
           {
             "name": "Reenter",
-            "scope": "instance",
             "emits": [
               {
                 "event": "ACK_R"

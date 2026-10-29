@@ -369,7 +369,7 @@ fn client_effects_from_render_ui_and_emit_split_correctly() {
         EffectResult::executed(Effect::RenderUi {
             slot: "modal".to_string(),
             content: Value::object(ValueMap::from_iter([(
-                "type".to_string(),
+                "type".into(),
                 Value::String(("form".to_string()).into()),
             )])),
         }),

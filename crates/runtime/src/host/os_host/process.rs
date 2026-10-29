@@ -58,7 +58,7 @@ fn io_error(op: OsOp, e: &std::io::Error) -> OsError {
 fn object(fields: Vec<(&str, Value)>) -> Value {
     let mut map = ValueMap::default();
     for (k, v) in fields {
-        map.insert(k.to_string(), v);
+        map.insert(k.to_string().into(), v);
     }
     Value::object(map)
 }
@@ -203,7 +203,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let mut vars: HashMap<String, String> = HashMap::new();
     for (name, value) in host.handles.process.env.lock().iter() {
         if let Some(v) = value {
-            vars.insert(name.clone(), v.clone());
+            vars.insert(name.to_string(), v.clone());
         }
     }
     match opts.and_then(|m| m.get("env")) {
@@ -215,7 +215,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                 }
                 match value {
                     Value::String(v) if !v.contains('\0') => {
-                        vars.insert(name.clone(), v.clone().into_inner());
+                        vars.insert(name.to_string(), v.clone().into_inner());
                     }
                     Value::Null => {
                         if !host.grants.allows(&orbital_core_base::os_grants::OsRequirement::inherited_env(name)) {
@@ -223,10 +223,10 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                         }
                         match lookup_env(host, name).map_err(|e| io_error(op, &e))? {
                             Some(v) => {
-                                vars.insert(name.clone(), v);
+                                vars.insert(name.to_string(), v);
                             }
                             None => {
-                                vars.remove(name);
+                                vars.remove(name.as_str());
                             }
                         }
                     }

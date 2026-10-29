@@ -64,6 +64,7 @@ impl RuntimeKernel {
             "Processing event"
         );
 
+        self.ensure_trait_loaded(trait_name)?;
         let trait_def = self
             .registry.trait_definitions
             .read()
@@ -413,16 +414,18 @@ impl RuntimeKernel {
         let schemas = self.registry.schemas.read();
         let home = homes.get(trait_name).and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)));
         let resolve = |name: &str| {
-            home.and_then(|(program, index)| {
+            let alias = home.and_then(|(program, index)| {
                 program
                     .orbitals
                     .get(index)
                     .and_then(|orbital| orbital.types.as_ref())
                     .and_then(|aliases| aliases.get(name))
                     .or_else(|| program.types.as_ref().and_then(|aliases| aliases.get(name)))
-                    .map(|members| declared_alias_shape(members))
-            })
-            .or_else(|| entities.get(name).map(|def| super::row_intake::entity_struct(def)))
+            });
+            match alias {
+                Some(members) => declared_alias_shape(members).map(Some),
+                None => entities.get(name).map(|def| super::row_intake::entity_struct(def)).transpose(),
+            }
         };
         crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve)
     }
@@ -434,6 +437,10 @@ impl RuntimeKernel {
         targets: impl IntoIterator<Item = (&'a str, &'a str)>,
         payload: &Value,
     ) -> Result<(), KernelError> {
+        let targets: Vec<(&'a str, &'a str)> = targets.into_iter().collect();
+        for (trait_name, _) in &targets {
+            self.ensure_trait_loaded(trait_name)?;
+        }
         match self.payload_rejection(targets, payload) {
             Some(message) => Err(KernelError::PayloadInvalid(message)),
             None => Ok(()),

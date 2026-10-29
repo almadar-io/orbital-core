@@ -304,7 +304,7 @@ pub fn token_exchange_request(
                     return invalid("auth.claims must be an object");
                 };
                 for (name, value) in claims {
-                    payload.insert(name.clone(), value_to_json(value));
+                    payload.insert(name.to_string(), value_to_json(value));
                 }
                 let payload = serde_json::Value::Object(payload).to_string();
                 let assertion = crate::jwt::compact(*alg, &payload, &pem)
@@ -409,7 +409,7 @@ pub(super) fn parse_rotated_token(resp: &HttpResponse, field: &str) -> Result<St
 }
 
 pub(super) fn object(entries: Vec<(&str, Value)>) -> Value {
-    Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Value::Object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
 
 pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
@@ -420,7 +420,7 @@ pub fn reply_payload(resp: &HttpResponse, as_: ResponseAs) -> Value {
             Some(Value::String(prev)) => format!("{prev}, {value}"),
             _ => value.clone(),
         };
-        headers.insert(name, Value::string(joined));
+        headers.insert(name.into(), Value::string(joined));
     }
     let body = match as_ {
         ResponseAs::Text => resp.text().into_owned(),
@@ -464,7 +464,7 @@ mod failure_value_tests {
 
 pub(super) fn set_field(mut payload: Value, name: &str, value: Value) -> Value {
     if let Value::Object(map) = &mut payload {
-        map.insert(name.to_string(), value);
+        map.insert(name.to_string().into(), value);
     }
     payload
 }

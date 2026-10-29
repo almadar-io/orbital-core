@@ -38,7 +38,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),
         OirType::Instant => "instant".to_string(),
-        OirType::Json | OirType::SExpr => "json".to_string(),
+        OirType::SExpr => "sexpr".to_string(),
         OirType::Array { .. } | OirType::Tuple { .. } => "array".to_string(),
         OirType::Map { .. } | OirType::Struct { .. } | OirType::Row { .. } => "object".to_string(),
         // Every variant of a struct union is an object, so the KIND is object;
@@ -86,7 +86,7 @@ pub fn is_unknowable(t: &OirType) -> bool {
 /// The companion to `set_value_type_compatible` for the `(set @field <expr>)`
 /// path where the value's type is *inferred* through the SExpression
 /// (Gap G-LOLO-SET-OP-RETURN). **Conservative on unknowable inferred types**:
-/// an open `Json`/`SExpr` never rejects. An array with unknown elements still
+/// an open `SExpr` or an absent slot never rejects. An array with unknown elements still
 /// checks its outer kind; matching array/tuple slots supply its element type.
 /// A concrete inferred type — including a concrete Array element — compares
 /// structurally through `sub`, passed by its real `OirType`, not an erased
@@ -143,9 +143,10 @@ pub fn oir_type_accepts_kind(declared: &OirType, actual_kind: &str) -> bool {
 /// The legacy kind-string vocabulary's representative `OirType`, for callers
 /// that hold a source spelling (a payload's declared kind) but want to
 /// compare structurally rather than through the string-only relation.
-/// Marker spellings with no real `OirType` (`any`, `entity`, raw
+/// Marker spellings with no real `OirType` (`entity`, raw
 /// `int`/`float`/`null`, `Map<...>`, PascalCase named types) get their
-/// [`CompatType::witness_type`] stand-in.
+/// [`CompatType::witness_type`] stand-in; a spelling nothing declares is the erased
+/// variable, which every check treats as unknowable.
 pub fn compat_kind_oir(kind: &str) -> OirType {
-    parse_compat_type(kind).witness_type()
+    parse_compat_type(kind).witness_type().unwrap_or_else(OirType::erased)
 }

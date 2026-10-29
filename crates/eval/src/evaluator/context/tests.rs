@@ -3,15 +3,15 @@ use super::*;
 fn sample_payload() -> Value {
     let mut data = ValueMap::default();
     data.insert(
-        "email".to_string(),
+        "email".into(),
         Value::string("test@example.com"),
     );
-    data.insert("name".to_string(), Value::string("Test User"));
-    data.insert("connectionSlots".to_string(), Value::Number(10.0));
+    data.insert("name".into(), Value::string("Test User"));
+    data.insert("connectionSlots".into(), Value::Number(10.0));
 
     let mut payload = ValueMap::default();
-    payload.insert("data".to_string(), Value::object(data));
-    payload.insert("id".to_string(), Value::string("user-123"));
+    payload.insert("data".into(), Value::object(data));
+    payload.insert("id".into(), Value::string("user-123"));
 
     Value::object(payload)
 }
@@ -20,11 +20,11 @@ fn sample_payload() -> Value {
 fn a_render_binding_to_a_missing_field_of_a_held_root_resolves_to_null() {
     let mut ctx = BindingContext::new();
     let mut user = ValueMap::default();
-    user.insert("email".to_string(), Value::string("learner@kflow.test"));
+    user.insert("email".into(), Value::string("learner@kflow.test"));
     ctx.set_user(Value::object(user));
     let mut card = ValueMap::default();
-    card.insert("name".to_string(), Value::string("@user.name"));
-    card.insert("email".to_string(), Value::string("@user.email"));
+    card.insert("name".into(), Value::string("@user.name"));
+    card.insert("email".into(), Value::string("@user.email"));
     let resolved = ctx.resolve_value(&Value::object(card)).into_owned();
     let Value::Object(out) = resolved else { panic!("an object resolves to an object") };
     assert_eq!(out.get("name"), Some(&Value::Null));
@@ -43,11 +43,11 @@ fn control_a_binding_to_a_root_the_kernel_has_not_populated_stays_its_token() {
 fn sample_user() -> Value {
     let mut user = ValueMap::default();
     user.insert(
-        "id".to_string(),
+        "id".into(),
         Value::string("current-user-id"),
     );
     user.insert(
-        "name".to_string(),
+        "name".into(),
         Value::string("Current User"),
     );
     Value::object(user)
@@ -102,9 +102,9 @@ fn test_resolve_value_every_root() {
     // THE canonical value-walker resolves any `@payload.X` / `@entity.X` / `@config.X`
     // inside a tree — no per-binding special-casing. (Effects run through this.)
     let mut entity = ValueMap::default();
-    entity.insert("title".to_string(), Value::string("Ticket #1"));
+    entity.insert("title".into(), Value::string("Ticket #1"));
     let mut config = ValueMap::default();
-    config.insert("look".to_string(), Value::string("striped"));
+    config.insert("look".into(), Value::string("striped"));
     let ctx = BindingContextBuilder::new()
         .payload(sample_payload())
         .entity(Value::object(entity))
@@ -114,22 +114,22 @@ fn test_resolve_value_every_root() {
     let content = Value::object(ValueMap::from_iter([
         // a data table bound to the loaded collection — resolves to the payload value
         (
-            "rows".to_string(),
+            "rows".into(),
             Value::String(("@payload.data".to_string()).into()),
         ),
         (
-            "heading".to_string(),
+            "heading".into(),
             Value::String(("@entity.title".to_string()).into()),
         ),
         (
-            "look".to_string(),
+            "look".into(),
             Value::String(("@config.look".to_string()).into()),
         ),
         (
-            "missing".to_string(),
+            "missing".into(),
             Value::String(("@payload.nope".to_string()).into()),
         ),
-        ("literal".to_string(), Value::String(("plain".to_string()).into())),
+        ("literal".into(), Value::String(("plain".to_string()).into())),
     ]));
     let resolved = ctx.resolve_value(&content).into_owned();
     let obj = resolved.as_object().unwrap();
@@ -149,7 +149,7 @@ fn test_resolve_value_every_root() {
 #[test]
 fn resolve_value_evaluates_a_translate_call_with_the_contexts_catalog() {
     let mut entity = ValueMap::default();
-    entity.insert("count".to_string(), Value::Number(3.0));
+    entity.insert("count".into(), Value::Number(3.0));
     let ctx = BindingContextBuilder::new()
         .entity(Value::object(entity))
         .locale(Value::string("ar"))
@@ -162,13 +162,13 @@ fn resolve_value_evaluates_a_translate_call_with_the_contexts_catalog() {
         Value::String(("i18n/t".to_string()).into()),
         Value::String(("home:posts.count".to_string()).into()),
         Value::Object(ValueMap::from_iter([(
-            "n".to_string(),
+            "n".into(),
             Value::String(("@entity.count".to_string()).into()),
         )]).into()),
     ]);
     let resolved = ctx
         .resolve_value(&Value::object(ValueMap::from_iter([(
-            "label".to_string(),
+            "label".into(),
             call,
         )])))
         .into_owned();
@@ -202,11 +202,11 @@ fn test_resolve_value_config_forward_to_another_binding() {
     // gap: `box.data-theme` arriving as `"@currentTheme"`).
     let mut config = ValueMap::default();
     config.insert(
-        "theme".to_string(),
+        "theme".into(),
         Value::string("@currentTheme"),
     );
     let mut user = ValueMap::default();
-    user.insert("name".to_string(), Value::string("Ada"));
+    user.insert("name".into(), Value::string("Ada"));
     let ctx = BindingContextBuilder::new()
         .config(Value::object(config))
         .current_theme(Value::string("clay-light"))
@@ -226,17 +226,17 @@ fn test_resolve_value_config_forward_to_another_binding() {
 fn test_resolve_value_runtime_data_is_never_evaluated_as_code() {
     let mut payload = ValueMap::default();
     payload.insert(
-        "argv".to_string(),
+        "argv".into(),
         Value::array(vec![Value::String("list".into()), Value::String("-c".into()), Value::String("x".into())]),
     );
-    payload.insert("note".to_string(), Value::string("@user.email"));
+    payload.insert("note".into(), Value::string("@user.email"));
     let mut entity = ValueMap::default();
     entity.insert(
-        "form".to_string(),
+        "form".into(),
         Value::array(vec![Value::String("if".into()), Value::Bool(true), Value::String("a".into()), Value::String("b".into())]),
     );
     let mut user = ValueMap::default();
-    user.insert("email".to_string(), Value::string("ada@example.com"));
+    user.insert("email".into(), Value::string("ada@example.com"));
     let ctx = BindingContextBuilder::new()
         .payload(Value::object(payload))
         .entity(Value::object(entity))
@@ -263,7 +263,7 @@ fn test_resolve_value_runtime_data_is_never_evaluated_as_code() {
 fn test_resolve_value_config_trees_and_authored_forms_still_evaluate() {
     let mut config = ValueMap::default();
     config.insert(
-        "label".to_string(),
+        "label".into(),
         Value::array(vec![Value::String("if".into()), Value::Bool(true), Value::String("A".into()), Value::String("B".into())]),
     );
     let ctx = BindingContextBuilder::new().config(Value::object(config)).build();
@@ -286,7 +286,7 @@ fn test_resolve_value_self_forward_stays_literal_not_infinite_loop() {
     // bug) must not recurse forever — the same occurs-check that already
     // guards structural (Object/Array) re-expansion covers the scalar hop.
     let mut config = ValueMap::default();
-    config.insert("x".to_string(), Value::string("@config.x"));
+    config.insert("x".into(), Value::string("@config.x"));
     let ctx = BindingContextBuilder::new()
         .config(Value::object(config))
         .build();
@@ -305,8 +305,8 @@ fn test_resolve_value_interpolates_embedded_bindings() {
     // string ("@entity.count") resolves to its typed value. Locks the runtime/
     // codegen parity for prefixed bindings (the "Count: @entity.count" bug).
     let mut entity = ValueMap::default();
-    entity.insert("count".to_string(), Value::Number(0.0));
-    entity.insert("name".to_string(), Value::string("Counter"));
+    entity.insert("count".into(), Value::Number(0.0));
+    entity.insert("name".into(), Value::string("Counter"));
     let ctx = BindingContextBuilder::new()
         .entity(Value::object(entity))
         .build();
@@ -426,19 +426,19 @@ fn test_entity_stores() {
         {
             let mut c = ValueMap::default();
             c.insert(
-                "requesterId".to_string(),
+                "requesterId".into(),
                 Value::string("user-1"),
             );
-            c.insert("status".to_string(), Value::string("accepted"));
+            c.insert("status".into(), Value::string("accepted"));
             Value::object(c)
         },
         {
             let mut c = ValueMap::default();
             c.insert(
-                "requesterId".to_string(),
+                "requesterId".into(),
                 Value::string("user-1"),
             );
-            c.insert("status".to_string(), Value::string("pending"));
+            c.insert("status".into(), Value::string("pending"));
             Value::object(c)
         },
     ];
@@ -461,10 +461,10 @@ fn test_entity_stores() {
 #[test]
 fn resolve_value_self_referential_structure_terminates() {
     let mut entry = ValueMap::default();
-    entry.insert("action".to_string(), Value::string("restarted"));
+    entry.insert("action".into(), Value::string("restarted"));
     let mut entity = ValueMap::default();
     entity.insert(
-        "audit".to_string(),
+        "audit".into(),
         Value::array(vec![
             Value::String(("@entity.audit".to_string()).into()),
             Value::Object(entry.into()),
@@ -495,14 +495,14 @@ fn resolve_value_self_referential_structure_terminates() {
 fn resolve_value_mutual_cycle_terminates_and_siblings_still_resolve() {
     let mut entity = ValueMap::default();
     entity.insert(
-        "a".to_string(),
+        "a".into(),
         Value::array(vec![Value::String(("@entity.b".to_string()).into())]),
     );
     entity.insert(
-        "b".to_string(),
+        "b".into(),
         Value::array(vec![Value::String(("@entity.a".to_string()).into())]),
     );
-    entity.insert("name".to_string(), Value::string("N"));
+    entity.insert("name".into(), Value::string("N"));
     let ctx = BindingContextBuilder::new()
         .entity(Value::object(entity))
         .build();
@@ -536,7 +536,7 @@ fn resolve_value_mutual_cycle_terminates_and_siblings_still_resolve() {
 #[test]
 fn render_ui_operator_forms_are_evaluated() {
     let mut entity = ValueMap::default();
-    entity.insert("status".to_string(), Value::string("draft"));
+    entity.insert("status".into(), Value::string("draft"));
     let ctx = BindingContextBuilder::new()
         .entity(Value::object(entity))
         .build();
@@ -592,8 +592,8 @@ fn big_list(n: usize) -> Value {
         (0..n)
             .map(|i| {
                 let mut row = ValueMap::default();
-                row.insert("n".to_string(), Value::Number(i as f64));
-                row.insert("label".to_string(), Value::string(format!("row-{i}")));
+                row.insert("n".into(), Value::Number(i as f64));
+                row.insert("label".into(), Value::string(format!("row-{i}")));
                 Value::object(row)
             })
             .collect(),

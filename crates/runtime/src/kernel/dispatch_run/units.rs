@@ -437,7 +437,7 @@ impl RuntimeKernel {
             (Some(result), Some(def)) => {
                 self.composed_callsite
                     .write()
-                    .insert(child.clone(), composed_with.clone());
+                    .insert(child.clone().into(), composed_with.clone());
                 let authored: Vec<&SExpression> =
                     result.effect_runs.iter().map(|run| &run.effect).collect();
                 (

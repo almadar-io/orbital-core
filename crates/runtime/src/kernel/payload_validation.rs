@@ -2,7 +2,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType};
+use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType, ShapeError};
 use orbital_core_base::schema::types::PayloadField;
 use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::operators::arg_types::misfit_detail_of_shape;
@@ -22,6 +22,8 @@ pub enum PayloadFailureReason {
     Missing,
     Null,
     WrongType,
+    /// The declared type has no shape to check a value against.
+    NoShape,
 }
 
 impl PayloadFailureReason {
@@ -30,6 +32,7 @@ impl PayloadFailureReason {
             Self::Missing => "missing",
             Self::Null => "null",
             Self::WrongType => "wrong-type",
+            Self::NoShape => "no-shape",
         }
     }
 }
@@ -53,7 +56,7 @@ pub fn validate_event_payload_with_types(
         event,
         payload,
         schema,
-        &|name| named.get(name).cloned(),
+        &|name| Ok(named.get(name).cloned()),
     )
 }
 
@@ -61,7 +64,7 @@ pub(crate) fn validate_event_payload_with_context(
     event: &str,
     payload: &Value,
     schema: &[PayloadField],
-    resolve: &dyn Fn(&str) -> Option<OirType>,
+    resolve: &dyn Fn(&str) -> Result<Option<OirType>, ShapeError>,
 ) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
     for field in schema {
@@ -81,8 +84,17 @@ pub(crate) fn validate_event_payload_with_context(
                 }
             }
             Some(value) => {
-                let declared =
-                    DeclaredShape::with_resolver(None, payload_field_shape(field), resolve);
+                let declared = payload_field_shape(field)
+                    .and_then(|shape| DeclaredShape::with_resolver(None, shape, resolve));
+                let declared = match declared {
+                    Ok(declared) => declared,
+                    Err(error) => {
+                        let mut failure = fail(PayloadFailureReason::NoShape);
+                        failure.expected_type = error.to_string();
+                        failures.push(failure);
+                        continue;
+                    }
+                };
                 if let Some(found) = misfit_detail_of_shape(value, &declared) {
                     let mut failure = fail(if found.actual == "absent" {
                         PayloadFailureReason::Missing
@@ -147,18 +159,20 @@ mod tests {
     }
 
     #[test]
-    fn the_bare_array_primitive_and_the_object_type_are_containers_too() {
-        let schema = [
-            field("list", "array", false),
-            field("data", "object", false),
-        ];
+    fn the_object_type_is_a_container_and_a_bare_array_has_no_shape() {
+        let schema = [field("data", "object", false)];
+        assert!(validate_event_payload("E", &payload(json!({ "data": {} })), &schema).is_empty());
+        assert_eq!(validate_event_payload("E", &payload(json!({ "data": [1] })), &schema).len(), 1);
+        let bare = [field("list", "array", false), field("typed", "[number]", false)];
+        let failures = validate_event_payload("E", &payload(json!({ "list": [1], "typed": [1] })), &bare);
+        assert_eq!(failures.len(), 1, "only the bare array is refused: {failures:?}");
+        assert_eq!(failures[0].field, "list");
+        assert_eq!(failures[0].reason, PayloadFailureReason::NoShape);
+        assert_eq!(failures[0].expected_type, "no declared shape: an array type with no element type");
         assert!(
-            validate_event_payload("E", &payload(json!({ "list": [1], "data": {} })), &schema)
-                .is_empty()
+            format_payload_failures(&failures).contains("list (no-shape"),
+            "the refusal names the position"
         );
-        let bad =
-            validate_event_payload("E", &payload(json!({ "list": "x", "data": [1] })), &schema);
-        assert_eq!(bad.len(), 2);
         let objects = [field("rows", "[object]", false)];
         assert_eq!(
             validate_event_payload("E", &payload(json!({"rows": [1]})), &objects)[0].field,
@@ -242,7 +256,7 @@ mod tests {
            {"name": "tag", "type": "string", "required": false, "nullable": true}]))
         .unwrap();
         let versioned = |value| {
-            validate_event_payload_with_context("E", &payload(value), &schema, &|_| None)
+            validate_event_payload_with_context("E", &payload(value), &schema, &|_| Ok(None))
         };
         for ok in [
             json!({"viewer": {"id": "u"}}),

@@ -64,7 +64,7 @@ impl RuntimeKernel {
 
         let outcomes =
             self.dispatch_in_turn(lane.turn(), trait_name, Some(&eid), event, payload.clone())?;
-        let mut response = EventResponse::from_process_results(&outcomes, trait_name, event);
+        let mut response = self.response_for(&outcomes, trait_name, event);
         response.fold_rerenders(&self.rerender_stale());
 
         Ok(self.finish_client_dispatch(LegSeed {
@@ -118,11 +118,11 @@ impl RuntimeKernel {
         let awaiting = self.awaiting_init_value();
         let with_awaiting = |payload: Value| match payload {
             Value::Object(mut map) => {
-                map.insert("_awaitingInit".to_string(), awaiting.clone());
+                map.insert("_awaitingInit".into(), awaiting.clone());
                 Some(Value::Object(map))
             }
             Value::Null => Some(Value::object(ValueMap::from_iter([(
-                "_awaitingInit".to_string(),
+                "_awaitingInit".into(),
                 awaiting.clone(),
             )]))),
             other => Some(other),
@@ -169,7 +169,7 @@ impl RuntimeKernel {
                         seed_row.clone()
                     };
                     let entity_by_trait = (!replayed_from.is_null())
-                        .then(|| ValueMap::from_iter([(trait_name.to_string(), replayed_from)]));
+                        .then(|| ValueMap::from_iter([(trait_name.into(), replayed_from)]));
                     vec![EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),
@@ -231,7 +231,7 @@ impl RuntimeKernel {
                                     .collect()
                             }),
                             entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                                ValueMap::from_iter([(t.clone(), entry.entity_before.to_value())])
+                                ValueMap::from_iter([(t.clone().into(), entry.entity_before.to_value())])
                             }),
                             delivery,
                             dispatch_log,
@@ -272,7 +272,7 @@ impl RuntimeKernel {
                         client_id: client_id.map(str::to_string),
                         source_trait: Some(trait_name.to_string()),
                         entity_by_trait: shared_frame
-                            .map(|row| ValueMap::from_iter([(trait_name.to_string(), row)])),
+                            .map(|row| ValueMap::from_iter([(trait_name.into(), row)])),
                         ..Default::default()
                     },
                     awaiting: if tick.is_some() {
@@ -379,7 +379,7 @@ impl RuntimeKernel {
                         event: Some(event),
                     }]),
                     entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                        ValueMap::from_iter([(trait_name.clone(), entry.entity_before.to_value())])
+                        ValueMap::from_iter([(trait_name.clone().into(), entry.entity_before.to_value())])
                     }),
                     delivery,
                     dispatch_log: dispatch_log_of(entry),
@@ -473,27 +473,21 @@ impl RuntimeKernel {
         response: &EventResponse,
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        let trait_entity_type = |trait_name: &String| {
-            self.registry
-                .trait_definitions
-                .read()
-                .get(trait_name)
-                .and_then(|d| d.linked_entity.clone())
-                .unwrap_or_else(|| trait_name.clone())
-        };
-        let misfit = response
-            .data
-            .iter()
-            .flatten()
-            .find_map(|(entity_type, rows)| {
-                let keyed: Vec<std::borrow::Cow<'_, Value>> = rows.iter().map(keyed_row).collect();
-                self.rows_misfit(entity_type, keyed.iter().map(|row| row.as_ref()))
-            })
-            .or_else(|| {
-                response.entity_by_trait.iter().flatten().find_map(|(trait_name, frame)| {
-                    self.rows_misfit(&trait_entity_type(trait_name), [keyed_row(frame).as_ref()])
-                })
-            });
+        self.apply_server_response_with(response, already_delivered, None).map(|(outcomes, _)| outcomes)
+    }
+
+    /// [`Self::apply_server_response`], also reporting what the response's frame delta did to this kernel's frames
+    /// (`base`: the rows the leg carried, by frame, which the host's echo of them must not clobber).
+    pub fn apply_server_response_with(
+        &self,
+        response: &EventResponse,
+        already_delivered: &HashSet<(String, String)>,
+        base: Option<&HashMap<String, ValueMap>>,
+    ) -> Result<(Vec<(String, ProcessEventResult)>, FramesApplied), KernelError> {
+        let misfit = response.data.iter().flatten().find_map(|(entity_type, rows)| {
+            let keyed: Vec<std::borrow::Cow<'_, Value>> = rows.iter().map(keyed_row).collect();
+            self.rows_misfit(entity_type, keyed.iter().map(|row| row.as_ref()))
+        });
         if let Some(misfit) = misfit {
             return Err(KernelError::Internal(format!("server response refused: {misfit}")));
         }
@@ -552,27 +546,10 @@ impl RuntimeKernel {
                 .collect()
         };
 
-        let mut trait_entity_ids: HashMap<String, String> = HashMap::new();
-        if let Some(entity_by_trait) = &response.entity_by_trait {
-            let trait_defs = self.registry.trait_definitions.read();
-            for (trait_name, entity_val) in entity_by_trait {
-                if client_only.contains(trait_name) {
-                    continue;
-                }
-                let entity_type = trait_defs
-                    .get(trait_name)
-                    .and_then(|d| d.linked_entity.clone())
-                    .unwrap_or_else(|| trait_name.clone());
-                let id = wire_row_id(entity_val);
-                self.write_trait_frame(
-                    trait_name,
-                    &entity_type,
-                    &id,
-                    &SharedEntity::from_value_ref(entity_val),
-                );
-                trait_entity_ids.insert(trait_name.clone(), id);
-            }
-        }
+        let frames_applied = match &response.frames {
+            Some(delta) => self.apply_server_frames(delta, &client_only, base)?,
+            None => FramesApplied::default(),
+        };
 
         {
             let mut state_manager = self.state_manager.write();
@@ -588,11 +565,8 @@ impl RuntimeKernel {
                 if client_only.contains(trait_name) && !host_ran.contains(trait_name.as_str()) {
                     continue;
                 }
-                let entity_id = self.state_key(Some(
-                    trait_entity_ids
-                        .get(trait_name)
-                        .map_or(RUNTIME_SINGLETON, String::as_str),
-                ));
+                let frame_id = frames_applied.ids.get(&self.trait_frame_key(trait_name));
+                let entity_id = self.state_key(Some(frame_id.map_or(RUNTIME_SINGLETON, String::as_str)));
                 if state_manager
                     .get_or_create_state(trait_name, entity_id.as_deref())
                     .is_ok()
@@ -668,7 +642,7 @@ impl RuntimeKernel {
             &mut DispatchMemory::default(),
             &mut outcomes,
         )?;
-        Ok(outcomes)
+        Ok((outcomes, frames_applied))
     }
 
     /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
@@ -680,7 +654,7 @@ impl RuntimeKernel {
             .into_iter()
             .flatten()
             .map(|t| t.r#trait.clone())
-            .chain(entity_by_trait.into_iter().flat_map(|rows| rows.keys().cloned()))
+            .chain(entity_by_trait.into_iter().flat_map(|rows| rows.keys().map(|k| k.to_string())))
             .collect()
     }
 
@@ -708,11 +682,11 @@ impl RuntimeKernel {
             }
         }
         for (trait_name, row) in entity_by_trait.into_iter().flatten() {
-            let entity_type = match self.registry.trait_definitions.read().get(trait_name) {
+            let entity_type = match self.registry.trait_definitions.read().get(trait_name.as_str()) {
                 Some(def) => def
                     .linked_entity
                     .clone()
-                    .unwrap_or_else(|| trait_name.clone()),
+                    .unwrap_or_else(|| trait_name.to_string()),
                 None => continue,
             };
             if !row.as_object().is_some_and(|o| !o.is_empty()) {
@@ -854,7 +828,7 @@ fn keyed_row(row: &Value) -> std::borrow::Cow<'_, Value> {
     match row {
         Value::Object(fields) if !fields.contains_key("id") => {
             let mut fields = fields.clone();
-            fields.insert("id".to_string(), Value::string(wire_row_id(row)));
+            fields.insert("id".into(), Value::string(wire_row_id(row)));
             std::borrow::Cow::Owned(Value::Object(fields))
         }
         _ => std::borrow::Cow::Borrowed(row),

@@ -104,9 +104,9 @@ pub fn event_slot_index(event: &Value, slots: &[String]) -> Option<usize> {
 /// `onSlotClick(day, time)` / `onDayClick(day)`.
 pub fn calendar_click_payload(date: &str, time: Option<&str>) -> Value {
     let mut o = ValueMap::default();
-    o.insert("date".to_string(), Value::string(date.to_string()));
+    o.insert("date".into(), Value::string(date.to_string()));
     if let Some(t) = time {
-        o.insert("time".to_string(), Value::string(t.to_string()));
+        o.insert("time".into(), Value::string(t.to_string()));
     }
     Value::object(o)
 }

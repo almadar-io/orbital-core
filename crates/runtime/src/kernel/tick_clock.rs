@@ -16,6 +16,7 @@ use std::prelude::v1::*;
 use orbital_core_base::cron::{cron_matches, parse_cron, CronFields};
 use orbital_core_base::schema::types::{Orbital, OrbitalSchema, StringOrNumber, TraitReference};
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 /// Cron ticks are re-checked at most this often (calendar-minute resolution is enough).
 const CRON_CHECK_INTERVAL_MS: u64 = 1000;
@@ -135,6 +136,15 @@ impl TickClock {
 
     /// [`Self::from_schema`] over a subset of orbitals (a client scoped to its active orbital).
     pub fn from_orbitals(orbitals: &[Orbital]) -> Self {
+        Self::from_orbital_iter(orbitals.iter())
+    }
+
+    /// [`Self::from_schema`] over every program given: the booted one and the lazy ones loaded with it.
+    pub fn from_programs(programs: &[Arc<OrbitalSchema>]) -> Self {
+        Self::from_orbital_iter(programs.iter().flat_map(|p| p.orbitals.iter()))
+    }
+
+    fn from_orbital_iter<'a>(orbitals: impl Iterator<Item = &'a Orbital>) -> Self {
         let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
         let mut entries = Vec::new();
         for orbital in orbitals {
@@ -314,7 +324,6 @@ mod tests {
                 "traits": [{
                     "name": "T",
                     "linkedEntity": "E",
-                    "category": "interaction",
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
                         "events": [],

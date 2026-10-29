@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 /// The fields of an object value, in insertion order: `object/keys`, `object/values` and `object/entries` list
 /// them in the order the fields were written, as the JS evaluator does.
-pub type ValueMap = crate::collections::IndexMap<String, Value>;
+pub type ValueMap = crate::collections::IndexMap<Shared<String>, Value>;
 
 /// A copy-on-write handle: cloning shares the data; a write through `DerefMut` copies only when it is shared.
 /// It is how a value's lists and records are held, so reading one is a reference-count bump, not a deep copy,
@@ -324,7 +324,7 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut object = ValueMap::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
-            object.insert(key, value);
+            object.insert(key.into(), value);
         }
         Ok(Value::object(object))
     }
@@ -562,7 +562,7 @@ impl Value {
                 // Last part - set the value
                 match current {
                     Value::Object(obj) => {
-                        obj.insert(part.to_string(), value);
+                        obj.insert(part.to_string().into(), value);
                         return true;
                     }
                     Value::Array(arr) => {
@@ -581,7 +581,7 @@ impl Value {
                 match current {
                     Value::Object(obj) => {
                         if !obj.contains_key(part.as_ref()) {
-                            obj.insert(part.to_string(), Value::object(ValueMap::default()));
+                            obj.insert(part.to_string().into(), Value::object(ValueMap::default()));
                         }
                         match obj.get_mut(part.as_ref()) {
                             Some(v) => current = v,
@@ -715,7 +715,7 @@ impl From<SExpression> for Value {
             SExpression::String(s) => Value::string(s),
             SExpression::Array(arr) => Value::Array(arr.into_inner().into_iter().map(Value::from).collect()),
             SExpression::Object(obj) => {
-                Value::Object(obj.into_inner().into_iter().map(|(k, v)| (k.into_inner(), Value::from(v))).collect())
+                Value::Object(obj.into_inner().into_iter().map(|(k, v)| (k, Value::from(v))).collect())
             }
         }
     }
@@ -772,7 +772,7 @@ impl std::ops::IndexMut<&str> for Value {
             *self = Value::object(ValueMap::default());
         }
         match self {
-            Value::Object(fields) => fields.entry(key.to_string()).or_insert(Value::Null),
+            Value::Object(fields) => fields.entry(key.to_string().into()).or_insert(Value::Null),
             other => panic!("cannot index a {} value by field name `{key}`", other.type_name()),
         }
     }
@@ -936,10 +936,10 @@ mod tests {
     fn test_get_path() {
         let mut obj = ValueMap::default();
         let mut address = ValueMap::default();
-        address.insert("city".to_string(), Value::string("NYC"));
-        address.insert("zip".to_string(), Value::string("10001"));
-        obj.insert("name".to_string(), Value::string("John"));
-        obj.insert("address".to_string(), Value::object(address));
+        address.insert("city".into(), Value::string("NYC"));
+        address.insert("zip".into(), Value::string("10001"));
+        obj.insert("name".into(), Value::string("John"));
+        obj.insert("address".into(), Value::object(address));
 
         let value = Value::object(obj);
 
@@ -967,7 +967,7 @@ mod tests {
             Value::String(("c".to_string()).into()),
         ]);
         let mut root = ValueMap::default();
-        root.insert("data".to_string(), data);
+        root.insert("data".into(), data);
         let value = Value::object(root);
 
         assert_eq!(
@@ -990,7 +990,7 @@ mod tests {
     #[test]
     fn test_get_path_owned_empty_array_length_is_zero() {
         let mut root = ValueMap::default();
-        root.insert("data".to_string(), Value::array(vec![]));
+        root.insert("data".into(), Value::array(vec![]));
         let value = Value::object(root);
         assert_eq!(
             value.get_path_owned("data.length"),
@@ -1087,8 +1087,8 @@ mod tests {
         let via_json: Value = serde_json::from_value(tree).unwrap();
         let direct = crate::value_serialize::to_canonical_value(&sample).unwrap();
         assert_eq!(direct, via_json);
-        let keys: Vec<&String> = match &direct {
-            Value::Object(fields) => fields.keys().collect(),
+        let keys: Vec<String> = match &direct {
+            Value::Object(fields) => fields.keys().map(|k| k.to_string()).collect(),
             other => panic!("{other:?}"),
         };
         assert_eq!(keys, ["alpha", "by_key", "hole", "raw", "unit", "zeta"]);
@@ -1098,8 +1098,8 @@ mod tests {
     #[test]
     fn control_an_uncanonical_value_keeps_the_serialized_order_and_equal_text_is_shared() {
         let direct = crate::value_serialize::to_value(&sample()).unwrap();
-        let keys: Vec<&String> = match &direct {
-            Value::Object(fields) => fields.keys().collect(),
+        let keys: Vec<String> = match &direct {
+            Value::Object(fields) => fields.keys().map(|k| k.to_string()).collect(),
             other => panic!("{other:?}"),
         };
         assert_eq!(keys, ["zeta", "alpha", "by_key", "raw", "unit", "hole"]);

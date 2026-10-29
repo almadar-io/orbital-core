@@ -9,10 +9,22 @@ impl RuntimeKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        let mut mount = self.mount.write();
-        for t in traits {
-            mount.awaiting.insert(t.into());
-        }
+        let awaiting = self.awaiting_lifecycle(traits);
+        self.mount.write().awaiting.extend(awaiting);
+    }
+
+    /// The traits among `traits` that handle a lifecycle event: only those have one to wait for (a mount seeds
+    /// exactly them, `mounts_of`), so a trait with none is ready at once and hears its listens.
+    fn awaiting_lifecycle<I, S>(&self, traits: I) -> Vec<String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        traits
+            .into_iter()
+            .map(Into::into)
+            .filter(|t: &String| self.lifecycle_event_of(t).is_some())
+            .collect()
     }
 
     /// A new mount replacing the previous one (a page switch): nothing held for
@@ -22,13 +34,12 @@ impl RuntimeKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
+        let awaiting = self.awaiting_lifecycle(traits);
         let mut mount = self.mount.write();
         mount.awaiting.clear();
         mount.held.clear();
         self.renders.write().clear();
-        for t in traits {
-            mount.awaiting.insert(t.into());
-        }
+        mount.awaiting.extend(awaiting);
     }
 
     /// Traits leaving the mount: nothing stays held for them.
@@ -107,6 +118,14 @@ impl RuntimeKernel {
         self.registry.schemas.read().get(name).cloned()
     }
 
+    /// Every registered program, the lazy ones loaded so far included.
+    pub fn registered_programs(&self) -> Vec<Arc<OrbitalSchema>> {
+        let schemas = self.registry.schemas.read();
+        let mut names: Vec<&String> = schemas.keys().collect();
+        names.sort();
+        names.into_iter().map(|name| schemas[name].clone()).collect()
+    }
+
     /// The `egress` origins every registered program declares, unioned: what a host's transport may reach.
     pub fn egress(&self) -> Vec<String> {
         self.grants.egress.read().clone()
@@ -118,7 +137,13 @@ impl RuntimeKernel {
     }
 
     /// Register a schema with the kernel.
-    pub fn register_schema(&self, mut schema: OrbitalSchema) -> Result<(), KernelError> {
+    pub fn register_schema(&self, schema: OrbitalSchema) -> Result<(), KernelError> {
+        self.register_schema_from(schema, "")
+    }
+
+    /// [`Self::register_schema`] for a program read from `file` (relative to the booted `.orb`, empty for the booted one): its
+    /// lazy orbitals sit beside it.
+    pub(super) fn register_schema_from(&self, mut schema: OrbitalSchema, file: &str) -> Result<(), KernelError> {
         if schema.resolved.is_none() && schema.type_contract_version.is_none() {
             return Err(KernelError::UnresolvedProgram { program: schema.name });
         }
@@ -262,12 +287,16 @@ impl RuntimeKernel {
             }
         }
 
+        let boot_lazy = self.register_lazy_stubs(&schema, file)?;
+        self.register_stub_listeners(&schema.name, None)?;
         for orbital in &schema.orbitals {
             let mut registered = Vec::new();
             for trait_ref in &orbital.traits {
                 if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
                     self.register_trait(Arc::clone(&trait_def))?;
-                    self.register_trait_listeners(&trait_def, &orbital.name)?;
+                    if !self.lazy.holds_listeners_of(&trait_def.name) {
+                        self.register_trait_listeners(&trait_def, &orbital.name)?;
+                    }
                     registered.push(trait_def);
                 }
             }
@@ -276,9 +305,12 @@ impl RuntimeKernel {
                 .extend(super::callsite_capture::capture_children(
                     &registered.iter().map(|t| &**t).collect::<Vec<_>>(),
                 ));
+            self.register_stub_listeners(&schema.name, Some(&orbital.name))?;
         }
+        self.require_stub_listeners_placed(&schema.name)?;
         self.bind_program_rows(&schema);
         let nav_items = app_nav_items(&schema);
+        self.resolve_lazy_stubs(&schema);
 
         {
             let mut schemas = self.registry.schemas.write();
@@ -308,6 +340,9 @@ impl RuntimeKernel {
         *self.registry.embed_index.write() = EmbedIndex::build(&self.registry.trait_definitions.read());
 
         info!(schema = %schema_name, "Schema registered successfully");
+        boot_lazy
+            .iter()
+            .try_for_each(|orbital| self.ensure_orbital_loaded(orbital))?;
         Ok(())
     }
 
@@ -496,6 +531,7 @@ impl RuntimeKernel {
         config: KernelConfig,
     ) -> Result<RuntimeKernel, KernelError> {
         let fork = RuntimeKernel::new(config.environment, entity_source, config);
+        fork.view_records.keep_none();
         fork.host_fans_out.store(
             self.host_fans_out.load(std::sync::atomic::Ordering::SeqCst),
             std::sync::atomic::Ordering::SeqCst,
@@ -564,6 +600,7 @@ impl RuntimeKernel {
         for name in names {
             fork.bind_program_rows(&schemas[name]);
         }
+        fork.inherit_lazy_stubs(self)?;
         Ok(fork)
     }
 

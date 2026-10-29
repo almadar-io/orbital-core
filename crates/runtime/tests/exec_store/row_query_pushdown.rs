@@ -360,7 +360,7 @@ fn every_write_case_matches_the_reference_semantics() {
                 on_failure: RowWriteFailureMode::Stop,
             },
         };
-        let got = apply_write_batch(&mut t, &batch, &mut CreateIds::Strict);
+        let got = apply_write_batch(&mut t, &batch, &mut CreateIds::Strict, &mut orbital_core_base::intern::KeyVocabulary::default());
         assert!(
             outcomes_match(&got, &case["expect"]["outcomes"]),
             "{name}: {got:?}"
@@ -455,7 +455,8 @@ fn the_cache_mints_a_missing_id_and_refuses_a_taken_one_like_the_reference() {
                 entity_type: "Stock".into(),
                 data: v(&json!({ "id": "s1" }))
             },
-            &mut CreateIds::Strict
+            &mut CreateIds::Strict,
+            &mut orbital_core_base::intern::KeyVocabulary::default()
         ),
         RowWriteOutcome::DuplicateId
     );
@@ -542,7 +543,7 @@ fn every_id_and_resolve_case_matches() {
             let id = set["id"].as_str().unwrap();
             let mut row = (**t.get(id).unwrap()).clone();
             for (k, val) in set["fields"].as_object().unwrap() {
-                row.as_object_mut().unwrap().insert(k.clone(), v(val));
+                row.as_object_mut().unwrap().insert(k.clone().into(), v(val));
             }
             t.insert(id.to_string(), Arc::new(row));
         }

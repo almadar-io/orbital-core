@@ -173,15 +173,27 @@ impl<'a> Program<'a> {
                     }
                 };
                 for (pi, path) in paths.iter().enumerate() {
-                    for w in path.writes.iter().filter(|w| w.entity == UNKNOWN_TARGET) {
-                        let site = format!("{}, {}{}", step.site, w.at, path_label(&paths, pi));
-                        out.push(unbuildable(
-                            prop,
-                            &site,
-                            "a write whose target entity is not statically known".to_string(),
-                        ));
-                    }
-                    for w in path.writes.iter().filter(|w| w.entity == entity) {
+                    let dynamic: Vec<Write> = path
+                        .writes
+                        .iter()
+                        .filter(|w| w.entity == UNKNOWN_TARGET)
+                        .map(|w| Write {
+                            op: WriteOp::Create,
+                            entity: entity.to_string(),
+                            id: None,
+                            data: Data::Whole(SExpression::string(WRITTEN)),
+                            at: format!(
+                                "{} (a {entity} row through a target chosen at run time)",
+                                w.at
+                            ),
+                        })
+                        .collect();
+                    for w in path
+                        .writes
+                        .iter()
+                        .filter(|w| w.entity == entity)
+                        .chain(&dynamic)
+                    {
                         let site = format!("{}, {}{}", step.site, w.at, path_label(&paths, pi));
                         let linked = td.linked_entity.as_deref() == Some(entity)
                             && matches!(&w.id, Some(SExpression::String(s)) if s == "@entity.id");
@@ -333,9 +345,14 @@ impl<'a> Program<'a> {
     }
 
     /// Sorts for the fields of a whole record a write takes from a binding (`@payload.order`).
-    pub(super) fn add_record_vars(&self, vars: &mut Vars, record: &SExpression, def: &EntityDefinition) {
+    pub(super) fn add_record_vars(
+        &self,
+        vars: &mut Vars,
+        record: &SExpression,
+        def: &EntityDefinition,
+    ) {
         if let SExpression::String(b) = record {
-            if b.starts_with("@payload.") && !b[9..].contains('.') {
+            if b == WRITTEN || (b.starts_with("@payload.") && !b[9..].contains('.')) {
                 add_entity_vars(vars, b, def, true);
             }
         }
@@ -458,7 +475,9 @@ impl<'a> Program<'a> {
             let set_fields = fields_set_anywhere(td);
             let arms: Vec<Step<'_>> = steps(td)
                 .into_iter()
-                .filter(|step| step.event == Some(event) && step.to == Some(to) && step.from.contains(&from))
+                .filter(|step| {
+                    step.event == Some(event) && step.to == Some(to) && step.from.contains(&from)
+                })
                 .collect();
             // An arm's own `@ensures` binds that arm; a spec transition, which no arm carries, binds every arm.
             let own = arms.iter().any(|step| step.ensures.contains(ensures));

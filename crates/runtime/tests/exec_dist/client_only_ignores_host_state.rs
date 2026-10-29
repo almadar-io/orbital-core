@@ -56,10 +56,9 @@ fn host_answer() -> EventResponse {
 fn host_row() -> EventResponse {
     EventResponse {
         success: true,
-        entity_by_trait: Some(orbital_core_base::value::ValueMap::from([(
+        frames: Some(orbital_core_runtime::effects::FrameDelta::absolute([(
             "Searcher".to_string(),
-            serde_json::from_value::<Value>(json!({ "id": "q1", "text": "from the host" }))
-                .unwrap(),
+            serde_json::from_value(json!({ "id": "q1", "text": "from the host" })).unwrap(),
         )])),
         ..EventResponse::default()
     }
@@ -104,7 +103,7 @@ fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
         serde_json::from_value::<Value>(json!({ "id": "t1", "text": "from the host" })).unwrap();
     let response = EventResponse {
         success: true,
-        entity_by_trait: Some(orbital_core_base::value::ValueMap::from([("Responder".to_string(), row.clone())])),
+        frames: Some(orbital_core_runtime::effects::FrameDelta::absolute([("Responder".to_string(), row.as_object().unwrap().clone())])),
         ..EventResponse::default()
     };
     k.apply_server_response(&response, &Default::default())

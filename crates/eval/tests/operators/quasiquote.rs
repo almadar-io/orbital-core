@@ -34,7 +34,7 @@ fn ctx_with(values: &[Value]) -> BindingContext {
     let entity: ValueMap = values
         .iter()
         .enumerate()
-        .map(|(i, v)| (format!("h{i}"), v.clone()))
+        .map(|(i, v)| (format!("h{i}").into(), v.clone()))
         .collect();
     c.set_entity(Value::object(entity));
     c

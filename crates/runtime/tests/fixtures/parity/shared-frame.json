@@ -289,7 +289,6 @@
             "linkedEntity": "Doc",
             "linkedEntityId": "ent_01M39KWWVP1XMFBM3K0SE7KZFA",
             "name": "Starter",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {
@@ -410,7 +409,6 @@
               }
             ],
             "name": "Reader",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {
@@ -535,7 +533,6 @@
               }
             ],
             "name": "OwnB",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {
@@ -660,7 +657,6 @@
               }
             ],
             "name": "OwnC",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {

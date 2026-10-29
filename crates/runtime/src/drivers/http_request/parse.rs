@@ -49,13 +49,13 @@ pub(super) fn pairs_of(value: &Value, what: &str) -> Result<Vec<(String, String)
             Value::Array(items) => {
                 for item in items {
                     if let Some(text) = scalar_text(item, what)? {
-                        out.push((key.clone(), text));
+                        out.push((key.to_string(), text));
                     }
                 }
             }
             other => {
                 if let Some(text) = scalar_text(other, what)? {
-                    out.push((key.clone(), text));
+                    out.push((key.to_string(), text));
                 }
             }
         }
@@ -129,7 +129,7 @@ pub(super) fn parse_multipart(value: &Value) -> Result<HttpBodySpec, HttpRefusal
                 for (name, value) in map {
                     match value {
                         Value::String(v) if is_header_name(name) && is_header_value(v) => {
-                            headers.push((name.clone(), v.to_string()))
+                            headers.push((name.to_string(), v.to_string()))
                         }
                         _ => return invalid("multipart part header needs a token name and a single-line string value"),
                     }
@@ -400,10 +400,10 @@ pub fn parse_beacon_call(url: &str, request: &Value) -> Result<HttpCallSpec, Htt
         return invalid("a beacon request needs `text`, a string");
     };
     let mut body = ValueMap::default();
-    body.insert("text".to_string(), Value::String(text.clone()));
+    body.insert("text".into(), Value::String(text.clone()));
     body.insert(
-        "headers".to_string(),
-        Value::object(ValueMap::from_iter([("Content-Type".to_string(), Value::String(("text/plain".to_string()).into()))])),
+        "headers".into(),
+        Value::object(ValueMap::from_iter([("Content-Type".into(), Value::String(("text/plain".to_string()).into()))])),
     );
     let mut spec = parse_http_call(HttpMethod::Post, origin, &path, &Value::object(body))?;
     spec.delivery = HttpDelivery::Beacon;

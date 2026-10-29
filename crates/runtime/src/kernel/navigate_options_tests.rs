@@ -6,7 +6,7 @@ use super::*;
 #[test]
 fn navigate_carries_crumb_options() {
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::string("My Note"));
+    payload.insert("title".into(), Value::string("My Note"));
     let ctx = BindingContextBuilder::new()
         .payload(Value::object(payload))
         .build();

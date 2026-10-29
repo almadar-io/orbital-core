@@ -92,8 +92,7 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> O
             | OirType::File
             | OirType::Orbital
             | OirType::Behavior
-            | OirType::Reference { .. }
-            | OirType::Json => return Path::Opaque,
+            | OirType::Reference { .. } => return Path::Opaque,
             _ => return Path::Missing,
         }
     }

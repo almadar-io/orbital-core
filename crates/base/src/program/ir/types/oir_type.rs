@@ -47,10 +47,8 @@ pub enum OirType {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<Box<OirType>>,
     },
-    Json,
     /// Renderable UI content (a `node`-typed field/knob): a pattern node or
-    /// array of them. Distinct from `Json` so codegen can emit the canonical
-    /// pattern-tree type instead of a shapeless record.
+    /// array of them, so codegen can emit the canonical pattern-tree type.
     Node,
     #[serde(rename_all = "camelCase")]
     Array {
@@ -132,9 +130,9 @@ pub enum OirType {
         name: String,
     },
     /// An unbound type variable (`t` of `type Page t` or a trait's `(t : Type)`):
-    /// opaque, so it accepts only itself, or `Json` by erasure.
+    /// opaque, so it accepts only itself.
     Var {
-        name: String,
+        name: Shared<String>,
     },
 }
 
@@ -194,9 +192,32 @@ impl OirType {
         bindings: &std::collections::BTreeMap<String, OirType>,
     ) -> bool {
         self.rewrite(&|ty| match ty {
-            Self::Var { name } => bindings.get(name).cloned(),
+            Self::Var { name } => bindings.get(name.as_str()).cloned(),
             _ => None,
         })
+    }
+
+    /// The reserved type variable of a position whose type the checker does not know: the element of a bare `array`
+    /// kind, a null. No program can bind it (a program's variables are `$name`), and only the checker's own readings
+    /// produce it.
+    pub const ERASED_VAR: &'static str = "_";
+
+    pub fn erased() -> Self {
+        static NAME: crate::sync::OnceLock<Shared<String>> = crate::sync::OnceLock::new();
+        Self::Var { name: NAME.get_or_init(|| Shared::new(Self::ERASED_VAR.to_string())).clone() }
+    }
+
+    pub fn is_erased(&self) -> bool {
+        matches!(self, Self::Var { name } if name == Self::ERASED_VAR)
+    }
+
+    /// The type of a run-time tuple slot whose value is null.
+    pub fn absent_slot() -> Self {
+        Self::Optional { inner: Box::new(Self::erased()) }
+    }
+
+    pub fn is_absent_slot(&self) -> bool {
+        matches!(self, Self::Optional { inner } if inner.is_erased())
     }
 
     /// Create an array type

@@ -544,8 +544,9 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
 #[cfg(target_pointer_width = "64")]
 #[test]
 fn public_layouts_do_not_grow_past_their_measured_native_size() {
-    assert_eq!(size_of::<ServerProgress>(), 416, "ServerProgress");
-    assert_eq!(size_of::<ServerProgressWire>(), 416, "ServerProgressWire");
+    // 408: `EventResponse.frames` (a delta, K5) replaces `entityByTrait`; the response is eight bytes smaller.
+    assert_eq!(size_of::<ServerProgress>(), 408, "ServerProgress");
+    assert_eq!(size_of::<ServerProgressWire>(), 408, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) and the viewer it was started as (one `Arc`: concurrent requests keep their own `@user`). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its

@@ -7,7 +7,7 @@ use super::resumable::{IoAnswer, IoRequest};
 use super::row_query::RowWriteOutcome;
 use super::RuntimeKernel;
 use orbital_core_base::ir::types::{
-    declared_alias_shape, field_shape, DeclaredShape, OirField, OirType,
+    declared_alias_shape, field_shape, DeclaredShape, OirField, OirType, ShapeError,
 };
 use orbital_core_base::schema::types::EntityDefinition;
 use orbital_core_base::value::Value;
@@ -16,63 +16,78 @@ use std::sync::Arc;
 
 /// An entity's row as a record of its declared fields, as the intake checks it (EXEC-EVAL-10): a present value must fit
 /// its field's kind, an absent field passes and null passes only at a nullable one (a trait's working row is unsaved, so `required` is not enforced).
-pub(super) fn entity_struct(entity: &EntityDefinition) -> OirType {
-    let fields = entity
-        .fields
-        .iter()
-        .filter_map(|field| {
-            let mut declared = OirField::new(field.name.as_ref()?.clone(), field_shape(field));
-            declared.required = false;
-            Some(declared)
-        })
-        .collect();
-    OirType::Struct {
-        fields,
-        additional: None,
+pub(super) fn entity_struct(entity: &EntityDefinition) -> Result<OirType, ShapeError> {
+    let mut fields = Vec::new();
+    for field in &entity.fields {
+        let Some(name) = field.name.as_ref() else { continue };
+        let mut declared = OirField::new(name.clone(), field_shape(field).map_err(|e| e.within(name.clone()))?);
+        declared.required = false;
+        fields.push(declared);
     }
+    Ok(OirType::Struct {
+        fields: fields.into(),
+        additional: None,
+    })
+}
+
+fn no_shape_misfit(entity_type: &str, error: &ShapeError) -> String {
+    format!("store row {entity_type} cannot be checked: {entity_type} has {error}")
 }
 
 impl RuntimeKernel {
     /// The declared shape of a row of `entity_type`, closed over the entities and program types it names; `None` for
     /// an entity no registered program declares.
-    pub(crate) fn row_shape(&self, entity_type: &str) -> Option<Arc<DeclaredShape>> {
+    pub(crate) fn row_shape(&self, entity_type: &str) -> Result<Option<Arc<DeclaredShape>>, ShapeError> {
         if let Some(shape) = self.registry.row_shapes.read().get(entity_type) {
-            return shape.clone();
+            return Ok(shape.clone());
         }
-        let shape = self.build_row_shape(entity_type).map(Arc::new);
+        let shape = self.build_row_shape(entity_type)?.map(Arc::new);
         self.registry
             .row_shapes
             .write()
             .insert(entity_type.to_string(), shape.clone());
-        shape
+        Ok(shape)
     }
 
-    fn build_row_shape(&self, entity_type: &str) -> Option<DeclaredShape> {
+    fn build_row_shape(&self, entity_type: &str) -> Result<Option<DeclaredShape>, ShapeError> {
         let definitions = self.registry.entity_definitions.read();
-        let row = entity_struct(definitions.get(entity_type)?);
+        let Some(definition) = definitions.get(entity_type) else { return Ok(None) };
+        let row = entity_struct(definition)?;
         let schemas = self.registry.schemas.read();
-        Some(DeclaredShape::with_resolver(
+        DeclaredShape::with_resolver(
             Some(entity_type.to_string()),
             row,
             |name| {
                 if let Some(entity) = definitions.get(name) {
-                    return Some(entity_struct(entity));
+                    return entity_struct(entity).map(Some);
                 }
-                schemas.values().find_map(|program| {
-                    program
-                        .types
-                        .iter()
-                        .chain(
-                            program
-                                .orbitals
-                                .iter()
-                                .filter_map(|orbital| orbital.types.as_ref()),
-                        )
-                        .find_map(|aliases| aliases.get(name))
-                        .map(|members| declared_alias_shape(members))
-                })
+                schemas
+                    .values()
+                    .find_map(|program| {
+                        program
+                            .types
+                            .iter()
+                            .chain(
+                                program
+                                    .orbitals
+                                    .iter()
+                                    .filter_map(|orbital| orbital.types.as_ref()),
+                            )
+                            .find_map(|aliases| aliases.get(name))
+                            .map(|members| declared_alias_shape(members))
+                    })
+                    .transpose()
             },
-        ))
+        )
+        .map(Some)
+    }
+
+    fn row_misfit(&self, entity_type: &str, row: &Value) -> Option<String> {
+        match self.row_shape(entity_type) {
+            Ok(Some(shape)) => row_misfit_against(entity_type, &shape, row),
+            Ok(None) => None,
+            Err(error) => Some(no_shape_misfit(entity_type, &error)),
+        }
     }
 
     /// Why one of `rows` does not fit `entity_type`'s declaration, when one does not.
@@ -81,9 +96,7 @@ impl RuntimeKernel {
         entity_type: &str,
         rows: impl IntoIterator<Item = &'a Value>,
     ) -> Option<String> {
-        let shape = self.row_shape(entity_type)?;
-        rows.into_iter()
-            .find_map(|row| row_misfit_against(entity_type, &shape, row))
+        rows.into_iter().find_map(|row| self.row_misfit(entity_type, row))
     }
 
     /// [`Self::rows_misfit`] for rows a store creates: one without an `id` gets the id the store assigns, so its
@@ -94,7 +107,7 @@ impl RuntimeKernel {
             .map(|row| match row {
                 Value::Object(fields) if !fields.contains_key("id") => {
                     let mut fields = fields.clone();
-                    fields.insert("id".to_string(), Value::string(String::new()));
+                    fields.insert("id".into(), Value::string(String::new()));
                     std::borrow::Cow::Owned(Value::Object(fields))
                 }
                 _ => std::borrow::Cow::Borrowed(row),
@@ -114,31 +127,19 @@ impl RuntimeKernel {
             | IoRequest::WriteRow { entity_type, .. } => Some(entity_type.as_str()),
             _ => None,
         };
-        let shape = |entity_type: &str| self.row_shape(entity_type);
         match answer {
             IoAnswer::Row(Ok(row)) => {
-                let misfit = entity_type
-                    .and_then(|entity_type| Some((entity_type, shape(entity_type)?)))
-                    .and_then(|(entity_type, shape)| row_misfit_against(entity_type, &shape, &row));
+                let misfit = entity_type.and_then(|entity_type| self.row_misfit(entity_type, &row));
                 IoAnswer::Row(misfit.map_or(Ok(row), Err))
             }
             IoAnswer::Rows(Ok(rows)) => {
                 let misfit = entity_type
-                    .and_then(|entity_type| Some((entity_type, shape(entity_type)?)))
-                    .and_then(|(entity_type, shape)| {
-                        rows.iter()
-                            .find_map(|row| row_misfit_against(entity_type, &shape, row))
-                    });
+                    .and_then(|entity_type| rows.iter().find_map(|row| self.row_misfit(entity_type, row)));
                 IoAnswer::Rows(misfit.map_or(Ok(rows), Err))
             }
             IoAnswer::Page(Ok(page)) => {
                 let misfit = entity_type
-                    .and_then(|entity_type| Some((entity_type, shape(entity_type)?)))
-                    .and_then(|(entity_type, shape)| {
-                        page.rows
-                            .iter()
-                            .find_map(|row| row_misfit_against(entity_type, &shape, row))
-                    });
+                    .and_then(|entity_type| page.rows.iter().find_map(|row| self.row_misfit(entity_type, row)));
                 IoAnswer::Page(misfit.map_or(Ok(page), Err))
             }
             IoAnswer::Wrote(Ok(outcomes)) => {
@@ -151,8 +152,7 @@ impl RuntimeKernel {
                                 | RowWriteOutcome::Updated { row, .. } => row,
                                 _ => return None,
                             };
-                            let shape = shape(entity_type)?;
-                            row_misfit_against(entity_type, &shape, row)
+                            self.row_misfit(entity_type, row)
                         })
                     }
                     _ => None,
@@ -173,4 +173,29 @@ fn row_misfit_against(entity_type: &str, shape: &DeclaredShape, row: &Value) -> 
     Some(format!(
         "store row {entity_type} {id:?} does not fit its declaration: {entity_type}{path} is {actual}"
     ))
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    fn entity(fields: serde_json::Value) -> EntityDefinition {
+        serde_json::from_value(serde_json::json!({ "name": "Note", "fields": fields })).unwrap()
+    }
+
+    #[test]
+    fn an_entity_field_with_no_shape_is_a_typed_error_naming_it() {
+        let shapeless = entity(serde_json::json!([
+            { "name": "id", "type": "string" },
+            { "name": "meta", "type": "object" }
+        ]));
+        let error = entity_struct(&shapeless).unwrap_err();
+        assert_eq!(error.path, vec!["meta".to_string()]);
+        assert!(no_shape_misfit("Note", &error).contains("Note has no declared shape at `meta`"), "{error}");
+        let shaped = entity(serde_json::json!([
+            { "name": "id", "type": "string" },
+            { "name": "meta", "type": "object", "properties": { "tag": { "type": "string" } } }
+        ]));
+        assert!(entity_struct(&shaped).is_ok(), "control: a declared record has a shape");
+    }
 }

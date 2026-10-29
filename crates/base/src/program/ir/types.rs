@@ -135,6 +135,11 @@ impl OirModule {
         initial_of(&self.pages, |p| p.is_initial)
     }
 
+    /// The page a path no page matches shows: the one declared `[notFound]`, if any.
+    pub fn not_found_page(&self) -> Option<&OirPage> {
+        self.pages.iter().find(|p| p.is_not_found)
+    }
+
     /// Create a new empty module
     pub fn new(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
@@ -318,7 +323,7 @@ pub(crate) use shape::deserialize_type_contract_version;
 pub use shape::{
     declared_alias_shape, field_shape, names_in, payload_array_item_type, payload_field_shape,
     payload_field_shape_with_entity, payload_tuple_slots, payload_type_shape, record_shape,
-    DeclaredShape,
+    DeclaredShape, ShapeError, ShapeGap,
 };
 pub use traits::{OirDispatchMode, OirEvent, OirState, OirTrait, OirTraitSource};
 pub use transition::{

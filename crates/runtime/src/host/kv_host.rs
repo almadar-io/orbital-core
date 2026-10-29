@@ -198,7 +198,7 @@ fn load_file(op: OsOp, file: &Path) -> Result<KvTable, OsError> {
             "kv store file is not a JSON object",
         ));
     };
-    Ok(fields.into_iter().collect())
+    Ok(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
 fn commit_file(op: OsOp, dir: &Path, file: &Path, table: &KvTable) -> Result<(), OsError> {
@@ -322,7 +322,7 @@ fn obj<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::Object(
         (fields
             .into_iter()
-            .map(|(k, v)| (k.to_string(), v))
+            .map(|(k, v)| (k.into(), v))
             .collect::<ValueMap>()).into(),
     )
 }

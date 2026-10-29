@@ -107,7 +107,7 @@ fn send(row_json: Option<Json>) -> EventRequest {
             carried("Composer", "ready"),
             carried("Persistor", "idle"),
         ]),
-        entity_by_trait: row_json.map(|r| ValueMap::from([("Composer".to_string(), row(r))])),
+        entity_by_trait: row_json.map(|r| ValueMap::from([("Composer".into(), row(r))])),
         ..Default::default()
     }
 }
@@ -201,7 +201,7 @@ fn carried_rows_schema() -> OrbitalSchema {
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "CardOrbital",
-            "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }, { "name": "seen", "type": "object" }] },
+            "entity": { "name": "Card", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "label", "type": "string" }, { "name": "seen", "type": "object", "properties": { "label": { "name": "label", "type": "string" }, "createdAt": { "name": "createdAt", "type": "string" } } }] },
             "traits": [{ "name": "Viewer", "linkedEntity": "Card",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": "PING", "effects": [["set", "@entity.seen", { "label": "@entity.label", "createdAt": ["object/get", "@entity", "createdAt"] }]] }] } }]
@@ -269,21 +269,17 @@ fn ping(carried_row: Json) -> EventRequest {
     EventRequest {
         event: "PING".to_string(),
         traits: Some(vec![carried("Viewer", "idle")]),
-        entity_by_trait: Some(ValueMap::from([("Viewer".to_string(), row(carried_row))])),
+        entity_by_trait: Some(ValueMap::from([("Viewer".into(), row(carried_row))])),
         ..Default::default()
     }
 }
 
 fn entity_of(response: &EventResponse, trait_name: &str) -> Json {
-    serde_json::to_value(
-        response
-            .entity_by_trait
-            .as_ref()
-            .and_then(|rows| rows.get(trait_name))
-            .cloned()
-            .unwrap_or(Value::Null),
-    )
-    .unwrap()
+    let mut frames = std::collections::BTreeMap::new();
+    if let Some(delta) = &response.frames {
+        delta.fold_into(&mut frames);
+    }
+    frames.get(trait_name).map_or(Json::Null, |fields| serde_json::to_value(fields).unwrap())
 }
 
 #[test]
@@ -318,16 +314,15 @@ fn a_persisted_shared_row_carried_with_an_id_stays_out_of_the_shared_frame() {
             payload: Some(row(json!({ "channel": "chan-1" }))),
             traits: Some(vec![carried("Writer", "idle"), carried("Reader", "idle")]),
             entity_by_trait: Some(ValueMap::from([
-                (
-                    "Writer".to_string(),
+                ("Writer".into(),
                     row(json!({ "id": "row-1", "channel": "" })),
                 ),
-                ("Reader".to_string(), row(json!({ "channel": "" }))),
+                ("Reader".into(), row(json!({ "channel": "" }))),
             ])),
             ..Default::default()
         },
     );
-    let reader = entity_of(&response, "Reader");
+    let reader = entity_of(&response, "$shared::Draft");
     assert!(
         reader.get("id").is_none(),
         "the writer's detail row became the shared frame: {reader}"
@@ -345,15 +340,14 @@ fn control_a_runtime_shared_row_carried_with_an_id_folds_into_the_shared_frame()
                 carried("ScratchWriter", "idle"),
                 carried("ScratchReader", "idle"),
             ]),
-            entity_by_trait: Some(ValueMap::from([(
-                "ScratchWriter".to_string(),
+            entity_by_trait: Some(ValueMap::from([("ScratchWriter".into(),
                 row(json!({ "id": "row-1", "channel": "c1" })),
             )])),
             ..Default::default()
         },
     );
     assert_eq!(
-        entity_of(&response, "ScratchReader")["seenChannel"],
+        entity_of(&response, "$shared::Scratch")["seenChannel"],
         json!("c1")
     );
 }
@@ -414,7 +408,17 @@ fn a_fork_answers_exactly_as_a_freshly_registered_server() {
     drive_rows(&template, "CardOrbital", request());
     let forked = drive_rows(&template.fork_session().unwrap(), "CardOrbital", request());
     let fresh = drive_rows(&EmbeddedServer::new(carried_rows_schema()).unwrap(), "CardOrbital", request());
-    assert_eq!(serde_json::to_value(&forked).unwrap(), serde_json::to_value(&fresh).unwrap());
+    let folded = |response: &EventResponse| {
+        let mut frames = std::collections::BTreeMap::new();
+        response.frames.as_ref().expect("sealed").fold_into(&mut frames);
+        frames
+    };
+    assert_eq!(folded(&forked), folded(&fresh), "the same frames");
+    assert_eq!(forked.frames.as_ref().map(|f| f.session.clone()), Some(None), "a fork cannot number its answers");
+    let (mut forked, mut fresh) = (serde_json::to_value(&forked).unwrap(), serde_json::to_value(&fresh).unwrap());
+    forked.as_object_mut().unwrap().remove("frames");
+    fresh.as_object_mut().unwrap().remove("frames");
+    assert_eq!(forked, fresh);
 }
 
 fn holder_schema() -> OrbitalSchema {
@@ -492,7 +496,7 @@ fn topic_request(event: &str, topic: Option<&str>, carried: Option<&str>) -> Eve
         event: event.to_string(),
         target_trait: Some("Viewer".to_string()),
         payload: topic.map(|t| row(json!({ "topic": t }))),
-        entity_by_trait: carried.map(|t| ValueMap::from([("Viewer".to_string(), row(json!({ "topic": t })))])),
+        entity_by_trait: carried.map(|t| ValueMap::from([("Viewer".into(), row(json!({ "topic": t })))])),
         ..Default::default()
     }
 }

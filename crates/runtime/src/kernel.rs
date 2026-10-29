@@ -106,6 +106,10 @@ pub enum KernelError {
     /// under the contract this kernel checks values by.
     #[error("program '{program}' carries no type-contract stamp; resolve it again from source")]
     UnresolvedProgram { program: String },
+
+    /// A lazy orbital could not be loaded when a request or event reached it (EXEC-LOAD-2).
+    #[error("lazy orbital `{orbital}` could not be loaded: {reason}")]
+    LazyLoad { orbital: String, reason: String },
 }
 
 pub mod agent_ports;
@@ -251,7 +255,7 @@ fn with_awaiting_sidecar(payload: Value, awaiting: &HashSet<String>) -> Value {
     let mut list: Vec<&String> = awaiting.iter().collect();
     list.sort();
     map.insert(
-        "_awaitingInit".to_string(),
+        "_awaitingInit".into(),
         Value::Array(list.into_iter().map(|t| Value::string(t.clone())).collect()),
     );
     Value::Object(map)
@@ -373,6 +377,10 @@ pub struct RuntimeKernel {
     sessions: Sessions,
     /// Each client session's live streams and running requests, and what freeing one drops (EXEC-DIST-9).
     session_lives: Arc<session_life::SessionLives>,
+    /// Each session's client view record: the frames last sent and a version (K5).
+    view_records: Arc<view_record::ViewRecords>,
+    /// The server sessions' records as this client holds them (K5).
+    inbound_views: view_record::InboundViews,
     /// The host runs an emit's listeners whenever it marks the emit `dispatched`, so a fold runs only the client-only ones.
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
@@ -383,6 +391,8 @@ pub struct RuntimeKernel {
     deliveries: Arc<RwLock<envelope::Deliveries>>,
     /// Referrer trait -> the embedded children to re-render under its payload (`callsite_capture`).
     capture_children: Arc<RwLock<HashMap<String, Vec<String>>>>,
+    /// The program's lazy orbitals not loaded yet and the source that loads them (EXEC-LOAD-2).
+    lazy: lazy::LazyOrbitals,
     /// Trait -> the payload its composer last composed it with: what its own `@callsitePayload` reads.
     composed_callsite: Arc<RwLock<ValueMap>>,
     /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
@@ -629,7 +639,9 @@ impl RuntimeKernel {
         let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashSet<String>>> = Arc::default();
+        let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
+            Arc::clone(&view_records),
             Arc::clone(&frames),
             Arc::clone(&carried_rows),
             Arc::clone(&state_manager),
@@ -664,6 +676,8 @@ impl RuntimeKernel {
                 ended_sessions,
             },
             session_lives,
+            view_records,
+            inbound_views: Default::default(),
             lane: Arc::default(),
             keyed_parks: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
@@ -682,6 +696,7 @@ impl RuntimeKernel {
             },
             deliveries: Arc::default(),
             capture_children: Arc::new(RwLock::new(HashMap::new())),
+            lazy: lazy::LazyOrbitals::default(),
             composed_callsite: Arc::new(RwLock::new(ValueMap::default())),
             frames,
             carried_rows,
@@ -890,7 +905,7 @@ impl PendingSets {
     }
 
     fn insert(&mut self, field: String, value: Value) {
-        self.sets.insert(field.clone(), value.clone());
+        self.sets.insert(field.clone().into(), value.clone());
         if !self.view.set_field(field, value) {
             self.view = SharedEntity::from_value(Value::object(self.sets.clone()));
         }
@@ -902,7 +917,7 @@ fn declared_defaults(def: &EntityDefinition) -> Value {
     let defaults: ValueMap = def
         .fields
         .iter()
-        .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
+        .filter_map(|f| Some((f.name.clone()?.into(), sexpr_to_value(f.default.as_ref()?))))
         .collect();
     if defaults.is_empty() {
         Value::Null
@@ -937,15 +952,15 @@ fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
                 continue;
             }
             let mut item = ValueMap::from_iter([
-                ("href".to_string(), Value::string(page.path.clone())),
-                ("label".to_string(), Value::string(label.clone())),
+                ("href".into(), Value::string(page.path.clone())),
+                ("label".into(), Value::string(label.clone())),
             ]);
             if let Some(icon) = &page.icon {
-                item.insert("icon".to_string(), Value::string(icon.clone()));
+                item.insert("icon".into(), Value::string(icon.clone()));
             }
             if let Some(roles) = &page.roles {
                 item.insert(
-                    "roles".to_string(),
+                    "roles".into(),
                     Value::Array(roles.iter().cloned().map(Value::string).collect()),
                 );
             }
@@ -981,6 +996,7 @@ use super::row_query;
 
 mod source_handler;
 mod registration;
+pub mod lazy;
 mod dispatch;
 mod ticks;
 mod client_leg;
@@ -992,6 +1008,8 @@ mod oauth_effects;
 mod repaint;
 mod viewer_scope;
 mod session_life;
+mod view_record;
+pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
 mod dispatch_scope;

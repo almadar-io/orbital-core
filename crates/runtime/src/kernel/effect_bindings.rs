@@ -315,9 +315,9 @@ pub(super) fn os_failure(effect: &Effect, error: &OsError) -> EffectResult {
     http_failure(
         effect,
         Value::object(ValueMap::from_iter([
-            ("error".to_string(), Value::String(error.message.clone().into())),
+            ("error".into(), Value::String(error.message.clone().into())),
             (
-                "kind".to_string(),
+                "kind".into(),
                 Value::String(error.kind.as_str().to_string().into()),
             ),
         ])),
@@ -367,7 +367,7 @@ pub(super) fn resolve_http_request(request: &Value, ctx: &BindingContext) -> Res
         .and_then(|fields| fields.get_mut("paginate"))
     {
         for (k, v) in held {
-            paginate.insert(k, v);
+            paginate.insert(k.into(), v);
         }
     }
     Ok(resolved)

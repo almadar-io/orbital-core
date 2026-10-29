@@ -7,23 +7,23 @@ use std::prelude::v1::*;
 use crate::driver::{Driver, DriverAnswer, DriverAsk, DriverStep};
 use orbital_core_base::tab::{TabApply, TabAsk, TabCommand, TabFailure, TabFailureKind, TabField, TabImageFormat, TabOp};
 use orbital_core_base::tab_call::{matches_pattern, TabCall, TabPlan};
-use orbital_core_base::value::{Value, ValueMap};
+use orbital_core_base::value::{Shared, Value, ValueMap};
 
 /// The failure payload of a refused request: `{ error, kind: "invalid", key }`.
 pub fn refusal_payload(message: &str, key: Option<&str>) -> Value {
     failure_payload(TabFailureKind::Invalid, message, key)
 }
 
-fn with_key(fields: &mut Vec<(String, Value)>, key: Option<&str>) {
+fn with_key(fields: &mut Vec<(Shared<String>, Value)>, key: Option<&str>) {
     if let Some(key) = key {
-        fields.push(("key".to_string(), Value::string(key.to_string())));
+        fields.push(("key".into(), Value::string(key.to_string())));
     }
 }
 
 fn failure_payload(kind: TabFailureKind, message: &str, key: Option<&str>) -> Value {
     let mut fields = vec![
-        ("error".to_string(), Value::String(message.to_string().into())),
-        ("kind".to_string(), Value::String(kind.as_str().to_string().into())),
+        ("error".into(), Value::String(message.to_string().into())),
+        ("kind".into(), Value::String(kind.as_str().to_string().into())),
     ];
     with_key(&mut fields, key);
     Value::object(ValueMap::from_iter(fields))
@@ -74,8 +74,8 @@ fn command(tab: i64, command: TabCommand) -> DriverStep {
 
 fn element_ref(tab: i64, element_id: &str) -> Value {
     Value::object(ValueMap::from_iter([
-        ("tab".to_string(), Value::Number(tab as f64)),
-        ("elementId".to_string(), Value::String(element_id.to_string().into())),
+        ("tab".into(), Value::Number(tab as f64)),
+        ("elementId".into(), Value::String(element_id.to_string().into())),
     ]))
 }
 
@@ -131,7 +131,7 @@ impl TabDriver {
         if let Some(key) = self.key.as_deref() {
             fields.push(("key", Value::string(key.to_string())));
         }
-        DriverStep::Done(Ok(Value::Object(fields.into_iter().map(|(k, v)| (k.to_string(), v)).collect())))
+        DriverStep::Done(Ok(Value::Object(fields.into_iter().map(|(k, v)| (k.into(), v)).collect())))
     }
 
     fn fail(&self, kind: TabFailureKind, message: &str) -> DriverStep {
@@ -160,10 +160,10 @@ fn tab_infos(reply: &Value, pattern: Option<&str>) -> Option<Vec<Value>> {
             continue;
         }
         tabs.push(Value::object(ValueMap::from_iter([
-            ("tab".to_string(), Value::Number(tab as f64)),
-            ("url".to_string(), Value::String(url.into())),
-            ("title".to_string(), Value::String(title.into())),
-            ("active".to_string(), Value::Bool(active)),
+            ("tab".into(), Value::Number(tab as f64)),
+            ("url".into(), Value::String(url.into())),
+            ("title".into(), Value::String(title.into())),
+            ("active".into(), Value::Bool(active)),
         ])));
     }
     Some(tabs)

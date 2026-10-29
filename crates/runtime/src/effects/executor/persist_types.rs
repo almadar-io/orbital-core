@@ -62,13 +62,13 @@ pub(super) fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
         }
         _ => ValueMap::default(),
     };
-    entry.insert("action".to_string(), Value::string(b.action.clone()));
-    entry.insert("entityType".to_string(), Value::string(b.entity.clone()));
+    entry.insert("action".into(), Value::string(b.action.clone()));
+    entry.insert("entityType".into(), Value::string(b.entity.clone()));
     if let Some(id) = &b.row_id {
-        entry.insert("id".to_string(), Value::string(id.clone()));
+        entry.insert("id".into(), Value::string(id.clone()));
     }
     if b.operation == PersistOperation::Delete {
-        entry.insert("deleted".to_string(), Value::Bool(true));
+        entry.insert("deleted".into(), Value::Bool(true));
     }
     Value::object(entry)
 }
@@ -76,11 +76,11 @@ pub(super) fn batch_entry(b: &BatchOp, result: &EffectResult) -> Value {
 pub(super) fn batch_summary(effect: Effect, completed: Vec<Value>, total: usize) -> EffectResult {
     let mut summary = ValueMap::default();
     summary.insert(
-        "completedCount".to_string(),
+        "completedCount".into(),
         Value::Number(completed.len() as f64),
     );
-    summary.insert("totalCount".to_string(), Value::Number(total as f64));
-    summary.insert("operations".to_string(), Value::array(completed));
+    summary.insert("totalCount".into(), Value::Number(total as f64));
+    summary.insert("operations".into(), Value::array(completed));
     EffectResult::executed_with_value(effect, Value::object(summary))
 }
 

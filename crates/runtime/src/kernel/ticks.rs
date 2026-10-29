@@ -60,6 +60,7 @@ impl RuntimeKernel {
     ) -> Result<ProcessEventResult, Fault> {
         let stamp = self.begin_dispatch();
 
+        self.ensure_trait_loaded(trait_name)?;
         let trait_def = self
             .registry.trait_definitions
             .read()
@@ -284,14 +285,28 @@ impl RuntimeKernel {
         tick_name: &str,
         client_id: Option<&str>,
     ) -> Result<TickDispatch, KernelError> {
+        let _lane = self.lane.enter(None)?;
+        let mut dispatched = self.dispatch_tick_own(trait_name, entity_id, tick_name, client_id)?;
+        dispatched.emits = self.dispatch_tick_emits(orbital, trait_name, entity_id, tick_name, client_id, &dispatched.outcome)?;
+        Ok(dispatched)
+    }
+
+    /// The tick's own effects only: no emit of it has run through the cascade yet ([`Self::dispatch_tick_emits`]).
+    /// A host frame seals each tick's own writes against the view record before that tick's cascade reads them,
+    /// keeping the server-role order: one tick's own effects, then its cascade, then the next tick (K5).
+    pub fn dispatch_tick_own(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+        client_id: Option<&str>,
+    ) -> Result<TickDispatch, KernelError> {
         let lane = self.lane.enter(None)?;
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
-        let trait_def = self
-            .registry.trait_definitions
-            .read()
-            .get(trait_name)
-            .cloned()
-            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
+        self.ensure_trait_loaded(trait_name)?;
+        if !self.registry.trait_definitions.read().contains_key(trait_name) {
+            return Err(KernelError::TraitNotFound(trait_name.to_string()));
+        }
         // The leg replays the tick from the pre-tick row, so the store applies its writes once.
         let pre_tick_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
 
@@ -336,7 +351,7 @@ impl RuntimeKernel {
                 event: None,
             }]),
             entity_by_trait: (!pre_tick_row.is_null())
-                .then(|| ValueMap::from_iter([(trait_name.to_string(), pre_tick_row.clone())])),
+                .then(|| ValueMap::from_iter([(trait_name.into(), pre_tick_row.clone())])),
             ..Default::default()
         });
         if !outcome.executed {
@@ -349,6 +364,36 @@ impl RuntimeKernel {
             });
         }
 
+        Ok(TickDispatch {
+            outcome,
+            discarded_server_effects,
+            browser_leg,
+            emits: Vec::new(),
+            rerenders: Vec::new(),
+        })
+    }
+
+    /// Take each `emit` an executed tick ran (`outcome`, from [`Self::dispatch_tick_own`]) through the normal cascade.
+    pub fn dispatch_tick_emits(
+        &self,
+        orbital: &str,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        tick_name: &str,
+        client_id: Option<&str>,
+        outcome: &ProcessEventResult,
+    ) -> Result<Vec<TickEmit>, KernelError> {
+        if !outcome.executed || !outcome.effect_results.iter().any(|r| matches!(r.effect, Effect::Emit { .. })) {
+            return Ok(Vec::new());
+        }
+        let _lane = self.lane.enter(None)?;
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
+        let trait_def = self
+            .registry.trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
         debug!(
             target: "almadar::kernel",
             orbital = %orbital, trait_name = %trait_name, tick = %tick_name,
@@ -398,7 +443,7 @@ impl RuntimeKernel {
                 &mut DispatchMemory::default(),
                 &mut outcomes,
             )?;
-            let response = EventResponse::from_process_results(&outcomes, trait_name, emitted);
+            let response = self.response_for(&outcomes, trait_name, emitted);
             let dispatch = self.finish_client_dispatch(LegSeed {
                 trait_name,
                 event: emitted,
@@ -418,12 +463,6 @@ impl RuntimeKernel {
                 dispatch,
             });
         }
-        Ok(TickDispatch {
-            outcome,
-            discarded_server_effects,
-            browser_leg,
-            emits,
-            rerenders: Vec::new(),
-        })
+        Ok(emits)
     }
 }

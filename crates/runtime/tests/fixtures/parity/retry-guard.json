@@ -194,7 +194,6 @@
               }
             ],
             "name": "Sender",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {
@@ -344,7 +343,6 @@
               }
             ],
             "name": "Worker",
-            "scope": "instance",
             "stateMachine": {
               "events": [
                 {

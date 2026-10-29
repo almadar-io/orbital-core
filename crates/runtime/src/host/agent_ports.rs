@@ -62,8 +62,8 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
     let mut map = ValueMap::default();
     match dispatch_failure(response) {
         Some(error) => {
-            map.insert("ok".to_string(), Value::Bool(false));
-            map.insert("error".to_string(), Value::string(error));
+            map.insert("ok".into(), Value::Bool(false));
+            map.insert("error".into(), Value::string(error));
         }
         None => {
             let emitted = response
@@ -71,15 +71,15 @@ pub fn dispatch_outcome(response: &EventResponse) -> Value {
                 .iter()
                 .map(|e| {
                     let mut event = ValueMap::default();
-                    event.insert("event".to_string(), Value::string(e.event.clone()));
+                    event.insert("event".into(), Value::string(e.event.clone()));
                     if let Some(payload) = &e.payload {
-                        event.insert("payload".to_string(), payload.clone());
+                        event.insert("payload".into(), payload.clone());
                     }
                     Value::object(event)
                 })
                 .collect();
-            map.insert("ok".to_string(), Value::Bool(true));
-            map.insert("emitted".to_string(), Value::Array(emitted));
+            map.insert("ok".into(), Value::Bool(true));
+            map.insert("emitted".into(), Value::Array(emitted));
         }
     }
     Value::object(map)
@@ -107,9 +107,9 @@ pub fn completion_result(op: &str, value: Value) -> Value {
     let text = orbital_core_base::agent_ports::is_agent_port_operator(op)
         .then(|| serde_json::to_string(&orbital_core_base::json_value::value_to_json(&value)).unwrap_or_default());
     let mut payload = ValueMap::default();
-    payload.insert("result".to_string(), value);
+    payload.insert("result".into(), value);
     if let Some(text) = text {
-        payload.insert("text".to_string(), Value::string(text));
+        payload.insert("text".into(), Value::string(text));
     }
     Value::object(payload)
 }
@@ -117,9 +117,9 @@ pub fn completion_result(op: &str, value: Value) -> Value {
 /// The failure payload of a substrate or program op's completion: `{ error }`, plus `errors` when the op gave any.
 pub fn failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
     let mut payload = ValueMap::default();
-    payload.insert("error".to_string(), Value::string(failure.message.clone()));
+    payload.insert("error".into(), Value::string(failure.message.clone()));
     if !failure.errors.is_empty() {
-        payload.insert("errors".to_string(), Value::array(failure.errors.clone()));
+        payload.insert("errors".into(), Value::array(failure.errors.clone()));
     }
     Value::object(payload)
 }
@@ -181,14 +181,14 @@ mod tests {
         assert_eq!(program_answer("program/read", &[text("x")], text("y")).unwrap(), text("y"), "control: another op is not reshaped");
         assert!(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], text("no response")).is_err(), "edge: a host that answers no event response fails");
         let mut counted = ValueMap::default();
-        counted.insert("trait".to_string(), text("T"));
-        counted.insert("from".to_string(), text("idle"));
-        counted.insert("to".to_string(), text("idle"));
-        counted.insert("event".to_string(), text("GO"));
-        counted.insert("firedArm".to_string(), Value::Number(1.0));
-        counted.insert("effects".to_string(), Value::array(Vec::new()));
+        counted.insert("trait".into(), text("T"));
+        counted.insert("from".into(), text("idle"));
+        counted.insert("to".into(), text("idle"));
+        counted.insert("event".into(), text("GO"));
+        counted.insert("firedArm".into(), Value::Number(1.0));
+        counted.insert("effects".into(), Value::array(Vec::new()));
         let Value::Object(mut with_arm) = response() else { panic!("a response is a record") };
-        with_arm.insert("transitions".to_string(), Value::array(vec![Value::Object(counted.into())]));
+        with_arm.insert("transitions".into(), Value::array(vec![Value::Object(counted.into())]));
         assert_eq!(
             shaped_from(program_answer("program/dispatch", &[text("O.T.GO"), object(serde_json::json!({}))], Value::Object(with_arm))),
             outcome,

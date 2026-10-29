@@ -432,7 +432,7 @@ fn host_answer(paints_hud: bool) -> EventResponse {
     let painted = json!({ "type": "typography", "content": "from the host" });
     serde_json::from_value(json!({
         "success": true, "transitioned": true, "states": {}, "emittedEvents": [],
-        "entityByTrait": { "Hud": { "id": "singleton", "score": 7 } },
+        "frames": { "from": 0, "to": 0, "ops": [["set", { "Hud": { "id": "singleton", "score": 7 } }]] },
         "clientEffects": if paints_hud { json!([["render-ui", "hud", painted]]) } else { json!([]) },
         "clientEffectsByTrait": if paints_hud { json!([{ "traitName": "Hud", "effect": ["render-ui", "hud", painted] }]) } else { json!([]) }
     }))

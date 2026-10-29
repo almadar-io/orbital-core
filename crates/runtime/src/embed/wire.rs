@@ -49,6 +49,10 @@ pub struct SeedWire {
 #[serde(rename_all = "camelCase")]
 pub struct DispatchWire {
     pub orbital: String,
+    /// The flight this dispatch holds while it owes the host a leg: its answers fold in flight order
+    /// (`foldInOrder`) and the host ends it when the last is folded (`endFlight`). Absent when nothing is owed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flight: Option<u64>,
     pub seed: SeedWire,
     pub response: EventResponse,
     pub server_legs: Vec<RoutedLeg>,
@@ -120,6 +124,30 @@ pub struct AppliedWire {
     pub response: EventResponse,
     /// The legs the fold's own arms owe the host (a refetch after a browser-stored write), to post and fold in turn.
     pub server_legs: Vec<RoutedLeg>,
+    /// Set when the response's frame delta started past the version this client holds: ask the host for
+    /// `frames_since(since)` and fold the snapshot (EXEC-DIST-7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resync: Option<crate::kernel::FramesResync>,
+}
+
+/// Where an answer folded in flight order stands: folded, or queued behind an older flight.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+#[expect(clippy::large_enum_variant, reason = "mirrors ServerProgressWire's unboxed layout")]
+pub enum FoldProgressWire {
+    Applied { fold: AppliedWire },
+    Queued { ticket: u64 },
+}
+
+/// A queued answer the kernel folded once its flight was the oldest open one, under the ticket `foldInOrder` answered with.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+#[expect(clippy::large_enum_variant, reason = "mirrors NextWire's unboxed layout")]
+pub enum FoldedNextWire {
+    Applied { ticket: u64, fold: AppliedWire },
+    Failed { ticket: u64, error: String },
 }
 
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -275,6 +303,8 @@ impl std::fmt::Debug for SecretText {
 
 #[cfg(test)]
 pub mod ts_export;
+#[cfg(test)]
+mod serde_index;
 
 mod io_wire;
 mod io_convert;

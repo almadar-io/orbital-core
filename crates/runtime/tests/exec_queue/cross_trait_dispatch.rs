@@ -885,7 +885,7 @@ fn send_live(live: &Live, event: &str) {
 }
 
 fn live_item(n: f64) -> Value {
-    Value::Object([("n".to_string(), Value::Number(n))].into_iter().collect())
+    Value::Object([("n".into(), Value::Number(n))].into_iter().collect())
 }
 
 fn watch(kernel: &RuntimeKernel) -> serde_json::Value {
@@ -957,4 +957,130 @@ fn listeners_of_one_delivery_keep_one_shared_payload_in_their_outcomes() {
     assert!(Arc::ptr_eq(&of("TargetA").payload, &of("TargetB").payload), "bare listeners share the delivered payload, never a copy each");
     assert!(!Arc::ptr_eq(&of("TargetA").payload, &of("Mapped").payload), "control: a mapped listener holds its own payload");
     assert_eq!(serde_json::to_value(&*of("Mapped").payload).unwrap()["id"], "abc123");
+}
+
+// G-ORB-516: an unkeyed substrate read made by one trait is answered while another trait's keyed `behavior/dependencies`
+// read is still in flight, and the keyed read settles after it.
+
+struct Gated {
+    entered: std::sync::Mutex<std::sync::mpsc::Sender<()>>,
+    release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl orbital_core_runtime::effects::SubstrateHandler for Gated {
+    fn run(&self, op: &str, _: &[Value]) -> Result<Value, orbital_core_runtime::effects::SubstrateFailure> {
+        if op == "behavior/dependencies" {
+            self.entered.lock().unwrap().send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        Ok(Value::string(op))
+    }
+}
+
+struct Reading {
+    kernel: Arc<RuntimeKernel>,
+    sink: Arc<orbital_core_runtime::os_host::completion::KernelCompletionSink>,
+    entered: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+    completions: std::sync::mpsc::Receiver<String>,
+}
+
+fn reading_kernel() -> Reading {
+    use orbital_core_runtime::os_host::completion::KernelCompletionSink;
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "reading",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Tally", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" }, { "name": "deps", "type": "string" }, { "name": "source", "type": "string" }] },
+            "traits": [{
+                "name": "Constellation", "linkedEntity": "Tally",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "KINDS_READY", "effects": [["behavior/dependencies", "p", { "key": "deps", "emit": { "success": "DEPS_DONE", "failure": "DEPS_FAILED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "DEPS_DONE", "effects": [["set", "@entity.deps", "@payload.result"]] },
+                        { "from": "idle", "to": "idle", "event": "DEPS_FAILED", "effects": [["set", "@entity.deps", "@payload.error"]] }
+                    ]
+                }
+            }, {
+                "name": "Loader", "linkedEntity": "Tally",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["behavior/source", "p", { "emit": { "success": "SRC_DONE", "failure": "SRC_FAILED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "SRC_DONE", "effects": [["set", "@entity.source", "@payload.result"]] },
+                        { "from": "idle", "to": "idle", "event": "SRC_FAILED", "effects": [["set", "@entity.source", "@payload.error"]] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig {
+        substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
+        ..Default::default()
+    };
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config));
+    kernel.register_schema(schema).unwrap();
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, release_rx) = std::sync::mpsc::channel();
+    let handles = Arc::new(orbital_core_runtime::os_host::OsHandles::default());
+    let native = Arc::new(
+        orbital_core_runtime::native_host::NativeHost::new(
+            store,
+            Arc::new(Offline),
+            Arc::new(orbital_core_runtime::credentials::Credentials::from_env(Default::default())),
+            Vec::new(),
+            orbital_core_runtime::os_host::OsGrants::default(),
+            handles.clone(),
+            Arc::new(|_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {}),
+        )
+        .with_substrate(Some(Arc::new(Gated { entered: std::sync::Mutex::new(entered_tx), release: std::sync::Mutex::new(release_rx) }) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>)),
+    );
+    let (tx, completions) = std::sync::mpsc::channel();
+    let done = std::sync::Mutex::new(tx);
+    let sink = Arc::new(KernelCompletionSink::new(
+        kernel.clone(),
+        Arc::new(move |request: &orbital_core_runtime::resumable::IoRequest| native.answer(request)),
+        Arc::new(move |_: &orbital_core_runtime::resumable::CallSite, event: &str, _: &orbital_core_base::value::Value, _: Option<&str>, result: Result<orbital_core_runtime::resumable::DispatchOutcomes, orbital_core_runtime::resumable::DispatchError>| {
+            result.unwrap();
+            done.lock().unwrap().send(event.to_string()).unwrap();
+        }),
+    ));
+    handles.completions.set_sink(sink.clone());
+    Reading { kernel, sink, entered, release, completions }
+}
+
+fn send_to(reading: &Reading, trait_name: &str, event: &str) {
+    let started = reading.kernel.start_dispatch(trait_name, None, event, Value::Null, None, None).unwrap();
+    reading.sink.drive(started).unwrap();
+}
+
+fn tally_of(reading: &Reading, trait_name: &str) -> serde_json::Value {
+    serde_json::to_value(&reading.kernel.snapshot_trait(trait_name, None).entity).unwrap()
+}
+
+#[test]
+fn an_unkeyed_substrate_read_completes_while_a_keyed_dependencies_read_is_in_flight() {
+    let reading = reading_kernel();
+    send_to(&reading, "Constellation", "KINDS_READY");
+    let wait = std::time::Duration::from_secs(5);
+    reading.entered.recv_timeout(wait).expect("the keyed read is in flight");
+    let (tx, answered) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let (kernel, sink) = (reading.kernel.clone(), reading.sink.clone());
+        move || {
+            let started = kernel.start_dispatch("Loader", None, "LOAD", Value::Null, None, None).unwrap();
+            sink.drive(started).unwrap();
+            tx.send(()).unwrap();
+        }
+    });
+    answered.recv_timeout(wait).expect("LOAD hung behind the keyed read");
+    assert_eq!(tally_of(&reading, "Loader")["source"], "behavior/source", "the unkeyed read was answered");
+    assert_eq!(tally_of(&reading, "Constellation")["deps"], serde_json::Value::Null, "the keyed read has not settled yet");
+    reading.release.send(()).unwrap();
+    assert_eq!(reading.completions.recv_timeout(wait).expect("the keyed read settles"), "DEPS_DONE");
+    assert_eq!(tally_of(&reading, "Constellation")["deps"], "behavior/dependencies");
 }

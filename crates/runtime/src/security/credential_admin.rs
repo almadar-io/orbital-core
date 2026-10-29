@@ -174,9 +174,9 @@ fn test(asks: &dyn AdminAsks, catalog: &Catalog, service: &str) -> Result<Value,
 
 fn counts(rotated: &RotateCounts) -> Value {
     Value::object(ValueMap::from_iter([
-        ("rotated".to_string(), Value::Number(rotated.rotated as f64)),
-        ("alreadyCurrent".to_string(), Value::Number(rotated.already_current as f64)),
-        ("unreadable".to_string(), Value::Number(rotated.unreadable as f64)),
+        ("rotated".into(), Value::Number(rotated.rotated as f64)),
+        ("alreadyCurrent".into(), Value::Number(rotated.already_current as f64)),
+        ("unreadable".into(), Value::Number(rotated.unreadable as f64)),
     ]))
 }
 
@@ -210,14 +210,14 @@ pub fn run(
             require_store(asks, "")?;
             admin::settable(&catalog()?, service()?, env_var()?)?;
             let removed = asks.store_remove(env_var()?).map_err(host)?;
-            Ok(Value::object(ValueMap::from_iter([("removed".to_string(), Value::Bool(removed))])))
+            Ok(Value::object(ValueMap::from_iter([("removed".into(), Value::Bool(removed))])))
         }
         CredentialAdminOp::Test => test(asks, &catalog()?, service()?),
         CredentialAdminOp::Mode => {
             let requested = parsed.mode.as_deref().ok_or_else(|| missing("mode"))?;
             admin::requested_mode(requested)?;
             let now = asks.mode_write(requested).map_err(host)?;
-            Ok(Value::object(ValueMap::from_iter([("mode".to_string(), Value::String(now.into()))])))
+            Ok(Value::object(ValueMap::from_iter([("mode".into(), Value::String(now.into()))])))
         }
         CredentialAdminOp::Rotate => {
             require_store(asks, "")?;
@@ -348,7 +348,7 @@ mod tests {
     }
 
     fn object(pairs: &[(&str, &str)]) -> Value {
-        Value::Object(pairs.iter().map(|(k, v)| (k.to_string(), Value::string(v.to_string()))).collect())
+        Value::Object(pairs.iter().map(|(k, v)| (k.to_string().into(), Value::string(v.to_string()))).collect())
     }
 
     fn caller(role: Option<&str>) -> ServiceCaller {

@@ -438,7 +438,7 @@ pub fn apply_derived(
                 "persist {operation:?} {entity_type}: derived field `{name}` could not be computed ({err})"
             ))
         })?;
-        fields.insert(name.clone(), value);
+        fields.insert(name.clone().into(), value);
     }
     Ok(Value::object(fields))
 }
@@ -493,14 +493,14 @@ mod tests {
 
     fn row(id: &str, owner: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::string(id.to_string()));
-        m.insert("memberId".to_string(), Value::string(owner.to_string()));
+        m.insert("id".into(), Value::string(id.to_string()));
+        m.insert("memberId".into(), Value::string(owner.to_string()));
         Value::object(m)
     }
 
     fn viewer(id: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::string(id.to_string()));
+        m.insert("id".into(), Value::string(id.to_string()));
         Value::object(m)
     }
 
@@ -523,9 +523,9 @@ mod tests {
 
     fn row_with_status(id: &str, owner: &str, status: &str) -> Value {
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::string(id.to_string()));
-        m.insert("memberId".to_string(), Value::string(owner.to_string()));
-        m.insert("status".to_string(), Value::string(status.to_string()));
+        m.insert("id".into(), Value::string(id.to_string()));
+        m.insert("memberId".into(), Value::string(owner.to_string()));
+        m.insert("status".into(), Value::string(status.to_string()));
         Value::object(m)
     }
 

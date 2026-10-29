@@ -496,7 +496,7 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
         if let Some(Value::Object(options)) = out.get_mut(*at) {
             if let Some(cwd) = options.get("cwd") {
                 if let Some(resolved) = path(cwd)? {
-                    options.insert("cwd".to_string(), resolved);
+                    options.insert("cwd".into(), resolved);
                 }
             }
         }

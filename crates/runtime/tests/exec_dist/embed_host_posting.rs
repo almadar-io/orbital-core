@@ -128,7 +128,9 @@ fn row(v: serde_json::Value) -> Value {
 fn answer(rows: ValueMap) -> EventResponse {
     EventResponse {
         success: true,
-        entity_by_trait: Some(rows),
+        frames: Some(orbital_core_runtime::effects::FrameDelta::absolute(
+            rows.into_iter().map(|(frame, row)| (frame.to_string(), row.as_object().unwrap().clone())),
+        )),
         ..Default::default()
     }
 }
@@ -140,14 +142,12 @@ fn frame(k: &EmbeddedKernel, t: &str) -> serde_json::Value {
 #[test]
 fn a_late_echo_of_the_carried_row_does_not_overwrite_a_newer_client_value() {
     let k = kernel();
-    let carried = ValueMap::from([(
-        "Loader".to_string(),
+    let carried = ValueMap::from([("Loader".into(),
         row(json!({ "id": "singleton", "note": "old" })),
     )]);
     let base = k.fold_base(Some(&carried), &[], None).unwrap();
     k.apply_server_response_since(
-        &answer(ValueMap::from([(
-            "Loader".to_string(),
+        &answer(ValueMap::from([("Loader".into(),
             row(json!({ "id": "singleton", "note": "old", "count": 3.0 })),
         )])),
         &HashSet::new(),
@@ -163,8 +163,7 @@ fn a_late_echo_of_the_carried_row_does_not_overwrite_a_newer_client_value() {
             entity: row(json!({ "id": "singleton", "note": "typing", "count": 3.0 })),
         },
     );
-    let echo = answer(ValueMap::from([(
-        "Loader".to_string(),
+    let echo = answer(ValueMap::from([("Loader".into(),
         row(json!({ "id": "singleton", "note": "old", "count": 4.0 })),
     )]));
     k.apply_server_response_since(&echo, &HashSet::new(), Some(&base))
@@ -193,8 +192,7 @@ fn control_without_a_base_the_echo_overwrites() {
             entity: row(json!({ "id": "singleton", "note": "typing" })),
         },
     );
-    let echo = answer(ValueMap::from([(
-        "Loader".to_string(),
+    let echo = answer(ValueMap::from([("Loader".into(),
         row(json!({ "id": "singleton", "note": "old" })),
     )]));
     k.apply_server_response_since(&echo, &HashSet::new(), None)
@@ -206,8 +204,7 @@ fn control_without_a_base_the_echo_overwrites() {
 fn a_row_with_no_carried_counterpart_folds_whole() {
     let k = kernel();
     let base = k.fold_base(Some(&ValueMap::new()), &[], None).unwrap();
-    let echo = answer(ValueMap::from([(
-        "Loader".to_string(),
+    let echo = answer(ValueMap::from([("Loader".into(),
         row(json!({ "id": "singleton", "note": "fresh" })),
     )]));
     k.apply_server_response_since(&echo, &HashSet::new(), Some(&base))
@@ -226,8 +223,7 @@ fn a_seeded_trait_is_based_on_the_row_the_client_shows() {
             entity: row(json!({ "id": "singleton", "note": "shown" })),
         },
     );
-    let carried = ValueMap::from([(
-        "Loader".to_string(),
+    let carried = ValueMap::from([("Loader".into(),
         row(json!({ "id": "singleton", "note": "pre-dispatch" })),
     )]);
     let seeded = k
@@ -449,7 +445,7 @@ fn composer_schema_with(thread_init: serde_json::Value) -> OrbitalSchema {
 
 fn host_answer(active_channel: &str) -> EventResponse {
     answer(ValueMap::from([(
-        "Thread".to_string(),
+        "$shared::Message".into(),
         row(json!({ "activeChannel": active_channel })),
     )]))
 }

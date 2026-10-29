@@ -122,10 +122,10 @@ pub fn whole(op: &str, what: &str, n: f64) -> Result<i64, EvalError> {
 /// Build a vector object; includes `z` only when `with_z` is true.
 pub fn make_vec(x: f64, y: f64, z: f64, with_z: bool) -> Value {
     let mut m = ValueMap::default();
-    m.insert("x".to_string(), Value::Number(x));
-    m.insert("y".to_string(), Value::Number(y));
+    m.insert("x".into(), Value::Number(x));
+    m.insert("y".into(), Value::Number(y));
     if with_z {
-        m.insert("z".to_string(), Value::Number(z));
+        m.insert("z".into(), Value::Number(z));
     }
     Value::object(m)
 }

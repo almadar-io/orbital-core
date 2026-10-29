@@ -450,7 +450,7 @@ pub(super) fn rules_by_field(
         Value::Object(fields) => fields
             .into_iter()
             .map(|(field, list)| match list {
-                Value::Array(rules) => Ok((field.clone(), rule_list(&field, rules.into_inner())?)),
+                Value::Array(rules) => Ok((field.to_string(), rule_list(&field, rules.into_inner())?)),
                 other => Err(mismatch(other.type_name())),
             })
             .collect(),
@@ -542,8 +542,8 @@ impl Operator for ValidateCheckOp {
             }
         }
         let mut out = ValueMap::default();
-        out.insert("valid".to_string(), Value::Bool(errors.is_empty()));
-        out.insert("errors".to_string(), Value::array(errors));
+        out.insert("valid".into(), Value::Bool(errors.is_empty()));
+        out.insert("errors".into(), Value::array(errors));
         Ok(Value::object(out))
     }
 }

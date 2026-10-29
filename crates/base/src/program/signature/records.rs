@@ -84,7 +84,7 @@ pub(super) fn unwrap_optional(ty: &OirType) -> &OirType {
 
 /// A type whose value says nothing the checker can use.
 pub(super) fn is_uninformative(ty: &OirType) -> bool {
-    matches!(unwrap_optional(ty), OirType::Json | OirType::SExpr)
+    crate::type_compat::is_json_family(unwrap_optional(ty))
 }
 
 pub(super) enum Record<'t> {

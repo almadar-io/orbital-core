@@ -253,7 +253,7 @@ mod tests {
         let effect = ClientEffect::RenderUi {
             slot: "main".to_string(),
             config: Some(Value::object(ValueMap::from_iter([(
-                "type".to_string(),
+                "type".into(),
                 Value::String(("card".to_string()).into()),
             )]))),
         };
@@ -284,7 +284,7 @@ mod tests {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
             params: Some(Value::object(ValueMap::from_iter([(
-                "id".to_string(),
+                "id".into(),
                 Value::String(("42".to_string()).into()),
             )]))),
             options: None,
@@ -311,7 +311,7 @@ mod tests {
         let effect = ClientEffect::Navigate {
             path: "/notes/:id".to_string(),
             params: Some(Value::object(ValueMap::from_iter([(
-                "id".to_string(),
+                "id".into(),
                 Value::String(("42".to_string()).into()),
             )]))),
             options: Some(NavigateOptions {
@@ -344,7 +344,7 @@ mod tests {
         let effect = Effect::RenderUi {
             slot: "main".to_string(),
             content: Value::object(ValueMap::from_iter([(
-                "type".to_string(),
+                "type".into(),
                 Value::String(("card".to_string()).into()),
             )])),
         };
@@ -354,7 +354,7 @@ mod tests {
             ClientEffect::RenderUi {
                 slot: "main".to_string(),
                 config: Some(Value::object(ValueMap::from_iter([(
-                    "type".to_string(),
+                    "type".into(),
                     Value::String(("card".to_string()).into())
                 )]))),
             }
@@ -427,7 +427,7 @@ mod tests {
         let effect = ClientEffect::RenderUi {
             slot: "modal".to_string(),
             config: Some(Value::object(ValueMap::from_iter([(
-                "type".to_string(),
+                "type".into(),
                 Value::String(("form".to_string()).into()),
             )]))),
         };

@@ -70,7 +70,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn obj(pairs: Vec<(&str, Value)>) -> Value {
-        Value::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+        Value::Object(pairs.into_iter().map(|(k, v)| (k.into(), v)).collect())
     }
 
     #[test]
@@ -109,7 +109,7 @@ mod tests {
     fn resolves_trait_ref() {
         let mut index = ValueMap::default();
         index.insert(
-            "Search".to_string(),
+            "Search".into(),
             obj(vec![("type", Value::string("table-view"))]),
         );
         let props = obj(vec![(
@@ -147,7 +147,7 @@ mod tests {
     fn resolves_overlay_sourced_peer() {
         let mut index = ValueMap::default();
         index.insert(
-            "Popover1".to_string(),
+            "Popover1".into(),
             obj(vec![("type", Value::string("popover"))]),
         );
         let props = obj(vec![(
@@ -224,7 +224,7 @@ mod tests {
         };
 
         let mut tc = ValueMap::default();
-        tc.insert("Catalog".to_string(), obj(vec![("type", Value::string("stack"))]));
+        tc.insert("Catalog".into(), obj(vec![("type", Value::string("stack"))]));
 
         let entities = HashMap::new();
         let editing = None;

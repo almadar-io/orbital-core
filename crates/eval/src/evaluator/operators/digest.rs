@@ -265,7 +265,7 @@ fn codec_answer(
                 ("code", code),
             ]
             .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
+            .map(|(key, value)| (key.into(), value))
             .collect(),
         ));
     }

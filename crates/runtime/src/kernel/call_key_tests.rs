@@ -2,7 +2,7 @@ use super::*;
 
 fn ctx_with_batch() -> BindingContext {
     let mut entity = ValueMap::default();
-    entity.insert("batchId".to_string(), Value::string("b-7"));
+    entity.insert("batchId".into(), Value::string("b-7"));
     BindingContextBuilder::new()
         .entity(Value::object(entity))
         .build()
@@ -40,9 +40,9 @@ fn cancel_call_key_resolves_from_the_entity_binding() {
 #[test]
 fn a_cancel_call_on_a_bound_list_resolves_to_the_list_and_a_list_literal_evaluates() {
     let mut entity = ValueMap::default();
-    entity.insert("batchId".to_string(), Value::string("b-7"));
+    entity.insert("batchId".into(), Value::string("b-7"));
     entity.insert(
-        "keys".to_string(),
+        "keys".into(),
         Value::array(vec!["x".into(), "y".into()]),
     );
     let ctx = BindingContextBuilder::new()

@@ -222,8 +222,7 @@
                   ]
                 }
               ]
-            },
-            "scope": "instance"
+            }
           },
           {
             "name": "ContactAudit",
@@ -278,11 +277,6 @@
                 "kind": "set",
                 "resource": "@entity.recordedAt"
               }
-            ],
-            "category": "lifecycle",
-            "capabilities": [
-              "audit",
-              "compliance"
             ],
             "linkedEntity": "AuditEntry",
             "linkedEntityId": "ent_01KXG04F0MSA7QDPSYJHC2YPRH",
@@ -635,7 +629,6 @@
                 }
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-audit-capture",
               "alias": "AuditCapture",

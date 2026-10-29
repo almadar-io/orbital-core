@@ -54,6 +54,7 @@ pub struct SessionGuard {
         Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
         Arc<RwLock<HashMap<(String, String), String>>>,
         Arc<RwLock<StateMachineManager>>,
+        Arc<view_record::ViewRecords>,
         String,
     )>,
 }
@@ -67,8 +68,9 @@ impl Drop for SessionGuard {
                 None => slot.remove(&self.thread),
             };
         }
-        if let Some((frames, carried, states, session)) = self.scratch.take() {
+        if let Some((frames, carried, states, views, session)) = self.scratch.take() {
             drop_session_instances(&frames, &carried, &states, &session);
+            views.drop_session(&session);
         }
     }
 }

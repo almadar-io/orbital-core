@@ -714,7 +714,7 @@ mod tests {
 
     fn beacon_driver() -> (crate::http_request::HttpCallDriver, DriverStep) {
         let request = Value::object(orbital_core_base::value::ValueMap::from_iter([(
-            "text".to_string(),
+            "text".into(),
             Value::String(("hello".to_string()).into()),
         )]));
         let spec = crate::http_request::parse_beacon_call("https://api.example.com/log", &request)

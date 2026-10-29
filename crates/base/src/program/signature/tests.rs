@@ -2233,7 +2233,7 @@ fn a_literal_sequence_with_an_undetermined_item_is_an_error() {
         "control: with every item determined it is typed"
     );
     assert!(
-        is_undetermined(call(&list, &[ty(OirType::Json)], Mode::Static)),
+        is_undetermined(call(&list, &[ty(OirType::erased())], Mode::Static)),
         "json is no type"
     );
 }
@@ -2256,7 +2256,7 @@ fn a_variable_handed_an_undetermined_or_opaque_value_is_an_error() {
     );
     assert!(is_undetermined(call(
         &prepend,
-        &[ty(s_arr(OirType::Json)), ty(OirType::String)],
+        &[ty(s_arr(OirType::erased())), ty(OirType::String)],
         Mode::Static
     )));
     assert!(is_undetermined(call(
@@ -2417,7 +2417,7 @@ fn a_held_program_is_a_type_a_variable_binds_and_nothing_can_be_read_from() {
     assert!(
         is_undetermined(call(
             &literal,
-            &[ty(OirType::SExpr), ty(OirType::Json)],
+            &[ty(OirType::SExpr), ty(OirType::erased())],
             Mode::Static
         )),
         "control: json beside it is still no type"
@@ -2459,7 +2459,7 @@ fn a_held_program_is_a_type_a_variable_binds_and_nothing_can_be_read_from() {
         Ok(Some(OirType::String))
     );
     assert!(
-        is_undetermined(call(&show, &[ty(OirType::Json)], Mode::Static)),
+        is_undetermined(call(&show, &[ty(OirType::erased())], Mode::Static)),
         "control: json"
     );
     assert!(
@@ -3054,7 +3054,7 @@ fn a_proof_binds_only_what_every_value_of_the_argument_type_fits() {
     assert!(bind_date(OirType::Date, Mode::Proof).is_ok(), "control: a date-typed value passes a date position");
     assert!(bind_date(OirType::Number, Mode::Proof).is_err(), "epoch ms is not a date: a point in time is ISO text");
     assert!(bind_date(OirType::String, Mode::Static).is_ok(), "control: only a strict call refuses a string at a date position");
-    assert!(matches!(bind(OirType::Json, Mode::Proof), Err(Mismatch::Undetermined { .. })));
+    assert!(matches!(bind(OirType::erased(), Mode::Proof), Err(Mismatch::Undetermined { .. })));
     assert!(bind(OirType::String, Mode::Proof).is_ok());
     assert!(
         bind(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_err(),
@@ -3089,7 +3089,7 @@ fn strict_bind(params: serde_json::Value, actual: Actual<'_>) -> Result<(), Mism
 #[test]
 fn a_loose_value_at_a_concrete_position_is_undetermined_and_a_narrowed_one_binds() {
     for formal in [json!("number"), json!("bytes"), json!("vector"), json!({ "kind": "record" })] {
-        let loose = strict_bind(json!([p("x", formal.clone())]), Actual::of_type(OirType::Json));
+        let loose = strict_bind(json!([p("x", formal.clone())]), Actual::of_type(OirType::erased()));
         assert!(matches!(loose, Err(Mismatch::Undetermined { .. })), "{formal}: {loose:?}");
     }
     let object = json!({ "kind": "object", "fields": { "a": "number" } });

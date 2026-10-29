@@ -127,13 +127,16 @@ mod tests {
     }
 
     #[test]
-    fn the_retired_local_flag_is_not_a_dispatch_declaration() {
-        let t: TraitDefinition = serde_json::from_value(serde_json::json!({
-            "name": "T", "local": true,
-            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] },
-        }))
-        .expect("trait fixture");
-        assert_eq!(mode_of(&t, true), DispatchMode::PersistedAwaited);
+    fn the_retired_local_flag_is_refused_naming_dispatch() {
+        for local in [true, false] {
+            let err = serde_json::from_value::<crate::schema::TraitReference>(serde_json::json!({
+                "name": "T", "local": local,
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] },
+            }))
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && err.contains("`local`") && err.contains("dispatch"), "{err}");
+        }
     }
 
     #[test]

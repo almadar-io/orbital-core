@@ -5,6 +5,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use super::ticket_queue::TicketQueue;
 use super::wire::{CallSiteWire, Settled, IoReplyWire, NextWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::executor::{ServiceHandler, SubstrateHandler};
@@ -12,7 +13,7 @@ use crate::resumable::{completion_event, CallSite, DispatchContinuation, Dispatc
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
-use crate::kernel::{EntryError, KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
+use crate::kernel::{EntryError, FrameWrite, KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
 use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::schema::types::OrbitalSchema;
@@ -118,11 +119,6 @@ enum Waiting {
     Resume { flight: u64, replies: Vec<IoReply> },
 }
 
-struct Queued {
-    ticket: u64,
-    work: Waiting,
-}
-
 /// A server-role kernel and the dispatches it has in flight.
 pub struct EmbeddedServer {
     kernel: RuntimeKernel,
@@ -134,7 +130,7 @@ pub struct EmbeddedServer {
     /// The live streams the host reported open, by the id it closes them with: while one is open its session lives.
     streams: Mutex<HashMap<u64, SessionStream>>,
     /// The requests waiting for the lane, in arrival order: the kernel, not the host, decides what runs next.
-    queued: Mutex<std::collections::VecDeque<Queued>>,
+    queued: Mutex<TicketQueue<Waiting>>,
     /// Row-set resolves waiting on the host; they share `next_flight`'s ids with the dispatches.
     resolves: Mutex<HashMap<u64, ResolveContinuation>>,
     next_flight: Mutex<u64>,
@@ -176,6 +172,15 @@ fn host_answered() -> (Arc<dyn EntitySource>, KernelConfig) {
 impl EmbeddedServer {
     /// Register an already-resolved schema in a fresh server-role kernel.
     pub fn new(schema: OrbitalSchema) -> Result<Self, EntryError> {
+        Self::with_lazy_source(schema, None)
+    }
+
+    /// [`Self::new`] for a program whose `uses lazy` orbitals the kernel loads through `lazy` on the first dispatch that
+    /// reaches them (EXEC-LOAD-2). Without a source a lazy page is the client's to open.
+    pub fn with_lazy_source(
+        schema: OrbitalSchema,
+        lazy: Option<Arc<dyn crate::kernel::lazy::LazySource>>,
+    ) -> Result<Self, EntryError> {
         if schema.orbitals.is_empty() {
             return Err(EntryError::NoOrbitals);
         }
@@ -193,6 +198,9 @@ impl EmbeddedServer {
             .collect();
         let (host, config) = host_answered();
         let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, host, config);
+        if let Some(lazy) = lazy {
+            kernel.set_lazy_source(lazy);
+        }
         kernel
             .register_schema(schema)
             .map_err(EntryError::Register)?;
@@ -204,7 +212,7 @@ impl EmbeddedServer {
             tick_mount: Mutex::new(BTreeSet::new()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
-            queued: Mutex::new(std::collections::VecDeque::new()),
+            queued: Mutex::new(TicketQueue::default()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -225,7 +233,7 @@ impl EmbeddedServer {
             tick_mount: Mutex::new(self.tick_mount.lock().clone()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
-            queued: Mutex::new(std::collections::VecDeque::new()),
+            queued: Mutex::new(TicketQueue::default()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -265,7 +273,7 @@ impl EmbeddedServer {
             tick_mount: Mutex::new(BTreeSet::new()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
-            queued: Mutex::new(std::collections::VecDeque::new()),
+            queued: Mutex::new(TicketQueue::default()),
             resolves: Mutex::new(HashMap::new()),
             next_flight: Mutex::new(0),
             dispatch_stream: Mutex::new(Vec::new()),
@@ -378,7 +386,7 @@ impl EmbeddedServer {
 
     /// Forget a dispatch the host gave up on.
     pub fn abandon(&self, flight: u64) -> bool {
-        self.queued.lock().retain(|queued| !matches!(queued.work, Waiting::Resume { flight: waiting, .. } if waiting == flight));
+        self.queued.lock().retain(|work| !matches!(work, Waiting::Resume { flight: waiting, .. } if *waiting == flight));
         self.flights.lock().remove(&flight).is_some() || self.resolves.lock().remove(&flight).is_some()
     }
 
@@ -461,7 +469,7 @@ impl EmbeddedServer {
         let mut queued = self.queued.lock();
         if self.lane_held() || !queued.is_empty() {
             let ticket = self.next_id();
-            queued.push_back(Queued { ticket, work: Waiting::Start { orbital: orbital.to_string(), request: Box::new(request), admitted } });
+            queued.push(ticket, Waiting::Start { orbital: orbital.to_string(), request: Box::new(request), admitted });
             return Ok(ServerProgress::Queued { ticket });
         }
         drop(queued);
@@ -487,7 +495,7 @@ impl EmbeddedServer {
         if self.lane_held() {
             return None;
         }
-        let Queued { ticket, work } = self.queued.lock().pop_front()?;
+        let (ticket, work) = self.queued.lock().pop_front()?;
         Some((ticket, match work {
             Waiting::Start { orbital, request, admitted } => self.start_now(&orbital, *request, admitted),
             Waiting::Resume { flight, replies } => self.resume_now(flight, replies),
@@ -527,11 +535,27 @@ impl EmbeddedServer {
 
     fn start_now(&self, orbital: &str, request: EventRequest, (session, revived): Admitted) -> Result<ServerProgress, String> {
         self.dispatch_stream.lock().clear();
-        let traits = self
-            .orbital_traits
-            .get(orbital)
-            .ok_or_else(|| format!("Orbital not found: {orbital}"))?;
+        let lazy_traits;
+        let traits = match self.orbital_traits.get(orbital) {
+            Some(traits) => traits,
+            None => {
+                self.kernel.ensure_orbital_loaded(orbital).map_err(|e| e.to_string())?;
+                lazy_traits = self
+                    .kernel
+                    .get_orbital(orbital)
+                    .ok_or_else(|| format!("Orbital not found: {orbital}"))?
+                    .traits;
+                &lazy_traits
+            }
+        };
         let _in_session = session.as_ref().map(|active| self.kernel.enter_session(active.session()));
+        if let Some(since) = request.frames_since {
+            let frames = self.kernel.frames_since(since);
+            return Ok(ServerProgress::Done(match frames {
+                Some(frames) => EventResponse { success: true, frames: Some(frames), ..Default::default() },
+                None => EventResponse::error("this host keeps no frames for the session: mount again"),
+            }));
+        }
         let user = request
             .user
             .clone()
@@ -793,7 +817,7 @@ impl EmbeddedServer {
                 return Err(format!("no dispatch is waiting as flight {flight}"));
             }
             let ticket = self.next_id();
-            queued.push_back(Queued { ticket, work: Waiting::Resume { flight, replies } });
+            queued.push(ticket, Waiting::Resume { flight, replies });
             return Ok(ServerProgress::Queued { ticket });
         }
         drop(queued);
@@ -927,10 +951,14 @@ impl EmbeddedServer {
         let Some(orbital) = self.kernel.orbital_of_trait(seed_trait) else {
             return;
         };
-        let Some(traits) = self.orbital_traits.get(&orbital) else {
-            return;
+        let traits = match self.orbital_traits.get(&orbital) {
+            Some(traits) => traits.clone(),
+            None => match self.kernel.get_orbital(&orbital) {
+                Some(detail) => detail.traits,
+                None => return,
+            },
         };
-        for (name, state) in self.kernel.held_states(traits, entity_id) {
+        for (name, state) in self.kernel.held_states(&traits, entity_id) {
             response.states.entry(name).or_insert(state);
         }
     }
@@ -952,11 +980,6 @@ impl EmbeddedServer {
                     None if seed.tick => {
                         EventResponse::from_process_results(&outcomes, "", &seed.event)
                     }
-                    None if seed.mount => EventResponse::from_process_results_mount(
-                        &outcomes,
-                        &seed.trait_name,
-                        &seed.event,
-                    ),
                     None => EventResponse::from_process_results(
                         &outcomes,
                         &seed.trait_name,
@@ -966,11 +989,11 @@ impl EmbeddedServer {
                 let hops = TransitionHop::of_outcomes(&outcomes);
                 response.transitions = (!hops.is_empty()).then_some(hops);
                 self.kernel.stamp_emitted_sources(&mut response);
-                self.kernel
-                    .echo_frames(&mut response, &outcomes, seed.entity_id.as_deref(), seed.mount);
-                if let Some(rows) = seed.carried_rows {
-                    response.entity_by_trait.get_or_insert_with(Default::default).extend(rows);
-                }
+                let mut writes = self.kernel.frame_writes(&outcomes, seed.entity_id.as_deref(), seed.mount);
+                writes.extend(seed.carried_rows.iter().flatten().filter_map(|(trait_name, row)| {
+                    Some((self.kernel.trait_frame_key(trait_name), FrameWrite::Fields(row.as_object()?.clone())))
+                }));
+                self.kernel.seal_frames(&mut response, writes);
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
                 *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes);
                 Ok(ServerProgress::Done(response))

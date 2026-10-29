@@ -2,6 +2,7 @@ use super::{
     compat_kind_oir, oir_type_accepts_kind, oir_type_satisfies, oir_type_satisfies_field,
     set_value_type_compatible, Coercion, SemanticStringKind, WidenKind,
 };
+use crate::ir::types::OirType;
 use crate::ir::types::OirType::*;
 
 type C = Coercion;
@@ -16,11 +17,16 @@ fn equal_and_required_marker() {
 }
 
 #[test]
-fn any_accepts_all() {
-    assert!(set_value_type_compatible("any", "object"));
-    assert!(set_value_type_compatible("any", "number"));
-    // Asymmetry: `any` as the ACTUAL is only accepted by `any` itself.
+fn any_is_not_a_type() {
+    assert!(!set_value_type_compatible("any", "object"));
+    assert!(!set_value_type_compatible("any", "number"));
     assert!(!set_value_type_compatible("string", "any"));
+    assert!(!set_value_type_compatible("json", "object"));
+    assert!(!set_value_type_compatible("object", "json"));
+    assert!(
+        set_value_type_compatible("string", "string"),
+        "control: a declared type still accepts itself"
+    );
 }
 
 #[test]
@@ -70,8 +76,8 @@ fn oir_type_satisfies_field_keeps_inferred_element_type() {
     let number_array = Array {
         inner: Box::new(Number),
     };
-    let json_array = Array {
-        inner: Box::new(Json),
+    let unknown_array = Array {
+        inner: Box::new(OirType::erased()),
     };
     // A concrete inferred element type compares structurally, not by the
     // erased "array" kind — this is the 4.2-follow-up fix: the inferred
@@ -79,7 +85,7 @@ fn oir_type_satisfies_field_keeps_inferred_element_type() {
     assert!(oir_type_satisfies_field(&string_array, "[string]"));
     assert!(!oir_type_satisfies_field(&number_array, "[string]"));
     // Unknown elements retain a known array kind and fit typed array slots.
-    assert!(oir_type_satisfies_field(&json_array, "[string]"));
+    assert!(oir_type_satisfies_field(&unknown_array, "[string]"));
     // The nullable outer container needs refinement.
     let opt_string_array = Optional {
         inner: Box::new(string_array.clone()),
@@ -113,7 +119,7 @@ fn oir_type_satisfies_mirrors_the_str_wrapper() {
     ));
     // Unknowable inferred types never reject, declared side real or not.
     assert!(oir_type_satisfies(
-        &Json,
+        &OirType::erased(),
         &Array {
             inner: Box::new(String)
         }
@@ -149,9 +155,9 @@ fn oir_type_accepts_kind_mirrors_the_str_wrapper() {
     // An erased-element actual never rejects.
     assert!(oir_type_accepts_kind(
         &Array {
-            inner: Box::new(Json)
+            inner: Box::new(OirType::erased())
         },
-        "[json]"
+        "[opaque]"
     ));
     assert!(oir_type_accepts_kind(
         &Array {
@@ -175,13 +181,13 @@ fn compat_kind_oir_round_trips_the_legacy_vocabulary() {
     );
     // Markers with no real `OirType` fall back to their witness type.
     assert_eq!(compat_kind_oir("money"), Money);
-    assert_eq!(compat_kind_oir("any"), Json);
+    assert_eq!(compat_kind_oir("any"), OirType::erased(), "a spelling nothing declares is unknown");
 }
 
 #[test]
 fn object_json_map_family() {
-    assert!(set_value_type_compatible("object", "json"));
-    assert!(set_value_type_compatible("json", "object"));
+    assert!(!set_value_type_compatible("object", "json"), "json is not a type");
+    assert!(!set_value_type_compatible("json", "object"), "json is not a type");
     assert!(set_value_type_compatible("Map<string,string>", "object"));
     assert!(set_value_type_compatible("object", "Map<string,string>"));
     assert!(set_value_type_compatible("Map<a,b>", "Map<c,d>"));
@@ -223,7 +229,7 @@ fn bytes_is_not_implicitly_a_string() {
     assert!(!set_value_type_compatible("bytes", "string"));
     assert!(!set_value_type_compatible("string", "bytes"));
     assert!(!set_value_type_compatible("number", "bytes"));
-    assert!(set_value_type_compatible("any", "bytes"));
+    assert!(!set_value_type_compatible("any", "bytes"), "any is not a type");
     assert!(super::sub(&Bytes, &Bytes).is_some());
     assert_eq!(super::sub(&String, &Bytes), None);
     assert_eq!(super::sub(&Bytes, &String), None);
@@ -475,21 +481,20 @@ fn sub_object_json_family_mutually_compatible() {
     let row = Struct { fields: Default::default(), additional: None };
     let bag = Map {
         key: Box::new(String),
-        value: Box::new(Json),
+        value: Box::new(OirType::erased()),
     };
     assert_eq!(sub(&row, &bag), Some(C::Erase { from: row.clone() }));
     assert_eq!(sub(&bag, &row), Some(C::Erase { from: bag.clone() }));
-    assert_eq!(sub(&Json, &row), Some(C::Erase { from: Json }));
-    assert_eq!(sub(&row, &Json), Some(C::Erase { from: row.clone() }));
-    assert_eq!(sub(&Json, &SExpr), Some(C::Erase { from: Json }));
+    assert_eq!(sub(&SExpr, &row), Some(C::Erase { from: SExpr }));
+    assert_eq!(sub(&row, &SExpr), Some(C::Erase { from: row.clone() }));
     assert_eq!(sub(&File, &row), Some(C::Erase { from: File }));
-    // json does not leak into string/array-declared slots.
-    assert_eq!(sub(&Json, &String), None);
+    // an expression does not leak into string/array-declared slots.
+    assert_eq!(sub(&SExpr, &String), None);
     assert_eq!(
         sub(
-            &Json,
+            &SExpr,
             &Array {
-                inner: Box::new(Json)
+                inner: Box::new(SExpr)
             }
         ),
         None
@@ -549,7 +554,7 @@ fn an_atom_and_a_list_of_program_data_are_an_sexpr() {
         "control: a list holding a date is not program data"
     );
     assert_eq!(
-        sub(&String, &Json),
+        sub(&String, &OirType::erased()),
         None,
         "control: only the expression type takes atoms"
     );
@@ -576,7 +581,7 @@ fn sub_arrays_structural() {
     };
     assert_eq!(sub(&a, &c), None);
     assert_eq!(sub(&a, &String), None);
-    assert_eq!(sub(&Json, &a), None);
+    assert_eq!(sub(&SExpr, &a), None);
 }
 
 #[test]
@@ -605,7 +610,7 @@ fn sub_reference_row_or_id() {
     // Owner ruling 2026-10-25: a relation read is the related row's id, so it fits a string, and is not a row.
     assert_eq!(sub(&article, &String), Some(C::Erase { from: article.clone() }));
     assert_eq!(sub(&article, &row), None);
-    assert_eq!(sub(&Json, &article), None);
+    assert_eq!(sub(&SExpr, &article), None);
 }
 
 #[test]
@@ -625,7 +630,7 @@ fn sub_row_is_object_family() {
             from: object.clone()
         })
     );
-    assert_eq!(sub(&Json, &row), Some(C::Erase { from: Json }));
+    assert_eq!(sub(&SExpr, &row), Some(C::Erase { from: SExpr }));
     assert_eq!(sub(&row, &object), Some(C::Erase { from: row.clone() }));
     assert_eq!(sub(&row, &row), Some(C::Identity));
     // A reference takes a loaded row.
@@ -669,7 +674,7 @@ fn sub_node_renders_any_scalar() {
         inner: Box::new(String),
     };
     assert_eq!(sub(&arr, &Node), Some(C::Erase { from: arr }));
-    // json is not renderable content.
-    assert_eq!(sub(&Json, &Node), None);
+    // an expression is not renderable content.
+    assert_eq!(sub(&SExpr, &Node), None);
     assert_eq!(sub(&Node, &String), None);
 }

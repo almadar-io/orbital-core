@@ -206,7 +206,11 @@ fn control_a_fetch_without_include_leaves_ids() {
     assert_eq!(t["replies"], json!(["c"]));
 }
 
-fn editor_schema() -> OrbitalSchema {
+fn editor_schema(display: Option<&str>) -> OrbitalSchema {
+    let relation = match display {
+        Some(field) => json!({ "entity": "Staff", "cardinality": "one", "display": field }),
+        None => json!({ "entity": "Staff", "cardinality": "one" }),
+    };
     serde_json::from_value(json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
@@ -216,7 +220,7 @@ fn editor_schema() -> OrbitalSchema {
             { "name": "TaskOrbital",
               "entity": { "name": "Task", "persistence": "persistent", "fields": [
                   { "name": "id", "type": "string" }, { "name": "title", "type": "string" },
-                  { "name": "assignee", "type": "relation", "relation": { "entity": "Staff", "cardinality": "one" } }
+                  { "name": "assignee", "type": "relation", "relation": relation }
               ] },
               "traits": [{
                   "name": "editor", "linkedEntity": "Task",
@@ -245,8 +249,8 @@ fn staff() -> Store {
     )])
 }
 
-fn open() -> Json {
-    let server = EmbeddedServer::new(editor_schema()).unwrap();
+fn open(display: Option<&str>) -> Json {
+    let server = EmbeddedServer::new(editor_schema(display)).unwrap();
     let request = EventRequest {
         event: "OPEN".to_string(),
         target_trait: Some("editor".to_string()),
@@ -257,13 +261,13 @@ fn open() -> Json {
 }
 
 #[test]
-fn form_detail_and_column_nodes_carry_the_relation_options() {
-    let render = open();
+fn form_detail_and_column_nodes_carry_the_relation_options_labelled_by_the_declared_display_field() {
+    let render = open(Some("name"));
     let children = render[2]["children"].as_array().unwrap();
     for node in children {
         assert_eq!(
             node["relationsData"]["assignee"],
-            json!([{ "value": "s1", "label": "Ada" }, { "value": "s2", "label": "Grace" }]),
+            json!([{ "value": "s1", "label": "Ada" }, { "value": "s2", "label": "s2" }]),
             "{node}"
         );
     }
@@ -271,8 +275,32 @@ fn form_detail_and_column_nodes_carry_the_relation_options() {
 }
 
 #[test]
+fn control_a_relation_without_a_declared_display_field_is_labelled_by_the_record_id_never_a_guessed_field() {
+    let render = open(None);
+    for node in render[2]["children"].as_array().unwrap() {
+        assert_eq!(
+            node["relationsData"]["assignee"],
+            json!([{ "value": "s1", "label": "s1" }, { "value": "s2", "label": "s2" }]),
+            "{node}"
+        );
+    }
+}
+
+#[test]
+fn edge_the_display_field_is_read_from_the_target_row_whatever_its_name() {
+    let render = open(Some("title"));
+    let labels: Vec<_> = render[2]["children"][0]["relationsData"]["assignee"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["label"].clone())
+        .collect();
+    assert_eq!(labels, [json!("s1"), json!("Grace")]);
+}
+
+#[test]
 fn control_a_node_without_relation_fields_and_the_wrapper_stay_untouched() {
-    let render = open();
+    let render = open(Some("name"));
     assert!(render[2].get("relationsData").is_none());
     let _: Value = serde_json::from_value(render).unwrap();
 }

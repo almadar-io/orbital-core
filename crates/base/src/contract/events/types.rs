@@ -92,7 +92,7 @@ impl Event {
 
     /// Add metadata
     pub fn with_metadata(mut self, key: &str, value: Value) -> Self {
-        self.metadata.insert(key.to_string(), value);
+        self.metadata.insert(key.to_string().into(), value);
         self
     }
 

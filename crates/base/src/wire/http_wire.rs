@@ -476,7 +476,7 @@ pub fn parse_http_headers(value: Option<&Value>) -> Result<Vec<(String, String)>
                 match value {
                     Value::String(s) => {
                         check_header(name, s)?;
-                        out.push((name.clone(), s.to_string()));
+                        out.push((name.to_string(), s.to_string()));
                     }
                     _ => return invalid("HTTP header values must be strings"),
                 }
@@ -534,7 +534,7 @@ pub fn parse_retry(value: &Value) -> Result<HttpRetry, HttpRefusal> {
     };
     let fields: Vec<_> = map
         .iter()
-        .map(|(name, value)| (name.clone(), RetryOperand::Literal(value.clone())))
+        .map(|(name, value)| (name.to_string(), RetryOperand::Literal(value.clone())))
         .collect();
     HttpRetry::check_partial(&fields)?.ok_or_else(|| HttpRefusal::Invalid("retry must contain concrete values".into()))
 }

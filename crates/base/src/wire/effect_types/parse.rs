@@ -391,10 +391,10 @@ pub(super) fn parse_redis(args: &[SExpression]) -> Option<Effect> {
             match name.as_str() {
                 "key" => key = Some(value),
                 "emit" => {
-                    routes.insert("emit".to_string(), value);
+                    routes.insert("emit".into(), value);
                 }
                 _ => {
-                    options.insert(name.to_string(), value);
+                    options.insert(name.to_string().into(), value);
                 }
             }
         }
@@ -427,10 +427,10 @@ pub(super) fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
             match name.as_str() {
                 "key" => key = Some(value),
                 "emit" => {
-                    routes.insert("emit".to_string(), value);
+                    routes.insert("emit".into(), value);
                 }
                 _ => {
-                    options.insert(name.to_string(), value);
+                    options.insert(name.to_string().into(), value);
                 }
             }
         }

@@ -25,11 +25,11 @@ fn insert_path(target: &mut ValueMap, path: &[&str], value: Value) {
         return;
     };
     if tail.is_empty() {
-        target.insert(head.to_string(), value);
+        target.insert(head.to_string().into(), value);
         return;
     }
     let child = target
-        .entry(head.to_string())
+        .entry(head.to_string().into())
         .or_insert_with(|| Value::object(ValueMap::default()));
     if !matches!(child, Value::Object(_)) {
         *child = Value::object(ValueMap::default());

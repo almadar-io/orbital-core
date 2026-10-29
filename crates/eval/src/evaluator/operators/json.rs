@@ -26,7 +26,7 @@ fn json_to_value(json: serde_json::Value) -> Value {
         }
         serde_json::Value::Object(map) => Value::Object(
             map.into_iter()
-                .map(|(k, v)| (k, json_to_value(v)))
+                .map(|(k, v)| (k.into(), json_to_value(v)))
                 .collect(),
         ),
     }
@@ -216,9 +216,9 @@ impl Operator for TreeIndexOp {
         }
         let hit = |path: &str, node: &Value, at: usize| {
             let mut hit = ValueMap::new();
-            hit.insert("path".to_string(), Value::string(path.to_string()));
-            hit.insert("node".to_string(), node.clone());
-            hit.insert("at".to_string(), Value::Number(at as f64));
+            hit.insert("path".into(), Value::string(path.to_string()));
+            hit.insert("node".into(), node.clone());
+            hit.insert("at".into(), Value::Number(at as f64));
             Value::object(hit)
         };
         let mut visited = 0usize;
@@ -268,7 +268,7 @@ impl Operator for TreeIndexOp {
         Ok(Value::object(
             found
                 .into_iter()
-                .map(|(head, list)| (head, Value::array(list)))
+                .map(|(head, list)| (head.into(), Value::array(list)))
                 .collect::<ValueMap>(),
         ))
     }

@@ -164,7 +164,7 @@ pub(super) fn io_error(op: OsOp, e: &io::Error) -> OsError {
 pub(super) fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
     let mut map = ValueMap::default();
     for (key, value) in pairs {
-        map.insert(key.to_string(), value);
+        map.insert(key.to_string().into(), value);
     }
     Value::object(map)
 }

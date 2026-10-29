@@ -145,7 +145,7 @@ fn test_persist_server_only() {
         entity_type: "User".to_string(),
         data: Value::Object({
             let mut m = ValueMap::default();
-            m.insert("name".to_string(), Value::string("John"));
+            m.insert("name".into(), Value::string("John"));
             m.into()
         }),
         id: None,
@@ -166,7 +166,7 @@ fn row_of(pairs: &[(&str, &str)]) -> Value {
     Value::Object({
         let mut m = ValueMap::default();
         for (k, v) in pairs {
-            m.insert((*k).to_string(), Value::string((*v).to_string()));
+            m.insert((*k).to_string().into(), Value::string((*v).to_string()));
         }
         m.into()
     })
@@ -252,7 +252,7 @@ fn test_persist_update_data_carries_its_own_id_with_trailing_emit_options() {
             "Ticket",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("subject".to_string(), Value::string("original"));
+                m.insert("subject".into(), Value::string("original"));
                 m.into()
             }),
         )
@@ -276,8 +276,8 @@ fn test_persist_update_data_carries_its_own_id_with_trailing_emit_options() {
         entity_type: "Ticket".to_string(),
         data: Value::Object({
             let mut m = ValueMap::default();
-            m.insert("id".to_string(), Value::string(ticket_id.clone()));
-            m.insert("subject".to_string(), Value::string("edited"));
+            m.insert("id".into(), Value::string(ticket_id.clone()));
+            m.insert("subject".into(), Value::string("edited"));
             m.into()
         }),
         id: None,
@@ -345,11 +345,11 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
         orbital_core_base::effect_types::parse_effect(&raw).expect("parse_persist must recognize this shape");
 
     let mut payload_data = ValueMap::default();
-    payload_data.insert("content".to_string(), Value::string("hello"));
+    payload_data.insert("content".into(), Value::string("hello"));
     let mut payload = ValueMap::default();
-    payload.insert("data".to_string(), Value::object(payload_data));
+    payload.insert("data".into(), Value::object(payload_data));
     let mut user = ValueMap::default();
-    user.insert("id".to_string(), Value::string("user-42"));
+    user.insert("id".into(), Value::string("user-42"));
 
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
         .payload(Value::object(payload))
@@ -394,9 +394,9 @@ fn test_persist_denied_delete_is_failed_not_executed() {
             "Note",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::string("note-1"));
+                m.insert("id".into(), Value::string("note-1"));
                 m.insert(
-                    "authorId".to_string(),
+                    "authorId".into(),
                     Value::string("author-1"),
                 );
                 m.into()
@@ -425,7 +425,7 @@ fn test_persist_denied_delete_is_failed_not_executed() {
     // policy must reject this row.
     let viewer = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::string("someone-else"));
+        m.insert("id".into(), Value::string("someone-else"));
         m.into()
     });
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()
@@ -507,7 +507,7 @@ fn test_in_memory_persistence() {
     // Create
     let data = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("name".to_string(), Value::string("John"));
+        m.insert("name".into(), Value::string("John"));
         m.into()
     });
     let created = persistence.create("User", &data).unwrap();
@@ -529,7 +529,7 @@ fn test_in_memory_persistence() {
     // Update
     let update_data = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("name".to_string(), Value::string("Jane"));
+        m.insert("name".into(), Value::string("Jane"));
         m.into()
     });
     let updated = persistence.update("User", id, &update_data).unwrap();
@@ -586,8 +586,8 @@ fn test_fetch_effect_server() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::string("user-1"));
-                m.insert("name".to_string(), Value::string("John"));
+                m.insert("id".into(), Value::string("user-1"));
+                m.insert("name".into(), Value::string("John"));
                 m.into()
             }),
         )
@@ -597,8 +597,8 @@ fn test_fetch_effect_server() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::string("user-2"));
-                m.insert("name".to_string(), Value::string("Jane"));
+                m.insert("id".into(), Value::string("user-2"));
+                m.insert("name".into(), Value::string("Jane"));
                 m.into()
             }),
         )
@@ -643,8 +643,8 @@ fn test_fetch_effect_by_id() {
             "User",
             &Value::Object({
                 let mut m = ValueMap::default();
-                m.insert("id".to_string(), Value::string("user-123"));
-                m.insert("name".to_string(), Value::string("John"));
+                m.insert("id".into(), Value::string("user-123"));
+                m.insert("name".into(), Value::string("John"));
                 m.into()
             }),
         )
@@ -719,14 +719,14 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
             let mut rows = vec![
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::string("r1"));
-                    m.insert("channel".to_string(), Value::string("general"));
+                    m.insert("id".into(), Value::string("r1"));
+                    m.insert("channel".into(), Value::string("general"));
                     m.into()
                 }),
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::string("r2"));
-                    m.insert("channel".to_string(), Value::string("random"));
+                    m.insert("id".into(), Value::string("r2"));
+                    m.insert("channel".into(), Value::string("random"));
                     m.into()
                 }),
             ];
@@ -761,7 +761,7 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
     let issuing_entity = Value::Object({
         let mut m = ValueMap::default();
         m.insert(
-            "activeChannel".to_string(),
+            "activeChannel".into(),
             Value::string("general"),
         );
         m.into()
@@ -817,14 +817,14 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
             let mut rows = vec![
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::string("r1"));
-                    m.insert("ownerId".to_string(), Value::string("user-1"));
+                    m.insert("id".into(), Value::string("r1"));
+                    m.insert("ownerId".into(), Value::string("user-1"));
                     m.into()
                 }),
                 Value::Object({
                     let mut m = ValueMap::default();
-                    m.insert("id".to_string(), Value::string("r2"));
-                    m.insert("ownerId".to_string(), Value::string("user-2"));
+                    m.insert("id".into(), Value::string("r2"));
+                    m.insert("ownerId".into(), Value::string("user-2"));
                     m.into()
                 }),
             ];
@@ -849,7 +849,7 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
 
     let viewer = Value::Object({
         let mut m = ValueMap::default();
-        m.insert("id".to_string(), Value::string("user-1"));
+        m.insert("id".into(), Value::string("user-1"));
         m.into()
     });
     let ctx = orbital_core_eval::evaluator::context::BindingContextBuilder::new()

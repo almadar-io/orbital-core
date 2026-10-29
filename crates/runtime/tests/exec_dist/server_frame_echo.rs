@@ -1,7 +1,6 @@
-// The server role ends a dispatch by bringing each trait's row to its frame as it stands, and echoing every
-// non-empty frame to every trait bound to it: a bound trait that never ran still converges its row. JS twin:
-// the final-row and frame-echo passes of `evaluateOrbitalEvent` (`riya-level-seed-reaches-the-body.test.ts`,
-// `evaluate-shared-frame-final-row.test.ts`).
+// The server role ends a dispatch by sealing the frames it wrote against the session's view record (K5, EXEC-DIST-7):
+// one frame per private trait or `[shared]` entity, a `put` the first time the client is told of it and a `set` per
+// field that changed after.
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse, LifecycleEvent, MountSeed}, orbital_core_base::schema::types::OrbitalSchema};
@@ -57,15 +56,19 @@ fn run(server: &EmbeddedServer, event: &str, target: &str) -> EventResponse {
 }
 
 fn rows(response: &EventResponse) -> Json {
-    serde_json::to_value(response.entity_by_trait.clone().unwrap_or_default()).unwrap()
+    let mut frames = std::collections::BTreeMap::new();
+    if let Some(delta) = &response.frames {
+        delta.fold_into(&mut frames);
+    }
+    serde_json::to_value(frames).unwrap()
 }
 
 #[test]
-fn a_shared_frame_is_echoed_to_every_trait_bound_to_it() {
+fn a_shared_frame_is_one_frame_for_every_trait_bound_to_it() {
     let server = EmbeddedServer::new(schema()).unwrap();
     let rows = rows(&run(&server, "WRITE", "Writer"));
-    assert_eq!(rows["Writer"]["v"], json!("written"));
-    assert_eq!(rows["Sibling"]["v"], json!("written"));
+    assert_eq!(rows["$shared::Doc"]["v"], json!("written"));
+    assert!(rows.get("Writer").is_none() && rows.get("Sibling").is_none(), "{rows}");
 }
 
 #[test]
@@ -80,12 +83,7 @@ fn a_private_frame_stays_with_its_trait_and_its_entitys_other_traits_do_not_see_
 fn control_with_no_frame_written_there_are_no_rows_to_echo() {
     let server = EmbeddedServer::new(schema()).unwrap();
     let response = run(&server, "NOTHING_HANDLES_THIS", "Writer");
-    assert!(
-        response.entity_by_trait.is_none()
-            || rows(&response).as_object().is_some_and(|m| m
-                .values()
-                .all(|r| r.as_object().is_some_and(|o| o.is_empty())))
-    );
+    assert!(response.frames.is_none(), "{:?}", response.frames);
 }
 
 // A dispatch row is the trait's id plus only what its steps wrote in that dispatch; only a mount carries whole rows.
@@ -176,12 +174,12 @@ fn a_counter_only_request_carries_the_counter_and_never_the_held_list() {
 }
 
 #[test]
-fn control_a_request_that_rewrites_the_list_carries_it_and_the_size_shows() {
+fn a_request_that_rewrites_the_list_with_the_value_it_holds_carries_no_list() {
     let server = EmbeddedServer::new(list_schema(true)).unwrap();
     start(&server, mount_of("Holder"));
     let (bytes, all) = bump_rows_bytes(&server, 50);
-    assert!(all.iter().all(|rows| rows["Holder"].get("items").is_some()));
-    assert!(bytes > 50 * 10_000, "{bytes} bytes over 50 requests");
+    assert!(all.iter().all(|rows| rows["Holder"].get("items").is_none()), "the record knows the client holds it");
+    assert!(bytes < 50 * 300, "{bytes} bytes over 50 requests");
 }
 
 #[test]
@@ -227,18 +225,15 @@ fn doc_schema(extra_traits: Vec<Json>) -> OrbitalSchema {
 fn a_shared_frames_written_field_alone_reaches_every_bound_trait() {
     let server = EmbeddedServer::new(doc_schema(vec![])).unwrap();
     let rows = rows(&run(&server, "WRITE_V", "WriterA"));
-    assert_eq!(rows["ReaderB"]["v"], json!("written"), "{rows}");
-    assert!(only_id_and(&rows, "ReaderB", &["v"]), "{rows}");
-    assert!(only_id_and(&rows, "WriterA", &["v"]), "{rows}");
+    assert_eq!(rows["$shared::Doc3"]["v"], json!("written"), "{rows}");
+    assert!(only_id_and(&rows, "$shared::Doc3", &["v"]), "{rows}");
 }
 
 #[test]
 fn control_a_shared_field_no_trait_wrote_is_absent_from_every_row() {
     let server = EmbeddedServer::new(doc_schema(vec![])).unwrap();
     let rows = rows(&run(&server, "WRITE_V", "WriterA"));
-    for trait_name in ["WriterA", "ReaderB"] {
-        assert!(rows[trait_name].get("w").is_none() && rows[trait_name].get("x").is_none(), "{rows}");
-    }
+    assert!(rows["$shared::Doc3"].get("w").is_none() && rows["$shared::Doc3"].get("x").is_none(), "{rows}");
 }
 
 fn cascade_schema(second_writes: Json) -> OrbitalSchema {
@@ -270,19 +265,17 @@ fn cascade_schema(second_writes: Json) -> OrbitalSchema {
 fn cascade_steps_writing_the_same_field_leave_the_last_value() {
     let server = EmbeddedServer::new(cascade_schema(json!([["set", "@entity.v", "two"]]))).unwrap();
     let rows = rows(&run(&server, "GO", "First"));
-    assert_eq!(rows["First"]["v"], json!("two"), "{rows}");
-    assert_eq!(rows["Second"]["v"], json!("two"), "{rows}");
+    assert_eq!(rows["$shared::Doc3"]["v"], json!("two"), "{rows}");
 }
 
 #[test]
 fn cascade_steps_writing_different_fields_leave_both() {
     let server = EmbeddedServer::new(cascade_schema(json!([["set", "@entity.w", "second"]]))).unwrap();
     let rows = rows(&run(&server, "GO", "First"));
-    for trait_name in ["First", "Second"] {
-        assert_eq!(rows[trait_name]["v"], json!("one"), "{rows}");
-        assert_eq!(rows[trait_name]["w"], json!("second"), "{rows}");
-        assert!(rows[trait_name].get("x").is_none(), "{rows}");
-    }
+    let frame = &rows["$shared::Doc3"];
+    assert_eq!(frame["v"], json!("one"), "{rows}");
+    assert_eq!(frame["w"], json!("second"), "{rows}");
+    assert!(frame.get("x").is_none(), "{rows}");
 }
 
 fn quiet_schema() -> OrbitalSchema {
@@ -324,9 +317,7 @@ fn a_request_that_changes_nothing_carries_no_earlier_fields() {
     let server = EmbeddedServer::new(schema()).unwrap();
     run(&server, "WRITE", "Writer");
     let later = rows(&run(&server, "NOTHING_HANDLES_THIS", "Sibling"));
-    for trait_name in ["Sibling", "Writer"] {
-        assert!(later[trait_name].get("v").is_none(), "{later}");
-    }
+    assert!(later.as_object().is_some_and(|frames| frames.is_empty()), "{later}");
 }
 
 fn failing_schema(with_failure: bool) -> OrbitalSchema {
@@ -515,13 +506,13 @@ fn mount_both() -> EventRequest {
 fn a_mount_batch_reports_the_final_shared_row_to_a_trait_that_stepped_before_its_sibling_wrote() {
     let server = EmbeddedServer::new(mount_batch_schema(true)).unwrap();
     let rows = rows(&start(&server, mount_both()));
-    assert_eq!(rows["Early"]["v"], json!("fresh"), "{rows}");
-    assert_eq!(rows["Late"]["v"], json!("fresh"), "{rows}");
+    assert_eq!(rows["$shared::Doc3"]["v"], json!("fresh"), "{rows}");
+    assert!(rows.get("Early").is_none() && rows.get("Late").is_none(), "{rows}");
 }
 
 #[test]
 fn control_a_mount_batch_where_no_sibling_writes_keeps_the_default() {
     let server = EmbeddedServer::new(mount_batch_schema(false)).unwrap();
     let rows = rows(&start(&server, mount_both()));
-    assert_eq!(rows["Early"]["v"], json!(""), "{rows}");
+    assert_eq!(rows["$shared::Doc3"]["v"], json!(""), "{rows}");
 }

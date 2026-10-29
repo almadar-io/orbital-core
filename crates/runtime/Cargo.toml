@@ -65,6 +65,8 @@ native-transport = ["std", "dep:ureq", "ureq/tls"]
 [dev-dependencies]
 tempfile = "3.10"
 ts-rs = "12.0.1"
+syn = { version = "2", features = ["full"] }
+quote = "1"
 orbital-core-base = { path = "../base", features = ["ts-export"] }
 orbital-core-eval = { path = "../eval", features = ["ts-export"] }
 

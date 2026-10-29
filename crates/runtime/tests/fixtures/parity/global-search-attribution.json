@@ -275,11 +275,6 @@
                 "resource": "@entity.typeFilter"
               }
             ],
-            "category": "lifecycle",
-            "capabilities": [
-              "discovery",
-              "search"
-            ],
             "linkedEntity": "SearchQuery",
             "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
             "entityRefIds": {
@@ -1376,7 +1371,6 @@
                 "tier": "presentation"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-global-search",
               "alias": "GlobalSearchAtom",
@@ -1650,8 +1644,7 @@
                   ]
                 }
               ]
-            },
-            "scope": "instance"
+            }
           },
           {
             "name": "Projects",
@@ -1772,8 +1765,7 @@
                   ]
                 }
               ]
-            },
-            "scope": "instance"
+            }
           },
           {
             "name": "InlineTypographyRender3",
@@ -1789,7 +1781,6 @@
                 "resource": "main"
               }
             ],
-            "category": "interaction",
             "linkedEntity": "SearchQuery",
             "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
             "entityRefIds": {
@@ -1999,7 +1990,6 @@
                 ]
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-global-search",
               "alias": "GlobalSearchAtom",
@@ -2159,7 +2149,6 @@
                 "resource": "main"
               }
             ],
-            "category": "interaction",
             "linkedEntity": "SearchQuery",
             "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
             "entityRefIds": {
@@ -2369,7 +2358,6 @@
                 ]
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-global-search",
               "alias": "GlobalSearchAtom",
@@ -2529,7 +2517,6 @@
                 "resource": "main"
               }
             ],
-            "category": "interaction",
             "linkedEntity": "SearchQuery",
             "linkedEntityId": "ent_01M2HF5GMNGVKWFSM4E6WE1SAY",
             "entityRefIds": {
@@ -2597,7 +2584,6 @@
                 "tier": "presentation"
               }
             },
-            "scope": "instance",
             "sourceBehavior": {
               "behavior": "std/behaviors/std-global-search",
               "alias": "GlobalSearchAtom",

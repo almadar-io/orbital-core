@@ -258,7 +258,7 @@ mod tests {
     }
 
     fn sock_reply() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(7.0))]))))
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".into(), Value::Number(7.0))]))))
     }
 
     #[test]
@@ -276,8 +276,8 @@ mod tests {
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(Value::Null))), StreamEvent::Sent);
         assert_eq!(stream.recv(), os(OsOp::Recv, vec![Value::Number(7.0), Value::Number(16384.0)]));
         let reply = Value::object(ValueMap::from_iter([
-            ("data".to_string(), Value::String(("K1BPTkcNCg==".to_string()).into())),
-            ("eof".to_string(), Value::Bool(false)),
+            ("data".into(), Value::String(("K1BPTkcNCg==".to_string()).into())),
+            ("eof".into(), Value::Bool(false)),
         ]));
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(reply))), StreamEvent::Data(b"+PONG\r\n".to_vec()));
         assert_eq!(stream.close(), os(OsOp::Close, vec![Value::Number(7.0)]));
@@ -290,8 +290,8 @@ mod tests {
         stream.resume(sock_reply());
         stream.recv();
         let reply = Value::object(ValueMap::from_iter([
-            ("data".to_string(), Value::String(String::new().into())),
-            ("eof".to_string(), Value::Bool(true)),
+            ("data".into(), Value::String(String::new().into())),
+            ("eof".into(), Value::Bool(true)),
         ]));
         assert_eq!(stream.resume(DriverAnswer::Os(Ok(reply))), StreamEvent::Eof);
     }

@@ -287,11 +287,9 @@ impl ServerBridge for KernelBridge {
             || self.kernel.start_dispatch_mount(seeds, entity_id, payload.clone()),
             || self.kernel.dispatch_mount(seeds, entity_id, payload.clone()),
         )?;
-        Ok(EventResponse::from_process_results(
-            &outcomes,
-            &seeds[0].r#trait,
-            seeds[0].event.as_str(),
-        ))
+        let mut response = EventResponse::from_process_results(&outcomes, &seeds[0].r#trait, seeds[0].event.as_str());
+        self.kernel.seal_outcomes(&mut response, &outcomes, entity_id, true);
+        Ok(response)
     }
 
     fn send_event_with_options(
@@ -312,7 +310,7 @@ impl ServerBridge for KernelBridge {
             || self.kernel.start_dispatch(&trait_name, entity_id, event, payload.clone(), None, None),
             || self.kernel.dispatch(&trait_name, entity_id, event, payload.clone()),
         )?;
-        let response = EventResponse::from_process_results(&outcomes, &trait_name, event);
+        let response = self.kernel.response_for(&outcomes, &trait_name, event);
         tracing::debug!(
             target: orbital_core_base::logging::ns::BRIDGE,
             orbital = %orbital,
@@ -338,7 +336,8 @@ impl ServerBridge for KernelBridge {
             .kernel
             .process_tick(trait_name, entity_id, tick_name)
             .map_err(|e| BridgeError::Server(e.to_string()))?;
-        Ok(EventResponse::from_process_result(trait_name, &result))
+        let outcomes = [(trait_name.to_string(), result)];
+        Ok(self.kernel.response_for(&outcomes, "", ""))
     }
 }
 

@@ -33,6 +33,8 @@ pub const INIT: &str = "@__init";
 pub const OTHER: &str = "@__other";
 /// A value the program reads from a row it fetched.
 pub const FETCHED: &str = "@__fetched";
+/// The row a write to a run-time-chosen entity stores: every declared field free, of its declared sort.
+pub const WRITTEN: &str = "@__written";
 /// The entity of a write whose target is not statically known.
 pub const UNKNOWN_TARGET: &str = "@?";
 /// The head the prover gives a value it cannot model; the evaluator has no such operator, so a counterexample that

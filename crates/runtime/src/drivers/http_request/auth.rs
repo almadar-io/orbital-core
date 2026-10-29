@@ -22,7 +22,7 @@ pub(super) fn parse_token_body(value: Option<&Value>) -> Result<(TokenBodyKind, 
     for (name, field) in fields {
         let at = format!("auth.body.{name}");
         out.push((
-            name.clone(),
+            name.to_string(),
             match field {
                 Value::Object(slot) if slot.contains_key("credential") => {
                     TokenField::Slot(parse_slot_object(slot, &at)?)
@@ -284,19 +284,19 @@ pub(super) fn parse_jwt_bearer(map: &ValueMap) -> Result<TokenExchange, HttpRefu
     let grant = non_empty_text(map, "grant", "auth")?
         .unwrap_or_else(|| "urn:ietf:params:oauth:grant-type:jwt-bearer".to_string());
     let mut form = ValueMap::default();
-    form.insert("grant_type".to_string(), Value::string(grant));
+    form.insert("grant_type".into(), Value::string(grant));
     if let Some(scope) = non_empty_text(map, "scope", "auth")? {
-        form.insert("scope".to_string(), Value::string(scope));
+        form.insert("scope".into(), Value::string(scope));
     }
     let mut body = ValueMap::default();
-    body.insert("form".to_string(), Value::object(form));
+    body.insert("form".into(), Value::object(form));
     let mut exchange = ValueMap::default();
-    exchange.insert("scheme".to_string(), Value::string("token-exchange"));
-    exchange.insert("tokenUrl".to_string(), Value::string(token_url.clone()));
-    exchange.insert("body".to_string(), Value::object(body));
+    exchange.insert("scheme".into(), Value::string("token-exchange"));
+    exchange.insert("tokenUrl".into(), Value::string(token_url.clone()));
+    exchange.insert("body".into(), Value::object(body));
     for name in ["expiresMarginMs", "storeAs", "grantRequest", "onUnauthorized"] {
         if let Some(value) = map.get(name) {
-            exchange.insert(name.to_string(), value.clone());
+            exchange.insert(name.to_string().into(), value.clone());
         }
     }
     let mut ex = parse_token_exchange(&exchange)?;

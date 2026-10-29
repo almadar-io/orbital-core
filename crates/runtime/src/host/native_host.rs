@@ -389,7 +389,7 @@ pub(crate) mod tests {
     }
 
     fn object(pairs: &[(&str, Value)]) -> Value {
-        Value::Object(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect())
+        Value::Object(pairs.iter().map(|(k, v)| (k.to_string().into(), v.clone())).collect())
     }
 
     #[test]
@@ -406,6 +406,60 @@ pub(crate) mod tests {
         let (host, settled) = sinking_host(true);
         assert!(matches!(host.answer(&keyed("program/read", None)), IoAnswer::Substrate(Ok(_))));
         assert!(settled.recv_timeout(std::time::Duration::from_millis(100)).is_err(), "nothing settles later");
+    }
+
+    struct Gated {
+        entered: std::sync::mpsc::Sender<()>,
+        release: orbital_core_base::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl SubstrateHandler for Gated {
+        fn run(&self, op: &str, _: &[Value]) -> Result<Value, SubstrateFailure> {
+            if op == "behavior/dependencies" {
+                self.entered.send(()).unwrap();
+                self.release.lock().recv().unwrap();
+            }
+            Ok(Value::string(op))
+        }
+    }
+
+    fn gated_host() -> (NativeHost, std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<(String, Result<Value, Value>)>) {
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release) = std::sync::mpsc::channel();
+        let (host, settled) = sinking_host(true);
+        let host = host.with_substrate(Some(Arc::new(Gated { entered, release: orbital_core_base::sync::Mutex::new(release) })));
+        (host, entered_rx, release_tx, settled)
+    }
+
+    #[test]
+    fn an_unkeyed_substrate_ask_is_answered_while_a_keyed_dependencies_read_is_in_flight() {
+        let (host, entered, release, settled) = gated_host();
+        assert!(matches!(host.answer(&keyed("behavior/dependencies", Some("deps"))), IoAnswer::ServiceDeferred));
+        entered.recv_timeout(std::time::Duration::from_secs(2)).expect("the keyed read is in flight");
+        for op in ["behavior/source", "behavior/resolve", "behavior/describe", "program/validate"] {
+            match host.answer(&keyed(op, None)) {
+                IoAnswer::Substrate(Ok(Value::String(answer))) => assert_eq!(answer, op),
+                other => panic!("{op} was not answered while the keyed read was in flight: {other:?}"),
+            }
+        }
+        assert!(settled.recv_timeout(std::time::Duration::from_millis(100)).is_err(), "the keyed read is still in flight");
+        release.send(()).unwrap();
+        let (key, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the keyed read settles");
+        assert_eq!(key, "deps");
+        assert_eq!(outcome, Ok(object(&[("result", Value::string("behavior/dependencies"))])));
+    }
+
+    #[test]
+    fn control_two_keyed_substrate_asks_in_flight_both_settle() {
+        let (host, entered, release, settled) = gated_host();
+        assert!(matches!(host.answer(&keyed("behavior/dependencies", Some("deps"))), IoAnswer::ServiceDeferred));
+        entered.recv_timeout(std::time::Duration::from_secs(2)).expect("the keyed read is in flight");
+        assert!(matches!(host.answer(&keyed("behavior/source", Some("src"))), IoAnswer::ServiceDeferred));
+        let (key, _) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the second settles");
+        assert_eq!(key, "src");
+        release.send(()).unwrap();
+        let (key, _) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the first settles");
+        assert_eq!(key, "deps");
     }
 
     #[test]

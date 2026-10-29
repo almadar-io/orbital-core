@@ -4,7 +4,7 @@ use orbital_core_base::value::ValueMap;
 fn obj(pairs: &[(&str, Value)]) -> Value {
     let mut m = ValueMap::default();
     for (k, v) in pairs {
-        m.insert((*k).to_string(), v.clone());
+        m.insert((*k).to_string().into(), v.clone());
     }
     Value::object(m)
 }
@@ -141,7 +141,7 @@ fn list_keeps_insertion_order_through_update_and_delete() {
     let ids = ["e", "a", "d", "b", "c", "f", "h", "g"];
     for id in ids {
         let mut row = ValueMap::default();
-        row.insert("id".to_string(), Value::string(id.to_string()));
+        row.insert("id".into(), Value::string(id.to_string()));
         cache.create("Item", &Value::object(row)).unwrap();
     }
     let listed = |cache: &InMemoryEntityCache| -> Vec<String> {
@@ -155,7 +155,7 @@ fn list_keeps_insertion_order_through_update_and_delete() {
     assert_eq!(listed(&cache), ids);
 
     let mut patch = ValueMap::default();
-    patch.insert("n".to_string(), Value::Number(1.0));
+    patch.insert("n".into(), Value::Number(1.0));
     cache.write("Item", "d", &Value::object(patch)).unwrap();
     cache.delete("Item", "b").unwrap();
     assert_eq!(listed(&cache), ["e", "a", "d", "c", "f", "h", "g"]);
@@ -235,4 +235,93 @@ fn entity_types_names_each_store_once() {
     let mut types = cache.entity_types();
     types.sort();
     assert_eq!(types, ["Note", "deals"]);
+}
+
+/// G-ORBITAL-CORE-070: rows a store keeps share one allocation per field name (R3, interned `ValueMap` keys).
+#[test]
+fn rows_a_store_keeps_share_their_field_names() {
+    let cache = InMemoryEntityCache::new();
+    for id in ["a", "b", "c"] {
+        cache
+            .create("Deal", &obj(&[("id", Value::string(id)), ("owner", Value::string("u1"))]))
+            .expect("create");
+    }
+    let rows = cache.list("Deal").expect("list");
+    let key_of = |row: &Arc<Value>, name: &str| {
+        row.as_object().unwrap().get_key_value(name).map(|(k, _)| k.clone()).unwrap()
+    };
+    for name in ["id", "owner"] {
+        let first = key_of(&rows[0], name);
+        for row in &rows[1..] {
+            assert!(
+                orbital_core_base::value::Shared::ptr_eq(&first, &key_of(row, name)),
+                "`{name}` is one allocation across the rows"
+            );
+        }
+    }
+}
+
+/// Control: names that differ are not merged, and the same text in another entity's rows is the same name.
+#[test]
+fn control_distinct_field_names_stay_distinct_and_equal_ones_are_shared_across_entities() {
+    let cache = InMemoryEntityCache::new();
+    cache.create("Deal", &obj(&[("id", Value::string("a")), ("owner", Value::string("u1"))])).unwrap();
+    cache.create("Task", &obj(&[("id", Value::string("t")), ("title", Value::string("x"))])).unwrap();
+    let deal = cache.list("Deal").unwrap().remove(0);
+    let task = cache.list("Task").unwrap().remove(0);
+    let deal_fields = deal.as_object().unwrap();
+    let task_fields = task.as_object().unwrap();
+    let (id_a, _) = deal_fields.get_key_value("id").unwrap();
+    let (id_b, _) = task_fields.get_key_value("id").unwrap();
+    assert!(orbital_core_base::value::Shared::ptr_eq(id_a, id_b));
+    assert!(deal_fields.contains_key("owner") && !deal_fields.contains_key("title"));
+    assert_eq!(deal_fields.len(), 2);
+    assert_eq!(task_fields.len(), 2);
+}
+
+fn key_ptr(row: &Value, name: &str) -> orbital_core_base::value::Shared<String> {
+    row.as_object().unwrap().get_key_value(name).map(|(k, _)| k.clone()).unwrap()
+}
+
+/// R3: the batch path of a store shares field names with the rows the store already keeps.
+#[test]
+fn rows_written_by_a_batch_share_field_names_with_the_stores_other_rows() {
+    let cache = InMemoryEntityCache::new();
+    cache.create("Deal", &obj(&[("id", Value::string("a")), ("owner", Value::string("u1"))])).unwrap();
+    let batch: RowWriteBatch = serde_json::from_value(serde_json::json!({
+        "ops": [{"kind": "create", "entityType": "Deal", "data": {"id": "b", "owner": "u2"}}],
+        "onFailure": "stop"
+    }))
+    .unwrap();
+    assert!(cache.write_batch(&batch).is_some());
+    let rows = cache.list("Deal").unwrap();
+    assert_eq!(rows.len(), 2);
+    for name in ["id", "owner"] {
+        assert!(orbital_core_base::value::Shared::ptr_eq(&key_ptr(&rows[0], name), &key_ptr(&rows[1], name)), "`{name}`");
+    }
+}
+
+/// The batch helper the host-answered store uses: one vocabulary shares names across tables; a fresh one does not.
+#[test]
+fn apply_write_batch_across_shares_names_through_the_vocabulary_it_is_given() {
+    use orbital_core_base::intern::KeyVocabulary;
+    let make = || -> RowWriteBatch {
+        serde_json::from_value(serde_json::json!({
+            "ops": [
+                {"kind": "create", "entityType": "A", "data": {"id": "1", "title": "x"}},
+                {"kind": "create", "entityType": "B", "data": {"id": "2", "title": "y"}}
+            ],
+            "onFailure": "stop"
+        }))
+        .unwrap()
+    };
+    let run = |vocab: &mut KeyVocabulary| {
+        let mut tables: HashMap<String, RowTable> = HashMap::new();
+        super::super::row_query::apply_write_batch_across(&mut tables, &make(), &mut |_| CreateIds::Strict, vocab);
+        (tables["A"]["1"].clone(), tables["B"]["2"].clone())
+    };
+    let (a, b) = run(&mut KeyVocabulary::default());
+    assert!(orbital_core_base::value::Shared::ptr_eq(&key_ptr(&a, "title"), &key_ptr(&b, "title")));
+    let (a2, _) = run(&mut KeyVocabulary::default());
+    assert!(!orbital_core_base::value::Shared::ptr_eq(&key_ptr(&a, "title"), &key_ptr(&a2, "title")), "control: separate vocabularies do not share");
 }

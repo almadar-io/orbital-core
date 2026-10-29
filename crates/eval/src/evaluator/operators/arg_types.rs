@@ -173,7 +173,8 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::FieldRef { .. } => "string".to_string(),
         OirType::Struct { .. } | OirType::File => "object".to_string(),
         OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
-        OirType::TypeRef { name } | OirType::Enum { name } | OirType::Var { name } => name.clone(),
+        OirType::TypeRef { name } | OirType::Enum { name } => name.clone(),
+        OirType::Var { name } => name.to_string(),
         OirType::Integer | OirType::Money => "number".to_string(),
         other => serde_json::to_value(other)
             .ok()
@@ -328,7 +329,6 @@ fn first_misfit(
     };
     match ty {
         OirType::SExpr
-        | OirType::Json
         | OirType::Node
         | OirType::Trait
         | OirType::Orbital
@@ -610,7 +610,7 @@ mod tests {
             "nested JSON data fits"
         );
         let mut fields = ValueMap::new();
-        fields.insert("f".to_string(), Value::array(vec![num(1.0), lambda()]));
+        fields.insert("f".into(), Value::array(vec![num(1.0), lambda()]));
         let bad = Value::object(fields);
         assert_eq!(
             misfit_of_declared(&bad, &v(), &named),

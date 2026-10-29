@@ -187,20 +187,20 @@ impl RuntimeKernel {
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
                     let mut row = ValueMap::default();
-                    row.insert("trait".to_string(), Value::string(trait_name.clone()));
+                    row.insert("trait".into(), Value::string(trait_name.clone()));
                     row.insert(
-                        "entityId".to_string(),
+                        "entityId".into(),
                         Value::string(entity_id.map_or_else(|| "singleton".to_string(), |id| crate::process_result::public_entity_id(&id).to_string())),
                     );
-                    row.insert("state".to_string(), Value::string(state));
-                    row.insert("entity".to_string(), snapshot.entity);
+                    row.insert("state".into(), Value::string(state));
+                    row.insert("entity".into(), snapshot.entity);
                     traits.push(Value::object(row));
                 }
             }
             let mut state = ValueMap::default();
-            state.insert("orbital".to_string(), Value::string(detail.name));
-            state.insert("traits".to_string(), Value::array(traits));
-            answer.insert("state".to_string(), Value::object(state));
+            state.insert("orbital".into(), Value::string(detail.name));
+            state.insert("traits".into(), Value::array(traits));
+            answer.insert("state".into(), Value::object(state));
         }
         if reads.stats {
             let stats = self.stats();
@@ -211,13 +211,13 @@ impl RuntimeKernel {
                 ("activeInstances", stats.active_instances),
                 ("cachedEntities", stats.cached_entities),
             ] {
-                counters.insert(name.to_string(), Value::Number(count as f64));
+                counters.insert(name.to_string().into(), Value::Number(count as f64));
             }
-            answer.insert("stats".to_string(), Value::object(counters));
+            answer.insert("stats".into(), Value::object(counters));
         }
         if let Some(steps) = reads.trace {
             let mut ask = ValueMap::default();
-            ask.insert("trace".to_string(), Value::Number(steps as f64));
+            ask.insert("trace".into(), Value::Number(steps as f64));
             let trace = self
                 .io
                 .run("program/inputs", &[Value::object(ask)])
@@ -225,7 +225,7 @@ impl RuntimeKernel {
                     error: failure.message,
                     errors: failure.errors,
                 })?;
-            answer.insert("trace".to_string(), trace);
+            answer.insert("trace".into(), trace);
         }
         Ok(Value::Object(answer))
     }
@@ -313,9 +313,9 @@ impl RuntimeKernel {
             }
             DispatchPlan::Inbound { name, body, headers } => {
                 let mut ask = ValueMap::default();
-                ask.insert("inbound".to_string(), Value::string(name));
-                ask.insert("body".to_string(), Value::string(body));
-                ask.insert("headers".to_string(), Value::object(headers));
+                ask.insert("inbound".into(), Value::string(name));
+                ask.insert("body".into(), Value::string(body));
+                ask.insert("headers".into(), Value::object(headers));
                 vec![Value::object(ask)]
             }
         };

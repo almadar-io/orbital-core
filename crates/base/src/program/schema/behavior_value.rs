@@ -122,8 +122,8 @@ impl TraitValueRef {
     /// The wire object `{"behavior", "trait"}`.
     pub fn to_value(&self) -> Value {
         Value::object(ValueMap::from_iter([
-            ("behavior".to_string(), Value::String(self.behavior.clone().into())),
-            ("trait".to_string(), Value::String(self.trait_name.clone().into())),
+            ("behavior".into(), Value::String(self.behavior.clone().into())),
+            ("trait".into(), Value::String(self.trait_name.clone().into())),
         ]))
     }
 
@@ -159,10 +159,10 @@ fn merge_object_key(out: &mut ValueMap, key: &str, new: &Value) {
         (Value::Object(new), Some(Value::Object(old))) => {
             let mut merged = old.clone();
             merged.extend(new.iter().map(|(k, v)| (k.clone(), v.clone())));
-            out.insert(key.to_string(), Value::Object(merged));
+            out.insert(key.to_string().into(), Value::Object(merged));
         }
         _ => {
-            out.insert(key.to_string(), new.clone());
+            out.insert(key.to_string().into(), new.clone());
         }
     }
 }
@@ -185,7 +185,7 @@ fn merge_trait_overrides(base: &ValueMap, over: &ValueMap) -> Option<ValueMap> {
     }
     for key in REPLACE_KEYS {
         if let Some(new) = over.get(key) {
-            out.insert(key.to_string(), new.clone());
+            out.insert(key.to_string().into(), new.clone());
         }
     }
     Some(out)
@@ -266,14 +266,14 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
                 return None;
             };
             out.insert(
-                key.to_string(),
+                key.to_string().into(),
                 Value::array(merge_fields_by_name(base.get(key), next)),
             );
         }
     }
     for key in ORBITAL_REPLACE_KEYS {
         if let Some(new) = over.get(key) {
-            out.insert(key.to_string(), new.clone());
+            out.insert(key.to_string().into(), new.clone());
         }
     }
     if let Some(new) = over.get("traits") {
@@ -297,7 +297,7 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
                 Value::object(merge_trait_overrides(&prior, entry)?),
             );
         }
-        out.insert("traits".to_string(), Value::Object(traits));
+        out.insert("traits".into(), Value::Object(traits));
     }
     Some(Value::Object(out))
 }
@@ -343,8 +343,8 @@ impl OrbitalValueRef {
     /// The wire object `{"behavior", "orbital"}`.
     pub fn to_value(&self) -> Value {
         Value::object(ValueMap::from_iter([
-            ("behavior".to_string(), Value::String(self.behavior.clone().into())),
-            ("orbital".to_string(), Value::String(self.orbital.clone().into())),
+            ("behavior".into(), Value::String(self.behavior.clone().into())),
+            ("orbital".into(), Value::String(self.orbital.clone().into())),
         ]))
     }
 
@@ -456,7 +456,7 @@ pub fn orbital_import_from_value(value: &serde_json::Value) -> Result<serde_json
         })
         .collect();
     let mut reference = Map::new();
-    reference.insert("ref".to_string(), J::String(reference_ref.clone()));
+    reference.insert("ref".into(), J::String(reference_ref.clone()));
     for (k, v) in o {
         if !matches!(
             k.as_str(),
@@ -466,7 +466,7 @@ pub fn orbital_import_from_value(value: &serde_json::Value) -> Result<serde_json
         }
     }
     if let Some(config) = o.get("config") {
-        reference.insert("config".to_string(), json_config_declarations(config));
+        reference.insert("config".into(), json_config_declarations(config));
     }
     if let Some(trait_overrides) = o.get("traits").and_then(J::as_object) {
         let overrides: Map<String, J> = trait_overrides
@@ -480,12 +480,12 @@ pub fn orbital_import_from_value(value: &serde_json::Value) -> Result<serde_json
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 if let Some(config) = over.get("config") {
-                    next.insert("config".to_string(), json_config_declarations(config));
+                    next.insert("config".into(), json_config_declarations(config));
                 }
                 (name.clone(), J::Object(next))
             })
             .collect();
-        reference.insert("traits".to_string(), J::Object(overrides));
+        reference.insert("traits".into(), J::Object(overrides));
     }
     Ok(json!({
         "name": o.get("name").and_then(J::as_str).unwrap_or(orbital),
@@ -544,7 +544,7 @@ pub fn is_orbital_value(value: &Value) -> bool {
 pub fn behavior_ref(specifier: &str) -> Option<Value> {
     is_behavior_specifier(specifier).then(|| {
         Value::object(ValueMap::from_iter([(
-            "behavior".to_string(),
+            "behavior".into(),
             Value::String(specifier.to_string().into()),
         )]))
     })
@@ -588,8 +588,8 @@ pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<
         return None;
     }
     Some(Value::object(ValueMap::from_iter([
-        ("behavior".to_string(), value_map.get("behavior")?.clone()),
-        ("bridge".to_string(), bridge.clone()),
+        ("behavior".into(), value_map.get("behavior")?.clone()),
+        ("bridge".into(), bridge.clone()),
     ])))
 }
 

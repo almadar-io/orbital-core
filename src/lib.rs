@@ -193,6 +193,9 @@ pub mod runtime {
     pub use orbital_core_runtime::kernel::TickEmit;
     pub use orbital_core_runtime::kernel::TraitSnapshot;
     pub use orbital_core_runtime::kernel::CROSS_TRAIT_CASCADE_CAP;
+    pub use orbital_core_runtime::kernel::lazy::LazyObserver;
+    pub use orbital_core_runtime::kernel::lazy::LazyProgram;
+    pub use orbital_core_runtime::kernel::lazy::LazySource;
     pub use orbital_core_runtime::listener::ListenerInfo;
     pub use orbital_core_runtime::listener::ListenerManager;
     pub use orbital_core_runtime::listener::TriggerCallback;
@@ -275,7 +278,7 @@ pub use orbital_core_base::generate::GeneratedFile;
 pub use orbital_core_base::generate::GeneratedOutput;
 pub use orbital_core_base::generate::ShellMode;
 pub use orbital_core_base::generate::UNSUPPORTED_OPERATOR_MARKER;
-pub use orbital_core_base::ir::types::field_shape;
+pub use orbital_core_base::ir::types::{field_shape, ShapeError, ShapeGap};
 pub use orbital_core_base::schema::*;
 pub use orbital_core_base::shell::Shell;
 pub use orbital_core_base::shell::ShellConfig;

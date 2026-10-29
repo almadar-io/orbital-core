@@ -257,6 +257,7 @@ pub enum Persistence {
 
 /// Field definition within an entity
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FieldDefinition {
     /// `field R T`: the record `R` as a type string (`@entity`, `@entity(<knob>)`, `@payload(<knob>)`, an entity or
     /// alias name, `$r`). A record alias carries its shape in `properties`. On an `object` with no `properties`, the
@@ -805,6 +806,10 @@ pub struct RelationDefinition {
     /// Delete behavior of the referencing rows
     #[serde(rename = "onDelete", default, skip_serializing_if = "Option::is_none")]
     pub on_delete: Option<OnDelete>,
+
+    /// The target field a related record is shown by (`@display <field>`); the record id when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<String>,
 }
 
 impl RelationDefinition {

@@ -397,7 +397,7 @@ fn client_env_runtime_optimistic_snapshot_and_restore() {
 fn render_ui_runs_locally_in_client_env() {
     let (kernel, _collector) = client_kernel_with(render_ui_schema());
     let mut payload = ValueMap::default();
-    payload.insert("title".to_string(), Value::string("Hello"));
+    payload.insert("title".into(), Value::string("Hello"));
     let outcomes = kernel
         .dispatch("RenderTrait", None, "SHOW", Value::object(payload))
         .unwrap();
@@ -756,19 +756,18 @@ fn edge_a_program_without_locales_accepts_any_viewer_locale() {
 fn apply_server_response_merges_data_and_states() {
     let kernel = server_kernel_with(server_response_schema());
     let mut row = ValueMap::default();
-    row.insert("id".to_string(), Value::string("n-1"));
+    row.insert("id".into(), Value::string("n-1"));
     row.insert(
-        "title".to_string(),
+        "title".into(),
         Value::string("From server"),
     );
     let mut data = HashMap::new();
     data.insert("Note".to_string(), vec![Value::object(row)]);
 
-    let mut entity_by_trait = ValueMap::default();
     let mut listener_entity = ValueMap::default();
-    listener_entity.insert("id".to_string(), Value::string("singleton"));
-    listener_entity.insert("note".to_string(), Value::string("n-1"));
-    entity_by_trait.insert("Listener".to_string(), Value::object(listener_entity));
+    listener_entity.insert("id".into(), Value::string("singleton"));
+    listener_entity.insert("note".into(), Value::string("n-1"));
+    let frames = crate::effects::FrameDelta::absolute([("Listener".to_string(), listener_entity)]);
 
     let mut states = HashMap::new();
     states.insert("Listener".to_string(), "ponged".to_string());
@@ -779,7 +778,7 @@ fn apply_server_response_merges_data_and_states() {
         states,
         emitted_events: Vec::new(),
         data: Some(data),
-        entity_by_trait: Some(entity_by_trait),
+        frames: Some(frames),
         ..Default::default()
     };
 
@@ -1026,7 +1025,7 @@ fn client_env_local_seed_posts_its_cascade_server_work() {
             "Composer",
             None,
             "DRAFT",
-            Value::object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
+            Value::object(ValueMap::from_iter([("value".into(), Value::from("hi"))])),
             None,
         )
         .unwrap();
@@ -1337,7 +1336,7 @@ fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
             "Composer",
             None,
             "DRAFT",
-            Value::object(ValueMap::from_iter([("value".to_string(), Value::from("hi"))])),
+            Value::object(ValueMap::from_iter([("value".into(), Value::from("hi"))])),
             None,
         )
         .unwrap();
@@ -1393,9 +1392,8 @@ fn a_server_row_that_contradicts_its_entity_refuses_the_whole_fold() {
 #[test]
 fn a_mistyped_trait_frame_refuses_the_fold() {
     let (kernel, _) = client_kernel_with(counted_note_schema());
-    let mut entity_by_trait = ValueMap::default();
-    entity_by_trait.insert("Notes".to_string(), serde_json::from_value(serde_json::json!({ "count": [] })).unwrap());
-    let response = EventResponse { success: true, entity_by_trait: Some(entity_by_trait), ..Default::default() };
+    let frames = crate::effects::FrameDelta::absolute([("Notes".to_string(), serde_json::from_value(serde_json::json!({ "count": [] })).unwrap())]);
+    let response = EventResponse { success: true, frames: Some(frames), ..Default::default() };
     assert!(kernel.apply_server_response(&response, &HashSet::new()).is_err());
 }
 

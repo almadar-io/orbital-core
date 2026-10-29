@@ -180,9 +180,9 @@ pub trait TargetTypeRenderer {
         match items_ty.first() {
             Some(first) if items_ty.iter().all(|t| t == first) => match items.into_iter().next() {
                 Some(out) => self.array(first, out),
-                None => self.array(&OirType::Json, self.json()),
+                None => self.array(&OirType::SExpr, self.json()),
             },
-            _ => self.array(&OirType::Json, self.json()),
+            _ => self.array(&OirType::SExpr, self.json()),
         }
     }
     fn map(
@@ -356,9 +356,9 @@ pub trait TargetTypeRenderer {
         match items_ty.first() {
             Some(first) if items_ty.iter().all(|t| t == first) => match items.into_iter().next() {
                 Some(cls) => self.classify_array(first, cls),
-                None => self.classify_array(&OirType::Json, self.classify_json()),
+                None => self.classify_array(&OirType::SExpr, self.classify_json()),
             },
-            _ => self.classify_array(&OirType::Json, self.classify_json()),
+            _ => self.classify_array(&OirType::SExpr, self.classify_json()),
         }
     }
     /// Class of [`TargetTypeRenderer::map`]. `key`/`value` are the children's
@@ -413,7 +413,6 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
         OirType::CallKey | OirType::FieldRef { .. } => r.string(enum_values),
         OirType::Money => r.money(),
         OirType::File => r.file(),
-        OirType::Json => r.json(),
         OirType::Node => r.node(),
         OirType::Reference { entity } => r.reference(entity),
         OirType::Row { entity } => r.row(entity),
@@ -478,7 +477,6 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
         OirType::CallKey | OirType::FieldRef { .. } => r.classify_string(enum_values),
         OirType::Money => r.classify_money(),
         OirType::File => r.classify_file(),
-        OirType::Json => r.classify_json(),
         OirType::Node => r.classify_node(),
         OirType::Reference { entity } => r.classify_reference(entity),
         OirType::Row { entity } => r.classify_row(entity),
@@ -815,7 +813,6 @@ mod tests {
         assert_eq!(tag(&OirType::Date), "date");
         // DateTime defaults to Date via the provided method.
         assert_eq!(tag(&OirType::DateTime), "date");
-        assert_eq!(tag(&OirType::Json), "json");
         assert_eq!(tag(&OirType::reference("User")), "ref(User)");
         assert_eq!(tag(&OirType::enum_type("Status")), "enum(Status)");
         assert_eq!(tag(&OirType::Trait), "trait");
@@ -896,7 +893,7 @@ mod tests {
             additional: Some(Box::new(OirType::array(OirType::String))),
         };
         assert_eq!(tag(&open), "struct<id:string,*:array<string>>");
-        let lossy = OirType::Struct { fields: crate::ir::types::no_fields(), additional: Some(Box::new(OirType::array(OirType::Json))) };
+        let lossy = OirType::Struct { fields: crate::ir::types::no_fields(), additional: Some(Box::new(OirType::Tuple { items: vec![OirType::String, OirType::Number] })) };
         assert_eq!(classify_type(&TagRenderer, &lossy, None), TypeMappingClass::Lossy);
         let closed = OirType::Struct { fields: crate::ir::types::no_fields(), additional: None };
         assert_eq!(tag(&closed), "struct<>");

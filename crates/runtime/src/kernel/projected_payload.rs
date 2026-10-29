@@ -35,7 +35,7 @@ pub fn projected_payload<'a>(
         } else {
             value
         };
-        out.insert(field.name.clone(), value);
+        out.insert(field.name.clone().into(), value);
     }
     out
 }
@@ -61,7 +61,7 @@ pub fn projected_through_mapping<'a>(
             continue;
         }
         if let Some(value) = projected.get(target_field.as_str()) {
-            out.insert(source_field.to_string(), value.clone());
+            out.insert(source_field.to_string().into(), value.clone());
         }
     }
     out

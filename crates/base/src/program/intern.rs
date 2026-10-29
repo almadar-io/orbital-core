@@ -311,3 +311,49 @@ pub fn value_record(fields: ValueMap) -> Value {
         _ => Value::object(fields),
     })
 }
+
+/// The field names a store has met: a row it keeps shares one allocation per name with every other row, so a
+/// stored row costs its values, not a copy of each field name.
+#[derive(Debug, Default)]
+pub struct KeyVocabulary {
+    held: HashSet<Shared<String>>,
+}
+
+impl KeyVocabulary {
+    /// The held copy of `key`, taking `key` itself when its text is new.
+    pub fn key(&mut self, key: &Shared<String>) -> Shared<String> {
+        match self.held.get(key.as_str()) {
+            Some(held) => held.clone(),
+            None => {
+                self.held.insert(key.clone());
+                key.clone()
+            }
+        }
+    }
+
+    /// `row` with each top-level field name replaced by the held copy; a row whose names are all held already is
+    /// returned as it is.
+    pub fn row(&mut self, row: Value) -> Value {
+        let Value::Object(fields) = row else {
+            return row;
+        };
+        let canonical: Vec<Shared<String>> = fields.keys().map(|k| self.key(k)).collect();
+        if fields.keys().zip(&canonical).all(|(k, c)| Shared::ptr_eq(k, c)) {
+            return Value::Object(fields);
+        }
+        let mut shared = ValueMap::with_capacity_and_hasher(fields.len(), Default::default());
+        for (key, (_, value)) in canonical.into_iter().zip(fields.into_inner()) {
+            shared.insert(key, value);
+        }
+        Value::object(shared)
+    }
+
+    /// How many distinct names are held.
+    pub fn len(&self) -> usize {
+        self.held.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.held.is_empty()
+    }
+}

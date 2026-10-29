@@ -81,7 +81,7 @@ impl TraitState {
 
     /// Set a data value
     pub fn set_data(&mut self, key: &str, value: Value) {
-        self.data.insert(key.to_string(), value);
+        self.data.insert(key.to_string().into(), value);
     }
 }
 

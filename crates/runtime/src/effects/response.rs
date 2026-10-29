@@ -24,7 +24,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     let mut src: ValueMap = ValueMap::default();
     let mut put_str = |key: &str, v: &Option<String>| {
         if let Some(v) = v {
-            src.insert(key.to_string(), Value::string(v.clone()));
+            src.insert(key.to_string().into(), Value::string(v.clone()));
         }
     };
     put_str("orbital", &source.orbital);
@@ -36,15 +36,15 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     put_str("tick", &source.tick);
     put_str("originClientId", &source.origin_client_id);
     if let Some(v) = source.from_bridge {
-        src.insert("fromBridge".to_string(), Value::Bool(v));
+        src.insert("fromBridge".into(), Value::Bool(v));
     }
     if let Some(v) = source.dispatched {
-        src.insert("dispatched".to_string(), Value::Bool(v));
+        src.insert("dispatched".into(), Value::Bool(v));
     }
     let mut record = ValueMap::default();
-    record.insert("event".to_string(), Value::string(event.to_string()));
-    record.insert("payload".to_string(), payload.clone());
-    record.insert("source".to_string(), Value::object(src));
+    record.insert("event".into(), Value::string(event.to_string()));
+    record.insert("payload".into(), payload.clone());
+    record.insert("source".into(), Value::object(src));
     Value::object(record)
 }
 
@@ -228,11 +228,15 @@ pub struct EventRequest {
     /// Where this leg runs, set by the kernel on every leg it builds (EXEC-DIST-6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residence: Option<LegResidence>,
+    /// Not a dispatch: the client holds this version of the session's frames and asks what it is missing. The answer
+    /// is a response carrying only `frames`, a snapshot unless the client is current (EXEC-DIST-7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frames_since: Option<u64>,
 }
 
 /// The option keys of a `program/dispatch` event request that become request fields as they are named.
-const DISPATCH_REQUEST_KEYS: [&str; 9] =
-    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "entityByTrait"];
+const DISPATCH_REQUEST_KEYS: [&str; 10] =
+    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "entityByTrait", "framesSince"];
 
 /// An empty text, record or list in an event request is absent, as the HTTP routes read it.
 fn dispatch_option_present(value: &serde_json::Value) -> bool {
@@ -389,9 +393,9 @@ pub struct EventResponse {
     /// Fetched pages delivered by reference (`deliver: ids`), keyed by entity name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_refs: Option<HashMap<String, orbital_core_base::row_set::RowSetRef>>,
+    /// What this response changes in the frames the client holds, against the kernel's view record (EXEC-DIST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
-    pub entity_by_trait: Option<ValueMap>,
+    pub frames: Option<crate::effects::frame_delta::FrameDelta>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_effects_by_trait: Option<Vec<ClientEffectByTrait>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -744,7 +748,8 @@ impl EventResponse {
     /// downstream of the seed are tolerated no-ops, exactly like the JS runtime's embed
     /// bubble; only the seed's own rejection is reported to the caller).
     ///
-    /// Each trait's row is its `id` plus only the fields its steps wrote in this dispatch (EXEC-DIST-7).
+    /// The frames a dispatch wrote are not in the response until the kernel seals them against its view record
+    /// ([`RuntimeKernel::seal_outcomes`](crate::kernel::RuntimeKernel::seal_outcomes), EXEC-DIST-7).
     pub fn from_process_results(
         outcomes: &[(String, crate::process_result::ProcessEventResult)],
         seed_trait: &str,
@@ -754,22 +759,6 @@ impl EventResponse {
             outcomes.iter().map(|(t, r)| (t.as_str(), r)),
             seed_trait,
             event_name,
-            false,
-        )
-    }
-
-    /// [`from_process_results`](Self::from_process_results) for a `request.mount` dispatch: each row is the trait's whole
-    /// effective entity, which seeds the viewer's frame.
-    pub fn from_process_results_mount(
-        outcomes: &[(String, crate::process_result::ProcessEventResult)],
-        seed_trait: &str,
-        event_name: &str,
-    ) -> Self {
-        Self::fold_outcomes(
-            outcomes.iter().map(|(t, r)| (t.as_str(), r)),
-            seed_trait,
-            event_name,
-            true,
         )
     }
 
@@ -777,7 +766,6 @@ impl EventResponse {
         outcomes: impl Iterator<Item = (&'a str, &'a crate::process_result::ProcessEventResult)>,
         seed_trait: &str,
         event_name: &str,
-        whole_rows: bool,
     ) -> Self {
         let mut merged = EventResponse {
             success: true,
@@ -785,7 +773,6 @@ impl EventResponse {
         };
         let mut data: HashMap<String, Vec<Value>> = HashMap::new();
         let mut data_refs: HashMap<String, orbital_core_base::row_set::RowSetRef> = HashMap::new();
-        let mut entity_by_trait: ValueMap = ValueMap::default();
         let mut client_effects_by_trait: Vec<ClientEffectByTrait> = Vec::new();
         let mut effect_results: Vec<ServerEffectResult> = Vec::new();
         let mut emitted_events: Vec<EmittedEvent> = Vec::new();
@@ -821,25 +808,6 @@ impl EventResponse {
                 merged
                     .guard_failed
                     .get_or_insert_with(|| format!("{seed_trait}.{event_name}"));
-            }
-
-            if whole_rows {
-                let is_empty_obj = result.entity_data.fields().is_some_and(|o| o.is_empty());
-                if !result.entity_data.is_null() && !is_empty_obj {
-                    entity_by_trait.insert(trait_name.to_string(), result.entity_data.to_value());
-                }
-            } else if result.executed {
-                if !entity_by_trait.contains_key(trait_name) {
-                    let mut fields = ValueMap::default();
-                    fields.reserve(result.written_values().count() + 1);
-                    entity_by_trait.insert(trait_name.to_string(), Value::object(fields));
-                }
-                if let Some(Value::Object(fields)) = entity_by_trait.get_mut(trait_name) {
-                    fields.extend(result.written_values().map(|(k, v)| (k.clone(), v.clone())));
-                    if let Some(id) = result.entity_data.get("id").filter(|id| !id.is_null()) {
-                        fields.insert("id".to_string(), id.clone());
-                    }
-                }
             }
 
             for (index, er) in result.effect_results.iter().enumerate() {
@@ -918,11 +886,6 @@ impl EventResponse {
         } else {
             Some(data_refs)
         };
-        merged.entity_by_trait = if entity_by_trait.is_empty() {
-            None
-        } else {
-            Some(entity_by_trait)
-        };
         merged.client_effects_by_trait = if client_effects_by_trait.is_empty() {
             None
         } else {
@@ -962,7 +925,7 @@ impl EventResponse {
     ) -> Self {
         // No seed/event context on the single-result path — pass a seed that can never
         // match so `guard_failed` stays unset (ticks don't dispatch a named event).
-        Self::fold_outcomes(std::iter::once((trait_name, result)), "", "", false)
+        Self::fold_outcomes(std::iter::once((trait_name, result)), "", "")
     }
 }
 

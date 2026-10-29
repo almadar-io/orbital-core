@@ -4,12 +4,11 @@ use super::*;
 
 /// The legacy kind-string vocabulary, parsed into the relation's input space.
 /// Markers exist for vocabulary the erased-kind alphabet carries but `OirType`
-/// has no variant for (`any`, `entity`/`relation`, raw `int`/`float`/`null`/
+/// has no variant for (`entity`/`relation`, raw `int`/`float`/`null`/
 /// `timestamp`, PascalCase named types, raw `Map<...>` tags).
 #[derive(Debug, Clone, PartialEq)]
 pub enum CompatType {
     Ty(OirType),
-    Any,
     Entity,
     Named(String),
     MapTag,
@@ -24,9 +23,9 @@ pub enum CompatType {
 
 impl CompatType {
     /// A representative `OirType` for witness purposes when the parsed side
-    /// is a marker rather than a real type.
-    pub fn witness_type(&self) -> OirType {
-        match self {
+    /// is a marker rather than a real type; `None` for a spelling nothing declares.
+    pub fn witness_type(&self) -> Option<OirType> {
+        Some(match self {
             CompatType::Ty(t) => t.clone(),
             CompatType::Entity => OirType::Reference {
                 entity: "entity".into(),
@@ -34,18 +33,16 @@ impl CompatType {
             CompatType::Named(n) => OirType::Reference { entity: n.clone() },
             CompatType::MapTag => OirType::Map {
                 key: Box::new(OirType::String),
-                value: Box::new(OirType::Json),
+                value: Box::new(OirType::erased()),
             },
             CompatType::Timestamp => OirType::DateTime,
             CompatType::MoneyTag => OirType::Money,
             CompatType::FileTag => OirType::File,
             CompatType::Int => OirType::Integer,
             CompatType::Float => OirType::Number,
-            CompatType::Null => OirType::Optional {
-                inner: Box::new(OirType::Json),
-            },
-            CompatType::Any | CompatType::Unknown(_) => OirType::Json,
-        }
+            CompatType::Null => OirType::absent_slot(),
+            CompatType::Unknown(_) => return None,
+        })
     }
 }
 
@@ -108,7 +105,6 @@ pub(super) fn is_string_literal_union(text: &str) -> bool {
 pub fn parse_compat_type(s: &str) -> CompatType {
     let t = s.trim_end_matches('!');
     match t {
-        "any" => CompatType::Any,
         "entity" | "relation" => CompatType::Entity,
         "null" => CompatType::Null,
         "int" => CompatType::Int,
@@ -136,7 +132,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         // they get markers with exactly those one-way arms.
         "money" => CompatType::MoneyTag,
         "file" => CompatType::FileTag,
-        "json" => CompatType::Ty(OirType::Json),
+        "sexpr" | "SExpr" => CompatType::Ty(OirType::SExpr),
         "node" => CompatType::Ty(OirType::Node),
         // A tagged union of struct variants (`type Pick = A | B` in a payload):
         // an object-family declaration — the variants themselves are checked
@@ -145,16 +141,14 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         // A schemaless object — an empty Struct is its nearest `OirType` shape;
         // the family arm makes every cross-variant object pairing erase.
         "object" => CompatType::Ty(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
-        "array" => CompatType::Ty(OirType::Array {
-            inner: Box::new(OirType::Json),
-        }),
+        "array" => CompatType::Ty(OirType::array(OirType::erased())),
         _ if tuple_type_slots(t).is_some() => {
             let items = tuple_type_slots(t)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|slot| match parse_compat_type(slot) {
                     CompatType::Ty(ty) => ty,
-                    _ => OirType::Json,
+                    _ => OirType::erased(),
                 })
                 .collect();
             CompatType::Ty(OirType::Tuple { items })
@@ -173,13 +167,13 @@ pub fn parse_compat_type(s: &str) -> CompatType {
                 "behavior" => OirType::Behavior,
                 nested if nested.starts_with('[') => match parse_compat_type(nested) {
                     CompatType::Ty(ty) => ty,
-                    _ => OirType::Json,
+                    _ => OirType::erased(),
                 },
                 declared => match parse_compat_type(declared) {
                     CompatType::Ty(ty) => ty,
                     CompatType::Named(_) => OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
-                    CompatType::MapTag => OirType::map(OirType::String, OirType::Json),
-                    _ => OirType::Json,
+                    CompatType::MapTag => OirType::map(OirType::String, OirType::erased()),
+                    _ => OirType::erased(),
                 },
             };
             CompatType::Ty(OirType::Array {
@@ -188,7 +182,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         }
         _ if t.starts_with("Map<") && t.ends_with('>') => CompatType::MapTag,
         _ if t.len() > 1 && t.starts_with('$') => CompatType::Ty(OirType::Var {
-            name: t[1..].to_string(),
+            name: t[1..].to_string().into(),
         }),
         // `"a" | "b"`: a closed set of strings is an enum of strings.
         _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum {
@@ -206,8 +200,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
 
 /// The relation over the parsed vocabulary — the single place the legacy
 /// string predicate's decision table now lives. `Ty`×`Ty` delegates to
-/// [`sub`]; markers carry the string-only arms (`any` accepts everything,
-/// `entity`/named types take a row or id string, raw `int`/`float`/`null` are
+/// [`sub`]; markers carry the string-only arms (`entity`/named types take a row or id string, raw `int`/`float`/`null` are
 /// identity-only, `timestamp` is a date family
 /// that does NOT cross-accept `date`/`datetime` names, and a raw `Map<...>`
 /// tag counts as an object on both sides — plus the PascalCase quirk of also
@@ -227,9 +220,6 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         });
     }
     match (src, dst) {
-        (_, Any) => Some(Coercion::Erase {
-            from: src.witness_type(),
-        }),
         (Ty(s), Ty(d)) => sub(s, d),
         (_, Entity) => match src {
             Ty(t) if is_object_family(t) => Some(Coercion::Row { from_id: false }),
@@ -253,16 +243,16 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
             MapTag => Some(Coercion::Identity),
             _ => None,
         },
-        (MapTag, Ty(d)) if is_object_family(d) || is_json_family(d) => Some(Coercion::Erase {
-            from: src.witness_type(),
-        }),
+        (MapTag, Ty(d)) if is_object_family(d) || is_json_family(d) => {
+            src.witness_type().map(|from| Coercion::Erase { from })
+        }
         (_, Timestamp) => match src {
             Ty(t) if is_string_kind(t) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
             Timestamp => Some(Coercion::Identity),
             _ => None,
         },
         // Raw `money` declared accepts exactly an actual `number`; as an
-        // actual it matches nothing but `money`/`any` (the legacy asymmetry).
+        // actual it matches nothing but `money` (the legacy asymmetry).
         (_, MoneyTag) => match src {
             Ty(OirType::Number) => Some(Coercion::Widen(WidenKind::MoneyNumber)),
             MoneyTag => Some(Coercion::Identity),
@@ -301,7 +291,7 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
 /// relation's witness decides. The acceptance set is exactly the legacy
 /// string predicate's — Optional-transparent, element-blind arrays, the
 /// object/json/Map family, semantic-string refinements,
-/// entity/named row-or-id, `any` top, `Enum`/`Trait` as `string`.
+/// entity/named row-or-id, `Enum`/`Trait` as `string`.
 /// The slot types of a `.lolo` tuple type `[T1, T2, …]` (two or more top-level slots;
 /// a single `[T]` is an array), or `None`. The one tuple-type parser every consumer of
 /// a type string uses.

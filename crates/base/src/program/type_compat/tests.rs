@@ -53,8 +53,8 @@ fn an_int_entity_field_fits_an_int_slot_widens_to_number_and_a_number_field_does
     let field = |ty: &str| -> crate::schema::FieldDefinition {
         serde_json::from_value(serde_json::json!({ "name": "f", "type": ty })).unwrap()
     };
-    let int_field = field_shape(&field("int"));
-    let number_field = field_shape(&field("number"));
+    let int_field = field_shape(&field("int")).unwrap();
+    let number_field = field_shape(&field("number")).unwrap();
     assert_eq!(int_field, OirType::Integer);
     assert!(super::sub(&int_field, &OirType::Integer).is_some());
     assert!(super::sub(&int_field, &OirType::Number).is_some());
@@ -183,7 +183,7 @@ fn checked_assignment_requires_known_identity_preserving_evidence() {
     for (source, target) in [
         (OirType::Struct { fields: Default::default(), additional: None }, map.clone()),
         (
-            OirType::array(OirType::Json),
+            OirType::array(OirType::erased()),
             OirType::array(OirType::Number),
         ),
         (OirType::String, OirType::CallKey),
@@ -395,7 +395,7 @@ fn structural_nested_record_fields_reject_contradictions() {
     assert!(super::assignable(&good, &expected));
     assert!(!super::assignable(&bad, &expected));
     assert!(super::assignable(
-        &record(&[("cells", OirType::array(OirType::Json))]),
+        &record(&[("cells", OirType::array(OirType::erased()))]),
         &expected
     ));
 }
@@ -416,12 +416,12 @@ fn structural_typed_maps_check_values_and_record_members() {
         &expected
     ));
     assert!(super::assignable(
-        &OirType::map(OirType::String, OirType::Json),
+        &OirType::map(OirType::String, OirType::erased()),
         &expected
     ));
     assert!(super::assignable(
         &record(&[("a", OirType::String)]),
-        &OirType::map(OirType::String, OirType::Json)
+        &OirType::map(OirType::String, OirType::erased())
     ));
     assert!(!super::assignable(
         &OirType::map(OirType::String, OirType::Number),
@@ -493,7 +493,7 @@ fn tuple_routes_preserve_every_explicit_slot_coercion() {
 
 #[test]
 fn unknown_list_elements_do_not_erase_the_known_outer_kind() {
-    let unknown_list = OirType::array(OirType::Json);
+    let unknown_list = OirType::array(OirType::erased());
     let source = record(&[("kind", unknown_list.clone())]);
     assert!(!super::assignable(
         &source,
@@ -524,7 +524,7 @@ fn unknown_list_elements_do_not_erase_the_known_outer_kind() {
             items: vec![OirType::String, OirType::Number]
         }
     ));
-    assert!(super::oir_type_satisfies(&OirType::Json, &OirType::String));
+    assert!(super::oir_type_satisfies(&OirType::erased(), &OirType::String));
     assert!(super::set_value_type_compatible("[string]", "array"));
     assert!(!super::set_value_type_compatible(
         "[string]",
@@ -608,11 +608,11 @@ fn a_type_variable_is_opaque() {
     let u = OirType::Var { name: "u".into() };
     assert!(super::assignable(&t, &t));
     assert!(
-        super::assignable(&t, &OirType::Json),
-        "a variable erases to json"
+        super::assignable(&t, &OirType::erased()),
+        "a variable erases to the unknown"
     );
     assert!(
-        super::assignable(&OirType::Json, &t),
+        super::assignable(&OirType::erased(), &t),
         "an unknowable value may be a t"
     );
     assert!(!super::assignable(&OirType::optional(t.clone()), &t));
@@ -747,7 +747,7 @@ fn oir_type_compat_concrete() {
     assert!(!oir_type_satisfies_field(&OirType::String, "number"));
     assert!(oir_type_satisfies_field(
         &OirType::Array {
-            inner: Box::new(OirType::Json)
+            inner: Box::new(OirType::erased())
         },
         "array"
     ));
@@ -762,7 +762,20 @@ fn oir_type_compat_concrete() {
 
 #[test]
 fn oir_type_unknowable_never_rejects() {
-    // open Json / SExpr (input-dependent ops we can't pin down) → compatible.
-    assert!(oir_type_satisfies_field(&OirType::Json, "number"));
+    // open SExpr / unknown (input-dependent ops we can't pin down) → compatible.
+    assert!(oir_type_satisfies_field(&OirType::erased(), "number"));
     assert!(oir_type_satisfies_field(&OirType::SExpr, "boolean"));
+}
+
+#[test]
+fn the_erased_slot_is_one_shared_name_not_one_per_use() {
+    let (OirType::Var { name: a }, OirType::Var { name: b }) = (OirType::erased(), OirType::erased()) else {
+        panic!("the erased slot is a type variable");
+    };
+    assert!(crate::value::Shared::ptr_eq(&a, &b));
+    assert!(OirType::erased().is_erased());
+    let own = OirType::Var { name: "t".into() };
+    assert!(!own.is_erased());
+    let OirType::Var { name: own_name } = own else { unreachable!() };
+    assert!(!crate::value::Shared::ptr_eq(&a, &own_name));
 }

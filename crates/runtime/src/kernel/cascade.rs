@@ -193,6 +193,11 @@ impl RuntimeKernel {
     ) {
         let listeners = self.local_only(self.listener_manager.matching(event, source));
         let listeners = self.without_browser_listeners(listeners);
+        for listener in &listeners {
+            if let Err(error) = self.ensure_trait_loaded(&listener.trait_name) {
+                tracing::error!(trait_name = %listener.trait_name, %error, "lazy listener not loaded; its delivery fails");
+            }
+        }
         if listeners.is_empty() {
             return;
         }
@@ -235,80 +240,6 @@ impl RuntimeKernel {
                 completion: false,
             });
         }
-    }
-
-    /// Bring the response's rows to the frames the dispatch wrote: every field a step's `set`s wrote lands in
-    /// every trait bound to that frame, so a sibling sharing it (stepped or not) converges on the same values
-    /// (EXEC-DIST-7). With `whole_frames` (a `request.mount`) every non-empty frame is echoed whole instead,
-    /// seeding the viewer. JS twin: the final-row and frame-echo passes at the end of `evaluateOrbitalEvent`.
-    pub fn echo_frames(
-        &self,
-        response: &mut EventResponse,
-        outcomes: &[(String, ProcessEventResult)],
-        entity_id: Option<&str>,
-        whole_frames: bool,
-    ) {
-        let defs = self.registry.trait_definitions.read();
-        let mut rows = response.entity_by_trait.take().unwrap_or_default();
-        let bound_to = |key: &str| -> Vec<String> {
-            match key.strip_prefix("$shared::") {
-                Some(entity) => defs
-                    .values()
-                    .filter(|def| def.linked_entity.as_deref() == Some(entity))
-                    .map(|def| def.name.clone())
-                    .collect(),
-                None => defs.get(key).map(|def| def.name.clone()).into_iter().collect(),
-            }
-        };
-        if whole_frames {
-            let eid = self.session_eid(entity_id.unwrap_or(RUNTIME_SINGLETON));
-            let frames = self.frames.read();
-            for ((key, frame_eid), frame) in frames.iter() {
-                let Some(frame_fields) = frame.fields().filter(|f| !f.is_empty()) else {
-                    continue;
-                };
-                if *frame_eid != eid {
-                    continue;
-                }
-                for trait_name in bound_to(key) {
-                    let row = rows
-                        .entry(trait_name)
-                        .or_insert_with(|| Value::object(ValueMap::default()));
-                    if let Value::Object(fields) = row {
-                        fields.extend(frame_fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
-                    }
-                }
-            }
-        } else {
-            let mut written: orbital_core_base::collections::IndexMap<String, (ValueMap, Option<Value>)> =
-                Default::default();
-            for (trait_name, outcome) in outcomes {
-                if !outcome.executed || outcome.written_values().next().is_none() {
-                    continue;
-                }
-                let (fields, id) = written
-                    .entry(self.trait_frame_key(trait_name))
-                    .or_default();
-                fields.extend(outcome.written_values().map(|(k, v)| (k.clone(), v.clone())));
-                if id.is_none() {
-                    *id = outcome.entity_data.get("id").filter(|id| !id.is_null()).cloned();
-                }
-            }
-            for (key, (fields, id)) in written {
-                for trait_name in bound_to(&key) {
-                    let row = rows
-                        .entry(trait_name)
-                        .or_insert_with(|| Value::object(ValueMap::default()));
-                    if let Value::Object(row_fields) = row {
-                        row_fields.extend(fields.iter().map(|(k, v)| (k.clone(), v.clone())));
-                        if let Some(id) = &id {
-                            row_fields.entry("id".to_string()).or_insert_with(|| id.clone());
-                        }
-                    }
-                }
-            }
-        }
-        response.entity_by_trait = (!rows.is_empty()).then_some(rows);
     }
 
     /// Every event name a pattern prop of the program's effects names: the props whose registry kind is an event
@@ -426,7 +357,13 @@ impl RuntimeKernel {
             let defs = self.registry.trait_definitions.read();
             listeners
                 .iter()
-                .filter(|l| defs.get(&l.trait_name).is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly))
+                .filter(|l| {
+                    let mode = match defs.get(&l.trait_name) {
+                        Some(d) => Some(self.dispatch_mode_of(d)),
+                        None => self.lazy_trait_mode(&l.trait_name),
+                    };
+                    mode == Some(DispatchMode::HybridClientOnly)
+                })
                 .map(|l| l.trait_name.clone())
                 .collect()
         };

@@ -307,7 +307,7 @@ pub fn reply_value(resp: &Resp) -> Result<Value, ReplyProblem> {
 }
 
 fn object(entries: Vec<(&str, Value)>) -> Value {
-    Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+    Value::Object(entries.into_iter().map(|(k, v)| (k.into(), v)).collect())
 }
 
 fn push_present(entries: &mut Vec<(&'static str, Value)>, name: &'static str, value: Option<&str>) {
@@ -622,7 +622,7 @@ mod tests {
     }
 
     fn sock() -> DriverAnswer {
-        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".to_string(), Value::Number(5.0))]))))
+        DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([("sock".into(), Value::Number(5.0))]))))
     }
 
     fn ok() -> DriverAnswer {
@@ -631,15 +631,15 @@ mod tests {
 
     fn data(bytes: &[u8]) -> DriverAnswer {
         DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
-            ("data".to_string(), text(&codec::base64_encode(bytes))),
-            ("eof".to_string(), Value::Bool(false)),
+            ("data".into(), text(&codec::base64_encode(bytes))),
+            ("eof".into(), Value::Bool(false)),
         ]))))
     }
 
     fn eof() -> DriverAnswer {
         DriverAnswer::Os(Ok(Value::object(ValueMap::from_iter([
-            ("data".to_string(), text("")),
-            ("eof".to_string(), Value::Bool(true)),
+            ("data".into(), text("")),
+            ("eof".into(), Value::Bool(true)),
         ]))))
     }
 
@@ -800,17 +800,17 @@ mod tests {
     #[test]
     fn a_call_parses_its_command_and_connection_options() {
         let options = Value::object(ValueMap::from_iter([
-            ("auth".to_string(), text("REDIS_PASSWORD")),
-            ("user".to_string(), text("app")),
-            ("db".to_string(), Value::Number(2.0)),
+            ("auth".into(), text("REDIS_PASSWORD")),
+            ("user".into(), text("app")),
+            ("db".into(), Value::Number(2.0)),
         ]));
         let parsed = parse_redis_call(&text("redis://cache.internal"), &list(&["GET", "k"]), &options).expect("parses");
         assert_eq!(parsed.command, words(&["GET", "k"]));
         assert_eq!(parsed.auth, Some(CredentialSlot::from("REDIS_PASSWORD")));
         assert_eq!((parsed.user.as_deref(), parsed.db), (Some("app"), Some(2)));
         let scoped = Value::object(ValueMap::from_iter([(
-            "auth".to_string(),
-            Value::Object(ValueMap::from_iter([("credential".to_string(), text("TOKEN")), ("scope".to_string(), text("user"))]).into()),
+            "auth".into(),
+            Value::Object(ValueMap::from_iter([("credential".into(), text("TOKEN")), ("scope".into(), text("user"))]).into()),
         )]));
         let parsed = parse_redis_call(&text("redis://h"), &list(&["PING"]), &scoped).expect("parses");
         assert_eq!(parsed.auth.map(|slot| slot.scope), Some(orbital_core_base::http_wire::SecretScope::User));
@@ -825,11 +825,11 @@ mod tests {
             assert!(parse_redis_call(&origin, &command, &nothing).is_err(), "{command:?}");
         }
         assert!(parse_redis_call(&Value::Number(1.0), &list(&["PING"]), &nothing).is_err());
-        let user_alone = Value::object(ValueMap::from_iter([("user".to_string(), text("app"))]));
+        let user_alone = Value::object(ValueMap::from_iter([("user".into(), text("app"))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &user_alone).is_err());
-        let unknown = Value::object(ValueMap::from_iter([("timeout".to_string(), Value::Number(1.0))]));
+        let unknown = Value::object(ValueMap::from_iter([("timeout".into(), Value::Number(1.0))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &unknown).is_err());
-        let fractional = Value::object(ValueMap::from_iter([("db".to_string(), Value::Number(1.5))]));
+        let fractional = Value::object(ValueMap::from_iter([("db".into(), Value::Number(1.5))]));
         assert!(parse_redis_call(&origin, &list(&["PING"]), &fractional).is_err());
     }
 

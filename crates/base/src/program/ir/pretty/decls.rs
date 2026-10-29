@@ -115,7 +115,6 @@ impl PrettyPrinter {
             OirType::FieldRef { record, value: None } => format!("Field<{}>", self.format_type(record)),
             OirType::Money => "Money".to_string(),
             OirType::File => "File".to_string(),
-            OirType::Json => "Json".to_string(),
             OirType::Node => "Node".to_string(),
             OirType::Array { inner } => format!("[{}]", self.format_type(inner)),
             OirType::Tuple { items } => format!(
@@ -156,7 +155,7 @@ impl PrettyPrinter {
             OirType::Behavior => "Behavior".to_string(),
             OirType::SExpr => "SExpr".to_string(),
             OirType::TypeRef { name } => format!("&{}", name),
-            OirType::Var { name } => name.clone(),
+            OirType::Var { name } => name.to_string(),
         }
     }
 

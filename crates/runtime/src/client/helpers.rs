@@ -510,8 +510,8 @@ pub fn render_item_children(
 pub fn get_columns(props: &Value, rows: &[Value]) -> Vec<Value> {
     let spec = |key: &str, label: &str| -> Value {
         let mut o = ValueMap::default();
-        o.insert("key".to_string(), Value::string(key.to_string()));
-        o.insert("label".to_string(), Value::string(label.to_string()));
+        o.insert("key".into(), Value::string(key.to_string()));
+        o.insert("label".into(), Value::string(label.to_string()));
         Value::object(o)
     };
     let from_arr = |arr: &[Value]| -> Vec<Value> {
@@ -804,7 +804,7 @@ pub fn inject_entity_data(pattern: &mut Value, entity_type: &str, data: &[Value]
         // Check if this pattern references the entity type
         if let Some(pattern_entity) = obj.get("entity").and_then(|v| v.as_str()) {
             if pattern_entity == entity_type {
-                obj.insert("data".to_string(), Value::array(data.to_vec()));
+                obj.insert("data".into(), Value::array(data.to_vec()));
             }
         }
     }
@@ -826,7 +826,7 @@ pub fn build_form_payload(form_data: &HashMap<String, String>) -> Value {
             Value::string(value.clone())
         };
 
-        payload.insert(key.clone(), parsed_value);
+        payload.insert(key.clone().into(), parsed_value);
     }
 
     Value::object(payload)
@@ -841,7 +841,7 @@ pub fn from_json(json: serde_json::Value) -> Value {
         serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(from_json).collect()),
         serde_json::Value::Object(obj) => {
-            Value::Object(obj.into_iter().map(|(k, v)| (k, from_json(v))).collect())
+            Value::Object(obj.into_iter().map(|(k, v)| (k.into(), from_json(v))).collect())
         }
     }
 }
@@ -855,7 +855,7 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
         Value::Object(obj) => {
-            serde_json::Value::Object(obj.iter().map(|(k, v)| (k.clone(), to_json(v))).collect())
+            serde_json::Value::Object(obj.iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
         }
         Value::Lambda { params, .. } => {
             // Lambdas can't be serialized to JSON, represent as a string

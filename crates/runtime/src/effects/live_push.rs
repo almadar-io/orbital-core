@@ -178,12 +178,12 @@ impl LiveBroadcastItem {
         client_id: &str,
     ) -> Self {
         let mut request = orbital_core_base::value::ValueMap::new();
-        request.insert("event".to_string(), Value::string(event.to_string()));
+        request.insert("event".into(), Value::string(event.to_string()));
         if !matches!(payload, Value::Null) {
-            request.insert("payload".to_string(), payload.clone());
+            request.insert("payload".into(), payload.clone());
         }
-        request.insert("targetTrait".to_string(), Value::string(trait_name.to_string()));
-        request.insert("entityId".to_string(), Value::string(entity_id.to_string()));
+        request.insert("targetTrait".into(), Value::string(trait_name.to_string()));
+        request.insert("entityId".into(), Value::string(entity_id.to_string()));
         Self {
             event: event.to_string(),
             payload: None,
@@ -258,7 +258,7 @@ mod tests {
     fn a_deferred_completion_reaches_only_the_client_that_asked_as_a_dispatch_to_fold() {
         let mut response = EventResponse::success("idle");
         response.emitted_events = vec![EmittedEvent { event: "FILE_READ".to_string(), payload: None, source: Some(BusEventSource::from_trait("Reader")) }];
-        let payload = Value::object(orbital_core_base::value::ValueMap::from_iter([("key".to_string(), Value::String(("r1".to_string()).into()))]));
+        let payload = Value::object(orbital_core_base::value::ValueMap::from_iter([("key".into(), Value::String(("r1".to_string()).into()))]));
         let item = LiveBroadcastItem::dispatched("Files".to_string(), "Reader", "READ_DONE", &payload, "singleton", response.clone(), "tab-1");
         assert!(item.delivered_to(Some("tab-1"), |_| false));
         assert!(!item.delivered_to(Some("tab-2"), |_| true), "control: another tab does not get it");
