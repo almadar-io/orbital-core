@@ -407,3 +407,67 @@ fn a_two_hop_cascade_response_serializes_byte_identically() {
 }
 
 const TWO_HOP_RESPONSE: &str = r#"{"success":true,"transitioned":true,"states":{"Hop":"idle"},"emittedEvents":[{"event":"HOP_NEXT","payload":{"left":1.0},"source":{"orbital":"Main","trait":"Hop","dispatched":true}},{"event":"HOP_NEXT","payload":{"left":0.0},"source":{"orbital":"Main","trait":"Hop","dispatched":true}}],"frames":{"session":"$program","from":0,"to":1,"ops":[["clear"],["put","Hop",{"hits":2.0,"tags":["a","b","b"]}]]},"clientEffectsByTrait":[{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}],"event":"HOP","fromState":"idle"},{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}],"event":"HOP","fromState":"idle"},{"traitName":"Hop","effect":["render-ui","main",{"type":"typography","content":"t"}]}],"effectResults":[{"effect":"set","action":"@entity.hits","success":true},{"effect":"set","action":"@entity.tags","success":true},{"effect":"emit","success":true,"target":"HOP_NEXT"},{"effect":"set","action":"@entity.hits","success":true},{"effect":"set","action":"@entity.tags","success":true},{"effect":"emit","success":true,"target":"HOP_NEXT"}],"guardFailed":"Hop.HOP"}"#;
+
+/// EXEC-QUEUE-4: the step cap counts one settle pass. `Passer` runs two interleaved chains per pass (the worklist holds
+/// two deliveries) and the second chain ends by starting the next pass alone; `bounded` ends each chain at `length`.
+fn passer(bounded: bool) -> RuntimeKernel {
+    let ends = |chain: &str| -> Json {
+        if bounded {
+            json!([{ "from": "run", "to": "run", "event": chain, "guard": ["<", "@payload.i", 400],
+                     "effects": [["emit", format!("WORK_{chain}"), { "pass": "@payload.pass", "i": ["+", "@payload.i", 1] }]] }])
+        } else {
+            json!([{ "from": "run", "to": "run", "event": chain,
+                     "effects": [["emit", format!("WORK_{chain}"), { "pass": "@payload.pass", "i": ["+", "@payload.i", 1] }]] }])
+        }
+    };
+    let mut transitions = vec![json!({ "from": "run", "to": "run", "event": "ROUND", "guard": [">", "@payload.pass", 0],
+        "effects": [["emit", "WORK_A", { "pass": "@payload.pass", "i": 0 }], ["emit", "WORK_B", { "pass": "@payload.pass", "i": 0 }]] })];
+    transitions.extend(ends("A").as_array().unwrap().clone());
+    transitions.extend(ends("B").as_array().unwrap().clone());
+    transitions.push(json!({ "from": "run", "to": "run", "event": "B", "guard": [">=", "@payload.i", 400],
+        "effects": [["emit", "ROUND_NEXT", { "pass": ["-", "@payload.pass", 1] }]] }));
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Passer",
+                "listens": [
+                    { "event": "WORK_A", "triggers": "A", "source": { "kind": "trait", "trait": "Passer" } },
+                    { "event": "WORK_B", "triggers": "B", "source": { "kind": "trait", "trait": "Passer" } },
+                    { "event": "ROUND_NEXT", "triggers": "ROUND", "source": { "kind": "trait", "trait": "Passer" } }
+                ],
+                "stateMachine": { "states": [{ "name": "run", "isInitial": true }], "transitions": transitions }
+            }]
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::server().register(schema)
+}
+
+fn passer_run(kernel: &RuntimeKernel, passes: u64) -> (usize, bool) {
+    let payload: Value = serde_json::from_value(json!({ "pass": passes })).unwrap();
+    let outcomes = kernel.dispatch("Passer", None, "ROUND", payload).unwrap();
+    let steps = outcomes.iter().filter(|(t, r)| t == "Passer" && r.executed).count();
+    (steps, outcomes.iter().any(|(_, r)| r.cascade_cut.is_some()))
+}
+
+#[test]
+fn a_dispatch_of_many_settle_passes_runs_past_the_cap_in_total() {
+    let (steps, cut) = passer_run(&passer(true), 5);
+    assert!(steps > CROSS_TRAIT_CASCADE_CAP, "five passes of about 800 steps each: {steps}");
+    assert!(!cut, "each pass is under the cap");
+}
+
+#[test]
+fn control_a_pass_that_never_drains_is_still_cut_at_the_cap() {
+    let (_, cut) = passer_run(&passer(false), 5);
+    assert!(cut, "two chains that never end keep the worklist from draining");
+}
+
+#[test]
+fn control_one_pass_under_the_cap_is_not_cut() {
+    let (steps, cut) = passer_run(&passer(true), 1);
+    assert!(steps > 400 && steps < CROSS_TRAIT_CASCADE_CAP && !cut, "{steps} {cut}");
+}

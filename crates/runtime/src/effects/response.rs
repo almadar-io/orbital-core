@@ -129,7 +129,7 @@ pub struct ServerEffectResult {
     pub action: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_type: Option<String>,
-    /// The namespaced operator (`memory/store`) — only on `ServerEffectKind::Substrate`.
+    /// The namespaced operator (`llm/generate`) — only on `ServerEffectKind::Substrate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "NamespacedEffectName"))]
     pub name: Option<String>,

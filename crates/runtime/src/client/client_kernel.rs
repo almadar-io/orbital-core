@@ -58,6 +58,9 @@ fn next_client_id() -> String {
 pub struct ClientKernel {
     embedded: EmbeddedKernel,
     bridge: Option<Arc<dyn ServerBridge>>,
+    /// The entities whose rows live in the server's database (not client-resident): a row-set reference
+    /// to one is resolved by the server that holds the rows, never against this client's cache.
+    server_hosted: std::collections::HashSet<String>,
 }
 
 /// A dispatch whose local cascade ran ([`ClientKernel::begin`]) and whose server legs, if any,
@@ -119,8 +122,19 @@ impl ClientKernel {
         schema: OrbitalSchema,
         bridge: Option<Arc<dyn ServerBridge>>,
     ) -> Result<Self, crate::kernel::EntryError> {
+        let mut server_hosted = std::collections::HashSet::new();
+        for orbital in &schema.orbitals {
+            let entities = std::iter::once(&orbital.entity).chain(orbital.auxiliary_entities.iter().flatten());
+            for entity in entities {
+                if let orbital_core_base::schema::types::EntityRef::Inline(def) = entity {
+                    if !def.is_client_resident() {
+                        server_hosted.insert(def.name.clone());
+                    }
+                }
+            }
+        }
         let embedded = EmbeddedKernel::new(schema, next_client_id())?;
-        Ok(Self { embedded, bridge })
+        Ok(Self { embedded, bridge, server_hosted })
     }
 
     /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns
@@ -130,7 +144,12 @@ impl ClientKernel {
         &self,
         reference: &orbital_core_base::row_set::RowSetRef,
     ) -> Result<crate::row_query::RowPage, String> {
-        self.embedded.resolve_rows(reference)
+        match &self.bridge {
+            Some(bridge) if self.server_hosted.contains(&reference.entity_type) => {
+                bridge.resolve_rows(reference).map_err(|e| e.to_string())
+            }
+            _ => self.embedded.resolve_rows(reference),
+        }
     }
 
     pub fn seed(&self, entity_type: &str, rows: Vec<Value>) -> Result<(), String> {
@@ -235,6 +254,37 @@ impl ClientKernel {
         Ok(settled)
     }
 
+    /// One host frame of the kernel's tick clock (`EmbeddedKernel::frame`, the loop every host runs): every due tick
+    /// runs once, with the kernel's frame sealing and `[visible]` mounts, and each emit cascade it began is posted
+    /// and folded like a dispatch's. The responses to paint, in order: the frame's own, then each cascade's. Empty when
+    /// nothing was due.
+    pub fn frame(&self, now_ms: u64) -> Result<Vec<EventResponse>, BridgeError> {
+        let Some(parts) = self.embedded.frame_client(now_ms).map_err(BridgeError::Server)? else {
+            return Ok(Vec::new());
+        };
+        for error in &parts.errors {
+            tracing::error!(target: orbital_core_base::logging::ns::BRIDGE, %error, "frame tick failed");
+        }
+        if parts.fired.is_empty() {
+            return Err(BridgeError::Server(parts.errors.join("; ")));
+        }
+        let mut frame = parts.response;
+        frame.emitted_events.clear();
+        let mut responses = vec![frame];
+        for (trait_name, (_, dispatch)) in parts.dispatches {
+            let mut base = dispatch.response.clone();
+            base.emitted_events.clear();
+            let event = dispatch.seed.1.clone();
+            responses.push(self.post_legs(&trait_name, None, &event, &dispatch, base)?);
+        }
+        Ok(responses)
+    }
+
+    /// How many `(trait, tick)` pairs the schema declares.
+    pub fn tick_count(&self) -> usize {
+        self.embedded.tick_count()
+    }
+
     fn owning_orbital(&self, trait_name: &str) -> Result<&str, BridgeError> {
         self.embedded
             .owning_orbital(trait_name)
@@ -270,7 +320,22 @@ impl ClientKernel {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.embedded.kernel().remount_traits(traits);
+        self.embedded.remount(traits.into_iter().map(Into::into).collect());
+    }
+
+    /// Add `traits` to the current mount without dropping those already mounted (`EmbeddedKernel::mount`).
+    pub fn mount<I, S>(&self, traits: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.embedded.mount(traits.into_iter().map(Into::into).collect());
+    }
+
+    /// The host's report of whether `trait_name`'s rendered output is on screen: a `[visible]` tick of an
+    /// off-screen trait does not fire (EXEC-TICK-4).
+    pub fn set_trait_on_screen(&self, trait_name: &str, on_screen: bool) {
+        self.embedded.set_trait_on_screen(trait_name, on_screen);
     }
 
     pub fn dispatch(

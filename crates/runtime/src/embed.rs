@@ -44,31 +44,14 @@ use wire::{
     MountLegWire, MountWire, RoutedLeg, SeedWire, SnapshotWire, StatefulLegWire,
 };
 
-/// Watches what the embedded kernel does, for a host that records it (the `orb verify` bridge).
-/// Every hook defaults to nothing.
-pub trait EmbedObserver: Send + Sync {
-    /// A dispatch ran (`tick` names the tick whose `emit` began it).
-    fn dispatched(
-        &self,
-        _trait_name: &str,
-        _event: &str,
-        _payload: &Value,
-        _dispatch: &ClientDispatch,
-        _tick: Option<&str>,
-    ) {
-    }
-    /// A server response was folded.
-    fn applied(
-        &self,
-        _owners: &TraitOwners,
-        _response: &EventResponse,
-        _outcomes: &[(String, ProcessEventResult)],
-    ) {
-    }
-    /// A trait was rolled back to a snapshot.
-    fn restored(&self) {}
-    /// A tick ran during a frame.
-    fn tick_fired(&self, _trait_name: &str, _tick: &str) {}
+/// One host frame, before it is given a wire form: each emit cascade is the `D` the caller asked for.
+pub struct FrameParts<D> {
+    pub fired: Vec<FiredTick>,
+    pub response: EventResponse,
+    pub dispatches: Vec<(String, D)>,
+    pub browser_legs: Vec<RoutedLeg>,
+    pub dropped_server_effects: usize,
+    pub errors: Vec<String>,
 }
 
 /// `payload` with the client's mount as `_awaitingInit`.
@@ -135,7 +118,6 @@ pub struct EmbeddedKernel {
     ticks: Mutex<TickClock>,
     /// The mounted traits whose ticks run; `None` until a host declares a mount (the whole schema).
     mounted: Mutex<Option<BTreeSet<String>>>,
-    observer: Option<Arc<dyn EmbedObserver>>,
     /// A frame carries its ticks' `effectResults` only for a host that asked ([`Self::set_frame_effect_results`]).
     frame_effect_results: std::sync::atomic::AtomicBool,
     /// The flights of the dispatches that owe the host a leg, and the answers waiting for their turn (EXEC-CONC-8).
@@ -182,14 +164,9 @@ impl EmbeddedKernel {
             client_id: client_id.into(),
             ticks: Mutex::new(ticks),
             mounted: Mutex::new(None),
-            observer: None,
             frame_effect_results: std::sync::atomic::AtomicBool::new(false),
             fold_order: fold_order::FoldOrder::default(),
         })
-    }
-
-    pub fn set_observer(&mut self, observer: Arc<dyn EmbedObserver>) {
-        self.observer = Some(observer);
     }
 
     pub fn kernel(&self) -> &RuntimeKernel {
@@ -280,7 +257,6 @@ impl EmbeddedKernel {
         payload: Value,
     ) -> Result<DispatchWire, String> {
         let orbital = self.owning_orbital(trait_name)?;
-        let observed = self.observer.as_ref().map(|_| payload.clone());
         let dispatch = self
             .kernel
             .dispatch_with_server_leg(
@@ -292,9 +268,6 @@ impl EmbeddedKernel {
                 Some(&self.client_id),
             )
             .map_err(|e| e.to_string())?;
-        if let (Some(observer), Some(payload)) = (&self.observer, &observed) {
-            observer.dispatched(trait_name, event, payload, &dispatch, None);
-        }
         self.dispatch_wire(orbital, dispatch)
     }
 
@@ -559,9 +532,6 @@ impl EmbeddedKernel {
             .kernel
             .apply_server_response_with(response, already_delivered, by_frame.as_ref())
             .map_err(|e| e.to_string())?;
-        if let Some(observer) = &self.observer {
-            observer.applied(&self.trait_owners, response, &outcomes);
-        }
         let mut merged = EventResponse::from_process_results(&outcomes, "", "")
             .with_server_effect_results(response);
         let painted = self.kernel.diff_frames(frames.writes);
@@ -650,9 +620,6 @@ impl EmbeddedKernel {
     ) -> EventResponse {
         let restored_entity = snapshot.entity.as_object().cloned();
         self.kernel.restore_trait(trait_name, entity_id, snapshot);
-        if let Some(observer) = &self.observer {
-            observer.restored();
-        }
         let mut repaint = EventResponse::from_process_results(&[], "", "");
         let write = match restored_entity {
             Some(fields) => FrameWrite::Replaced(fields),
@@ -683,6 +650,34 @@ impl EmbeddedKernel {
     /// One host frame of the tick clock at monotonic `now_ms`: every due tick runs at most once.
     /// `None` when nothing fired and nothing failed.
     pub fn frame(&self, now_ms: u64) -> Result<Option<FrameWire>, String> {
+        Ok(self
+            .frame_with(now_ms, |orbital, dispatch| self.dispatch_wire(orbital, dispatch), |wire| &mut wire.response)?
+            .map(|parts| FrameWire {
+                fired: parts.fired,
+                response: parts.response,
+                dispatches: parts
+                    .dispatches
+                    .into_iter()
+                    .map(|(trait_name, dispatch)| FrameDispatch { trait_name, dispatch })
+                    .collect(),
+                browser_legs: parts.browser_legs,
+                dropped_server_effects: parts.dropped_server_effects,
+                errors: parts.errors,
+            }))
+    }
+
+    /// [`Self::frame`] for the client role: the emit cascades stay [`ClientDispatch`]es, which the client kernel posts
+    /// and folds itself (no wire flight is opened).
+    pub fn frame_client(&self, now_ms: u64) -> Result<Option<FrameParts<(String, ClientDispatch)>>, String> {
+        self.frame_with(now_ms, |orbital, dispatch| Ok((orbital.to_string(), dispatch)), |(_, dispatch)| &mut dispatch.response)
+    }
+
+    fn frame_with<D>(
+        &self,
+        now_ms: u64,
+        mut wrap: impl FnMut(&str, ClientDispatch) -> Result<D, String>,
+        response_of: impl Fn(&mut D) -> &mut EventResponse,
+    ) -> Result<Option<FrameParts<D>>, String> {
         let due = {
             let mounted = self.mounted.lock();
             self.ticks
@@ -721,9 +716,6 @@ impl EmbeddedKernel {
                     if !dispatched.outcome.executed {
                         continue;
                     }
-                    if let Some(observer) = &self.observer {
-                        observer.tick_fired(&trait_name, &tick);
-                    }
                     if let Some(leg) = dispatched.browser_leg {
                         browser_legs.push(RoutedLeg {
                             orbital: orbital.to_string(),
@@ -747,19 +739,13 @@ impl EmbeddedKernel {
                     match self.kernel.dispatch_tick_emits(orbital, trait_name, None, tick, Some(&self.client_id), &outcomes[at].1) {
                         Ok(emits) => {
                             for emit in emits {
-                                if let Some(observer) = &self.observer {
-                                    observer.dispatched(trait_name, &emit.event, &emit.payload, &emit.dispatch, Some(tick));
-                                }
                                 if let Some(delta) = emit.dispatch.response.frames.clone() {
                                     absorb(&mut frames, delta);
                                 }
-                                match self.dispatch_wire(orbital, emit.dispatch) {
+                                match wrap(orbital, emit.dispatch) {
                                     Ok(dispatch) => {
                                         dispatch_tick_at.push(at);
-                                        dispatches.push(FrameDispatch {
-                                            trait_name: trait_name.clone(),
-                                            dispatch,
-                                        });
+                                        dispatches.push((trait_name.clone(), dispatch));
                                     }
                                     Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
                                 }
@@ -806,7 +792,7 @@ impl EmbeddedKernel {
                 .filter(|(_, repainted_at)| *repainted_at >= tick_at)
                 .map(|(key, _)| key.clone())
                 .collect();
-            dispatch.dispatch.response.drop_renders_of(&superseded);
+            response_of(&mut dispatch.1).drop_renders_of(&superseded);
         }
         response.fold_rerenders(&rerenders);
         // A frame names only the traits a tick moved; the host holds every other state (P-015).
@@ -816,7 +802,7 @@ impl EmbeddedKernel {
         if !self.frame_effect_results.load(std::sync::atomic::Ordering::Relaxed) {
             response.effect_results = None;
         }
-        Ok(Some(FrameWire {
+        Ok(Some(FrameParts {
             fired,
             response,
             dispatches,

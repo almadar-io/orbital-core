@@ -83,7 +83,6 @@ impl Session {
                     snapshot.map(|snap| self.kernel.restore(&s("trait"), entity.as_deref(), snap));
                 self.report(result)
             }
-            "abandon" => Value::Null,
             "tick" => {
                 let result = self.kernel.tick(&s("trait"), &s("tick"), entity.as_deref());
                 self.report(result)

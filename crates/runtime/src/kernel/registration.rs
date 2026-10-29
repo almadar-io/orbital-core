@@ -97,20 +97,33 @@ impl RuntimeKernel {
         Ok(found)
     }
 
+    /// `credential-list`'s raw reply with the credentials the registered programs declare beside the store's rows; any
+    /// other reply as it is.
+    pub(super) fn with_declared(&self, op: orbital_core_base::credential_admin::CredentialAdminOp, reply: Value) -> Result<Value, String> {
+        use orbital_core_base::credential_admin::CredentialAdminOp;
+        let (CredentialAdminOp::List, Value::Object(mut fields)) = (op, reply.clone()) else {
+            return Ok(reply);
+        };
+        let declared = self
+            .program_credentials()?
+            .into_iter()
+            .map(|credential| {
+                Value::object(ValueMap::from_iter([
+                    ("group".into(), Value::String(credential.group.into())),
+                    ("envVar".into(), Value::String(credential.env_var.into())),
+                    ("description".into(), Value::String(credential.description.into())),
+                ]))
+            })
+            .collect::<Vec<_>>();
+        fields.insert("declared".into(), Value::array(declared));
+        Ok(Value::object(fields))
+    }
+
     /// Name the program whose credentials this kernel's credential effects manage beside its own (an integrations
     /// console serving the app a host shows): its declared credentials join the catalog, replacing the last one named.
     pub fn set_managed_program(&self, program: &serde_json::Value) {
         *self.grants.managed_credentials.write() =
             orbital_core_base::secrets::program_credentials(program);
-    }
-
-    /// The credential catalog: the registry's services plus the credentials every registered program declares, what a
-    /// `store`-source boot seeds the credential store with.
-    pub fn credential_catalog(
-        &self,
-    ) -> Result<orbital_core_base::credential_admin::Catalog, String> {
-        let program = self.program_credentials()?;
-        orbital_core_base::credential_admin::catalog(&program).map_err(|refusal| refusal.message)
     }
 
     /// The program registered under `name`, as the kernel holds it.

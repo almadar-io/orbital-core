@@ -13,6 +13,7 @@ use crate::resumable::{completion_event, CallSite, DispatchContinuation, Dispatc
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
+use crate::tick_clock::{Calendar, TickClock};
 use crate::kernel::{EntryError, FrameWrite, KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
 use crate::entity_source::EntitySource;
 use crate::effects::response::{EventRequest, EventResponse};
@@ -119,6 +120,10 @@ enum Waiting {
     Resume { flight: u64, replies: Vec<IoReply> },
 }
 
+fn clock_of(kernel: &RuntimeKernel) -> Mutex<TickClock> {
+    Mutex::new(TickClock::from_programs(&kernel.registered_programs()))
+}
+
 /// A server-role kernel and the dispatches it has in flight.
 pub struct EmbeddedServer {
     kernel: RuntimeKernel,
@@ -126,6 +131,8 @@ pub struct EmbeddedServer {
     default_user: Mutex<Value>,
     /// The traits some client has mounted: a tick that is not `[background]` fires only for these.
     tick_mount: Mutex<BTreeSet<String>>,
+    /// Which declared ticks are due on each pass ([`Self::tick_pass`]), the clock every host runs.
+    ticks: Mutex<TickClock>,
     flights: Mutex<HashMap<u64, Flight>>,
     /// The live streams the host reported open, by the id it closes them with: while one is open its session lives.
     streams: Mutex<HashMap<u64, SessionStream>>,
@@ -206,6 +213,7 @@ impl EmbeddedServer {
             .map_err(EntryError::Register)?;
         let default_user = kernel.get_current_user();
         Ok(Self {
+            ticks: clock_of(&kernel),
             kernel,
             orbital_traits,
             default_user: Mutex::new(default_user),
@@ -227,6 +235,7 @@ impl EmbeddedServer {
         let (host, config) = host_answered();
         let kernel = self.kernel.fork_session(host, config).map_err(EntryError::ForkSession)?;
         Ok(Self {
+            ticks: clock_of(&kernel),
             kernel,
             orbital_traits: self.orbital_traits.clone(),
             default_user: Mutex::new(self.default_user.lock().clone()),
@@ -267,6 +276,7 @@ impl EmbeddedServer {
             .program_context(host, config, schema)
             .map_err(EntryError::ForkProgram)?;
         Ok(Self {
+            ticks: clock_of(&kernel),
             kernel,
             orbital_traits,
             default_user: Mutex::new(self.default_user.lock().clone()),
@@ -342,6 +352,34 @@ impl EmbeddedServer {
             self.kernel.entity_source().write(entity_type, id, row)?;
         }
         Ok(())
+    }
+
+    /// One pass of the tick clock at monotonic `now_ms`: the `(trait, tick)` pairs due now that this server runs, the
+    /// `[background]` ticks and those of a trait some client has mounted ([`Self::set_tick_mount`]). The host starts
+    /// each as a `runTick` request. Same selection as the native host's tick pass for `[background]` ticks.
+    pub fn tick_pass(&self, now_ms: u64) -> Vec<(String, String)> {
+        let due = self.ticks.lock().due(now_ms, Calendar::local_now);
+        let mounted = self.tick_mount.lock();
+        due.into_iter()
+            .filter(|(trait_name, tick)| {
+                mounted.contains(trait_name) || self.kernel.tick_of(trait_name, tick).is_some_and(|t| t.background)
+            })
+            .collect()
+    }
+
+    /// Stop the tick clock; declared ticks and their phase are kept.
+    pub fn tick_pause(&self) {
+        self.ticks.lock().pause();
+    }
+
+    /// Restart the tick clock; the paused span is never counted.
+    pub fn tick_resume(&self) {
+        self.ticks.lock().resume();
+    }
+
+    /// Whether the tick clock is stopped.
+    pub fn tick_paused(&self) -> bool {
+        self.ticks.lock().is_paused()
     }
 
     /// The traits whose mount-scoped ticks fire: the host's union of what its clients have mounted.

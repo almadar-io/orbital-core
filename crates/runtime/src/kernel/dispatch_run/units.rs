@@ -213,10 +213,7 @@ impl RuntimeKernel {
                 fanned: Vec::new(),
             }
         } else {
-            Stage::Released(Cascade {
-                queue: released.into(),
-                steps: 0,
-            })
+            Stage::Released(Cascade::new(released.into()))
         };
         let span = tracing::trace_span!(
             target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
@@ -273,7 +270,7 @@ impl RuntimeKernel {
                         .into_iter()
                         .chain(std::mem::take(fanned))
                         .collect();
-                    *stage = Stage::Main(Cascade { queue, steps: 0 });
+                    *stage = Stage::Main(Cascade::new(queue));
                     return Ok(Flow::More);
                 };
                 let from = self.current_state_name(scope, Some(eid));
@@ -363,7 +360,7 @@ impl RuntimeKernel {
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
     ) -> Result<(), KernelError> {
-        let mut cascade = Cascade { queue, steps: 0 };
+        let mut cascade = Cascade::new(queue);
         loop {
             match self.cascade_unit(
                 eid,
@@ -487,6 +484,7 @@ impl RuntimeKernel {
         let Some(item) = cascade.queue.pop_front() else {
             return Ok(false);
         };
+        cascade.settle_pass();
         if let Some(job) = item.repaint.clone() {
             self.repaint_unit(eid, cascade, item, job, outcomes)?;
             return Ok(true);

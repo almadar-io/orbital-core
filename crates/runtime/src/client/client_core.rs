@@ -49,13 +49,13 @@ pub struct ClientCore {
     pub schema: OrbitalSchema,
     /// Server bridge (HTTP or in-process kernel) for the closed circuit. Legacy
     /// path — a core constructed with [`ClientKernel::new`] (`Self::client_kernel`
-    /// is `Some`) drives `drive_blocking`/`drive_tick_blocking` through the client
+    /// is `Some`) drives `drive_blocking`/`drive_ticks_blocking` through the client
     /// kernel instead; this field stays populated ONLY for `KernelBridge`/verify
     /// callers ([`ClientCore::new`]), which never set `client_kernel`.
     pub server_bridge: Option<Arc<dyn crate::client::bridge::ServerBridge>>,
     /// The client-role kernel (Client env + `ServerLegCollector` + mode-aware
     /// post/fold), when this core was built with [`ClientCore::with_client_kernel`].
-    /// `drive_blocking`/`drive_tick_blocking` prefer this over `server_bridge`.
+    /// `drive_blocking`/`drive_ticks_blocking` prefer this over `server_bridge`.
     pub client_kernel: Option<Arc<ClientKernel>>,
     /// Active orbital index.
     pub current_orbital_idx: usize,
@@ -99,8 +99,6 @@ pub struct ClientCore {
     awaiting: Vec<AwaitingEntry>,
     next_await_token: u64,
     awaiting_motion: Option<std::time::Duration>,
-    /// The kernel's one tick clock over this schema: `drive_ticks_blocking` asks it which declared ticks are due.
-    ticks: crate::tick_clock::TickClock,
     ticks_started: web_time::Instant,
 }
 
@@ -126,7 +124,6 @@ impl ClientCore {
             .unwrap_or_else(|| "Unknown".to_string());
         let embedded = embedded_traits(&schema);
         let current_page = initial_page(&schema, 0);
-        let ticks = crate::tick_clock::TickClock::from_schema(&schema);
 
         Self {
             schema,
@@ -151,7 +148,6 @@ impl ClientCore {
             awaiting: Vec::new(),
             next_await_token: 0,
             awaiting_motion: None,
-            ticks,
             ticks_started: web_time::Instant::now(),
         }
     }
@@ -172,7 +168,7 @@ impl ClientCore {
 
     /// Build a core driven by the client-role kernel (`client_kernel.rs`) instead
     /// of a bare [`crate::client::bridge::ServerBridge`] — `drive_blocking`/
-    /// `drive_tick_blocking` route through [`ClientKernel::dispatch`]/[`ClientKernel::tick`],
+    /// `drive_ticks_blocking` route through [`ClientKernel::dispatch`]/[`ClientKernel::frame`],
     /// which apply the mode-aware post/fold circuit (`HybridClientOnly` never
     /// posts, `RuntimeOptimistic` snapshots + rolls back, `PersistedAwaited` folds
     /// before presenting). `server_bridge` stays `None` on this path.
@@ -412,42 +408,49 @@ impl ClientCore {
         }
     }
 
-    /// Fire one scheduled tick of `trait_name` through the client kernel (preferred)
-    /// or the legacy bridge, and process the response, so the tick's `set` effects
-    /// advance the in-memory entity (and any render-ui it emits re-renders). Same
-    /// circuit as `drive_blocking`, but the canonical `process_tick` path.
-    pub fn drive_tick_blocking(&mut self, trait_name: &str, tick_name: &str) {
-        if let Some(client_kernel) = self.client_kernel.clone() {
-            if let Ok(response) = client_kernel.tick(trait_name, tick_name, None) {
-                self.process_response(tick_name, Some(trait_name.to_string()), response);
-            }
-            return;
+    /// Report to the kernel which traits have rendered output on screen: those with `main` content or a slot
+    /// they authored. A `[visible]` tick of any other trait does not fire. Call before each frame.
+    pub fn report_presence(&self) {
+        let Some(kernel) = &self.client_kernel else { return };
+        let mut shown: std::collections::HashSet<&str> = self.trait_content.keys().map(|k| k.as_str()).collect();
+        for contents in self.ui_slots.values() {
+            shown.extend(contents.iter().filter_map(|c| c.source_trait.as_deref()));
         }
-
-        let Some(bridge) = self.server_bridge.clone() else {
-            return;
-        };
-        let orbital_name = self.orbital_name();
-        if let Ok(response) = bridge.tick(&orbital_name, trait_name, tick_name, None) {
-            self.process_response(tick_name, Some(trait_name.to_string()), response);
+        for orbital in &self.schema.orbitals {
+            for reference in &orbital.traits {
+                if let Some(name) = reference.trait_name() {
+                    kernel.set_trait_on_screen(name, shown.contains(name));
+                }
+            }
         }
     }
 
     /// Whether the schema declares any tick: a host requests continuous repaint then, since the client is otherwise
     /// event-reactive and `set`-effect loops (`gameflowTick every 33ms`) would never advance.
     pub fn has_ticks(&self) -> bool {
-        !self.ticks.is_empty()
+        self.client_kernel.as_ref().is_some_and(|kernel| kernel.tick_count() > 0)
     }
 
-    /// One host frame of the kernel's tick clock: every declared tick that is due runs once through
-    /// [`Self::drive_tick_blocking`]. Answers whether any ran, so the host repaints only when state may have advanced.
+    /// One host frame of the kernel's tick clock through the client kernel ([`ClientKernel::frame`]): every due tick
+    /// runs once and the responses are painted. Answers whether any tick ran, so the host repaints only when state may
+    /// have advanced. A core without a client kernel runs no ticks.
     pub fn drive_ticks_blocking(&mut self) -> bool {
+        let Some(kernel) = self.client_kernel.clone() else { return false };
+        self.report_presence();
         let now_ms = u64::try_from(self.ticks_started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let due = self.ticks.due(now_ms, crate::tick_clock::Calendar::local_now);
-        for (trait_name, tick_name) in &due {
-            self.drive_tick_blocking(trait_name, tick_name);
+        match kernel.frame(now_ms) {
+            Ok(responses) => {
+                let ran = !responses.is_empty();
+                for response in responses {
+                    self.process_response("frame", None, response);
+                }
+                ran
+            }
+            Err(error) => {
+                tracing::error!(target: "almadar::client", %error, "frame failed");
+                false
+            }
         }
-        !due.is_empty()
     }
 
     /// Drive and display `trait_name` (its orbital and page), clearing what was shown.

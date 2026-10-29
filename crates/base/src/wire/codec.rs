@@ -332,6 +332,64 @@ pub fn brotli_decode(data: &[u8], max: usize) -> CodecResult {
     }
 }
 
+/// The Ed25519 public key of the 32-byte signing `seed`.
+pub fn ed25519_public_key(seed: &[u8; 32]) -> [u8; 32] {
+    ed25519_dalek::SigningKey::from_bytes(seed).verifying_key().to_bytes()
+}
+
+/// The 64-byte Ed25519 signature of `message` under the 32-byte signing `seed`.
+pub fn ed25519_sign(seed: &[u8; 32], message: &[u8]) -> [u8; 64] {
+    use ed25519_dalek::Signer;
+    ed25519_dalek::SigningKey::from_bytes(seed).sign(message).to_bytes()
+}
+
+/// Whether `signature` is `public_key`'s Ed25519 signature of `message`; a key that is not a curve point is not valid.
+pub fn ed25519_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
+    use ed25519_dalek::Verifier;
+    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else { return false };
+    key.verify(message, &ed25519_dalek::Signature::from_bytes(signature)).is_ok()
+}
+
+/// One regular file of a tar archive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TarFile {
+    pub path: String,
+    pub data: Vec<u8>,
+    pub executable: bool,
+}
+
+/// The regular files of a ustar archive, in archive order; directories, links and extended headers are skipped.
+pub fn tar_files(archive: &[u8]) -> Result<Vec<TarFile>, String> {
+    fn field(block: &[u8]) -> &[u8] {
+        let end = block.iter().position(|b| *b == 0).unwrap_or(block.len());
+        &block[..end]
+    }
+    fn octal(block: &[u8]) -> Result<usize, String> {
+        let text = core::str::from_utf8(field(block)).map_err(|_| "a tar header number is not text".to_string())?;
+        usize::from_str_radix(text.trim(), 8).map_err(|_| format!("a tar header number is not octal: {text:?}"))
+    }
+    let mut files = Vec::new();
+    let mut offset = 0;
+    while offset + 512 <= archive.len() {
+        let header = &archive[offset..offset + 512];
+        if header.iter().all(|b| *b == 0) {
+            break;
+        }
+        let size = octal(&header[124..136])?;
+        let mode = octal(&header[100..108])?;
+        let name = core::str::from_utf8(field(&header[0..100])).map_err(|_| "a tar path is not text".to_string())?;
+        let prefix = core::str::from_utf8(field(&header[345..500])).map_err(|_| "a tar path is not text".to_string())?;
+        let path = if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
+        let start = offset + 512;
+        let end = start.checked_add(size).filter(|end| *end <= archive.len()).ok_or_else(|| "a tar entry runs past the archive".to_string())?;
+        if matches!(header[156], 0 | b'0') {
+            files.push(TarFile { path, data: archive[start..end].to_vec(), executable: mode & 0o111 != 0 });
+        }
+        offset = start + size.div_ceil(512) * 512;
+    }
+    Ok(files)
+}
+
 /// Lower-case hex.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -390,5 +448,46 @@ mod structured_codec_tests {
         assert_eq!(brotli_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
         assert_eq!(brotli_decode(&valid, 5).unwrap().data, b"hello");
         assert_eq!(brotli_decode(&[255; 8], 100).unwrap_err(), CodecFailure::Block);
+    }
+
+    #[test]
+    fn ed25519_signs_and_verifies_rfc8032_vector_and_refuses_a_tampered_message() {
+        let seed: [u8; 32] = hex_decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60").unwrap().try_into().unwrap();
+        let public = ed25519_public_key(&seed);
+        assert_eq!(hex(&public), "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        let signature = ed25519_sign(&seed, b"");
+        assert_eq!(hex(&signature), "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
+        assert!(ed25519_verify(&public, b"", &signature));
+        assert!(!ed25519_verify(&public, b"x", &signature));
+        let mut bent = signature;
+        bent[0] ^= 1;
+        assert!(!ed25519_verify(&public, b"", &bent));
+        let mut other = seed;
+        other[0] ^= 1;
+        assert!(!ed25519_verify(&ed25519_public_key(&other), b"", &signature));
+    }
+
+    #[test]
+    fn tar_files_reads_regular_files_with_their_mode_and_refuses_a_truncated_entry() {
+        fn entry(name: &str, mode: u32, kind: u8, data: &[u8]) -> Vec<u8> {
+            let mut header = vec![0u8; 512];
+            header[..name.len()].copy_from_slice(name.as_bytes());
+            header[100..107].copy_from_slice(format!("{mode:07o}").as_bytes());
+            header[124..135].copy_from_slice(format!("{:011o}", data.len()).as_bytes());
+            header[156] = kind;
+            let mut out = header;
+            out.extend_from_slice(data);
+            out.resize(out.len().div_ceil(512) * 512, 0);
+            out
+        }
+        let mut archive = [entry("dir/", 0o755, b'5', b""), entry("dir/a.txt", 0o644, b'0', b"hello"), entry("dir/run", 0o755, b'0', b"#!")].concat();
+        archive.extend_from_slice(&[0u8; 1024]);
+        let files = tar_files(&archive).unwrap();
+        assert_eq!(files, vec![
+            TarFile { path: "dir/a.txt".into(), data: b"hello".to_vec(), executable: false },
+            TarFile { path: "dir/run".into(), data: b"#!".to_vec(), executable: true },
+        ]);
+        assert!(tar_files(&archive[..1026]).is_err());
+        assert!(tar_files(&[]).unwrap().is_empty());
     }
 }

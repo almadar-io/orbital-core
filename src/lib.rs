@@ -10,7 +10,6 @@ pub mod codec {
     pub use orbital_core_base::codec::*;
     pub mod jwt {
         pub use orbital_core_base::jwt_alg::JwtAlg;
-        pub use orbital_core_runtime::jwt::*;
     }
     pub use orbital_core_runtime::lenient;
 }
@@ -192,8 +191,9 @@ pub use orbital_core_base::schema;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;
-    pub use orbital_core_runtime::credential_admin::{run, schema_invoked_services, AdminAsks, CredentialStanding, RotateCounts, StoreListing, StoredName};
+    pub use orbital_core_runtime::credential_admin::{CredentialStanding, RotateCounts, StoreListing, StoredName};
 }
+pub use orbital_core_base::sandbox_manifest;
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;
 pub use orbital_core_base::signature;
@@ -324,6 +324,7 @@ pub use orbital_core_runtime::program_machine;
 pub use orbital_core_runtime::process_result::ProcessEventResult;
 pub use orbital_core_runtime::process_result::{public_entity_id, RUNTIME_SINGLETON};
 pub use orbital_core_runtime::render_report;
+pub use orbital_core_runtime::step_replay;
 pub use orbital_core_runtime::server_leg::ServerLegCollector;
 pub use orbital_core_runtime::tick_clock::Calendar;
 pub use orbital_core_runtime::tick_clock::TickClock;

@@ -16,6 +16,7 @@
 //! the host drops it, and the replay builds it again identically.
 
 use super::*;
+use super::resumable::AWAITING_HOST;
 use crate::driver::{drive, DriveContext, DriveEnd, Driver, DriverAnswer, DriverAsk, DriverStep};
 use crate::tls::session::{roots_from_pem, web_roots, Recorded};
 use crate::tls::{TlsEvent, TlsStream};
@@ -634,13 +635,6 @@ impl RuntimeKernel {
         match drive(&self.io, &mut run, first, DriveContext::default()) {
             DriveEnd::Done(_) => {}
             DriveEnd::AwaitingHost => return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
-            DriveEnd::NoBeaconHost => {
-                return Err(fail(
-                    op,
-                    OsErrorKind::Io,
-                    "the handshake asked for a beacon",
-                ))
-            }
         }
         let Handshaken { sock, stream, spec } = run
             .outcome
@@ -762,10 +756,6 @@ impl RuntimeKernel {
                 ))
             }),
             DriveEnd::AwaitingHost => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
-            DriveEnd::NoBeaconHost => Err(OsError::new(
-                OsErrorKind::Tls,
-                "the TLS operation asked for a beacon",
-            )),
         }
     }
 

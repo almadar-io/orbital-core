@@ -41,6 +41,8 @@ pub mod projected_payload;
 pub mod relations;
 #[path = "kernel/resumable/mod.rs"]
 pub mod resumable;
+#[path = "kernel/step_replay.rs"]
+pub mod step_replay;
 #[path = "kernel/instances.rs"]
 pub mod instances;
 #[path = "kernel/server_leg.rs"]
@@ -103,8 +105,6 @@ pub mod credential_store;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "security/credentials.rs"]
 pub mod credentials;
-#[path = "security/jwt.rs"]
-pub mod jwt;
 #[path = "security/lenient.rs"]
 pub mod lenient;
 

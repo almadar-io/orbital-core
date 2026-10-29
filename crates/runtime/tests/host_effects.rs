@@ -9,8 +9,13 @@ use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orb
 use serde_json::{json, Value as Json};
 
 fn schema(effect: Json) -> OrbitalSchema {
+    schema_with(effect, json!({ "credentials": ["admin"] }))
+}
+
+fn schema_with(effect: Json, grants: Json) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
+        "osGrants": grants,
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -416,241 +421,96 @@ fn a_random_answer_and_a_secret_set_value_are_redacted_in_debug() {
 
 mod credential_admin_effects {
     use super::*;
-    use orbital_core_base::language_data::{install_language_data, LanguageData};
+    use orbital_core_runtime::credential_admin::{RotateCounts, StoreListing, StoredName};
 
-    const REGISTRY: &str = r#"{ "services": {
-        "apikeys": { "backend": "production", "credentials": [{ "envVar": "SALT", "required": true, "description": "salt" }] },
-        "hosting": { "backend": "production", "credentials": [] }
-    } }"#;
-
-    fn install_registry() {
-        let _ = install_language_data(LanguageData {
-            core_version: "0.0.0".into(),
-            root: std::path::PathBuf::new(),
-            patterns: "{}".into(),
-            component_mapping: "{}".into(),
-            event_contracts: "{}".into(),
-            services: REGISTRY.into(),
-            binding_rules: "{}".into(),
-            program_types: "{}".into(),
-            protocols: r#"[{"name":"route","address":null,"viewer":true,"grant":null,"side":"client"}]"#.into(),
-            themes: Vec::new(),
-        });
+    fn listing() -> StoreListing {
+        StoreListing { enabled: true, entries: vec![StoredName { service: "apikeys".into(), name: "SALT".into() }] }
     }
 
-    fn admin() -> Option<Json> {
-        Some(json!({ "id": "u1", "role": "admin" }))
+    fn store(request: &IoRequest) -> IoAnswer {
+        match request {
+            IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(listing()))),
+            IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Ok(())),
+            IoRequest::CredentialStoreRemove { name } => IoAnswer::CredentialStoreRemove(Ok(name == "SALT")),
+            IoRequest::CredentialStoreRotate => IoAnswer::CredentialStoreRotate(Ok(RotateCounts { rotated: 2, already_current: 1, unreadable: 0 })),
+            IoRequest::CredentialModeRead => IoAnswer::CredentialModeRead(Ok(Some("real".into()))),
+            IoRequest::CredentialModeWrite { mode } => IoAnswer::CredentialModeWrite(Ok(mode.clone())),
+            IoRequest::Secret { name, .. } => IoAnswer::Secret(Ok((name == "SALT").then(|| "held".to_string()))),
+            other => panic!("the fixture asks for {other:?}"),
+        }
     }
 
-    fn secret_none(request: &IoRequest) -> Option<IoAnswer> {
-        matches!(request, IoRequest::Secret { .. }).then(|| IoAnswer::Secret(Ok(None)))
+    fn answer(effect: Json, user: Option<Json>) -> (Json, Vec<IoRequest>) {
+        let (response, seen) = run(effect, go(user), store);
+        (payload_of(&response, "OK"), seen)
     }
 
     #[test]
-    fn credential_set_checks_the_role_the_store_and_the_declared_name_then_writes_through_one_store_ask() {
-        install_registry();
-        let effect = json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "salt-value-1111"}, routes()]);
-        let (response, seen) = run(effect.clone(), go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| match request {
-                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
-                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
-                ))),
-                IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Ok(())),
-                other => panic!("the fixture asks for {other:?}"),
-            })
-        });
-        assert_eq!(
-            payload_of(&response, "OK"),
-            json!({ "saved": true, "service": "apikeys", "envVar": "SALT", "last4": "1111" })
-        );
+    fn each_credential_operator_makes_its_one_raw_store_ask_and_answers_the_raw_reply() {
+        let (listed, seen) = answer(json!(["credential-list", {}, routes()]), signed_in());
+        assert_eq!(listed, json!({ "enabled": true, "entries": [{ "service": "apikeys", "name": "SALT" }], "declared": [] }));
+        assert_eq!(seen, vec![IoRequest::CredentialStoreList]);
+
+        let (saved, seen) = answer(json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "salt-value-1111"}, routes()]), signed_in());
+        assert_eq!(saved, json!({ "saved": true }));
         assert!(matches!(seen.last(), Some(IoRequest::CredentialStoreWrite { service, name, value }) if service == "apikeys" && name == "SALT" && value == "salt-value-1111"));
         assert!(!format!("{seen:?}").contains("salt-value"), "the stored value never shows in a Debug of the asks");
 
-        let (denied, seen) = run(effect.clone(), go(signed_in()), |request| {
-            secret_none(request).unwrap_or_else(|| panic!("a refused role asks nothing more, asked {request:?}"))
-        });
-        assert_eq!(
-            payload_of(&denied, "BAD"),
-            json!({ "error": "forbidden: \"set\" requires one of roles: admin, owner", "code": "AUTH_ERROR" })
-        );
-        assert_eq!(seen.len(), 1);
-        let (anonymous, _) = run(effect, go(None), |request| {
-            secret_none(request).unwrap_or_else(|| panic!("anonymous asks nothing more, asked {request:?}"))
-        });
-        assert_eq!(payload_of(&anonymous, "BAD")["code"], "AUTH_ERROR");
+        let (removed, _) = answer(json!(["credential-remove", {"envVar": "SALT"}, routes()]), signed_in());
+        assert_eq!(removed, json!({ "removed": true }));
+        let (absent, _) = answer(json!(["credential-remove", {"envVar": "OTHER"}, routes()]), signed_in());
+        assert_eq!(absent, json!({ "removed": false }), "control: a name the store lacks removes nothing");
+
+        let (rotated, _) = answer(json!(["credential-rotate", routes()]), signed_in());
+        assert_eq!(rotated, json!({ "rotated": 2.0, "alreadyCurrent": 1.0, "unreadable": 0.0 }));
+
+        let (read, seen) = answer(json!(["credential-mode", {}, routes()]), signed_in());
+        assert_eq!(read, json!({ "mode": "real" }));
+        assert_eq!(seen, vec![IoRequest::CredentialModeRead]);
+        let (switched, _) = answer(json!(["credential-mode", {"mode": "mock"}, routes()]), signed_in());
+        assert_eq!(switched, json!({ "mode": "mock" }));
+
+        let (held, _) = answer(json!(["credential-test", {"envVar": "SALT"}, routes()]), signed_in());
+        assert_eq!(held, json!({ "held": true }));
+        let (missing, _) = answer(json!(["credential-test", {"envVar": "OTHER"}, routes()]), signed_in());
+        assert_eq!(missing, json!({ "held": false }));
     }
 
-    /// The app a console manages: its `github` orbital reads the `GITHUB_TOKEN` secret knob in an `http` auth slot.
-    fn shown_program() -> Json {
-        json!({ "name": "shop", "typeContractVersion": 1, "orbitals": [{ "name": "github", "traits": [{
-            "name": "Repo", "config": { "token": { "type": "secret", "default": "GITHUB_TOKEN" } },
-            "stateMachine": { "transitions": [{ "from": "idle", "to": "idle", "event": "SYNC", "effects": [
-                ["http", "GET", "https://api.github.com", "/user", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }]
-            ] }] }
-        }] }] })
+    #[test]
+    fn a_raw_credential_operator_needs_the_declared_admin_grant() {
+        let ungranted = |grants: Json| {
+            let server = EmbeddedServer::new(schema_with(json!(["credential-list", {}, routes()]), grants)).unwrap();
+            run_on(server, go(signed_in()), store)
+        };
+        for grants in [json!({}), json!({ "stdio": ["out"] })] {
+            let (response, seen) = ungranted(grants);
+            assert_eq!(
+                payload_of(&response, "BAD"),
+                json!({ "error": "credential-list: the program declares no `credentials: [admin]` grant" })
+            );
+            assert!(seen.is_empty(), "an ungranted operator asks the store nothing: {seen:?}");
+        }
+        let (response, seen) = ungranted(json!({ "credentials": ["admin"] }));
+        assert_eq!(payload_of(&response, "OK")["enabled"], true, "control: the declared grant lets it through");
+        assert_eq!(seen, vec![IoRequest::CredentialStoreList]);
     }
 
-    fn set_github_token(server: EmbeddedServer) -> (EventResponse, Vec<IoRequest>) {
-        run_on(server, go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| match request {
-                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
-                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
-                ))),
-                IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Ok(())),
+    #[test]
+    fn the_operators_apply_no_role_gate_and_a_request_outside_the_shape_is_a_host_failure() {
+        let (anonymous, _) = answer(json!(["credential-list", {}, routes()]), None);
+        assert_eq!(anonymous["enabled"], true, "the role gate is std-credential-admin's, not the operator's");
+        let (response, seen) = run(json!(["credential-set", {"service": "apikeys"}, routes()]), go(signed_in()), store);
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "credential-set needs envVar" }));
+        assert!(seen.is_empty(), "a request without its fields asks the store nothing: {seen:?}");
+        let (response, _) = run(
+            json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "v"}, routes()]),
+            go(signed_in()),
+            |request| match request {
+                IoRequest::CredentialStoreWrite { .. } => IoAnswer::CredentialStoreWrite(Err("No credential store is installed on this host".into())),
                 other => panic!("the fixture asks for {other:?}"),
-            })
-        })
-    }
-
-    fn console() -> EmbeddedServer {
-        EmbeddedServer::new(schema(json!(["credential-set", {"service": "github", "envVar": "GITHUB_TOKEN", "value": "ghp-token-9876"}, routes()]))).unwrap()
-    }
-
-    // The integrations console manages the credentials of the app the host names (G-PLAYGROUND-RUNTIME-013).
-    #[test]
-    fn a_console_sets_a_credential_the_program_it_manages_declares() {
-        install_registry();
-        let server = console();
-        server.set_managed_program(&shown_program());
-        let (response, seen) = set_github_token(server);
-        assert_eq!(payload_of(&response, "OK"), json!({ "saved": true, "service": "github", "envVar": "GITHUB_TOKEN", "last4": "9876" }));
-        assert!(seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { service, name, .. } if service == "github" && name == "GITHUB_TOKEN")));
-    }
-
-    #[test]
-    fn control_a_console_managing_no_program_refuses_it_by_service() {
-        install_registry();
-        let (response, seen) = set_github_token(console());
-        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { .. })));
-        assert_eq!(payload_of(&response, "BAD")["error"], "Service \"github\" declares no credentials");
-    }
-
-    #[test]
-    fn edge_naming_another_program_replaces_the_managed_one() {
-        install_registry();
-        let server = console();
-        server.set_managed_program(&shown_program());
-        server.set_managed_program(&json!({ "name": "blank", "typeContractVersion": 1, "orbitals": [] }));
-        let (response, _) = set_github_token(server);
-        assert_eq!(payload_of(&response, "BAD")["error"], "Service \"github\" declares no credentials");
-    }
-
-    #[test]
-    fn an_undeclared_name_is_refused_before_any_write_is_asked() {
-        install_registry();
-        let (response, seen) = run(
-            json!(["credential-set", {"service": "apikeys", "envVar": "OTHER", "value": "v"}, routes()]),
-            go(admin()),
-            |request| {
-                secret_none(request).unwrap_or_else(|| match request {
-                    IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
-                        orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
-                    ))),
-                    other => panic!("the fixture asks for {other:?}"),
-                })
             },
         );
-        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { .. })));
-        assert_eq!(
-            payload_of(&response, "BAD"),
-            json!({ "error": "\"OTHER\" is not a declared credential of \"apikeys\" (declared: SALT)" })
-        );
-    }
-
-    #[test]
-    fn credential_mode_is_validated_in_the_kernel_and_applied_through_one_flag_ask() {
-        let (response, seen) = run(json!(["credential-mode", {"mode": "mock"}, routes()]), go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| match request {
-                IoRequest::CredentialModeWrite { mode } => IoAnswer::CredentialModeWrite(Ok(mode.clone())),
-                other => panic!("the fixture asks for {other:?}"),
-            })
-        });
-        assert_eq!(payload_of(&response, "OK"), json!({ "mode": "mock" }));
-        assert!(matches!(seen.last(), Some(IoRequest::CredentialModeWrite { mode }) if mode == "mock"));
-        let (bad, seen) = run(json!(["credential-mode", {"mode": "hybrid"}, routes()]), go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| panic!("an invalid mode asks no flag, asked {request:?}"))
-        });
-        assert_eq!(payload_of(&bad, "BAD")["error"], "mode must be \"mock\" or \"real\"");
-        assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialModeWrite { .. })));
-    }
-
-    #[test]
-    fn the_catalog_includes_the_secret_knobs_the_registered_program_reads() {
-        install_registry();
-        let program: OrbitalSchema = serde_json::from_value(json!({
-            "name": "App",
-            "typeContractVersion": 1, "orbitals": [{
-                "name": "KeysOrbital",
-                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-                "traits": [{ "name": "Host", "linkedEntity": "Job",
-                    "config": { "salt": { "type": "secret", "default": "PROGRAM_SALT", "description": "The program salt." } },
-                    "stateMachine": {
-                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
-                        "transitions": [
-                            { "from": "idle", "to": "idle", "event": "GO", "effects": [["credential-list", {"service": "KeysOrbital"}, routes()]] },
-                            { "from": "idle", "to": "done", "event": "OK" },
-                            { "from": "idle", "to": "failed", "event": "BAD" },
-                            { "from": "idle", "to": "idle", "event": "PROBE", "effects": [["credential-status", {"credential": "@config.salt", "scope": "app"}, routes()]] }
-                        ]
-                    } }]
-            }]
-        }))
-        .unwrap();
-        let server = EmbeddedServer::new(program).unwrap();
-        let mut progress = server.start("KeysOrbital", go(None)).unwrap();
-        let response = loop {
-            match progress {
-                ServerProgress::Done(response) => break response,
-                ServerProgress::Await { flight, requests } => {
-                    let replies = requests
-                        .into_iter()
-                        .map(|pending| IoReply {
-                            id: pending.id,
-                            answer: match &pending.request {
-                                IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
-                                IoRequest::Secret { .. } => IoAnswer::Secret(Ok(None)),
-                                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(None)),
-                                IoRequest::CredentialModeRead => IoAnswer::CredentialModeRead(Ok(None)),
-                                other => panic!("the fixture asks for {other:?}"),
-                            },
-                        })
-                        .collect();
-                    progress = server.resume(flight, replies).unwrap();
-                }
-                ServerProgress::Queued { ticket } => panic!("a lone request is never queued (ticket {ticket})"),
-            }
-        };
-        let listed = payload_of(&response, "OK");
-        let entries = listed["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1, "{listed}");
-        assert_eq!(entries[0]["id"], "KeysOrbital/PROGRAM_SALT");
-        assert_eq!(entries[0]["description"], "The program salt.");
-        assert_eq!(entries[0]["source"], "none");
-    }
-
-    #[test]
-    fn credential_rotate_and_remove_need_a_store_and_an_admin() {
-        let (response, _) = run(json!(["credential-rotate", routes()]), go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| match request {
-                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(None)),
-                other => panic!("the fixture asks for {other:?}"),
-            })
-        });
-        assert_eq!(payload_of(&response, "BAD")["error"], "No credential store is installed on this host");
-        let (rotated, _) = run(json!(["credential-rotate", routes()]), go(admin()), |request| {
-            secret_none(request).unwrap_or_else(|| match request {
-                IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(
-                    orbital_core_runtime::credential_admin::StoreListing { enabled: true, entries: Vec::new() },
-                ))),
-                IoRequest::CredentialStoreRotate => IoAnswer::CredentialStoreRotate(Ok(orbital_core_runtime::credential_admin::RotateCounts {
-                    rotated: 2,
-                    already_current: 1,
-                    unreadable: 0,
-                })),
-                other => panic!("the fixture asks for {other:?}"),
-            })
-        });
-        assert_eq!(payload_of(&rotated, "OK"), json!({ "rotated": 2.0, "alreadyCurrent": 1.0, "unreadable": 0.0 }));
+        assert_eq!(payload_of(&response, "BAD"), json!({ "error": "No credential store is installed on this host" }));
     }
 
     #[test]

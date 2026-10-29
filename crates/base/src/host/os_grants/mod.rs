@@ -88,6 +88,15 @@ macro_rules! named_kinds {
     };
 }
 
+/// What a program may do with the credential store beyond the declared-credential asks: `admin` is the raw
+/// `credential-list|set|remove|test|mode|rotate` operators.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CredentialKind {
+    Admin,
+}
+
 /// What a device call does: read or write a register in an `mmio` window, wait for or acknowledge an `irq` line.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -102,6 +111,7 @@ pub enum DevKind {
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
 named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
+named_kinds!(CredentialKind { Admin => "admin" });
 named_kinds!(DevKind { Read => "read", Write => "write", Wait => "wait", Ack => "ack" });
 named_kinds!(StdioKind { In => "in", Out => "out", Err => "err" });
 named_kinds!(SysKind {
@@ -337,6 +347,10 @@ pub struct OsGrants {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<DevGrant>>"))]
     pub dev: Vec<DevGrant>,
+    /// `credentials: [admin]`: the raw credential-store operators, closed unless declared.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<CredentialKind>>"))]
+    pub credentials: Vec<CredentialKind>,
     /// `kv: { <store>: [read, write] }`: a store name, or a `*`/`?` glob over one, and the modes it grants.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<BTreeMap<String, Vec<KvMode>>>"))]

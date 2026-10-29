@@ -191,37 +191,28 @@ pub const ACCESS_CHECK_SHAPE: &[ShapeField] = &[field("allowed", "boolean")];
 /// label stored beside it (empty text when it has none, always empty after a forget).
 pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean"), field("label", "string")];
 
-/// `credential-list`: the store's state, the integrations mode, each service's status and the masked inventory.
-pub const CREDENTIAL_LIST_SHAPE: &[ShapeField] =
-    &[field("enabled", "boolean"), field("mode", "string"), field("services", "array"), field("entries", "array")];
+/// `credential-list`: whether the store can encrypt, the rows it holds (service and name, never a value) and the
+/// credentials the registered programs declare (group, name, description).
+pub const CREDENTIAL_LIST_SHAPE: &[ShapeField] = &[field("enabled", "boolean"), field("entries", "array"), field("declared", "array")];
 
-/// `credential-set`: the masked tail of what was stored.
-pub const CREDENTIAL_SET_SHAPE: &[ShapeField] =
-    &[field("saved", "boolean"), field("service", "string"), field("envVar", "string"), field("last4", "string")];
+/// `credential-set`: the row was written.
+pub const CREDENTIAL_SET_SHAPE: &[ShapeField] = &[field("saved", "boolean")];
 
 /// `credential-remove`: whether a stored row was deleted.
 pub const CREDENTIAL_REMOVE_SHAPE: &[ShapeField] = &[field("removed", "boolean")];
 
-/// `credential-test`: the presence check, never a live probe.
-pub const CREDENTIAL_TEST_SHAPE: &[ShapeField] = &[
-    field("service", "string"),
-    field("configured", "boolean"),
-    field("missing", "array"),
-    field("probed", "boolean"),
-    field("ok", "boolean"),
-    field("message", "string"),
-];
+/// `credential-test`: whether the host holds a non-empty value for the credential name.
+pub const CREDENTIAL_TEST_SHAPE: &[ShapeField] = &[field("held", "boolean")];
 
-/// `credential-mode`: the mode in force after the switch.
+/// `credential-mode`: the mode in force (after the switch when the request names one, else as the host holds it).
 pub const CREDENTIAL_MODE_SHAPE: &[ShapeField] = &[field("mode", "string")];
 
 /// `credential-rotate`: how many rows were re-encrypted, were already current, or could not be read.
 pub const CREDENTIAL_ROTATE_SHAPE: &[ShapeField] =
     &[field("rotated", "number"), field("alreadyCurrent", "number"), field("unreadable", "number")];
 
-/// A credential administration failure: the message and its code (`AUTH_ERROR` for a refused role, `VALIDATION_ERROR`
-/// for a request outside its contract; absent for any other cause).
-pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+/// A credential store failure: the host's message.
+pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
 /// A host effect's failure: the message.
 pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
@@ -553,7 +544,8 @@ mod tests {
             assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(shape), "{op}");
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE), "{op}");
         }
-        assert_eq!(undeclared_reads(&["last4", "saved"], &success_payload("credential-set", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["saved"], &success_payload("credential-set", CallVariant::Plain), &[]), Vec::<&str>::new());
+        assert_eq!(undeclared_reads(&["last4"], &success_payload("credential-set", CallVariant::Plain), &[]), vec!["last4"], "control: the masked tail is std's, not the operator's");
         assert_eq!(undeclared_reads(&["value"], &success_payload("credential-set", CallVariant::Plain), &[]), vec!["value"]);
         assert_eq!(failure_payload("random-bytes", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         assert_eq!(failure_payload("random-bytes", CallVariant::Plain, true), ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE));

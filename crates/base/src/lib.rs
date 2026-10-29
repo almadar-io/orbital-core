@@ -108,6 +108,8 @@ pub mod dispatch_mode;
 pub mod inbound;
 #[path = "contract/credential_admin.rs"]
 pub mod credential_admin;
+#[path = "contract/sandbox_manifest.rs"]
+pub mod sandbox_manifest;
 #[path = "contract/events/mod.rs"]
 pub mod events;
 

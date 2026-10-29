@@ -206,31 +206,23 @@ impl RuntimeKernel {
                     Err(message) => EffectResult::failed(effect.clone(), &message),
                 }
             }
-            Effect::CredentialAdmin { op, request, .. } => {
-                let caller = ServiceCaller::of_user(&ctx.user);
-                let catalog = || {
-                    let program = self
-                        .program_credentials()
-                        .map_err(orbital_core_base::credential_admin::Refusal::plain)?;
-                    orbital_core_base::credential_admin::catalog(&program)
-                };
-                match crate::credential_admin::run(
-                    &*self.io,
-                    *op,
-                    request,
-                    caller.as_ref(),
-                    &catalog,
-                ) {
-                    Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
-                    Err(refusal) => {
-                        let mut fields = vec![("error".into(), Value::String(refusal.message.into()))];
-                        if let Some(code) = refusal.code {
-                            fields.push(("code".into(), Value::String(code.to_string().into())));
-                        }
-                        http_failure(effect, Value::object(ValueMap::from_iter(fields)))
-                    }
-                }
-            }
+            Effect::CredentialAdmin { op, request, .. } => match (if self.os_grants().credentials_allow(orbital_core_base::os_grants::CredentialKind::Admin) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{}: the program declares no `credentials: [admin]` grant",
+                    op.name()
+                ))
+            })
+            .and_then(|()| crate::credential_admin::ask(&self.io, *op, request))
+            .and_then(|reply| self.with_declared(*op, reply))
+            {
+                Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
+                Err(message) => http_failure(
+                    effect,
+                    Value::object(ValueMap::from_iter([("error".into(), Value::String(message.into()))])),
+                ),
+            },
             other => EffectResult::noop(other.clone(), "not a host effect"),
         }
     }

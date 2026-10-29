@@ -679,32 +679,6 @@ fn a_navigate_effect_mounts_the_page_it_lands_on() {
     assert!(!core.page_entered, "the blocking dispatch mounted it");
 }
 
-struct TickRecorder(std::sync::Mutex<Vec<(String, String)>>);
-
-impl crate::client::bridge::ServerBridge for TickRecorder {
-    fn send_event_with_options(
-        &self,
-        _: &str,
-        _: &str,
-        _: Option<&str>,
-        _: Option<&str>,
-        _: orbital_core_base::value::Value,
-    ) -> Result<EventResponse, crate::client::http::BridgeError> {
-        Ok(EventResponse::success(""))
-    }
-
-    fn tick(
-        &self,
-        _: &str,
-        trait_name: &str,
-        tick_name: &str,
-        _: Option<&str>,
-    ) -> Result<EventResponse, crate::client::http::BridgeError> {
-        self.0.lock().unwrap().push((trait_name.to_string(), tick_name.to_string()));
-        Ok(EventResponse::success(""))
-    }
-}
-
 fn ticking_schema(ticks: serde_json::Value) -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "t",
@@ -727,34 +701,61 @@ fn ticking_schema(ticks: serde_json::Value) -> OrbitalSchema {
     .unwrap()
 }
 
-#[test]
-fn a_frame_tick_runs_through_the_kernel_tick_clock_on_every_host_frame() {
-    let recorder = Arc::new(TickRecorder(Default::default()));
-    let mut core = ClientCore::new(
-        ticking_schema(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }])),
-        Some(recorder.clone()),
-    );
-    assert!(core.has_ticks());
-    assert!(core.drive_ticks_blocking());
-    assert!(core.drive_ticks_blocking());
-    assert_eq!(
-        *recorder.0.lock().unwrap(),
-        [("T".to_string(), "f".to_string()), ("T".to_string(), "f".to_string())]
-    );
+fn kernel_core(ticks: serde_json::Value) -> ClientCore {
+    let schema = ticking_schema(ticks);
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    ClientCore::with_client_kernel(schema, kernel)
 }
 
 #[test]
-fn control_an_interval_tick_waits_out_its_interval_and_a_tickless_orbital_runs_nothing() {
-    let recorder = Arc::new(TickRecorder(Default::default()));
-    let mut slow = ClientCore::new(
-        ticking_schema(serde_json::json!([{ "name": "slow", "interval": "1h", "effects": [] }])),
-        Some(recorder.clone()),
-    );
+fn a_frame_tick_runs_through_the_kernel_frame_on_every_host_frame() {
+    let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]);
+    let twin = crate::embed::EmbeddedKernel::new(ticking_schema(ticks.clone()), "twin").unwrap();
+    let wire = twin.frame(0).unwrap().expect("the embedded kernel's frame fires it");
+    assert_eq!(wire.fired.len(), 1);
+    let mut core = kernel_core(ticks);
+    assert!(core.has_ticks());
+    assert!(core.drive_ticks_blocking(), "the client core fires the same tick through the same frame");
+    assert!(core.drive_ticks_blocking());
+}
+
+#[test]
+fn control_an_interval_tick_waits_out_its_interval_a_tickless_orbital_runs_nothing_and_a_bridge_core_runs_no_ticks() {
+    let mut slow = kernel_core(serde_json::json!([{ "name": "slow", "interval": "1h", "effects": [] }]));
     assert!(slow.has_ticks());
     assert!(!slow.drive_ticks_blocking());
     assert!(!slow.drive_ticks_blocking(), "still inside the hour");
-    let mut tickless = ClientCore::new(ticking_schema(serde_json::json!([])), Some(recorder.clone()));
+    let mut tickless = kernel_core(serde_json::json!([]));
     assert!(!tickless.has_ticks());
     assert!(!tickless.drive_ticks_blocking());
-    assert!(recorder.0.lock().unwrap().is_empty());
+    let mut bare = ClientCore::new(
+        ticking_schema(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }])),
+        None,
+    );
+    assert!(!bare.has_ticks() && !bare.drive_ticks_blocking(), "only a client-kernel core is driven by the frame");
+}
+
+#[test]
+fn a_visible_tick_runs_only_while_its_trait_has_rendered_output_on_screen() {
+    let ticks = serde_json::json!([{ "name": "v", "interval": "frame", "whileVisible": true, "effects": [] }]);
+    let mut core = kernel_core(ticks.clone());
+    assert!(!core.drive_ticks_blocking(), "nothing is rendered, so the [visible] tick is dropped");
+    core.trait_content.insert("T".into(), Value::Null);
+    assert!(core.drive_ticks_blocking(), "the trait's output is on screen");
+    core.trait_content.remove("T");
+    assert!(!core.drive_ticks_blocking(), "off screen again");
+    let mut always = kernel_core(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]));
+    assert!(always.drive_ticks_blocking(), "control: a tick that is not [visible] needs no presence");
+}
+
+#[test]
+fn the_mount_scopes_the_tick_clock_of_a_client_kernel_core() {
+    let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]);
+    let schema = ticking_schema(ticks);
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel.clone());
+    kernel.remount(["Other"]);
+    assert!(!core.drive_ticks_blocking(), "T is not in the mount");
+    kernel.mount(["T"]);
+    assert!(core.drive_ticks_blocking(), "mounting T starts its ticks");
 }

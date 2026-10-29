@@ -65,6 +65,13 @@ impl OsGrants {
                 grants: OsGrants { desktop: vec![*kind], ..OsGrants::default() },
             });
         }
+        for (i, kind) in self.credentials.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("credentials[{i}]"),
+                label: format!("credentials {}", kind.name()),
+                grants: OsGrants { credentials: vec![*kind], ..OsGrants::default() },
+            });
+        }
         for (i, g) in self.dev.iter().enumerate() {
             for kind in &g.kinds {
                 out.push(GrantAtom {

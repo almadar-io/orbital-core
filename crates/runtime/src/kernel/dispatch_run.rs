@@ -42,9 +42,29 @@ impl Fault {
     }
 }
 
+/// One dispatch's worklist. `steps` counts the current settle pass: the deliveries since the worklist last drained
+/// after holding more than one (EXEC-QUEUE-4). `wide` is whether it has held more than one since then.
 struct Cascade {
     queue: VecDeque<CascadeItem>,
     steps: usize,
+    wide: bool,
+}
+
+impl Cascade {
+    fn new(queue: VecDeque<CascadeItem>) -> Self {
+        Self { queue, steps: 0, wide: false }
+    }
+
+    /// Called right after a delivery is taken off the worklist: the worklist draining to empty ends a settle pass that
+    /// fanned out, and the delivery just taken starts the next one with a fresh step count.
+    fn settle_pass(&mut self) {
+        if !self.queue.is_empty() {
+            self.wide = true;
+        } else if self.wide {
+            self.wide = false;
+            self.steps = 0;
+        }
+    }
 }
 
 enum Stage {

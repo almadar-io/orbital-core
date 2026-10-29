@@ -212,6 +212,7 @@ impl OsGrants {
         extend_missing(&mut self.stdio, &other.stdio);
         extend_missing(&mut self.sys, &other.sys);
         extend_missing(&mut self.desktop, &other.desktop);
+        extend_missing(&mut self.credentials, &other.credentials);
         for (store, modes) in &other.kv {
             extend_missing(self.kv.entry(store.clone()).or_default(), modes);
         }
@@ -297,6 +298,10 @@ impl OsGrants {
 
     pub fn desktop_allows(&self, kind: DesktopKind) -> bool {
         self.desktop.contains(&kind)
+    }
+
+    pub fn credentials_allow(&self, kind: CredentialKind) -> bool {
+        self.credentials.contains(&kind)
     }
 
     /// Whether `resource` may be used for `kind`: a register access lies wholly inside a granted window, an irq line
