@@ -197,7 +197,7 @@ impl tracing::Subscriber for Lines {
                 self.0.push_str(&format!(" {}={:?}", field.name(), value));
             }
         }
-        let mut fields = Fields(String::new());
+        let mut fields = Fields(format!("{}", event.metadata().level()));
         event.record(&mut fields);
         CAPTURED.with(|c| {
             if let Some(lines) = c.borrow_mut().as_mut() {
@@ -207,7 +207,7 @@ impl tracing::Subscriber for Lines {
     }
 }
 
-fn capture_lines(body: impl FnOnce()) -> Vec<String> {
+pub(super) fn capture_lines(body: impl FnOnce()) -> Vec<String> {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         tracing::subscriber::set_global_default(Lines)

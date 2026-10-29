@@ -160,7 +160,31 @@ pub(super) fn parse_token_exchange(map: &ValueMap) -> Result<TokenExchange, Http
         None => default_exchange_cache(&exchange, "token-exchange")?,
     };
     check_exchange_cache_scope(&exchange)?;
+    check_grant_method(&exchange, "token-exchange")?;
     Ok(exchange)
+}
+
+pub(super) fn check_grant_method(exchange: &TokenExchange, scheme: &str) -> Result<(), HttpRefusal> {
+    if exchange.grant_request.as_ref().map(|request| request.method) != Some(GrantMethod::Get) {
+        return Ok(());
+    }
+    let mut carried = Vec::new();
+    if exchange.grant.grant_type().is_some() {
+        carried.push("auth.grant");
+    }
+    if !exchange.fields.is_empty() {
+        carried.push("a request body");
+    }
+    if exchange.client_auth.is_some() {
+        carried.push("auth.clientAuth");
+    }
+    if carried.is_empty() {
+        return Ok(());
+    }
+    invalid(format!(
+        "auth.grantRequest.method GET has nowhere to carry {} (scheme `{scheme}`); use method POST",
+        carried.join(", ")
+    ))
 }
 
 pub(super) fn check_exchange_cache_scope(exchange: &TokenExchange) -> Result<(), HttpRefusal> {
@@ -235,12 +259,18 @@ pub(super) fn parse_oauth2_client(map: &ValueMap) -> Result<TokenExchange, HttpR
         rotate: None,
         on_unauthorized: parse_on_unauthorized(map)?,
     };
+    check_grant_method(&exchange, "oauth2-client")?;
     exchange.store_as = default_exchange_cache(&exchange, "oauth2")?;
     Ok(exchange)
 }
 
 pub(super) fn parse_jwt_bearer(map: &ValueMap) -> Result<TokenExchange, HttpRefusal> {
     closed_keys(map, &["scheme", "key", "alg", "claims", "tokenUrl", "grant", "scope", "expiresMarginMs", "storeAs", "grantRequest", "onUnauthorized"], "auth")?;
+    if let Some(request) = map.get("grantRequest").map(parse_grant_request).transpose()? {
+        if request.method == GrantMethod::Get {
+            return invalid("auth.grantRequest.method GET has nowhere to carry the signed assertion (scheme `jwt-bearer`); use method POST");
+        }
+    }
     let key = slot_field(map, "key", "auth")?;
     let alg = orbital_core_base::jwt_alg::JwtAlg::parse(&text_field(map, "alg", "auth")?)
         .ok_or_else(|| HttpRefusal::Invalid("auth.alg must be RS256 or ES256".to_string()))?;

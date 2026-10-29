@@ -174,7 +174,7 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::Struct { .. } | OirType::File => "object".to_string(),
         OirType::Row { entity } | OirType::Reference { entity } => entity.clone(),
         OirType::TypeRef { name } | OirType::Enum { name } | OirType::Var { name } => name.clone(),
-        OirType::Integer | OirType::Money | OirType::Instant => "number".to_string(),
+        OirType::Integer | OirType::Money => "number".to_string(),
         other => serde_json::to_value(other)
             .ok()
             .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
@@ -400,12 +400,19 @@ fn first_misfit(
         OirType::Reference { .. } => {
             (!matches!(value, Value::Object(_) | Value::String(_))).then(|| Misfit::here(value, ty))
         }
-        OirType::Number | OirType::Integer | OirType::Money | OirType::Instant => {
+        OirType::Number | OirType::Integer | OirType::Money => {
             (!matches!(value, Value::Number(_))).then(|| Misfit::here(value, ty))
         }
         OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| Misfit::here(value, ty)),
-        OirType::Date | OirType::DateTime => {
-            (!matches!(value, Value::String(_) | Value::Number(_))).then(|| Misfit::here(value, ty))
+        OirType::Date | OirType::DateTime | OirType::Instant => {
+            let wanted = if matches!(ty, OirType::Date) {
+                super::system::IsoShape::Date
+            } else {
+                super::system::IsoShape::DateTime
+            };
+            let fits = matches!(value, Value::String(text)
+                if super::system::parse_iso(text).is_some_and(|(_, found)| found == wanted));
+            (!fits).then(|| Misfit::here(value, ty))
         }
         OirType::Bytes => match value {
             Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,

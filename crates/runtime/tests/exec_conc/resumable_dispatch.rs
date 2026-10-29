@@ -901,8 +901,38 @@ fn one_stamp_serves_the_whole_dispatch_across_awaits() {
         .map(|e| e["effect"]["payload"]["at"].clone())
         .collect();
     assert_eq!(ats.len(), 2, "{ats:?}");
-    assert!(ats[0].is_number());
+    assert!(is_iso_instant(&ats[0]), "{ats:?}");
     assert_eq!(ats[0], ats[1]);
+}
+
+fn is_iso_instant(value: &Json) -> bool {
+    value
+        .as_str()
+        .is_some_and(|text| chrono::DateTime::parse_from_rfc3339(text).is_ok())
+}
+
+#[test]
+fn control_an_instant_is_iso_text_with_a_zone_and_not_a_number_or_a_bare_date() {
+    assert!(is_iso_instant(&json!("2026-10-29T08:15:30.123Z")));
+    assert!(is_iso_instant(&json!("2026-10-29T08:15:30+02:00")));
+    assert!(!is_iso_instant(&json!(1_761_725_730_123_u64)));
+    assert!(!is_iso_instant(&json!("2026-10-29")));
+    assert!(!is_iso_instant(&json!("2026-10-29T08:15:30")));
+}
+
+#[test]
+fn every_emitted_event_of_the_embedded_loop_carries_its_source_orbital() {
+    let mut seen = 0;
+    for (name, setup) in every_fixture() {
+        let orbital = json!(orbital_of(&setup));
+        for response in run_json_loop(&setup) {
+            for emitted in response["emittedEvents"].as_array().unwrap() {
+                assert_eq!(emitted["source"]["orbital"], orbital, "{name}: {emitted}");
+                seen += 1;
+            }
+        }
+    }
+    assert!(seen > 0);
 }
 
 #[test]
@@ -1101,13 +1131,13 @@ fn wire_of(text: &str) -> Wire {
     let value: Json = serde_json::from_str(text).unwrap();
     match value["status"].as_str().unwrap() {
         "done" => {
-            // The blocking responses carry no hop trace and no emitter identity: both are the server role's
+            // The blocking responses carry no hop trace and no emitter ids: both are the server role's
             // additions (`tests/server_transitions.rs`, `tests/server_emit_stamp.rs`).
             let mut response = value["response"].clone();
             response.as_object_mut().unwrap().remove("transitions");
             for emitted in response["emittedEvents"].as_array_mut().unwrap() {
                 if let Some(source) = emitted["source"].as_object_mut() {
-                    for key in ["orbital", "orbitalId", "traitId", "eventId"] {
+                    for key in ["orbitalId", "traitId", "eventId"] {
                         source.remove(key);
                     }
                 }

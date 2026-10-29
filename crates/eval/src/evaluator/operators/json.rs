@@ -302,6 +302,9 @@ impl Operator for JsonStringifyOp {
                 (flag(&options, "pretty")?, flag(&options, "sorted")?)
             }
         };
+        if !sorted {
+            return Ok(Value::String(orbital_core_base::json_value::value_json_string(&val, pretty).into()));
+        }
         let json = value_to_json(&val);
         let json = if sorted {
             crate::util::canonical_json::canonical_json(&json)

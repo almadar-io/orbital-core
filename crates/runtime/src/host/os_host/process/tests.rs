@@ -162,12 +162,28 @@ fn a_signal_outside_the_closed_set_is_invalid() {
     let (g, h) = (grants(), OsHandles::default());
     let r = call(&g, &h, OsOp::Spawn, sh("exec sleep 30", &[])).expect("spawn");
     let pid = field(&r, "pid");
-    for bad in [s("SEGV"), Value::Number(11.0), s("term")] {
+    for bad in [s("SEGV"), Value::Number(11.0), Value::Number(9.0), s("term")] {
         let e = call(&g, &h, OsOp::Kill, vec![pid.clone(), bad]).expect_err("bad signal");
         assert_eq!(e.kind, OsErrorKind::Invalid);
     }
-    call(&g, &h, OsOp::Kill, vec![pid.clone(), Value::Number(9.0)]).expect("numeric KILL");
+    call(&g, &h, OsOp::Kill, vec![pid.clone(), s("KILL")]).expect("control: a declared name");
     call(&g, &h, OsOp::Wait, vec![pid]).expect("wait");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_signals_are_exactly_the_names_the_operator_table_declares() {
+    use orbital_core_base::language::registry::get_operator;
+    let declared = table_signal_names();
+    assert_eq!(declared.len(), 9);
+    for name in &declared {
+        assert!(libc_signal(name).is_some(), "the host maps {name}");
+        assert!(signal_number(&s(name), OsOp::Kill).is_ok(), "{name}");
+    }
+    let watched = get_operator(OsOp::WatchSignal.name()).and_then(|operator| operator.params[0].ty.literal_strings());
+    assert_eq!(watched, Some(declared.clone()), "os/watch-signal declares the same set");
+    let refused = signal_number(&s("ALRM"), OsOp::Kill).expect_err("a name outside the table");
+    assert!(declared.iter().all(|name| refused.message.contains(name)), "{}", refused.message);
 }
 
 #[test]

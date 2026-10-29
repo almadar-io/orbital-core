@@ -563,7 +563,7 @@ pub enum FieldType {
     Date,
     Datetime,
     Timestamp,
-    /// Epoch milliseconds the clock produced; a number at rest.
+    /// A moment as ISO text with a zone (`datetime` with the clock as its only source); text at rest.
     Instant,
     /// Semantic string domains. `.lolo` already types `date`/`datetime` rather
     /// than annotating them, so a field's domain belongs in the type system for

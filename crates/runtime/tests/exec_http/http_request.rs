@@ -1833,6 +1833,98 @@ mod grant_request_contract {
         }
     }
 
+    fn metadata_auth() -> serde_json::Value {
+        json!({"scheme":"token-exchange","tokenUrl":"https://auth.example.com/computeMetadata/v1/token",
+            "expiresMarginMs":300000,
+            "grantRequest":{"method":"GET","headers":{"Metadata-Flavor":"Google"},"timeoutMs":2000}})
+    }
+
+    #[test]
+    fn a_get_grant_sends_get_with_the_declared_headers_no_body_and_no_content_type() {
+        let call = spec(json!({"auth":metadata_auth()}));
+        let request = token_exchange_request(call.auth.as_ref().unwrap(), &no_secrets).unwrap();
+        assert_eq!(request.method, "GET");
+        assert_eq!(request.url, "https://auth.example.com/computeMetadata/v1/token");
+        assert_eq!(request.headers, vec![("Metadata-Flavor".to_string(), "Google".to_string())]);
+        assert!(request.body.is_empty());
+        assert_eq!(header(&request, "content-type"), None);
+        assert_eq!(request.timeout, Some(Duration::from_millis(2000)));
+    }
+
+    #[test]
+    fn a_get_grant_token_is_cached_for_expires_in_minus_the_margin_and_a_hit_skips_the_grant() {
+        let call = spec(json!({"auth":metadata_auth()}));
+        let cache = token_cache_name(call.auth.as_ref().unwrap()).unwrap();
+        let (mut d, step) = HttpCallDriver::start(call.clone(), egress_with_auth(), None);
+        assert_eq!(step, secret_ask(&cache, SecretScope::App));
+        let grant = http_ask(d.resume(HttpAnswer::Secret(Ok(None))));
+        assert_eq!(grant.method, "GET");
+        let step = d.resume(HttpAnswer::Http(Ok(response(200, &[], r#"{"access_token":"MT","expires_in":3600,"token_type":"Bearer"}"#))));
+        assert_eq!(step, HttpStep::Ask(HttpAsk::SecretSet { name: cache.clone(), value: "MT".into(), ttl_ms: 3_300_000, scope: SecretScope::App }));
+        let api = http_ask(d.resume(HttpAnswer::SecretSet(Ok(()))));
+        assert_eq!(header(&api, "authorization"), Some("Bearer MT"));
+        let (mut hit, _) = HttpCallDriver::start(call.clone(), egress_with_auth(), None);
+        assert_eq!(header(&http_ask(hit.resume(ok_secret("CACHED"))), "authorization"), Some("Bearer CACHED"));
+        let (mut expired, _) = HttpCallDriver::start(call, egress_with_auth(), None);
+        assert_eq!(http_ask(expired.resume(HttpAnswer::Secret(Ok(None)))).method, "GET");
+    }
+
+    #[test]
+    fn a_grant_without_method_posts_exactly_as_before_and_post_is_the_same_spelling() {
+        let credential = json!({"client_email":"service@example.com",
+            "private_key":include_str!("../fixtures/jwt/rs256-pkcs8.pem")}).to_string();
+        let secrets = |slot: &CredentialSlot| {
+            if slot.name == "SERVICE_ACCOUNT" { Some(credential.clone()) } else { vault(slot) }
+        };
+        for auth in grant_auths() {
+            let baseline = spec(json!({"auth":auth.clone()}));
+            let baseline = token_exchange_request(baseline.auth.as_ref().unwrap(), &secrets).unwrap();
+            assert_eq!(baseline.method, "POST");
+            assert!(header(&baseline, "content-type").is_some());
+            for options in [json!({}), json!({"method":"POST"})] {
+                let mut configured = auth.clone();
+                configured["grantRequest"] = options;
+                let call = spec(json!({"auth":configured}));
+                let request = token_exchange_request(call.auth.as_ref().unwrap(), &secrets).unwrap();
+                assert_eq!(request.method, baseline.method);
+                assert_eq!(request.url, baseline.url);
+                assert_eq!(request.headers, baseline.headers);
+                if auth["scheme"] != "jwt-bearer" { assert_eq!(request.body, baseline.body); }
+            }
+        }
+    }
+
+    #[test]
+    fn a_get_grant_with_nothing_to_carry_is_accepted_and_one_that_carries_a_body_is_refused_naming_the_scheme() {
+        assert!(parse(HttpMethod::Post, "/x", json!({"auth":metadata_auth()})).is_ok());
+        let mut custom = metadata_auth();
+        custom["grant"] = json!("custom");
+        custom["body"] = json!({"form":{}});
+        assert!(parse(HttpMethod::Post, "/x", json!({"auth":custom})).is_ok());
+        for (scheme, auth) in [
+            ("token-exchange", login_auth()),
+            ("token-exchange", refresh_auth("basic")),
+            ("token-exchange", json!({"scheme":"token-exchange","tokenUrl":"https://auth.example.com/token","grant":"client_credentials"})),
+            ("token-exchange", json!({"scheme":"token-exchange","tokenUrl":"https://auth.example.com/token","body":{"form":{"k":"v"}}})),
+            ("oauth2-client", grant_auths()[1].clone()),
+            ("jwt-bearer", grant_auths()[2].clone()),
+        ] {
+            let mut get = auth;
+            get["grantRequest"] = json!({"method":"GET"});
+            match parse(HttpMethod::Post, "/x", json!({"auth":get.clone()})) {
+                Err(HttpRefusal::Invalid(message)) => {
+                    assert!(message.contains("GET") && message.contains(scheme), "{get}: {message}");
+                }
+                other => panic!("{get}: expected a refusal, got {other:?}"),
+            }
+        }
+        for method in [json!("get"), json!("PUT"), json!(1), json!(null), json!("")] {
+            let mut auth = metadata_auth();
+            auth["grantRequest"]["method"] = method.clone();
+            assert!(matches!(parse(HttpMethod::Post, "/x", json!({"auth":auth})), Err(HttpRefusal::Invalid(_))), "{method}");
+        }
+    }
+
     #[test]
     fn grant_request_headers_refuse_owned_names_invalid_syntax_and_secret_values() {
         for auth in grant_auths() {

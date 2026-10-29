@@ -148,13 +148,14 @@ pub(super) fn default_of(def: &EntityDefinition, field: &str) -> SExpression {
 
 pub fn field_sort(f: &FieldDefinition) -> Option<Sort> {
     match f.field_type {
-        FieldType::Number | FieldType::Int | FieldType::Money | FieldType::Instant => Some(Sort::Num),
+        FieldType::Number | FieldType::Int | FieldType::Money => Some(Sort::Num),
         FieldType::Boolean => Some(Sort::Bool),
         FieldType::Enum => Some(Sort::Str(f.values.clone())),
         FieldType::String
         | FieldType::Date
         | FieldType::Datetime
         | FieldType::Timestamp
+        | FieldType::Instant
         | FieldType::Email
         | FieldType::Url
         | FieldType::Phone
@@ -166,9 +167,9 @@ pub fn field_sort(f: &FieldDefinition) -> Option<Sort> {
 
 pub(super) fn payload_sort(f: &PayloadField) -> Option<Sort> {
     match f.field_type.as_str() {
-        "number" | "money" | "instant" => Some(Sort::Num),
+        "number" | "money" => Some(Sort::Num),
         "boolean" => Some(Sort::Bool),
-        "string" | "enum" | "date" | "datetime" | "timestamp" | "email" | "url" | "phone"
+        "string" | "enum" | "date" | "datetime" | "timestamp" | "instant" | "email" | "url" | "phone"
         | "uuid" | "image" => Some(Sort::Str(f.values.clone())),
         _ => None,
     }

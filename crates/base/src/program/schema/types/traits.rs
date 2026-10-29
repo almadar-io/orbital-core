@@ -419,15 +419,15 @@ pub struct TraitDefinition {
 
     /// Events this trait emits
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub emits: Option<Vec<EmitDefinition>>,
+    pub emits: Option<crate::value::Shared<Vec<EmitDefinition>>>,
 
     /// Events this trait listens to
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub listens: Option<Vec<ListenDefinition>>,
+    pub listens: Option<crate::value::Shared<Vec<ListenDefinition>>>,
 
     /// State machine definition
     #[serde(rename = "stateMachine")]
-    pub state_machine: StateMachine,
+    pub state_machine: crate::value::Shared<StateMachine>,
 
     /// Scheduled ticks
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -499,11 +499,7 @@ impl TraitDefinition {
     /// Every proposition the trait states: each state's `@holds` and each transition's `@ensures`. They read the same
     /// roots as a guard, so every rewrite of the trait's guards (renames, config fold) applies to them too.
     pub fn propositions_mut(&mut self) -> impl Iterator<Item = &mut SExpression> {
-        let StateMachine { states, transitions, .. } = &mut self.state_machine;
-        states
-            .iter_mut()
-            .filter_map(|s| s.holds.as_mut())
-            .chain(transitions.iter_mut().flat_map(|t| t.ensures.iter_mut().flatten()))
+        self.state_machine.propositions_mut()
     }
 }
 

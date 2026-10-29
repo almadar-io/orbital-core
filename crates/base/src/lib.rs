@@ -12,6 +12,8 @@ extern crate orbital_core_std as std;
 pub mod value;
 #[path = "program/intern.rs"]
 pub mod intern;
+#[path = "program/value_serialize.rs"]
+pub mod value_serialize;
 #[path = "program/shared_entity.rs"]
 pub mod shared_entity;
 #[path = "program/json_value.rs"]

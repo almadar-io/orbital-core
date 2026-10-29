@@ -59,19 +59,21 @@ pub fn normalize_fn_shapes(schema: &mut OrbitalSchema) {
             match tref {
                 TraitReference::Inline(td) => {
                     let td = Arc::make_mut(td);
-                    for p in td.propositions_mut() {
-                        p.normalize_fn_shapes();
-                    }
-                    for tr in &mut td.state_machine.transitions {
-                        if let Some(g) = tr.guard.as_mut() {
-                            g.normalize_fn_shapes();
+                    td.state_machine.edit(|machine| {
+                        for p in machine.propositions_mut() {
+                            p.normalize_fn_shapes();
                         }
-                        if let Some(effs) = tr.effects.as_mut() {
-                            for e in effs.iter_mut() {
-                                e.normalize_fn_shapes();
+                        for tr in &mut machine.transitions {
+                            if let Some(g) = tr.guard.as_mut() {
+                                g.normalize_fn_shapes();
+                            }
+                            if let Some(effs) = tr.effects.as_mut() {
+                                for e in effs.iter_mut() {
+                                    e.normalize_fn_shapes();
+                                }
                             }
                         }
-                    }
+                    });
                     if let Some(ticks) = td.ticks.as_mut() {
                         for tk in ticks.iter_mut() {
                             if let Some(g) = tk.guard.as_mut() {

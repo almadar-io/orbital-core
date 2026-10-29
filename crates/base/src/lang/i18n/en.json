@@ -1045,7 +1045,6 @@
     "time/weekday": "time/weekday",
     "time/year": "time/year",
     "trace/emit": "trace/emit",
-    "trace/log": "trace/log",
     "tree/fold": "tree/fold",
     "unquote": "unquote",
     "validate/array": "validate/array",

@@ -31,7 +31,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::language::registry::{get_operator, OperatorTypeRef, OperatorTypeRefKind};
 use crate::os::OsOp;
+use crate::sync::OnceLock;
 
 /// The shape an operator's success emit carries.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -460,148 +462,59 @@ pub const PERSIST_BATCH_FAILURE_SHAPE: &[ShapeField] = &[
 /// `persist batch` hands back a summary of the attempted operations.
 pub const PERSIST_BATCH_FIELDS: &[&str] = &["operations", "completedCount", "totalCount"];
 
-const OS_NONE: &[ShapeField] = &[];
-const OS_DATA: &[ShapeField] = &[field("data", "bytes")];
-const OS_BYTES: &[ShapeField] = &[field("bytes", "number")];
-const OS_FD: &[ShapeField] = &[field("fd", "number")];
-const OS_READ: &[ShapeField] = &[field("data", "bytes"), field("eof", "boolean")];
-const OS_OFFSET: &[ShapeField] = &[field("offset", "number")];
-const OS_TARGET: &[ShapeField] = &[field("target", "string")];
-const OS_ENTRIES: &[ShapeField] = &[field("entries", "array")];
-const OS_PATHS: &[ShapeField] = &[field("paths", "array")];
-const OS_PATH: &[ShapeField] = &[field("path", "string")];
-const OS_STAT: &[ShapeField] = &[
-    field("kind", "string"),
-    field("size", "number"),
-    field("mode", "number"),
-    field("uid", "number"),
-    field("gid", "number"),
-    field("atime", "number"),
-    field("mtime", "number"),
-    field("ctime", "number"),
-];
-const OS_OK: &[ShapeField] = &[field("ok", "boolean")];
-const OS_SPAWNED: &[ShapeField] = &[
-    field("pid", "number"),
-    field("stdin", "number"),
-    field("stdout", "number"),
-    field("stderr", "number"),
-];
-const OS_EXIT: &[ShapeField] = &[field("code", "number"), field("signal", "number")];
-const OS_PID: &[ShapeField] = &[field("pid", "number")];
-const KV_STORED_KEY: &[ShapeField] = &[field("storedKey", "string")];
-const KV_EXISTED: &[ShapeField] = &[field("existed", "boolean")];
-const KV_APPLIED: &[ShapeField] = &[field("applied", "number")];
-const OS_VALUE: &[ShapeField] = &[field("value", "string")];
-const OS_NAMES: &[ShapeField] = &[field("names", "array")];
-const OS_EOF: &[ShapeField] = &[field("eof", "boolean")];
-const OS_TTY_SIZE: &[ShapeField] = &[field("rows", "number"), field("cols", "number")];
-const OS_SOCK: &[ShapeField] = &[field("sock", "number")];
-const OS_LISTENING: &[ShapeField] = &[field("sock", "number"), field("address", "string"), field("port", "number")];
-const OS_ACCEPTED: &[ShapeField] = &[field("sock", "number"), field("peer", "string")];
-const OS_RECVFROM: &[ShapeField] = &[field("data", "bytes"), field("peer", "string")];
-const OS_ADDRESSES: &[ShapeField] = &[field("addresses", "array")];
-const OS_NANOS: &[ShapeField] = &[field("nanos", "number")];
-const OS_REGISTER: &[ShapeField] = &[field("value", "int")];
-const OS_IRQ: &[ShapeField] = &[field("irq", "int")];
-const OS_UID: &[ShapeField] = &[field("uid", "number")];
-const OS_GID: &[ShapeField] = &[field("gid", "number")];
-const OS_USERNAME: &[ShapeField] = &[field("username", "string")];
-const OS_GROUP: &[ShapeField] = &[field("gid", "number"), field("members", "array")];
-const OS_EVENT_FILE: &[ShapeField] = &[
-    field("path", "string"),
-    field("name", "string"),
-    field("dir", "string"),
-    field("timestamp", "number"),
-    field("kind", "string"),
-];
-const OS_EVENT_PROCESS: &[ShapeField] = &[
-    field("pid", "number"),
-    field("name", "string"),
-    field("exitCode", "number"),
-    field("signal", "string"),
-    field("args", "array"),
-    field("duration", "number"),
-];
-const OS_EVENT_SIGNAL: &[ShapeField] = &[field("signal", "string")];
-const OS_EVENT_ENV: &[ShapeField] = &[field("name", "string"), field("value", "string")];
-const OS_EVENT_PORT: &[ShapeField] = &[field("port", "number"), field("open", "boolean")];
-const OS_EVENT_CRON: &[ShapeField] = &[field("scheduledAt", "number")];
-
 /// An `os/` failure: the message and its closed kind (`denied`, `not-found`, `exists`, `invalid`, `io`,
 /// `timeout`, `unsupported`, `closed`).
 pub const OS_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("kind", "string")];
 
-/// What one `os/` operation emits: its final answer on `emit.success`, and each event of a stream on
-/// `emit.onMessage` (opaque for a single-answer op). The system-information and desktop ops state no
-/// payload in the contract, so theirs is opaque.
+/// What one `os/` or `kv/` operation emits, read from the operator table's `effect` (`produces`, `events`,
+/// `unrouted`): its final answer on `emit.success`, each event of a stream on `emit.onMessage` and, for a stream op,
+/// its answer when called with no `onMessage` route. A payload the table does not declare is opaque.
 struct OsContract {
     success: ProducedPayload,
     event: ProducedPayload,
+    unrouted: ProducedPayload,
 }
 
-fn os_contract(op: OsOp) -> OsContract {
-    let single = |shape: &'static [ShapeField]| OsContract {
-        success: ProducedPayload::Shape(shape),
-        event: ProducedPayload::Opaque,
+fn table_payload(op: OsOp, declared: Option<&OperatorTypeRef>) -> ProducedPayload {
+    let Some(declared) = declared else {
+        return ProducedPayload::Opaque;
     };
-    let stream = |success: &'static [ShapeField], event: &'static [ShapeField]| OsContract {
-        success: ProducedPayload::Shape(success),
-        event: ProducedPayload::Shape(event),
+    let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = declared else {
+        panic!("the operator table declares a payload for `{}` that is not an object", op.name());
     };
-    let unstated = || OsContract { success: ProducedPayload::Opaque, event: ProducedPayload::Opaque };
-    match op {
-        OsOp::ReadFile => single(OS_DATA),
-        OsOp::WriteFile | OsOp::AppendFile | OsOp::Write | OsOp::Send | OsOp::Sendto | OsOp::StdoutWrite
-        | OsOp::StderrWrite => single(OS_BYTES),
-        OsOp::Open => single(OS_FD),
-        OsOp::Read | OsOp::Recv => single(OS_READ),
-        OsOp::Seek => single(OS_OFFSET),
-        OsOp::Close | OsOp::Truncate | OsOp::Fsync | OsOp::Copy | OsOp::Rename | OsOp::Remove | OsOp::Link
-        | OsOp::Symlink | OsOp::Mkdir | OsOp::Rmdir | OsOp::Chdir | OsOp::Chmod | OsOp::Chown | OsOp::Utimes
-        | OsOp::Kill | OsOp::Setenv | OsOp::Unsetenv | OsOp::Shutdown => single(OS_NONE),
-        OsOp::Readlink => single(OS_TARGET),
-        OsOp::WatchFiles => stream(OS_NONE, OS_EVENT_FILE),
-        OsOp::ListDir => single(OS_ENTRIES),
-        OsOp::Glob => single(OS_PATHS),
-        OsOp::Mktemp | OsOp::Realpath | OsOp::Cwd | OsOp::CurrentExe => single(OS_PATH),
-        OsOp::Stat | OsOp::Lstat => single(OS_STAT),
-        OsOp::Access | OsOp::Exists | OsOp::Isatty => single(OS_OK),
-        OsOp::Spawn => single(OS_SPAWNED),
-        OsOp::Wait => single(OS_EXIT),
-        OsOp::Pid | OsOp::Ppid => single(OS_PID),
-        OsOp::WatchProcess => stream(OS_NONE, OS_EVENT_PROCESS),
-        OsOp::WatchSignal => stream(OS_NONE, OS_EVENT_SIGNAL),
-        OsOp::Getenv => single(OS_VALUE),
-        OsOp::Environ => single(OS_NAMES),
-        OsOp::WatchEnv => stream(OS_NONE, OS_EVENT_ENV),
-        OsOp::StdinRead => stream(OS_EOF, OS_DATA),
-        OsOp::TtySize => single(OS_TTY_SIZE),
-        OsOp::TcpConnect | OsOp::UdpBind => single(OS_SOCK),
-        OsOp::TcpListen => stream(OS_LISTENING, OS_ACCEPTED),
-        OsOp::Recvfrom => single(OS_RECVFROM),
-        OsOp::DnsResolve => single(OS_ADDRESSES),
-        OsOp::WatchPort => stream(OS_NONE, OS_EVENT_PORT),
-        OsOp::ClockMonotonic => single(OS_NANOS),
-        OsOp::Uid => single(OS_UID),
-        OsOp::Gid => single(OS_GID),
-        OsOp::Username => single(OS_USERNAME),
-        OsOp::GroupOf => single(OS_GROUP),
-        OsOp::WatchCron => stream(OS_NONE, OS_EVENT_CRON),
-        OsOp::CpuUsage | OsOp::MemoryInfo | OsOp::Uptime | OsOp::LoadAvg | OsOp::Hostname | OsOp::Uname
-        | OsOp::DiskUsage | OsOp::Mounts | OsOp::DiskIo | OsOp::NetworkInterfaces | OsOp::NetworkStats
-        | OsOp::NetworkConnected | OsOp::DefaultGateway | OsOp::BatteryStatus | OsOp::AcPower
-        | OsOp::ThermalZones | OsOp::Notify | OsOp::Speak | OsOp::BrightnessGet | OsOp::BrightnessSet
-        | OsOp::VolumeGet | OsOp::VolumeSet | OsOp::VolumeMute | OsOp::Suspend | OsOp::Hibernate => unstated(),
-        OsOp::KvGet => unstated(),
-        OsOp::KvPut => single(KV_STORED_KEY),
-        OsOp::KvDelete => single(KV_EXISTED),
-        OsOp::KvScan => single(OS_ENTRIES),
-        OsOp::KvBatch => single(KV_APPLIED),
-        OsOp::MmioRead => single(OS_REGISTER),
-        OsOp::IrqWait => single(OS_IRQ),
-        OsOp::MmioWrite | OsOp::IrqAck => single(OS_NONE),
-    }
+    let mut names: Vec<&String> = fields.keys().collect();
+    names.sort_unstable();
+    let shape: Vec<ShapeField> = names
+        .into_iter()
+        .map(|name| ShapeField {
+            name: Box::leak(name.clone().into_boxed_str()),
+            field_type: Box::leak(fields[name].kind_name().to_string().into_boxed_str()),
+            fields: &[],
+        })
+        .collect();
+    ProducedPayload::Shape(Box::leak(shape.into_boxed_slice()))
+}
+
+fn os_contract(op: OsOp) -> &'static OsContract {
+    static CONTRACTS: OnceLock<Vec<OsContract>> = OnceLock::new();
+    let contracts = CONTRACTS.get_or_init(|| {
+        OsOp::ALL
+            .iter()
+            .map(|op| {
+                let effect = get_operator(op.name()).and_then(|operator| operator.effect.as_ref());
+                OsContract {
+                    success: table_payload(*op, effect.and_then(|e| e.produces.as_ref())),
+                    event: table_payload(*op, effect.and_then(|e| e.events.as_ref())),
+                    unrouted: match effect.and_then(|e| e.unrouted.as_ref()) {
+                        Some(unrouted) => table_payload(*op, Some(unrouted)),
+                        None => table_payload(*op, effect.and_then(|e| e.produces.as_ref())),
+                    },
+                }
+            })
+            .collect()
+    });
+    let at = OsOp::ALL.iter().position(|candidate| *candidate == op).expect("every OsOp is in ALL");
+    &contracts[at]
 }
 
 /// What `operator` emits on success at a call site.
@@ -612,11 +525,9 @@ fn os_contract(op: OsOp) -> OsContract {
 /// [`ProducedPayload::Opaque`] rather than guessing "create" -- a wrong guess
 /// would report against the wrong contract), or an `http` call's `paginate`.
 pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload {
-    if operator == "os/stdin-read" && variant != CallVariant::StdinStream {
-        return ProducedPayload::Shape(OS_READ);
-    }
     if let Some(op) = OsOp::from_name(operator) {
-        return os_contract(op).success;
+        let contract = os_contract(op);
+        return if variant == CallVariant::StdinStream { contract.success.clone() } else { contract.unrouted.clone() };
     }
     if let Some(op) = crate::tab::TabOp::from_name(operator) {
         return ProducedPayload::Shape(tab_success_shape(op));
@@ -708,7 +619,7 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
 /// What `operator` emits on `emit.onMessage`: an `http` `stream`, or each event of a streaming `os/` op.
 pub fn message_payload(operator: &str) -> ProducedPayload {
     if let Some(op) = OsOp::from_name(operator) {
-        return os_contract(op).event;
+        return os_contract(op).event.clone();
     }
     match operator {
         "http" => ProducedPayload::Shape(HTTP_STREAM_EVENT_SHAPE),
@@ -758,6 +669,14 @@ pub fn undeclared_reads<'a>(
 mod tests {
     use super::*;
 
+    #[derive(Debug, PartialEq)]
+    struct Pairs(&'static [(&'static str, &'static str)]);
+
+    fn pairs(payload: ProducedPayload) -> Pairs {
+        let ProducedPayload::Shape(shape) = payload else { panic!("a shape: {payload:?}") };
+        Pairs(Box::leak(shape.iter().map(|f| (f.name, f.field_type)).collect::<Vec<_>>().into_boxed_slice()))
+    }
+
     #[test]
     fn os_binary_reads_declare_bytes_while_text_facts_stay_strings() {
         for operator in ["os/read-file", "os/read", "os/recv", "os/recvfrom"] {
@@ -769,28 +688,25 @@ mod tests {
         let ProducedPayload::Shape(shape) = message_payload("os/stdin-read") else {
             panic!("stdin chunks must declare their payload");
         };
-        assert_eq!(shape, &[field("data", "bytes")]);
-        assert_eq!(success_payload("os/getenv", CallVariant::Plain), ProducedPayload::Shape(OS_VALUE));
-        assert_eq!(OS_VALUE, &[field("value", "string")]);
+        assert_eq!(pairs(ProducedPayload::Shape(shape)), Pairs(&[("data", "bytes"), ("key", "string")]));
+        assert_eq!(pairs(success_payload("os/getenv", CallVariant::Plain)), Pairs(&[("key", "string"), ("value", "string")]));
     }
 
     #[test]
     fn device_calls_declare_an_int_register_value_and_an_irq_line() {
-        assert_eq!(success_payload("os/mmio-read", CallVariant::Plain), ProducedPayload::Shape(OS_REGISTER));
-        assert_eq!(OS_REGISTER, &[field("value", "int")]);
-        assert_eq!(success_payload("os/irq-wait", CallVariant::Plain), ProducedPayload::Shape(OS_IRQ));
-        assert_eq!(OS_IRQ, &[field("irq", "int")]);
+        assert_eq!(pairs(success_payload("os/mmio-read", CallVariant::Plain)), Pairs(&[("key", "string"), ("value", "int")]));
+        assert_eq!(pairs(success_payload("os/irq-wait", CallVariant::Plain)), Pairs(&[("irq", "int"), ("key", "string")]));
         for operator in ["os/mmio-write", "os/irq-ack"] {
-            assert_eq!(success_payload(operator, CallVariant::Plain), ProducedPayload::Shape(OS_NONE), "{operator}");
+            assert_eq!(pairs(success_payload(operator, CallVariant::Plain)), Pairs(&[("key", "string")]), "{operator}");
         }
         assert_eq!(message_payload("os/irq-wait"), ProducedPayload::Opaque, "control: a single answer has no stream event");
     }
 
     #[test]
     fn stdin_success_is_narrowed_between_single_read_and_stream_end() {
-        assert_eq!(success_payload("os/stdin-read", CallVariant::Plain), ProducedPayload::Shape(OS_READ));
-        assert_eq!(success_payload("os/stdin-read", CallVariant::StdinStream), ProducedPayload::Shape(OS_EOF));
-        assert_eq!(message_payload("os/stdin-read"), ProducedPayload::Shape(OS_DATA));
+        assert_eq!(pairs(success_payload("os/stdin-read", CallVariant::Plain)), pairs(success_payload("os/read", CallVariant::Plain)));
+        assert_eq!(pairs(success_payload("os/stdin-read", CallVariant::StdinStream)), Pairs(&[("eof", "boolean"), ("key", "string")]));
+        assert_eq!(pairs(message_payload("os/stdin-read")), Pairs(&[("data", "bytes"), ("key", "string")]));
     }
 
     #[test]
@@ -820,8 +736,36 @@ mod tests {
     }
 
     #[test]
+    fn keyed_socket_answers_and_accepted_connections_declare_the_call_key() {
+        for (operator, event) in [("os/send", false), ("os/recv", false), ("os/tcp-listen", false), ("os/tcp-listen", true)] {
+            let payload = if event { message_payload(operator) } else { success_payload(operator, CallVariant::Plain) };
+            let ProducedPayload::Shape(shape) = payload else { panic!("{operator} declares its payload") };
+            assert!(shape.iter().any(|f| f.name == "key" && f.field_type == "string"), "{operator} event={event}");
+        }
+        assert_eq!(message_payload("os/send"), ProducedPayload::Opaque, "control: a single answer has no event");
+    }
+
+    #[test]
+    fn a_file_event_carries_its_instant_as_text() {
+        let ProducedPayload::Shape(shape) = message_payload("os/watch-files") else { panic!("file events declare a payload") };
+        assert_eq!(shape.iter().find(|f| f.name == "timestamp").map(|f| f.field_type), Some("string"));
+    }
+
+    #[test]
+    fn every_os_payload_is_the_one_the_table_declares() {
+        for op in OsOp::ALL {
+            let declared = get_operator(op.name()).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref());
+            match (declared, success_payload(op.name(), CallVariant::StdinStream)) {
+                (None, payload) => assert_eq!(payload, ProducedPayload::Opaque, "{}", op.name()),
+                (Some(_), ProducedPayload::Shape(shape)) => assert!(shape.iter().any(|f| f.name == "key"), "{}", op.name()),
+                (Some(_), other) => panic!("{}: {other:?}", op.name()),
+            }
+        }
+    }
+
+    #[test]
     fn current_exe_answers_a_path_like_cwd() {
-        assert_eq!(success_payload("os/current-exe", CallVariant::Plain), ProducedPayload::Shape(OS_PATH));
+        assert_eq!(pairs(success_payload("os/current-exe", CallVariant::Plain)), pairs(success_payload("os/cwd", CallVariant::Plain)));
         assert_eq!(undeclared_reads(&["path"], &success_payload("os/current-exe", CallVariant::Plain), &[]), Vec::<&str>::new());
         assert_eq!(undeclared_reads(&["exe"], &success_payload("os/current-exe", CallVariant::Plain), &[]), vec!["exe"]);
     }

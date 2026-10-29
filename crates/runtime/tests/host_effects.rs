@@ -1041,11 +1041,11 @@ mod lowering {
         }
         assert!(matches!(
             success_payload("os/read-file", CallVariant::Plain),
-            ProducedPayload::Shape(shape) if shape.iter().map(|f| f.name).collect::<Vec<_>>() == ["data"]
+            ProducedPayload::Shape(shape) if shape.iter().map(|f| f.name).collect::<Vec<_>>() == ["data", "key"]
         ));
         assert!(matches!(
             message_payload("os/stdin-read"),
-            ProducedPayload::Shape(shape) if shape.iter().map(|f| f.name).collect::<Vec<_>>() == ["data"]
+            ProducedPayload::Shape(shape) if shape.iter().map(|f| f.name).collect::<Vec<_>>() == ["data", "key"]
         ));
         assert_eq!(message_payload("os/read-file"), ProducedPayload::Opaque);
         assert_eq!(success_payload("os/cpu-usage", CallVariant::Plain), ProducedPayload::Opaque);

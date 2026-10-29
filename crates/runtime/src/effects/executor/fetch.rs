@@ -10,6 +10,17 @@ impl EffectExecutor {
         EffectResult::failed(effect, error)
     }
 
+    /// A store error is a failure unless the step is suspended on host I/O, where it only says "no answer yet".
+    pub(super) fn log_store_failure(&self, effect: &str, entity_type: &str, error: &str) {
+        let suspended = self.persistence.as_ref().is_some_and(|p| p.suspended())
+            || self.fetch_handler.as_ref().is_some_and(|f| f.suspended());
+        if suspended {
+            debug!(entity_type = entity_type, "{effect} effect suspended on host I/O");
+        } else {
+            error!(entity_type = entity_type, error = %error, "{effect} effect failed");
+        }
+    }
+
     pub(super) fn do_fetch(
         &self,
         entity_type: &str,
@@ -97,7 +108,7 @@ impl EffectExecutor {
                         EffectResult::executed_row_set(effect, &reference, counted(reference.total))
                     }
                     Err(e) => {
-                        error!(entity_type = entity_type, error = %e, "Fetch effect failed");
+                        self.log_store_failure("Fetch", entity_type, &e);
                         Self::fetch_failed(effect, &e)
                     }
                 };
@@ -133,7 +144,7 @@ impl EffectExecutor {
                     EffectResult::executed_fetch(effect, Value::array(rows), entity_type, counted(total))
                 }
                 Err(e) => {
-                    error!(entity_type = entity_type, error = %e, "Fetch effect failed");
+                    self.log_store_failure("Fetch", entity_type, &e);
                     Self::fetch_failed(effect, &e)
                 }
             }

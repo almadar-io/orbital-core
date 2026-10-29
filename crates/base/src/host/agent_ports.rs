@@ -240,10 +240,10 @@ pub fn plan_inputs(
 /// The JSON Schema type a declared field type has on the wire, or `None` for a type with no JSON shape.
 fn json_type_of(field_type: &str) -> Option<&'static str> {
     match field_type {
-        "string" | "date" | "timestamp" | "datetime" | "email" | "url" | "phone" | "uuid"
+        "string" | "date" | "timestamp" | "datetime" | "instant" | "email" | "url" | "phone" | "uuid"
         | "image" | "bytes" | "callkey" | "CallKey" | "enum" | "trait" | "slot" | "pattern" | "secret" | "event"
         | "EventAddress" | "field" => Some("string"),
-        "number" | "instant" => Some("number"),
+        "number" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),
         "object" | "relation" | "orbital" | "behavior" => Some("object"),
@@ -1031,6 +1031,12 @@ mod tests {
             as_json(&Value::array(issues)),
             serde_json::json!([{ "path": "n", "reason": "missing" }])
         );
+    }
+
+    #[test]
+    fn an_instant_is_text_on_the_wire() {
+        assert_eq!(json_type_of("instant"), Some("string"));
+        assert_eq!(json_type_of("number"), Some("number"));
     }
 
     #[test]

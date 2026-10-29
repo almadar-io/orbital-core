@@ -306,6 +306,18 @@ mod tests {
     }
 
     #[test]
+    fn an_instant_member_takes_zoned_iso_text_and_refuses_a_number() {
+        let schema = [field("n", "instant", true)];
+        let check = |value: serde_json::Value| validate_event_payload("GO", &payload(json!({ "n": value })), &schema);
+        assert!(check(json!("2026-10-29T02:30:00.000Z")).is_empty());
+        assert!(check(json!("2026-10-29T02:30:00+02:00")).is_empty());
+        assert_eq!(check(json!(1_700_000_000_000_i64)).len(), 1);
+        assert_eq!(check(json!("2026-10-29")).len(), 1);
+        assert_eq!(check(json!("2026-10-29T02:30:00")).len(), 1);
+        assert_eq!(format_payload_failures(&check(json!(0))), "Payload validation failed for event 'GO': n (wrong-type, expected instant)");
+    }
+
+    #[test]
     fn the_error_text_lists_every_failure_under_the_first_event() {
         let schema = [field("a", "string", true), field("b", "[x]", false)];
         let failures = validate_event_payload("E", &payload(json!({ "b": 1 })), &schema);

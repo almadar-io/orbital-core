@@ -499,28 +499,34 @@ pub fn orbital_import_from_value(value: &serde_json::Value) -> Result<serde_json
 
 /// A program held as data with every orbital value at `orbitals[i]` replaced by the import orbital it stands for.
 /// Twin of `@almadar/core` `parseProgram`'s value step.
-pub fn program_with_orbital_imports(
-    program: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let Some(orbitals) = program
-        .get("orbitals")
-        .and_then(serde_json::Value::as_array)
-    else {
-        return Ok(program.clone());
+pub fn program_with_orbital_imports(program: &Value) -> Result<Value, String> {
+    into_program_with_orbital_imports(program.clone())
+}
+
+fn is_value_orbital_literal(value: &Value) -> bool {
+    matches!(
+        (value.get("behavior").and_then(Value::as_str), value.get("orbital").and_then(Value::as_str)),
+        (Some(behavior), Some(orbital)) if value.is_object() && is_behavior_specifier(behavior) && is_pascal(orbital)
+    )
+}
+
+/// [`program_with_orbital_imports`] for a program the caller hands over: converted in place, so no orbital is copied.
+pub fn into_program_with_orbital_imports(mut program: Value) -> Result<Value, String> {
+    let at: Vec<usize> = match program.get("orbitals").and_then(Value::as_array) {
+        Some(orbitals) => orbitals
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| is_value_orbital_literal(entry))
+            .map(|(i, _)| i)
+            .collect(),
+        None => return Ok(program),
     };
-    let converted = orbitals
-        .iter()
-        .map(|entry| {
-            if is_json_orbital_value(entry) {
-                orbital_import_from_value(entry)
-            } else {
-                Ok(entry.clone())
-            }
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut out = program.clone();
-    out["orbitals"] = serde_json::Value::Array(converted);
-    Ok(out)
+    for i in at {
+        let entry = crate::json_value::value_to_json(&program["orbitals"][i]);
+        let converted = orbital_import_from_value(&entry)?;
+        program["orbitals"][i] = serde_json::from_value(converted).map_err(|e| e.to_string())?;
+    }
+    Ok(program)
 }
 
 /// Parse an orbital-value literal straight to its wire object.
@@ -596,20 +602,24 @@ pub fn parse_behavior_value_literal(raw: &str) -> Option<Value> {
 mod tests {
     use super::*;
 
+    fn val(json: serde_json::Value) -> Value {
+        serde_json::from_value(json).expect("literal")
+    }
+
     #[test]
     fn an_orbital_value_in_a_program_is_the_import_orbital_it_stands_for() {
-        let program = serde_json::json!({ "name": "App", "orbitals": [
+        let program = val(serde_json::json!({ "name": "App", "orbitals": [
             { "behavior": "almadar-behaviors/std-crm", "orbital": "ContactOrbital", "name": "Contacts",
               "config": { "pageSize": 20 }, "app": { "appName": "Crm" },
               "traits": { "ContactList": { "config": { "dense": { "type": "boolean", "default": true } }, "events": { "OPEN": "VIEW" } } },
               "siblings": [{ "name": "Extra", "ref": "Ui.traits.Card", "linkedEntity": "Contact" }],
               "entities": { "Person": "Customer" } },
             { "name": "Plain", "entity": { "name": "Thing", "fields": [] }, "traits": [], "pages": [] }
-        ] });
+        ] }));
         let out = program_with_orbital_imports(&program).unwrap();
         assert_eq!(
             out["orbitals"][0],
-            serde_json::json!({
+            val(serde_json::json!({
                 "name": "Contacts",
                 "uses": [{ "from": "almadar-behaviors/std-crm", "as": "Source", "config": { "appName": { "type": "unknown", "default": "Crm" } } }],
                 "entity": "Source.orbitals.ContactOrbital.entity",
@@ -621,12 +631,42 @@ mod tests {
                     "config": { "pageSize": { "type": "unknown", "default": 20 } },
                     "traits": { "ContactList": { "events": { "OPEN": "VIEW" }, "config": { "dense": { "type": "boolean", "default": true } } } }
                 }
-            })
+            }))
         );
         assert_eq!(
             out["orbitals"][1], program["orbitals"][1],
             "control: an IR orbital is untouched"
         );
+    }
+
+    #[test]
+    fn a_program_handed_over_converts_in_place_to_what_the_borrowed_form_returns() {
+        let program = val(serde_json::json!({ "name": "App", "orbitals": [
+            { "behavior": "almadar-behaviors/std-crm", "orbital": "ContactOrbital", "name": "Contacts" },
+            { "name": "Plain", "entity": { "name": "Thing", "fields": [] }, "traits": [], "pages": [] }
+        ] }));
+        let borrowed = program_with_orbital_imports(&program).unwrap();
+        assert_eq!(into_program_with_orbital_imports(program.clone()).unwrap(), borrowed);
+        assert_ne!(borrowed["orbitals"][0], program["orbitals"][0], "the value became its import orbital");
+        let no_orbitals = val(serde_json::json!({ "name": "App" }));
+        assert_eq!(into_program_with_orbital_imports(no_orbitals.clone()).unwrap(), no_orbitals, "control: no orbitals list, nothing to convert");
+    }
+
+    #[test]
+    fn a_program_holding_no_orbital_value_is_returned_unchanged_and_unshared_copies_stay_shared() {
+        let program = val(serde_json::json!({ "name": "App", "orbitals": [{ "name": "Plain", "pages": [] }] }));
+        let out = into_program_with_orbital_imports(program.clone()).unwrap();
+        assert_eq!(out, program);
+        let (Value::Object(a), Value::Object(b)) = (&program, &out) else { panic!("objects") };
+        assert!(crate::value::Shared::ptr_eq(a, b), "nothing converted, nothing copied");
+    }
+
+    #[test]
+    fn edge_a_refused_orbital_value_fails_the_whole_program_handed_over() {
+        let program = val(serde_json::json!({ "name": "App", "orbitals": [
+            { "behavior": "std/behaviors/std-x", "orbital": "XOrbital", "uses": [{ "from": "std/behaviors/std-y", "as": "Source" }] }
+        ] }));
+        assert!(into_program_with_orbital_imports(program).is_err());
     }
 
     #[test]

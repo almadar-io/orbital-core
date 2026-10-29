@@ -223,7 +223,12 @@ impl RuntimeKernel {
     /// The driver orbital's dispatch of the verb `ask` maps to, in a frame of its own keyed by the ask.
     pub(crate) fn store_driver_run(&self, ask: &StoreAsk) -> Result<DispatchContinuation, String> {
         let verb = match &ask.ensure {
-            Some(ensure) => crate::store_driver::ensure_verb(&ensure.entity_type, &ensure.indexes, &ask.key),
+            Some(ensure) => crate::store_driver::ensure_verb(
+                &ensure.entity_type,
+                &ensure.indexes,
+                &ask.key,
+                self.io.collection_of(&ensure.entity_type),
+            ),
             None => crate::store_driver::verb_for(&ask.request, &ask.key, &|entity| self.io.collection_of(entity)).ok_or_else(|| {
                 format!(
                     "store driver {}: {:?} is not a row ask a driver answers",

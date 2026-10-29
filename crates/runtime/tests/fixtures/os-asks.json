@@ -79,7 +79,7 @@
     { "name": "command not found", "op": "os/spawn", "args": ["nope-not-a-command", []], "expect": { "error": { "kind": "not-found", "message": "os/spawn: No such file or directory (os error 2)" } } },
     { "name": "unknown option", "op": "os/spawn", "args": ["echo", [], { "shell": true }], "expect": { "error": { "kind": "invalid", "message": "os/spawn: unknown option shell" } } },
     { "name": "spawn sleep", "op": "os/spawn", "args": ["sleep", ["30"]], "bind": { "sleeper": "pid" }, "expect": { "ok": { "pid": { "$number": true } } } },
-    { "name": "bad signal", "op": "os/kill", "args": [{ "$var": "sleeper" }, "NOPE"], "expect": { "error": { "kind": "invalid", "message": "os/kill: signal must be one of TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT (or its number)" } } },
+    { "name": "bad signal", "op": "os/kill", "args": [{ "$var": "sleeper" }, "NOPE"], "expect": { "error": { "kind": "invalid", "message": "os/kill: signal must be one of TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT" } } },
     { "name": "kill", "op": "os/kill", "args": [{ "$var": "sleeper" }, "TERM"], "expect": { "ok": {} } },
     { "name": "wait for the signal", "op": "os/wait", "args": [{ "$var": "sleeper" }], "expect": { "ok": { "signal": 15 } } },
     { "name": "kill an unknown pid", "op": "os/kill", "args": [999999, "TERM"], "expect": { "error": { "kind": "closed", "message": "os/kill: pid 999999 is not a spawned process" } } },

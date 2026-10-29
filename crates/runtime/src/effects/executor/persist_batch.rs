@@ -243,7 +243,7 @@ impl EffectExecutor {
                 }
                 Some(Err(e)) => {
                     for (k, p) in pending.drain(..) {
-                        error!(entity_type = %p.entity_type, error = %e, "Persist effect failed");
+                        self.log_store_failure("Persist", &p.entity_type, &e);
                         out[k] = Some(EffectResult::failed(p.effect, &e));
                     }
                 }

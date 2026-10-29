@@ -387,7 +387,7 @@ pub use crate::driver::{DriverAnswer as HttpAnswer, DriverAsk as HttpAsk, Driver
 #[allow(unused_imports)]
 use orbital_core_base::http_wire::{RetryOutcome, invalid, closed_keys, text_field, parse_slot_object, whole_number, check_header, credential, v4_public, v6_public};
 #[allow(unused_imports)]
-pub use orbital_core_base::http_wire::{tcp_default_port, parse_egress_entry, split_tcp_url, HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_delay_ms, parse_grant_request, parse_retry, is_public_address};
+pub use orbital_core_base::http_wire::{tcp_default_port, parse_egress_entry, split_tcp_url, HttpMethod, SecretScope, CredentialSlot, RetryOn, RetryDelay, HttpRetry, RetryOperand, GrantRequest, GrantMethod, HttpRefusal, OriginParts, split_url, parse_origin, parse_origin_prefix, parse_credential_status_slot, is_header_name, is_header_value, parse_http_headers, parse_timeout_ms, parse_delay_ms, parse_grant_request, parse_retry, is_public_address};
 
 mod parse;
 mod auth;

@@ -1055,6 +1055,9 @@ mod fetch_payload_tests;
 mod set_eval_failure_tests;
 
 #[cfg(test)]
+mod suspend_log_tests;
+
+#[cfg(test)]
 mod set_object_literal_tests;
 
 #[cfg(test)]

@@ -45,6 +45,70 @@ pub fn js_json_string_pretty<T: serde::Serialize + ?Sized>(value: &T) -> String 
     out
 }
 
+/// [`js_json_string`] / [`js_json_string_pretty`] of a core value, written straight from it: no JSON tree is built
+/// between, so a large value costs its text and nothing else. The text is the one `value_to_json` then
+/// `js_json_string` write.
+pub fn value_json_string(value: &Value, pretty: bool) -> String {
+    let mut out = String::new();
+    write_value_json(value, pretty.then_some("  "), 0, &mut out);
+    out
+}
+
+fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut String) {
+    let newline = |out: &mut String, depth: usize| {
+        if let Some(unit) = indent {
+            out.push('\n');
+            for _ in 0..depth {
+                out.push_str(unit);
+            }
+        }
+    };
+    match value {
+        Value::Null | Value::Lambda { .. } => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => {
+            if n.fract() == 0.0 && n.abs() < i64::MAX as f64 {
+                out.push_str(&(*n as i64).to_string());
+            } else if n.is_finite() {
+                out.push_str(&js_number_string(*n));
+            } else {
+                out.push_str("null");
+            }
+        }
+        Value::String(text) => out.push_str(&serde_json::to_string(text.as_str()).expect("a string always writes")),
+        Value::Array(items) => {
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline(out, depth + 1);
+                write_value_json(item, indent, depth + 1, out);
+            }
+            if !items.is_empty() {
+                newline(out, depth);
+            }
+            out.push(']');
+        }
+        Value::Object(map) => {
+            out.push('{');
+            for (i, (key, item)) in map.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                newline(out, depth + 1);
+                out.push_str(&serde_json::to_string(key.as_str()).expect("a string always writes"));
+                out.push_str(if indent.is_some() { ": " } else { ":" });
+                write_value_json(item, indent, depth + 1, out);
+            }
+            if !map.is_empty() {
+                newline(out, depth);
+            }
+            out.push('}');
+        }
+    }
+}
+
 fn to_json_tree<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).expect("JSON text of an in-memory value always writes")
 }
@@ -139,6 +203,33 @@ mod tests {
             assert_eq!(js_json_string(case), serde_json::to_string(case).unwrap(), "compact {case}");
             assert_eq!(js_json_string_pretty(case), serde_json::to_string_pretty(case).unwrap(), "pretty {case}");
         }
+    }
+
+    #[test]
+    fn a_value_is_written_as_the_tree_route_writes_it() {
+        let nested = Value::Object(
+            [
+                ("ints".to_string(), Value::array(vec![Value::Number(0.0), Value::Number(-0.0), Value::Number(-7.0), Value::Number(9.2e18)])),
+                ("floats".to_string(), Value::array(vec![Value::Number(0.5), Value::Number(1e21), Value::Number(1e-7), Value::Number(1.7976931348623157e308)])),
+                ("non_finite".to_string(), Value::array(vec![Value::Number(f64::NAN), Value::Number(f64::INFINITY), Value::Number(f64::NEG_INFINITY)])),
+                ("text".to_string(), Value::string("q\"uote \\ \u{1} \n é 💡 /".to_string())),
+                ("empty".to_string(), Value::Object(Default::default())),
+                ("none".to_string(), Value::array(Vec::new())),
+                ("flags".to_string(), Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Null])),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        for value in [Value::Null, Value::Number(3.0), Value::string("x".to_string()), nested] {
+            assert_eq!(value_json_string(&value, false), js_json_string(&value_to_json(&value)), "compact {value:?}");
+            assert_eq!(value_json_string(&value, true), js_json_string_pretty(&value_to_json(&value)), "pretty {value:?}");
+        }
+    }
+
+    #[test]
+    fn edge_a_value_keeps_its_keys_in_the_order_it_holds_them() {
+        let value = Value::Object([("b".to_string(), Value::Number(1.0)), ("a".to_string(), Value::Number(2.0))].into_iter().collect());
+        assert_eq!(value_json_string(&value, false), "{\"b\":1,\"a\":2}");
     }
 
     #[test]

@@ -89,6 +89,8 @@ struct WriteVerb<'a> {
 struct EnsureVerb<'a> {
     key: &'a str,
     entity_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<String>,
     indexes: &'a [EntityIndex],
 }
 
@@ -181,11 +183,12 @@ pub fn verb_for(
     Some(DriverVerb { event, payload })
 }
 
-/// The verb that sends a driver the access paths an entity declares (EXEC-STORE-6).
-pub fn ensure_verb(entity_type: &str, indexes: &[EntityIndex], key: &str) -> DriverVerb {
+/// The verb that sends a driver the access paths an entity declares (EXEC-STORE-6), naming the entity's declared
+/// `collection` beside its `entityType` like every row verb (EXEC-STORE-4).
+pub fn ensure_verb(entity_type: &str, indexes: &[EntityIndex], key: &str, collection: Option<String>) -> DriverVerb {
     DriverVerb {
         event: ROWS_ENSURE_INDEXES,
-        payload: to_value(&EnsureVerb { key, entity_type, indexes }),
+        payload: to_value(&EnsureVerb { key, entity_type, collection, indexes }),
     }
 }
 
@@ -364,6 +367,26 @@ mod tests {
             let object = payload.as_object().unwrap();
             assert!(!object.contains_key("collection") && !object.contains_key("collections"), "{payload}");
         }
+    }
+
+    #[test]
+    fn the_ensure_indexes_verb_names_the_declared_collection_beside_the_entity_type() {
+        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None }];
+        let verb = ensure_verb("Ticket", &indexes, "k", declared("Ticket"));
+        assert_eq!(verb.event, ROWS_ENSURE_INDEXES);
+        assert_eq!(
+            value_to_json(&verb.payload),
+            serde_json::json!({"key": "k", "entityType": "Ticket", "collection": "tickets_tbl", "indexes": [{"fields": ["status"]}]})
+        );
+    }
+
+    #[test]
+    fn control_an_ensure_indexes_verb_for_an_undeclared_collection_carries_no_collection_field() {
+        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None }];
+        let verb = ensure_verb("Note", &indexes, "k", declared("Note"));
+        let payload = value_to_json(&verb.payload);
+        assert!(!payload.as_object().unwrap().contains_key("collection"), "{payload}");
+        assert_eq!(payload["entityType"], "Note");
     }
 
     #[test]

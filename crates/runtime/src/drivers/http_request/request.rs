@@ -347,12 +347,19 @@ pub fn token_exchange_request(
             }
         }
     };
-    headers.push(("Content-Type".to_string(), content_type.to_string()));
+    let method = ex.grant_request.as_ref().map_or(GrantMethod::Post, |request| request.method);
+    let body = match method {
+        GrantMethod::Post => {
+            headers.push(("Content-Type".to_string(), content_type.to_string()));
+            body.into_bytes()
+        }
+        GrantMethod::Get => Vec::new(),
+    };
     Ok(HttpRequest {
-        method: "POST".to_string(),
+        method: method.as_str().to_string(),
         url: ex.token_url.clone(),
         headers,
-        body: body.into_bytes(),
+        body,
         timeout: ex.grant_request.as_ref().and_then(|request| request.timeout_ms).map(Duration::from_millis),
     })
 }

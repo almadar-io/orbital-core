@@ -250,6 +250,222 @@ mod tests {
         }
     }
 
+    /// Operators whose success payload the table declares but this host cannot answer in a unit fixture, each
+    /// with the reason; every other declared payload is run below.
+    const NOT_RUN: &[(&str, &str)] = &[
+        ("os/watch-files", "a stream the host does not implement (G-ORB-307)"),
+        ("os/watch-process", "a stream the host does not implement (G-ORB-307)"),
+        ("os/watch-signal", "a stream the host does not implement (G-ORB-307)"),
+        ("os/watch-env", "a stream the host does not implement (G-ORB-307)"),
+        ("os/watch-port", "a stream the host does not implement (G-ORB-307)"),
+        ("os/watch-cron", "a stream the host does not implement (G-ORB-307)"),
+        ("os/stdin-read", "reads the test process's own stdin"),
+        ("os/stdout-write", "writes the test process's own stdout"),
+        ("os/stderr-write", "writes the test process's own stderr"),
+        ("os/isatty", "depends on how the test process is attached"),
+        ("os/tty-size", "needs a terminal"),
+        ("os/tcp-listen", "a stream: its first answer arrives through the completion sink (net/tests.rs)"),
+        ("os/dns-resolve", "needs a resolver"),
+        ("os/mmio-read", "no devices on this host"),
+        ("os/mmio-write", "no devices on this host"),
+        ("os/irq-wait", "no devices on this host"),
+        ("os/irq-ack", "no devices on this host"),
+    ];
+
+    fn fits(declared: &str, value: &Value) -> bool {
+        match declared {
+            "string" | "bytes" => matches!(value, Value::String(_)),
+            "number" | "int" => matches!(value, Value::Number(_)),
+            "boolean" => matches!(value, Value::Bool(_)),
+            "array" => matches!(value, Value::Array(_)),
+            "object" => matches!(value, Value::Object(_)),
+            other => panic!("the conformance check does not know the declared type {other}"),
+        }
+    }
+
+    /// Checks `answer` against the success shape the operator table declares for `op`: no undeclared field, every
+    /// declared field that is not optional present, each of the declared type.
+    fn assert_answers_the_table_shape(op: OsOp, answer: &Value) {
+        use orbital_core_base::language::registry::{get_operator, OperatorTypeRef, OperatorTypeRefKind};
+        let produces = get_operator(op.name()).and_then(|operator| operator.effect.as_ref()).and_then(|effect| effect.produces.as_ref());
+        let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, optional, .. })) = produces else {
+            panic!("{} declares no success payload", op.name());
+        };
+        let Value::Object(answered) = answer else { panic!("{} answered {answer:?}, not an object", op.name()) };
+        for (name, value) in answered.iter() {
+            let declared = fields.get(name.as_str()).unwrap_or_else(|| panic!("{} answered the undeclared field {name}", op.name()));
+            assert!(fits(declared.kind_name(), value), "{}: {name} is declared {} but answered {value:?}", op.name(), declared.kind_name());
+        }
+        for (name, declared) in fields {
+            if name == "key" || optional.contains(name) {
+                continue;
+            }
+            let value = answered.get(name.as_str()).unwrap_or_else(|| panic!("{} did not answer the declared field {name}", op.name()));
+            assert!(fits(declared.kind_name(), value), "{}: {name} is declared {} but answered {value:?}", op.name(), declared.kind_name());
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "undeclared field")]
+    fn the_conformance_check_refuses_an_undeclared_field() {
+        assert_answers_the_table_shape(OsOp::Pid, &anchored_value(serde_json::json!({ "pid": 1, "extra": 2 })));
+    }
+
+    #[test]
+    #[should_panic(expected = "did not answer the declared field")]
+    fn the_conformance_check_refuses_a_missing_declared_field() {
+        assert_answers_the_table_shape(OsOp::Pid, &anchored_value(serde_json::json!({})));
+    }
+
+    #[test]
+    #[should_panic(expected = "is declared number")]
+    fn the_conformance_check_refuses_a_field_of_the_wrong_type() {
+        assert_answers_the_table_shape(OsOp::Pid, &anchored_value(serde_json::json!({ "pid": "1" })));
+    }
+
+    #[test]
+    fn the_conformance_check_admits_an_optional_field_absent_and_a_null_value_is_not_absence() {
+        assert_answers_the_table_shape(OsOp::Getenv, &anchored_value(serde_json::json!({})));
+        assert_answers_the_table_shape(OsOp::Getenv, &anchored_value(serde_json::json!({ "value": "x" })));
+        let null = std::panic::catch_unwind(|| assert_answers_the_table_shape(OsOp::Getenv, &anchored_value(serde_json::json!({ "value": null }))));
+        assert!(null.is_err(), "getenv answers no value, never a null one");
+    }
+
+    #[test]
+    fn every_os_answer_has_the_success_shape_the_operator_table_declares() {
+        use orbital_core_base::os_grants::{NetGrant, NetKind};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("real");
+        let text = |p: &std::path::Path| Value::string(p.to_string_lossy().into_owned());
+        let s = |t: &str| Value::string(t.to_string());
+        let n = |v: f64| Value::Number(v);
+        let object = |json: serde_json::Value| -> Value { serde_json::from_value(json).expect("value") };
+        let list = |items: Vec<Value>| Value::Array(items.into_iter().collect());
+        let tcp = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let tcp_port = tcp.local_addr().unwrap().port();
+        let free_udp = |_: u8| std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let (udp_a, udp_b) = (free_udp(0), free_udp(1));
+        let grants = OsGrants {
+            fs: vec![FsGrant { glob: format!("{}/**", root.display()), modes: vec![FsMode::Read, FsMode::Write, FsMode::Create, FsMode::Remove, FsMode::Meta] }],
+            exec: vec!["/bin/sh".to_string()],
+            net: vec![
+                NetGrant { target: format!("127.0.0.1:{tcp_port}"), kinds: vec![NetKind::Tcp] },
+                NetGrant { target: format!("127.0.0.1:{udp_a}"), kinds: vec![NetKind::Udp] },
+                NetGrant { target: format!("127.0.0.1:{udp_b}"), kinds: vec![NetKind::Udp] },
+            ],
+            env: vec!["ORB_CONFORMANCE_X".to_string()],
+            sys: vec![SysKind::Identity, SysKind::Cpu],
+            kv: [("conformance".to_string(), vec![KvMode::Read, KvMode::Write])].into_iter().collect(),
+            ..OsGrants::default()
+        };
+        let handles = OsHandles { kv: crate::kv_host::KvStores::memory("conformance", "en"), ..OsHandles::default() };
+        let ran = std::cell::RefCell::new(std::collections::BTreeSet::new());
+        let run = |op: OsOp, args: Vec<Value>| -> Value {
+            let answer = os_answer(op, args, &grants, &handles).unwrap_or_else(|e| panic!("{} failed: {e:?}", op.name()));
+            assert_answers_the_table_shape(op, &answer);
+            ran.borrow_mut().insert(op.name());
+            answer
+        };
+        let field = |v: &Value, name: &str| match v {
+            Value::Object(m) => m.get(name).cloned().unwrap_or_else(|| panic!("no {name} in {v:?}")),
+            other => panic!("{other:?}"),
+        };
+        let (a, copy, moved, hard, soft, sub) = (root.join("a.txt"), root.join("b.txt"), root.join("c.txt"), root.join("d.txt"), root.join("s.lnk"), root.join("sub"));
+
+        run(OsOp::WriteFile, vec![text(&a), s("aGVsbG8=")]);
+        run(OsOp::AppendFile, vec![text(&a), s("IQ==")]);
+        run(OsOp::ReadFile, vec![text(&a)]);
+        let fd = field(&run(OsOp::Open, vec![text(&a), s("r+")]), "fd");
+        run(OsOp::Read, vec![fd.clone(), n(2.0)]);
+        run(OsOp::Seek, vec![fd.clone(), n(0.0), s("set")]);
+        run(OsOp::Write, vec![fd.clone(), s("eA==")]);
+        run(OsOp::Fsync, vec![fd.clone()]);
+        run(OsOp::Close, vec![fd]);
+        run(OsOp::Truncate, vec![text(&a), n(3.0)]);
+        run(OsOp::Copy, vec![text(&a), text(&copy)]);
+        run(OsOp::Rename, vec![text(&copy), text(&moved)]);
+        run(OsOp::Link, vec![text(&a), text(&hard)]);
+        run(OsOp::Symlink, vec![text(&a), text(&soft)]);
+        run(OsOp::Readlink, vec![text(&soft)]);
+        run(OsOp::Mkdir, vec![text(&sub)]);
+        run(OsOp::ListDir, vec![text(&root)]);
+        run(OsOp::Glob, vec![s(&format!("{}/*.txt", root.display()))]);
+        run(OsOp::Mktemp, vec![s("tmp-"), text(&root)]);
+        run(OsOp::Realpath, vec![text(&a)]);
+        run(OsOp::Stat, vec![text(&a)]);
+        run(OsOp::Lstat, vec![text(&soft)]);
+        run(OsOp::Access, vec![text(&a)]);
+        run(OsOp::Exists, vec![text(&a)]);
+        run(OsOp::Chmod, vec![text(&a), n(420.0)]);
+        let (uid, gid) = (field(&run(OsOp::Uid, vec![]), "uid"), field(&run(OsOp::Gid, vec![]), "gid"));
+        run(OsOp::Chown, vec![text(&a), uid, gid]);
+        run(OsOp::Utimes, vec![text(&a), n(1000.0), n(2000.0)]);
+        run(OsOp::Chdir, vec![text(&root)]);
+        run(OsOp::Cwd, vec![]);
+        for path in [&moved, &hard, &soft] {
+            run(OsOp::Remove, vec![text(path)]);
+        }
+        run(OsOp::Rmdir, vec![text(&sub)]);
+
+        run(OsOp::Pid, vec![]);
+        run(OsOp::Ppid, vec![]);
+        run(OsOp::CurrentExe, vec![]);
+        run(OsOp::Setenv, vec![s("ORB_CONFORMANCE_X"), s("1")]);
+        run(OsOp::Getenv, vec![s("ORB_CONFORMANCE_X")]);
+        run(OsOp::Unsetenv, vec![s("ORB_CONFORMANCE_X")]);
+        let unset = run(OsOp::Getenv, vec![s("ORB_CONFORMANCE_X")]);
+        assert_eq!(unset, object(serde_json::json!({})), "control: an unset variable answers no value");
+        run(OsOp::Environ, vec![]);
+        let spawned = run(OsOp::Spawn, vec![s("/bin/sh"), list(vec![s("-c"), s("exit 3")]), object(serde_json::json!({}))]);
+        run(OsOp::Wait, vec![field(&spawned, "pid")]);
+        let piped = run(OsOp::Spawn, vec![s("/bin/sh"), list(vec![s("-c"), s("exit 0")]), object(serde_json::json!({ "stdin": "pipe", "stdout": "pipe", "stderr": "pipe" }))]);
+        assert!(["stdin", "stdout", "stderr"].iter().all(|name| matches!(field(&piped, name), Value::Number(_))), "control: piped streams answer their handles");
+        run(OsOp::Wait, vec![field(&piped, "pid")]);
+        let sleeper = run(OsOp::Spawn, vec![s("/bin/sh"), list(vec![s("-c"), s("exec sleep 30")]), object(serde_json::json!({}))]);
+        run(OsOp::Kill, vec![field(&sleeper, "pid"), s("TERM")]);
+        let killed = run(OsOp::Wait, vec![field(&sleeper, "pid")]);
+        assert_eq!(field(&killed, "signal"), n(15.0));
+
+        run(OsOp::ClockMonotonic, vec![]);
+        run(OsOp::Username, vec![]);
+        #[cfg(target_os = "macos")]
+        run(OsOp::GroupOf, vec![s("staff")]);
+        #[cfg(not(target_os = "macos"))]
+        run(OsOp::GroupOf, vec![s("root")]);
+
+        let sock = field(&run(OsOp::TcpConnect, vec![s("127.0.0.1"), n(f64::from(tcp_port))]), "sock");
+        let (mut peer, _) = tcp.accept().expect("accept");
+        run(OsOp::Send, vec![sock.clone(), s("cGluZw==")]);
+        std::io::Write::write_all(&mut peer, b"pong").unwrap();
+        run(OsOp::Recv, vec![sock.clone(), n(16.0)]);
+        run(OsOp::Shutdown, vec![sock.clone()]);
+        run(OsOp::Close, vec![sock]);
+        let (left, right) = (
+            field(&run(OsOp::UdpBind, vec![s("127.0.0.1"), n(f64::from(udp_a))]), "sock"),
+            field(&run(OsOp::UdpBind, vec![s("127.0.0.1"), n(f64::from(udp_b))]), "sock"),
+        );
+        run(OsOp::Sendto, vec![left, s("cGluZw=="), s("127.0.0.1"), n(f64::from(udp_b))]);
+        run(OsOp::Recvfrom, vec![right, n(16.0)]);
+
+        run(OsOp::KvPut, vec![s("conformance"), s("a/1"), object(serde_json::json!({ "id": "1" }))]);
+        run(OsOp::KvScan, vec![s("conformance"), s("a/")]);
+        run(OsOp::KvBatch, vec![s("conformance"), list(vec![object(serde_json::json!({ "kind": "delete", "key": "a/1" }))])]);
+        run(OsOp::KvDelete, vec![s("conformance"), s("a/1")]);
+
+        let ran = ran.into_inner();
+        let declared: std::collections::BTreeSet<&str> = OsOp::ALL
+            .iter()
+            .filter(|op| {
+                orbital_core_base::language::registry::get_operator(op.name()).and_then(|o| o.effect.as_ref()).is_some_and(|e| e.produces.is_some())
+            })
+            .map(|op| op.name())
+            .collect();
+        let excused: std::collections::BTreeSet<&str> = NOT_RUN.iter().map(|(name, _)| *name).collect();
+        let covered: std::collections::BTreeSet<&str> = ran.union(&excused).copied().collect();
+        assert_eq!(covered, declared, "every operator that declares a success payload is run or excused");
+        assert!(ran.is_disjoint(&excused), "an excused operator is not also run");
+    }
+
     #[test]
     fn an_anchored_path_is_resolved_at_the_boot_anchor_and_checked_against_the_resolved_grant() {
         let dir = tempfile::tempdir().expect("tempdir");

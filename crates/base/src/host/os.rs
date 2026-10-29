@@ -49,7 +49,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
 }
 
 macro_rules! os_ops {
-    ($( $variant:ident => ($name:literal, $min:literal, $max:literal, $shape:ident) ),+ $(,)?) => {
+    ($( $variant:ident => ($name:literal, $shape:ident) ),+ $(,)?) => {
         /// One variant per `os/` effect operation; the host's answerer matches it exhaustively.
         #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -71,16 +71,6 @@ macro_rules! os_ops {
                 match name { $( $name => Some(OsOp::$variant), )+ _ => None }
             }
 
-            /// The fewest positional arguments the operation takes.
-            pub fn min_args(self) -> usize {
-                match self { $( OsOp::$variant => $min, )+ }
-            }
-
-            /// The most positional arguments the operation takes.
-            pub fn max_args(self) -> usize {
-                match self { $( OsOp::$variant => $max, )+ }
-            }
-
             /// Whether the operation answers once or streams.
             pub fn shape(self) -> OsShape {
                 match self { $( OsOp::$variant => OsShape::$shape, )+ }
@@ -90,109 +80,126 @@ macro_rules! os_ops {
 }
 
 os_ops! {
-    ReadFile => ("os/read-file", 1, 2, Single),
-    WriteFile => ("os/write-file", 2, 3, Single),
-    AppendFile => ("os/append-file", 2, 2, Single),
-    Open => ("os/open", 2, 3, Single),
-    Close => ("os/close", 1, 1, Single),
-    Read => ("os/read", 2, 2, Single),
-    Write => ("os/write", 2, 2, Single),
-    Seek => ("os/seek", 3, 3, Single),
-    Truncate => ("os/truncate", 2, 2, Single),
-    Fsync => ("os/fsync", 1, 1, Single),
-    Copy => ("os/copy", 2, 2, Single),
-    Rename => ("os/rename", 2, 2, Single),
-    Remove => ("os/remove", 1, 1, Single),
-    Link => ("os/link", 2, 2, Single),
-    Symlink => ("os/symlink", 2, 2, Single),
-    Readlink => ("os/readlink", 1, 1, Single),
-    WatchFiles => ("os/watch-files", 1, 2, Stream),
-    Mkdir => ("os/mkdir", 1, 3, Single),
-    Rmdir => ("os/rmdir", 1, 2, Single),
-    ListDir => ("os/list-dir", 1, 1, Single),
-    Glob => ("os/glob", 1, 1, Single),
-    Mktemp => ("os/mktemp", 1, 2, Single),
-    Realpath => ("os/realpath", 1, 1, Single),
-    Cwd => ("os/cwd", 0, 0, Single),
-    Chdir => ("os/chdir", 1, 1, Single),
-    Stat => ("os/stat", 1, 1, Single),
-    Lstat => ("os/lstat", 1, 1, Single),
-    Access => ("os/access", 1, 2, Single),
-    Exists => ("os/exists", 1, 1, Single),
-    Chmod => ("os/chmod", 2, 2, Single),
-    Chown => ("os/chown", 3, 3, Single),
-    Utimes => ("os/utimes", 3, 3, Single),
-    Spawn => ("os/spawn", 2, 3, Single),
-    Wait => ("os/wait", 1, 1, Single),
-    Kill => ("os/kill", 2, 2, Single),
-    Pid => ("os/pid", 0, 0, Single),
-    Ppid => ("os/ppid", 0, 0, Single),
-    CurrentExe => ("os/current-exe", 0, 0, Single),
-    WatchProcess => ("os/watch-process", 1, 2, Stream),
-    WatchSignal => ("os/watch-signal", 1, 1, Stream),
-    Getenv => ("os/getenv", 1, 1, Single),
-    Setenv => ("os/setenv", 2, 2, Single),
-    Unsetenv => ("os/unsetenv", 1, 1, Single),
-    Environ => ("os/environ", 0, 0, Single),
-    WatchEnv => ("os/watch-env", 1, 1, Stream),
-    StdinRead => ("os/stdin-read", 0, 1, Stream),
-    StdoutWrite => ("os/stdout-write", 1, 1, Single),
-    StderrWrite => ("os/stderr-write", 1, 1, Single),
-    Isatty => ("os/isatty", 1, 1, Single),
-    TtySize => ("os/tty-size", 1, 1, Single),
-    TcpConnect => ("os/tcp-connect", 2, 2, Single),
-    TcpListen => ("os/tcp-listen", 2, 2, Stream),
-    Send => ("os/send", 2, 2, Single),
-    Recv => ("os/recv", 2, 2, Single),
-    UdpBind => ("os/udp-bind", 2, 2, Single),
-    Sendto => ("os/sendto", 4, 4, Single),
-    Recvfrom => ("os/recvfrom", 2, 2, Single),
-    DnsResolve => ("os/dns-resolve", 1, 2, Single),
-    Shutdown => ("os/shutdown", 1, 1, Single),
-    WatchPort => ("os/watch-port", 2, 2, Stream),
-    ClockMonotonic => ("os/clock-monotonic", 0, 0, Single),
-    Uid => ("os/uid", 0, 0, Single),
-    Gid => ("os/gid", 0, 0, Single),
-    Username => ("os/username", 0, 0, Single),
-    GroupOf => ("os/group-of", 1, 1, Single),
-    WatchCron => ("os/watch-cron", 1, 1, Stream),
-    CpuUsage => ("os/cpu-usage", 0, 0, Single),
-    MemoryInfo => ("os/memory-info", 0, 0, Single),
-    Uptime => ("os/uptime", 0, 0, Single),
-    LoadAvg => ("os/load-avg", 0, 0, Single),
-    Hostname => ("os/hostname", 0, 0, Single),
-    Uname => ("os/uname", 0, 0, Single),
-    DiskUsage => ("os/disk-usage", 1, 1, Single),
-    Mounts => ("os/mounts", 0, 0, Single),
-    DiskIo => ("os/disk-io", 0, 0, Single),
-    NetworkInterfaces => ("os/network-interfaces", 0, 0, Single),
-    NetworkStats => ("os/network-stats", 0, 0, Single),
-    NetworkConnected => ("os/network-connected", 0, 0, Single),
-    DefaultGateway => ("os/default-gateway", 0, 0, Single),
-    BatteryStatus => ("os/battery-status", 0, 0, Single),
-    AcPower => ("os/ac-power", 0, 0, Single),
-    ThermalZones => ("os/thermal-zones", 0, 0, Single),
-    Notify => ("os/notify", 2, 3, Single),
-    Speak => ("os/speak", 1, 1, Single),
-    BrightnessGet => ("os/brightness-get", 0, 0, Single),
-    BrightnessSet => ("os/brightness-set", 1, 1, Single),
-    VolumeGet => ("os/volume-get", 0, 0, Single),
-    VolumeSet => ("os/volume-set", 1, 1, Single),
-    VolumeMute => ("os/volume-mute", 0, 1, Single),
-    Suspend => ("os/suspend", 0, 0, Single),
-    Hibernate => ("os/hibernate", 0, 0, Single),
-    MmioRead => ("os/mmio-read", 3, 3, Single),
-    MmioWrite => ("os/mmio-write", 4, 4, Single),
-    IrqWait => ("os/irq-wait", 1, 1, Single),
-    IrqAck => ("os/irq-ack", 1, 1, Single),
-    KvGet => ("kv/get", 2, 2, Single),
-    KvPut => ("kv/put", 3, 3, Single),
-    KvDelete => ("kv/delete", 2, 2, Single),
-    KvScan => ("kv/scan", 2, 3, Single),
-    KvBatch => ("kv/batch", 2, 2, Single),
+    ReadFile => ("os/read-file", Single),
+    WriteFile => ("os/write-file", Single),
+    AppendFile => ("os/append-file", Single),
+    Open => ("os/open", Single),
+    Close => ("os/close", Single),
+    Read => ("os/read", Single),
+    Write => ("os/write", Single),
+    Seek => ("os/seek", Single),
+    Truncate => ("os/truncate", Single),
+    Fsync => ("os/fsync", Single),
+    Copy => ("os/copy", Single),
+    Rename => ("os/rename", Single),
+    Remove => ("os/remove", Single),
+    Link => ("os/link", Single),
+    Symlink => ("os/symlink", Single),
+    Readlink => ("os/readlink", Single),
+    WatchFiles => ("os/watch-files", Stream),
+    Mkdir => ("os/mkdir", Single),
+    Rmdir => ("os/rmdir", Single),
+    ListDir => ("os/list-dir", Single),
+    Glob => ("os/glob", Single),
+    Mktemp => ("os/mktemp", Single),
+    Realpath => ("os/realpath", Single),
+    Cwd => ("os/cwd", Single),
+    Chdir => ("os/chdir", Single),
+    Stat => ("os/stat", Single),
+    Lstat => ("os/lstat", Single),
+    Access => ("os/access", Single),
+    Exists => ("os/exists", Single),
+    Chmod => ("os/chmod", Single),
+    Chown => ("os/chown", Single),
+    Utimes => ("os/utimes", Single),
+    Spawn => ("os/spawn", Single),
+    Wait => ("os/wait", Single),
+    Kill => ("os/kill", Single),
+    Pid => ("os/pid", Single),
+    Ppid => ("os/ppid", Single),
+    CurrentExe => ("os/current-exe", Single),
+    WatchProcess => ("os/watch-process", Stream),
+    WatchSignal => ("os/watch-signal", Stream),
+    Getenv => ("os/getenv", Single),
+    Setenv => ("os/setenv", Single),
+    Unsetenv => ("os/unsetenv", Single),
+    Environ => ("os/environ", Single),
+    WatchEnv => ("os/watch-env", Stream),
+    StdinRead => ("os/stdin-read", Stream),
+    StdoutWrite => ("os/stdout-write", Single),
+    StderrWrite => ("os/stderr-write", Single),
+    Isatty => ("os/isatty", Single),
+    TtySize => ("os/tty-size", Single),
+    TcpConnect => ("os/tcp-connect", Single),
+    TcpListen => ("os/tcp-listen", Stream),
+    Send => ("os/send", Single),
+    Recv => ("os/recv", Single),
+    UdpBind => ("os/udp-bind", Single),
+    Sendto => ("os/sendto", Single),
+    Recvfrom => ("os/recvfrom", Single),
+    DnsResolve => ("os/dns-resolve", Single),
+    Shutdown => ("os/shutdown", Single),
+    WatchPort => ("os/watch-port", Stream),
+    ClockMonotonic => ("os/clock-monotonic", Single),
+    Uid => ("os/uid", Single),
+    Gid => ("os/gid", Single),
+    Username => ("os/username", Single),
+    GroupOf => ("os/group-of", Single),
+    WatchCron => ("os/watch-cron", Stream),
+    CpuUsage => ("os/cpu-usage", Single),
+    MemoryInfo => ("os/memory-info", Single),
+    Uptime => ("os/uptime", Single),
+    LoadAvg => ("os/load-avg", Single),
+    Hostname => ("os/hostname", Single),
+    Uname => ("os/uname", Single),
+    DiskUsage => ("os/disk-usage", Single),
+    Mounts => ("os/mounts", Single),
+    DiskIo => ("os/disk-io", Single),
+    NetworkInterfaces => ("os/network-interfaces", Single),
+    NetworkStats => ("os/network-stats", Single),
+    NetworkConnected => ("os/network-connected", Single),
+    DefaultGateway => ("os/default-gateway", Single),
+    BatteryStatus => ("os/battery-status", Single),
+    AcPower => ("os/ac-power", Single),
+    ThermalZones => ("os/thermal-zones", Single),
+    Notify => ("os/notify", Single),
+    Speak => ("os/speak", Single),
+    BrightnessGet => ("os/brightness-get", Single),
+    BrightnessSet => ("os/brightness-set", Single),
+    VolumeGet => ("os/volume-get", Single),
+    VolumeSet => ("os/volume-set", Single),
+    VolumeMute => ("os/volume-mute", Single),
+    Suspend => ("os/suspend", Single),
+    Hibernate => ("os/hibernate", Single),
+    MmioRead => ("os/mmio-read", Single),
+    MmioWrite => ("os/mmio-write", Single),
+    IrqWait => ("os/irq-wait", Single),
+    IrqAck => ("os/irq-ack", Single),
+    KvGet => ("kv/get", Single),
+    KvPut => ("kv/put", Single),
+    KvDelete => ("kv/delete", Single),
+    KvScan => ("kv/scan", Single),
+    KvBatch => ("kv/batch", Single),
 }
 
 impl OsOp {
+    /// The fewest positional arguments the operation takes: the operator table's `minArity`.
+    pub fn min_args(self) -> usize {
+        self.table_entry().min_arity as usize
+    }
+
+    /// The most positional arguments the operation takes: the operator table's `maxArity` less its trailing
+    /// `options` parameter, which the envelope carries.
+    pub fn max_args(self) -> usize {
+        let max = self.table_entry().max_arity.unwrap_or_else(|| panic!("the operator table bounds the arity of `{}`", self.name()));
+        max as usize - 1
+    }
+
+    fn table_entry(self) -> &'static crate::language::registry::EmbeddedOperator {
+        crate::language::registry::get_operator(self.name())
+            .unwrap_or_else(|| panic!("the operator table declares no `{}`", self.name()))
+    }
+
     /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
     pub fn is_kv(self) -> bool {
         matches!(
@@ -355,6 +362,18 @@ mod tests {
             .map(|(name, _)| *name)
             .collect();
         assert!(effectful.is_empty(), "the pure os/path-* operators are evaluated in eval; every effectful os operator is hosted: {effectful:?}");
+    }
+
+    #[test]
+    fn every_os_operator_ends_in_the_options_parameter_the_envelope_carries() {
+        use crate::language::registry::get_operator;
+        for op in OsOp::ALL {
+            let entry = get_operator(op.name()).expect("table entry");
+            let last = entry.params.last().expect("a parameter");
+            assert_eq!(last.name, "options", "{}", op.name());
+            assert_eq!(op.max_args() + 1, entry.max_arity.expect("bounded") as usize, "{}", op.name());
+            assert_eq!(op.min_args(), entry.min_arity as usize, "{}", op.name());
+        }
     }
 
     #[test]
@@ -549,9 +568,12 @@ mod tests {
     #[test]
     fn arity_is_the_declared_range() {
         assert!(accepts_arity(OsOp::ReadFile, 1));
-        assert!(accepts_arity(OsOp::ReadFile, 2));
         assert!(!accepts_arity(OsOp::ReadFile, 0));
-        assert!(!accepts_arity(OsOp::ReadFile, 3));
+        assert!(!accepts_arity(OsOp::ReadFile, 2), "the table declares a path and the options");
+        assert!(accepts_arity(OsOp::Spawn, 3) && !accepts_arity(OsOp::Spawn, 2), "the table requires the config");
+        assert!(accepts_arity(OsOp::VolumeMute, 1) && !accepts_arity(OsOp::VolumeMute, 0));
+        assert!(accepts_arity(OsOp::WatchProcess, 2) && !accepts_arity(OsOp::WatchProcess, 1));
+        assert!(accepts_arity(OsOp::Exists, 1) && !accepts_arity(OsOp::Exists, 2));
         assert!(accepts_arity(OsOp::Cwd, 0));
         assert!(!accepts_arity(OsOp::Cwd, 1));
     }

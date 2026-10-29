@@ -500,7 +500,7 @@ impl EffectExecutor {
                     return EffectResult::failed(effect, &message).with_code(ServerEffectCode::DerivedFailed);
                 }
                 Err(DerivedFault::Store(message)) => {
-                    error!(entity_type = entity_type, error = %message, "Persist effect failed");
+                    self.log_store_failure("Persist", entity_type, &message);
                     return EffectResult::failed(effect, &message);
                 }
             };
@@ -634,7 +634,7 @@ impl EffectExecutor {
                     EffectResult::executed_with_value(effect, value)
                 }
                 Err(e) => {
-                    error!(entity_type = entity_type, error = %e, "Persist effect failed");
+                    self.log_store_failure("Persist", entity_type, &e);
                     let failed = EffectResult::failed(effect, &e);
                     match code {
                         Some(code) => failed.with_code(code),

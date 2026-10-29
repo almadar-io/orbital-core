@@ -367,6 +367,15 @@ impl IoPort {
         })
     }
 
+    /// Whether the step in flight is waiting on host or store answers, and has not diverged from its record.
+    pub(crate) fn awaiting_host(&self) -> bool {
+        self.ledger.lock().as_ref().is_some_and(|l| {
+            l.thread == orbital_core_base::sync::current_thread()
+                && l.diverged.is_none()
+                && (!l.pending.is_empty() || !l.store_asks.is_empty())
+        })
+    }
+
     /// Run `step` with `journal` as the answers its I/O is served from. Steps from different threads
     /// take turns; I/O from threads that are not running a step goes straight to the host handlers.
     pub(crate) fn run_step<R>(

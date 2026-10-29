@@ -7,7 +7,7 @@ use super::*;
 // =============================================================================
 
 /// State machine definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateMachine {
     /// States in the machine
     pub states: Vec<StateDefinition>,
@@ -20,8 +20,19 @@ pub struct StateMachine {
     pub transitions: Vec<TransitionDefinition>,
 }
 
+impl StateMachine {
+    /// Every proposition the machine states: each state's `@holds` and each transition's `@ensures`.
+    pub fn propositions_mut(&mut self) -> impl Iterator<Item = &mut SExpression> {
+        let StateMachine { states, transitions, .. } = self;
+        states
+            .iter_mut()
+            .filter_map(|s| s.holds.as_mut())
+            .chain(transitions.iter_mut().flat_map(|t| t.ensures.iter_mut().flatten()))
+    }
+}
+
 /// State definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StateDefinition {
     /// State name
     pub name: String,
@@ -51,7 +62,7 @@ pub struct StateDefinition {
 }
 
 /// Event definition (for documentation)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventDefinition {
     /// Event key
     pub key: String,
@@ -138,7 +149,7 @@ pub struct InboundVerification {
 }
 
 /// Transition definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TransitionDefinition {
     /// Source state(s)
     pub from: StringOrArray,

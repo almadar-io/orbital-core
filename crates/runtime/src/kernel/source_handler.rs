@@ -20,6 +20,9 @@ impl EntitySourceHandler {
 }
 
 impl PersistenceHandler for EntitySourceHandler {
+    fn suspended(&self) -> bool {
+        self.io.awaiting_host()
+    }
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
         let created = self.source.create(entity_type, data)?;
         self.note_write(entity_type);
@@ -394,6 +397,9 @@ impl EntitySourceHandler {
 }
 
 impl FetchHandler for EntitySourceHandler {
+    fn suspended(&self) -> bool {
+        self.io.awaiting_host()
+    }
     #[allow(clippy::too_many_arguments)]
     fn fetch(
         &self,

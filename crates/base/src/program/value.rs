@@ -38,6 +38,18 @@ impl<T: Clone> Shared<T> {
     }
 }
 
+impl<T: Clone + PartialEq> Shared<T> {
+    /// Runs `edit` on a private copy and swaps it in only when it changed the data, so a pass that finds nothing to
+    /// rewrite leaves every holder of this handle sharing one allocation.
+    pub fn edit(&mut self, edit: impl FnOnce(&mut T)) {
+        let mut copy = T::clone(&self.0);
+        edit(&mut copy);
+        if copy != *self.0 {
+            self.0 = Arc::new(copy);
+        }
+    }
+}
+
 impl<T> Clone for Shared<T> {
     fn clone(&self) -> Self {
         Shared(Arc::clone(&self.0))
@@ -453,6 +465,33 @@ impl Value {
         }
     }
 
+    /// The field `key` of an object value; `None` for a missing field or a value that is not an object.
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.as_object().and_then(|fields| fields.get(key))
+    }
+
+    /// [`Value::get`], mutably.
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Value> {
+        self.as_object_mut().and_then(|fields| fields.get_mut(key))
+    }
+
+    pub fn is_object(&self) -> bool {
+        matches!(self, Value::Object(_))
+    }
+
+    pub fn is_array(&self) -> bool {
+        matches!(self, Value::Array(_))
+    }
+
+    pub fn is_string(&self) -> bool {
+        matches!(self, Value::String(_))
+    }
+
+    /// The value, leaving `Null` in its place.
+    pub fn take(&mut self) -> Value {
+        std::mem::take(self)
+    }
+
     /// Get a nested value by path (e.g., "address.city")
     pub fn get_path(&self, path: &str) -> Option<&Value> {
         let mut current = self;
@@ -715,6 +754,47 @@ impl From<Value> for SExpression {
     }
 }
 
+static NULL: Value = Value::Null;
+
+/// `value["field"]`: the field of an object, `Null` when absent or when the value is not an object.
+impl std::ops::Index<&str> for Value {
+    type Output = Value;
+    fn index(&self, key: &str) -> &Value {
+        self.get(key).unwrap_or(&NULL)
+    }
+}
+
+/// `value["field"] = x`: a `Null` value becomes an object, a missing field is added as `Null`; any other value is
+/// not indexable by name and panics.
+impl std::ops::IndexMut<&str> for Value {
+    fn index_mut(&mut self, key: &str) -> &mut Value {
+        if self.is_null() {
+            *self = Value::object(ValueMap::default());
+        }
+        match self {
+            Value::Object(fields) => fields.entry(key.to_string()).or_insert(Value::Null),
+            other => panic!("cannot index a {} value by field name `{key}`", other.type_name()),
+        }
+    }
+}
+
+/// `value[i]`: the element of an array, `Null` when out of range or when the value is not an array.
+impl std::ops::Index<usize> for Value {
+    type Output = Value;
+    fn index(&self, at: usize) -> &Value {
+        self.as_array().and_then(|items| items.get(at)).unwrap_or(&NULL)
+    }
+}
+
+impl std::ops::IndexMut<usize> for Value {
+    fn index_mut(&mut self, at: usize) -> &mut Value {
+        match self {
+            Value::Array(items) => items.get_mut(at).unwrap_or_else(|| panic!("array index {at} is out of range")),
+            other => panic!("cannot index a {} value by position {at}", other.type_name()),
+        }
+    }
+}
+
 // Convenience conversions
 impl From<bool> for Value {
     fn from(b: bool) -> Self {
@@ -769,6 +849,34 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn index_reads_a_missing_or_non_object_field_as_null_and_writes_through_null() {
+        let mut v = Value::Null;
+        v["a"]["b"] = Value::Number(1.0);
+        assert_eq!(v["a"]["b"], Value::Number(1.0));
+        assert_eq!(v.get("a").and_then(|a| a.get("b")), Some(&Value::Number(1.0)));
+        assert_eq!(v["missing"], Value::Null);
+        assert_eq!(Value::Number(2.0)["a"], Value::Null, "control: a number has no fields");
+        assert_eq!(Value::Number(2.0).get("a"), None);
+    }
+
+    #[test]
+    fn index_by_position_reads_null_out_of_range_and_writes_in_range() {
+        let mut v = Value::array(vec![Value::Number(1.0), Value::Number(2.0)]);
+        v[1] = Value::Number(3.0);
+        assert_eq!(v[1], Value::Number(3.0));
+        assert_eq!(v[5], Value::Null);
+        assert_eq!(Value::Null[0], Value::Null, "control: a non-array has no elements");
+    }
+
+    #[test]
+    fn take_leaves_null_and_the_kind_tests_agree_with_the_variant() {
+        let mut v = Value::object(ValueMap::default());
+        assert!(v.is_object() && !v.is_array() && !v.is_string());
+        let taken = v.take();
+        assert!(taken.is_object() && v.is_null());
+    }
+
 
     #[test]
     fn split_path_reads_an_escaped_dot_and_backslash_as_literals() {
@@ -926,5 +1034,135 @@ mod tests {
         assert!(Value::Number(1.0).compare(&Value::string("2")).is_err(), "a number and a string have no order");
         assert!(Value::Null.compare(&Value::Number(0.0)).is_err(), "null is not zero");
         assert!(Value::Number(f64::NAN).compare(&Value::Number(1.0)).is_err(), "NaN has no order");
+    }
+
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    enum Kind {
+        Plain,
+        Wrapped(u32),
+        Pair(i8, String),
+        Shaped { zed: bool, alpha: Option<f64> },
+    }
+
+    #[derive(serde::Serialize)]
+    struct Sample {
+        zeta: String,
+        alpha: Vec<Kind>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        skipped: Option<u8>,
+        by_key: std::collections::BTreeMap<u32, (i64, u64, f32)>,
+        raw: serde_json::Value,
+        unit: (),
+        hole: f64,
+    }
+
+    fn sample() -> Sample {
+        Sample {
+            zeta: "z".into(),
+            alpha: vec![Kind::Plain, Kind::Wrapped(7), Kind::Pair(-2, "p".into()), Kind::Shaped { zed: true, alpha: Some(1.5) }],
+            skipped: None,
+            by_key: [(10, (-1, 2, 0.5)), (2, (3, 4, 1.0))].into_iter().collect(),
+            raw: serde_json::json!({"b": [1, {"y": null, "x": "s"}], "a": 2.5}),
+            unit: (),
+            hole: f64::NAN,
+        }
+    }
+
+    #[test]
+    fn a_value_built_by_the_serializer_is_the_canonical_json_tree_converted() {
+        let sample = sample();
+        fn sorted(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.sort_keys();
+                    map.values_mut().for_each(sorted);
+                }
+                serde_json::Value::Array(items) => items.iter_mut().for_each(sorted),
+                _ => {}
+            }
+        }
+        let mut tree = serde_json::to_value(&sample).unwrap();
+        sorted(&mut tree);
+        let via_json: Value = serde_json::from_value(tree).unwrap();
+        let direct = crate::value_serialize::to_canonical_value(&sample).unwrap();
+        assert_eq!(direct, via_json);
+        let keys: Vec<&String> = match &direct {
+            Value::Object(fields) => fields.keys().collect(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(keys, ["alpha", "by_key", "hole", "raw", "unit", "zeta"]);
+        assert_eq!(direct.get_path("hole"), Some(&Value::Null), "a non-finite number is null");
+    }
+
+    #[test]
+    fn control_an_uncanonical_value_keeps_the_serialized_order_and_equal_text_is_shared() {
+        let direct = crate::value_serialize::to_value(&sample()).unwrap();
+        let keys: Vec<&String> = match &direct {
+            Value::Object(fields) => fields.keys().collect(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(keys, ["zeta", "alpha", "by_key", "raw", "unit", "hole"]);
+        let twice = crate::value_serialize::to_value(&vec!["same".to_string(), "same".to_string()]).unwrap();
+        let Value::Array(items) = twice else { panic!() };
+        let (Value::String(a), Value::String(b)) = (&items[0], &items[1]) else { panic!() };
+        assert!(Shared::ptr_eq(a, b));
+    }
+
+    #[test]
+    fn a_map_key_that_is_not_text_or_a_number_is_refused() {
+        let bad: std::collections::BTreeMap<Vec<u8>, u8> = [(vec![1], 1)].into_iter().collect();
+        assert!(crate::value_serialize::to_value(&bad).is_err());
+    }
+
+    #[test]
+    fn equal_subtrees_of_a_serialized_value_are_one_node_and_a_write_copies_only_its_own() {
+        let leaf = serde_json::json!({"k": [1, "a"], "z": null});
+        let other = serde_json::json!({"k": [1, "b"], "z": null});
+        let tree = serde_json::json!({"x": leaf, "y": leaf, "w": other});
+        let mut value = crate::value_serialize::to_canonical_value(&tree).unwrap();
+        let node = |value: &Value, key: &str| match value.get_path(key) {
+            Some(Value::Object(fields)) => fields.clone(),
+            other => panic!("{other:?}"),
+        };
+        assert!(Shared::ptr_eq(&node(&value, "x"), &node(&value, "y")));
+        assert!(!Shared::ptr_eq(&node(&value, "x"), &node(&value, "w")), "control: a different leaf is a different node");
+        assert!(value.set_path("x.z", Value::Number(1.0)));
+        assert_eq!(value.get_path("x.z"), Some(&Value::Number(1.0)));
+        assert_eq!(value.get_path("y.z"), Some(&Value::Null), "the sibling still reads the shared original");
+    }
+
+    #[test]
+    fn edit_that_changes_nothing_keeps_the_allocation_shared() {
+        let original = Shared::new(vec![1, 2, 3]);
+        let mut held = original.clone();
+        held.edit(|items| {
+            for item in items.iter_mut() {
+                *item = *item;
+            }
+        });
+        assert!(Shared::ptr_eq(&original, &held), "an edit that wrote the same values must not copy");
+        held.edit(|_| {});
+        assert!(Shared::ptr_eq(&original, &held), "an edit that did nothing must not copy");
+    }
+
+    #[test]
+    fn edit_that_changes_something_leaves_other_holders_untouched() {
+        let original = Shared::new(vec![1, 2, 3]);
+        let mut held = original.clone();
+        held.edit(|items| items.push(4));
+        assert!(!Shared::ptr_eq(&original, &held), "control: a real change takes its own allocation");
+        assert_eq!(*original, vec![1, 2, 3], "the other holder still reads the old data");
+        assert_eq!(*held, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn edit_on_the_only_holder_applies_the_change() {
+        let mut only = Shared::new(String::from("a"));
+        only.edit(|text| text.push('b'));
+        assert_eq!(*only, "ab");
+        let mut empty: Shared<Vec<u8>> = Shared::new(Vec::new());
+        empty.edit(|items| items.clear());
+        assert!(empty.is_empty(), "an empty list edited to empty stays empty");
     }
 }

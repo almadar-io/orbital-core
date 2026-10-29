@@ -390,30 +390,38 @@ pub(super) fn wait_later(
     })
 }
 
+/// The signal names the operator table's `os/kill` declares for its `signal` parameter.
+fn table_signal_names() -> Vec<&'static str> {
+    orbital_core_base::language::registry::get_operator(OsOp::Kill.name())
+        .and_then(|operator| operator.params.get(1))
+        .and_then(|param| param.ty.literal_strings())
+        .expect("the operator table declares os/kill's signal as a closed set of names")
+}
+
+#[cfg(unix)]
+fn libc_signal(name: &str) -> Option<i32> {
+    Some(match name {
+        "TERM" => libc::SIGTERM,
+        "KILL" => libc::SIGKILL,
+        "INT" => libc::SIGINT,
+        "HUP" => libc::SIGHUP,
+        "QUIT" => libc::SIGQUIT,
+        "USR1" => libc::SIGUSR1,
+        "USR2" => libc::SIGUSR2,
+        "STOP" => libc::SIGSTOP,
+        "CONT" => libc::SIGCONT,
+        _ => return None,
+    })
+}
+
 #[cfg(unix)]
 fn signal_number(value: &Value, op: OsOp) -> Result<i32, OsError> {
-    const SET: [(&str, i32); 9] = [
-        ("TERM", libc::SIGTERM),
-        ("KILL", libc::SIGKILL),
-        ("INT", libc::SIGINT),
-        ("HUP", libc::SIGHUP),
-        ("QUIT", libc::SIGQUIT),
-        ("USR1", libc::SIGUSR1),
-        ("USR2", libc::SIGUSR2),
-        ("STOP", libc::SIGSTOP),
-        ("CONT", libc::SIGCONT),
-    ];
-    let found = match value {
-        Value::String(name) => SET.iter().find(|(n, _)| n == name).map(|(_, s)| *s),
-        Value::Number(n) if n.fract() == 0.0 => SET
-            .iter()
-            .find(|(_, s)| f64::from(*s) == *n)
-            .map(|(_, s)| *s),
-        _ => None,
-    };
-    found.ok_or_else(|| {
-        invalid(op, "signal must be one of TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT (or its number)")
-    })
+    let names = table_signal_names();
+    match value {
+        Value::String(name) if names.contains(&name.as_str()) => libc_signal(name)
+            .ok_or_else(|| err(OsErrorKind::Unsupported, op, format!("this host has no signal {name}"))),
+        _ => Err(invalid(op, format!("signal must be one of {}", names.join(", ")))),
+    }
 }
 
 fn kill(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {

@@ -54,6 +54,10 @@ pub trait PersistenceHandler: Send + Sync {
     fn write_batch(&self, _batch: &RowWriteBatch) -> Option<Result<Vec<RowWriteOutcome>, String>> {
         None
     }
+    /// Whether the step in flight is awaiting host I/O (a replay divergence is not): an `Err` it just returned is "no answer yet", not a failure.
+    fn suspended(&self) -> bool {
+        false
+    }
 }
 
 /// Handler for fetch operations (server-only)
@@ -149,6 +153,10 @@ pub trait FetchHandler: Send + Sync {
         Err(format!(
             "{entity_type}: this fetch handler cannot deliver rows by reference"
         ))
+    }
+    /// Whether the step in flight is awaiting host I/O (a replay divergence is not): an `Err` it just returned is "no answer yet", not a failure.
+    fn suspended(&self) -> bool {
+        false
     }
 }
 

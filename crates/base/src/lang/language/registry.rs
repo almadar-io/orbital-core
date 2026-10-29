@@ -61,6 +61,22 @@ impl OperatorTypeRef {
         }
     }
 
+    /// The strings of a closed literal type: a literal string, or a union of them. `None` when the type is anything
+    /// else (a union with a non-literal member included).
+    pub fn literal_strings(&self) -> Option<Vec<&str>> {
+        match self {
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Literal { value }) => value.as_str().map(|text| vec![text]),
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of }) => {
+                let mut out = Vec::new();
+                for member in of {
+                    out.extend(member.literal_strings()?);
+                }
+                Some(out)
+            }
+            _ => None,
+        }
+    }
+
     /// The coarse kind the signature declares, for readers that only branch on it: a primitive's own name, `array`
     /// (lists and tuples), `object` (records, shapes and maps), `function` (a function type), `union`, `var`,
     /// and the kind tag of everything else.
@@ -216,6 +232,12 @@ pub struct EmbeddedOperatorEffect {
     pub kind: String,
     #[serde(default)]
     pub produces: Option<OperatorTypeRef>,
+    /// What each event of a stream puts on the bus (`emit.onMessage`).
+    #[serde(default)]
+    pub events: Option<OperatorTypeRef>,
+    /// What the effect puts on the bus when called with no `onMessage` route, where that differs from `produces`.
+    #[serde(default)]
+    pub unrouted: Option<OperatorTypeRef>,
     #[serde(default)]
     pub config: Option<HashMap<String, OperatorTypeRef>>,
 }

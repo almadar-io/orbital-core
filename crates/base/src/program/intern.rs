@@ -3,7 +3,7 @@
 //! table lives only for the outermost [`scope`] on the thread and is dropped with it, so nothing outlives the parse.
 
 use crate::schema::sexpr::{SExpression, SObject};
-use crate::value::Shared;
+use crate::value::{Shared, Value, ValueMap};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -11,6 +11,7 @@ use std::hash::{Hash, Hasher};
 struct Table {
     held: HashSet<Shared<String>>,
     nodes: HashMap<u64, Vec<SExpression>>,
+    values: HashMap<u64, Vec<Value>>,
     node_requests: usize,
     node_distinct: usize,
     requests: usize,
@@ -53,6 +54,7 @@ pub fn scope<R>(read: impl FnOnce() -> R) -> R {
             *table = Some(Table {
                 held: HashSet::new(),
                 nodes: HashMap::new(),
+                values: HashMap::new(),
                 node_requests: 0,
                 node_distinct: 0,
                 requests: 0,
@@ -220,5 +222,92 @@ pub fn record(fields: SObject) -> SExpression {
             }
         }
         None => SExpression::object(fields),
+    })
+}
+
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Null, Value::Null) => true,
+        (Value::Bool(a), Value::Bool(b)) => a == b,
+        (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits(),
+        (Value::String(a), Value::String(b)) => Shared::ptr_eq(a, b),
+        (Value::Array(a), Value::Array(b)) => Shared::ptr_eq(a, b),
+        (Value::Object(a), Value::Object(b)) => Shared::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn hash_value(node: &Value, state: &mut impl Hasher) {
+    match node {
+        Value::Null => 0u8.hash(state),
+        Value::Bool(b) => (1u8, *b).hash(state),
+        Value::Number(n) => (2u8, n.to_bits()).hash(state),
+        Value::String(text) => (3u8, &**text as *const String as usize).hash(state),
+        Value::Array(items) => (4u8, &**items as *const Vec<Value> as usize).hash(state),
+        Value::Object(fields) => (5u8, &**fields as *const ValueMap as usize).hash(state),
+        Value::Lambda { body, .. } => (6u8, std::sync::Arc::as_ptr(body) as usize).hash(state),
+    }
+}
+
+fn mergeable(node: &Value) -> bool {
+    !matches!(node, Value::Lambda { .. })
+}
+
+/// The list `items` as the one shared value node the active scope holds for that content, else a new node (held by
+/// the scope, if any). Two nodes are one only when every child is the same shared node.
+pub fn value_list(items: Vec<Value>) -> Value {
+    TABLE.with(|table| match table.borrow_mut().as_mut() {
+        Some(table) if items.iter().all(mergeable) => {
+            table.node_requests += 1;
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            4u8.hash(&mut state);
+            items.iter().for_each(|item| hash_value(item, &mut state));
+            let bucket = table.values.entry(state.finish()).or_default();
+            let found = bucket.iter().find(|held| {
+                matches!(held, Value::Array(known)
+                    if known.len() == items.len() && known.iter().zip(items.iter()).all(|(a, b)| same_value(a, b)))
+            });
+            match found {
+                Some(held) => held.clone(),
+                None => {
+                    let fresh = Value::array(items);
+                    bucket.push(fresh.clone());
+                    table.node_distinct += 1;
+                    fresh
+                }
+            }
+        }
+        _ => Value::array(items),
+    })
+}
+
+/// [`value_list`] for an object: fields are compared in order, so field order stays part of the content.
+pub fn value_record(fields: ValueMap) -> Value {
+    TABLE.with(|table| match table.borrow_mut().as_mut() {
+        Some(table) if fields.values().all(mergeable) => {
+            table.node_requests += 1;
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            5u8.hash(&mut state);
+            for (key, value) in fields.iter() {
+                key.hash(&mut state);
+                hash_value(value, &mut state);
+            }
+            let bucket = table.values.entry(state.finish()).or_default();
+            let found = bucket.iter().find(|held| {
+                matches!(held, Value::Object(known)
+                    if known.len() == fields.len()
+                        && known.iter().zip(fields.iter()).all(|((ka, va), (kb, vb))| ka == kb && same_value(va, vb)))
+            });
+            match found {
+                Some(held) => held.clone(),
+                None => {
+                    let fresh = Value::object(fields);
+                    bucket.push(fresh.clone());
+                    table.node_distinct += 1;
+                    fresh
+                }
+            }
+        }
+        _ => Value::object(fields),
     })
 }

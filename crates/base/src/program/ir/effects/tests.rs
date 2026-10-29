@@ -32,7 +32,7 @@ fn a_substrate_operator_is_exactly_one_the_table_hosts_on_the_substrate_or_the_p
     for name in [
         "llm/generate",
         "memory/store",
-        "trace/log",
+        "trace/emit",
         "session/read-spec",
         "workspace/read-orbital",
     ] {

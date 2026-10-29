@@ -214,13 +214,36 @@ impl HttpRetry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GrantRequest {
+    #[serde(default, skip_serializing_if = "GrantMethod::is_post")]
+    pub method: GrantMethod,
     pub headers: Vec<(String, String)>,
     pub timeout_ms: Option<u64>,
     pub retry: Option<HttpRetry>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum GrantMethod {
+    Get,
+    #[default]
+    Post,
+}
+
+impl GrantMethod {
+    pub fn is_post(&self) -> bool {
+        *self == Self::Post
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+        }
+    }
+}
+
 impl GrantRequest {
-    pub const KEYS: &'static [&'static str] = &["headers", "timeoutMs", "retry"];
+    pub const KEYS: &'static [&'static str] = &["method", "headers", "timeoutMs", "retry"];
 
     pub fn is_driver_owned_header(name: &str) -> bool {
         name.eq_ignore_ascii_case("authorization") || name.eq_ignore_ascii_case("content-type")
@@ -491,7 +514,14 @@ pub fn parse_grant_request(value: &Value) -> Result<GrantRequest, HttpRefusal> {
     if headers.iter().any(|(name, _)| GrantRequest::is_driver_owned_header(name)) {
         return invalid("grant Authorization and Content-Type headers are kernel-owned");
     }
+    let method = match map.get("method") {
+        None => GrantMethod::Post,
+        Some(Value::String(text)) if text == "GET" => GrantMethod::Get,
+        Some(Value::String(text)) if text == "POST" => GrantMethod::Post,
+        Some(_) => return invalid("auth.grantRequest.method must be GET or POST"),
+    };
     Ok(GrantRequest {
+        method,
         headers,
         timeout_ms: parse_timeout_ms(map.get("timeoutMs"))?,
         retry: map.get("retry").map(parse_retry).transpose()?,

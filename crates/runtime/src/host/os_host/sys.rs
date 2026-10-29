@@ -584,10 +584,9 @@ mod native {
     }
 
     pub(super) fn mounts(op: OsOp) -> Result<Value, OsError> {
-        Ok(Value::Array(procfs::mounts(&read_small(
-            op,
-            "/proc/mounts",
-        )?)))
+        Ok(Value::Array(
+            procfs::mounts(&read_small(op, "/proc/mounts")?).into(),
+        ))
     }
 
     pub(super) fn interfaces(op: OsOp) -> Result<Vec<Iface>, OsError> {

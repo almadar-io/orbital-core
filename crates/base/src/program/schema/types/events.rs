@@ -213,7 +213,7 @@ pub fn resolve_config_ref_event_name(
 }
 
 /// Event emission definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EmitDefinition {
     /// Event name
     pub event: String,
@@ -304,7 +304,7 @@ pub struct EmitDefinition {
 }
 
 /// Event listener definition
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ListenDefinition {
     /// Event to listen for (bare event name once `source` is populated;
     /// legacy concatenated form `"Source.EVENT"` when older .orb files are loaded)
