@@ -140,7 +140,7 @@ impl OirExpr {
             let mut v = Vec::with_capacity(parts.len() + 1);
             v.push(S::String(head.to_string().into()));
             v.extend(parts);
-            S::Array(v)
+            S::Array(v.into())
         };
         Some(match self {
             OirExpr::Null => S::Null,
@@ -153,12 +153,12 @@ impl OirExpr {
                 for it in items {
                     v.push(it.to_sexpression()?);
                 }
-                S::Array(v)
+                S::Array(v.into())
             }
             OirExpr::Object { fields } => {
                 let mut m = crate::schema::sexpr::SObject::with_capacity_and_hasher(fields.len(), Default::default());
                 for (k, val) in fields {
-                    m.insert(k.clone(), val.to_sexpression()?);
+                    m.insert(k.as_str().into(), val.to_sexpression()?);
                 }
                 S::object(m)
             }
@@ -259,7 +259,7 @@ impl OirExpr {
                             S::Array(vec![
                                 S::String(accumulator.clone().into()),
                                 S::String(variable.clone().into()),
-                            ]),
+                            ].into()),
                             body.to_sexpression()?,
                         ],
                     ),

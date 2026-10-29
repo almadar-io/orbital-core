@@ -442,7 +442,7 @@ pub(super) fn rules_by_field(
                         _ => Ok(Value::Null),
                     })
                     .collect::<Result<Vec<_>, OrbitalError>>()?;
-                Ok((field.clone(), rule_list(field, evaluated)?))
+                Ok((field.to_string(), rule_list(field, evaluated)?))
             })
             .collect();
     }

@@ -17,7 +17,7 @@ pub type ValueMap = crate::collections::IndexMap<String, Value>;
 /// A copy-on-write handle: cloning shares the data; a write through `DerefMut` copies only when it is shared.
 /// It is how a value's lists and records are held, so reading one is a reference-count bump, not a deep copy,
 /// and an accumulator written in a loop is updated in place.
-#[derive(Default, PartialEq, Eq, PartialOrd, Hash)]
+#[derive(Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Shared<T>(Arc<T>);
 
 impl<T> Shared<T> {
@@ -122,6 +122,13 @@ impl std::borrow::Borrow<str> for Shared<String> {
         self.as_str()
     }
 }
+
+impl std::borrow::Borrow<String> for Shared<String> {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
 
 impl From<&str> for Shared<String> {
     fn from(text: &str) -> Self {
@@ -667,9 +674,9 @@ impl From<SExpression> for Value {
             SExpression::Bool(b) => Value::Bool(b),
             SExpression::Number(n) => Value::Number(n),
             SExpression::String(s) => Value::string(s),
-            SExpression::Array(arr) => Value::Array(arr.into_iter().map(Value::from).collect()),
+            SExpression::Array(arr) => Value::Array(arr.into_inner().into_iter().map(Value::from).collect()),
             SExpression::Object(obj) => {
-                Value::Object((*obj).into_iter().map(|(k, v)| (k, Value::from(v))).collect())
+                Value::Object(obj.into_inner().into_iter().map(|(k, v)| (k.into_inner(), Value::from(v))).collect())
             }
         }
     }
@@ -688,7 +695,7 @@ impl From<Value> for SExpression {
             }
             Value::Object(obj) => SExpression::object(
                 obj.into_iter()
-                    .map(|(k, v)| (k, SExpression::from(v)))
+                    .map(|(k, v)| (k.into(), SExpression::from(v)))
                     .collect(),
             ),
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
@@ -702,7 +709,7 @@ impl From<Value> for SExpression {
                     ));
                 }
                 arr.push((*body).clone());
-                SExpression::Array(arr)
+                SExpression::Array(arr.into())
             }
         }
     }

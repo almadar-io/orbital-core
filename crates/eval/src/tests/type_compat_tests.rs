@@ -10,23 +10,23 @@ fn literal_value_type_defers_operator_calls_but_types_literals() {
     // Operator applications are computed expressions → defer (None), so the
     // caller routes them to the expression inferencer instead of comparing a
     // literal kind. (CG-EMIT-PAYLOAD-SEXPR: these used to mis-type as "array".)
-    let array_find = SExpression::Array(vec![s("array/find"), s("@entity.units")]);
+    let array_find = SExpression::Array(vec![s("array/find"), s("@entity.units")].into());
     assert_eq!(literal_value_type(&array_find), None);
     let object_get_find = SExpression::Array(vec![
         s("object/get"),
-        SExpression::Array(vec![s("array/find"), s("@entity.units")]),
+        SExpression::Array(vec![s("array/find"), s("@entity.units")].into()),
         s("id"),
-    ]);
+    ].into());
     assert_eq!(literal_value_type(&object_get_find), None);
 
     // Genuine literal arrays still type as "array" (head not a known operator,
     // or empty) — matching eval_expr's own literal-vs-call discrimination.
     assert_eq!(
-        literal_value_type(&SExpression::Array(vec![s("red"), s("blue")])),
+        literal_value_type(&SExpression::Array(vec![s("red"), s("blue")].into())),
         Some("array")
     );
     assert_eq!(
-        literal_value_type(&SExpression::Array(vec![])),
+        literal_value_type(&SExpression::Array(vec![].into())),
         Some("array")
     );
 

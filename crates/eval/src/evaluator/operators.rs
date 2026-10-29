@@ -604,7 +604,7 @@ fn eval_node(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
         SExpression::Object(obj) => {
             let mut result = ValueMap::default();
             for (k, v) in obj.iter() {
-                result.insert(k.clone(), eval_expr(v, ctx)?);
+                result.insert(k.to_string(), eval_expr(v, ctx)?);
             }
             Ok(Value::object(result))
         }

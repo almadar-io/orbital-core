@@ -3936,3 +3936,44 @@ fn time_iso_duration_stays_a_number_of_ms() {
     assert_eq!(eval(r#"["time/duration", 9000000]"#), Value::string("2h 30m"));
     assert!(eval_err(r#"["time/duration", "2h"]"#).contains("Type mismatch"));
 }
+
+fn traced_paths(json: &str) -> (Vec<(String, Value)>, Vec<NodePathOwned>) {
+    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let (result, steps) = crate::evaluator::trace::evaluate_traced(&expr, &BindingContext::new());
+    result.unwrap();
+    let mut exits = Vec::new();
+    let mut enters = Vec::new();
+    for step in steps {
+        match step {
+            crate::evaluator::trace::TraceStep::Exit { path, outcome } => exits.push((format!("{path:?}"), outcome.unwrap())),
+            crate::evaluator::trace::TraceStep::Enter { path } => enters.push(path),
+            _ => {}
+        }
+    }
+    (exits, enters)
+}
+
+type NodePathOwned = crate::evaluator::trace::NodePath;
+
+#[test]
+fn identical_subtrees_at_different_paths_keep_separate_trace_entries() {
+    let (exits, enters) = traced_paths(r#"["+", ["*", 2, 3], ["+", ["*", 2, 3], ["*", 2, 3]]]"#);
+    assert_eq!(enters.len(), 11);
+    let distinct: std::collections::HashSet<String> = enters.iter().map(|p| format!("{p:?}")).collect();
+    assert_eq!(distinct.len(), enters.len(), "every entered path is its own");
+    assert_eq!(exits.iter().filter(|(_, v)| *v == Value::from(6.0)).count(), 3);
+}
+
+#[test]
+fn control_distinct_subtrees_trace_the_same_way() {
+    let (_, enters) = traced_paths(r#"["+", ["*", 2, 3], ["+", ["*", 3, 4], ["*", 4, 5]]]"#);
+    assert_eq!(enters.len(), 11);
+}
+
+#[test]
+fn a_lambda_body_shared_by_two_calls_traces_under_each_calls_own_path() {
+    let (_, enters) = traced_paths(r#"["list", ["array/map", ["list", 1, 2], ["fn", "x", ["*", "@x", 2]]], ["array/map", ["list", 1, 2], ["fn", "x", ["*", "@x", 2]]]]"#);
+    let first = enters.iter().filter(|p| format!("{p:?}").starts_with("[Index(1), Index(2)")).count();
+    let second = enters.iter().filter(|p| format!("{p:?}").starts_with("[Index(2), Index(2)")).count();
+    assert!(first > 0 && first == second);
+}

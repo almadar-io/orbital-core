@@ -306,8 +306,39 @@ fn test_oir_module_new() {
 fn test_oir_entity_new() {
     let entity = OirEntity::new("Task");
     assert_eq!(entity.name, "Task");
-    assert_eq!(entity.collection, "task");
+    assert_eq!(entity.collection, "Task");
     assert_eq!(entity.persistence, OirPersistence::Persistent);
+}
+
+fn module_of(pages: &[(&str, bool)]) -> OirModule {
+    let mut module = OirModule::new("App", "1.0.0");
+    for (name, initial) in pages {
+        let mut page = OirPage::new(*name, format!("/{name}"));
+        page.is_initial = *initial;
+        module.pages.push(page);
+    }
+    module
+}
+
+#[test]
+fn initial_page_is_the_marked_one_else_the_first() {
+    let marked = module_of(&[("A", false), ("B", true), ("C", false)]);
+    assert_eq!(marked.initial_page().map(|p| p.name.as_str()), Some("B"));
+    let none_marked = module_of(&[("A", false), ("B", false)]);
+    assert_eq!(none_marked.initial_page().map(|p| p.name.as_str()), Some("A"));
+    let two_marked = module_of(&[("A", false), ("B", true), ("C", true)]);
+    assert_eq!(two_marked.initial_page().map(|p| p.name.as_str()), Some("B"));
+    assert!(module_of(&[]).initial_page().is_none());
+}
+
+#[test]
+fn page_initial_marker_round_trips_and_is_omitted_when_unset() {
+    let mut page = OirPage::new("Home", "/");
+    assert!(!serde_json::to_string(&page).unwrap().contains("isInitial"));
+    page.is_initial = true;
+    let json = serde_json::to_string(&page).unwrap();
+    assert!(json.contains("\"isInitial\":true"));
+    assert!(serde_json::from_str::<OirPage>(&json).unwrap().is_initial);
 }
 
 #[test]

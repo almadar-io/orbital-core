@@ -176,7 +176,7 @@ fn a_failure_names_the_failing_operation_and_how_many_ran_before_it() {
     assert_eq!(out[0].0, "FAILED");
     assert_eq!(out[0].1["index"].as_f64(), Some(1.0), "{out:?}");
     assert_eq!(out[0].1["completedCount"].as_f64(), Some(1.0));
-    assert_eq!(out[0].1["code"], Json::Null, "a missing required column has no store code");
+    assert!(out[0].1.get("code").is_none(), "a missing required column has no store code: absent, never null");
 }
 
 #[test]
@@ -191,10 +191,10 @@ fn a_failure_carries_the_store_code_of_the_failing_operation() {
 }
 
 #[test]
-fn control_a_failure_no_single_operation_caused_has_a_null_index_and_nothing_completed() {
+fn control_a_failure_no_single_operation_caused_has_no_index_and_nothing_completed() {
     let out = send(&kernel(), "NOT_ARRAY", Json::Null);
     assert_eq!(out[0].0, "FAILED");
-    assert_eq!(out[0].1["index"], Json::Null);
+    assert!(out[0].1.get("index").is_none(), "no single operation at fault: absent, never null");
     assert_eq!(out[0].1["completedCount"].as_f64(), Some(0.0));
     let ok = send(&kernel(), "SEED", Json::Null);
     assert!(ok[0].1.get("index").is_none(), "control: a success carries no failure fields");

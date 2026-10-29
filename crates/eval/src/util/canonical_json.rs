@@ -22,21 +22,23 @@ use serde_json::Value;
 /// Recursively sort every JSON object's keys; arrays are returned unchanged
 /// (element order is semantic — codegen and diffing both depend on it).
 pub fn canonical_json(value: &Value) -> Value {
+    into_canonical_json(value.clone())
+}
+
+/// `canonical_json` for an owned value: the keys are sorted where they stand, so a large tree is never held twice.
+pub fn into_canonical_json(mut value: Value) -> Value {
+    sort_keys(&mut value);
+    value
+}
+
+fn sort_keys(value: &mut Value) {
     match value {
         Value::Object(map) => {
-            let mut entries: Vec<(String, Value)> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), canonical_json(v)))
-                .collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            let mut sorted = serde_json::Map::new();
-            for (k, v) in entries {
-                sorted.insert(k, v);
-            }
-            Value::Object(sorted)
+            map.sort_keys();
+            map.values_mut().for_each(sort_keys);
         }
-        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
-        other => other.clone(),
+        Value::Array(items) => items.iter_mut().for_each(sort_keys),
+        _ => {}
     }
 }
 
@@ -95,6 +97,24 @@ mod tests {
         assert_eq!(canonical_json(&json!(42)), json!(42));
         assert_eq!(canonical_json(&json!("x")), json!("x"));
         assert_eq!(canonical_json(&json!(true)), json!(true));
+    }
+
+    #[test]
+    fn the_owned_form_sorts_the_same_bytes_as_the_borrowed_form() {
+        let input = json!({ "b": [{ "z": 1, "a": { "y": 2, "x": 3 } }, 7], "a": null, "c": "s" });
+        let borrowed = serde_json::to_string(&canonical_json(&input)).unwrap();
+        let owned = serde_json::to_string(&into_canonical_json(input)).unwrap();
+        assert_eq!(owned, borrowed);
+        assert_eq!(owned, r#"{"a":null,"b":[{"a":{"x":3,"y":2},"z":1},7],"c":"s"}"#);
+    }
+
+    #[test]
+    fn the_sorted_tree_is_what_its_printed_text_parses_back_to() {
+        let input = json!({ "n": [1.5, -0.0, 1e21, 7, u64::MAX], "b": { "d": "é\n", "c": [] }, "a": {} });
+        let tree = into_canonical_json(input);
+        let text = serde_json::to_string_pretty(&tree).unwrap();
+        let parsed: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), serde_json::to_string(&tree).unwrap());
     }
 
     #[test]

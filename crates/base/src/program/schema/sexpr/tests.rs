@@ -44,7 +44,7 @@ fn try_rewrite_stops_at_the_first_error_in_walk_order() {
 fn try_rewrite_of_a_tree_deeper_than_a_small_stack_completes() {
     let mut deep = SExpression::Number(0.0);
     for _ in 0..100_000 {
-        deep = SExpression::Array(vec![SExpression::string("do"), deep]);
+        deep = SExpression::Array(vec![SExpression::string("do"), deep].into());
     }
     let rewritten = std::thread::Builder::new()
         .stack_size(256 * 1024)
@@ -76,6 +76,52 @@ fn control_try_rewrite_of_a_leaf_is_the_leaf_after_exit() {
 }
 
 #[test]
+fn try_rewrite_that_changes_nothing_returns_the_shared_input() {
+    let expr = rewrite_input(serde_json::json!(["do", ["a", 1], {"k": ["b"], "j": "c"}]));
+    let out: SExpression = expr
+        .try_rewrite(|_| Ok::<_, ()>(RewriteVisit::Descend), Ok)
+        .unwrap();
+    assert!(out.same_node(&expr), "an unchanged tree is the input, not a rebuilt copy");
+    assert_eq!(out, expr);
+}
+
+#[test]
+fn try_rewrite_that_changes_one_leaf_rebuilds_only_the_path_to_it() {
+    let expr = rewrite_input(serde_json::json!(["do", ["a", 1], ["b", ["c"]]]));
+    let out = expr
+        .try_rewrite(
+            |_| Ok::<_, ()>(RewriteVisit::Descend),
+            |node| Ok(if node.as_str() == Some("a") { SExpression::string("A") } else { node }),
+        )
+        .unwrap();
+    assert_eq!(out, rewrite_input(serde_json::json!(["do", ["A", 1], ["b", ["c"]]])));
+    assert!(!out.same_node(&expr));
+    let (SExpression::Array(old), SExpression::Array(new)) = (&expr, &out) else { panic!("lists") };
+    assert!(!old[1].same_node(&new[1]), "the list holding the changed leaf is rebuilt");
+    assert!(old[2].same_node(&new[2]), "a sibling subtree stays shared");
+}
+
+#[test]
+fn control_unshared_gives_every_list_and_object_its_own_allocation() {
+    let expr = rewrite_input(serde_json::json!(["do", ["a", 1], {"k": ["b"]}]));
+    let copy = expr.unshared();
+    assert_eq!(copy, expr);
+    assert!(!copy.same_node(&expr));
+    let (SExpression::Array(old), SExpression::Array(new)) = (&expr, &copy) else { panic!("lists") };
+    assert!(!old[1].same_node(&new[1]));
+    assert!(!old[2].same_node(&new[2]));
+}
+
+#[test]
+fn any_string_reads_every_string_leaf_and_nothing_else() {
+    let expr = rewrite_input(serde_json::json!(["do", [1, true, null], {"key": ["deep", "@x.y"]}]));
+    assert!(expr.any_string(|s| s == "deep"));
+    assert!(expr.any_string(|s| s.starts_with('@')));
+    assert!(!expr.any_string(|s| s == "key"), "object keys are not strings of the tree");
+    assert!(!SExpression::Number(1.0).any_string(|_| true));
+}
+
+#[test]
 fn every_variant_reads_from_json_and_integers_are_numbers() {
     let expr: SExpression = serde_json::from_str(
         r#"[null, true, 3, -2, 1.5, 18446744073709551615, "@a.b", [], {"z": 1, "a": [2]}]"#,
@@ -91,10 +137,10 @@ fn every_variant_reads_from_json_and_integers_are_numbers() {
     assert_eq!(items[4], SExpression::Number(1.5));
     assert_eq!(items[5], SExpression::Number(18446744073709551615u64 as f64));
     assert_eq!(items[6], SExpression::string("@a.b"));
-    assert_eq!(items[7], SExpression::Array(vec![]));
+    assert_eq!(items[7], SExpression::array(vec![]));
     let object = items[8].as_object().unwrap();
     assert_eq!(object.keys().collect::<Vec<_>>(), ["z", "a"]);
-    assert_eq!(object["a"], SExpression::Array(vec![SExpression::Number(2.0)]));
+    assert_eq!(object["a"], SExpression::Array(vec![SExpression::Number(2.0)].into()));
 }
 
 #[test]
@@ -232,13 +278,13 @@ fn canonical_json_sorts_object_keys_so_emission_is_byte_stable() {
     // randomly seeded, so a non-canonical serializer disagrees with itself.
     let render = || {
         let mut map = SObject::default();
-        map.insert("zebra".to_string(), SExpression::Number(1.0));
-        map.insert("alpha".to_string(), SExpression::Bool(true));
-        map.insert("middle".to_string(), SExpression::string("x"));
+        map.insert("zebra".into(), SExpression::Number(1.0));
+        map.insert("alpha".into(), SExpression::Bool(true));
+        map.insert("middle".into(), SExpression::string("x"));
         let expr = SExpression::Array(vec![
             SExpression::string("="),
             SExpression::object(map),
-        ]);
+        ].into());
         serde_json::to_string(&expr.to_canonical_json()).expect("serializes")
     };
     let first = render();
@@ -260,9 +306,9 @@ fn canonical_json_round_trips_nested_arrays_and_scalars() {
             SExpression::string("="),
             SExpression::string("@user.role"),
             SExpression::string("supervisor"),
-        ]),
+        ].into()),
         SExpression::Null,
-    ]);
+    ].into());
     assert_eq!(
         serde_json::to_string(&expr.to_canonical_json()).expect("serializes"),
         r#"["or",["=","@user.role","supervisor"],null]"#
@@ -517,12 +563,12 @@ fn is_statically_true_is_the_dual_of_is_statically_false() {
         lit("or"),
         eq("==", lit("create"), lit("create")),
         lit("@payload.row"),
-    ]);
+    ].into());
     assert!(or.is_statically_true(), "one operand provably true");
     assert!(!or.is_statically_false());
-    let and = SExpression::Array(vec![lit("and"), SExpression::Bool(true), lit("@payload.row")]);
+    let and = SExpression::Array(vec![lit("and"), SExpression::Bool(true), lit("@payload.row")].into());
     assert!(!and.is_statically_true() && !and.is_statically_false(), "undecidable");
-    let not = SExpression::Array(vec![lit("not"), SExpression::Bool(false)]);
+    let not = SExpression::Array(vec![lit("not"), SExpression::Bool(false)].into());
     assert!(not.is_statically_true());
     assert!(!SExpression::Bool(false).is_statically_true());
     assert!(!SExpression::string(String::new()).is_statically_true());
@@ -536,7 +582,7 @@ fn is_statically_false_true_for_bool_false() {
 }
 
 fn eq(op: &str, a: SExpression, b: SExpression) -> SExpression {
-    SExpression::Array(vec![SExpression::string(op.to_string()), a, b])
+    SExpression::Array(vec![SExpression::string(op.to_string()), a, b].into())
 }
 
 fn lit(v: &str) -> SExpression {
@@ -598,7 +644,7 @@ fn is_statically_false_true_for_empty_object() {
 
 #[test]
 fn is_statically_false_true_for_empty_array_literal() {
-    assert!(SExpression::Array(vec![]).is_statically_false());
+    assert!(SExpression::array(vec![]).is_statically_false());
 }
 
 #[test]
@@ -654,9 +700,8 @@ fn entity_reads_ignore_payload_and_config_bindings() {
 }
 
 #[test]
-fn an_ir_node_is_24_bytes_because_the_object_map_is_boxed() {
-    // 72 when the object map was inline; boxing it lets every variant fit beside a `Vec`.
-    assert_eq!(std::mem::size_of::<SExpression>(), 24);
+fn an_ir_node_is_16_bytes_because_lists_and_objects_are_shared_handles() {
+    assert_eq!(std::mem::size_of::<SExpression>(), 16);
 }
 
 #[test]
@@ -665,4 +710,240 @@ fn a_boxed_object_keeps_the_plain_json_wire_form() {
     let expr: SExpression = serde_json::from_value(json.clone()).unwrap();
     assert!(matches!(expr, SExpression::Object(_)));
     assert_eq!(serde_json::to_value(&expr).unwrap(), json);
+}
+
+fn string_of(expr: &SExpression) -> &crate::value::Shared<String> {
+    match expr {
+        SExpression::String(text) => text,
+        other => panic!("expected a string, got {other:?}"),
+    }
+}
+
+#[test]
+fn reading_a_tree_shares_equal_string_values_and_keys_in_one_allocation() {
+    let expr: SExpression = serde_json::from_str(r#"["go", {"go": "go", "other": ["go", "x"]}, "x"]"#).unwrap();
+    let SExpression::Array(items) = &expr else { panic!("array") };
+    let SExpression::Object(map) = &items[1] else { panic!("object") };
+    let (key, value) = map.get_index(0).unwrap();
+    let SExpression::Array(inner) = &map["other"] else { panic!("array") };
+    let first = string_of(&items[0]);
+    assert!(crate::value::Shared::ptr_eq(first, key), "a key shares the allocation of an equal value");
+    assert!(crate::value::Shared::ptr_eq(first, string_of(value)));
+    assert!(crate::value::Shared::ptr_eq(first, string_of(&inner[0])));
+    assert!(crate::value::Shared::ptr_eq(string_of(&inner[1]), string_of(&items[2])));
+    assert!(!crate::value::Shared::ptr_eq(first, string_of(&items[2])), "different text stays apart");
+}
+
+#[test]
+fn the_interning_table_does_not_outlive_the_read() {
+    let _: SExpression = serde_json::from_str(r#"["a", "a"]"#).unwrap();
+    assert_eq!(crate::intern::held(), 0);
+    let held = crate::intern::scope(|| {
+        let _: SExpression = serde_json::from_str(r#"["a", "b", "a"]"#).unwrap();
+        let _: SExpression = serde_json::from_str(r#"["b", "c"]"#).unwrap();
+        crate::intern::held()
+    });
+    assert_eq!(held, 3, "a nested read joins the outer table");
+    assert_eq!(crate::intern::held(), 0);
+}
+
+#[test]
+fn separate_reads_do_not_share_allocations() {
+    let a: SExpression = serde_json::from_str(r#""same""#).unwrap();
+    let b: SExpression = serde_json::from_str(r#""same""#).unwrap();
+    assert_eq!(a, b);
+    assert!(!crate::value::Shared::ptr_eq(string_of(&a), string_of(&b)));
+}
+
+#[test]
+fn interned_object_keys_answer_str_lookups_and_compare_by_text() {
+    let expr: SExpression = serde_json::from_str(r#"{"alpha": 1, "beta": 2}"#).unwrap();
+    let SExpression::Object(map) = &expr else { panic!("object") };
+    assert_eq!(map.get("beta"), Some(&SExpression::Number(2.0)));
+    assert!(map.contains_key("alpha"));
+    assert!(!map.contains_key("gamma"));
+    assert_eq!(map.keys().map(|k| k.as_str()).collect::<Vec<_>>(), ["alpha", "beta"]);
+    let mut other = SObject::default();
+    other.insert("alpha".into(), SExpression::Number(1.0));
+    other.insert("beta".into(), SExpression::Number(2.0));
+    assert_eq!(**map, other, "a built object equals a read one");
+}
+
+#[test]
+fn a_resolved_program_round_trips_to_the_same_bytes_and_shares_its_strings() {
+    use crate::schema::OrbitalSchema;
+    for text in [
+        include_str!("../../../../../../tests/fixtures/embed/resolved/basic-entity.json"),
+        include_str!("../../../../../../tests/fixtures/embed/resolved/two-orbital-chore.json"),
+        include_str!("../../../../../../tests/fixtures/embed/resolved/tick-counter.json"),
+    ] {
+        let schema: OrbitalSchema = serde_json::from_str(text).unwrap();
+        let first = serde_json::to_string_pretty(&schema).unwrap();
+        let again: OrbitalSchema = serde_json::from_str(&first).unwrap();
+        assert_eq!(serde_json::to_string_pretty(&again).unwrap(), first, "serialize(parse(x)) is a fixed point");
+        let tree: SExpression = serde_json::from_str(text).unwrap();
+        let bytes = serde_json::to_string(&tree).unwrap();
+        let mut plain: serde_json::Value = serde_json::from_str(text).unwrap();
+        fn as_floats(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Number(n) => *value = serde_json::json!(n.as_f64().unwrap()),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(as_floats),
+                serde_json::Value::Object(map) => map.values_mut().for_each(as_floats),
+                _ => {}
+            }
+        }
+        as_floats(&mut plain);
+        assert_eq!(bytes, serde_json::to_string(&plain).unwrap(), "an interned read writes the bytes a plain read writes");
+    }
+}
+
+#[test]
+fn a_program_read_keeps_one_allocation_per_distinct_string() {
+    let text = include_str!("../../../../../../tests/fixtures/embed/resolved/two-orbital-chore.json");
+    let mut distinct: std::collections::HashMap<*const String, &str> = std::collections::HashMap::new();
+    let mut by_text: std::collections::HashMap<&str, std::collections::HashSet<*const String>> = std::collections::HashMap::new();
+    let mut total = 0usize;
+    fn visit<'a>(
+        expr: &'a SExpression,
+        total: &mut usize,
+        distinct: &mut std::collections::HashMap<*const String, &'a str>,
+        by_text: &mut std::collections::HashMap<&'a str, std::collections::HashSet<*const String>>,
+    ) {
+        match expr {
+            SExpression::String(text) => {
+                *total += 1;
+                let ptr: *const String = &**text;
+                distinct.insert(ptr, text.as_str());
+                by_text.entry(text.as_str()).or_default().insert(ptr);
+            }
+            SExpression::Array(items) => items.iter().for_each(|item| visit(item, total, distinct, by_text)),
+            SExpression::Object(map) => {
+                for (key, value) in map.iter() {
+                    *total += 1;
+                    let ptr: *const String = &**key;
+                    distinct.insert(ptr, key.as_str());
+                    by_text.entry(key.as_str()).or_default().insert(ptr);
+                    visit(value, total, distinct, by_text);
+                }
+            }
+            _ => {}
+        }
+    }
+    let whole: SExpression = serde_json::from_str(text).unwrap();
+    visit(&whole, &mut total, &mut distinct, &mut by_text);
+    assert!(total > distinct.len(), "the fixture repeats strings");
+    assert!(by_text.values().all(|ptrs| ptrs.len() == 1), "equal text is held once");
+}
+
+#[test]
+#[ignore = "measurement: ORB_MEASURE_PROGRAM=<resolved .orb path> cargo test -p orbital-core-base --lib interning_hit_rate -- --ignored --nocapture"]
+fn interning_hit_rate_on_a_resolved_program() {
+    use crate::schema::OrbitalSchema;
+    let path = std::env::var("ORB_MEASURE_PROGRAM").expect("ORB_MEASURE_PROGRAM names a resolved program");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let stats = crate::intern::scope(|| {
+        let _program: OrbitalSchema = serde_json::from_str(&text).unwrap();
+        crate::intern::stats().unwrap()
+    });
+    println!("interned: {stats:?}");
+    let tree: SExpression = crate::intern::scope(|| serde_json::from_str(&text).unwrap());
+    let (mut expanded, mut held) = ((0usize, 0usize), (0usize, 0usize));
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![(&tree, true)];
+    fn cost(items: usize) -> usize {
+        16 + items * std::mem::size_of::<SExpression>() + 24
+    }
+    while let Some((node, first)) = stack.pop() {
+        let (children, bytes): (Vec<&SExpression>, usize) = match node {
+            SExpression::Array(items) => (items.iter().collect(), cost(items.len())),
+            SExpression::Object(fields) => (fields.values().collect(), cost(fields.len()) + fields.len() * 16),
+            _ => continue,
+        };
+        expanded.0 += 1;
+        expanded.1 += bytes;
+        let ptr = match node {
+            SExpression::Array(items) => &**items as *const Vec<SExpression> as usize,
+            SExpression::Object(fields) => &**fields as *const SObject as usize,
+            _ => unreachable!(),
+        };
+        let fresh = seen.insert(ptr);
+        if fresh {
+            held.0 += 1;
+            held.1 += bytes;
+        }
+        if first || fresh {
+            stack.extend(children.into_iter().map(|child| (child, true)));
+        }
+    }
+    println!("list/object nodes as a tree: {} ({} B); as shared: {} ({} B)", expanded.0, expanded.1, held.0, held.1);
+    println!(
+        "SExpression={}B Shared<String>={}B String={}B",
+        std::mem::size_of::<SExpression>(),
+        std::mem::size_of::<crate::value::Shared<String>>(),
+        std::mem::size_of::<String>()
+    );
+}
+
+fn list_of(expr: &SExpression) -> &crate::value::Shared<Vec<SExpression>> {
+    let SExpression::Array(items) = expr else { panic!("array") };
+    items
+}
+
+fn record_of(expr: &SExpression) -> &crate::value::Shared<SObject> {
+    let SExpression::Object(fields) = expr else { panic!("object") };
+    fields
+}
+
+#[test]
+fn identical_subtrees_in_one_read_share_one_node() {
+    let expr: SExpression = serde_json::from_str(
+        r#"["if", ["=", "@a", 1], ["+", ["*", 2, 3], {"k": ["*", 2, 3]}], ["+", ["*", 2, 3], {"k": ["*", 2, 3]}]]"#,
+    )
+    .unwrap();
+    let items = list_of(&expr);
+    let (then, other) = (list_of(&items[2]), list_of(&items[3]));
+    assert!(crate::value::Shared::ptr_eq(then, other), "equal branches are one node");
+    assert!(crate::value::Shared::ptr_eq(list_of(&then[1]), record_of(&then[2]).get("k").map(list_of).unwrap()));
+    assert!(!crate::value::Shared::ptr_eq(list_of(&items[1]), then), "different content stays apart");
+}
+
+#[test]
+fn control_nodes_that_differ_in_any_child_order_or_bit_stay_apart() {
+    let expr: SExpression = serde_json::from_str(
+        r#"[["a", 1], ["a", 2], ["a", 1.5], ["b", 1], [1, "a"], {"x": 1, "y": 2}, {"y": 2, "x": 1}, {"x": 1}, [0.0], [-0.0], [], {}]"#,
+    )
+    .unwrap();
+    let items = list_of(&expr);
+    for i in 0..items.len() {
+        for j in (i + 1)..items.len() {
+            let apart = match (&items[i], &items[j]) {
+                (SExpression::Array(a), SExpression::Array(b)) => !crate::value::Shared::ptr_eq(a, b),
+                (SExpression::Object(a), SExpression::Object(b)) => !crate::value::Shared::ptr_eq(a, b),
+                _ => true,
+            };
+            assert!(apart, "{i} and {j} hold different content");
+        }
+    }
+}
+
+#[test]
+fn separate_reads_and_empty_nodes_follow_the_scope() {
+    let a: SExpression = serde_json::from_str("[1, 2]").unwrap();
+    let b: SExpression = serde_json::from_str("[1, 2]").unwrap();
+    assert!(!crate::value::Shared::ptr_eq(list_of(&a), list_of(&b)), "no table outside a scope");
+    let (c, d) = crate::intern::scope(|| {
+        (serde_json::from_str::<SExpression>("[1, 2]").unwrap(), serde_json::from_str::<SExpression>("[1, 2]").unwrap())
+    });
+    assert!(crate::value::Shared::ptr_eq(list_of(&c), list_of(&d)), "a nested read joins the outer table");
+}
+
+#[test]
+fn writing_through_one_holder_of_a_shared_node_leaves_the_other_untouched() {
+    let mut expr: SExpression = serde_json::from_str(r#"[["a", 1], ["a", 1]]"#).unwrap();
+    let SExpression::Array(items) = &mut expr else { panic!("array") };
+    assert!(crate::value::Shared::ptr_eq(list_of(&items[0]), list_of(&items[1])));
+    let SExpression::Array(first) = &mut items[0] else { panic!("array") };
+    first.push(SExpression::Number(9.0));
+    assert_eq!(serde_json::to_string(&items[0]).unwrap(), r#"["a",1.0,9.0]"#);
+    assert_eq!(serde_json::to_string(&items[1]).unwrap(), r#"["a",1.0]"#);
 }

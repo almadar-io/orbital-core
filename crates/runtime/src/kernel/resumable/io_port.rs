@@ -31,6 +31,8 @@ pub(crate) struct IoPort {
     pub(super) memory: crate::entity_source::InMemoryEntityCache,
     /// `[store: Driver]` bindings: entity type -> the driver orbital that answers its row asks.
     pub(super) store_drivers: RwLock<HashMap<String, String>>,
+    /// Entity type -> the `[persistent: tbl]` collection it declares; sent to its store driver (EXEC-STORE-4).
+    pub(super) collections: RwLock<HashMap<String, String>>,
     pub(super) store_seq: std::sync::atomic::AtomicU64,
 }
 
@@ -69,6 +71,7 @@ impl IoPort {
             runtime_types: RwLock::new(HashSet::new()),
             memory: crate::entity_source::InMemoryEntityCache::new(),
             store_drivers: RwLock::new(HashMap::new()),
+            collections: RwLock::new(HashMap::new()),
             store_seq: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -125,6 +128,51 @@ impl IoPort {
     pub(super) fn store_off_path(&self, entity_type: &str) -> String {
         let driver = self.store_drivers.read().get(entity_type).cloned().unwrap_or_default();
         format!("entity {entity_type} is bound to store driver {driver}: its rows are answered only on the resumable path (EXEC-STORE-4)")
+    }
+
+    /// The collection `entity_type` declares, when it declares one.
+    pub(crate) fn collection_of(&self, entity_type: &str) -> Option<String> {
+        self.collections.read().get(entity_type).cloned()
+    }
+
+    /// `data` for a create on a store-bound entity: a row naming no id is minted a UUID v4 drawn from the host's
+    /// journaled randomness, so ids stay unique across restarts of a persistent store (EXEC-STEP-8, create versus
+    /// upsert). A replay keeps the id its journaled create already carries, or re-reads the journaled draw.
+    pub(super) fn with_minted_id<'d>(&self, entity_type: &str, data: &'d Value) -> Result<std::borrow::Cow<'d, Value>, String> {
+        let Value::Object(fields) = data else {
+            return Ok(std::borrow::Cow::Borrowed(data));
+        };
+        if !self.store_bound(entity_type)
+            || self.direct()
+            || fields.get("id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())
+        {
+            return Ok(std::borrow::Cow::Borrowed(data));
+        }
+        let id = match self.journaled_mint(entity_type, fields) {
+            Some(id) => id,
+            None => uuid_v4(&self.random(16)?)?,
+        };
+        let mut fields = fields.clone();
+        fields.insert("id".to_string(), Value::string(id));
+        Ok(std::borrow::Cow::Owned(Value::Object(fields)))
+    }
+
+    /// The id the next unclaimed journal entry already minted for this very create, when it is one.
+    fn journaled_mint(&self, entity_type: &str, fields: &orbital_core_base::value::ValueMap) -> Option<String> {
+        let slot = self.ledger.lock();
+        let ledger = slot.as_ref()?;
+        let next = (0..ledger.journal.len()).find(|i| !ledger.claimed.has(*i))?;
+        let IoRequest::WriteRows { batch } = &ledger.journal[next].request else {
+            return None;
+        };
+        let [RowWriteOp::Create { entity_type: recorded, data: Value::Object(row) }] = batch.ops.as_slice() else {
+            return None;
+        };
+        let id = row.get("id").and_then(Value::as_str)?;
+        let bare = |map: &orbital_core_base::value::ValueMap| {
+            map.iter().filter(|(name, _)| name.as_str() != "id").map(|(n, v)| (n.clone(), v.clone())).collect::<Vec<_>>()
+        };
+        (recorded == entity_type && bare(row) == bare(fields)).then(|| id.to_string())
     }
 
     pub(super) fn store_bound(&self, entity_type: &str) -> bool {
@@ -549,4 +597,15 @@ impl IoPort {
         ledger.pending.remove(at);
         true
     }
+}
+
+/// A UUID v4 string from exactly 16 random bytes.
+fn uuid_v4(raw: &[u8]) -> Result<String, String> {
+    let mut bytes: [u8; 16] = raw
+        .try_into()
+        .map_err(|_| format!("the host answered {} random bytes for an id, asked for 16", raw.len()))?;
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = orbital_core_base::codec::hex(&bytes);
+    Ok(format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]))
 }

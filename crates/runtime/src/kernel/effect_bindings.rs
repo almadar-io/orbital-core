@@ -257,11 +257,12 @@ pub(super) fn resolved_or_failed(
     effect: &Effect,
     ctx: &BindingContext,
     effect_results: &mut Vec<EffectResult>,
+    site: impl FnOnce() -> super::step_effects::EffectSite,
 ) -> Option<Effect> {
     match resolve_effect_bindings(effect.clone(), ctx) {
         Ok(resolved) => Some(resolved),
         Err(fault) => {
-            tracing::error!(effect = %effect.operator(), error = %fault, "kernel: effect arguments failed to evaluate");
+            tracing::error!(site = %site(), effect = %effect.operator(), error = %fault, "kernel: effect arguments failed to evaluate");
             effect_results.push(EffectResult::failed(
                 effect.clone(),
                 &OrbitalError::Eval(fault).to_string(),

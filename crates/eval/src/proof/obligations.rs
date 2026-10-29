@@ -77,6 +77,9 @@ pub struct Obligation {
     pub inexact: Option<String>,
     /// Set when the obligation could not be built (too many effect paths).
     pub unbuildable: Option<String>,
+    /// Values of the `set`s this path ran: a `set` whose value fails to evaluate stops its transition, so each
+    /// evaluated to some value wherever the post-state is reached.
+    pub evaluated: Vec<SExpression>,
 }
 
 /// Every proposition the program owes, once: each strict spec proposition, and each one written on a real entity,

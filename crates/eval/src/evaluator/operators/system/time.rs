@@ -125,7 +125,7 @@ pub(super) fn shift_time(ts: f64, amount: f64, unit: TimeUnit) -> Result<f64, Or
 
 /// Whether a point in time names a calendar day or a moment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Shape {
+pub enum Shape {
     Date,
     DateTime,
 }
@@ -351,7 +351,7 @@ impl Operator for TimeIsAfterOp {
 
 /// `YYYY-MM-DD` (a date) or `YYYY-MM-DDTHH:MM[:SS[.f+]]` with a `Z` or `±HH:MM` zone (a datetime) to epoch ms and shape.
 /// `None` for every other spelling, a date-time without a zone, or an out-of-range part.
-pub(super) fn parse_iso(text: &str) -> Option<(i64, Shape)> {
+pub fn parse_iso(text: &str) -> Option<(i64, Shape)> {
     use chrono::{NaiveDate, TimeZone};
     let b = text.as_bytes();
     let num = |from: usize, len: usize| -> Option<u32> {

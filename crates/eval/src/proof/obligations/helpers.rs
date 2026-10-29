@@ -50,7 +50,7 @@ pub fn unresolved(what: &str) -> SExpression {
     SExpression::Array(vec![
         SExpression::string(UNRESOLVED.to_string()),
         SExpression::string(what.to_string()),
-    ])
+    ].into())
 }
 
 pub(super) fn canonical(e: &SExpression) -> String {
@@ -78,6 +78,7 @@ pub(super) fn unbuildable(prop: &Proposition, site: &str, reason: String) -> Obl
         vars: Vars::new(),
         inexact: None,
         unbuildable: Some(reason),
+        evaluated: Vec::new(),
     }
 }
 

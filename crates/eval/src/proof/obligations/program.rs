@@ -246,7 +246,7 @@ impl<'a> Program<'a> {
                                     let mut record: orbital_core_base::schema::SObject = written
                                         .iter()
                                         .filter(|(name, _)| !intrinsic.contains(name.as_str()))
-                                        .map(|(name, value)| (name.clone(), to_row(value)))
+                                        .map(|(name, value)| (name.as_str().into(), to_row(value)))
                                         .collect();
                                     for field in &def.fields {
                                         if let (Some(name), Some(default)) =
@@ -254,7 +254,7 @@ impl<'a> Program<'a> {
                                         {
                                             if !intrinsic.contains(name.as_str()) {
                                                 record
-                                                    .entry(name.clone())
+                                                    .entry(name.as_str().into())
                                                     .or_insert_with(|| default.clone());
                                             }
                                         }
@@ -285,6 +285,7 @@ impl<'a> Program<'a> {
                                     vars: vars.clone(),
                                     inexact: join(&notes),
                                     unbuildable: None,
+                                    evaluated: Vec::new(),
                                 },
                             ));
                         }
@@ -321,6 +322,7 @@ impl<'a> Program<'a> {
                                     vars,
                                     inexact: join(&notes),
                                     unbuildable: None,
+                                    evaluated: Vec::new(),
                                 },
                             ));
                         }
@@ -422,6 +424,7 @@ impl<'a> Program<'a> {
                                 vars: vars.clone(),
                                 inexact: join(&notes),
                                 unbuildable: None,
+                                evaluated: Vec::new(),
                             },
                         ));
                     }
@@ -496,6 +499,7 @@ impl<'a> Program<'a> {
                             vars,
                             inexact: join(&notes),
                             unbuildable: None,
+                            evaluated: path.evaluated.iter().map(|v| config_read(td, v)).collect(),
                         },
                     ));
                 }
@@ -524,6 +528,7 @@ impl<'a> Program<'a> {
                 vars: vars.clone(),
                 inexact: None,
                 unbuildable: None,
+                evaluated: Vec::new(),
             },
         ));
         let Some(def) = linked.filter(|d| d.persistence != Some(Persistence::Runtime)) else {
@@ -544,6 +549,7 @@ impl<'a> Program<'a> {
                 vars,
                 inexact: None,
                 unbuildable: None,
+                evaluated: Vec::new(),
             },
         ));
     }
@@ -644,6 +650,7 @@ impl<'a> Program<'a> {
                         vars,
                         inexact: Some(format!("{} may write while {} is in the state; which row each shows is not modeled", other.name, td.name)),
                         unbuildable: None,
+                        evaluated: Vec::new(),
                     });
                 }
             }

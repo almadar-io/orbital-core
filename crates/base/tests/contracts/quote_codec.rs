@@ -37,7 +37,7 @@ fn quote_expr_builds_the_ir_call_and_quote_body_of_reads_it() {
         SExpression::String(">".into()),
         SExpression::String("@payload.amount".into()),
         SExpression::Number(0.0),
-    ]);
+    ].into());
     let q = quote_expr(&guard);
     let SExpression::Array(items) = &q else { panic!("quote is a call") };
     assert_eq!(items[0], SExpression::String(QUOTE_HEAD.into()));
@@ -46,12 +46,12 @@ fn quote_expr_builds_the_ir_call_and_quote_body_of_reads_it() {
 
 #[test]
 fn control_quote_body_of_rejects_non_quote_shapes() {
-    let not_quote = SExpression::Array(vec![SExpression::String("quote".into())]);
+    let not_quote = SExpression::Array(vec![SExpression::String("quote".into())].into());
     assert_eq!(quote_body_of(&not_quote), None);
     let nested = SExpression::Array(vec![
         SExpression::String("quote".into()),
-        SExpression::Array(vec![SExpression::String(">".into())]),
-    ]);
+        SExpression::Array(vec![SExpression::String(">".into())].into()),
+    ].into());
     assert_eq!(quote_body_of(&nested), None);
     assert_eq!(quote_body_of(&SExpression::String("quote".into())), None);
 }

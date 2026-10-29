@@ -99,7 +99,7 @@ const HTTP_REPLY_BODY_SHAPE: &[ShapeField] = &[
     field("body", "string"),
 ];
 
-/// `http` hands back the reply: its status, its lower-cased headers, its body and the call's key (`null` unkeyed).
+/// `http` hands back the reply: its status, its lower-cased headers, its body and the call's key (absent unkeyed).
 pub const HTTP_REPLY_SHAPE: &[ShapeField] = &[
     field("status", "number"),
     field("headers", "object"),
@@ -108,8 +108,8 @@ pub const HTTP_REPLY_SHAPE: &[ShapeField] = &[
 ];
 
 /// `browser/beacon` hands back how the host took the request, never a collector reply: `sent`, the route taken
-/// (`queue` | `fetch`), the keepalive fetch's `status` (`null` when the queue accepted it or the fetch threw) and
-/// the call's key (`null` unkeyed).
+/// (`queue` | `fetch`), the keepalive fetch's `status` (absent when the queue accepted it or the fetch threw) and
+/// the call's key (absent unkeyed).
 pub const HTTP_BEACON_SHAPE: &[ShapeField] = &[
     field("sent", "boolean"),
     field("via", "string"),
@@ -175,7 +175,7 @@ pub const TAB_ACT_SHAPE: &[ShapeField] = &[
 
 /// A `browser/tab-*` failure: the message, its kind (`invalid`: the request was refused before any ask; `unavailable`:
 /// the host has no browser tabs; `not-ready`: the tab has no page script running; `not-found`: the element left the
-/// page; `failed`) and the call's key (`null` unkeyed).
+/// page; `failed`) and the call's key (absent unkeyed).
 pub const TAB_FAILURE_SHAPE: &[ShapeField] =
     &[field("error", "string"), field("kind", "string"), field("key", "string")];
 
@@ -198,10 +198,10 @@ pub fn tab_success_shape(op: crate::tab::TabOp) -> &'static [ShapeField] {
 }
 
 /// `browser/prompt` hands back the on-device model's reply text (JSON satisfying the schema the call gave) and the
-/// call's key (`null` unkeyed).
+/// call's key (absent unkeyed).
 pub const PROMPT_SHAPE: &[ShapeField] = &[field("reply", "string"), field("key", "string")];
 
-/// `browser/embed` hands back one vector per text, in input order, and the call's key (`null` unkeyed).
+/// `browser/embed` hands back one vector per text, in input order, and the call's key (absent unkeyed).
 pub const EMBED_SHAPE: &[ShapeField] = &[field("embeddings", "array"), field("key", "string")];
 
 /// A `browser/prompt` or `browser/embed` failure: the message, its kind (`unconfigured`: the host wires no model or
@@ -221,7 +221,7 @@ pub const HTTP_PAGED_SHAPE: &[ShapeField] = &[
 
 /// An `http` failure: the message, its kind (`timeout`, `failed`, `refused`, `unconfigured`, `oauth`,
 /// `unavailable`), the credential a missing one names, the leg that failed (`phase`: `grant`, `request` or
-/// `null`), the status of a failed grant reply (`grantStatus`), the public `code` and closed `reason` of an
+/// absent), the status of a failed grant reply (`grantStatus`), the public `code` and closed `reason` of an
 /// `oauth` failure (each absent for every other kind, never null) and the call's key (absent for an unkeyed call).
 pub const HTTP_FAILURE_SHAPE: &[ShapeField] = &[
     field("error", "string"),
@@ -250,11 +250,11 @@ pub const REDIS_REPLY_TYPE: &str = "RespValue";
 /// The deepest list nesting a `redis` reply carries; a deeper reply fails the call.
 pub const REDIS_REPLY_DEPTH: usize = 3;
 
-/// `redis` hands back the server's reply and the call's key (`null` unkeyed).
+/// `redis` hands back the server's reply and the call's key (absent unkeyed).
 pub const REDIS_REPLY_SHAPE: &[ShapeField] = &[field("reply", REDIS_REPLY_TYPE), field("key", "string")];
 
 /// A `redis` failure: the message, its kind (`refused`, `unconfigured`, `timeout`, `failed`, `protocol`,
-/// `unsupported`, `redis`), the server's error code word for `redis` (`ERR`, `WRONGTYPE`, `NOAUTH`, ...; `null`
+/// `unsupported`, `redis`), the server's error code word for `redis` (`ERR`, `WRONGTYPE`, `NOAUTH`, ...; absent
 /// for every other kind), the credential a missing one names and the call's key.
 pub const REDIS_FAILURE_SHAPE: &[ShapeField] = &[
     field("error", "string"),
@@ -268,7 +268,7 @@ pub const REDIS_FAILURE_SHAPE: &[ShapeField] = &[
 pub const POSTGRES_ARRAY_DEPTH: usize = 3;
 
 /// `postgres` hands back the rows (one map of column name to value per row), the rows the command counted, the result
-/// columns in order and the call's key (`null` unkeyed).
+/// columns in order and the call's key (absent unkeyed).
 pub const POSTGRES_RESULT_SHAPE: &[ShapeField] = &[
     field("rows", "array"),
     field("rowCount", "number"),
@@ -277,7 +277,7 @@ pub const POSTGRES_RESULT_SHAPE: &[ShapeField] = &[
 ];
 
 /// A `postgres` failure: the message, its kind (`refused`, `unconfigured`, `timeout`, `failed`, `protocol`,
-/// `unsupported`, `postgres`), the server's SQLSTATE for `postgres` (`null` for every other kind), the credential a
+/// `unsupported`, `postgres`), the server's SQLSTATE for `postgres` (absent for every other kind), the credential a
 /// missing one names and the call's key.
 pub const POSTGRES_FAILURE_SHAPE: &[ShapeField] = &[
     field("error", "string"),
@@ -364,7 +364,7 @@ pub const CREDENTIAL_ROTATE_SHAPE: &[ShapeField] =
     &[field("rotated", "number"), field("alreadyCurrent", "number"), field("unreadable", "number")];
 
 /// A credential administration failure: the message and its code (`AUTH_ERROR` for a refused role, `VALIDATION_ERROR`
-/// for a request outside its contract; `null` for any other cause).
+/// for a request outside its contract; absent for any other cause).
 pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
 /// `oauth-authorize` hands back the URL to send the user to, the state the callback returns and, on a host that asked the
@@ -431,11 +431,11 @@ pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 /// A keyed `call-service` failure: the message and the call's key.
 pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("key", "string")];
 
-/// A `persist` failure: the message and the store's code (`duplicate-id`, `not-found`, `no-row-key`; `null` for
+/// A `persist` failure: the message and the store's code (`duplicate-id`, `not-found`, `no-row-key`; absent for
 /// any other cause, such as an access denial).
 pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
-/// A `fetch` failure: the message and the code (`not-found` for a by-id miss; `null` for any other cause, until
+/// A `fetch` failure: the message and the code (`not-found` for a by-id miss; absent for any other cause, until
 /// the read contract gains a typed refusal, `G-ORB-334`).
 pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
@@ -446,8 +446,8 @@ pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), f
 pub const KEYED_SUBSTRATE_FAILURE_SHAPE: &[ShapeField] =
     &[field("error", "string"), field("errors", "array"), field("key", "string")];
 
-/// A `persist batch` failure: the persist failure (message and the failing operation's store code, `null` for a cause
-/// that has none), the failing operation's position in the batch (`null` when no single operation is at fault, such
+/// A `persist batch` failure: the persist failure (message and the failing operation's store code, absent for a cause
+/// that has none), the failing operation's position in the batch (absent when no single operation is at fault, such
 /// as operations that do not evaluate) and the number of operations that completed before it (rolled back by a store
 /// that runs the batch atomically).
 pub const PERSIST_BATCH_FAILURE_SHAPE: &[ShapeField] = &[

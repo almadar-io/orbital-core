@@ -11,6 +11,7 @@ use orbital_core_base::row_set::RowQuery;
 use orbital_core_base::schema::types::EntityIndex;
 use orbital_core_base::value::Value;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub const ROW_READ: &str = "ROW_READ";
@@ -50,6 +51,8 @@ pub enum ReplyError {
 struct ReadVerb<'a> {
     key: &'a str,
     entity_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<String>,
     id: &'a str,
 }
 
@@ -58,6 +61,8 @@ struct ReadVerb<'a> {
 struct ListVerb<'a> {
     key: &'a str,
     entity_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -65,6 +70,8 @@ struct ListVerb<'a> {
 struct QueryVerb<'a> {
     key: &'a str,
     entity_type: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    collection: Option<String>,
     query: &'a RowQuery,
     project: RowProjection,
 }
@@ -73,6 +80,8 @@ struct QueryVerb<'a> {
 struct WriteVerb<'a> {
     key: &'a str,
     batch: &'a RowWriteBatch,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    collections: BTreeMap<&'a str, String>,
 }
 
 #[derive(Serialize)]
@@ -116,17 +125,32 @@ fn to_value<T: Serialize>(record: &T) -> Value {
 
 /// The verb for `request`, tagged with `key`; `None` for an ask a store driver does not answer. A single-row
 /// write reaches a driver as a one-op `WriteRows` batch, never as `CreateRow`/`WriteRow`/`DeleteRow`.
-pub fn verb_for(request: &IoRequest, key: &str) -> Option<DriverVerb> {
+/// `collection_of` gives the `[persistent: tbl]` collection an entity declares: the read, list and query verbs
+/// carry it as `collection`, a write verb as `collections` (entity type -> collection) for the entities of its
+/// ops that declare one; both are absent when none is declared.
+pub fn verb_for(
+    request: &IoRequest,
+    key: &str,
+    collection_of: &dyn Fn(&str) -> Option<String>,
+) -> Option<DriverVerb> {
     let (event, payload) = match request {
         IoRequest::ReadRow { entity_type, id } => (
             ROW_READ,
             to_value(&ReadVerb {
                 key,
                 entity_type,
+                collection: collection_of(entity_type),
                 id,
             }),
         ),
-        IoRequest::ListRows { entity_type } => (ROW_LIST, to_value(&ListVerb { key, entity_type })),
+        IoRequest::ListRows { entity_type } => (
+            ROW_LIST,
+            to_value(&ListVerb {
+                key,
+                entity_type,
+                collection: collection_of(entity_type),
+            }),
+        ),
         IoRequest::QueryRows {
             entity_type,
             query,
@@ -136,11 +160,22 @@ pub fn verb_for(request: &IoRequest, key: &str) -> Option<DriverVerb> {
             to_value(&QueryVerb {
                 key,
                 entity_type,
+                collection: collection_of(entity_type),
                 query,
                 project: *project,
             }),
         ),
-        IoRequest::WriteRows { batch } => (ROWS_WRITE, to_value(&WriteVerb { key, batch })),
+        IoRequest::WriteRows { batch } => {
+            let collections = batch
+                .ops
+                .iter()
+                .filter_map(|op| {
+                    let entity = op.entity_type();
+                    collection_of(entity).map(|collection| (entity, collection))
+                })
+                .collect();
+            (ROWS_WRITE, to_value(&WriteVerb { key, batch, collections }))
+        }
         _ => return None,
     };
     Some(DriverVerb { event, payload })
@@ -173,7 +208,7 @@ pub fn answer_for(
     event: &str,
     payload: &Value,
 ) -> Result<IoAnswer, ReplyError> {
-    let verb = verb_for(request, "").ok_or(ReplyError::NotARowAsk)?.event;
+    let verb = verb_for(request, "", &|_| None).ok_or(ReplyError::NotARowAsk)?.event;
     let failed = || decode::<FailedReply>(event, payload).map(|r| r.message);
     let mismatch = || ReplyError::Mismatch {
         verb,
@@ -278,7 +313,7 @@ mod tests {
 
     #[test]
     fn a_read_ask_is_a_keyed_row_read_verb() {
-        let verb = verb_for(&read(), "k1").unwrap();
+        let verb = verb_for(&read(), "k1", &|_| None).unwrap();
         assert_eq!(verb.event, ROW_READ);
         assert_eq!(
             value_to_json(&verb.payload),
@@ -286,9 +321,54 @@ mod tests {
         );
     }
 
+    fn declared(entity: &str) -> Option<String> {
+        (entity == "Ticket").then(|| "tickets_tbl".to_string())
+    }
+
+    #[test]
+    fn every_row_verb_names_the_declared_collection_beside_the_entity_type() {
+        let read = verb_for(&read(), "k", &declared).unwrap();
+        assert_eq!(
+            value_to_json(&read.payload),
+            serde_json::json!({"key": "k", "entityType": "Ticket", "collection": "tickets_tbl", "id": "t1"})
+        );
+        let list = verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &declared).unwrap();
+        assert_eq!(
+            value_to_json(&list.payload),
+            serde_json::json!({"key": "k", "entityType": "Ticket", "collection": "tickets_tbl"})
+        );
+        let query = IoRequest::QueryRows {
+            entity_type: "Ticket".into(),
+            query: RowQuery::default(),
+            project: RowProjection::Ids,
+        };
+        let query = verb_for(&query, "k", &declared).unwrap();
+        assert_eq!(value_to_json(&query.payload)["collection"], "tickets_tbl");
+        assert_eq!(value_to_json(&query.payload)["entityType"], "Ticket");
+        let write = verb_for(&take(false), "k", &declared).unwrap();
+        assert_eq!(
+            value_to_json(&write.payload)["collections"],
+            serde_json::json!({"Ticket": "tickets_tbl"})
+        );
+    }
+
+    #[test]
+    fn control_an_entity_declaring_no_collection_carries_no_collection_field() {
+        let other = |_: &str| None;
+        for verb in [
+            verb_for(&read(), "k", &other).unwrap(),
+            verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &other).unwrap(),
+            verb_for(&take(false), "k", &other).unwrap(),
+        ] {
+            let payload = value_to_json(&verb.payload);
+            let object = payload.as_object().unwrap();
+            assert!(!object.contains_key("collection") && !object.contains_key("collections"), "{payload}");
+        }
+    }
+
     #[test]
     fn a_guarded_take_reaches_the_driver_as_one_conditional_op() {
-        let verb = verb_for(&take(true), "k2").unwrap();
+        let verb = verb_for(&take(true), "k2", &|_| None).unwrap();
         assert_eq!(verb.event, ROWS_WRITE);
         assert_eq!(
             value_to_json(&verb.payload),
@@ -308,10 +388,11 @@ mod tests {
                 entity_type: "T".into(),
                 id: "1".into()
             },
-            "k"
+            "k",
+            &|_| None
         )
         .is_none());
-        assert!(verb_for(&IoRequest::CancelCall { key: "k".into() }, "k").is_none());
+        assert!(verb_for(&IoRequest::CancelCall { key: "k".into() }, "k", &|_| None).is_none());
     }
 
     #[test]

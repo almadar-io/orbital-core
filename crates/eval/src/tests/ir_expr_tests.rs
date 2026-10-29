@@ -31,9 +31,9 @@ fn to_sexpression_guard_roundtrips_through_evaluator() {
                 S::String("/".into()),
                 S::String("@payload.current".into()),
                 S::String("@entity.max".into()),
-            ]),
+            ].into()),
             S::Number(0.85),
-        ])
+        ].into())
     );
     // And the one evaluator agrees: 90/100 = 0.9 ≥ 0.85.
     let v = |j: serde_json::Value| serde_json::from_value::<Value>(j).unwrap();

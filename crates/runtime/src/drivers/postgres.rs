@@ -953,7 +953,9 @@ impl PostgresDriver {
         }
         let outcome = match result_value(&self.columns, &self.rows, self.tag.as_deref()) {
             Ok(Value::Object(mut result)) => {
-                result.insert("key".to_string(), self.key.clone().map_or(Value::Null, Value::string));
+                if let Some(key) = &self.key {
+                    result.insert("key".to_string(), Value::string(key.clone()));
+                }
                 Ok(Value::Object(result))
             }
             Ok(other) => Ok(other),

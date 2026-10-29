@@ -186,7 +186,7 @@ impl RuntimeKernel {
                             // [ "if", cond, then, else? ]
                             if let Some(cond) = items.get(1) {
                                 let Some(holds) =
-                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results)
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())
                                 else {
                                     return;
                                 };
@@ -206,7 +206,7 @@ impl RuntimeKernel {
                             // [ "when", cond, body… ]
                             if let Some(cond) = items.get(1) {
                                 let Some(holds) =
-                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results)
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())
                                 else {
                                     return;
                                 };
@@ -296,7 +296,7 @@ impl RuntimeKernel {
         match &effect {
             Effect::Set { path, value } => {
                 let Some(evaluated_value) =
-                    set_value(&effect, path, value, ctx, evaluator, effect_results)
+                    set_value(&effect, path, value, ctx, evaluator, effect_results, || self.effect_site())
                 else {
                     return;
                 };
@@ -440,7 +440,7 @@ impl RuntimeKernel {
             ),
             // An emit resolves now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
             Effect::CancelCall { .. } | Effect::Emit { .. } => {
-                if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results) {
+                if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results, || self.effect_site()) {
                     effect_results.push(self.effect_executor.execute(&resolved, ctx));
                 }
             }
@@ -459,7 +459,7 @@ impl RuntimeKernel {
         shape: CallShape,
         run: impl FnOnce(&Effect, Option<&str>) -> EffectResult,
     ) {
-        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results) else {
+        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results, || self.effect_site()) else {
             return;
         };
         let key = resolved.call_key().map(str::to_string);
@@ -497,7 +497,7 @@ impl RuntimeKernel {
         ctx: &BindingContext,
         effect_results: &mut Vec<EffectResult>,
     ) {
-        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results) else {
+        let Some(resolved) = resolved_or_failed(effect, ctx, effect_results, || self.effect_site()) else {
             return;
         };
         let key = resolved.call_key().map(str::to_string);
@@ -706,6 +706,30 @@ impl CallShape {
     };
 }
 
+/// The trait (and its orbital) whose step is running an effect, as a failure log line names it.
+pub(super) struct EffectSite {
+    pub trait_name: Option<String>,
+    pub orbital: Option<String>,
+}
+
+impl std::fmt::Display for EffectSite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.trait_name, &self.orbital) {
+            (Some(t), Some(o)) => write!(f, "trait {t} in orbital {o}"),
+            (Some(t), None) => write!(f, "trait {t}"),
+            (None, _) => f.write_str("no trait step in flight"),
+        }
+    }
+}
+
+impl RuntimeKernel {
+    pub(super) fn effect_site(&self) -> EffectSite {
+        let trait_name = self.step.step_site.read().clone().map(|(t, _)| t);
+        let orbital = trait_name.as_deref().and_then(|t| self.emit_source(t).orbital);
+        EffectSite { trait_name, orbital }
+    }
+}
+
 /// An `if`/`when` condition: a boolean, or the form fails the step (a non-boolean is never read as false).
 fn condition_holds(
     form: &SExpression,
@@ -713,11 +737,12 @@ fn condition_holds(
     ctx: &BindingContext,
     evaluator: &Evaluator,
     effect_results: &mut Vec<EffectResult>,
+    site: impl FnOnce() -> EffectSite,
 ) -> Option<bool> {
     match evaluator.evaluate(cond, ctx).map_err(|err| err.to_string()).and_then(|v| v.boolean().map_err(|err| err.to_string())) {
         Ok(holds) => Some(holds),
         Err(message) => {
-            tracing::error!(error = %message, "kernel: effect condition is not a boolean");
+            tracing::error!(site = %site(), error = %message, "kernel: effect condition is not a boolean");
             if let Some(effect) = orbital_core_base::effect_types::parse_effect(form) {
                 effect_results.push(EffectResult::failed(effect, &message));
             }
@@ -735,12 +760,13 @@ fn set_value(
     ctx: &BindingContext,
     evaluator: &Evaluator,
     effect_results: &mut Vec<EffectResult>,
+    site: impl FnOnce() -> EffectSite,
 ) -> Option<Value> {
     if value.as_array().is_some() || value.as_object().is_some() {
         match evaluator.evaluate(&value_to_sexpr(value), ctx) {
             Ok(v) => Some(v),
             Err(err) => {
-                tracing::error!(path = %path, error = %err, "kernel: set value failed to evaluate");
+                tracing::error!(site = %site(), path = %path, error = %err, "kernel: set value failed to evaluate");
                 effect_results.push(EffectResult::failed(effect.clone(), &err.to_string()));
                 None
             }

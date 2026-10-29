@@ -49,6 +49,7 @@ pub struct ResolvedMark {
 
 /// The root OrbitalSchema type
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(remote = "Self")]
 pub struct OrbitalSchema {
     #[serde(default, rename = "typeContractVersion", skip_serializing_if = "Option::is_none", deserialize_with = "crate::ir::types::deserialize_type_contract_version")]
     pub type_contract_version: Option<u32>,
@@ -156,6 +157,19 @@ pub struct OrbitalSchema {
     /// V4 identity ledger slice (id → name history) — optional until the Phase-7 flip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<crate::identity::IdentityLedger>,
+}
+
+impl Serialize for OrbitalSchema {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        OrbitalSchema::serialize(self, serializer)
+    }
+}
+
+/// Reading a program holds one interning table for the whole read, so equal strings share one allocation.
+impl<'de> Deserialize<'de> for OrbitalSchema {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::intern::scope(|| OrbitalSchema::deserialize(deserializer))
+    }
 }
 
 impl OrbitalSchema {

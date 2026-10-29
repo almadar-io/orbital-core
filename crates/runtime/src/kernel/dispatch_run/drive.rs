@@ -224,7 +224,7 @@ impl RuntimeKernel {
     pub(crate) fn store_driver_run(&self, ask: &StoreAsk) -> Result<DispatchContinuation, String> {
         let verb = match &ask.ensure {
             Some(ensure) => crate::store_driver::ensure_verb(&ensure.entity_type, &ensure.indexes, &ask.key),
-            None => crate::store_driver::verb_for(&ask.request, &ask.key).ok_or_else(|| {
+            None => crate::store_driver::verb_for(&ask.request, &ask.key, &|entity| self.io.collection_of(entity)).ok_or_else(|| {
                 format!(
                     "store driver {}: {:?} is not a row ask a driver answers",
                     ask.driver, ask.request

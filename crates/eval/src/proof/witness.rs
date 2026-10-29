@@ -191,7 +191,7 @@ fn candidate_set(guard: &SExpression) -> Option<(Vec<String>, Vec<String>)> {
     };
     match (op.as_str(), args) {
         ("object/has", [a, b]) => match split_payload_arg(a, b)? {
-            (path, SExpression::Object(map)) => Some((path, map.keys().cloned().collect())),
+            (path, SExpression::Object(map)) => Some((path, map.keys().map(|k| k.to_string()).collect())),
             _ => None,
         },
         ("=" | "==" | "!=", [lhs, rhs]) => {
@@ -213,7 +213,7 @@ fn candidate_set(guard: &SExpression) -> Option<(Vec<String>, Vec<String>)> {
                 let values = map
                     .iter()
                     .filter(|(_, v)| (*v == literal) != negate)
-                    .map(|(k, _)| k.clone())
+                    .map(|(k, _)| k.to_string())
                     .collect();
                 return Some((path, values));
             }
@@ -322,7 +322,7 @@ fn solve_membership_form(
             let Some((path, SExpression::Object(map))) = split_payload_arg(a, b) else {
                 return false;
             };
-            let keys: Vec<String> = map.keys().cloned().collect();
+            let keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
             match (want, keys.first()) {
                 (true, Some(first)) => set(payload, &path, J::String(first.clone())),
                 (true, None) => return false,
@@ -337,7 +337,7 @@ fn solve_membership_form(
             let Some(key) = map
                 .iter()
                 .find(|(_, v)| sexpr_is_bool(v, want))
-                .map(|(k, _)| k.clone())
+                .map(|(k, _)| k.to_string())
             else {
                 return false;
             };
@@ -558,7 +558,7 @@ fn literal_elements(expr: &SExpression) -> Option<Vec<SExpression>> {
         {
             None
         }
-        Some(_) => Some(items.clone()),
+        Some(_) => Some(items.to_vec()),
     }
 }
 
@@ -868,14 +868,14 @@ fn solve_object_get_comparison(
         return Some(false);
     };
     let equal = (op == "=") == want;
-    let keys: Vec<String> = map.keys().cloned().collect();
-    let matching: Vec<&String> = map
+    let keys: Vec<String> = map.keys().map(|k| k.to_string()).collect();
+    let matching: Vec<&orbital_core_base::value::Shared<String>> = map
         .iter()
         .filter(|(_, v)| (*v == literal) == equal)
         .map(|(k, _)| k)
         .collect();
     let key = match matching.first() {
-        Some(k) => (*k).clone(),
+        Some(k) => k.to_string(),
         None if !equal => absent_key(&keys),
         None => return Some(false),
     };

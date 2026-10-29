@@ -341,7 +341,7 @@ impl InMemoryEntityCache {
             .unwrap_or_else(|| entity_type.to_string())
     }
 
-    fn next_id(&self, entity_type: &str) -> String {
+    pub(crate) fn next_id(&self, entity_type: &str) -> String {
         let n = self
             .id_counter
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)

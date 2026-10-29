@@ -165,3 +165,72 @@ fn control_a_transition_with_no_failure_runs_every_effect() {
         .iter()
         .all(|r| r.status != EffectRunStatus::Failed));
 }
+
+// One global capturing subscriber: a scoped one misses events whose callsite a sibling thread registered first.
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+struct Lines;
+
+impl tracing::Subscriber for Lines {
+    fn register_callsite(
+        &self,
+        _: &'static tracing::Metadata<'static>,
+    ) -> tracing::subscriber::Interest {
+        tracing::subscriber::Interest::sometimes()
+    }
+    fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+        CAPTURED.with(|c| c.borrow().is_some())
+    }
+    fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+    fn enter(&self, _: &tracing::span::Id) {}
+    fn exit(&self, _: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct Fields(String);
+        impl tracing::field::Visit for Fields {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                self.0.push_str(&format!(" {}={:?}", field.name(), value));
+            }
+        }
+        let mut fields = Fields(String::new());
+        event.record(&mut fields);
+        CAPTURED.with(|c| {
+            if let Some(lines) = c.borrow_mut().as_mut() {
+                lines.push(fields.0);
+            }
+        });
+    }
+}
+
+fn capture_lines(body: impl FnOnce()) -> Vec<String> {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        tracing::subscriber::set_global_default(Lines)
+            .expect("no other global subscriber in this binary")
+    });
+    CAPTURED.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    body();
+    CAPTURED.with(|c| c.borrow_mut().take()).unwrap_or_default()
+}
+
+#[test]
+fn the_failure_log_line_names_the_trait_and_orbital_of_the_effect() {
+    let lines = capture_lines(|| {
+        run("INIT");
+    });
+    let failure: Vec<&String> = lines
+        .iter()
+        .filter(|l| l.contains("set value failed to evaluate"))
+        .collect();
+    assert_eq!(failure.len(), 1, "{lines:?}");
+    assert!(
+        failure[0].contains("trait Preview in orbital Page"),
+        "{}",
+        failure[0]
+    );
+}

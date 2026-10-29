@@ -553,7 +553,7 @@ mod credential_admin_effects {
         assert!(!seen.iter().any(|r| matches!(r, IoRequest::CredentialStoreWrite { .. })));
         assert_eq!(
             payload_of(&response, "BAD"),
-            json!({ "error": "\"OTHER\" is not a declared credential of \"apikeys\" (declared: SALT)", "code": null })
+            json!({ "error": "\"OTHER\" is not a declared credential of \"apikeys\" (declared: SALT)" })
         );
     }
 

@@ -8,7 +8,7 @@ fn args(value: Json) -> Vec<SExpression> {
 fn evaluate(arguments: Vec<SExpression>, ctx: &BindingContext) -> Result<Value, OrbitalError> {
     let mut call = vec![SExpression::string("let")];
     call.extend(arguments);
-    Evaluator::new().evaluate(&SExpression::Array(call), ctx)
+    Evaluator::new().evaluate(&SExpression::Array(call.into()), ctx)
 }
 
 fn ignored_slots() -> Vec<SExpression> {

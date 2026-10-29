@@ -61,7 +61,8 @@ impl EntitySource for IoPort {
     }
 
     fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
-        let create = || RowWriteOp::Create { entity_type: entity_type.to_string(), data: data.clone() };
+        let minted = self.with_minted_id(entity_type, data)?;
+        let create = || RowWriteOp::Create { entity_type: entity_type.to_string(), data: minted.as_ref().clone() };
         if let Some(outcome) = self.bound_single_write(entity_type, create) {
             return match outcome? {
                 RowWriteOutcome::Created { row } => Ok(row),
@@ -295,6 +296,7 @@ impl EntitySource for IoPort {
     }
 
     fn bind_collection(&self, entity_type: &str, collection: &str) {
+        self.collections.write().insert(entity_type.to_string(), collection.to_string());
         self.source.bind_collection(entity_type, collection)
     }
 

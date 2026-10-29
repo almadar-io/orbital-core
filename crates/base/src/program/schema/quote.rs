@@ -32,11 +32,11 @@ fn canonical(expr: &SExpression) -> serde_json::Value {
             serde_json::Value::Array(items.iter().map(canonical).collect())
         }
         SExpression::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
+            let mut keys: Vec<&crate::value::Shared<String>> = map.keys().collect();
             keys.sort();
             let mut out = serde_json::Map::new();
             for key in keys {
-                out.insert(key.clone(), canonical(&map[key]));
+                out.insert(key.to_string(), canonical(&map[key]));
             }
             serde_json::Value::Object(out)
         }
@@ -60,7 +60,7 @@ pub fn quote_expr(expr: &SExpression) -> SExpression {
     SExpression::Array(vec![
         SExpression::string(QUOTE_HEAD.to_string()),
         SExpression::string(encode_quote_body(expr)),
-    ])
+    ].into())
 }
 
 /// The encoded body when `expr` is a `(quote x)` call.
@@ -155,7 +155,7 @@ fn extract_holes(
         return Ok(SExpression::Array(vec![
             SExpression::string(UNQUOTE_HEAD.to_string()),
             SExpression::Number((holes.len() - 1) as f64),
-        ]));
+        ].into()));
     }
     match expr {
         SExpression::Array(items) => Ok(SExpression::Array(
@@ -166,7 +166,7 @@ fn extract_holes(
         )),
         SExpression::Object(map) => {
             // Canonical key order, so hole numbering matches the body bytes on every path.
-            let mut keys: Vec<&String> = map.keys().collect();
+            let mut keys: Vec<&crate::value::Shared<String>> = map.keys().collect();
             keys.sort();
             let mut out = crate::schema::sexpr::SObject::default();
             for key in keys {
@@ -190,7 +190,7 @@ pub fn quasiquote_expr(template: &SExpression) -> Result<SExpression, Quasiquote
         SExpression::string(body),
     ];
     items.extend(holes);
-    Ok(SExpression::Array(items))
+    Ok(SExpression::Array(items.into()))
 }
 
 /// The body and holes when `expr` is a `(quasiquote x)` call.

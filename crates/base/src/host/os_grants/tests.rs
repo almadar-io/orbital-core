@@ -1100,7 +1100,7 @@ fn a_host_resolves_an_anchored_path_under_its_anchor_or_refuses_it() {
 fn concat(pieces: &[&str]) -> SExpression {
     let mut items = vec![SExpression::String("str/concat".into())];
     items.extend(pieces.iter().map(|p| SExpression::String((*p).into())));
-    SExpression::Array(items)
+    SExpression::Array(items.into())
 }
 
 #[test]

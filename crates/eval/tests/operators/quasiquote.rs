@@ -61,7 +61,7 @@ fn every_case_instantiates_to_the_fixture_result() {
             SExpression::string(body),
         ];
         ir.extend((0..holes.len()).map(|i| SExpression::string(format!("@entity.h{i}"))));
-        let got = eval_expr(&SExpression::Array(ir), &ctx_with(&c.values)).unwrap();
+        let got = eval_expr(&SExpression::Array(ir.into()), &ctx_with(&c.values)).unwrap();
         assert_eq!(got, c.result, "instantiate `{}`", c.name);
     }
 }

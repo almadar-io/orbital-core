@@ -33,6 +33,9 @@ pub struct OirPage {
     /// `translationOf:` page modifier; groups alternates ahead of `source_page`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translation_of: Option<String>,
+    /// The page declared `[initial]`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_initial: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,6 +64,7 @@ impl OirPage {
             indexing: None,
             source_page: None,
             translation_of: None,
+            is_initial: false,
             layout: None,
             view_type: None,
             sections: vec![],
@@ -74,6 +78,11 @@ impl OirPage {
     pub fn find_section(&self, id: &str) -> Option<&OirSection> {
         self.sections.iter().find(|s| s.id == id)
     }
+}
+
+/// The page an app opens on: the first one marked initial, else the first declared.
+pub fn initial_of<T>(pages: &[T], is_initial: impl Fn(&T) -> bool) -> Option<&T> {
+    pages.iter().find(|p| is_initial(p)).or_else(|| pages.first())
 }
 
 /// View type

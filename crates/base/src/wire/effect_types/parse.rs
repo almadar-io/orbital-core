@@ -394,7 +394,7 @@ pub(super) fn parse_redis(args: &[SExpression]) -> Option<Effect> {
                     routes.insert("emit".to_string(), value);
                 }
                 _ => {
-                    options.insert(name.clone(), value);
+                    options.insert(name.to_string(), value);
                 }
             }
         }
@@ -430,7 +430,7 @@ pub(super) fn parse_postgres(args: &[SExpression]) -> Option<Effect> {
                     routes.insert("emit".to_string(), value);
                 }
                 _ => {
-                    options.insert(name.clone(), value);
+                    options.insert(name.to_string(), value);
                 }
             }
         }

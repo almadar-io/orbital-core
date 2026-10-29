@@ -63,7 +63,7 @@ pub(crate) fn mapped_listen_payload(
             let mut mapped = ValueMap::default();
             for (key, expr) in mapping {
                 if let Ok(value) = evaluator.evaluate(expr, ctx) {
-                    mapped.insert(key.clone(), value);
+                    mapped.insert(key.to_string(), value);
                 }
             }
             Value::object(mapped)

@@ -165,8 +165,10 @@ fn text(value: &str) -> Value {
     Value::string(value.to_string())
 }
 
-fn opt_text(value: Option<&str>) -> Value {
-    value.map_or(Value::Null, text)
+fn push_text(entries: &mut Vec<(&'static str, Value)>, name: &'static str, value: Option<&str>) {
+    if let Some(value) = value {
+        entries.push((name, text(value)));
+    }
 }
 
 /// The profile the mock backend derives from a provider and a subject.
@@ -784,14 +786,15 @@ impl OAuthFlow {
                 ("accessToken", text(&tokens.access_token)),
                 ("expiresIn", Value::Number(expires_in)),
             ]))),
-            OAuthOp::Code => FlowStep::Done(Ok(object(vec![
-                ("accessToken", text(&tokens.access_token)),
-                ("refreshToken", opt_text(tokens.refresh_token.as_deref())),
-                ("expiresIn", Value::Number(expires_in)),
-                ("tokenType", text("bearer")),
-                ("scope", Value::Array(tokens.scope.iter().map(|s| text(s)).collect())),
-                ("subject", opt_text(subject.as_deref())),
-            ]))),
+            OAuthOp::Code => {
+                let mut entries = vec![("accessToken", text(&tokens.access_token))];
+                push_text(&mut entries, "refreshToken", tokens.refresh_token.as_deref());
+                entries.push(("expiresIn", Value::Number(expires_in)));
+                entries.push(("tokenType", text("bearer")));
+                entries.push(("scope", Value::Array(tokens.scope.iter().map(|s| text(s)).collect())));
+                push_text(&mut entries, "subject", subject.as_deref());
+                FlowStep::Done(Ok(object(entries)))
+            }
             OAuthOp::Connect => {
                 let Some(provider) = pending.as_ref().and_then(|p| orbital_core_base::oauth_ask::OAuthProvider::parse(&p.provider)) else {
                     return reason(OAuthFailureReason::ProviderMismatch);

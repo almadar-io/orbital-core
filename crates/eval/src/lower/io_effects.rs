@@ -217,12 +217,12 @@ impl NodeLowerer {
             if let Some(expr) = held.get(key) {
                 if orbital_core_base::schema::quote::quote_body_of(expr).is_none() {
                     let quoted = orbital_core_base::schema::quote::quote_expr(expr);
-                    held.insert(key.to_string(), quoted);
+                    held.insert(key.into(), quoted);
                 }
             }
         }
         let mut fields = (**fields).clone();
-        fields.insert("paginate".to_string(), SExpression::object(held));
+        fields.insert("paginate".into(), SExpression::object(held));
         self.resolve_owned(SExpression::object(fields))
     }
 

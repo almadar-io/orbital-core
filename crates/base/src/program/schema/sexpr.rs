@@ -17,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// An S-expression object: keys in authored order, so lowering and codegen are deterministic.
-pub type SObject = crate::collections::IndexMap<String, SExpression>;
+pub type SObject = crate::collections::IndexMap<crate::value::Shared<String>, SExpression>;
 
 /// S-Expression - the fundamental unit of Orbital logic
 ///
@@ -38,17 +38,39 @@ pub enum SExpression {
     Number(f64),
     /// String value (may contain @bindings)
     String(crate::value::Shared<String>),
-    /// Array - either a function call `[op, ...args]` or a list
-    Array(Vec<SExpression>),
-    /// Object - key-value map, boxed so a node stays 32 bytes (the map is 72)
-    Object(Box<SObject>),
+    /// Array - either a function call `[op, ...args]` or a list; equal lists read in one program are one allocation
+    Array(crate::value::Shared<Vec<SExpression>>),
+    /// Object - key-value map, a shared handle so a node stays 16 bytes (the map is 72)
+    Object(crate::value::Shared<SObject>),
 }
 
 /// Read by one visit per node: the derived `untagged` form buffers every node and retries each variant, which
 /// makes parsing a guard cost more than evaluating it.
 impl<'de> Deserialize<'de> for SExpression {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(SExpressionVisitor)
+        crate::intern::scope(|| deserializer.deserialize_any(SExpressionVisitor))
+    }
+}
+
+/// An object key read through the interner.
+struct InternedKey(crate::value::Shared<String>);
+
+impl<'de> Deserialize<'de> for InternedKey {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KeyVisitor;
+        impl serde::de::Visitor<'_> for KeyVisitor {
+            type Value = InternedKey;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object key")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<InternedKey, E> {
+                Ok(InternedKey(crate::intern::shared(value)))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<InternedKey, E> {
+                Ok(InternedKey(crate::intern::shared_owned(value)))
+            }
+        }
+        deserializer.deserialize_str(KeyVisitor)
     }
 }
 
@@ -90,11 +112,11 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<SExpression, E> {
-        Ok(SExpression::string(value))
+        Ok(SExpression::String(crate::intern::shared(value)))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<SExpression, E> {
-        Ok(SExpression::string(value))
+        Ok(SExpression::String(crate::intern::shared_owned(value)))
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<SExpression, A::Error> {
@@ -102,15 +124,15 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
         while let Some(item) = seq.next_element::<SExpression>()? {
             items.push(item);
         }
-        Ok(SExpression::Array(items))
+        Ok(crate::intern::list(items))
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<SExpression, A::Error> {
         let mut object = SObject::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
-        while let Some((key, value)) = map.next_entry::<String, SExpression>()? {
-            object.insert(key, value);
+        while let Some((key, value)) = map.next_entry::<InternedKey, SExpression>()? {
+            object.insert(key.0, value);
         }
-        Ok(SExpression::object(object))
+        Ok(crate::intern::record(object))
     }
 }
 
@@ -125,8 +147,8 @@ pub enum RewriteVisit {
 
 enum RewriteFrame<'a> {
     Enter(&'a SExpression),
-    Array(usize),
-    Object(Vec<String>),
+    Array(&'a SExpression, usize),
+    Object(&'a SExpression, usize),
 }
 
 mod methods;

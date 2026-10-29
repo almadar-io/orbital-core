@@ -207,8 +207,56 @@ impl OsGrants {
         }
         let mut resolved = OsGrants { anchored: AnchoredGrants::default(), ..self.clone() };
         resolved.union(&added);
+        resolved.add_canonical_twins(anchors);
         (resolved, problems)
     }
+
+    #[cfg(feature = "std")]
+    /// Records, beside every `fs` grant whose literal directory prefix passes through a symlink, the same grant on
+    /// the canonical (realpath) prefix, so a host that checks the resolved path of a request finds the grant that
+    /// was declared on the unresolved one. The prefix that does not exist yet keeps its text under the canonical
+    /// form of its deepest existing ancestor. Nothing else widens: a symlink to a path no grant names stays refused.
+    fn add_canonical_twins(&mut self, anchors: &OsAnchors) {
+        let twins: Vec<FsGrant> = self
+            .fs
+            .iter()
+            .filter_map(|g| Some(FsGrant { glob: canonical_glob(&g.glob, anchors)?, modes: g.modes.clone() }))
+            .collect();
+        self.union(&OsGrants { fs: twins, ..OsGrants::default() });
+    }
+}
+
+#[cfg(feature = "std")]
+fn canonical_glob(glob: &str, anchors: &OsAnchors) -> Option<String> {
+    let absolute = match anchors.expand(glob) {
+        Ok(Some(path)) => path.to_str()?.to_string(),
+        Ok(None) => glob.to_string(),
+        Err(_) => return None,
+    };
+    let segments: Vec<&str> = absolute.split('/').filter(|s| !s.is_empty()).collect();
+    let literal = segments.iter().take_while(|s| !s.contains(['*', '?'])).count();
+    let mut base = PathBuf::from("/");
+    base.extend(&segments[..literal]);
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let canonical = loop {
+        match std::fs::canonicalize(&base) {
+            Ok(real) => break real,
+            Err(_) => {
+                tail.push(base.file_name()?.to_os_string());
+                if !base.pop() {
+                    return None;
+                }
+            }
+        }
+    };
+    let mut real = canonical;
+    real.extend(tail.iter().rev());
+    let mut text = real.to_str()?.trim_end_matches('/').to_string();
+    for segment in &segments[literal..] {
+        text.push('/');
+        text.push_str(segment);
+    }
+    (text != absolute.trim_end_matches('/')).then_some(text)
 }
 
 /// An `os/` path or command argument written against an anchor, `{ anchor: "cwd", path: "docs/a.md" }`: `path` is
@@ -263,8 +311,8 @@ pub(super) fn anchor_from_sexpr(expr: &SExpression) -> Option<GrantAnchor> {
 }
 
 /// Whether `object` has exactly the keys of an anchored path: `anchor` and, optionally, `path`.
-pub(super) fn anchored_keys<'a>(mut keys: impl Iterator<Item = &'a String>) -> bool {
-    keys.all(|k| k == "anchor" || k == "path")
+pub(super) fn anchored_keys<'a, K: AsRef<str> + 'a>(mut keys: impl Iterator<Item = &'a K>) -> bool {
+    keys.all(|k| matches!(k.as_ref(), "anchor" | "path"))
 }
 
 impl AnchoredPath {

@@ -192,12 +192,9 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
         EffectOutcome::Failed => {
             let mut payload = error_payload(result, None);
             if let Value::Object(fields) = &mut payload {
-                fields.insert(
-                    "code".to_string(),
-                    result
-                        .code
-                        .map_or(Value::Null, |c| Value::string(c.as_str().to_string())),
-                );
+                if let Some(c) = result.code {
+                    fields.insert("code".to_string(), Value::string(c.as_str().to_string()));
+                }
             }
             (emit.failure.clone()?, payload)
         }
@@ -207,7 +204,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
 }
 
 /// A `persist`'s declared completion: `emit.failure` with `{ error, code }` when it failed (access denial,
-/// missing required column; `code` is the store's `duplicate-id` / `not-found` / `no-row-key`, `null` for any
+/// missing required column; `code` is the store's `duplicate-id` / `not-found` / `no-row-key`, absent for any
 /// other cause), `emit.success` when it ran, carrying the
 /// stored row for create/update and `{ id, deleted: true }` for delete (the JS runtime's
 /// payloads, `emit_contract::success_payload`). A delegated or no-op persist fires
@@ -224,18 +221,14 @@ pub(super) fn persist_completion_emit(
             if let Some(err) = &result.error {
                 payload.insert("error".to_string(), Value::string(err.clone()));
             }
-            payload.insert(
-                "code".to_string(),
-                result
-                    .code
-                    .map_or(Value::Null, |c| Value::string(c.as_str().to_string())),
-            );
+            if let Some(c) = result.code {
+                payload.insert("code".to_string(), Value::string(c.as_str().to_string()));
+            }
             if matches!(effect, Effect::PersistBatch { .. }) {
                 let at = result.batch_failure;
-                payload.insert(
-                    "index".to_string(),
-                    at.map_or(Value::Null, |f| Value::Number(f.index as f64)),
-                );
+                if let Some(f) = at {
+                    payload.insert("index".to_string(), Value::Number(f.index as f64));
+                }
                 payload.insert(
                     "completedCount".to_string(),
                     Value::Number(at.map_or(0, |f| f.completed_count) as f64),
@@ -253,12 +246,12 @@ pub(super) fn persist_completion_emit(
                 } => {
                     let mut payload = ValueMap::default();
                     // The declared id is a binding (`@payload.id`): the payload carries the id it named.
-                    payload.insert(
-                        "id".to_string(),
-                        id.clone().map_or(Value::Null, |id| {
-                            ctx.resolve_value(&Value::string(id)).into_owned()
-                        }),
-                    );
+                    if let Some(id) = id {
+                        payload.insert(
+                            "id".to_string(),
+                            ctx.resolve_value(&Value::string(id.clone())).into_owned(),
+                        );
+                    }
                     payload.insert("deleted".to_string(), Value::Bool(true));
                     Value::object(payload)
                 }
@@ -273,4 +266,101 @@ pub(super) fn persist_completion_emit(
         EffectOutcome::Executed => envelope.as_persist_success(),
         _ => envelope,
     })
+}
+
+#[cfg(test)]
+mod absent_not_null_tests {
+    use super::*;
+
+    fn assert_no_null(payload: &Value, what: &str) {
+        match payload {
+            Value::Null => {
+                panic!("{what}: a payload field is null, an absent optional field must be omitted")
+            }
+            Value::Object(fields) => fields
+                .iter()
+                .for_each(|(name, v)| assert_no_null(v, &format!("{what}.{name}"))),
+            Value::Array(items) => items.iter().for_each(|v| assert_no_null(v, what)),
+            _ => {}
+        }
+    }
+
+    fn emitted(result: Option<EffectResult>) -> Value {
+        match result.expect("a completion").effect {
+            Effect::Emit { payload, .. } => payload,
+            other => panic!("not an emit: {other:?}"),
+        }
+    }
+
+    fn routes() -> FetchEmit {
+        FetchEmit {
+            success: Some("OK".into()),
+            failure: Some("BAD".into()),
+            cancelled: None,
+            on_message: None,
+        }
+    }
+
+    fn persist(operation: PersistOperation, id: Option<&str>) -> Effect {
+        Effect::Persist {
+            operation,
+            entity_type: "Task".into(),
+            data: Value::Null,
+            id: id.map(str::to_string),
+            emit: Some(routes()),
+            guard: None,
+        }
+    }
+
+    #[test]
+    fn no_unkeyed_payload_with_an_absent_optional_leg_holds_null() {
+        let fetch = orbital_core_base::effect_types::parse_effect(
+            &serde_json::from_value::<SExpression>(serde_json::json!(["fetch", "Task"])).unwrap(),
+        )
+        .expect("a fetch effect");
+        let failed = EffectResult::failed(fetch, "boom");
+        let payload = emitted(fetch_completion_emit(&routes(), &failed));
+        assert_no_null(&payload, "fetch failure");
+        assert!(payload.as_object().unwrap().get("code").is_none());
+
+        let ctx = BindingContext::new();
+        for (name, effect) in [
+            (
+                "persist create failure",
+                persist(PersistOperation::Create, None),
+            ),
+            (
+                "persist batch failure",
+                Effect::PersistBatch {
+                    ops: Value::array(Vec::new()),
+                    emit: Some(routes()),
+                },
+            ),
+        ] {
+            let failed = EffectResult::failed(effect.clone(), "boom");
+            assert_no_null(
+                &emitted(persist_completion_emit(&routes(), &effect, &failed, &ctx)),
+                name,
+            );
+        }
+
+        let delete = persist(PersistOperation::Delete, None);
+        let done = EffectResult::executed(delete.clone());
+        assert_no_null(
+            &emitted(persist_completion_emit(&routes(), &delete, &done, &ctx)),
+            "persist delete without id",
+        );
+
+        assert_no_null(
+            &crate::redis::failure_payload("e", "failed", None, None, &None),
+            "redis/postgres failure",
+        );
+        assert_no_null(
+            &crate::redis::refusal_payload(
+                &orbital_core_base::http_wire::HttpRefusal::CredentialMissing("T".into()),
+                &None,
+            ),
+            "redis/postgres refusal",
+        );
+    }
 }

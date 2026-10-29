@@ -30,7 +30,7 @@ fn syntax_names_are_not_lowered_as_children_and_a_declared_shape_is_kept_as_text
     let expr = call("let", vec![
         SExpression::Array(vec![SExpression::Array(vec![
             SExpression::string("if"), SExpression::Number(7.0), SExpression::string("{\"type\":\"number\"}"),
-        ])]),
+        ].into())].into()),
         SExpression::string("@local.if"),
     ]);
     let expected = OirExpr::call("let", vec![
@@ -41,14 +41,14 @@ fn syntax_names_are_not_lowered_as_children_and_a_declared_shape_is_kept_as_text
     ]);
     assert_eq!(lower_sexpr(&expr), Ok(expected));
     let pair = call("let", vec![
-        SExpression::Array(vec![SExpression::Array(vec![SExpression::string("if"), SExpression::Number(7.0)])]),
+        SExpression::Array(vec![SExpression::Array(vec![SExpression::string("if"), SExpression::Number(7.0)].into())].into()),
         SExpression::string("@local.if"),
     ]);
     assert!(lower_sexpr(&pair).is_ok(), "control: a pair lowers");
     let malformed = call("let", vec![
         SExpression::Array(vec![SExpression::Array(vec![
             SExpression::string("x"), SExpression::Number(7.0), SExpression::Number(1.0),
-        ])]),
+        ].into())].into()),
         SExpression::string("@local.x"),
     ]);
     assert!(lower_sexpr(&malformed).is_err());
@@ -130,7 +130,7 @@ fn synthesized_http_pagination_keeps_quoted_callbacks_and_request_fields() {
 fn call(op: &str, args: Vec<SExpression>) -> SExpression {
     let mut items = vec![SExpression::string(op)];
     items.extend(args);
-    SExpression::Array(items)
+    SExpression::Array(items.into())
 }
 
 fn lowered_log_level(args: Vec<SExpression>) -> Result<orbital_core_base::ir::effects::OirLogLevel, LowerError> {
@@ -389,4 +389,23 @@ fn the_retired_oal_family_no_longer_resolves_to_an_operator() {
     assert!(get_operator("oal/battery-status").is_none());
     assert!(get_operator("oal/cpu-usage").is_none());
     assert!(get_operator("os/path-join").is_some());
+}
+
+#[test]
+fn identical_subtrees_at_different_positions_each_lower_in_place() {
+    let expr: SExpression = serde_json::from_str(r#"["if", ["=", "@a", 1], ["+", ["-", 2, 3], ["-", 2, 3]], ["+", ["-", 2, 3], 9]]"#).unwrap();
+    let product = || OirExpr::sub(OirExpr::number(2.0), OirExpr::number(3.0));
+    let expected = OirExpr::if_then_else(
+        OirExpr::eq(OirExpr::binding(OirBinding::parse("@a").expect("binding")), OirExpr::number(1.0)),
+        OirExpr::add(product(), product()),
+        OirExpr::add(product(), OirExpr::number(9.0)),
+    );
+    assert_eq!(lower_sexpr(&expr), Ok(expected));
+}
+
+#[test]
+fn control_distinct_subtrees_lower_in_place() {
+    let expr: SExpression = serde_json::from_str(r#"["+", ["-", 2, 3], ["-", 4, 5]]"#).unwrap();
+    let product = |a: f64, b: f64| OirExpr::sub(OirExpr::number(a), OirExpr::number(b));
+    assert_eq!(lower_sexpr(&expr), Ok(OirExpr::add(product(2.0, 3.0), product(4.0, 5.0))));
 }

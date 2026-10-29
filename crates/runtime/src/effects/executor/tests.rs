@@ -334,13 +334,13 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
             SExpression::object({
                 let mut m = orbital_core_base::schema::sexpr::SObject::default();
                 m.insert(
-                    "sender".to_string(),
+                    "sender".into(),
                     SExpression::string("@user.id"),
                 );
                 m
             }),
-        ]),
-    ]);
+        ].into()),
+    ].into());
     let effect =
         orbital_core_base::effect_types::parse_effect(&raw).expect("parse_persist must recognize this shape");
 

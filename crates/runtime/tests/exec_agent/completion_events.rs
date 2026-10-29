@@ -718,9 +718,9 @@ fn fetch_failure(effect: serde_json::Value, store: Arc<dyn EntitySource>) -> ser
 }
 
 #[test]
-fn a_fetch_store_error_carries_the_message_and_a_null_code() {
+fn a_fetch_store_error_carries_the_message_and_no_code() {
     let got = fetch_failure(json!(["fetch", "Run", options()]), Arc::new(DownStore("store is down")));
-    assert_eq!(got, json!({ "error": "store is down", "code": null }));
+    assert_eq!(got, json!({ "error": "store is down" }));
 }
 
 #[test]
@@ -731,8 +731,8 @@ fn a_fetch_by_id_miss_carries_the_not_found_code() {
 }
 
 #[test]
-fn control_a_fetch_error_that_merely_reads_like_a_denial_carries_a_null_code() {
+fn control_a_fetch_error_that_merely_reads_like_a_denial_carries_no_code() {
     let words = "@Read denied: the declared access policy for `Run` rejected this row";
     let got = fetch_failure(json!(["fetch", "Run", options()]), Arc::new(DownStore(words)));
-    assert_eq!(got, json!({ "error": words, "code": null }));
+    assert_eq!(got, json!({ "error": words }));
 }

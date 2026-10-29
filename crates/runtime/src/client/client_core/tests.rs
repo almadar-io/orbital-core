@@ -271,6 +271,18 @@ fn two_page_schema() -> OrbitalSchema {
     .unwrap()
 }
 
+#[test]
+fn the_page_marked_initial_opens_not_the_first() {
+    let mut schema = two_page_schema();
+    let pages = schema.orbitals[0].pages.as_mut().unwrap();
+    if let orbital_core_base::schema::types::PageRef::Inline(def) = &mut pages[1] {
+        def.is_initial = Some(true);
+    }
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let core = ClientCore::with_client_kernel(schema, kernel);
+    assert_eq!(core.current_page.as_deref(), Some("DetailPage"));
+}
+
 /// The desktop shows one page at a time, like the web and native routers: `main` holds the
 /// current page's writers only, and a `navigate` effect moves to the page whose path matches.
 #[test]

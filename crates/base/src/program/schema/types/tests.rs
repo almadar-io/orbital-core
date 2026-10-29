@@ -572,7 +572,7 @@ fn retag_callsite_payload_keeps_local_field_as_payload() {
     let local: std::collections::HashSet<String> = ["data".to_string()].into_iter().collect();
     let mut e = SExpression::object(
         [(
-            "entity".to_string(),
+            "entity".into(),
             SExpression::string("@callsitePayload.data"),
         )]
         .into_iter()

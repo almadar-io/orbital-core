@@ -444,6 +444,34 @@ impl OperatorKind {
         }
     }
 
+    /// Whether two evaluations of this operator inside one dispatch can differ by drawing entropy: the `prob/*`
+    /// stream and the clock-seeded `math/random`, `math/randomInt` and `array/shuffle`. `@now` and `time/*` read the
+    /// dispatch's one stamp (EXEC-SEED-1) and do not.
+    pub fn draws_entropy(&self) -> bool {
+        matches!(
+            self,
+            Self::MathRandomOp
+                | Self::MathRandomIntOp
+                | Self::ArrayShuffleOp
+                | Self::ProbBetaOp
+                | Self::ProbCategoricalOp
+                | Self::ProbConditionOp
+                | Self::ProbCredibleIntervalOp
+                | Self::ProbExpectedValueOp
+                | Self::ProbFlipOp
+                | Self::ProbGaussianOp
+                | Self::ProbHistogramOp
+                | Self::ProbInferOp
+                | Self::ProbPercentileOp
+                | Self::ProbPoissonOp
+                | Self::ProbPosteriorOp
+                | Self::ProbSampleOp
+                | Self::ProbSeedOp
+                | Self::ProbUniformOp
+                | Self::ProbVarianceOp
+        )
+    }
+
     /// The position of the callback parameter that is the element's `number` index, when the operator hands its
     /// callback one: `array/map`, `count`, `find`, `every` and `some` call back with `(item, index)`. The language
     /// types that parameter, whatever it is named and however the callback is written.

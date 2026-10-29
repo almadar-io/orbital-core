@@ -5,7 +5,6 @@
 use std::prelude::v1::*;
 
 use crate::schema::types::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
-use crate::str_utils::to_snake_case;
 use crate::collections::IndexMap;
 use serde::{Deserialize, Serialize};
 use crate::value::Shared;
@@ -129,6 +128,11 @@ impl OirModule {
             }
         }
         rows
+    }
+
+    /// The page the app opens on: the first one declared `[initial]`, else the first declared.
+    pub fn initial_page(&self) -> Option<&OirPage> {
+        initial_of(&self.pages, |p| p.is_initial)
     }
 
     /// Create a new empty module
@@ -307,7 +311,7 @@ mod value;
 pub use entity::{OirCardinality, OirConstraint, OirEntity, OirField, OirPersistence, OirRelation};
 pub use oir_type::{no_fields, OirType};
 pub use page::{
-    OirEntityBinding, OirNavigation, OirPage, OirPattern, OirSection, OirSectionEvent,
+    initial_of, OirEntityBinding, OirNavigation, OirPage, OirPattern, OirSection, OirSectionEvent,
     OirTraitBinding, OirViewType,
 };
 pub(crate) use shape::deserialize_type_contract_version;

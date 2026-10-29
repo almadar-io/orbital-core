@@ -73,7 +73,7 @@ fn format_object(
     if map.is_empty() {
         return "{}".to_string();
     }
-    let mut keys: Vec<&String> = map.keys().collect();
+    let mut keys: Vec<&crate::value::Shared<String>> = map.keys().collect();
     keys.sort();
     let entries: Vec<String> = keys
         .into_iter()

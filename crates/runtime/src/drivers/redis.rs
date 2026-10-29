@@ -310,19 +310,23 @@ fn object(entries: Vec<(&str, Value)>) -> Value {
     Value::Object(entries.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
-fn key_value(key: &Option<String>) -> Value {
-    key.clone().map_or(Value::Null, Value::string)
+fn push_present(entries: &mut Vec<(&'static str, Value)>, name: &'static str, value: Option<&str>) {
+    if let Some(value) = value {
+        entries.push((name, Value::string(value.to_string())));
+    }
 }
 
-/// A failure payload: `{ error, kind, code, credential, key }`.
+pub(crate) fn push_key(entries: &mut Vec<(&'static str, Value)>, key: &Option<String>) {
+    push_present(entries, "key", key.as_deref());
+}
+
+/// A failure payload: `{ error, kind }` plus `code`, `credential` and `key` when present (absent, never null).
 pub fn failure_payload(error: &str, kind: &str, code: Option<&str>, credential: Option<&str>, key: &Option<String>) -> Value {
-    object(vec![
-        ("error", Value::string(error.to_string())),
-        ("kind", Value::string(kind.to_string())),
-        ("code", code.map_or(Value::Null, |c| Value::string(c.to_string()))),
-        ("credential", credential.map_or(Value::Null, |c| Value::string(c.to_string()))),
-        ("key", key_value(key)),
-    ])
+    let mut entries = vec![("error", Value::string(error.to_string())), ("kind", Value::string(kind.to_string()))];
+    push_present(&mut entries, "code", code);
+    push_present(&mut entries, "credential", credential);
+    push_key(&mut entries, key);
+    object(entries)
 }
 
 /// A call refused before any byte moved: a missing credential is `unconfigured` and names it, the rest `refused`.
@@ -577,7 +581,11 @@ impl RedisDriver {
             }
             _ => {
                 let outcome = match replies.first().map(reply_value) {
-                    Some(Ok(reply)) => Ok(object(vec![("reply", reply), ("key", key_value(&self.key))])),
+                    Some(Ok(reply)) => {
+                        let mut entries = vec![("reply", reply)];
+                        push_key(&mut entries, &self.key);
+                        Ok(object(entries))
+                    }
                     Some(Err(problem)) => Err(problem_payload(&problem, &self.key)),
                     None => Err(failure_payload("redis: no reply", "protocol", None, None, &self.key)),
                 };
@@ -671,8 +679,12 @@ mod tests {
         }
     }
 
-    fn reply_payload(reply: Value, key: Value) -> Value {
-        object(vec![("reply", reply), ("key", key)])
+    fn reply_payload(reply: Value, key: Option<Value>) -> Value {
+        let mut entries = vec![("reply", reply)];
+        if let Some(key) = key {
+            entries.push(("key", key));
+        }
+        object(entries)
     }
 
     fn failed(step: &DriverStep) -> &Value {
@@ -826,13 +838,13 @@ mod tests {
     fn get_connects_sends_one_command_reads_the_reply_and_closes() {
         let (asks, step) = run(spec(&["GET", "k"]), None, vec![sock(), ok(), data(b"$3\r\nbar\r\n"), ok()]);
         assert_eq!(asks, vec![connect(), send(b"*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"), recv(), close()]);
-        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("bar"), Value::Null))));
+        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("bar"), None))));
     }
 
     #[test]
     fn the_key_rides_the_success_and_the_failure() {
         let (_, step) = run(spec(&["GET", "k"]), Some("call-1"), vec![sock(), ok(), data(b"$-1\r\n"), ok()]);
-        assert_eq!(step, DriverStep::Done(Ok(reply_payload(Value::Null, text("call-1")))));
+        assert_eq!(step, DriverStep::Done(Ok(reply_payload(Value::Null, Some(text("call-1"))))));
         let (_, step) = run(spec(&["INCR", "k"]), Some("call-1"), vec![sock(), ok(), data(b"-ERR value is not an integer\r\n"), ok()]);
         assert_eq!(field(failed(&step), "key"), &text("call-1"));
     }
@@ -845,7 +857,7 @@ mod tests {
             vec![sock(), ok(), data(b"$11\r\nhello"), data(b" wor"), data(b"ld\r\n"), ok()],
         );
         assert_eq!(asks.iter().filter(|a| **a == recv()).count(), 3);
-        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("hello world"), Value::Null))));
+        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("hello world"), None))));
     }
 
     #[test]
@@ -882,7 +894,7 @@ mod tests {
                 close(),
             ]
         );
-        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("v"), Value::Null))));
+        assert_eq!(step, DriverStep::Done(Ok(reply_payload(text("v"), None))));
     }
 
     #[test]
@@ -998,7 +1010,7 @@ mod tests {
         let (_, step) = run(spec(&["MGET", "a", "b"]), None, vec![sock(), ok(), data(b"*2\r\n$1\r\nx\r\n$-1\r\n"), ok()]);
         assert_eq!(
             step,
-            DriverStep::Done(Ok(reply_payload(Value::array(vec![text("x"), Value::Null]), Value::Null)))
+            DriverStep::Done(Ok(reply_payload(Value::array(vec![text("x"), Value::Null]), None)))
         );
     }
 

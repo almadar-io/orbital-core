@@ -8,14 +8,41 @@ impl SExpression {
     }
 
     pub fn object(map: SObject) -> SExpression {
-        SExpression::Object(Box::new(map))
+        SExpression::Object(crate::value::Shared::new(map))
+    }
+
+    pub fn array(items: Vec<SExpression>) -> SExpression {
+        SExpression::Array(crate::value::Shared::new(items))
+    }
+
+    /// A copy in which every list and object owns its storage, so each node has an address of its own even where the
+    /// source shares identical subtrees.
+    pub fn unshared(&self) -> SExpression {
+        match self.rewrite_with(
+            false,
+            |_| Ok::<_, std::convert::Infallible>(RewriteVisit::Descend),
+            Ok,
+        ) {
+            Ok(copy) => copy,
+            Err(never) => match never {},
+        }
     }
 
     /// A rewrite of the tree without recursion, so its depth is bounded by the heap, not the thread stack: `enter`
     /// runs on every node in pre-order, `exit` on every descended node once its children are rewritten, in the order
-    /// a recursive walk visits them (the first error is the one a recursive walk would raise).
+    /// a recursive walk visits them (the first error is the one a recursive walk would raise). A list or object whose
+    /// children all come back as they went in is handed to `exit` as the shared input, not a rebuilt copy.
     pub fn try_rewrite<E>(
         &self,
+        enter: impl FnMut(&SExpression) -> Result<RewriteVisit, E>,
+        exit: impl FnMut(SExpression) -> Result<SExpression, E>,
+    ) -> Result<SExpression, E> {
+        self.rewrite_with(true, enter, exit)
+    }
+
+    fn rewrite_with<E>(
+        &self,
+        reuse: bool,
         mut enter: impl FnMut(&SExpression) -> Result<RewriteVisit, E>,
         mut exit: impl FnMut(SExpression) -> Result<SExpression, E>,
     ) -> Result<SExpression, E> {
@@ -30,27 +57,72 @@ impl SExpression {
                     }
                     match node {
                         SExpression::Array(items) => {
-                            frames.push(RewriteFrame::Array(items.len()));
+                            frames.push(RewriteFrame::Array(node, items.len()));
                             frames.extend(items.iter().rev().map(RewriteFrame::Enter));
                         }
                         SExpression::Object(fields) => {
-                            frames.push(RewriteFrame::Object(fields.keys().cloned().collect()));
+                            frames.push(RewriteFrame::Object(node, fields.len()));
                             frames.extend(fields.values().rev().map(RewriteFrame::Enter));
                         }
                         leaf => done.push(exit(leaf.clone())?),
                     }
                 }
-                RewriteFrame::Array(len) => {
+                RewriteFrame::Array(source, len) => {
                     let items = done.split_off(done.len() - len);
-                    done.push(exit(SExpression::Array(items))?);
+                    let unchanged = reuse
+                        && matches!(source, SExpression::Array(old)
+                            if old.iter().zip(&items).all(|(a, b)| a.same_node(b)));
+                    let node = if unchanged { source.clone() } else { SExpression::Array(items.into()) };
+                    done.push(exit(node)?);
                 }
-                RewriteFrame::Object(keys) => {
-                    let values = done.split_off(done.len() - keys.len());
-                    done.push(exit(SExpression::object(keys.into_iter().zip(values).collect()))?);
+                RewriteFrame::Object(source, len) => {
+                    let values = done.split_off(done.len() - len);
+                    let SExpression::Object(old) = source else {
+                        unreachable!("an object frame is pushed for an object");
+                    };
+                    let unchanged = reuse && old.values().zip(&values).all(|(a, b)| a.same_node(b));
+                    let node = if unchanged {
+                        source.clone()
+                    } else {
+                        SExpression::object(old.keys().cloned().zip(values).collect())
+                    };
+                    done.push(exit(node)?);
                 }
             }
         }
         Ok(done.pop().expect("a rewrite leaves its root"))
+    }
+
+    /// Whether `self` and `other` are the same node: the same shared allocation for a string, list or object, an equal
+    /// scalar otherwise.
+    pub fn same_node(&self, other: &SExpression) -> bool {
+        match (self, other) {
+            (SExpression::Null, SExpression::Null) => true,
+            (SExpression::Bool(a), SExpression::Bool(b)) => a == b,
+            (SExpression::Number(a), SExpression::Number(b)) => a.to_bits() == b.to_bits(),
+            (SExpression::String(a), SExpression::String(b)) => crate::value::Shared::ptr_eq(a, b),
+            (SExpression::Array(a), SExpression::Array(b)) => crate::value::Shared::ptr_eq(a, b),
+            (SExpression::Object(a), SExpression::Object(b)) => crate::value::Shared::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// Whether any string in the tree, not under a key, satisfies `test`; read-only, without recursion.
+    pub fn any_string(&self, mut test: impl FnMut(&str) -> bool) -> bool {
+        let mut pending = vec![self];
+        while let Some(node) = pending.pop() {
+            match node {
+                SExpression::String(text) => {
+                    if test(text) {
+                        return true;
+                    }
+                }
+                SExpression::Array(items) => pending.extend(items.iter()),
+                SExpression::Object(fields) => pending.extend(fields.values()),
+                SExpression::Null | SExpression::Bool(_) | SExpression::Number(_) => {}
+            }
+        }
+        false
     }
 
     /// Check if this is a null value
@@ -82,11 +154,11 @@ impl SExpression {
                 serde_json::Value::Array(items.iter().map(Self::to_canonical_json).collect())
             }
             SExpression::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
+                let mut keys: Vec<&crate::value::Shared<String>> = map.keys().collect();
                 keys.sort();
                 let mut out = serde_json::Map::new();
                 for key in keys {
-                    out.insert(key.clone(), map[key].to_canonical_json());
+                    out.insert(key.to_string(), map[key].to_canonical_json());
                 }
                 serde_json::Value::Object(out)
             }
@@ -115,7 +187,7 @@ impl SExpression {
                 if is_flat_fn {
                     let body = items.pop().expect("len > 3 guarantees a body");
                     let params: Vec<SExpression> = items.drain(1..).collect();
-                    items.push(SExpression::Array(params));
+                    items.push(SExpression::Array(params.into()));
                     items.push(body);
                 }
             }
@@ -170,7 +242,7 @@ impl SExpression {
     /// Try to get as an object
     pub fn as_object(&self) -> Option<&crate::schema::sexpr::SObject> {
         match self {
-            SExpression::Object(o) => Some(o.as_ref()),
+            SExpression::Object(o) => Some(&**o),
             _ => None,
         }
     }

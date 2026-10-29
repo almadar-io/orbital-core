@@ -222,18 +222,13 @@ impl RuntimeKernel {
                     &catalog,
                 ) {
                     Ok(reply) => EffectResult::executed_with_value(effect.clone(), reply),
-                    Err(refusal) => http_failure(
-                        effect,
-                        Value::object(ValueMap::from_iter([
-                            ("error".to_string(), Value::String(refusal.message.into())),
-                            (
-                                "code".to_string(),
-                                refusal
-                                    .code
-                                    .map_or(Value::Null, |code| Value::String(code.to_string().into())),
-                            ),
-                        ])),
-                    ),
+                    Err(refusal) => {
+                        let mut fields = vec![("error".to_string(), Value::String(refusal.message.into()))];
+                        if let Some(code) = refusal.code {
+                            fields.push(("code".to_string(), Value::String(code.to_string().into())));
+                        }
+                        http_failure(effect, Value::object(ValueMap::from_iter(fields)))
+                    }
                 }
             }
             Effect::OAuthAuthorize {

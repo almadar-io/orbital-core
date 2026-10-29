@@ -287,6 +287,50 @@ mod tests {
     }
 
     #[test]
+    fn a_grant_declared_through_a_symlinked_package_directory_covers_its_canonical_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("real");
+        let project = root.join("project");
+        let store = root.join("store/pkg");
+        std::fs::create_dir_all(project.join("node_modules/@scope")).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("package.json"), "{}").unwrap();
+        std::fs::write(root.join("store/secret.txt"), "no").unwrap();
+        std::os::unix::fs::symlink(&store, project.join("node_modules/@scope/pkg")).unwrap();
+        std::os::unix::fs::symlink(root.join("store/secret.txt"), project.join("node_modules/@scope/leak")).unwrap();
+        let handles = OsHandles {
+            anchors: OsAnchors { start: Some(project.clone()), ..OsAnchors::default() },
+            ..OsHandles::default()
+        };
+        let declared = OsGrants {
+            anchored: AnchoredGrants {
+                fs: vec![AnchoredFsGrant { anchor: GrantAnchor::Cwd, glob: "node_modules/@scope/pkg/**".into(), modes: vec![FsMode::Read] }],
+                ..AnchoredGrants::default()
+            },
+            ..OsGrants::default()
+        };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty());
+        let read = |path: &str| os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": path}))], &grants, &handles);
+        assert!(read("node_modules/@scope/pkg/package.json").is_ok());
+        assert_eq!(
+            read("node_modules/@scope/leak").expect_err("link outside the grant").kind,
+            OsErrorKind::Denied,
+            "control: a symlink to a path no grant covers stays refused"
+        );
+        assert_eq!(
+            read("node_modules/@scope/pkg/../leak").expect_err("sibling").kind,
+            OsErrorKind::Denied,
+            "edge: a sibling of the granted directory is not covered by its canonical twin"
+        );
+        let mut missing = declared.clone();
+        missing.anchored.fs[0].glob = "node_modules/@scope/absent/**".into();
+        let (grants, _) = missing.resolve_anchors(&handles.anchors);
+        let absent = os_answer(OsOp::ReadFile, vec![anchored_value(serde_json::json!({"anchor": "cwd", "path": "node_modules/@scope/absent/x"}))], &grants, &handles);
+        assert_eq!(absent.expect_err("absent").kind, OsErrorKind::NotFound, "edge: a grant on a path that does not exist canonicalizes its existing prefix");
+    }
+
+    #[test]
     fn a_computed_anchored_path_is_checked_against_the_narrow_glob_after_resolution() {
         let dir = tempfile::tempdir().expect("tempdir");
         let root = dir.path().canonicalize().expect("real");

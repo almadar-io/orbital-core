@@ -13,7 +13,7 @@ pub struct OirEntity {
     pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Collection/table name for persistence
+    /// The declared collection, else the entity name: the name a store keys the rows by.
     pub collection: String,
     /// Persistence mode
     pub persistence: OirPersistence,
@@ -69,7 +69,7 @@ impl OirEntity {
     /// Create a new entity
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
-        let collection = to_snake_case(&name);
+        let collection = name.clone();
         Self {
             name,
             id: None,

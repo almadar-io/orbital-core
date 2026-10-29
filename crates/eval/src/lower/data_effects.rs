@@ -43,7 +43,7 @@ impl NodeLowerer {
             if let SExpression::Array(t) = tuple {
                 items.extend(strip_literal_list_marker(t).iter().cloned());
             }
-            SExpression::Array(items)
+            SExpression::Array(items.into())
         }
         let mut ops_expr = ops.clone();
         if let SExpression::Array(items) = &mut ops_expr {

@@ -146,7 +146,7 @@ impl ListenerManager {
                 let mut mapped = ValueMap::default();
                 for (key, expr) in mapping.as_ref() {
                     if let Ok(value) = evaluator.evaluate(expr, &ctx) {
-                        mapped.insert(key.clone(), value);
+                        mapped.insert(key.to_string(), value);
                     }
                 }
                 Value::object(mapped)
@@ -423,7 +423,7 @@ mod tests {
 
         let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
         mapping.insert(
-            "userId".to_string(),
+            "userId".into(),
             serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap(),
         );
 
@@ -460,7 +460,7 @@ mod tests {
     fn a_listens_guard_and_mapping_are_one_copy_shared_by_the_bus_handler_and_every_listener_info() {
         let manager = ListenerManager::new(shared_bus());
         let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
-        mapping.insert("userId".to_string(), serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap());
+        mapping.insert("userId".into(), serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap());
         let listen = ListenDefinition {
             event: "USER_CREATED".to_string(),
             triggers: Some("INIT_PROFILE".to_string()),

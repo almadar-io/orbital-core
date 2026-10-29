@@ -60,7 +60,7 @@ pub fn projected_through_mapping<'a>(
         if source_field.contains('.') {
             continue;
         }
-        if let Some(value) = projected.get(target_field) {
+        if let Some(value) = projected.get(target_field.as_str()) {
             out.insert(source_field.to_string(), value.clone());
         }
     }

@@ -37,6 +37,7 @@ pub(super) struct Path {
     /// Branch conditions taken, over the pre-state.
     pub(super) conds: Vec<SExpression>,
     pub(super) writes: Vec<Write>,
+    pub(super) evaluated: Vec<SExpression>,
     pub(super) notes: Vec<String>,
 }
 
@@ -108,7 +109,7 @@ pub(super) fn exec(
             no.conds.push(SExpression::Array(vec![
                 SExpression::string("not"),
                 cond,
-            ]));
+            ].into()));
             let (then, otherwise): (&[SExpression], &[SExpression]) = if head == "if" {
                 (
                     items.get(2).map(std::slice::from_ref).unwrap_or(&[]),
@@ -149,7 +150,9 @@ pub(super) fn exec(
                     match target.strip_prefix("@entity.") {
                         Some(field) if !field.contains('.') => {
                             // A binding that reads nothing stores null, as every other read of it (G-ORBITAL-CORE-019).
-                            path.frame.insert(field.to_string(), path.read(value));
+                            let value = path.read(value);
+                            path.evaluated.push(value.clone());
+                            path.frame.insert(field.to_string(), value);
                         }
                         _ => path
                             .notes
@@ -286,7 +289,7 @@ pub(super) fn exec(
 pub(super) fn data_of(path: &mut Path, data: &SExpression, linked: Option<&EntityDefinition>) -> Data {
     match (data, linked) {
         (SExpression::Object(map), _) => {
-            Data::Fields(map.iter().map(|(k, v)| (k.clone(), path.read(v))).collect())
+            Data::Fields(map.iter().map(|(k, v)| (k.to_string(), path.read(v))).collect())
         }
         (SExpression::String(b), Some(def)) if b == "@entity" => {
             path.notes
@@ -310,7 +313,7 @@ pub(super) fn data_of(path: &mut Path, data: &SExpression, linked: Option<&Entit
             Data::Merge(
                 path.read(&items[1]),
                 over.iter()
-                    .map(|(k, v)| (k.clone(), path.read(v)))
+                    .map(|(k, v)| (k.to_string(), path.read(v)))
                     .collect(),
             )
         }

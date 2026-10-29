@@ -123,9 +123,6 @@ pub struct OirMetadata {
     pub checksum: Option<String>,
 }
 
-// `to_snake_case` is the canonical `crate::str_utils::to_snake_case` (imported
-// at module top) — the byte-identical local copy was removed (Pillar F3).
-
 /// Add every service a `call-service` effect inside `e` names to `names`.
 pub fn invoked_services_in(
     e: &crate::ir::expr::OirExpr,

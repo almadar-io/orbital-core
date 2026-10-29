@@ -858,3 +858,52 @@ fn find_npm_package_missing_or_unparseable_returns_none() {
     fs::write(bad_pkg_dir.join("package.json"), "{ not valid json").unwrap();
     assert!(find_npm_package("bad-json-pkg", tmp.path(), &user_store).is_none());
 }
+
+fn set_compiler_range(pkg_dir: &Path, range: &str) {
+    let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
+    let mut json: Value = serde_json::from_str(&raw).unwrap();
+    json["orb"]["compiler"] = Value::String(range.to_string());
+    fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+}
+
+#[test]
+fn discovery_refuses_a_package_whose_compiler_range_excludes_the_running_orb() {
+    let tmp = TestTempDir::new("compiler-range-excluded");
+    let node_modules = tmp.path().join("node_modules");
+    let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
+    set_compiler_range(&pkg, ">=99.0.0");
+
+    let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
+    match &err {
+        DiscoverError::IncompatibleCompiler { package, range, running } => {
+            assert_eq!(package, "pkg-a");
+            assert_eq!(range, ">=99.0.0");
+            assert_eq!(running, crate::language_data::running_version());
+        }
+        other => panic!("expected IncompatibleCompiler, got {other:?}"),
+    }
+    let text = err.to_string();
+    assert!(text.contains("pkg-a") && text.contains(">=99.0.0") && text.contains(crate::language_data::running_version()), "{text}");
+}
+
+#[test]
+fn discovery_loads_a_package_whose_compiler_range_includes_the_running_orb() {
+    let tmp = TestTempDir::new("compiler-range-included");
+    let node_modules = tmp.path().join("node_modules");
+    let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
+    set_compiler_range(&pkg, &format!(">={}", crate::language_data::running_version()));
+
+    let packages = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap();
+    assert_eq!(packages.len(), 1);
+}
+
+#[test]
+fn discovery_refuses_a_compiler_range_that_is_not_semver() {
+    let tmp = TestTempDir::new("compiler-range-invalid");
+    let node_modules = tmp.path().join("node_modules");
+    let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
+    set_compiler_range(&pkg, "latest-ish");
+
+    let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
+    assert!(matches!(err, DiscoverError::InvalidPackageJson { .. }), "{err:?}");
+}

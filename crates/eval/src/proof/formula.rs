@@ -242,11 +242,29 @@ fn raises() -> Outcomes {
 /// Translates expressions against a variable table, recording the opaque atoms it had to introduce.
 pub struct Translator<'a> {
     vars: &'a Vars,
+    evaluated: &'a [SExpression],
     pub opaque: BTreeMap<String, SExpression>,
 }
 
 fn canonical(expr: &SExpression) -> String {
     serde_json::to_string(expr).unwrap_or_default()
+}
+
+/// Whether evaluating `expr` twice in one dispatch gives one value: every call is a dispatched operator that draws
+/// no entropy. A head the evaluator does not dispatch (`proof/unresolved`, a data list) is not known to repeat.
+fn repeats(expr: &SExpression) -> bool {
+    match expr {
+        SExpression::Array(items) => match items.split_first() {
+            Some((SExpression::String(op), args)) => {
+                crate::evaluator::operators::get_operator(op)
+                    .is_some_and(|kind| !kind.draws_entropy())
+                    && args.iter().all(repeats)
+            }
+            _ => false,
+        },
+        SExpression::Object(map) => map.values().all(repeats),
+        _ => true,
+    }
 }
 
 fn is_binding(expr: &SExpression) -> Option<&str> {
@@ -260,8 +278,15 @@ impl<'a> Translator<'a> {
     pub fn new(vars: &'a Vars) -> Self {
         Translator {
             vars,
+            evaluated: &[],
             opaque: BTreeMap::new(),
         }
+    }
+
+    /// Terms known to have evaluated (an obligation's `set` values): such a term equals itself when it repeats.
+    pub fn with_evaluated(mut self, evaluated: &'a [SExpression]) -> Self {
+        self.evaluated = evaluated;
+        self
     }
 
     fn opaque(&mut self, expr: &SExpression) -> Formula {
@@ -391,7 +416,7 @@ impl<'a> Translator<'a> {
                             } else {
                                 (args[0].clone(), branch)
                             };
-                            SExpression::Array(vec![SExpression::String(op.clone()), a, b])
+                            SExpression::Array(vec![SExpression::String(op.clone()), a, b].into())
                         };
                         let cond = self.outcomes(&c)?;
                         let yes = self.outcomes(&with(then))?;
@@ -453,7 +478,7 @@ impl<'a> Translator<'a> {
                     SExpression::string("!="),
                     args[0].clone(),
                     SExpression::Null,
-                ]);
+                ].into());
                 Some((present, args[0].clone(), args[1].clone()))
             }
             "+" | "-" | "*" | "/" => {
@@ -475,12 +500,12 @@ impl<'a> Translator<'a> {
                     SExpression::string(">="),
                     args[0].clone(),
                     SExpression::Number(0.0),
-                ]);
+                ].into());
                 let negated = SExpression::Array(vec![
                     SExpression::string("-"),
                     SExpression::Number(0.0),
                     args[0].clone(),
-                ]);
+                ].into());
                 Some((cond, args[0].clone(), negated))
             }
             "math/max" | "math/min" if args.len() == 2 => {
@@ -491,7 +516,7 @@ impl<'a> Translator<'a> {
                     SExpression::string(cmp.to_string()),
                     args[0].clone(),
                     args[1].clone(),
-                ]);
+                ].into());
                 Some((cond, args[0].clone(), args[1].clone()))
             }
             _ => None,
@@ -603,6 +628,9 @@ impl<'a> Translator<'a> {
         whole: &SExpression,
     ) -> Option<(Formula, Formula)> {
         let always = Formula::Const(true);
+        if a == b && self.evaluated.contains(a) && repeats(a) {
+            return Some((always, Formula::Const(true)));
+        }
         if matches!(a, SExpression::Null) || matches!(b, SExpression::Null) {
             let other = if matches!(a, SExpression::Null) { b } else { a };
             return Some(match other {

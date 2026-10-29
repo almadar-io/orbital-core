@@ -1067,6 +1067,81 @@ fn a_nullable_ensures_is_proved_by_a_presence_guard_and_refuted_only_by_present_
     );
 }
 
+fn restated(set: J, ensures_value: J) -> OrbitalSchema {
+    let t = json!([pay(
+        json!([["set", "@entity.paid", set]]),
+        json!([["=", "@entity.paid", ensures_value]]),
+        None
+    )]);
+    program(t, J::Null, J::Null)
+}
+
+#[test]
+fn an_ensures_restating_a_set_stamped_term_outside_the_fragment_is_proved() {
+    let term = json!(["time/add", "@now", 60000, "ms"]);
+    assert_eq!(only(&restated(term.clone(), term)), Verdict::Proved);
+}
+
+#[test]
+fn restating_a_different_stamped_term_is_not_proved() {
+    let set = json!(["time/add", "@now", 60000, "ms"]);
+    let other = json!(["time/add", "@now", 1, "ms"]);
+    assert!(!matches!(only(&restated(set, other)), Verdict::Proved));
+}
+
+#[test]
+fn restating_a_term_that_draws_randomness_is_not_proved() {
+    for term in [
+        json!(["prob/uniform", 0, 1]),
+        json!(["math/random"]),
+        json!(["+", 1, ["math/randomInt", 0, 9]]),
+    ] {
+        assert!(
+            !matches!(only(&restated(term.clone(), term.clone())), Verdict::Proved),
+            "{term}"
+        );
+    }
+}
+
+#[test]
+fn restating_a_term_the_transition_did_not_set_keeps_its_verdict() {
+    let term = json!(["time/add", "@now", 60000, "ms"]);
+    let t = json!([pay(
+        json!([["set", "@entity.total", 1]]),
+        json!([["=", term.clone(), term]]),
+        None
+    )]);
+    assert!(!matches!(
+        only(&program(t, J::Null, J::Null)),
+        Verdict::Proved
+    ));
+}
+
+#[test]
+fn only_entropy_operators_are_marked_as_drawing_it() {
+    use crate::evaluator::operators::get_operator;
+    for name in ["prob/flip", "prob/seed", "prob/posterior", "math/random", "math/randomInt", "array/shuffle"] {
+        assert!(get_operator(name).expect(name).draws_entropy(), "{name}");
+    }
+    for name in ["time/add", "time/now", "+", "if", "math/abs", "array/sort"] {
+        assert!(!get_operator(name).expect(name).draws_entropy(), "{name}");
+    }
+}
+
+#[test]
+fn a_set_in_one_branch_proves_the_restatement_only_on_that_branch() {
+    let term = json!(["time/add", "@now", 60000, "ms"]);
+    let t = json!([pay(
+        json!([["if", ["=", "@payload.amount", 1], ["set", "@entity.paid", term.clone()]]]),
+        json!([["=", "@entity.paid", term]]),
+        None
+    )]);
+    let all = verdicts(&program(t, J::Null, J::Null));
+    assert_eq!(all.len(), 2, "{all:#?}");
+    assert!(all.iter().any(|(_, v)| *v == Verdict::Proved), "{all:#?}");
+    assert!(all.iter().any(|(_, v)| *v != Verdict::Proved), "the branch that skips the set: {all:#?}");
+}
+
 #[test]
 fn an_opaque_write_leaves_the_ensures_unproved_never_passed() {
     let ensures = json!([[">=", "@entity.paid", 0]]);

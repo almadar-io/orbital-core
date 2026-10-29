@@ -22,7 +22,7 @@ pub fn instance_rows(
         .map(|instance| {
             let mut row: ValueMap = instance
                 .iter()
-                .map(|(key, sexpr)| (key.clone(), super::kernel::sexpr_to_value(sexpr)))
+                .map(|(key, sexpr)| (key.to_string(), super::kernel::sexpr_to_value(sexpr)))
                 .collect();
             if row.get("id").is_none_or(is_blank) {
                 minted += 1;

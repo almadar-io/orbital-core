@@ -964,12 +964,8 @@ fn pages_of(
 
 /// The page an orbital opens on: the one marked initial, else its first.
 fn initial_page(schema: &OrbitalSchema, idx: usize) -> Option<String> {
-    let mut pages = pages_of(schema, idx).peekable();
-    let first = pages.peek().map(|p| p.name.clone());
-    pages
-        .find(|p| p.is_initial == Some(true))
-        .map(|p| p.name.clone())
-        .or(first)
+    let pages: Vec<_> = pages_of(schema, idx).collect();
+    orbital_core_base::ir::types::initial_of(&pages, |p| p.is_initial == Some(true)).map(|p| p.name.clone())
 }
 
 /// The page a visit was on, for `navigate-back`.

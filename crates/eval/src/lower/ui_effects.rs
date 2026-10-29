@@ -80,7 +80,7 @@ impl NodeLowerer {
                 if key != "type" {
                     pattern
                         .config
-                        .insert(key.clone(), self.sexpr_to_value(value));
+                        .insert(key.to_string(), self.sexpr_to_value(value));
                 }
             }
             pattern

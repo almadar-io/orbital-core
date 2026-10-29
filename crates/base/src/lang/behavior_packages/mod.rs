@@ -205,6 +205,12 @@ pub enum DiscoverError {
         field: &'static str,
         path: PathBuf,
     },
+    #[error("{package} declares `orb.compiler` {range:?}, which orb {running} does not satisfy (ORB_LANGUAGE_DATA_INCOMPATIBLE) — install a {package} whose range accepts this orb, or upgrade orb")]
+    IncompatibleCompiler {
+        package: String,
+        range: String,
+        running: String,
+    },
     #[error("invalid package.json at {path:?}: {reason}")]
     InvalidPackageJson { path: PathBuf, reason: String },
     #[error("io error at {path:?}: {source}")]
@@ -617,6 +623,23 @@ fn build_package(
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
     let compiler_range = require_str(orb, "compiler", package_json_path)?;
+    let running = crate::language_data::running_version();
+    match compiler_satisfies(&compiler_range, running) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(DiscoverError::IncompatibleCompiler {
+                package: name.to_string(),
+                range: compiler_range,
+                running: running.to_string(),
+            })
+        }
+        Err(e) => {
+            return Err(DiscoverError::InvalidPackageJson {
+                path: package_json_path.to_path_buf(),
+                reason: format!("`orb.compiler` {compiler_range:?} is not a semver range: {e}"),
+            })
+        }
+    }
     let vectors_rel = optional_str(orb, "vectors", package_json_path)?;
     let std_peer_range = peer_dependency(top, "@almadar/std");
     let core_range =

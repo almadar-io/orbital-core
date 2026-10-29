@@ -249,7 +249,7 @@ impl NodeLowerer {
             SExpression::Object(obj) => {
                 let mut fields = orbital_core_base::ir::expr::OirFields::default();
                 for (key, value) in obj.iter() {
-                    fields.insert(key.clone(), self.resolve_sexpr(value)?);
+                    fields.insert(key.to_string(), self.resolve_sexpr(value)?);
                 }
                 Ok(OirExpr::object(fields))
             }
@@ -794,7 +794,7 @@ impl ExprLowerer {
             }
             SExpression::Object(obj) => OirValue::Object(
                 obj.iter()
-                    .map(|(k, v)| (k.clone(), self.sexpr_to_value(v)))
+                    .map(|(k, v)| (k.to_string(), self.sexpr_to_value(v)))
                     .collect(),
             ),
         }

@@ -532,6 +532,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_declared_shape_is_a_function_of_its_text_whichever_allocation_holds_it() {
+        let text = serde_json::json!({"version":1,"type":{"kind":"string"}}).to_string();
+        let first = SExpression::string(text.clone());
+        let second = SExpression::string(text);
+        let other = SExpression::string(serde_json::json!({"version":1,"type":{"kind":"number"}}).to_string());
+        let a = declared_shape(&first).unwrap();
+        let b = declared_shape(&second).unwrap();
+        let again = declared_shape(&first).unwrap();
+        assert!(std::rc::Rc::ptr_eq(&a, &b) && std::rc::Rc::ptr_eq(&a, &again));
+        assert!(!std::rc::Rc::ptr_eq(&a, &declared_shape(&other).unwrap()), "control: other text, other shape");
+    }
+
     fn num(n: f64) -> Value {
         Value::Number(n)
     }

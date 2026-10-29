@@ -62,7 +62,7 @@ mod through_mapping {
     }
 
     fn mapping(pairs: &[(&str, &str)]) -> orbital_core_base::schema::SObject {
-        pairs.iter().map(|(k, v)| (k.to_string(), SExpression::string(v.to_string()))).collect()
+        pairs.iter().map(|(k, v)| (k.to_string().into(), SExpression::string(v.to_string()))).collect()
     }
 
     #[test]
@@ -83,8 +83,8 @@ mod through_mapping {
     fn edge_a_computed_mapping_value_is_not_a_pass_through() {
         let rows = tags();
         let computed: orbital_core_base::schema::SObject = orbital_core_base::schema::SObject::from([(
-            "tagId".to_string(),
-            SExpression::Array(vec![SExpression::string("str/concat"), SExpression::string("@payload.id")]),
+            "tagId".into(),
+            SExpression::Array(vec![SExpression::string("str/concat"), SExpression::string("@payload.id")].into()),
         )]);
         let out = projected_through_mapping(&target(), &computed, |t| (t == "Tag").then_some(rows.as_slice()));
         assert!(out.is_empty());

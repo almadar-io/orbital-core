@@ -59,7 +59,8 @@ fn index_tree(
     path: &NodePath,
     paths: &mut HashMap<*const SExpression, NodePath>,
 ) {
-    paths.insert(node as *const SExpression, path.clone());
+    let earlier = paths.insert(node as *const SExpression, path.clone());
+    debug_assert!(earlier.is_none_or(|known| known == *path), "a traced node has one path");
     match node {
         SExpression::Array(items) => {
             for (i, child) in items.iter().enumerate() {
@@ -71,7 +72,7 @@ fn index_tree(
         SExpression::Object(map) => {
             for (k, child) in map.iter() {
                 let mut p = path.clone();
-                p.push(PathSeg::Key(k.clone()));
+                p.push(PathSeg::Key(k.to_string()));
                 index_tree(child, &p, paths);
             }
         }
@@ -162,6 +163,8 @@ impl Drop for Active {
 
 /// Evaluate `expr`, recording its trace. Never panics on an evaluation failure: the result and the steps up to it come back.
 pub fn evaluate_traced(expr: &SExpression, ctx: &BindingContext) -> (EvalResult, Vec<TraceStep>) {
+    let owned = expr.unshared();
+    let expr = &owned;
     let mut paths = HashMap::new();
     index_tree(expr, &Vec::new(), &mut paths);
     COLLECTOR.with(|slot| {
