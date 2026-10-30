@@ -184,6 +184,9 @@ impl std::ops::Deref for NamedTypes {
 pub struct CallBindings {
     vars: SmallMap<Vec<OirType>>,
     keys: SmallMap<Vec<String>>,
+    /// The closed record a map position was handed, by its value variable: an operator that hands the map back keeps
+    /// the record's fields, each now possibly dropped.
+    records: SmallMap<OirType>,
     /// The key arguments that name no field of the record their variable is bound to: the argument position and
     /// the path. Reading such a field is an error only when the call supplies no default (see [`Signature::finish`]).
     absent: SmallMap<(usize, String)>,
@@ -217,6 +220,7 @@ impl CallBindings {
     pub fn clear(&mut self) {
         self.vars.clear();
         self.keys.clear();
+        self.records.clear();
         self.absent.clear();
         self.defaults.clear();
         self.defaulted.clear();

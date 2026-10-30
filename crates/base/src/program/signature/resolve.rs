@@ -52,6 +52,12 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
             // A map whose values differ in type is a record.
             K::Map { key, value } => {
                 if let OperatorTypeRef::Tagged(K::Var { name, .. }) = &**value {
+                    if let Some(OirType::Struct { fields, additional }) = b.records.get(name) {
+                        return Some(OirType::Struct {
+                            fields: fields.iter().cloned().map(|mut field| { field.required = false; field }).collect::<Vec<_>>().into(),
+                            additional: additional.clone(),
+                        });
+                    }
                     if let Some(all) = b.vars.get(name) {
                         if all
                             .first()
@@ -167,11 +173,17 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 if let map @ OirType::Map { .. } = unwrap_optional(record) {
                     return Some(map.clone());
                 }
-                let keys = b.keys.get(of)?;
                 let OirType::Struct { fields, additional } = unwrap_optional(record) else {
                     return None;
                 };
                 let pick = matches!(kind, K::PickOf { .. });
+                // Keys that are not written out drop any subset: every field stays, each possibly dropped.
+                let Some(keys) = b.keys.get(of) else {
+                    return (!pick).then(|| OirType::Struct {
+                        fields: fields.iter().cloned().map(|mut field| { field.required = false; field }).collect::<Vec<_>>().into(),
+                        additional: additional.clone(),
+                    });
+                };
                 let mut projected: Vec<OirField> = fields
                     .iter()
                     .filter(|f| keys.contains(&f.name) == pick)

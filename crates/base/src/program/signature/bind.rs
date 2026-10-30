@@ -219,8 +219,25 @@ pub(super) fn bind_type(
                     }
                     Some(Record::Fields(fields)) => {
                         bind_type(key, &element(&OirType::String), b, mode)?;
+                        let mut members: Vec<OirType> = Vec::new();
                         for field in fields {
-                            bind_type(value, &element(&field.field_type), b, mode)?;
+                            if !members.contains(&field.field_type) {
+                                members.push(field.field_type.clone());
+                            }
+                        }
+                        // A closed record's values are whichever field a key names: alike, one type; unlike, their join.
+                        let alike = members.first().is_none_or(|first| members.iter().all(|m| b.agrees(first, m)));
+                        if alike {
+                            for member in &members {
+                                bind_type(value, &element(member), b, mode)?;
+                            }
+                        } else if let Some(joined) = join_struct_member_types(members) {
+                            bind_type(value, &element(&joined), b, mode)?;
+                        }
+                        if let OperatorTypeRef::Tagged(K::Var { name, .. }) = &**value {
+                            if let OirType::Struct { .. } = unwrap_optional(ty) {
+                                b.records.insert(name.clone(), unwrap_optional(ty).clone());
+                            }
                         }
                         Ok(())
                     }

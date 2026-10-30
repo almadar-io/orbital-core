@@ -1701,6 +1701,50 @@ fn additional_records_paths_and_pick_omit_keep_presence_distinct() {
 }
 
 #[test]
+fn omit_with_literal_keys_is_exact_and_with_computed_keys_makes_each_field_optional() {
+    let omit = op(
+        json!([p("obj", record("R")), p("keys", list(json!({ "kind": "keyOf", "of": "R" })))]),
+        json!({ "kind": "omitOf", "of": "R" }), Some(2),
+    );
+    let row = struct_of(&[("a", OirType::String), ("b", OirType::Number)]);
+    let literal = Actual { known: None, text: None, texts: Some(vec!["b".into()]), lambda: None };
+    assert_eq!(call(&omit, &[ty(row.clone()), literal], Mode::Static), Ok(Some(struct_of(&[("a", OirType::String)]))));
+    let computed = ty(OirType::array(OirType::String));
+    let mut a = OirField::new("a", OirType::String);
+    a.required = false;
+    let mut b = OirField::new("b", OirType::Number);
+    b.required = false;
+    assert_eq!(
+        call(&omit, &[ty(row), computed], Mode::Static),
+        Ok(Some(OirType::Struct { fields: vec![a, b].into(), additional: None })),
+        "keys known only at run time drop any subset"
+    );
+}
+
+#[test]
+fn a_map_position_takes_a_mixed_closed_record_and_hands_back_optional_fields() {
+    let filter = op(
+        json!([p("obj", json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }))]),
+        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }), Some(1),
+    );
+    let mixed = struct_of(&[("a", OirType::String), ("b", OirType::Number)]);
+    let mut a = OirField::new("a", OirType::String);
+    a.required = false;
+    let mut b = OirField::new("b", OirType::Number);
+    b.required = false;
+    assert_eq!(
+        call(&filter, &[ty(mixed)], Mode::Static),
+        Ok(Some(OirType::Struct { fields: vec![a, b].into(), additional: None })),
+    );
+    let map = OirType::map(OirType::String, OirType::Number);
+    assert_eq!(call(&filter, &[ty(map.clone())], Mode::Static), Ok(Some(map)), "a map keeps its value type");
+    assert!(
+        matches!(call(&filter, &[ty(OirType::Row { entity: "E".into() })], Mode::Static), Err(Mismatch::Undetermined { .. })),
+        "control: a record whose fields the call cannot see stays undetermined"
+    );
+}
+
+#[test]
 fn additional_records_branch_join_covers_both_extra_value_types() {
     let branch = |additional| OirType::Struct {
         fields: vec![OirField::new("fixed", OirType::String)].into(),
@@ -1881,10 +1925,17 @@ fn omitting_or_picking_keys_of_a_map_is_the_map() {
         "an optional map is read as the map"
     );
     let row = struct_of(&[("a", OirType::Number)]);
+    let mut maybe = OirField::new("a", OirType::Number);
+    maybe.required = false;
     assert_eq!(
-        call(&omit, &[ty(row), computed()], Mode::Static),
+        call(&omit, &[ty(row.clone()), computed()], Mode::Static),
+        Ok(Some(OirType::Struct { fields: vec![maybe].into(), additional: None })),
+        "keys computed from data say nothing about which fields of a record go: each may be gone"
+    );
+    assert_eq!(
+        call(&pick, &[ty(row), computed()], Mode::Static),
         Ok(None),
-        "control: keys computed from data say nothing about which fields of a record go"
+        "control: computed keys pick no known field"
     );
 }
 
