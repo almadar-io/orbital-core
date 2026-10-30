@@ -110,19 +110,39 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                     return match unwrap_optional(record) {
                         OirType::Map { value, .. } => Some(missing(value)),
                         OirType::Array { inner } => Some((**inner).clone()),
-                        // A record whose members are alike: whichever one the key names has their join.
-                        OirType::Struct { fields, .. } => {
-                            let members: Vec<OirType> =
-                                fields.iter().map(|f| f.field_type.clone()).collect();
+                        // A closed record: whichever member the key names, or none (null), so the join of its
+                        // member types, nullable when a member is or the key may name no member.
+                        OirType::Struct { fields, additional } => {
+                            let mut members: Vec<OirType> = Vec::new();
+                            let mut nullable = false;
+                            let declared = fields.iter().map(|f| (&f.field_type, !f.required));
+                            let typed_additional = additional.as_deref().map(|ty| (ty, true));
+                            for (ty, absent) in declared.chain(typed_additional) {
+                                nullable |= absent || ty.is_optional();
+                                let member = unwrap_optional(ty);
+                                if !members.contains(member) {
+                                    members.push(member.clone());
+                                }
+                            }
                             let first = members.first()?;
-                            if !members.iter().all(|m| b.agrees(first, m)) {
-                                return None;
-                            }
-                            let joined = unify_structs(&members);
-                            if joined.is_none() && is_typed_record_join(&members) {
-                                return None;
-                            }
-                            Some(joined.unwrap_or_else(|| first.clone()))
+                            let joined = if members.iter().all(|m| b.agrees(first, m)) {
+                                let raw: Vec<OirType> =
+                                    fields.iter().map(|f| f.field_type.clone()).collect();
+                                let joined = unify_structs(&raw);
+                                if joined.is_none() && is_typed_record_join(&raw) {
+                                    return None;
+                                }
+                                joined.unwrap_or_else(|| first.clone())
+                            } else {
+                                join_struct_member_types(members)?
+                            };
+                            // A key naming no member answers null unless a default answers it.
+                            let absent_key = !b.defaulted.contains(of);
+                            Some(if nullable || absent_key {
+                                OirType::optional(joined)
+                            } else {
+                                joined
+                            })
                         }
                         _ => None,
                     };

@@ -2156,6 +2156,30 @@ fn a_concat_with_a_literal_directory_prefix_needs_the_tree_and_anything_else_is_
 }
 
 #[test]
+fn a_glob_with_a_concat_pattern_needs_the_tree_under_its_literal_directory_prefix() {
+    let glob = |pieces: &[&str]| os_requirements(OsOp::Glob, &[concat(pieces)]);
+    let repro = glob(&["/", "@payload.x", "/**/*.replay.goldens.json"]);
+    assert_eq!(
+        repro,
+        Ok(vec![OsRequirement::FsTree {
+            root: "/".into(),
+            mode: FsMode::Read
+        }])
+    );
+    assert!(fs_grants("/**", &[FsMode::Read]).allows(&repro.expect("repro")[0]));
+    let under = glob(&["/etc/", "@payload.x", "/*.conf"]).expect("etc");
+    assert!(!fs_grants("/data/**", &[FsMode::Read]).allows(&under[0]));
+    assert!(fs_grants("/etc/**", &[FsMode::Read]).allows(&under[0]));
+    assert_eq!(glob(&["@payload.x", "/**/*.json"]), Err(0));
+    assert_eq!(glob(&["/data", "@payload.x"]), Err(0));
+    assert_eq!(
+        call(OsOp::Glob, json!(["/data/**/*.log"])),
+        Ok(vec![fs_req("/data", FsMode::Read)]),
+        "control: a literal pattern is unchanged"
+    );
+}
+
+#[test]
 fn a_tree_is_covered_only_by_a_double_star_grant_that_contains_its_root() {
     let need = |root: &str| OsRequirement::FsTree {
         root: root.into(),
@@ -2641,12 +2665,23 @@ fn the_grants_report_prints_codes_and_via_in_kebab_case_and_reads_back() {
         argument: Some(1),
         via: Some(OsGrantVia::ConfigUnresolvable),
     };
-    let report = OsGrantsReport { findings: vec![finding] };
+    let report = OsGrantsReport {
+        findings: vec![finding],
+    };
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["findings"][0]["code"], "target-not-static");
     assert_eq!(json["findings"][0]["via"], "config-unresolvable");
-    assert!(json["findings"][0].get("grant").is_none(), "an absent field is an absent key: {json}");
-    assert_eq!(serde_json::from_value::<OsGrantsReport>(json).unwrap(), report);
+    assert!(
+        json["findings"][0].get("grant").is_none(),
+        "an absent field is an absent key: {json}"
+    );
+    assert_eq!(
+        serde_json::from_value::<OsGrantsReport>(json).unwrap(),
+        report
+    );
     let bad = json!({ "findings": [{ "code": "missing", "site": "s", "via": "elsewhere" }] });
-    assert!(serde_json::from_value::<OsGrantsReport>(bad).is_err(), "control: an unknown via is refused");
+    assert!(
+        serde_json::from_value::<OsGrantsReport>(bad).is_err(),
+        "control: an unknown via is refused"
+    );
 }

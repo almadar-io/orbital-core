@@ -1506,8 +1506,8 @@ fn a_computed_key_over_a_record_of_alike_members_is_their_join() {
     let key = || Actual::of_type(OirType::String);
     assert_eq!(
         call(&get(), &[ty(roster), key()], Mode::Static),
-        Ok(Some(stat(OirType::Number))),
-        "whichever member the key names has the members' shape"
+        Ok(Some(OirType::optional(stat(OirType::Number)))),
+        "whichever member the key names has the members' shape, and a key naming none answers null"
     );
     // members that differ in a field: it is optional in the join.
     let mixed = struct_of(&[
@@ -1520,14 +1520,26 @@ fn a_computed_key_over_a_record_of_alike_members_is_their_join() {
     let joined = call(&get(), &[ty(mixed), key()], Mode::Static)
         .unwrap()
         .unwrap();
-    let OirType::Struct { fields, .. } = joined else {
+    let OirType::Optional { inner } = joined else {
+        panic!("an optional struct")
+    };
+    let OirType::Struct { fields, .. } = *inner else {
         panic!("a struct")
     };
     assert!(fields.iter().find(|f| f.name == "hp").unwrap().required);
     assert!(!fields.iter().find(|f| f.name == "tag").unwrap().required);
-    // controls: members of different kinds have no join; neither has an empty record.
+    // members of different kinds are the union of their types; an empty record has no member to name.
     let unlike = struct_of(&[("a", OirType::Number), ("b", OirType::String)]);
-    assert_eq!(call(&get(), &[ty(unlike), key()], Mode::Static), Ok(None));
+    assert_eq!(
+        call(&get(), &[ty(unlike), key()], Mode::Static),
+        Ok(Some(OirType::optional(OirType::Union {
+            variants: vec![
+                OirField::new("0".to_string(), OirType::Number),
+                OirField::new("1".to_string(), OirType::String),
+            ]
+            .into(),
+        })))
+    );
     assert_eq!(
         call(&get(), &[ty(struct_of(&[])), key()], Mode::Static),
         Ok(None)
@@ -1536,7 +1548,7 @@ fn a_computed_key_over_a_record_of_alike_members_is_their_join() {
     let uniform = struct_of(&[("a", OirType::Number), ("b", OirType::Number)]);
     assert_eq!(
         call(&get(), &[ty(uniform), key()], Mode::Static),
-        Ok(Some(OirType::Number))
+        Ok(Some(OirType::optional(OirType::Number)))
     );
 }
 
@@ -1606,8 +1618,14 @@ fn a_key_read_from_a_value_is_the_value_type_of_a_map_and_nothing_of_a_struct() 
     let row = struct_of(&[("name", OirType::String), ("count", OirType::Number)]);
     assert_eq!(
         call(&get(), &[ty(row), Actual::of_type(OirType::String)], Mode::Static),
-        Ok(None),
-        "control: which field of a struct a computed key names is not known, so the read has no type"
+        Ok(Some(OirType::optional(OirType::Union {
+            variants: vec![
+                OirField::new("0".to_string(), OirType::String),
+                OirField::new("1".to_string(), OirType::Number),
+            ]
+            .into(),
+        }))),
+        "a computed key over a closed record is the union of its field types, and null when it names none"
     );
     let list = s_arr(OirType::Number);
     assert_eq!(

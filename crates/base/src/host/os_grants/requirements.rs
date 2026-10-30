@@ -545,6 +545,9 @@ pub(super) fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferr
         OsGrantNeed::Fs { access, path } => fs_need(args, *path, *access, deferred),
         OsGrantNeed::FsGlob { glob } => match args.get(*glob).map(anchored_sexpr).transpose().map_err(|()| *glob)?.flatten() {
             Some((anchor, pattern)) => Ok(vec![anchored_glob_need(anchor, pattern, deferred)]),
+            None if matches!(args.get(*glob), Some(SExpression::Array(a)) if a.first().and_then(SExpression::as_str) == Some("str/concat")) => {
+                fs_need(args, *glob, FsMode::Read, deferred)
+            }
             None => Ok(literal(args, *glob, deferred)?
                 .map(|text| OsRequirement::Fs { path: glob_prefix(text), mode: FsMode::Read })
                 .into_iter()

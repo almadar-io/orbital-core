@@ -88,6 +88,10 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
     }
 }
 
+/// The credential keys of an OAuth client object: the `client` / `clients.<name>` of an `oauth-client` auth and the
+/// client operand of `oauth-authorize`.
+pub const OAUTH_CLIENT_SLOTS: &[&str] = &["clientId", "clientSecret"];
+
 /// The credential name a slot value carries: a bare `@config.<knob>` string, or a `{ credential, scope? }` object.
 pub fn slot_credential(value: &Value) -> Option<&str> {
     match value {
@@ -198,6 +202,18 @@ fn http_request(items: &[Value]) -> Option<&Map<String, Value>> {
 
 fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     each_http_call(expr, &mut |items| check_credential_slots(items, secrets, path, out));
+    each_call(expr, "oauth-authorize", &mut |items| {
+        let mut slots = Vec::new();
+        if let Some(client) = authorize_client(items) {
+            push_client_slots("oauth-authorize", client, &mut slots);
+        }
+        for (slot, value) in slots {
+            let is_secret_knob = slot_credential(value).and_then(config_knob).is_some_and(|knob| secrets.contains(&knob));
+            if !is_secret_knob {
+                out.push(SecretFlowViolation::CredentialNotSecret { path: path.to_string(), slot });
+            }
+        }
+    });
     each_operator_credential(expr, &mut |slot, operand| {
         let is_secret_knob = operand
             .as_str()
@@ -257,21 +273,60 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
 }
 
 fn each_http_call<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a [Value])) {
+    each_call(expr, "http", visit);
+}
+
+/// Every call form in `expr` whose head is `head`.
+fn each_call<'a>(expr: &'a Value, head: &str, visit: &mut dyn FnMut(&'a [Value])) {
     match expr {
         Value::Array(items) => {
-            if is_http(items) {
+            if items.first().and_then(Value::as_str) == Some(head) {
                 visit(items);
             }
             for item in items {
-                each_http_call(item, visit);
+                each_call(item, head, visit);
             }
         }
         Value::Object(map) => {
             for value in map.values() {
-                each_http_call(value, visit);
+                each_call(value, head, visit);
             }
         }
         _ => {}
+    }
+}
+
+/// The client object of an `oauth-authorize` call form.
+fn authorize_client(items: &[Value]) -> Option<&Map<String, Value>> {
+    items.get(1).and_then(Value::as_object)
+}
+
+fn push_client_slots<'a>(prefix: &str, client: &'a Map<String, Value>, out: &mut Vec<(String, &'a Value)>) {
+    for slot in OAUTH_CLIENT_SLOTS {
+        if let Some(value) = client.get(*slot) {
+            out.push((format!("{prefix}.{slot}"), value));
+        }
+    }
+}
+
+fn oauth_client_slots<'a>(auth: &'a Map<String, Value>, out: &mut Vec<(String, &'a Value)>) {
+    if let Some(client) = auth.get("client").and_then(Value::as_object) {
+        push_client_slots("client", client, out);
+    }
+    for (name, client) in auth.get("clients").and_then(Value::as_object).into_iter().flatten() {
+        if let Some(client) = client.as_object() {
+            push_client_slots(&format!("clients.{name}"), client, out);
+        }
+    }
+}
+
+fn scan_client_reads(client: &Map<String, Value>, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    for (key, value) in client {
+        let allowed_leaf = OAUTH_CLIENT_SLOTS.contains(&key.as_str())
+            && slot_credential(value).and_then(config_knob).is_some_and(|knob| secrets.contains(&knob));
+        if !allowed_leaf {
+            scan_reads(value, secrets, path, out);
+        }
     }
 }
 
@@ -308,6 +363,9 @@ fn credential_slot_values(items: &[Value]) -> Vec<(String, &Value)> {
             out.push(((*slot).to_string(), value));
         }
     }
+    if scheme == "oauth-client" {
+        oauth_client_slots(auth, &mut out);
+    }
     if scheme == "token-exchange" {
         for (name, value) in token_body_fields(auth) {
             if is_slot_object(value) {
@@ -336,6 +394,13 @@ fn effect_credential_slots(expr: &Value) -> Vec<&Value> {
     each_credential_effect(expr, &mut |_, items| out.extend(items.get(1)));
     each_operator_credential(expr, &mut |_, operand| out.push(operand));
     each_os_send_segment(expr, &mut |operand| out.push(operand));
+    each_call(expr, "oauth-authorize", &mut |items| {
+        let mut slots = Vec::new();
+        if let Some(client) = authorize_client(items) {
+            push_client_slots("oauth-authorize", client, &mut slots);
+        }
+        out.extend(slots.into_iter().map(|(_, value)| value));
+    });
     out
 }
 
@@ -473,8 +538,10 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             let credential = credential_effect(items).is_some();
             let slot_index = credential_operand_index(items);
             let segments = os_send_segments(items).is_some();
+            let authorize = items.first().and_then(Value::as_str) == Some("oauth-authorize");
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
+                    (_, Value::Object(client)) if authorize && index == 1 => scan_client_reads(client, secrets, path, out),
                     _ if segments && index == OS_SEND_DATA => scan_segment_reads(item, secrets, path, out),
                     _ if slot_index == Some(index) && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
@@ -542,6 +609,15 @@ fn scan_request_reads(request: &Map<String, Value>, secrets: &[&str], path: &str
                                     if !is_slot_object(field) {
                                         scan_reads(field, secrets, path, out);
                                     }
+                                }
+                            }
+                        }
+                        (Some("oauth-client"), "client", Value::Object(client)) => scan_client_reads(client, secrets, path, out),
+                        (Some("oauth-client"), "clients", Value::Object(clients)) => {
+                            for client in clients.values() {
+                                match client {
+                                    Value::Object(client) => scan_client_reads(client, secrets, path, out),
+                                    other => scan_reads(other, secrets, path, out),
                                 }
                             }
                         }
@@ -757,6 +833,58 @@ mod tests {
             let p = program(config(), call(json!({ "auth": { "scheme": "bearer", "credential": bad.clone() } })));
             assert_eq!(codes(&p), vec![CREDENTIAL_NOT_SECRET_CODE], "{bad}");
         }
+    }
+
+    fn oauth_client(secret: &str) -> Value {
+        json!({ "tag": "google", "mode": "real", "issuer": "https://a.example", "clientId": "@config.apiKey", "clientSecret": secret, "clientAuth": "post" })
+    }
+
+    #[test]
+    fn an_oauth_client_secret_is_accepted_in_client_clients_and_oauth_authorize() {
+        let one = call(json!({ "auth": { "scheme": "oauth-client", "op": "refresh", "client": oauth_client("@config.apiKey"), "refreshToken": "@payload.t" } }));
+        assert!(codes(&program(config(), one)).is_empty());
+        let many = call(json!({ "auth": { "scheme": "oauth-client", "op": "code", "clients": { "google": oauth_client("@config.apiKey"), "github": oauth_client("@config.apiKey") }, "code": "@payload.c" } }));
+        assert!(codes(&program(config(), many)).is_empty());
+        let authorize = json!([["oauth-authorize", oauth_client("@config.apiKey"), { "redirectUri": "https://a/cb" }, { "emit": { "success": "OK" } }]]);
+        assert!(codes(&program(config(), authorize)).is_empty());
+    }
+
+    #[test]
+    fn an_oauth_client_slot_that_is_not_a_secret_knob_is_reported_with_its_slot() {
+        let one = call(json!({ "auth": { "scheme": "oauth-client", "op": "refresh", "client": oauth_client("@config.plain") } }));
+        assert_eq!(codes(&program(config(), one)), vec![CREDENTIAL_NOT_SECRET_CODE]);
+        let many = call(json!({ "auth": { "scheme": "oauth-client", "op": "code", "clients": { "g": oauth_client("LITERAL") } } }));
+        let violations = secret_flow_violations(&program(config(), many));
+        assert!(matches!(&violations[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "clients.g.clientSecret"));
+        let authorize = json!([["oauth-authorize", oauth_client("@config.plain"), { "redirectUri": "https://a/cb" }]]);
+        let violations = secret_flow_violations(&program(config(), authorize));
+        assert!(matches!(&violations[..], [SecretFlowViolation::CredentialNotSecret { slot, .. }] if slot == "oauth-authorize.clientSecret"));
+    }
+
+    #[test]
+    fn an_oauth_secret_read_outside_the_client_slots_is_still_outside_auth() {
+        let mut client = oauth_client("@config.apiKey");
+        client["issuer"] = json!("@config.apiKey");
+        let one = call(json!({ "auth": { "scheme": "oauth-client", "op": "refresh", "client": client.clone() } }));
+        assert_eq!(codes(&program(config(), one)), vec![SECRET_OUTSIDE_AUTH_CODE]);
+        let authorize = json!([["oauth-authorize", client, { "redirectUri": "https://a/cb" }]]);
+        assert_eq!(codes(&program(config(), authorize)), vec![SECRET_OUTSIDE_AUTH_CODE]);
+        let logged = json!([["emit", "LOG", { "secret": "@config.apiKey" }]]);
+        assert_eq!(codes(&program(config(), logged)), vec![SECRET_OUTSIDE_AUTH_CODE]);
+        let other_field = call(json!({ "auth": { "scheme": "oauth-client", "op": "refresh", "client": oauth_client("@config.apiKey"), "refreshToken": "@config.apiKey" } }));
+        assert_eq!(codes(&program(config(), other_field)), vec![SECRET_OUTSIDE_AUTH_CODE]);
+    }
+
+    #[test]
+    fn oauth_client_slots_are_declared_as_program_credentials() {
+        let program = json!({ "orbitals": [{ "name": "o", "traits": [{
+            "config": { "id": { "type": "secret", "default": "CID" }, "sec": { "type": "secret", "default": "CSEC" } },
+            "stateMachine": { "transitions": [{ "effects": [
+                ["oauth-authorize", { "tag": "google", "clientId": "@config.id", "clientSecret": "@config.sec" }, { "redirectUri": "https://a/cb" }]
+            ] }] }
+        }] }] });
+        let envs: Vec<_> = program_credentials(&program).into_iter().map(|c| c.env_var).collect();
+        assert_eq!(envs, vec!["CID".to_string(), "CSEC".to_string()]);
     }
 
     #[test]
