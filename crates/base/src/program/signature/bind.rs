@@ -645,7 +645,7 @@ fn bind_record_with_nulls(
             }
         }
         K::Union { of } => {
-            for member in of.iter().filter(|m| matches!(m, OperatorTypeRef::Tagged(K::Map { .. }))) {
+            if let Some(member) = of.iter().find(|m| matches!(m, OperatorTypeRef::Tagged(K::Map { .. }))) {
                 let mut trial = b.clone();
                 bind_record_with_nulls(member, present, nulls, actual, &mut trial, mode)?;
                 *b = trial;

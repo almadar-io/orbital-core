@@ -8,7 +8,10 @@ use std::prelude::v1::*;
 use crate::config::DispatchClock;
 use crate::kernel::{RuntimeKernel, TraitSnapshot};
 use crate::process_result::ProcessEventResult;
-use crate::program_machine::{played_effect, played_ensures, PlayedEffect, PlayedEnsures};
+use crate::program_machine::{
+    played_effect, played_ensures, GuardVerdict, PlayRequest, PlayedEffect, PlayedEmit,
+    PlayedEnsures, PlayedGuard, PlayedOutcome, PlayedResult, PlayedState, PlayedStep,
+};
 use crate::resumable::{
     drive_blocking, BlockingHost, DispatchOutcomes, IoAnswer, IoRequest, PortHost,
 };
@@ -162,13 +165,29 @@ pub struct StepReport {
     pub dispatch_modes: BTreeMap<String, DispatchMode>,
 }
 
-/// What `orb execute` prints for a replay that could not run: the std command's answer, `{ success: false, error }`.
+/// What `orb execute` prints for a replay that could not run: `{ success: false, error, trait, outcomes }`, where `trait`
+/// is the trait of the step that failed (none outside any step) and `outcomes` are those completed before the failure.
 #[cfg_attr(test, derive(ts_rs::TS))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StepRefusal {
     #[cfg_attr(test, ts(type = "false"))]
     pub success: bool,
     pub error: String,
+    #[serde(rename = "trait")]
+    pub trait_name: Option<String>,
+    pub outcomes: Vec<StepOutcome>,
+}
+
+impl StepRefusal {
+    pub fn new(error: impl Into<String>) -> Self {
+        Self {
+            success: false,
+            error: error.into(),
+            trait_name: None,
+            outcomes: Vec::new(),
+        }
+    }
 }
 
 /// One trait's outcome of a dispatched step, as the report keeps it.
@@ -215,6 +234,115 @@ pub fn outcome_report(
         event: event.to_string(),
         ensures,
     }
+}
+
+fn played_emits(outcome: &StepOutcome, timestamp: u64) -> Result<Vec<PlayedEmit>, StepRefusal> {
+    outcome
+        .emits
+        .iter()
+        .map(|e| {
+            let payload =
+                match &e.payload {
+                    serde_json::Value::Null => None,
+                    p => Some(serde_json::from_value::<Value>(p.clone()).map_err(|err| {
+                        StepRefusal::new(format!("emit {} payload: {err}", e.event))
+                    })?),
+                };
+            Ok(PlayedEmit {
+                event_type: e.event.clone(),
+                payload,
+                timestamp,
+            })
+        })
+        .collect()
+}
+
+fn played_guard(g: &StepGuard) -> Result<PlayedGuard, StepRefusal> {
+    Ok(PlayedGuard {
+        arm: g.arm as u32,
+        guard: serde_json::from_value(g.guard.clone())
+            .map_err(|e| StepRefusal::new(format!("guard of arm {}: {e}", g.arm)))?,
+        passed: g.passed,
+        trace: Vec::new(),
+        error: g.error.clone(),
+    })
+}
+
+/// Each request answered as asked with the circuit it ran: request `i` reads step `i` of `report`, and the outcome of its
+/// own trait is the one reported. Refused when that trait did not run.
+pub fn played_steps(
+    requests: &[PlayRequest],
+    report: &StepReport,
+) -> Result<Vec<PlayedStep>, StepRefusal> {
+    requests
+        .iter()
+        .enumerate()
+        .map(|(i, request)| {
+            let step = report.steps.get(i);
+            let moved = step.map_or(&[][..], |s| s.outcomes.as_slice());
+            let outcome = moved
+                .iter()
+                .find(|o| o.trait_name == request.trait_name)
+                .ok_or_else(|| {
+                    StepRefusal::new(format!("trait \"{}\" did not run", request.trait_name))
+                })?;
+            let timestamp = i as u64;
+            let guards = outcome
+                .guards
+                .iter()
+                .map(played_guard)
+                .collect::<Result<Vec<_>, _>>()?;
+            let guard = match outcome.fired_arm {
+                Some(arm) if outcome.guards.iter().any(|g| g.arm == arm) => GuardVerdict::Pass,
+                None if !outcome.guards.is_empty() => GuardVerdict::Fail,
+                _ => GuardVerdict::Unguarded,
+            };
+            let outcomes = moved
+                .iter()
+                .map(|o| {
+                    Ok(PlayedOutcome {
+                        orbital: o.orbital.clone(),
+                        trait_name: o.trait_name.clone(),
+                        event: o.event.clone(),
+                        from: o.previous_state.clone(),
+                        to: o.new_state.clone(),
+                        arm: o.fired_arm.map(|a| a as u32),
+                        fired: o.executed,
+                        effects: o.effects.clone(),
+                        emitted: played_emits(o, timestamp)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, StepRefusal>>()?;
+            Ok(PlayedStep {
+                orbital: request.orbital.clone(),
+                trait_name: request.trait_name.clone(),
+                from: request.from.clone(),
+                event: request.event.clone(),
+                payload: request.payload.clone(),
+                seeds: request.seeds.clone(),
+                result: PlayedResult {
+                    trait_name: outcome.trait_name.clone(),
+                    event: request.event.clone(),
+                    transition_fired: outcome.executed,
+                    guard,
+                    fired_arm: outcome.fired_arm.map(|a| a as u32),
+                    state: PlayedState {
+                        before: Some(outcome.previous_state.clone()),
+                        after: Some(outcome.new_state.clone()),
+                    },
+                    effects: outcome.effects.clone(),
+                    emitted: played_emits(outcome, timestamp)?,
+                    guards,
+                    ensures: outcome.ensures.clone(),
+                    rendered: None,
+                    failure: outcome.failure.clone(),
+                    entity_after: step.map_or(serde_json::Value::Null, |s| s.entity_after.clone()),
+                    pending_asks: step.map_or_else(Vec::new, |s| s.pending_asks.clone()),
+                    outcomes,
+                },
+            })
+        })
+        .collect()
 }
 
 /// The program JSON text with each step's `config` knob values written over its trait's declared defaults; `None` when
@@ -329,6 +457,162 @@ pub fn replay_dispatch(
         .map_err(|e| e.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn play_step(
+    kernel: &RuntimeKernel,
+    clock: &StepClock,
+    credentials: &StepCredentials,
+    trait_defs: &BTreeMap<String, Arc<TraitDefinition>>,
+    known: &BTreeMap<String, (String, DispatchMode)>,
+    i: usize,
+    step: &serde_json::Value,
+    live: bool,
+    dispatch: &mut dyn FnMut(&str, &str, Value, Option<f64>) -> Result<DispatchOutcomes, String>,
+    partial: &mut Vec<StepOutcome>,
+) -> Result<StepResult, String> {
+    let field = |key: &str| {
+        step[key]
+            .as_str()
+            .ok_or_else(|| format!("step {i}: `{key}` must be a string"))
+    };
+    let (trait_name, event) = (field("trait")?, field("event")?);
+    if !known.contains_key(trait_name) {
+        return Err(format!(
+            "step {i}: the program has no trait \"{trait_name}\""
+        ));
+    }
+    let seed = match &step["entity"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::Object(fields) => Some(fields),
+        _ => return Err(format!("step {i}: `entity` must be an object of fields")),
+    };
+    let viewer = match &step["viewer"] {
+        serde_json::Value::Null => None,
+        user @ serde_json::Value::Object(_) => Some(to_value(user)?),
+        _ => return Err(format!("step {i}: `viewer` must be a user object or null")),
+    };
+    let settle_ms = match &step["settleMs"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::Number(n) if live => n.as_f64(),
+        serde_json::Value::Number(_) => {
+            return Err(format!("step {i}: `settleMs` applies to a live call only"))
+        }
+        _ => {
+            return Err(format!(
+                "step {i}: `settleMs` must be a number of milliseconds"
+            ))
+        }
+    };
+    let held = match &step["credentials"] {
+        serde_json::Value::Null => BTreeMap::new(),
+        serde_json::Value::Object(_) if live => {
+            return Err(format!(
+                "step {i}: `credentials` apply to a replay with no live host only"
+            ))
+        }
+        serde_json::Value::Object(named) => named
+            .iter()
+            .map(|(name, value)| {
+                value
+                    .as_str()
+                    .map(|v| (name.clone(), v.to_string()))
+                    .ok_or_else(|| format!("step {i}: `credentials.{name}` must be a string"))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?,
+        _ => {
+            return Err(format!(
+                "step {i}: `credentials` must be an object of credential values"
+            ))
+        }
+    };
+    let now = match &step["now"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::Number(n) => n.as_f64(),
+        _ => {
+            return Err(format!(
+                "step {i}: `now` must be a number (ms since the epoch)"
+            ))
+        }
+    };
+    if step["from"].is_string() || seed.is_some() {
+        let current = kernel.snapshot_trait(trait_name, None);
+        let entity = match seed {
+            None => current.entity,
+            Some(fields) => {
+                let mut row = match current.entity {
+                    Value::Object(row) => row,
+                    _ => Default::default(),
+                };
+                for (key, value) in fields {
+                    row.insert(key.clone().into(), to_value(value)?);
+                }
+                Value::Object(row)
+            }
+        };
+        kernel.restore_trait(
+            trait_name,
+            None,
+            TraitSnapshot {
+                state: step["from"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_default(),
+                entity,
+            },
+        );
+    }
+    clock.pin(now);
+    let payload = match &step["payload"] {
+        serde_json::Value::Null => Value::Null,
+        p => to_value(p)?,
+    };
+    let viewing = viewer.map(|user| kernel.enter_viewer(user));
+    credentials.hold(held);
+    let outcomes = dispatch(trait_name, event, payload, settle_ms);
+    credentials.hold(BTreeMap::new());
+    drop(viewing);
+    clock.pin(None);
+    let outcomes = outcomes.map_err(|e| format!("step {i} dispatch failed: {e}"))?;
+    let entity_after = serde_json::to_value(kernel.snapshot_trait(trait_name, None).entity)
+        .unwrap_or(serde_json::Value::Null);
+    let entities: serde_json::Map<String, serde_json::Value> = outcomes
+        .iter()
+        .filter(|(_, r)| r.executed)
+        .map(|(t, _)| {
+            let row = kernel.snapshot_trait(t, None).entity;
+            (
+                t.to_string(),
+                serde_json::to_value(&row).unwrap_or(serde_json::Value::Null),
+            )
+        })
+        .collect();
+    for (t, r) in &outcomes {
+        let orbital = kernel
+            .orbital_of_trait(t)
+            .ok_or_else(|| format!("step {i}: the trait \"{t}\" belongs to no orbital"))?;
+        let event = r.event.as_deref().unwrap_or(event);
+        let ensures = trait_defs
+            .get(t.as_str())
+            .map(|td| played_ensures(td, event, r))
+            .unwrap_or_default();
+        partial.push(outcome_report(t, orbital, event, ensures, r));
+    }
+    let outcomes = std::mem::take(partial);
+    let states = kernel
+        .trait_snapshot(None)
+        .into_iter()
+        .map(|(name, (state, _))| (name, state))
+        .collect();
+    let pending_asks = kernel.pending_asks();
+    Ok(StepResult {
+        outcomes,
+        states,
+        entities,
+        entity_after,
+        pending_asks,
+    })
+}
+
 /// Plays `steps` on `kernel`. A step's `credentials` are held in `credentials` while it runs. `live` is true when `dispatch` runs them on a live host (only then does a step take
 /// `settleMs`, which `dispatch` receives); `dispatch` returns the outcomes of the cascade one event started.
 /// The report is a [`StepReport`].
@@ -340,154 +624,40 @@ pub fn play_steps(
     steps: &[serde_json::Value],
     live: bool,
     dispatch: &mut dyn FnMut(&str, &str, Value, Option<f64>) -> Result<DispatchOutcomes, String>,
-) -> Result<StepReport, String> {
+) -> Result<StepReport, StepRefusal> {
     kernel.set_record_entity_after(true);
     let known = kernel.trait_snapshot(None);
     let mut reports = Vec::with_capacity(steps.len());
     for (i, step) in steps.iter().enumerate() {
-        let field = |key: &str| {
-            step[key]
-                .as_str()
-                .ok_or_else(|| format!("step {i}: `{key}` must be a string"))
-        };
-        let (trait_name, event) = (field("trait")?, field("event")?);
-        if !known.contains_key(trait_name) {
-            return Err(format!(
-                "step {i}: the program has no trait \"{trait_name}\""
-            ));
+        let mut partial: Vec<StepOutcome> = Vec::new();
+        let played = play_step(
+            kernel,
+            clock,
+            credentials,
+            trait_defs,
+            &known,
+            i,
+            step,
+            live,
+            dispatch,
+            &mut partial,
+        );
+        match played {
+            Ok(result) => reports.push(result),
+            Err(error) => {
+                let mut outcomes: Vec<StepOutcome> = reports
+                    .iter()
+                    .flat_map(|r| r.outcomes.iter().cloned())
+                    .collect();
+                outcomes.append(&mut partial);
+                return Err(StepRefusal {
+                    success: false,
+                    error,
+                    trait_name: step["trait"].as_str().map(str::to_string),
+                    outcomes,
+                });
+            }
         }
-        let seed = match &step["entity"] {
-            serde_json::Value::Null => None,
-            serde_json::Value::Object(fields) => Some(fields),
-            _ => return Err(format!("step {i}: `entity` must be an object of fields")),
-        };
-        let viewer = match &step["viewer"] {
-            serde_json::Value::Null => None,
-            user @ serde_json::Value::Object(_) => Some(to_value(user)?),
-            _ => return Err(format!("step {i}: `viewer` must be a user object or null")),
-        };
-        let settle_ms = match &step["settleMs"] {
-            serde_json::Value::Null => None,
-            serde_json::Value::Number(n) if live => n.as_f64(),
-            serde_json::Value::Number(_) => {
-                return Err(format!("step {i}: `settleMs` applies to a live call only"))
-            }
-            _ => {
-                return Err(format!(
-                    "step {i}: `settleMs` must be a number of milliseconds"
-                ))
-            }
-        };
-        let held = match &step["credentials"] {
-            serde_json::Value::Null => BTreeMap::new(),
-            serde_json::Value::Object(_) if live => {
-                return Err(format!(
-                    "step {i}: `credentials` apply to a replay with no live host only"
-                ))
-            }
-            serde_json::Value::Object(named) => named
-                .iter()
-                .map(|(name, value)| {
-                    value
-                        .as_str()
-                        .map(|v| (name.clone(), v.to_string()))
-                        .ok_or_else(|| format!("step {i}: `credentials.{name}` must be a string"))
-                })
-                .collect::<Result<BTreeMap<_, _>, _>>()?,
-            _ => {
-                return Err(format!(
-                    "step {i}: `credentials` must be an object of credential values"
-                ))
-            }
-        };
-        let now = match &step["now"] {
-            serde_json::Value::Null => None,
-            serde_json::Value::Number(n) => n.as_f64(),
-            _ => {
-                return Err(format!(
-                    "step {i}: `now` must be a number (ms since the epoch)"
-                ))
-            }
-        };
-        if step["from"].is_string() || seed.is_some() {
-            let current = kernel.snapshot_trait(trait_name, None);
-            let entity = match seed {
-                None => current.entity,
-                Some(fields) => {
-                    let mut row = match current.entity {
-                        Value::Object(row) => row,
-                        _ => Default::default(),
-                    };
-                    for (key, value) in fields {
-                        row.insert(key.clone().into(), to_value(value)?);
-                    }
-                    Value::Object(row)
-                }
-            };
-            kernel.restore_trait(
-                trait_name,
-                None,
-                TraitSnapshot {
-                    state: step["from"]
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_default(),
-                    entity,
-                },
-            );
-        }
-        clock.pin(now);
-        let payload = match &step["payload"] {
-            serde_json::Value::Null => Value::Null,
-            p => to_value(p)?,
-        };
-        let viewing = viewer.map(|user| kernel.enter_viewer(user));
-        credentials.hold(held);
-        let outcomes = dispatch(trait_name, event, payload, settle_ms);
-        credentials.hold(BTreeMap::new());
-        drop(viewing);
-        clock.pin(None);
-        let outcomes = outcomes.map_err(|e| format!("step {i} dispatch failed: {e}"))?;
-        let entity_after = serde_json::to_value(kernel.snapshot_trait(trait_name, None).entity)
-            .unwrap_or(serde_json::Value::Null);
-        let entities: serde_json::Map<String, serde_json::Value> = outcomes
-            .iter()
-            .filter(|(_, r)| r.executed)
-            .map(|(t, _)| {
-                let row = kernel.snapshot_trait(t, None).entity;
-                (
-                    t.to_string(),
-                    serde_json::to_value(&row).unwrap_or(serde_json::Value::Null),
-                )
-            })
-            .collect();
-        let outcomes = outcomes
-            .iter()
-            .map(|(t, r)| {
-                let orbital = kernel
-                    .orbital_of_trait(t)
-                    .ok_or_else(|| format!("step {i}: the trait \"{t}\" belongs to no orbital"))?;
-                let event = r.event.as_deref().unwrap_or(event);
-                let ensures = trait_defs
-                    .get(t.as_str())
-                    .map(|td| played_ensures(td, event, r))
-                    .unwrap_or_default();
-                Ok(outcome_report(t, orbital, event, ensures, r))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let states = kernel
-            .trait_snapshot(None)
-            .into_iter()
-            .map(|(name, (state, _))| (name, state))
-            .collect();
-        let pending_asks = kernel.pending_asks();
-        reports.push(StepResult {
-            outcomes,
-            states,
-            entities,
-            entity_after,
-            pending_asks,
-        });
     }
     let dispatch_modes = kernel
         .trait_snapshot(None)
@@ -524,6 +694,13 @@ mod tests {
     }
 
     fn play_on(program: &str, steps: serde_json::Value) -> Result<serde_json::Value, String> {
+        play_refusable(program, steps).map_err(|r| r.error)
+    }
+
+    fn play_refusable(
+        program: &str,
+        steps: serde_json::Value,
+    ) -> Result<serde_json::Value, StepRefusal> {
         let schema: OrbitalSchema = serde_json::from_str(program).unwrap();
         let clock = StepClock::new();
         let kernel = RuntimeKernel::new(
@@ -676,6 +853,25 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_mid_replay_carries_the_failing_trait_and_the_outcomes_so_far() {
+        let refusal = play_refusable(
+            MODES,
+            serde_json::json!([
+                { "trait": "Modes", "event": "KEY", "payload": { "key": "i" } },
+                { "trait": "Nope", "event": "KEY" }
+            ]),
+        )
+        .unwrap_err();
+        assert_eq!(refusal.trait_name.as_deref(), Some("Nope"));
+        assert_eq!(refusal.outcomes.len(), 1);
+        assert_eq!(refusal.outcomes[0].trait_name, "Modes");
+        assert_eq!(refusal.outcomes[0].new_state, "INSERT");
+        let outside = play_refusable(MODES, serde_json::json!([{ "event": "KEY" }])).unwrap_err();
+        assert_eq!(outside.trait_name, None);
+        assert!(outside.outcomes.is_empty());
+    }
+
+    #[test]
     fn a_pinned_now_is_what_the_clock_reads_only_while_the_step_runs() {
         let clock = StepClock::new();
         let read = clock.dispatch_clock();
@@ -716,6 +912,48 @@ mod tests {
     }
 
     #[test]
+    fn played_steps_answers_each_request_with_the_circuit_it_ran() {
+        use crate::program_machine::{GuardVerdict, PlayRequest};
+        let report = play(serde_json::json!([
+            { "trait": "Modes", "event": "KEY", "payload": { "key": "i" } },
+            { "trait": "Modes", "event": "KEY", "from": "NORMAL", "payload": { "key": "z" } }
+        ]))
+        .unwrap();
+        let report: StepReport = serde_json::from_value(report).unwrap();
+        let asked = |trait_name: &str, key: &str| serde_json::json!({ "orbital": "Editor", "trait": trait_name, "from": "NORMAL", "event": "KEY", "payload": { "key": key }, "now": 5 });
+        let requests: Vec<PlayRequest> = serde_json::from_value(serde_json::json!([
+            asked("Modes", "i"),
+            asked("Modes", "z")
+        ]))
+        .unwrap();
+        let played = played_steps(&requests, &report).unwrap();
+        assert_eq!(played.len(), 2);
+        let fired = &played[0].result;
+        assert_eq!(fired.guard, GuardVerdict::Pass);
+        assert_eq!(fired.fired_arm, Some(0));
+        assert!(fired.transition_fired);
+        assert_eq!(fired.state.after.as_deref(), Some("INSERT"));
+        assert_eq!(fired.outcomes.len(), 1);
+        assert_eq!(fired.entity_after["count"], serde_json::json!(1.0));
+        assert_eq!(played[0].orbital, "Editor");
+        assert_eq!(played[0].seeds.now, Some(5.0));
+        let refused = &played[1].result;
+        assert_eq!(
+            refused.guard,
+            GuardVerdict::Fail,
+            "control: every guard failed"
+        );
+        assert_eq!(refused.fired_arm, None);
+        assert!(!refused.transition_fired);
+        assert_eq!(refused.guards.len(), 2);
+
+        let missing: Vec<PlayRequest> =
+            serde_json::from_value(serde_json::json!([asked("Nope", "i")])).unwrap();
+        let refusal = played_steps(&missing, &report).unwrap_err();
+        assert_eq!(refusal.error, "trait \"Nope\" did not run");
+    }
+
+    #[test]
     fn the_report_is_the_typed_step_report_and_a_refusal_is_the_other_shape() {
         let report = play(serde_json::json!([
             { "trait": "Modes", "event": "KEY", "payload": { "key": "i" } }
@@ -743,7 +981,7 @@ mod tests {
             report,
             "the typed report prints what the replay printed"
         );
-        let refusal = serde_json::json!({ "success": false, "error": "no" });
+        let refusal = serde_json::json!({ "success": false, "error": "no", "trait": "Modes", "outcomes": [] });
         let parsed: StepRefusal = serde_json::from_value(refusal.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), refusal);
         assert!(

@@ -167,15 +167,15 @@ impl EffectExecutor {
         }
     }
 
-    pub(super) fn do_set(&self, path: &str, value: &Value, _ctx: &BindingContext) -> EffectResult {
+    pub(super) fn do_set(&self, path: &orbital_core_base::value::Shared<String>, value: &Value, _ctx: &BindingContext) -> EffectResult {
         let effect = Effect::Set {
-            path: path.to_string(),
+            path: path.clone(),
             value: value.clone(),
         };
 
         // Set works in both environments (modifies context)
         // In practice, the state machine manager handles this
-        debug!(path = path, "Set effect (handled by state machine)");
+        debug!(path = path.as_str(), "Set effect (handled by state machine)");
         EffectResult::executed(effect)
     }
 

@@ -188,30 +188,6 @@ pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
 /// `access-check` hands back the kernel's verdict on one access policy.
 pub const ACCESS_CHECK_SHAPE: &[ShapeField] = &[field("allowed", "boolean")];
 
-/// `credential-status` and `credential-forget` hand back whether the credential is connected and the non-secret account
-/// label stored beside it (empty text when it has none, always empty after a forget).
-pub const CREDENTIAL_SHAPE: &[ShapeField] = &[field("connected", "boolean"), field("label", "string")];
-
-/// `credential-list`: whether the store can encrypt, the rows it holds (service and name, never a value) and the
-/// credentials the registered programs declare (group, name, description).
-pub const CREDENTIAL_LIST_SHAPE: &[ShapeField] = &[field("enabled", "boolean"), field("entries", "array"), field("declared", "array")];
-
-/// `credential-set`: the row was written.
-pub const CREDENTIAL_SET_SHAPE: &[ShapeField] = &[field("saved", "boolean")];
-
-/// `credential-remove`: whether a stored row was deleted.
-pub const CREDENTIAL_REMOVE_SHAPE: &[ShapeField] = &[field("removed", "boolean")];
-
-/// `credential-test`: whether the host holds a non-empty value for the credential name.
-pub const CREDENTIAL_TEST_SHAPE: &[ShapeField] = &[field("held", "boolean")];
-
-/// `credential-mode`: the mode in force (after the switch when the request names one, else as the host holds it).
-pub const CREDENTIAL_MODE_SHAPE: &[ShapeField] = &[field("mode", "string")];
-
-/// `credential-rotate`: how many rows were re-encrypted, were already current, or could not be read.
-pub const CREDENTIAL_ROTATE_SHAPE: &[ShapeField] =
-    &[field("rotated", "number"), field("alreadyCurrent", "number"), field("unreadable", "number")];
-
 /// A credential store failure: the host's message.
 pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
@@ -263,12 +239,12 @@ struct OsContract {
     unrouted: ProducedPayload,
 }
 
-fn table_payload(op: OsOp, declared: Option<&OperatorTypeRef>) -> ProducedPayload {
+fn table_payload(op: &str, declared: Option<&OperatorTypeRef>) -> ProducedPayload {
     let Some(declared) = declared else {
         return ProducedPayload::Opaque;
     };
     let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = declared else {
-        panic!("the operator table declares a payload for `{}` that is not an object", op.name());
+        panic!("the operator table declares a payload for `{op}` that is not an object");
     };
     let mut names: Vec<&String> = fields.keys().collect();
     names.sort_unstable();
@@ -283,6 +259,28 @@ fn table_payload(op: OsOp, declared: Option<&OperatorTypeRef>) -> ProducedPayloa
     ProducedPayload::Shape(Box::leak(shape.into_boxed_slice()))
 }
 
+const CREDENTIAL_OPS: [&str; 8] = [
+    "credential-status",
+    "credential-forget",
+    "credential-list",
+    "credential-set",
+    "credential-remove",
+    "credential-test",
+    "credential-mode",
+    "credential-rotate",
+];
+
+fn credential_success(operator: &str) -> Option<ProducedPayload> {
+    static PAYLOADS: OnceLock<Vec<ProducedPayload>> = OnceLock::new();
+    let payloads = PAYLOADS.get_or_init(|| {
+        CREDENTIAL_OPS
+            .iter()
+            .map(|op| table_payload(op, get_operator(op).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref())))
+            .collect()
+    });
+    CREDENTIAL_OPS.iter().position(|op| *op == operator).map(|at| payloads[at].clone())
+}
+
 fn os_contract(op: OsOp) -> &'static OsContract {
     static CONTRACTS: OnceLock<Vec<OsContract>> = OnceLock::new();
     let contracts = CONTRACTS.get_or_init(|| {
@@ -291,11 +289,11 @@ fn os_contract(op: OsOp) -> &'static OsContract {
             .map(|op| {
                 let effect = get_operator(op.name()).and_then(|operator| operator.effect.as_ref());
                 OsContract {
-                    success: table_payload(*op, effect.and_then(|e| e.produces.as_ref())),
-                    event: table_payload(*op, effect.and_then(|e| e.events.as_ref())),
+                    success: table_payload(op.name(), effect.and_then(|e| e.produces.as_ref())),
+                    event: table_payload(op.name(), effect.and_then(|e| e.events.as_ref())),
                     unrouted: match effect.and_then(|e| e.unrouted.as_ref()) {
-                        Some(unrouted) => table_payload(*op, Some(unrouted)),
-                        None => table_payload(*op, effect.and_then(|e| e.produces.as_ref())),
+                        Some(unrouted) => table_payload(op.name(), Some(unrouted)),
+                        None => table_payload(op.name(), effect.and_then(|e| e.produces.as_ref())),
                     },
                 }
             })
@@ -320,6 +318,9 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
     if let Some(op) = crate::tab::TabOp::from_name(operator) {
         return ProducedPayload::Shape(tab_success_shape(op));
     }
+    if let Some(payload) = credential_success(operator) {
+        return payload;
+    }
     match operator {
         "persist" => match variant {
             CallVariant::PersistAction("create" | "upsert" | "update") => ProducedPayload::EntityRow,
@@ -332,14 +333,7 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "browser/prompt" => ProducedPayload::Shape(PROMPT_SHAPE),
         "browser/embed" => ProducedPayload::Shape(EMBED_SHAPE),
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
-        "credential-status" | "credential-forget" => ProducedPayload::Shape(CREDENTIAL_SHAPE),
         "access-check" => ProducedPayload::Shape(ACCESS_CHECK_SHAPE),
-        "credential-list" => ProducedPayload::Shape(CREDENTIAL_LIST_SHAPE),
-        "credential-set" => ProducedPayload::Shape(CREDENTIAL_SET_SHAPE),
-        "credential-remove" => ProducedPayload::Shape(CREDENTIAL_REMOVE_SHAPE),
-        "credential-test" => ProducedPayload::Shape(CREDENTIAL_TEST_SHAPE),
-        "credential-mode" => ProducedPayload::Shape(CREDENTIAL_MODE_SHAPE),
-        "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ROTATE_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
         _ => ProducedPayload::Opaque,
     }
@@ -531,18 +525,9 @@ mod tests {
         assert_eq!(success_payload("access-check", CallVariant::Plain), ProducedPayload::Shape(ACCESS_CHECK_SHAPE));
         assert_eq!(failure_payload("access-check", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         for op in ["credential-status", "credential-forget"] {
-            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(CREDENTIAL_SHAPE));
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         }
-        for (op, shape) in [
-            ("credential-list", CREDENTIAL_LIST_SHAPE),
-            ("credential-set", CREDENTIAL_SET_SHAPE),
-            ("credential-remove", CREDENTIAL_REMOVE_SHAPE),
-            ("credential-test", CREDENTIAL_TEST_SHAPE),
-            ("credential-mode", CREDENTIAL_MODE_SHAPE),
-            ("credential-rotate", CREDENTIAL_ROTATE_SHAPE),
-        ] {
-            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(shape), "{op}");
+        for op in ["credential-list", "credential-set", "credential-remove", "credential-test", "credential-mode", "credential-rotate"] {
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE), "{op}");
         }
         assert_eq!(undeclared_reads(&["saved"], &success_payload("credential-set", CallVariant::Plain), &[]), Vec::<&str>::new());
@@ -563,6 +548,25 @@ mod tests {
             vec!["value"],
             "the credential value is never a field of the status"
         );
+    }
+
+    #[test]
+    fn every_credential_payload_is_the_one_the_table_declares() {
+        for op in [
+            "credential-status", "credential-forget", "credential-list", "credential-set", "credential-remove",
+            "credential-test", "credential-mode", "credential-rotate",
+        ] {
+            let declared = get_operator(op).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref());
+            let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) = declared else {
+                panic!("{op}: the table declares no object payload");
+            };
+            let mut table: Vec<(&str, &str)> = fields.iter().map(|(name, ty)| (name.as_str(), ty.kind_name())).collect();
+            table.sort_unstable();
+            let ProducedPayload::Shape(shape) = success_payload(op, CallVariant::Plain) else { panic!("{op}: no shape") };
+            let mut emitted: Vec<(&str, &str)> = shape.iter().map(|f| (f.name, f.field_type)).collect();
+            emitted.sort_unstable();
+            assert_eq!(emitted, table, "{op}");
+        }
     }
 
     #[test]

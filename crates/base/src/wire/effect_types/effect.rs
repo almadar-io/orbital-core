@@ -13,7 +13,7 @@ pub enum Effect {
     Emit { event: String, payload: Value },
 
     /// Set a value in the binding context
-    Set { path: String, value: Value },
+    Set { path: Shared<String>, value: Value },
 
     /// Persist data to storage
     Persist {

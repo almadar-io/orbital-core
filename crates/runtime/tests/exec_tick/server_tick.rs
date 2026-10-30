@@ -239,7 +239,10 @@ fn the_tick_pass_names_the_declaring_orbital() {
     assert!(fired.is_empty(), "the first pass only captures the phase");
     let fired = server.tick_pass(10);
     let names: Vec<(&str, &str, &str)> =
-        fired.iter().map(|f| (f.orbital.as_str(), f.trait_name.as_str(), f.tick.as_str())).collect();
+        fired
+            .iter()
+            .flat_map(|(orbital, ticks)| ticks.iter().map(move |f| (orbital.as_str(), f.trait_name.as_str(), f.tick.as_str())))
+            .collect();
     assert!(names.contains(&("Board", "Scoped", "beat")), "{names:?}");
     assert!(names.contains(&("Board", "Background", "beat")), "{names:?}");
     assert!(names.iter().all(|(orbital, _, _)| *orbital == "Board"));

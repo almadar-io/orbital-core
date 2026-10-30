@@ -209,7 +209,7 @@ fn a_host_ask_that_declares_emit_routes_carries_its_return_address() {
         completion,
         &Some(HostAskCompletion {
             trait_name: "Chrome".into(),
-            entity: None,
+            entity_id: None,
             key: Some("login-1".into()),
             success: Some("SIGNED_IN".into()),
             failure: Some("SIGN_IN_FAILED".into()),

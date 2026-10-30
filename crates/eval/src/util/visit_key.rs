@@ -103,6 +103,12 @@ pub struct Visit {
 impl DispatchVisits {
     /// The identity of a step, digesting its payload and frame once.
     pub fn visit(&mut self, trait_name: &str, event: &str, from: &str, payload: &EvalValue, frame: &VisitFrame<'_>) -> Visit {
+        self.visit_digested(trait_name, event, from, payload_digest(payload), frame)
+    }
+
+    /// [`Self::visit`] for a payload whose [`payload_digest`] the caller holds: a fan-out digests the one payload its
+    /// listeners share once.
+    pub fn visit_digested(&mut self, trait_name: &str, event: &str, from: &str, payload: u128, frame: &VisitFrame<'_>) -> Visit {
         Visit {
             step: format!("{trait_name}\u{0}{event}\u{0}{from}"),
             digest: self.visit_digest(payload, frame),
@@ -131,9 +137,9 @@ impl DispatchVisits {
 
     /// xxh3-128 over an injective encoding of the canonical payload and the frame: a field enters as the digest of
     /// its canonical value, so equal frames still digest equal and differing ones differ.
-    fn visit_digest(&mut self, payload: &EvalValue, frame: &VisitFrame<'_>) -> u128 {
+    fn visit_digest(&mut self, payload: u128, frame: &VisitFrame<'_>) -> u128 {
         let mut h = Xxh3::new();
-        digest_value(&mut h, payload);
+        h.update(&payload.to_le_bytes());
         match frame {
             VisitFrame::Null => h.update(b"n"),
             VisitFrame::Value(value) => {
@@ -166,6 +172,13 @@ impl DispatchVisits {
         self.fields.insert(name.to_string(), (Arc::clone(value), digest));
         digest
     }
+}
+
+/// The xxh3-128 of a payload's canonical encoding, as a visit folds it in.
+pub fn payload_digest(payload: &EvalValue) -> u128 {
+    let mut h = Xxh3::new();
+    digest_value(&mut h, payload);
+    h.digest128()
 }
 
 fn digest_len(h: &mut Xxh3, n: usize) {

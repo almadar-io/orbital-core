@@ -123,6 +123,9 @@ fn collect_all(cfg: &Config) -> Collect<'_> {
     collect.visit::<DispatchWire>();
     collect.visit::<AppliedWire>();
     collect.visit::<MountWire>();
+    collect.visit::<crate::kernel::page_circuit::PageCircuit>();
+    collect.visit::<crate::kernel::contract_query::TraitSurface>();
+    collect.visit::<crate::kernel::contract_query::ProgramSurface>();
     collect.visit::<Entered>();
     collect.visit::<FrameWire>();
     collect.visit::<SnapshotWire>();
@@ -1053,6 +1056,7 @@ const GUARDED: &[&str] = &[
     "OsGrantsReport",
     "StepReport",
     "StepRefusal",
+    "PlayedStep",
 ];
 
 
@@ -1182,6 +1186,7 @@ fn every_wire_type_is_declared() {
         "DeliveryRecord",
         "DispatchLog",
         "MountSeed",
+        "PageCircuit",
         "TraitSnapshot",
         "AwaitingTrait",
         "DispatchMode",
@@ -1335,6 +1340,6 @@ fn the_types_decoded_by_their_printed_shape_alone_are_the_ones_serde_cannot_desc
     }
     let fallbacks = strict.fallbacks.borrow();
     let names: Vec<&str> = fallbacks.keys().map(String::as_str).collect();
-    assert_eq!(names, ["Accepted", "CanvasTheme", "ClientEffect", "DispatchMode", "FrameDispatch", "FrameOp", "OsOp", "RepaintReason", "ResolvedMotion", "Settled"], "{fallbacks:#?}");
+    assert_eq!(names, ["Accepted", "CanvasTheme", "ClientEffect", "DispatchMode", "FrameDispatch", "FrameOp", "OsOp", "PlayedStep", "RepaintReason", "ResolvedMotion", "Settled"], "{fallbacks:#?}");
     assert!(!fallbacks.contains_key("IoRequestWire"), "control: IoRequestWire is decoded from its serde derive");
 }

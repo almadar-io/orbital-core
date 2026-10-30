@@ -5,6 +5,7 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 use orbital_core_base::codec;
+use orbital_core_base::os::SegmentEncode;
 
 fn encode_digest(bytes: &[u8], encoding: &str) -> Option<String> {
     match encoding {
@@ -209,13 +210,36 @@ impl Operator for HashMd5CredentialOp {
     }
 }
 
-/// credential/byte-length (credential) - the length in UTF-8 bytes of the credential's value, so a program can frame a
-/// wire message around a segment the host fills in. The credential is a slot as in hash/pbkdf2. Null when it is not held.
+/// credential/byte-length (credential, encode?) - the length in UTF-8 bytes of the credential's value, after the segment
+/// `encode` (base64, uri or form) when one is given, so a program can frame a wire message around a segment the host
+/// fills in. The credential is a slot as in hash/pbkdf2. Null when it is not held.
 pub struct CredentialByteLengthOp;
 impl Operator for CredentialByteLengthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "credential/byte-length", == 1);
-        Ok(credential_value(&args[0], ctx)?.map_or(Value::Null, |value| Value::Number(value.len() as f64)))
+        require_arity!(args, "credential/byte-length", 1);
+        if args.len() > 2 {
+            return Err(OrbitalError::Eval(EvalError::ArityMismatch {
+                operator: "credential/byte-length".to_string(),
+                expected: 2,
+                actual: args.len(),
+            }));
+        }
+        let encode = match args.get(1) {
+            None => None,
+            Some(arg) => {
+                let name = string_arg(arg, ctx)?;
+                Some(SegmentEncode::from_name(&name).ok_or_else(|| {
+                    OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                        "credential/byte-length: encode must be one of {}",
+                        SegmentEncode::NAMES.join(", ")
+                    )))
+                })?)
+            }
+        };
+        Ok(credential_value(&args[0], ctx)?.map_or(Value::Null, |value| {
+            let length = encode.map_or(value.len(), |encode| encode.apply(value).len());
+            Value::Number(length as f64)
+        }))
     }
 }
 
@@ -929,6 +953,21 @@ mod tests {
     }
 
     #[test]
+    fn credential_byte_length_with_an_encode_counts_the_encoded_bytes_and_refuses_an_unknown_one() {
+        let value = "a b&c/é";
+        let len = |encode: &str| direct(&held("PW", value), serde_json::json!(["credential/byte-length", "PW", encode])).unwrap();
+        assert_eq!(len("base64"), Value::Number(12.0));
+        assert_eq!(len("uri"), Value::Number(18.0));
+        assert_eq!(len("form"), Value::Number(16.0), "a + for the space, %XX for the rest");
+        assert_eq!(direct(&held("PW", "a b"), serde_json::json!(["credential/byte-length", "PW", "form"])).unwrap(), Value::Number(3.0));
+        assert_eq!(direct(&held("PW", "a b"), serde_json::json!(["credential/byte-length", "PW", "uri"])).unwrap(), Value::Number(5.0));
+        assert_eq!(direct(&held("OTHER", value), serde_json::json!(["credential/byte-length", "PW", "uri"])).unwrap(), Value::Null);
+        assert!(direct(&held("PW", value), serde_json::json!(["credential/byte-length", "PW", "rot13"])).is_err());
+        assert!(direct(&held("PW", value), serde_json::json!(["credential/byte-length", "PW", "uri", "x"])).is_err());
+        assert_eq!(direct(&held("PW", value), serde_json::json!(["credential/byte-length", "PW"])).unwrap(), Value::Number(8.0), "control: no encode is the raw length");
+    }
+
+    #[test]
     fn a_null_text_operand_is_a_type_mismatch_and_a_text_one_is_answered() {
         for op in [
             "str/decode-uri-component",
@@ -1032,6 +1071,12 @@ mod tests {
 
     fn seeded(byte: u8) -> crate::evaluator::context::SealedOutputs {
         crate::evaluator::context::SealedOutputs::new(move |_, _, compute| Ok(compute([byte; 32])))
+    }
+
+    fn direct(ctx: &BindingContext, form: serde_json::Value) -> EvalResult {
+        let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+        let SExpression::Array(items) = &expr else { panic!("a call form") };
+        CredentialByteLengthOp.evaluate(&items[1..], ctx)
     }
 
     fn eval_in(ctx: &BindingContext, form: serde_json::Value) -> EvalResult {

@@ -231,6 +231,14 @@ impl SExpression {
         }
     }
 
+    /// The string handle itself, shared with the parsed expression
+    pub fn as_shared_str(&self) -> Option<&crate::value::Shared<String>> {
+        match self {
+            SExpression::String(s) => Some(s),
+            _ => None,
+        }
+    }
+
     /// Try to get as an array
     pub fn as_array(&self) -> Option<&Vec<SExpression>> {
         match self {

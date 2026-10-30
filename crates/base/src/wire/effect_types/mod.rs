@@ -4,7 +4,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::value::Value;
+use crate::value::{Shared, Value};
 use crate::value::ValueMap;
 use crate::error::EvalError;
 use crate::os::{accepts_arity, split_envelope, OsOp};

@@ -37,15 +37,15 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     put_str("originClientId", &source.origin_client_id);
     put_str("instanceKey", &source.instance_key);
     if let Some(v) = source.from_bridge {
-        src.insert("fromBridge".into(), Value::Bool(v));
+        src.insert(orbital_core_base::static_key!("fromBridge"), Value::Bool(v));
     }
     if let Some(v) = source.dispatched {
-        src.insert("dispatched".into(), Value::Bool(v));
+        src.insert(orbital_core_base::static_key!("dispatched"), Value::Bool(v));
     }
     let mut record = ValueMap::default();
-    record.insert("event".into(), Value::string(event.to_string()));
-    record.insert("payload".into(), payload.clone());
-    record.insert("source".into(), Value::object(src));
+    record.insert(orbital_core_base::static_key!("event"), Value::string(event.to_string()));
+    record.insert(orbital_core_base::static_key!("payload"), payload.clone());
+    record.insert(orbital_core_base::static_key!("source"), Value::object(src));
     Value::object(record)
 }
 
@@ -977,7 +977,7 @@ fn server_effect_result(er: &EffectResult) -> Option<ServerEffectResult> {
         return None;
     }
     let (kind, entity_type, action) = match &er.effect {
-        Effect::Set { path, .. } => (ServerEffectKind::Set, None, Some(path.clone())),
+        Effect::Set { path, .. } => (ServerEffectKind::Set, None, Some(path.to_string())),
         Effect::Persist {
             operation,
             entity_type,

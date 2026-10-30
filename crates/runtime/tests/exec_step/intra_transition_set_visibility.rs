@@ -173,7 +173,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
         .effect_results
         .iter()
         .filter_map(|r| match &r.effect {
-            Effect::Set { path, value } if path == "@entity.mirror" => Some(value.clone()),
+            Effect::Set { path, value } if path.as_str() == "@entity.mirror" => Some(value.clone()),
             _ => None,
         })
         .next()

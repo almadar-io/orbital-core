@@ -3,6 +3,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use std::collections::BTreeMap;
 use crate::credential_admin::{CredentialStanding, RotateCounts, StoreListing};
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};
 use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
@@ -170,8 +171,6 @@ pub enum FoldedNextWire {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct FiredTick {
-    /// The orbital that declares the tick: the one the `runTick` request is addressed to.
-    pub orbital: String,
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub tick: String,
@@ -192,7 +191,8 @@ pub struct FrameDispatch {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameWire {
-    pub fired: Vec<FiredTick>,
+    /// The fired ticks under the orbital that declares them: the one a `runTick` request is addressed to.
+    pub fired: BTreeMap<String, Vec<FiredTick>>,
     pub response: EventResponse,
     pub dispatches: Vec<FrameDispatch>,
     /// The `runTick` legs of fired ticks that write browser-stored data, for the host that owns the store.

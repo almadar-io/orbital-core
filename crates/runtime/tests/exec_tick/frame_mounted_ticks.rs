@@ -27,7 +27,7 @@ fn kernel() -> EmbeddedKernel {
 fn fired(k: &EmbeddedKernel, now_ms: u64) -> Vec<String> {
     k.frame(now_ms)
         .unwrap()
-        .map(|f| f.fired.into_iter().map(|t| t.trait_name).collect())
+        .map(|f| f.fired.into_values().flatten().map(|t| t.trait_name).collect())
         .unwrap_or_default()
 }
 

@@ -19,11 +19,11 @@ pub(super) const ROW_FRAME_SEPARATOR: char = '\u{1e}';
 
 /// The key a dispatch's path memory (`@prevEvents`, `@prevStates`) is kept under: the trait, or for a keyed row the
 /// trait qualified by the row (EXEC-STEP-1).
-pub(super) fn memory_scope(trait_name: &str, row: &str, keyed: bool) -> String {
+pub(super) fn memory_scope<'a>(trait_name: &'a str, row: &str, keyed: bool) -> std::borrow::Cow<'a, str> {
     if keyed {
-        format!("{trait_name}{ROW_FRAME_SEPARATOR}{row}")
+        std::borrow::Cow::Owned(format!("{trait_name}{ROW_FRAME_SEPARATOR}{row}"))
     } else {
-        trait_name.to_string()
+        std::borrow::Cow::Borrowed(trait_name)
     }
 }
 pub(super) const ROW_INIT_EVENT: &str = "INIT";
@@ -415,6 +415,9 @@ impl RuntimeKernel {
         event: &str,
         payload: &Value,
     ) {
+        if self.deferred_asks.read().is_empty() {
+            return;
+        }
         let mut asks = self.deferred_asks.write();
         let slot = (trait_name.to_string(), self.session_eid(row));
         let Some(list) = asks.get_mut(&slot) else {

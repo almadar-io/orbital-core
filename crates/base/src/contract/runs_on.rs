@@ -405,9 +405,121 @@ pub fn sexpr_runs_server_effect(
     }
 }
 
+/// What one dispatch's delegated effects reach: browser-stored rows, server work. A client-role kernel refuses a
+/// dispatch with both (EXEC-DIST-6 "mixed"); the validator reads the same classification.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct LegTouch {
+    pub browser_rows: bool,
+    pub server_work: bool,
+}
+
+impl LegTouch {
+    pub const NONE: LegTouch = LegTouch { browser_rows: false, server_work: false };
+
+    /// Both kinds in one dispatch.
+    pub fn is_mixed(self) -> bool {
+        self.browser_rows && self.server_work
+    }
+
+    /// The touch of running `self` then `other`.
+    pub fn then(self, other: LegTouch) -> LegTouch {
+        LegTouch {
+            browser_rows: self.browser_rows || other.browser_rows,
+            server_work: self.server_work || other.server_work,
+        }
+    }
+
+    /// The touch of one delegated effect: a data effect on a browser-stored entity reaches browser rows, a batch
+    /// naming browser and server entities reaches both, anything else is server work.
+    pub fn of_effect(effect: &crate::effect_types::Effect, residence: &Residence) -> LegTouch {
+        use crate::effect_types::Effect;
+        use crate::persist_batch::BatchPlacement;
+        let (browser_rows, server_work) = match effect {
+            Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
+                let client = residence.is_client(entity_type);
+                (client, !client)
+            }
+            Effect::PersistBatch { ops, .. } => {
+                let ops: crate::schema::sexpr::SExpression = ops.clone().into();
+                match crate::persist_batch::batch_placement(&ops, residence) {
+                    BatchPlacement::Client => (true, false),
+                    BatchPlacement::Mixed => (true, true),
+                    BatchPlacement::Server | BatchPlacement::Undetermined => (false, true),
+                }
+            }
+            _ => (false, true),
+        };
+        LegTouch { browser_rows, server_work }
+    }
+}
+
+fn then_each(
+    first: &std::collections::BTreeSet<LegTouch>,
+    second: &std::collections::BTreeSet<LegTouch>,
+) -> std::collections::BTreeSet<LegTouch> {
+    first.iter().flat_map(|a| second.iter().map(move |b| a.then(*b))).collect()
+}
+
+/// Every touch one run of `expr` can have: a delegated (server-site) call contributes [`LegTouch::of_effect`], the
+/// branches of an `if`/`when` are alternatives, a statically false branch never runs.
+pub fn expr_leg_touches(
+    expr: &crate::schema::sexpr::SExpression,
+    residence: &Residence,
+) -> std::collections::BTreeSet<LegTouch> {
+    use crate::schema::sexpr::SExpression;
+    use std::collections::BTreeSet;
+    let none = || BTreeSet::from([LegTouch::NONE]);
+    let sequence = |items: &[SExpression]| {
+        items
+            .iter()
+            .fold(none(), |acc, item| then_each(&acc, &expr_leg_touches(item, residence)))
+    };
+    match expr {
+        SExpression::Array(arr) => {
+            let head = arr.first().and_then(|e| e.as_str());
+            if matches!(head, Some("if") | Some("when")) && arr.len() >= 3 {
+                let cond = expr_leg_touches(&arr[1], residence);
+                let then_live = !arr[1].is_statically_false();
+                let mut arms = BTreeSet::new();
+                if then_live {
+                    arms.extend(sequence(&arr[2..if head == Some("if") { 3 } else { arr.len() }]));
+                }
+                if head == Some("if") {
+                    arms.extend(arr.get(3).map_or_else(none, |e| expr_leg_touches(e, residence)));
+                } else {
+                    arms.insert(LegTouch::NONE);
+                }
+                return then_each(&cond, &arms);
+            }
+            let own = match head {
+                Some(op) if runs_on(op) == RunsOn::Server => crate::effect_types::parse_effect(expr)
+                    .map(|e| LegTouch::of_effect(&e, residence))
+                    .unwrap_or(LegTouch { browser_rows: false, server_work: true }),
+                _ => LegTouch::NONE,
+            };
+            then_each(&BTreeSet::from([own]), &sequence(arr.get(1..).unwrap_or_default()))
+        }
+        SExpression::Object(obj) => obj
+            .values()
+            .fold(none(), |acc, v| then_each(&acc, &expr_leg_touches(v, residence))),
+        _ => none(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_or_one_element_array_expression_touches_nothing() {
+        use crate::schema::sexpr::SExpression;
+        let none = std::collections::BTreeSet::from([LegTouch::NONE]);
+        let residence = Residence::none();
+        let empty = SExpression::Array(Vec::new().into());
+        let single = SExpression::Array(vec![SExpression::String("math/abs".into())].into());
+        assert_eq!(expr_leg_touches(&empty, &residence), none);
+        assert_eq!(expr_leg_touches(&single, &residence), none);
+    }
 
     #[test]
     fn a_client_program_carries_the_sites_of_its_effects_and_the_language_tables_a_browser_kernel_lacks() {

@@ -95,13 +95,13 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
     let mut now = 0.0f64;
     for _ in 0..5 {
         let f = k.frame(now as u64).unwrap().expect("frame fires");
-        assert_eq!(f.fired.len(), ticking);
+        assert_eq!(fired_count(&f), ticking);
         now += step;
     }
     let before = ALLOCS.load(Ordering::SeqCst);
     let f = k.frame(now as u64).unwrap().expect("frame fires");
     let allocs = ALLOCS.load(Ordering::SeqCst) - before;
-    assert_eq!(f.fired.len(), ticking);
+    assert_eq!(fired_count(&f), ticking);
     now += step;
     let t = Instant::now();
     for _ in 0..frames {
@@ -128,8 +128,10 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
 // clones a key only for a field the base lacks (G-ORBITAL-CORE-002, five fewer per ticking trait, -); together 16179 / 161119.
 // 2026-10-29: `ValueMap` keys are interned `Shared<String>` names (R3, K1): entity layering and the per-tick `set` row share names, -12 per
 // ticking trait; 14979 / 149119 (was 16179 / 161119).
-const PINNED_100: usize = 14979;
-const PINNED_1000: usize = 149119;
+// 2026-10-30: `static_key!` literal keys and one shared key per `set` write (PendingSets), -2 per ticking trait; 14776 / 147113.
+// 2026-10-30: `Effect::Set.path` is the parsed expression's shared string, no per-tick copy (K1/R3); 14376 / 143113.
+const PINNED_100: usize = 14376;
+const PINNED_1000: usize = 143113;
 
 #[test]
 fn frame_allocation_count_is_pinned() {
@@ -198,7 +200,8 @@ fn frame_wire_dump() {
 // 34698: a steady frame carries every fired trait's state, both render lists and every `set` result (P-015 measures it).
 // 18973: one render list, only the states a tick moved, `effectResults` only for a subscribed host (P-015 T2, 2026-10-27).
 // 19025: frames are a versioned delta, one `["set", {frame: {fields}}]` op per dispatch (K5, 2026-10-29): the `session`/`from`/`to`/`ops` header is +52 bytes (+0.27%) over the old `entityByTrait` rows (18973); per-op field naming cost 19615 and per-frame ops 19815.
-const PINNED_WIRE_100: usize = 19025;
+// 19048: the tick frame carries `fired` keyed by orbital (owner 2026-10-30), one orbital key per frame (+23 bytes) instead of an orbital name per fired trait (22125 after 28d283e).
+const PINNED_WIRE_100: usize = 19048;
 
 /// The bytes a steady frame of 100 ticking traits puts on the wire, which only ever go down.
 #[test]
@@ -215,7 +218,7 @@ fn frame_wire_bytes_are_pinned() {
         now += step;
     }
     let f = k.frame(now as u64).unwrap().expect("frame fires");
-    assert_eq!(f.fired.len(), 100);
+    assert_eq!(fired_count(&f), 100);
     let bytes = serde_json::to_string(&f).unwrap().len();
     println!("FRAME_WIRE_100 bytes={bytes}");
     assert!(bytes <= PINNED_WIRE_100, "100-trait frame wire rose: {bytes} > {PINNED_WIRE_100}");
@@ -322,7 +325,7 @@ fn stage_breakdown() {
     let (a, _) = allocs_of(|| kernel.rerender_stale());
     println!("rerender_stale again: {a}");
     let (a, f) = allocs_of(|| k.frame(1000).unwrap().unwrap());
-    println!("frame total: {a} ticks {}", f.fired.len());
+    println!("frame total: {a} ticks {}", fired_count(&f));
 }
 
 /// Where the allocations of one steady-state tick come from, by the nearest `orbital_core*` frames:
@@ -361,4 +364,8 @@ fn tick_alloc_sites() {
     for (site, n) in rows.iter().take(25) {
         println!("{n:4}  {site}");
     }
+}
+
+fn fired_count(f: &orbital_core_runtime::embed::wire::FrameWire) -> usize {
+    f.fired.values().map(Vec::len).sum()
 }

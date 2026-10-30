@@ -54,8 +54,8 @@ pub enum ClientEffect {
     },
 }
 
-/// The return address of a `host-ask` that declared `emit` routes (EXEC-DIST-13): the trait that asked, the frame it
-/// asked on when that frame is a row, the call's `key`, and the events its two outcomes fire. The host answers once
+/// The return address of a `host-ask` that declared `emit` routes (EXEC-DIST-13): the trait that asked, the row it
+/// asked on when its frame is a row, the call's `key`, and the events its two outcomes fire. The host answers once
 /// by dispatching the event of the outcome it reached to `trait_name`; a route the ask did not declare is absent and
 /// that outcome fires nothing.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
@@ -63,8 +63,8 @@ pub enum ClientEffect {
 pub struct HostAskCompletion {
     #[serde(rename = "trait")]
     pub trait_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entity: Option<String>,
+    #[serde(default, rename = "entityId", skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,9 +74,9 @@ pub struct HostAskCompletion {
 }
 
 impl HostAskCompletion {
-    /// The completion a host-asked `effect` declares on `trait_name`'s `entity` frame: its resolved `key` and its
+    /// The completion a host-asked `effect` declares on `trait_name`'s `entity_id` row frame: its resolved `key` and its
     /// `emit` routes. `None` when it declares neither.
-    pub fn of(effect: &Effect, trait_name: &str, entity: Option<&str>) -> Option<Self> {
+    pub fn of(effect: &Effect, trait_name: &str, entity_id: Option<&str>) -> Option<Self> {
         let Effect::Custom { key, emit, .. } = effect else {
             return None;
         };
@@ -88,7 +88,7 @@ impl HostAskCompletion {
         }
         Some(Self {
             trait_name: trait_name.to_string(),
-            entity: entity.map(str::to_string),
+            entity_id: entity_id.map(str::to_string),
             key,
             success,
             failure,
@@ -109,7 +109,7 @@ impl HostAskCompletion {
             .ok_or_else(|| "host-ask tuple: completion needs the asking trait".to_string())?;
         Ok(Self {
             trait_name,
-            entity: text("entity")?,
+            entity_id: text("entityId")?,
             key: text("key")?,
             success: text("success")?,
             failure: text("failure")?,
@@ -548,7 +548,7 @@ mod tests {
             args: vec![],
             completion: Some(HostAskCompletion {
                 trait_name: "SignIn".to_string(),
-                entity: Some("row-1".to_string()),
+                entity_id: Some("row-1".to_string()),
                 key: Some("k".to_string()),
                 success: Some("SIGNED_IN".to_string()),
                 failure: Some("SIGN_IN_FAILED".to_string()),
@@ -556,7 +556,7 @@ mod tests {
         };
         roundtrip(
             &routed,
-            r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","entity":"row-1","key":"k","success":"SIGNED_IN","failure":"SIGN_IN_FAILED"}]"#,
+            r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","entityId":"row-1","key":"k","success":"SIGNED_IN","failure":"SIGN_IN_FAILED"}]"#,
         );
         let success_only = ClientEffect::HostAsk {
             op: "auth/sign-in".to_string(),
@@ -582,7 +582,7 @@ mod tests {
                 args: vec![],
                 completion: Some(HostAskCompletion {
                     trait_name: "SignIn".to_string(),
-                    entity: Some("row-1".to_string()),
+                    entity_id: Some("row-1".to_string()),
                     key: Some("k".to_string()),
                     success: Some("OK".to_string()),
                     failure: Some("BAD".to_string()),

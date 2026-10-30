@@ -1332,3 +1332,13 @@ fn an_unknown_trait_key_is_refused_and_a_known_one_is_not() {
     assert!(local.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && local.contains("`local`"), "{local}");
     assert!(serde_json::from_value::<TraitReference>(trait_json(json!({ "dispatch": "client", "description": "d" }))).is_ok());
 }
+
+#[test]
+fn the_host_sign_in_route_ignores_a_trailing_slash_and_nothing_else() {
+    assert_eq!(HOST_SIGN_IN_ROUTE, "/login");
+    assert!(is_host_sign_in_route("/login"));
+    assert!(is_host_sign_in_route("/login/"));
+    for path in ["/", "/login-help", "/login/step", "/Login", "/signin"] {
+        assert!(!is_host_sign_in_route(path), "{path}");
+    }
+}

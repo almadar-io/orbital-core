@@ -7,6 +7,7 @@
 use std::prelude::v1::*;
 
 use super::entity_source::EntitySource;
+use orbital_core_base::language::field_stamp::walk_fields_nodes;
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::schema::types::{Cardinality, EntityDefinition, FieldDefinition, FieldType};
 use orbital_core_base::value::Value;
@@ -253,62 +254,49 @@ fn field_name(entry: &Value) -> Option<String> {
 }
 
 fn visit(source: &dyn EntitySource, targets: &HashMap<String, RelationTarget>, node: &mut Value) {
-    match node {
-        Value::Array(items) => {
-            for item in items {
-                visit(source, targets, item);
-            }
+    walk_fields_nodes(node, &mut |_, map| {
+        if map.contains_key("relationsData") {
+            return;
         }
-        Value::Object(map) => {
-            let consumes_fields = map.get("type").and_then(Value::as_str).is_some_and(|t| {
-                orbital_core_base::language::pattern_registry::get_fields_contract(t).is_some()
-            });
-            if consumes_fields && !map.contains_key("relationsData") {
-                let entries = match map.get("fields").or_else(|| map.get("columns")) {
-                    Some(Value::Array(entries)) => entries.clone(),
-                    _ => Vec::new().into(),
-                };
-                let mut data: ValueMap = ValueMap::default();
-                for entry in &entries {
-                    let Some(name) = field_name(entry) else {
-                        continue;
+        let entries = match map.get("fields").or_else(|| map.get("columns")) {
+            Some(Value::Array(entries)) => entries.clone(),
+            _ => Vec::new().into(),
+        };
+        let mut data: ValueMap = ValueMap::default();
+        for entry in &entries {
+            let Some(name) = field_name(entry) else {
+                continue;
+            };
+            let Some(target) = targets.get(&name) else {
+                continue;
+            };
+            let Ok(rows) = source.list(&target.entity) else {
+                continue;
+            };
+            let options = rows
+                .iter()
+                .map(|row| {
+                    let text = |key: &str| {
+                        row.get_path(key)
+                            .filter(|v| !v.is_null())
+                            .map(Value::to_string_value)
                     };
-                    let Some(target) = targets.get(&name) else {
-                        continue;
-                    };
-                    let Ok(rows) = source.list(&target.entity) else {
-                        continue;
-                    };
-                    let options = rows
-                        .iter()
-                        .map(|row| {
-                            let text = |key: &str| {
-                                row.get_path(key)
-                                    .filter(|v| !v.is_null())
-                                    .map(Value::to_string_value)
-                            };
-                            let id = text("id").unwrap_or_default();
-                            let label = target
-                                .display
-                                .as_deref()
-                                .and_then(text)
-                                .unwrap_or_else(|| id.clone());
-                            Value::object(ValueMap::from_iter([
-                                ("value".into(), Value::String(id.into())),
-                                ("label".into(), Value::String(label.into())),
-                            ]))
-                        })
-                        .collect();
-                    data.insert(name.into(), Value::Array(options));
-                }
-                if !data.is_empty() {
-                    map.insert("relationsData".into(), Value::object(data));
-                }
-            }
-            if let Some(children) = map.get_mut("children") {
-                visit(source, targets, children);
-            }
+                    let id = text("id").unwrap_or_default();
+                    let label = target
+                        .display
+                        .as_deref()
+                        .and_then(text)
+                        .unwrap_or_else(|| id.clone());
+                    Value::object(ValueMap::from_iter([
+                        ("value".into(), Value::String(id.into())),
+                        ("label".into(), Value::String(label.into())),
+                    ]))
+                })
+                .collect();
+            data.insert(name.into(), Value::Array(options));
         }
-        _ => {}
-    }
+        if !data.is_empty() {
+            map.insert("relationsData".into(), Value::object(data));
+        }
+    });
 }

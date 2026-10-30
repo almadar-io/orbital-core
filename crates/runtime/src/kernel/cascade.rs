@@ -114,6 +114,7 @@ impl RuntimeKernel {
             trait_name: child,
             event: String::new(),
             payload: null_payload(),
+            payload_digest: None,
             delivery: null_payload(),
             source_payload: null_payload(),
             listen_guard: None,
@@ -145,6 +146,7 @@ impl RuntimeKernel {
                 trait_name: trait_name.to_string(),
                 event: emitted.to_string(),
                 payload: Arc::clone(&shared),
+                payload_digest: None,
                 delivery: Arc::new(delivery_record_value(emitted, payload, source)),
                 source_payload: shared,
                 listen_guard: None,
@@ -212,20 +214,19 @@ impl RuntimeKernel {
             .any(|l| l.payload_mapping.is_some())
             .then(|| BindingContextBuilder::new().payload(source_payload.clone()).build());
         let delivery = Arc::new(delivery_record_value(event, source_payload, source));
+        let shared_digest = Arc::new(std::sync::OnceLock::new());
         for l in listeners {
             // `direct_scopes` already received this very event as a seed scope on the embed
             // chain; a same-name route back to one of them is that delivery again.
             if l.triggers == event && direct_scopes.contains(&l.trait_name) {
                 continue;
             }
-            let mapped = match (&l.payload_mapping, &ctx) {
-                (Some(_), Some(ctx)) => Arc::new(envelope::mapped_listen_payload(
-                    &evaluator,
-                    ctx,
-                    l.payload_mapping.as_deref(),
-                    source_payload,
-                )),
-                _ => Arc::clone(&shared),
+            let (mapped, payload_digest) = match (&l.payload_mapping, &ctx) {
+                (Some(_), Some(ctx)) => (
+                    Arc::new(envelope::mapped_listen_payload(&evaluator, ctx, l.payload_mapping.as_deref(), source_payload)),
+                    None,
+                ),
+                _ => (Arc::clone(&shared), Some(Arc::clone(&shared_digest))),
             };
             debug!(
                 source_trait = %source_trait, event = %event,
@@ -236,6 +237,7 @@ impl RuntimeKernel {
                 trait_name: l.trait_name,
                 event: l.triggers,
                 payload: mapped,
+                payload_digest,
                 delivery: Arc::clone(&delivery),
                 source_payload: Arc::clone(&shared),
                 listen_guard: l.guard,

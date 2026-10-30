@@ -288,7 +288,7 @@ impl RuntimeKernel {
                     .map(|(k, v)| (k.clone(), v.clone())),
             );
             if let Some(id) = outcome.entity_data.get("id").filter(|id| !id.is_null()) {
-                fields.insert("id".to_string().into(), id.clone());
+                fields.insert(orbital_core_base::static_key!("id"), id.clone());
             }
         }
         let mut writes: Vec<(String, FrameWrite)> = written
@@ -503,7 +503,7 @@ impl RuntimeKernel {
                 let keyed = match &row {
                     Value::Object(map) if !map.contains_key("id") => {
                         let mut map = map.clone();
-                        map.insert("id".to_string().into(), Value::string(id));
+                        map.insert(orbital_core_base::static_key!("id"), Value::string(id));
                         Value::Object(map)
                     }
                     _ => row.clone(),

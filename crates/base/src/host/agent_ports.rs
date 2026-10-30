@@ -1018,6 +1018,7 @@ mod tests {
             entity: None,
             projected_from: None,
             items: None,
+            relation: None,
         }];
         let sent = serde_json::from_value::<Value>(serde_json::json!({ "n": "x" })).unwrap();
         let issues = issues_value(&payload_issues(&fields, &sent), &sent);

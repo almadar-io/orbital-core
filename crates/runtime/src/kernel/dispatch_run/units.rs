@@ -526,6 +526,7 @@ impl RuntimeKernel {
                             trait_name: item.trait_name.clone(),
                             event: keyed_rows::ROW_INIT_EVENT.to_string(),
                             payload: null_payload(),
+                            payload_digest: None,
                             delivery: null_payload(),
                             source_payload: null_payload(),
                             listen_guard: None,
@@ -543,9 +544,9 @@ impl RuntimeKernel {
             }
         }
         let outer_eid = eid;
-        let row_id: String = item.row.clone().unwrap_or_else(|| eid.to_string());
+        let queued_row = item.row.clone();
         let keyed = item.row.is_some() || self.is_keyed_row(&item.trait_name, eid);
-        let eid = row_id.as_str();
+        let eid = queued_row.as_deref().unwrap_or(eid);
         let from = self.current_state_name(&item.trait_name, Some(eid));
         let frame = self.step_frame(&item.trait_name, eid);
         if self.io.suspended() {
@@ -553,13 +554,12 @@ impl RuntimeKernel {
             return Err(Fault::Suspended);
         }
         let visit = (!item.completion)
-            .then(|| visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)));
+            .then(|| visited.visit_digested(&item.trait_name, &item.event, &from, item.payload_digest(), &VisitFrame::of(&frame)));
         if visit.as_ref().is_some_and(|v| visited.seen(v)) {
             debug!(trait_name = %item.trait_name, event = %item.event, from = %from, "fanout:visited-skip");
             return Ok(true);
         }
-        let remembered = keyed_rows::memory_scope(&item.trait_name, eid, keyed);
-        let view = memory.view(&remembered, &item.delivery);
+        let view = memory.view(&keyed_rows::memory_scope(&item.trait_name, eid, keyed), &item.delivery);
         if let Some(guard) = &item.listen_guard {
             if !listen_guard_passes(
                 guard,
@@ -579,7 +579,7 @@ impl RuntimeKernel {
         if cascade.steps >= CROSS_TRAIT_CASCADE_CAP || memory.delivered() >= CROSS_TRAIT_DISPATCH_CAP {
             let at_cap = match visit {
                 Some(v) => v,
-                None => visited.visit(&item.trait_name, &item.event, &from, &item.payload, &VisitFrame::of(&frame)),
+                None => visited.visit_digested(&item.trait_name, &item.event, &from, item.payload_digest(), &VisitFrame::of(&frame)),
             };
             visited.record(at_cap);
             let cut = crate::process_result::CascadeCut {
@@ -656,6 +656,7 @@ impl RuntimeKernel {
             result.consumed_emits = consumed_emits;
         }
         if let Some(result) = &result {
+            let remembered = keyed_rows::memory_scope(&t, eid, keyed);
             memory.record_delivery(&remembered, &delivery, view);
             if result.executed {
                 memory.record_transition(&remembered, &result.previous_state, &result.new_state);
@@ -669,7 +670,7 @@ impl RuntimeKernel {
         }
         for mut item in own.into_iter().rev() {
             if keyed {
-                item.row = Some(row_id.clone());
+                item.row = Some(eid.to_string());
             }
             cascade.queue.push_front(item);
         }

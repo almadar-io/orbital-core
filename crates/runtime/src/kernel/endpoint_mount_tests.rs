@@ -191,3 +191,198 @@ fn control_a_child_its_composer_has_composed_is_mounted_again() {
     kernel.composed_callsite.write().insert("Child".into(), Value::object(ValueMap::default()));
     assert_eq!(names(kernel.route_mounts("/")), ["Host", "Child"]);
 }
+
+fn paged() -> RuntimeKernel {
+    kernel(
+        serde_json::json!([
+            { "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "RouteT" }] },
+            { "name": "Other", "path": "/other/:id", "traits": [{ "ref": "OtherT" }] },
+            { "name": "Gone", "path": "/gone", "isNotFound": true, "traits": [{ "ref": "HttpT" }] },
+            { "name": "Api", "path": "", "protocol": "http", "traits": [{ "ref": "StdioT" }] }
+        ]),
+        &["RouteT", "OtherT", "HttpT", "StdioT"],
+    )
+}
+
+#[test]
+fn page_circuit_without_page_or_route_is_the_initial_page() {
+    let c = paged().page_circuit(None, None).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Home"));
+    assert_eq!(c.route.as_deref(), Some("/"));
+    assert!(!c.not_found);
+    assert_eq!(names(c.mounts), ["RouteT"]);
+    assert_eq!(c.orbital_by_trait.get("RouteT").map(String::as_str), Some("Main"));
+}
+
+#[test]
+fn page_circuit_named_page_wins_over_the_route() {
+    let c = paged().page_circuit(Some("Other"), Some("/")).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Other"));
+    assert_eq!(names(c.mounts), ["OtherT"]);
+}
+
+#[test]
+fn page_circuit_matches_a_route_with_the_kernels_route_matcher() {
+    let k = paged();
+    let c = k.page_circuit(None, Some("/other/7")).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Other"));
+    assert_eq!(c.route.as_deref(), Some("/other/7"));
+    assert!(!c.not_found);
+    assert_eq!(c.mounts, k.route_mounts("/other/:id"));
+    assert_eq!(c.mounts, k.route_mounts("/other/7"));
+}
+
+#[test]
+fn page_circuit_unmatched_route_is_the_not_found_page() {
+    let k = paged();
+    let c = k.page_circuit(None, Some("/nope")).unwrap();
+    assert!(c.not_found);
+    assert_eq!(c.page.as_deref(), Some("Gone"));
+    assert_eq!(c.mounts, k.route_mounts("/gone"));
+}
+
+#[test]
+fn page_circuit_unmatched_route_without_a_not_found_page_has_no_page() {
+    let c = app().page_circuit(None, Some("/nope")).unwrap();
+    assert!(c.not_found);
+    assert_eq!(c.page, None);
+    assert!(c.mounts.is_empty());
+}
+
+#[test]
+fn page_circuit_unknown_or_protocol_page_name_is_an_error() {
+    assert_eq!(paged().page_circuit(Some("Nope"), None), Err("unknown page: Nope".to_string()));
+    assert_eq!(paged().page_circuit(Some("Api"), None), Err("unknown page: Api".to_string()));
+}
+
+#[test]
+fn page_circuit_unknown_trait_owner_is_an_error() {
+    let k = kernel(
+        serde_json::json!([{ "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "Ghost" }] }]),
+        &["RouteT"],
+    );
+    assert_eq!(k.page_circuit(None, None), Err("unknown trait: Ghost".to_string()));
+}
+
+fn embed_kernel(host_embeds: bool) -> RuntimeKernel {
+    let host = serde_json::json!({
+        "name": "Host",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                "effects": [["render-ui", "main", if host_embeds { "@trait.Child" } else { "none" }]] }]
+        }
+    });
+    let mid = serde_json::json!({
+        "name": "Child",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", "@trait.Leaf"]] }]
+        }
+    });
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [host, mid, trait_json("Leaf")],
+            "pages": [{ "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "Host" }] }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+#[test]
+fn page_circuit_reports_the_traits_a_page_trait_embeds_transitively() {
+    let c = embed_kernel(true).page_circuit(None, None).unwrap();
+    assert_eq!(c.embedded, ["Child", "Leaf"]);
+    for t in ["Host", "Child", "Leaf"] {
+        assert_eq!(c.orbital_by_trait.get(t).map(String::as_str), Some("Main"), "{t}");
+    }
+}
+
+#[test]
+fn page_circuit_without_an_embed_has_no_embedded_traits() {
+    let c = embed_kernel(false).page_circuit(None, None).unwrap();
+    assert!(c.embedded.is_empty());
+    assert_eq!(c.orbital_by_trait.len(), 1);
+}
+
+#[test]
+fn page_circuit_without_page_or_route_and_no_initial_page_is_the_first_route_page() {
+    let c = app().page_circuit(None, None).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Home"));
+    assert_eq!(c.route.as_deref(), Some("/"));
+    assert!(!c.not_found);
+    assert_eq!(names(c.mounts), ["RouteT"]);
+}
+
+#[test]
+fn page_circuit_initial_page_wins_over_the_first_page() {
+    let k = kernel(
+        serde_json::json!([
+            { "name": "First", "path": "/", "traits": [{ "ref": "A" }] },
+            { "name": "Second", "path": "/two", "isInitial": true, "traits": [{ "ref": "B" }] }
+        ]),
+        &["A", "B"],
+    );
+    let c = k.page_circuit(None, None).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Second"));
+    assert_eq!(c.route.as_deref(), Some("/two"));
+}
+
+#[test]
+fn page_circuit_first_page_is_declaration_order_not_name_order() {
+    let k = kernel(
+        serde_json::json!([
+            { "name": "Zeta", "path": "/z", "traits": [{ "ref": "A" }] },
+            { "name": "Alpha", "path": "/a", "traits": [{ "ref": "B" }] }
+        ]),
+        &["A", "B"],
+    );
+    assert_eq!(k.page_circuit(None, None).unwrap().page.as_deref(), Some("Zeta"));
+}
+
+#[test]
+fn page_circuit_embedded_by_includes_a_page_listed_trait_another_page_trait_embeds() {
+    let c = embed_kernel(true).page_circuit(None, None).unwrap();
+    assert_eq!(c.embedded_by, ["Child", "Leaf"]);
+}
+
+#[test]
+fn page_circuit_embedded_by_names_a_page_listed_trait_a_sibling_references() {
+    let host = serde_json::json!({
+        "name": "Host",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                "effects": [["render-ui", "main", "@trait.Child"]] }]
+        }
+    });
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [host, trait_json("Child")],
+            "pages": [{ "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "Host" }, { "ref": "Child" }] }]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    k.register_schema(schema).unwrap();
+    let c = k.page_circuit(None, None).unwrap();
+    assert_eq!(c.embedded_by, ["Child"]);
+    assert!(c.embedded.is_empty());
+}

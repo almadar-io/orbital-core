@@ -73,40 +73,48 @@ impl RuntimeKernel {
             .collect()
     }
 
-    /// Every trait a route page places, whatever it handles.
-    pub(super) fn route_page_traits(&self) -> HashSet<String> {
-        let schemas = self.registry.schemas.read();
-        schemas
-            .values()
-            .flat_map(|schema| schema.orbitals.iter())
-            .flat_map(|orbital| orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).filter(|p| p.is_route()))
-            .flat_map(|page| page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string))
-            .chain(self.lazy_routed_traits())
-            .collect()
-    }
-
-    pub(super) fn mounts_of(&self, keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool) -> Vec<crate::effects::response::MountSeed> {
+    /// Every inline page of every registered schema, in schema-name order.
+    pub(super) fn each_inline_page(&self, mut visit: impl FnMut(&orbital_core_base::schema::types::PageDefinition)) {
         let schemas = self.registry.schemas.read();
         let mut names: Vec<&String> = schemas.keys().collect();
         names.sort();
-        let mut out: Vec<crate::effects::response::MountSeed> = Vec::new();
         for name in names {
             for orbital in &schemas[name].orbitals {
-                for page in orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).filter(|p| keep(p)) {
-                    for trait_name in page.traits.iter().flatten().filter_map(|t| t.trait_name()) {
-                        if out.iter().any(|seed| seed.r#trait == trait_name) {
-                            continue;
-                        }
-                        if self.awaits_composer(trait_name) {
-                            continue;
-                        }
-                        if let Some(event) = self.lifecycle_event_of(trait_name) {
-                            out.push(crate::effects::response::MountSeed { r#trait: trait_name.to_string(), event });
-                        }
-                    }
-                }
+                orbital.pages.iter().flatten().filter_map(|p| p.as_inline()).for_each(&mut visit);
             }
         }
+    }
+
+    /// Every trait a route page places, whatever it handles.
+    pub(super) fn route_page_traits(&self) -> HashSet<String> {
+        let mut traits: HashSet<String> = HashSet::new();
+        self.each_inline_page(|page| {
+            if page.is_route() {
+                traits.extend(page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string));
+            }
+        });
+        traits.extend(self.lazy_routed_traits());
+        traits
+    }
+
+    pub(super) fn mounts_of(&self, keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool) -> Vec<crate::effects::response::MountSeed> {
+        let mut out: Vec<crate::effects::response::MountSeed> = Vec::new();
+        self.each_inline_page(|page| {
+            if !keep(page) {
+                return;
+            }
+            for trait_name in page.traits.iter().flatten().filter_map(|t| t.trait_name()) {
+                if out.iter().any(|seed| seed.r#trait == trait_name) {
+                    continue;
+                }
+                if self.awaits_composer(trait_name) {
+                    continue;
+                }
+                if let Some(event) = self.lifecycle_event_of(trait_name) {
+                    out.push(crate::effects::response::MountSeed { r#trait: trait_name.to_string(), event });
+                }
+            }
+        });
         out
     }
 

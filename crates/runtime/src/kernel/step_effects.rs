@@ -302,7 +302,7 @@ impl RuntimeKernel {
                 };
                 let field_name = path.strip_prefix("@entity.").unwrap_or(path);
                 drop(mirrored);
-                entity_data.insert(field_name.to_string(), evaluated_value.clone());
+                entity_data.insert(orbital_core_base::value::Shared::new(field_name.to_string()), evaluated_value.clone());
                 effect_results.push(EffectResult::executed(Effect::Set {
                     path: path.clone(),
                     value: evaluated_value,

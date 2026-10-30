@@ -983,6 +983,26 @@ fn a_fan_out_does_not_copy_the_payload_once_per_listener() {
     assert!(many < 2.0, "45 listeners hold {many:.2} payload copies at peak (was 3.8 per listener before sharing)");
 }
 
+fn fanout_allocs(listeners: usize, rows: usize) -> usize {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(fanout_schema(listeners)).unwrap();
+    let rows: Vec<serde_json::Value> = (0..rows).map(|i| json!({ "label": "x", "n": i })).collect();
+    let payload = serde_json::from_value::<Value>(json!({ "rows": rows })).unwrap();
+    count(|| k.dispatch("Source", None, "GO", payload).unwrap()).0
+}
+
+/// The cycle check digests a fan-out's shared payload once, not once per listener: the allocations one more listener
+/// costs do not grow with the payload's size.
+#[test]
+fn a_fan_out_listener_does_not_redigest_the_payload() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let per_listener = |rows| (fanout_allocs(41, rows) - fanout_allocs(1, rows)) / 40;
+    let (small, large) = (per_listener(10), per_listener(1000));
+    println!("FANOUT_ALLOCS_PER_LISTENER rows10={small} rows1000={large}");
+    assert!(large < small + 100, "a listener costs {small} allocations at 10 rows and {large} at 1000");
+}
+
 /// Bytes allocated evaluating `(array/reduce (array/range 0 n) [] (fn (acc item) (array/append @acc @item)))`.
 fn reduce_append_bytes(n: usize) -> usize {
     use orbital_core_base::schema::sexpr::SExpression;

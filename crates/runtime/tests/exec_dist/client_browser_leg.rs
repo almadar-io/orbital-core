@@ -1,6 +1,7 @@
 // A client-only trait whose data effects all live in the browser store still owes the host its leg: the host runs it against the store (twin of `seedBrowserLeg`, `almadar-runtime/src/evaluation/client-role.ts`; ui `OrbPreview.browser-stored-entity`).
 
 use orbital_core_base::dispatch_mode::DispatchMode;
+use orbital_core_runtime::effects::response::LegResidence;
 use orbital_core_runtime::ServerLegCollector;
 use serde_json::json;
 use std::sync::Arc;
@@ -152,4 +153,64 @@ fn control_a_client_only_trait_the_host_did_not_run_keeps_its_own_state() {
     k.apply_server_response(&host_answer(json!([])), &Default::default())
         .unwrap();
     assert_eq!(state_of(&k).as_deref(), Some("loading"));
+}
+
+fn batch(entity: &str) -> serde_json::Value {
+    json!([["persist", "batch", [["create", entity, { "id": "a" }]]]])
+}
+
+#[test]
+fn a_persist_batch_on_a_browser_stored_entity_owes_the_host_a_browser_leg() {
+    let d = init(&kernel(batch("Invoice"), true));
+    assert_eq!(d.server_legs.len(), 1);
+    assert_eq!(d.server_legs[0].residence, Some(LegResidence::Browser));
+    assert_eq!(d.response.error, None);
+}
+
+#[test]
+fn control_a_persist_batch_on_a_server_entity_posts_a_server_leg() {
+    let d = init(&kernel(batch("Invoice"), false));
+    assert_eq!(d.server_legs.len(), 1);
+    assert_eq!(d.server_legs[0].residence, Some(LegResidence::Server));
+}
+
+fn two_entity_kernel(effects: serde_json::Value) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "books",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Books",
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices", "browser": true,
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "InvoiceList", "linkedEntity": "Invoice",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }] } }]
+        }, {
+            "name": "Notes",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::client().register(schema)
+}
+
+#[test]
+fn a_batch_naming_a_browser_and_a_server_entity_is_refused_as_mixed() {
+    let ops = json!([["persist", "batch", [["create", "Invoice", { "id": "a" }], ["create", "Note", { "id": "b" }]]]]);
+    let d = init(&two_entity_kernel(ops));
+    assert!(d.server_legs.is_empty());
+    assert!(d.response.error.as_deref().is_some_and(|e| e.starts_with("residence: one dispatch of InvoiceList on INIT")));
+}
+
+#[test]
+fn a_browser_batch_beside_a_server_write_is_refused_as_mixed() {
+    let effects = json!([
+        ["persist", "batch", [["create", "Invoice", { "id": "a" }]]],
+        ["persist", "create", "Note", { "id": "b" }]
+    ]);
+    let d = init(&two_entity_kernel(effects));
+    assert!(d.server_legs.is_empty());
+    assert!(d.response.error.as_deref().is_some_and(|e| e.starts_with("residence:")));
 }

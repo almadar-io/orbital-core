@@ -10,16 +10,20 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::os::SegmentEncode;
 use serde_json::{Map, Value};
 
 pub const CREDENTIAL_NOT_SECRET_CODE: &str = "ORB_HTTP_AUTH_CREDENTIAL_NOT_SECRET";
 pub const SECRET_OUTSIDE_AUTH_CODE: &str = "ORB_SECRET_OUTSIDE_AUTH";
 pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLOT_INVALID";
+pub const SEGMENT_ENCODE_INVALID_CODE: &str = "ORB_OS_SEND_SEGMENT_ENCODE_INVALID";
 
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretFlowViolation {
     CredentialStatusSlotInvalid { path: String },
+    /// An `os/send` segment whose `encode` is not a literal `base64`, `uri` or `form`.
+    SegmentEncodeInvalid { path: String },
     /// An `http` auth credential slot that is not a `secret`-typed knob.
     CredentialNotSecret { path: String, slot: String },
     /// A `secret`-typed knob read anywhere but an auth credential slot.
@@ -30,6 +34,7 @@ impl SecretFlowViolation {
     pub fn code(&self) -> &'static str {
         match self {
             Self::CredentialStatusSlotInvalid { .. } => CREDENTIAL_STATUS_SLOT_INVALID_CODE,
+            Self::SegmentEncodeInvalid { .. } => SEGMENT_ENCODE_INVALID_CODE,
             Self::CredentialNotSecret { .. } => CREDENTIAL_NOT_SECRET_CODE,
             Self::OutsideAuth { .. } => SECRET_OUTSIDE_AUTH_CODE,
         }
@@ -39,6 +44,7 @@ impl SecretFlowViolation {
         match self {
             Self::CredentialNotSecret { path, .. }
             | Self::OutsideAuth { path }
+            | Self::SegmentEncodeInvalid { path }
             | Self::CredentialStatusSlotInvalid { path } => path,
         }
     }
@@ -54,6 +60,10 @@ impl SecretFlowViolation {
             Self::CredentialNotSecret { slot, .. } => format!(
                 "`http` auth.{slot} must be a `secret`-typed config knob (@config.<knob>)"
             ),
+            Self::SegmentEncodeInvalid { .. } => format!(
+                "an `os/send` segment `encode` is one of the literals {}",
+                SegmentEncode::NAMES.join(", ")
+            ),
             Self::OutsideAuth { .. } => {
                 "a `secret`-typed knob is read outside an `http` auth credential slot".to_string()
             }
@@ -68,6 +78,7 @@ impl SecretFlowViolation {
             Self::CredentialNotSecret { .. } => {
                 "Declare `<knob>: secret = \"CREDENTIAL_NAME\"` in config and pass @config.<knob>"
             }
+            Self::SegmentEncodeInvalid { .. } => "Write the encode as the literal \"base64\", \"uri\" or \"form\"",
             Self::OutsideAuth { .. } => {
                 "Secrets are credential names the host resolves; use them only in `http` auth"
             }
@@ -224,6 +235,15 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
                 path: path.to_string(),
                 slot: slot.to_string(),
             });
+        }
+    });
+    each_os_send_segment_object(expr, &mut |segment| {
+        let known = match segment.get("encode") {
+            None => true,
+            Some(encode) => encode.as_str().and_then(SegmentEncode::from_name).is_some(),
+        };
+        if !known {
+            out.push(SecretFlowViolation::SegmentEncodeInvalid { path: path.to_string() });
         }
     });
     each_os_send_segment(expr, &mut |operand| {
@@ -448,6 +468,28 @@ fn segment_credential(segment: &Value) -> Option<&Value> {
 /// Whether a segment's credential operand names no credential: the empty literal.
 fn is_no_credential(operand: &Value) -> bool {
     operand.as_str() == Some("")
+}
+
+/// Every object segment of every `os/send` payload in `expr`.
+fn each_os_send_segment_object<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a Map<String, Value>)) {
+    match expr {
+        Value::Array(items) => {
+            for segment in os_send_segments(items).into_iter().flatten() {
+                if let Some(fields) = segment.as_object() {
+                    visit(fields);
+                }
+            }
+            for item in items {
+                each_os_send_segment_object(item, visit);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                each_os_send_segment_object(value, visit);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every credential segment of every `os/send` payload in `expr`: a credential slot the host resolves at the boundary.
@@ -1028,6 +1070,23 @@ mod tests {
         };
         assert_eq!(declared(json!("@config.apiKey")).iter().map(|c| c.env_var.as_str()).collect::<Vec<_>>(), vec!["SEND_CREDENTIAL"]);
         assert!(declared(json!("")).is_empty(), "bytes alone declare nothing");
+    }
+
+    #[test]
+    fn an_os_send_segment_encode_is_one_of_the_three_literals() {
+        let send = |encode: Value| {
+            json!([["os/send", "@payload.sock", [
+                { "bytes": ["bytes/from-string", "AUTH "], "credential": "@config.apiKey", "encode": encode }
+            ], { "key": "s" }]])
+        };
+        for ok in ["base64", "uri", "form"] {
+            assert!(codes(&program(config(), send(json!(ok)))).is_empty(), "{ok}");
+        }
+        for bad in [json!("rot13"), json!("Base64"), json!(""), json!(7), json!("@payload.how"), json!(null)] {
+            assert_eq!(codes(&program(config(), send(bad.clone()))), vec![SEGMENT_ENCODE_INVALID_CODE], "{bad}");
+        }
+        let plain = json!([["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "@config.apiKey" }], { "key": "s" }]]);
+        assert!(codes(&program(config(), plain)).is_empty(), "control: no encode");
     }
 
     #[test]

@@ -490,6 +490,7 @@ mod tests {
                             serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("registering".to_string()),
@@ -504,6 +505,7 @@ mod tests {
                             serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
                         ]),
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("registering".to_string()),
@@ -513,6 +515,7 @@ mod tests {
                         guard: None,
                         effects: None,
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("browsing".to_string()),
@@ -524,6 +527,7 @@ mod tests {
                             serde_json::from_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
                         ]),
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("viewing".to_string()),
@@ -535,6 +539,7 @@ mod tests {
                             serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("editing".to_string()),
@@ -548,6 +553,7 @@ mod tests {
                             serde_json::from_str(r#"["persist", "update", "User", "@entity.id", "@payload.data"]"#).unwrap(),
                         ]),
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("editing".to_string()),
@@ -557,6 +563,7 @@ mod tests {
                         guard: None,
                         effects: None,
                         ensures: None,
+                        await_render: None,
                     },
                     TransitionDefinition {
                         from: StringOrArray::Single("viewing".to_string()),
@@ -566,6 +573,7 @@ mod tests {
                         guard: None,
                         effects: None,
                         ensures: None,
+                        await_render: None,
                     },
                 ],
             }.into(),
@@ -969,6 +977,7 @@ mod tests {
                     )
                     .unwrap()]),
                     ensures: None,
+                    await_render: None,
                 }],
             }.into(),
             ticks: None,

@@ -15,7 +15,7 @@ use orbital_core_base::payload_check::{
     find_input_by_address, payload_issues, payload_json_schema,
 };
 use orbital_core_base::schema::types::{EntityRef, PayloadField};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// An event a dispatch emitted, as a host reads it off the response.
@@ -97,6 +97,13 @@ pub enum ContractQuery {
     IdentityEntity,
     /// The orbital that declares the entity inline, or null.
     EntityOwner { entity: String },
+    /// What a host reads of one trait: owner, entity, states, events, listens and transitions.
+    TraitSurface {
+        #[serde(rename = "trait")]
+        trait_name: String,
+    },
+    /// Every registered trait's surface and the entities whose rows live in the browser.
+    ProgramSurface,
     /// `rows` of `entity` as `viewer` reads them: narrowed by the entity's declared `@read`, `@user` bound to the viewer
     /// (`null`: no viewer).
     ReadRows {
@@ -104,6 +111,95 @@ pub enum ContractQuery {
         rows: Vec<Value>,
         viewer: serde_json::Value,
     },
+}
+
+/// The emitter a listen hears, its orbital resolved: the declared one, else the listening trait's own.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SurfaceListenSource {
+    pub orbital: String,
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+}
+
+/// One `listens` entry; `source` is `None` for a listen that hears any emitter.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SurfaceListen {
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<SurfaceListenSource>,
+}
+
+/// One transition per source state.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SurfaceTransition {
+    pub from: String,
+    pub to: String,
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    pub guard: Option<serde_json::Value>,
+    #[serde(rename = "awaitRender", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    pub await_render: Option<Vec<orbital_core_base::ir::types::AwaitRender>>,
+}
+
+/// One declared tick of a trait: its name and the run-mode flags the kernel holds.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceTick {
+    pub name: String,
+    pub while_visible: bool,
+    pub runs_in_background: bool,
+}
+
+/// One event a trait declares it emits, with the id the schema stamps on it.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SurfaceEmit {
+    pub event: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<String>,
+}
+
+/// What a host reads of one registered trait. `events` are the transition event keys without the lifecycle events
+/// (`INIT`, `LOAD`, `$MOUNT`), deduplicated in declaration order.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraitSurface {
+    pub name: String,
+    pub orbital: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbital_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trait_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    pub shared: bool,
+    pub browser: bool,
+    pub frame_key: String,
+    pub ticks: Vec<SurfaceTick>,
+    pub states: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial: Option<String>,
+    pub events: Vec<String>,
+    pub emits: Vec<SurfaceEmit>,
+    pub listens: Vec<SurfaceListen>,
+    pub transitions: Vec<SurfaceTransition>,
+}
+
+/// What a host reads of the whole program: every registered trait in name order, and the browser-stored entities.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramSurface {
+    pub traits: Vec<TraitSurface>,
+    pub browser_entities: Vec<String>,
 }
 
 fn json<T: serde::Serialize>(value: &T) -> Result<serde_json::Value, String> {
@@ -195,12 +291,18 @@ impl RuntimeKernel {
                 }))
             }
             ContractQuery::EntityOwner { entity } => json(&self.entity_owner_orbital(&entity)),
+            ContractQuery::TraitSurface { trait_name } => json(&self.trait_surface(&trait_name)?),
+            ContractQuery::ProgramSurface => json(&self.program_surface()?),
             ContractQuery::ReadRows {
                 entity,
                 rows,
                 viewer,
             } => {
-                let bindings = if viewer.is_null() { serde_json::json!({ "state": "idle" }) } else { serde_json::json!({ "user": viewer, "state": "idle" }) };
+                let bindings = if viewer.is_null() {
+                    serde_json::json!({ "state": "idle" })
+                } else {
+                    serde_json::json!({ "user": viewer, "state": "idle" })
+                };
                 let policy = self
                     .registry
                     .entity_policies
@@ -226,6 +328,159 @@ impl RuntimeKernel {
         }
     }
 
+    /// The surface of the registered trait `trait_name`; an unknown or ambiguous trait is an error.
+    pub fn trait_surface(&self, trait_name: &str) -> Result<TraitSurface, String> {
+        use crate::effects::response::LifecycleEvent;
+        let owners = crate::trait_owners::TraitOwners::from_kernel(self);
+        let orbital_name = owners.owning_orbital(trait_name)?;
+        let def = self
+            .registry
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .cloned()
+            .ok_or_else(|| format!("unknown trait: {trait_name}"))?;
+        let programs = self.registered_programs();
+        let orbital = programs
+            .iter()
+            .flat_map(|schema| schema.orbitals.iter())
+            .find(|orbital| orbital.name == orbital_name)
+            .ok_or_else(|| format!("unknown orbital: {orbital_name}"))?;
+        let entity = def.linked_entity.clone().or_else(|| match &orbital.entity {
+            EntityRef::Inline(e) => Some(e.name.clone()),
+            EntityRef::Reference(r) => Some(r.clone()),
+            EntityRef::Extends(e) => Some(e.reference.clone()),
+        });
+        let shared = entity.as_deref().is_some_and(|name| {
+            programs
+                .iter()
+                .flat_map(|schema| schema.orbitals.iter())
+                .any(|o| {
+                    std::iter::once(&o.entity)
+                        .chain(o.auxiliary_entities.iter().flatten())
+                        .any(|er| matches!(er, EntityRef::Inline(d) if d.name == name && d.shared))
+                })
+        });
+        let browser = entity.as_deref().is_some_and(|name| {
+            self.registry
+                .entity_definitions
+                .read()
+                .get(name)
+                .is_some_and(|d| d.browser)
+        });
+        let ticks = def
+            .ticks
+            .iter()
+            .flatten()
+            .map(|t| SurfaceTick {
+                name: t.name.clone(),
+                while_visible: t.while_visible,
+                runs_in_background: t.background,
+            })
+            .collect();
+        let machine = &def.state_machine;
+        let mut events: Vec<String> = Vec::new();
+        let mut transitions = Vec::new();
+        for t in &machine.transitions {
+            let guard = t
+                .guard
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| format!("guard of {} on {}: {e}", t.event, trait_name))?;
+            if LifecycleEvent::parse(&t.event).is_none() && !events.contains(&t.event) {
+                events.push(t.event.clone());
+            }
+            for from in t.from.states() {
+                transitions.push(SurfaceTransition {
+                    from: from.to_string(),
+                    to: t.to.clone(),
+                    event: t.event.clone(),
+                    guard: guard.clone(),
+                    await_render: t.await_render.clone(),
+                });
+            }
+        }
+        let listens = def
+            .listens
+            .iter()
+            .flat_map(|listens| listens.iter())
+            .map(|listen| SurfaceListen {
+                event: listen.event.clone(),
+                source: match &listen.source {
+                    None | Some(orbital_core_base::schema::ListenSource::Any) => None,
+                    Some(orbital_core_base::schema::ListenSource::Trait { trait_name, .. }) => {
+                        Some(SurfaceListenSource {
+                            orbital: orbital_name.to_string(),
+                            trait_name: trait_name.clone(),
+                        })
+                    }
+                    Some(orbital_core_base::schema::ListenSource::Orbital {
+                        orbital,
+                        trait_name,
+                        ..
+                    }) => Some(SurfaceListenSource {
+                        orbital: orbital.clone(),
+                        trait_name: trait_name.clone(),
+                    }),
+                },
+            })
+            .collect();
+        let identity = self.emit_source(trait_name);
+        let emits = def
+            .emits
+            .iter()
+            .flatten()
+            .map(|e| SurfaceEmit {
+                event: e.event.clone(),
+                event_id: e.event_id.clone(),
+            })
+            .collect();
+        Ok(TraitSurface {
+            name: trait_name.to_string(),
+            orbital: orbital_name.to_string(),
+            orbital_id: identity.orbital_id,
+            trait_id: identity.trait_id,
+            entity,
+            shared,
+            browser,
+            frame_key: self.trait_frame_key(trait_name),
+            ticks,
+            states: machine.states.iter().map(|s| s.name.clone()).collect(),
+            initial: machine
+                .states
+                .iter()
+                .find(|s| s.is_initial == Some(true))
+                .map(|s| s.name.clone()),
+            events,
+            emits,
+            listens,
+            transitions,
+        })
+    }
+
+    /// Every registered trait's surface in trait-name order; an ambiguous trait is an error.
+    pub fn program_surface(&self) -> Result<ProgramSurface, String> {
+        let owners = crate::trait_owners::TraitOwners::from_kernel(self);
+        let traits = owners
+            .iter()
+            .map(|(name, _)| self.trait_surface(name))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut browser_entities: Vec<String> = self
+            .registry
+            .entity_definitions
+            .read()
+            .iter()
+            .filter(|(_, d)| d.browser)
+            .map(|(name, _)| name.clone())
+            .collect();
+        browser_entities.sort();
+        Ok(ProgramSurface {
+            traits,
+            browser_entities,
+        })
+    }
+
     /// The orbital, across every registered program, that declares `entity` inline (its primary entity or an auxiliary).
     pub fn entity_owner_orbital(&self, entity: &str) -> Option<String> {
         self.registered_programs().iter().find_map(|schema| {
@@ -237,6 +492,17 @@ impl RuntimeKernel {
             })
         })
     }
+}
+
+/// The answer to a [`ContractQuery`] for a host with no registered program: the kernel's own answers on an empty
+/// kernel (EXEC-INBOUND-1: an unregistered hook is `unknown_hook`).
+pub fn contract_query_without_program(query: ContractQuery) -> Result<serde_json::Value, String> {
+    RuntimeKernel::new(
+        orbital_core_base::effect_types::RuntimeEnvironment::Server,
+        std::sync::Arc::new(crate::entity_source::InMemoryEntityCache::new()),
+        crate::config::KernelConfig::default(),
+    )
+    .contract_query(query)
 }
 
 #[cfg(test)]
@@ -289,6 +555,210 @@ mod tests {
             .expect("answer")
     }
 
+    fn await_render() -> serde_json::Value {
+        json!({ "trait": "Panel", "slot": "main", "skeleton": { "shape": { "variant": "list", "rows": 3 } } })
+    }
+
+    fn surface_kernel() -> RuntimeKernel {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Door",
+                "id": "orb-door",
+                "entity": { "name": "Lock", "collection": "locks", "shared": true, "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+                "traits": [{
+                    "name": "Gate",
+                    "linkedEntity": "Lock",
+                    "ticks": [
+                        { "name": "poll", "interval": 1000, "effects": [], "whileVisible": true },
+                        { "name": "sweep", "interval": "5s", "effects": [], "runsInBackground": true }
+                    ],
+                    "listens": [{ "event": "PING", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Bell" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "shut", "isInitial": true }, { "name": "open" }],
+                        "events": [{ "key": "OPEN" }, { "key": "INIT" }],
+                        "transitions": [
+                            { "from": "shut", "to": "open", "event": "OPEN", "guard": [">", "@entity.n", 1.0], "awaitRender": [await_render()] },
+                            { "from": ["open"], "to": "shut", "event": "INIT" }
+                        ]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    #[test]
+    fn a_trait_surface_is_what_the_kernel_holds_of_the_trait() {
+        let k = surface_kernel();
+        assert_eq!(
+            ask(&k, json!({ "kind": "traitSurface", "trait": "Gate" })),
+            json!({
+                "name": "Gate",
+                "orbital": "Door",
+                "orbitalId": "orb-door",
+                "entity": "Lock",
+                "shared": true,
+                "browser": false,
+                "frameKey": "$shared::Lock",
+                "ticks": [
+                    { "name": "poll", "whileVisible": true, "runsInBackground": false },
+                    { "name": "sweep", "whileVisible": false, "runsInBackground": true }
+                ],
+                "states": ["shut", "open"],
+                "initial": "shut",
+                "events": ["OPEN"],
+                "emits": [],
+                "listens": [{ "event": "PING", "source": { "orbital": "Door", "trait": "Bell" } }],
+                "transitions": [
+                    { "from": "shut", "to": "open", "event": "OPEN", "guard": [">", "@entity.n", 1.0], "awaitRender": [await_render()] },
+                    { "from": "open", "to": "shut", "event": "INIT" }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn a_trait_surface_carries_the_trait_id_and_the_declared_emits_with_their_event_ids() {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Bell",
+                "entity": { "name": "Ring", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Ringer",
+                    "id": "trait-ringer",
+                    "emits": [{ "event": "RUNG", "eventId": "ev-rung" }, { "event": "MUTED" }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "GO" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO" }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        let surface = ask(&kernel, json!({ "kind": "traitSurface", "trait": "Ringer" }));
+        assert_eq!(surface["traitId"], "trait-ringer");
+        assert_eq!(
+            surface["emits"],
+            json!([{ "event": "RUNG", "eventId": "ev-rung" }, { "event": "MUTED" }])
+        );
+    }
+
+    #[test]
+    fn an_unshared_browser_trait_keys_its_frame_by_its_own_name() {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Shelf",
+                "entity": { "name": "Book", "collection": "books", "browser": true, "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Reader",
+                    "linkedEntity": "Book",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "READ" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "READ" }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        let surface = ask(
+            &kernel,
+            json!({ "kind": "traitSurface", "trait": "Reader" }),
+        );
+        assert_eq!(surface["frameKey"], "Reader");
+        assert_eq!(surface["browser"], true);
+        assert_eq!(surface["shared"], false);
+        assert_eq!(surface["ticks"], json!([]));
+        assert!(surface.get("orbitalId").is_none(), "{surface}");
+    }
+
+    #[test]
+    fn a_program_surface_holds_every_trait_and_the_browser_entities() {
+        let kernel = surface_kernel();
+        let shelf: OrbitalSchema = serde_json::from_value(json!({
+            "name": "Shelves",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Shelf",
+                "entity": { "name": "Book", "collection": "books", "browser": true, "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Reader",
+                    "linkedEntity": "Book",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "READ" }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "READ" }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(shelf).unwrap();
+        let program = ask(&kernel, json!({ "kind": "programSurface" }));
+        assert_eq!(program["browserEntities"], json!(["Book"]));
+        let traits = program["traits"].as_array().expect("traits");
+        let names: Vec<_> = traits.iter().map(|t| t["orbital"].clone()).collect();
+        assert_eq!(names, vec![json!("Door"), json!("Shelf")]);
+        assert_eq!(
+            traits[0],
+            ask(&kernel, json!({ "kind": "traitSurface", "trait": "Gate" }))
+        );
+        assert_eq!(
+            traits[1],
+            ask(
+                &kernel,
+                json!({ "kind": "traitSurface", "trait": "Reader" })
+            )
+        );
+    }
+
+    #[test]
+    fn a_transition_without_await_render_round_trips_unchanged() {
+        let transition = json!({ "from": "a", "to": "b", "event": "GO" });
+        let parsed: orbital_core_base::schema::TransitionDefinition =
+            serde_json::from_value(transition.clone()).expect("transition");
+        assert_eq!(parsed.await_render, None);
+        assert_eq!(serde_json::to_value(&parsed).expect("json"), transition);
+    }
+
+    #[test]
+    fn an_unknown_trait_has_no_surface() {
+        let k = surface_kernel();
+        let err = k
+            .contract_query(
+                serde_json::from_value(json!({ "kind": "traitSurface", "trait": "Nope" }))
+                    .expect("query"),
+            )
+            .expect_err("unknown trait");
+        assert!(err.contains("unknown trait: Nope"), "{err}");
+    }
+
     #[test]
     fn external_inputs_and_readable_entities_are_the_programs() {
         let k = kernel();
@@ -306,6 +776,39 @@ mod tests {
             "ADD"
         );
         assert!(ask(&k, json!({ "kind": "findExternalInput", "orbital": "Cal", "trait": "Push", "event": "PUSH" })).is_null());
+    }
+
+    #[test]
+    fn a_host_with_no_program_gets_the_kernels_empty_answers() {
+        assert!(contract_query_without_program(
+            serde_json::from_value(json!({ "kind": "findExternalInput", "orbital": "Cal", "trait": "Push", "event": "ADD" })).expect("query")
+        )
+        .expect("answer")
+        .is_null());
+        assert_eq!(
+            contract_query_without_program(
+                serde_json::from_value(json!({ "kind": "externalInputs" })).expect("query")
+            )
+            .expect("answer"),
+            json!([])
+        );
+        let hook = contract_query_without_program(
+            serde_json::from_value(json!({ "kind": "findInbound", "name": "hook" }))
+                .expect("query"),
+        )
+        .expect("answer");
+        assert_eq!(hook["answer"]["status"], 404);
+        assert_eq!(
+            hook,
+            ask(
+                &RuntimeKernel::new(
+                    RuntimeEnvironment::Server,
+                    Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+                    KernelConfig::default()
+                ),
+                json!({ "kind": "findInbound", "name": "hook" })
+            )
+        );
     }
 
     #[test]

@@ -393,12 +393,13 @@ impl RuntimeKernel {
     /// Where a leg carrying `effects` runs, and whether it mixes browser-stored rows with server work (refused).
     pub(super) fn leg_residence(&self, effects: &[Effect]) -> (LegResidence, bool) {
         let residence = orbital_core_base::runs_on::Residence::of_entities(self.registry.entity_definitions.read().values());
-        let browser_rows = effects
+        let touch = effects
             .iter()
-            .any(|e| matches!(e, Effect::Persist { .. } | Effect::Fetch { .. }) && browser_data_effect(e, &residence));
-        let server_work = effects.iter().any(|e| !browser_data_effect(e, &residence));
-        let at = if server_work { LegResidence::Server } else { LegResidence::Browser };
-        (at, browser_rows && server_work)
+            .fold(orbital_core_base::runs_on::LegTouch::NONE, |acc, e| {
+                acc.then(orbital_core_base::runs_on::LegTouch::of_effect(e, &residence))
+            });
+        let at = if touch.server_work { LegResidence::Server } else { LegResidence::Browser };
+        (at, touch.is_mixed())
     }
 
     pub(super) fn all_browser_data(&self, effects: &[Effect]) -> bool {
@@ -602,6 +603,7 @@ impl RuntimeKernel {
                     delivery: Arc::new(delivery_record_value(&ev.event, &payload, &source)),
                     source_payload: Arc::clone(&payload),
                     payload,
+                    payload_digest: None,
                     listen_guard: None,
                     fans_out: true,
                     repaint: None,
@@ -871,7 +873,7 @@ fn keyed_row(row: &Value) -> std::borrow::Cow<'_, Value> {
     match row {
         Value::Object(fields) if !fields.contains_key("id") => {
             let mut fields = fields.clone();
-            fields.insert("id".into(), Value::string(wire_row_id(row)));
+            fields.insert(orbital_core_base::static_key!("id"), Value::string(wire_row_id(row)));
             std::borrow::Cow::Owned(Value::Object(fields))
         }
         _ => std::borrow::Cow::Borrowed(row),

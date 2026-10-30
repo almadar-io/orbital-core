@@ -330,9 +330,43 @@ pub fn accepts_arity(op: OsOp, count: usize) -> bool {
     (op.min_args()..=op.max_args()).contains(&count)
 }
 
-/// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential }` objects
-/// becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
-/// followed by the value of the credential it names (an empty name is bytes alone). `source` reads a credential by
+/// How a credential segment's value is encoded as the host substitutes it: the `encode` field of an `os/send` segment,
+/// and the second argument of `credential/byte-length`. The one definition of the three encoders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentEncode {
+    /// Standard padded base64 of the value's UTF-8 bytes.
+    Base64,
+    /// `encodeURIComponent`.
+    Uri,
+    /// `application/x-www-form-urlencoded`: a space is `+`.
+    Form,
+}
+
+impl SegmentEncode {
+    pub const NAMES: [&'static str; 3] = ["base64", "uri", "form"];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "base64" => Some(Self::Base64),
+            "uri" => Some(Self::Uri),
+            "form" => Some(Self::Form),
+            _ => None,
+        }
+    }
+
+    pub fn apply(self, value: &str) -> String {
+        match self {
+            Self::Base64 => crate::codec::base64_encode(value.as_bytes()),
+            Self::Uri => crate::codec::encode_uri_component(value),
+            Self::Form => crate::codec::form_urlencode_value(value),
+        }
+    }
+}
+
+/// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential, encode? }`
+/// objects becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
+/// followed by the value of the credential it names, passed through its `encode` when it has one (an empty name is
+/// bytes alone). `source` reads a credential by
 /// name; `None` holds none. The credential value exists only in the returned operand: the program, the journal and
 /// the answer never hold it. Any other op, or a data operand that is already bytes, is returned as it is.
 pub fn resolve_credential_segments(
@@ -357,6 +391,14 @@ pub fn resolve_credential_segments(
             return Err(invalid(at, "needs a bytes text and a credential name"));
         };
         bytes.extend(STANDARD.decode(text.as_str()).map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?);
+        let encode = match fields.get("encode") {
+            None => None,
+            Some(Value::String(requested)) => Some(
+                SegmentEncode::from_name(requested.as_str())
+                    .ok_or_else(|| invalid(at, &format!("encode must be one of {}", SegmentEncode::NAMES.join(", "))))?,
+            ),
+            Some(_) => return Err(invalid(at, &format!("encode must be one of {}", SegmentEncode::NAMES.join(", ")))),
+        };
         if name.as_str().is_empty() {
             continue;
         }
@@ -364,7 +406,10 @@ pub fn resolve_credential_segments(
             .ok_or_else(|| denied("no credential source is configured"))?(name.as_str())
             .map_err(|message| OsError::new(OsErrorKind::Io, format!("{}: credential {name}: {message}", op.name())))?;
         match held {
-            Some(value) => bytes.extend_from_slice(value.as_bytes()),
+            Some(value) => match encode {
+                Some(encode) => bytes.extend_from_slice(encode.apply(&value).as_bytes()),
+                None => bytes.extend_from_slice(value.as_bytes()),
+            },
             None => return Err(denied(&format!("credential {name} is not held"))),
         }
     }
@@ -649,5 +694,61 @@ mod tests {
             !accepts_arity(OsOp::CurrentExe, 1),
             "control: it takes no path"
         );
+    }
+
+    #[derive(serde::Deserialize)]
+    struct EncodeVector {
+        encode: String,
+        input: String,
+        expect: String,
+    }
+
+    fn encode_vectors() -> Vec<EncodeVector> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/operators/credential-encode-vectors.json");
+        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("vectors")
+    }
+
+    fn held(name: &str, value: &str) -> impl Fn(&str) -> Result<Option<String>, String> {
+        let (name, value) = (name.to_string(), value.to_string());
+        move |asked| Ok((asked == name).then(|| value.clone()))
+    }
+
+    fn send_resolved(segment: serde_json::Value, value: &str) -> Result<Vec<u8>, OsError> {
+        use base64::Engine;
+        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let source = held("CRED", value);
+        let resolved = resolve_credential_segments(OsOp::Send, &args, Some(&source))?;
+        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
+        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+    }
+
+    #[test]
+    fn a_segment_encode_is_applied_to_the_credential_value_on_every_shared_vector() {
+        let vectors = encode_vectors();
+        assert!(!vectors.is_empty());
+        for v in &vectors {
+            let prefix = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"P=");
+            let segment = json!({ "bytes": prefix, "credential": "CRED", "encode": v.encode });
+            let expected = format!("P={}", v.expect);
+            assert_eq!(send_resolved(segment, &v.input).expect("resolved"), expected.into_bytes(), "{} {:?}", v.encode, v.input);
+        }
+    }
+
+    #[test]
+    fn a_segment_without_encode_writes_the_credential_verbatim() {
+        let segment = json!({ "bytes": "", "credential": "CRED" });
+        assert_eq!(send_resolved(segment, "a b&c").expect("resolved"), b"a b&c".to_vec());
+    }
+
+    #[test]
+    fn an_unknown_or_non_text_segment_encode_is_refused_and_a_known_one_beside_no_credential_is_inert() {
+        for bad in [json!("rot13"), json!("BASE64"), json!(""), json!(7), json!(null)] {
+            let segment = json!({ "bytes": "", "credential": "CRED", "encode": bad });
+            let error = send_resolved(segment, "x").expect_err("refused");
+            assert_eq!(error.kind, OsErrorKind::Invalid, "{bad}");
+            assert!(error.message.contains("encode"), "{}", error.message);
+        }
+        let bytes_alone = json!({ "bytes": "QQ==", "credential": "", "encode": "form" });
+        assert_eq!(send_resolved(bytes_alone, "x").expect("resolved"), b"A".to_vec());
     }
 }

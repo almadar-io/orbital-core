@@ -50,7 +50,7 @@ use orbital_core_base::schema::types::{
 use orbital_core_base::theme::{
     resolve_theme, resolve_theme_default, ResolvedTheme, ThemeMode, ThemePresets,
 };
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Shared, Value};
 use orbital_core_base::value::ValueMap;
 use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder, EntropySource, SealedOutputs};
 use orbital_core_eval::evaluator::Evaluator;
@@ -128,6 +128,8 @@ struct CascadeItem {
     event: String,
     /// Shared across one fan-out's targets (G-ORBITAL-CORE-051); a delivery copies it only when processed.
     payload: Arc<Value>,
+    /// The digest of `payload` shared by one fan-out's targets, filled by the first delivery that visits.
+    payload_digest: Option<Arc<std::sync::OnceLock<u128>>>,
     delivery: Arc<Value>,
     /// The emit's own payload, which a listens `when` reads as `@payload`.
     source_payload: Arc<Value>,
@@ -144,6 +146,15 @@ struct CascadeItem {
     listen_key: Option<ListenKey>,
     /// The row this delivery steps: the evaluated `per` key, or the row of the step that queued it.
     row: Option<String>,
+}
+
+impl CascadeItem {
+    fn payload_digest(&self) -> u128 {
+        match &self.payload_digest {
+            Some(cell) => *cell.get_or_init(|| orbital_core_eval::util::visit_key::payload_digest(&self.payload)),
+            None => orbital_core_eval::util::visit_key::payload_digest(&self.payload),
+        }
+    }
 }
 
 /// A `per` clause awaiting evaluation, with the trait whose emit the listener heard (who hears a refusal).
@@ -897,12 +908,7 @@ fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
 }
 
 fn browser_data_effect(effect: &Effect, residence: &orbital_core_base::runs_on::Residence) -> bool {
-    match effect {
-        Effect::Persist { entity_type, .. } | Effect::Fetch { entity_type, .. } => {
-            residence.is_client(entity_type)
-        }
-        _ => false,
-    }
+    !orbital_core_base::runs_on::LegTouch::of_effect(effect, residence).server_work
 }
 
 /// Merge the Set-effect `set` fields into the `base` entity (read-modify-write).
@@ -937,8 +943,8 @@ impl PendingSets {
         std::borrow::Cow::Owned(c)
     }
 
-    fn insert(&mut self, field: String, value: Value) {
-        self.sets.insert(field.clone().into(), value.clone());
+    fn insert(&mut self, field: Shared<String>, value: Value) {
+        self.sets.insert(field.clone(), value.clone());
         if !self.view.set_field(field, value) {
             self.view = SharedEntity::from_value(Value::object(self.sets.clone()));
         }
@@ -1050,6 +1056,7 @@ mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
+pub mod page_circuit;
 pub mod contract_query;
 mod dispatch_scope;
 mod values;

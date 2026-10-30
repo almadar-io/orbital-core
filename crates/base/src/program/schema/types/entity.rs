@@ -790,7 +790,7 @@ pub enum OnDelete {
 }
 
 /// Relation definition for entity references
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RelationDefinition {
     /// Target entity name
     pub entity: String,

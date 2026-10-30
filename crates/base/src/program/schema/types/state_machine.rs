@@ -176,6 +176,11 @@ pub struct TransitionDefinition {
     /// by `orb validate` and judged by `orb verify`. No runtime effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ensures: Option<Vec<SExpression>>,
+
+    /// Predicted renders this transition's server effects lead to (awaiting-server skeletons). Computed by
+    /// orbital-compiler from the resolved schema; never authored.
+    #[serde(rename = "awaitRender", default, skip_serializing_if = "Option::is_none")]
+    pub await_render: Option<Vec<crate::ir::types::AwaitRender>>,
 }
 
 /// String or array of strings (for `from` field)

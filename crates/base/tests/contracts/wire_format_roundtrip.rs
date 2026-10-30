@@ -228,6 +228,7 @@ fn emit_payload_field_omits_optional_nulls() {
         entity: None,
         projected_from: None,
         items: None,
+        relation: None,
     };
     let json = serde_json::to_string(&field).expect("serialize payload field");
     assert!(
@@ -259,6 +260,7 @@ fn emit_payload_field_with_type_when_round_trips() {
         entity: None,
         projected_from: None,
         items: None,
+        relation: None,
     };
     let json = serde_json::to_string(&field).expect("serialize payload field with typeWhen");
     assert!(

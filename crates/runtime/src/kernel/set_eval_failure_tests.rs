@@ -67,7 +67,7 @@ fn has_set(result: &ProcessEventResult, field: &str) -> bool {
     result
         .effect_results
         .iter()
-        .any(|r| matches!(&r.effect, Effect::Set { path: p, .. } if *p == path))
+        .any(|r| matches!(&r.effect, Effect::Set { path: p, .. } if p.as_str() == path))
 }
 
 #[test]
@@ -79,7 +79,7 @@ fn a_set_that_fails_to_evaluate_writes_nothing_and_records_the_failure() {
     let failed = result
         .effect_results
         .iter()
-        .find(|r| matches!(r.effect, Effect::Set { ref path, .. } if path == "@entity.app"))
+        .find(|r| matches!(r.effect, Effect::Set { ref path, .. } if path.as_str() == "@entity.app"))
         .expect("the set is recorded");
     assert!(
         matches!(failed.outcome, EffectOutcome::Failed),

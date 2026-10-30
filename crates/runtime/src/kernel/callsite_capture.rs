@@ -87,6 +87,17 @@ pub fn references_callsite_payload(def: &TraitDefinition) -> bool {
         || contains_prefixed(&as_json(&def.state_machine), CALLSITE_PAYLOAD_PREFIX)
 }
 
+/// Every `@trait.X` a trait names in its config or state machine, in the order first met, itself excluded.
+pub(super) fn embedded_trait_refs(def: &TraitDefinition) -> Names {
+    let mut refs = Names::new();
+    if let Some(config) = &def.config {
+        trait_refs(&as_json(config), &mut refs);
+    }
+    trait_refs(&as_json(&def.state_machine), &mut refs);
+    refs.retain(|name| name != &def.name);
+    refs
+}
+
 /// Referrer trait -> the embedded children (`@trait.X` in its config or state machine) whose subtree
 /// needs a re-render under the referrer's payload: a child that reads `@callsitePayload`, or is a
 /// pass-through to a descendant that does. One orbital's traits, so same-named traits of sibling
@@ -96,12 +107,7 @@ pub fn capture_children(traits: &[&TraitDefinition]) -> HashMap<String, Names> {
         traits.iter().map(|t| (t.name.as_str(), *t)).collect();
     let mut adjacency: HashMap<&str, Names> = HashMap::new();
     for def in traits {
-        let mut refs = Names::new();
-        if let Some(config) = &def.config {
-            trait_refs(&as_json(config), &mut refs);
-        }
-        trait_refs(&as_json(&def.state_machine), &mut refs);
-        refs.retain(|name| name != &def.name);
+        let refs = embedded_trait_refs(def);
         if !refs.is_empty() {
             adjacency.insert(def.name.as_str(), refs);
         }

@@ -2,6 +2,7 @@
 //! operators, services, patterns and their props. Compiler and shells share them.
 
 pub mod canonical_operators;
+pub mod field_stamp;
 pub mod pattern_props;
 pub mod pattern_registry;
 pub mod program_types;

@@ -115,7 +115,7 @@ pub(super) fn parse_set(args: &[SExpression]) -> Option<Effect> {
     if args.len() < 2 {
         return None;
     }
-    let path = args[0].as_str()?.to_string();
+    let path = args[0].as_shared_str()?.clone();
     let value = Value::from(args[1].clone());
     Some(Effect::Set { path, value })
 }

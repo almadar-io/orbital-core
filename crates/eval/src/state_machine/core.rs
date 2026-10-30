@@ -358,6 +358,7 @@ mod tests {
                         serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                     ]),
                     ensures: None,
+                    await_render: None,
                 },
                 TransitionDefinition {
                     from: StringOrArray::Single("registering".to_string()),
@@ -372,6 +373,7 @@ mod tests {
                         serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
                     ]),
                     ensures: None,
+                    await_render: None,
                 },
                 TransitionDefinition {
                     from: StringOrArray::Single("registering".to_string()),
@@ -383,6 +385,7 @@ mod tests {
                         serde_json::from_str(r#"["navigate", "/users"]"#).unwrap(),
                     ]),
                     ensures: None,
+                    await_render: None,
                 },
                 TransitionDefinition {
                     from: StringOrArray::Single("browsing".to_string()),
@@ -394,6 +397,7 @@ mod tests {
                         serde_json::from_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
                     ]),
                     ensures: None,
+                    await_render: None,
                 },
             ],
         }
@@ -408,6 +412,7 @@ mod tests {
             guard: guard.map(|g| serde_json::from_str(g).unwrap()),
             effects: None,
             ensures: None,
+            await_render: None,
         };
         StateMachine {
             states: vec![

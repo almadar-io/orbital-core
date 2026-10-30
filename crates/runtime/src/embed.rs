@@ -13,6 +13,7 @@ pub mod memory;
 pub mod server;
 pub mod wire;
 
+pub use crate::kernel::contract_query::contract_query_without_program;
 pub use fold_order::{FoldProgress, FoldedNext};
 pub use server::{
     substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, tab_url_matches,
@@ -39,7 +40,7 @@ use orbital_core_base::theme::ThemeMode;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::sync::Mutex;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use wire::{
     AmbiguousTrait, AppliedWire, Entered, Left, DispatchWire, FiredTick, FrameDispatch, FrameWire, MountFailure,
@@ -48,7 +49,7 @@ use wire::{
 
 /// One host frame, before it is given a wire form: each emit cascade is the `D` the caller asked for.
 pub struct FrameParts<D> {
-    pub fired: Vec<FiredTick>,
+    pub fired: BTreeMap<String, Vec<FiredTick>>,
     pub response: EventResponse,
     pub dispatches: Vec<(String, D)>,
     pub browser_legs: Vec<RoutedLeg>,
@@ -289,6 +290,15 @@ impl EmbeddedKernel {
     }
 
     /// The kernel's mounts for a client opening `route_path` (EXEC-ENDPOINT-3).
+    pub fn page_circuit(&self, page: Option<&str>, route: Option<&str>) -> Result<crate::kernel::page_circuit::PageCircuit, String> {
+        self.kernel.page_circuit(page, route)
+    }
+
+    /// The answer to one [`crate::kernel::contract_query::ContractQuery`] about the registered program, as JSON.
+    pub fn contract_query(&self, query: crate::kernel::contract_query::ContractQuery) -> Result<serde_json::Value, String> {
+        self.kernel.contract_query(query)
+    }
+
     pub fn route_mounts(&self, route_path: &str) -> Vec<MountSeed> {
         self.kernel.route_mounts(route_path)
     }
@@ -746,11 +756,12 @@ impl EmbeddedKernel {
         if due.is_empty() {
             return Ok(None);
         }
+        let due_count = due.len();
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         let mut rerenders = Vec::new();
         let mut last_repaint: HashMap<(String, String), usize> = HashMap::new();
         let mut dispatch_tick_at: Vec<usize> = Vec::new();
-        let mut fired = Vec::new();
+        let mut fired: BTreeMap<String, Vec<FiredTick>> = BTreeMap::new();
         let mut dispatches = Vec::new();
         let mut browser_legs = Vec::new();
         let mut errors = Vec::new();
@@ -781,9 +792,7 @@ impl EmbeddedKernel {
                             leg,
                         });
                     }
-                    let at = fired.len();
-                    fired.push(FiredTick { orbital: orbital.to_string(), trait_name, tick });
-                    let FiredTick { trait_name, tick, .. } = &fired[at];
+                    let at = outcomes.len();
                     outcomes.push((trait_name.clone(), dispatched.outcome));
                     // Own writes are sealed only when a cascade is about to read them, in tick order; ticks with no
                     // cascade between them seal together.
@@ -795,7 +804,8 @@ impl EmbeddedKernel {
                             absorb(&mut frames, delta);
                         }
                     }
-                    match self.kernel.dispatch_tick_emits(orbital, trait_name, None, tick, Some(&self.client_id), &outcomes[at].1) {
+                    let emitted = self.kernel.dispatch_tick_emits(orbital, &trait_name, None, &tick, Some(&self.client_id), &outcomes[at].1);
+                    match emitted {
                         Ok(emits) => {
                             for emit in emits {
                                 if let Some(delta) = emit.dispatch.response.frames.clone() {
@@ -811,6 +821,15 @@ impl EmbeddedKernel {
                             }
                         }
                         Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),
+                    }
+                    let entry = FiredTick { trait_name, tick };
+                    match fired.get_mut(orbital) {
+                        Some(ticks) => ticks.push(entry),
+                        None => {
+                            let mut ticks = Vec::with_capacity(due_count);
+                            ticks.push(entry);
+                            fired.insert(orbital.to_string(), ticks);
+                        }
                     }
                 }
                 Err(e) => errors.push(format!("tick {trait_name}.{tick}: {e}")),

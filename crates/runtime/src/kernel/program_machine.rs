@@ -6,6 +6,7 @@ use std::prelude::v1::*;
 use crate::embed::eval_wire::EvalStepWire;
 use crate::process_result::{EffectRun, EffectRunStatus, ProcessEventResult};
 use crate::propositions::{judge_propositions, PropositionObservation, PropositionVerdict};
+use crate::step_replay::PendingAsk;
 use orbital_core_base::schema::types::TraitDefinition;
 use orbital_core_base::schema::SExpression;
 use orbital_core_base::value::Value;
@@ -171,6 +172,30 @@ pub struct PlayedResult {
     /// The slots the played trait filled, walked by the kernel's render probe; present when `options.render` asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rendered: Option<Vec<RenderedSlot>>,
+    /// Why the requested trait's step failed, when it did.
+    pub failure: Option<String>,
+    /// The step's row after its effects.
+    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    pub entity_after: serde_json::Value,
+    pub pending_asks: Vec<PendingAsk>,
+    /// Every trait the request's event moved, the requested one among them.
+    pub outcomes: Vec<PlayedOutcome>,
+}
+
+/// One trait the played request's cascade moved.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayedOutcome {
+    pub orbital: String,
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+    pub from: String,
+    pub to: String,
+    pub arm: Option<u32>,
+    pub fired: bool,
+    pub effects: Vec<PlayedEffect>,
+    pub emitted: Vec<PlayedEmit>,
 }
 
 /// One non-`system` slot a played trait's `render-ui` filled, as the client circuit rendered it.
@@ -252,6 +277,61 @@ pub struct TraitRef {
     pub overlay_only: bool,
 }
 
+/// What a request seeds on the trait before its event runs, and `program/step` echoes back as asked.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepSeeds {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue }"))]
+    pub entity: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue }"))]
+    pub config: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settle_ms: Option<f64>,
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue } | null"))]
+    pub viewer: Option<Option<serde_json::Map<String, serde_json::Value>>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "{ [key in string]: string }"))]
+    pub credentials: Option<serde_json::Map<String, serde_json::Value>>,
+}
+
+fn present_or_null<'de, D, T>(d: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(d).map(Some)
+}
+
+fn empty_payload() -> Value {
+    Value::Object(Default::default())
+}
+
+/// A request `program/step` plays: the event for `trait_name` in `orbital`, from the state `from`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayRequest {
+    pub orbital: String,
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub from: String,
+    pub event: String,
+    #[serde(default = "empty_payload")]
+    #[cfg_attr(test, ts(type = "EventPayload"))]
+    pub payload: Value,
+    #[serde(flatten)]
+    pub seeds: StepSeeds,
+}
+
 /// A request `program/step` played: the request as asked, and the circuit it ran.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +343,9 @@ pub struct PlayedStep {
     pub event: String,
     #[cfg_attr(test, ts(type = "EventPayload"))]
     pub payload: Value,
+    #[serde(flatten)]
+    #[cfg_attr(test, ts(flatten))]
+    pub seeds: StepSeeds,
     pub result: PlayedResult,
 }
 
@@ -378,7 +461,11 @@ mod tests {
                 "effects": [{ "type": "set", "args": ["@entity.code", "@payload.code"], "status": "executed", "routed": false }],
                 "emitted": [{ "type": "OPENED", "payload": { "by": "code" }, "timestamp": 0 }],
                 "guards": [{ "arm": 0, "guard": ["=", "@payload.code", "1234"], "passed": true, "trace": [] }],
-                "ensures": [{ "proposition": ["=", "@entity.code", "@payload.code"], "verdict": "held" }]
+                "ensures": [{ "proposition": ["=", "@entity.code", "@payload.code"], "verdict": "held" }],
+                "failure": null,
+                "entityAfter": { "code": "1234" },
+                "pendingAsks": [],
+                "outcomes": [{ "orbital": "DoorOrbital", "trait": "Lock", "event": "UNLOCK", "from": "locked", "to": "open", "arm": 0, "fired": true, "effects": [], "emitted": [] }]
             }
         });
         let played: PlayedStep = serde_json::from_value(wire.clone()).expect("a played step");

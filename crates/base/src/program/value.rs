@@ -14,6 +14,15 @@ use std::sync::Arc;
 /// them in the order the fields were written, as the JS evaluator does.
 pub type ValueMap = crate::collections::IndexMap<Shared<String>, Value>;
 
+/// The one shared `Shared<String>` for a literal key: built on first use, then a reference-count bump per call.
+#[macro_export]
+macro_rules! static_key {
+    ($text:literal) => {{
+        static KEY: $crate::sync::OnceLock<$crate::value::Shared<String>> = $crate::sync::OnceLock::new();
+        KEY.get_or_init(|| $crate::value::Shared::new($text.to_string())).clone()
+    }};
+}
+
 /// A copy-on-write handle: cloning shares the data; a write through `DerefMut` copies only when it is shared.
 /// It is how a value's lists and records are held, so reading one is a reference-count bump, not a deep copy,
 /// and an accumulator written in a loop is updated in place.
@@ -1138,7 +1147,7 @@ mod tests {
         let mut held = original.clone();
         held.edit(|items| {
             for item in items.iter_mut() {
-                *item = *item;
+                *item = std::convert::identity(*item);
             }
         });
         assert!(Shared::ptr_eq(&original, &held), "an edit that wrote the same values must not copy");

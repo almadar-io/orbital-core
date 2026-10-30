@@ -25,7 +25,7 @@ use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, O
 use orbital_core_base::os_grants::{OsGrants, OsRequirement};
 use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::sync::Mutex;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// Where a server dispatch stands.
@@ -358,18 +358,24 @@ impl EmbeddedServer {
     /// runs, the `[background]` ticks and those of a trait some client has mounted ([`Self::mount_client`]). The host
     /// starts each as a `runTick` request to the orbital named. Same selection as the native host's tick pass for
     /// `[background]` ticks.
-    pub fn tick_pass(&self, now_ms: u64) -> Vec<FiredTick> {
+    pub fn tick_pass(&self, now_ms: u64) -> BTreeMap<String, Vec<FiredTick>> {
         let mut clock = self.ticks.lock();
         let due = clock.due(now_ms, Calendar::local_now);
-        due.into_iter()
-            .filter(|(trait_name, tick)| {
-                self.kernel.trait_mounted(trait_name) || self.kernel.tick_of(trait_name, tick).is_some_and(|t| t.background)
-            })
-            .filter_map(|(trait_name, tick)| {
-                let orbital = clock.orbital_of(&trait_name, &tick)?.to_string();
-                Some(FiredTick { orbital, trait_name, tick })
-            })
-            .collect()
+        let mut by_orbital: BTreeMap<String, Vec<FiredTick>> = BTreeMap::new();
+        for (trait_name, tick) in due {
+            if !(self.kernel.trait_mounted(&trait_name) || self.kernel.tick_of(&trait_name, &tick).is_some_and(|t| t.background)) {
+                continue;
+            }
+            let Some(orbital) = clock.orbital_of(&trait_name, &tick) else { continue };
+            let entry = FiredTick { trait_name, tick };
+            match by_orbital.get_mut(orbital) {
+                Some(ticks) => ticks.push(entry),
+                None => {
+                    by_orbital.insert(orbital.to_string(), vec![entry]);
+                }
+            }
+        }
+        by_orbital
     }
 
     /// Whether the program declares any tick: a host runs its timer only then.
@@ -442,6 +448,10 @@ impl EmbeddedServer {
     }
 
     /// The kernel's mounts for a client opening `route_path` (EXEC-ENDPOINT-3).
+    pub fn page_circuit(&self, page: Option<&str>, route: Option<&str>) -> Result<crate::kernel::page_circuit::PageCircuit, String> {
+        self.kernel.page_circuit(page, route)
+    }
+
     pub fn route_mounts(&self, route_path: &str) -> Vec<crate::effects::response::MountSeed> {
         self.kernel.route_mounts(route_path)
     }

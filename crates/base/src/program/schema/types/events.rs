@@ -517,6 +517,9 @@ pub struct PayloadField {
     /// `[(Adv | string)]`), the same nested form an entity field's `items` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub items: Option<Box<PayloadField>>,
+    /// The declared relation of a `relation` field carried as a payload member (an entity row on the bus), whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<RelationDefinition>,
 }
 
 /// The canonical string spelling of a resolved config literal, for comparison
