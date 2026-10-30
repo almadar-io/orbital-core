@@ -860,7 +860,7 @@ fn a_call_site_listen_on_a_composed_trait_derives_expects_event_too() {
     );
 }
 
-// Shape union, the derivation's merge (twin of `@almadar/core` `mergeExpectationShape`, which the JS composer keeps).
+// Shape union, the derivation's merge (its TS twin, `@almadar/core` `mergeExpectationShape`, is archived).
 #[test]
 fn shape_union_retains_an_explicit_relation_target_identity() {
     let prior = json!({ "name": "owner", "type": "relation", "relation": { "entity": "Member", "cardinality": "one" } });

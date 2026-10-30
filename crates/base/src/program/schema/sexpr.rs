@@ -167,7 +167,7 @@ pub fn strip_literal_list_marker(arr: &[SExpression]) -> &[SExpression] {
 pub use json::{json_value_leaves, json_value_leaves_mut};
 pub use walk::{
     ConditionalNode, MappedChildren, OperatorLookup, OperatorReturn, SequentialBindings, ValueSlot,
-    ValueWalk,
+    ValueSourceSlots, ValueWalk,
 };
 
 #[cfg(test)]

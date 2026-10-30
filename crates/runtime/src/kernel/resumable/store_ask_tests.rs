@@ -129,7 +129,7 @@ fn create_of(request: &IoRequest) -> &Value {
 }
 
 fn draw(fill: u8) -> Exchange {
-    Exchange::new(IoRequest::Random { bytes: 16 }, IoAnswer::Random(Ok(vec![fill; 16])))
+    Exchange::new(IoRequest::Random { bytes: 16 }, IoAnswer::Random(Ok((vec![fill; 16]).into())))
 }
 
 fn id_of(request: &IoRequest) -> String {

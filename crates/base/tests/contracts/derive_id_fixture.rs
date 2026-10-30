@@ -1,6 +1,4 @@
-//! Cross-path fixture (W2-J1): pins `derive_id` byte-for-byte against the JS
-//! twin (`@almadar/core`'s `deriveId` in `src/types/identity.ts`). Both sides
-//! read `tests/fixtures/derive_id.json` and must produce identical output.
+//! Pins `derive_id` byte-for-byte against `tests/fixtures/derive_id.json`; the fixture is the contract.
 
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +18,7 @@ fn fixture_path() -> PathBuf {
 }
 
 #[test]
-fn derive_id_matches_the_js_twin_fixture() {
+fn derive_id_matches_the_fixture() {
     let raw = fs::read_to_string(fixture_path()).expect("read derive_id.json fixture");
     let cases: Vec<FixtureCase> = serde_json::from_str(&raw).expect("parse derive_id.json fixture");
     assert!(!cases.is_empty(), "fixture must not be empty");

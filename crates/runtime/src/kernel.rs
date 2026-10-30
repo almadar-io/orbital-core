@@ -17,9 +17,6 @@ use super::render_store::RenderStore;
 use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort};
 use orbital_core_base::dispatch_mode::DispatchMode;
 
-#[cfg(not(feature = "wire-drivers"))]
-const WIRE_DRIVERS_UNAVAILABLE: &str =
-    "postgres and redis calls need the full kernel build; this is the client build";
 use super::row_query::{
     and_predicates, compile_predicate, default_row_order, query_unsupported_reason,
     resolve_row_set, NotExpressible, PredicateRole, QueryCapabilities, RowPage, RowWriteBatch,
@@ -32,7 +29,7 @@ use crate::effects::executor::page_ordered_rows;
 use crate::effects::executor::ServiceCaller;
 use crate::effects::executor::{EffectExecutor, FetchHandler, FetchPage, PersistenceHandler};
 use crate::effects::response::{delivery_record_value, DeliveryRecord, DispatchLog};
-use crate::effects::response::{EventRequest, EventResponse, LegResidence, TraitFrom};
+use crate::effects::response::{EventRequest, EventResponse, LegResidence, TraitFrom, TransitionRejectionCode};
 use orbital_core_base::bus_event::BusEventSource;
 use orbital_core_base::codec;
 use orbital_core_base::effect_types::PersistOperation;
@@ -55,7 +52,7 @@ use orbital_core_base::theme::{
 };
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder, EntropySource};
+use orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder, EntropySource, SealedOutputs};
 use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_eval::state_machine::manager::StateMachineManager;
 use orbital_core_eval::state_machine::types::{EventPayload, TraitState};
@@ -378,6 +375,8 @@ pub struct RuntimeKernel {
     sessions: Sessions,
     /// Each client session's live streams and running requests, and what freeing one drops (EXEC-DIST-9).
     session_lives: Arc<session_life::SessionLives>,
+    /// Which traits each client has mounted: the mount-scoped ticks a server-role kernel runs (EXEC-TICK-4).
+    mount_ledger: Arc<RwLock<mount_ledger::MountLedger>>,
     /// Each session's client view record: the frames last sent and a version (K5).
     view_records: Arc<view_record::ViewRecords>,
     /// The server sessions' records as this client holds them (K5).
@@ -386,6 +385,8 @@ pub struct RuntimeKernel {
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
     record_entity_after: std::sync::atomic::AtomicBool,
+    /// Whether this host holds the circuit state itself ([`RuntimeKernel::set_stateful`]).
+    stateful: std::sync::atomic::AtomicBool,
     /// The program's declared locales (the first is the default) and merged message catalogs.
     i18n: Arc<RwLock<KernelI18n>>,
     /// The program's placement, the envelope ids accepted per sender and the dispatch origin in flight (EXEC-QUEUE-9).
@@ -417,6 +418,7 @@ pub struct RuntimeKernel {
     /// kernel's own writes are noted for EXEC-RENDER-3.
     rows: Arc<EntitySourceHandler>,
     prob_entropy: EntropySource,
+    sealed_outputs: SealedOutputs,
     /// The one dispatch lane (EXEC-CONC-1): a dispatch holds it from entry to commit.
     lane: Arc<lane::DispatchLane>,
     /// Keys of the keyed calls whose asking dispatch is parked without the lane (EXEC-CONC-0/1).
@@ -591,6 +593,7 @@ impl RuntimeKernel {
         );
         let entity_source: Arc<dyn EntitySource> = io.clone();
         let prob_entropy = entropy_from(Arc::clone(&io));
+        let sealed_outputs = sealed_from(Arc::clone(&io));
         let entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let entity_handler = Arc::new(EntitySourceHandler {
@@ -643,7 +646,9 @@ impl RuntimeKernel {
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashSet<String>>> = Arc::default();
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
+        let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
+            Arc::clone(&mount_ledger),
             Arc::clone(&view_records),
             Arc::clone(&frames),
             Arc::clone(&carried_rows),
@@ -671,6 +676,7 @@ impl RuntimeKernel {
             io,
             rows: entity_handler,
             prob_entropy,
+            sealed_outputs,
             sessions: Sessions {
                 current_user: Arc::new(RwLock::new(current_user)),
                 viewer_by_thread: Arc::default(),
@@ -679,6 +685,7 @@ impl RuntimeKernel {
                 ended_sessions,
             },
             session_lives,
+            mount_ledger,
             view_records,
             inbound_views: Default::default(),
             lane: Arc::default(),
@@ -687,6 +694,7 @@ impl RuntimeKernel {
             tls: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
+            stateful: std::sync::atomic::AtomicBool::new(false),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             step: StepScope {
                 dispatch_now: Arc::new(RwLock::new(None)),
@@ -1013,10 +1021,12 @@ mod host_effects;
 mod repaint;
 mod viewer_scope;
 mod session_life;
+mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
+pub mod contract_query;
 mod dispatch_scope;
 mod values;
 mod config_forward;

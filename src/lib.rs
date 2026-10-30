@@ -24,6 +24,7 @@ pub mod effects {
 }
 pub use orbital_core_base::error;
 pub use orbital_core_base::events;
+pub use orbital_core_base::event_wires;
 pub use orbital_core_base::expects;
 pub use orbital_core_base::fixtures;
 pub use orbital_core_base::generate;
@@ -52,6 +53,7 @@ pub use orbital_core_eval::lower;
 pub use orbital_core_base::renderer_packs;
 pub use orbital_core_base::protocols;
 pub use orbital_core_base::route;
+pub use orbital_core_base::validation_report;
 pub mod runtime {
     pub use orbital_core_base::dispatch_mode;
     pub use orbital_core_runtime::agent_ports;
@@ -188,6 +190,7 @@ pub mod runtime {
     pub use orbital_core_runtime::trait_owners::TraitOwners;
 }
 pub use orbital_core_base::schema;
+pub use orbital_core_base::secret;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;

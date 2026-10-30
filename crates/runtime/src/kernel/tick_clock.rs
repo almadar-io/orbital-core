@@ -111,6 +111,7 @@ enum Schedule {
 }
 
 struct Entry {
+    orbital: String,
     trait_name: String,
     tick_name: String,
     schedule: Schedule,
@@ -173,6 +174,7 @@ impl TickClock {
                         },
                     };
                     entries.push(Entry {
+                        orbital: orbital.name.clone(),
                         trait_name: def.name.clone(),
                         tick_name: tick.name.clone(),
                         schedule,
@@ -198,6 +200,14 @@ impl TickClock {
         } else {
             self.off_screen.insert(trait_name.to_string());
         }
+    }
+
+    /// The orbital that declares the tick `tick_name` of `trait_name` (the first, for a trait two orbitals declare).
+    pub fn orbital_of(&self, trait_name: &str, tick_name: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| e.trait_name == trait_name && e.tick_name == tick_name)
+            .map(|e| e.orbital.as_str())
     }
 
     pub fn len(&self) -> usize {

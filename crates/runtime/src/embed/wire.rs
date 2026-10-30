@@ -16,6 +16,7 @@ use crate::kernel::{AwaitingTrait, TraitSnapshot};
 use orbital_core_base::dispatch_mode::DispatchMode;
 use orbital_core_base::theme::ResolvedTheme;
 use crate::effects::response::{EventRequest, EventResponse};
+use orbital_core_base::secret::Secret;
 use orbital_core_base::value::Value;
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,26 @@ pub struct MountFailure {
     pub message: String,
 }
 
+/// A trait the page entered that has left, and the leg that releases it on its host.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Left {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub orbital: String,
+    pub leg: EventRequest,
+}
+
+/// What entering a page's traits answers: the seeds to mount, and the traits that left.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Entered {
+    pub seeds: Vec<crate::effects::response::MountSeed>,
+    pub left: Vec<Left>,
+}
+
 /// A folded server response: each applied `(trait, newState)` and the merged response.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
@@ -149,6 +170,8 @@ pub enum FoldedNextWire {
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct FiredTick {
+    /// The orbital that declares the tick: the one the `runTick` request is addressed to.
+    pub orbital: String,
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub tick: String,
@@ -276,26 +299,7 @@ impl<T, E> From<Settled<T, E>> for Result<T, E> {
     }
 }
 
-/// A secret value on the wire: a plain JSON string whose `Debug` never shows it.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SecretText(String);
-
-impl SecretText {
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    pub fn into_inner(self) -> String {
-        self.0
-    }
-}
-
-impl std::fmt::Debug for SecretText {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
+pub use orbital_core_base::secret::SecretText;
 
 #[cfg(test)]
 pub mod ts_export;

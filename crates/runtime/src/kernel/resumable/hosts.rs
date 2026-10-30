@@ -142,6 +142,7 @@ impl BlockingHost<'_> {
             | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
             | IoRequest::Clock
+            | IoRequest::Sealed { .. }
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
@@ -168,6 +169,7 @@ impl BlockingHost<'_> {
             | IoRequest::SecretRotate { .. }
             | IoRequest::Random { .. }
             | IoRequest::Clock
+            | IoRequest::Sealed { .. }
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }

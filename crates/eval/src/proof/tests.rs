@@ -145,13 +145,32 @@ fn a_create_is_proved_by_its_guard_and_refuted_without_it() {
     );
     let bare = json!([{ "from": "open", "to": "open", "event": "ADD",
         "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
-    let Verdict::Violated { counterexample } = only(&program(bare, J::Null, inv)) else {
+    let Verdict::Violated { counterexample, .. } = only(&program(bare, J::Null, inv)) else {
         panic!()
     };
     assert!(
         counterexample["payload"]["total"].as_f64().unwrap() < 0.0,
         "{counterexample}"
     );
+}
+
+#[test]
+fn a_violation_carries_the_reason_the_proposition_fails() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let bare = json!([{ "from": "open", "to": "open", "event": "ADD",
+        "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+    let Verdict::Violated { reason, .. } = only(&program(bare, J::Null, inv.clone())) else {
+        panic!()
+    };
+    assert!(reason.contains("(>= @entity.total 0)"), "the reason names the proposition: {reason}");
+    assert!(reason.contains("false on the counterexample"), "{reason}");
+    let guarded = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", -5],
+        "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+    let Verdict::Violated { reason: guarded_reason, .. } = only(&program(guarded, J::Null, inv)) else {
+        panic!()
+    };
+    assert!(guarded_reason.contains("1 condition"), "the conditions reaching the site are counted: {guarded_reason}");
+    assert!(!reason.contains("condition"), "control: a site no guard reaches names no condition: {reason}");
 }
 
 #[test]
@@ -171,7 +190,7 @@ fn an_own_row_update_is_proved_from_the_old_row_and_its_guard() {
         "@entity.total"
     ])));
     assert_eq!(only(&program(ok, J::Null, inv.clone())), Verdict::Proved);
-    let Verdict::Violated { counterexample } = only(&program(pay(None), J::Null, inv)) else {
+    let Verdict::Violated { counterexample, .. } = only(&program(pay(None), J::Null, inv)) else {
         panic!()
     };
     let row = &counterexample["row"];
@@ -1063,7 +1082,7 @@ fn a_nullable_ensures_is_proved_by_a_presence_guard_and_refuted_only_by_present_
         Verdict::Proved
     );
     let bare = json!([pay(keep.clone(), ensures.clone(), None)]);
-    let Verdict::Violated { counterexample } = only(&program(bare, J::Null, J::Null)) else {
+    let Verdict::Violated { counterexample, .. } = only(&program(bare, J::Null, J::Null)) else {
         panic!("without the guard a negative paid breaks the ensures")
     };
     let paids: Vec<&J> = counterexample
@@ -1384,4 +1403,40 @@ fn a_verdict_is_a_pure_function_of_the_program() {
     let mut reversed = transitions;
     reversed.reverse();
     assert_eq!(forward, keyed(reversed), "the same program with its transitions reordered");
+}
+
+#[test]
+fn the_prove_report_prints_a_violated_row_proposition_with_its_counterexample_and_omits_the_proved() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let bare = json!([{ "from": "open", "to": "open", "event": "ADD",
+        "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+    let report = serde_json::to_value(prove_report(&program(bare, J::Null, inv.clone()))).unwrap();
+    let finding = &report["findings"][0];
+    assert_eq!(finding["verdict"], "violated", "{report}");
+    assert_eq!(finding["proposition"]["kind"], "row", "{report}");
+    assert_eq!(finding["proposition"]["entity"], "Order", "{report}");
+    assert_eq!(finding["proposition"]["expr"], json!([">=", "@entity.total", 0.0]), "{report}");
+    assert!(finding["counterexample"]["payload"]["total"].as_f64().unwrap() < 0.0, "{report}");
+    assert_eq!(serde_json::from_value::<ProveReport>(report.clone()).unwrap(), prove_report(&program(
+        json!([{ "from": "open", "to": "open", "event": "ADD",
+            "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]), J::Null, inv.clone())), "the report decodes to what was printed");
+    let guarded = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", 0],
+        "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+    assert_eq!(
+        serde_json::to_value(prove_report(&program(guarded, J::Null, inv))).unwrap(),
+        json!({ "findings": [] }),
+        "control: a proved proposition is no finding"
+    );
+}
+
+#[test]
+fn the_prove_report_names_the_trait_of_a_state_proposition_and_an_unproved_one_has_no_counterexample() {
+    let undecidable = program(J::Array(vec![]), J::Null, state_holds("open", json!(["str/contains", "@entity.note", "x"])));
+    let report = serde_json::to_value(prove_report(&undecidable)).unwrap();
+    let finding = &report["findings"][0];
+    assert_eq!(finding["verdict"], "unproved", "{report}");
+    assert_eq!(finding["proposition"]["kind"], "state", "{report}");
+    assert_eq!(finding["proposition"]["trait"], "Checkout", "{report}");
+    assert_eq!(finding["proposition"]["state"], "open", "{report}");
+    assert!(finding.get("counterexample").is_none(), "control: an absent counterexample is an absent key: {report}");
 }

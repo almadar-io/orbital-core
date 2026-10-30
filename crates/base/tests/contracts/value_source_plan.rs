@@ -183,3 +183,29 @@ fn literals_undeclared_and_non_provenance_metadata_keep_the_expression_opaque() 
         assert_eq!(expr.value_leaves(&WALK), vec![&expr], "{input}");
     }
 }
+
+#[test]
+fn a_declared_kind_derives_one_slot_descriptor_and_a_malformed_one_derives_none() {
+    use orbital_core_base::schema::ValueSourceSlots as S;
+    for (kind, expected) in [
+        ("branch-union", Some(S::Branches)),
+        ("union-of-args", Some(S::Args)),
+        ("coalesce", Some(S::Args)),
+        ("last-of-args", Some(S::Last)),
+        ("lambda-result", Some(S::LambdaResult)),
+        ("identity-of-arg<2>", Some(S::Listed { args: vec![2] })),
+        ("union-of-args<2,0>", Some(S::Listed { args: vec![2, 0] })),
+        ("union-of-args< 1 , 3 >", Some(S::Listed { args: vec![1, 3] })),
+        ("identity-of-arg<bad>", None),
+        ("identity-of-arg<1", None),
+        ("computed-value", None),
+        ("", None),
+    ] {
+        assert_eq!(S::of_semantics(kind), expected, "{kind}");
+    }
+    assert_eq!(
+        serde_json::to_string(&S::Listed { args: vec![1, 2] }).unwrap(),
+        r#"{"kind":"listed","args":[1,2]}"#
+    );
+    assert_eq!(serde_json::to_string(&S::LambdaResult).unwrap(), r#"{"kind":"lambdaResult"}"#);
+}

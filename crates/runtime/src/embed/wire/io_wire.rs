@@ -108,6 +108,9 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },
     Clock,
+    /// Answered by the kernel itself; a host never receives it.
+    #[serde(rename_all = "camelCase")]
+    Sealed { op: String, args: Vec<Value> },
     #[serde(rename_all = "camelCase")]
     Os {
         op: OsOp,
@@ -304,11 +307,15 @@ pub enum IoAnswerWire {
     },
     /// The random bytes, standard base64.
     Random {
-        result: Settled<String, String>,
+        #[cfg_attr(test, ts(type = "Settled<string, string>"))]
+        result: Settled<SecretText, String>,
     },
     /// The host clock, epoch milliseconds.
     Clock {
         result: Settled<i64, String>,
+    },
+    Sealed {
+        result: Settled<Value, String>,
     },
     Os {
         result: Settled<Value, OsError>,

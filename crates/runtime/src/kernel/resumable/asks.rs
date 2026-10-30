@@ -17,9 +17,9 @@ impl RequestId {
 }
 
 /// The I/O the kernel needs the host to do. The kernel applies row policy, filters and paging itself
-/// around these, so a host answers plain storage reads and writes. `Debug` shows no secret value
-/// (`SecretSet.value`).
-#[derive(Clone, PartialEq)]
+/// around these, so a host answers plain storage reads and writes. A credential value is a [`Secret`], which never
+/// prints (an `HttpRequest` redacts its own credentials).
+#[derive(Clone, PartialEq, Debug)]
 pub enum IoRequest {
     ReadRow {
         entity_type: String,
@@ -109,14 +109,14 @@ pub enum IoRequest {
     /// Keep a derived secret in the host's store.
     SecretSet {
         name: String,
-        value: String,
+        value: Secret<String>,
         ttl_ms: u64,
         principal: Option<String>,
     },
     /// Replace the credential `name` the host holds with `value`, durably (a rotated refresh token).
     SecretRotate {
         name: String,
-        value: String,
+        value: Secret<String>,
         principal: Option<String>,
     },
     /// `bytes` of CSPRNG output, journaled so a replay sees the same bytes.
@@ -125,6 +125,14 @@ pub enum IoRequest {
     },
     /// The dispatch's wall clock in epoch milliseconds, journaled so a replay sees the same instant.
     Clock,
+    /// A cryptographic operator that draws entropy of its own (`rsa/sign` blinding, the `ecdh/p256-ephemeral` scalar).
+    /// The kernel answers it itself and never sends it to a host: the entropy is drawn fresh and is never journaled.
+    /// `args` are the operator's operands (a credential name, public values), never a secret value; the answer is the
+    /// operator's output, which a replay returns without running the operator again.
+    Sealed {
+        op: String,
+        args: Vec<Value>,
+    },
     /// One `os/<op>` effect. A streaming op sets `site`: the host dispatches each event to its route, then
     /// answers [`IoAnswer::Os`] with the final reply. `key` lets `cancel-call` abort the ask in flight.
     Os {
@@ -154,7 +162,7 @@ pub enum IoRequest {
     CredentialStoreWrite {
         service: String,
         name: String,
-        value: String,
+        value: Secret<String>,
     },
     /// Delete the stored row of credential `name`; whether one existed.
     CredentialStoreRemove {
@@ -254,9 +262,9 @@ pub enum CallVerdict {
     Deferred,
 }
 
-/// A host's answer to one [`IoRequest`]; the variant must be the one the request calls for. `Debug` shows no
-/// secret value (`Secret` carries one).
-#[derive(Clone, PartialEq)]
+/// A host's answer to one [`IoRequest`]; the variant must be the one the request calls for. A credential value
+/// (`Secret`, `CredentialStoreRead`) and the entropy of `Random` are [`Secret`]s, which never print.
+#[derive(Clone, PartialEq, Debug)]
 pub enum IoAnswer {
     Row(Result<Value, String>),
     Rows(Result<Vec<Arc<Value>>, String>),
@@ -281,16 +289,18 @@ pub enum IoAnswer {
     Prompt(Result<String, ModelFailure>),
     Embed(Result<Vec<Vec<f64>>, ModelFailure>),
     Tab(Result<Value, TabFailure>),
-    Secret(Result<Option<String>, String>),
+    Secret(Result<Option<Secret<String>>, String>),
     SecretSet(Result<(), String>),
     SecretRotate(Result<(), String>),
-    Random(Result<Vec<u8>, String>),
+    Random(Result<Secret<Vec<u8>>, String>),
     Clock(Result<i64, String>),
-    Os(Result<Value, OsError>),
+    /// The output of a [`IoRequest::Sealed`] operator.
+    Sealed(Result<Value, String>),
+    Os(Result<Secret<Value>, OsError>),
     CredentialStatus(Result<crate::credential_admin::CredentialStanding, String>),
     CredentialForget(Result<(), String>),
     CredentialStoreList(Result<Option<StoreListing>, String>),
-    CredentialStoreRead(Result<Option<String>, String>),
+    CredentialStoreRead(Result<Option<Secret<String>>, String>),
     CredentialStoreWrite(Result<(), String>),
     CredentialStoreRemove(Result<bool, String>),
     CredentialStoreRotate(Result<RotateCounts, String>),
@@ -341,213 +351,6 @@ pub struct PageFacts {
     pub hostname: String,
     pub referrer: String,
     pub screen_width: Option<f64>,
-}
-
-pub(super) struct Redacted;
-
-impl std::fmt::Debug for Redacted {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
-}
-
-impl std::fmt::Debug for IoRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ReadRow { entity_type, id } => f
-                .debug_struct("ReadRow")
-                .field("entity_type", entity_type)
-                .field("id", id)
-                .finish(),
-            Self::ListRows { entity_type } => f.debug_struct("ListRows").field("entity_type", entity_type).finish(),
-            Self::QueryRows {
-                entity_type,
-                query,
-                project,
-            } => f
-                .debug_struct("QueryRows")
-                .field("entity_type", entity_type)
-                .field("query", query)
-                .field("project", project)
-                .finish(),
-            Self::WriteRows { batch } => f.debug_struct("WriteRows").field("batch", batch).finish(),
-            Self::CommitRows { rows } => f.debug_struct("CommitRows").field("rows", rows).finish(),
-            Self::CreateRow { entity_type, data } => f
-                .debug_struct("CreateRow")
-                .field("entity_type", entity_type)
-                .field("data", data)
-                .finish(),
-            Self::WriteRow { entity_type, id, data } => f
-                .debug_struct("WriteRow")
-                .field("entity_type", entity_type)
-                .field("id", id)
-                .field("data", data)
-                .finish(),
-            Self::DeleteRow { entity_type, id } => f
-                .debug_struct("DeleteRow")
-                .field("entity_type", entity_type)
-                .field("id", id)
-                .finish(),
-            Self::CallService {
-                service,
-                method,
-                args,
-                key,
-                caller,
-                site,
-            } => f
-                .debug_struct("CallService")
-                .field("service", service)
-                .field("method", method)
-                .field("args", args)
-                .field("key", key)
-                .field("caller", caller)
-                .field("site", site)
-                .finish(),
-            Self::CancelCall { key } => f.debug_struct("CancelCall").field("key", key).finish(),
-            Self::Substrate { op, args, key, site } => f
-                .debug_struct("Substrate")
-                .field("op", op)
-                .field("args", args)
-                .field("key", key)
-                .field("site", site)
-                .finish(),
-            Self::PageFacts { fields } => f.debug_struct("PageFacts").field("fields", fields).finish(),
-            Self::Prompt { text, schema, key } => f
-                .debug_struct("Prompt")
-                .field("text", text)
-                .field("schema", schema)
-                .field("key", key)
-                .finish(),
-            Self::Embed { texts, key } => f.debug_struct("Embed").field("texts", texts).field("key", key).finish(),
-            Self::Tab { ask, key } => f.debug_struct("Tab").field("ask", ask).field("key", key).finish(),
-            Self::Secret { name, principal } => f
-                .debug_struct("Secret")
-                .field("name", name)
-                .field("principal", principal)
-                .finish(),
-            Self::SecretSet {
-                name,
-                ttl_ms,
-                principal,
-                ..
-            } => f
-                .debug_struct("SecretSet")
-                .field("name", name)
-                .field("value", &Redacted)
-                .field("ttl_ms", ttl_ms)
-                .field("principal", principal)
-                .finish(),
-            Self::SecretRotate { name, principal, .. } => f
-                .debug_struct("SecretRotate")
-                .field("name", name)
-                .field("value", &Redacted)
-                .field("principal", principal)
-                .finish(),
-            Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
-            Self::Clock => f.write_str("Clock"),
-            Self::Os { op, args, key, site } => f
-                .debug_struct("Os")
-                .field("op", op)
-                .field("args", args)
-                .field("key", key)
-                .field("site", site)
-                .finish(),
-            Self::CredentialStatus { name, principal } => f
-                .debug_struct("CredentialStatus")
-                .field("name", name)
-                .field("principal", principal)
-                .finish(),
-            Self::CredentialForget { name, principal } => f
-                .debug_struct("CredentialForget")
-                .field("name", name)
-                .field("principal", principal)
-                .finish(),
-            Self::CredentialStoreList => f.write_str("CredentialStoreList"),
-            Self::CredentialStoreRead { name } => f.debug_struct("CredentialStoreRead").field("name", name).finish(),
-            Self::CredentialStoreWrite { service, name, .. } => f
-                .debug_struct("CredentialStoreWrite")
-                .field("service", service)
-                .field("name", name)
-                .field("value", &Redacted)
-                .finish(),
-            Self::CredentialStoreRemove { name } => f.debug_struct("CredentialStoreRemove").field("name", name).finish(),
-            Self::CredentialStoreRotate => f.write_str("CredentialStoreRotate"),
-            Self::CredentialModeRead => f.write_str("CredentialModeRead"),
-            Self::CredentialModeWrite { mode } => f.debug_struct("CredentialModeWrite").field("mode", mode).finish(),
-            Self::Deliver { envelope, key, site } => f
-                .debug_struct("Deliver")
-                .field("envelope", envelope)
-                .field("key", key)
-                .field("site", site)
-                .finish(),
-        }
-    }
-}
-
-impl std::fmt::Debug for IoAnswer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Row(r) => f.debug_tuple("Row").field(r).finish(),
-            Self::Rows(r) => f.debug_tuple("Rows").field(r).finish(),
-            Self::Page(r) => f.debug_tuple("Page").field(r).finish(),
-            Self::IdPage(r) => f.debug_tuple("IdPage").field(r).finish(),
-            Self::QueryUnsupported(m) => f.debug_tuple("QueryUnsupported").field(m).finish(),
-            Self::Wrote(r) => f.debug_tuple("Wrote").field(r).finish(),
-            Self::WriteUnsupported(m) => f.debug_tuple("WriteUnsupported").field(m).finish(),
-            Self::Committed(r) => f.debug_tuple("Committed").field(r).finish(),
-            Self::Deleted(r) => f.debug_tuple("Deleted").field(r).finish(),
-            Self::Service(r) => f.debug_tuple("Service").field(r).finish(),
-            Self::ServiceCancelled => f.write_str("ServiceCancelled"),
-            Self::ServiceDeferred => f.write_str("ServiceDeferred"),
-            Self::Cancelled(r) => f.debug_tuple("Cancelled").field(r).finish(),
-            Self::Substrate(r) => f.debug_tuple("Substrate").field(r).finish(),
-            Self::PageFacts(r) => f.debug_tuple("PageFacts").field(r).finish(),
-            Self::Prompt(r) => f.debug_tuple("Prompt").field(r).finish(),
-            Self::Embed(r) => f.debug_tuple("Embed").field(r).finish(),
-            Self::Tab(r) => f.debug_tuple("Tab").field(r).finish(),
-            Self::Secret(r) => {
-                let shown: Result<Option<Redacted>, &String> = match r {
-                    Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
-                    Err(message) => Err(message),
-                };
-                f.debug_tuple("Secret").field(&shown).finish()
-            }
-            Self::SecretSet(r) => f.debug_tuple("SecretSet").field(r).finish(),
-            Self::SecretRotate(r) => f.debug_tuple("SecretRotate").field(r).finish(),
-            Self::Random(r) => {
-                let shown: Result<Redacted, &String> = match r {
-                    Ok(_) => Ok(Redacted),
-                    Err(message) => Err(message),
-                };
-                f.debug_tuple("Random").field(&shown).finish()
-            }
-            Self::Clock(r) => f.debug_tuple("Clock").field(r).finish(),
-            Self::Os(r) => {
-                let shown: Result<Redacted, &OsError> = match r {
-                    Ok(_) => Ok(Redacted),
-                    Err(error) => Err(error),
-                };
-                f.debug_tuple("Os").field(&shown).finish()
-            }
-            Self::CredentialStatus(r) => f.debug_tuple("CredentialStatus").field(r).finish(),
-            Self::CredentialForget(r) => f.debug_tuple("CredentialForget").field(r).finish(),
-            Self::CredentialStoreList(r) => f.debug_tuple("CredentialStoreList").field(r).finish(),
-            Self::CredentialStoreRead(r) => {
-                let shown: Result<Option<Redacted>, &String> = match r {
-                    Ok(value) => Ok(value.as_ref().map(|_| Redacted)),
-                    Err(message) => Err(message),
-                };
-                f.debug_tuple("CredentialStoreRead").field(&shown).finish()
-            }
-            Self::CredentialStoreWrite(r) => f.debug_tuple("CredentialStoreWrite").field(r).finish(),
-            Self::CredentialStoreRemove(r) => f.debug_tuple("CredentialStoreRemove").field(r).finish(),
-            Self::CredentialStoreRotate(r) => f.debug_tuple("CredentialStoreRotate").field(r).finish(),
-            Self::CredentialModeRead(r) => f.debug_tuple("CredentialModeRead").field(r).finish(),
-            Self::CredentialModeWrite(r) => f.debug_tuple("CredentialModeWrite").field(r).finish(),
-            Self::Deliver(r) => f.debug_tuple("Deliver").field(r).finish(),
-        }
-    }
 }
 
 impl IoAnswer {
@@ -601,6 +404,7 @@ impl IoAnswer {
                 | (IoRequest::SecretRotate { .. }, IoAnswer::SecretRotate(_))
                 | (IoRequest::Random { .. }, IoAnswer::Random(_))
                 | (IoRequest::Clock, IoAnswer::Clock(_))
+                | (IoRequest::Sealed { .. }, IoAnswer::Sealed(_))
                 | (IoRequest::Os { .. }, IoAnswer::Os(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
                 | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))

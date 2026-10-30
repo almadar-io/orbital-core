@@ -108,7 +108,7 @@ fn app_status_requires_nonempty_presence_without_changing_raw_secret_resolution(
             );
             assert_eq!(
                 answer_ports(Some(host), &secret(None)),
-                IoAnswer::Secret(Ok(value.map(str::to_string))),
+                IoAnswer::Secret(Ok(value.map(Into::into))),
                 "status must not rewrite the stored value"
             );
         });
@@ -135,7 +135,7 @@ fn user_status_keeps_empty_presence_and_never_falls_back_to_the_app() {
         }
         assert_eq!(
             answer_ports(Some(host), &secret(Some("u1"))),
-            IoAnswer::Secret(Ok(Some(String::new())))
+            IoAnswer::Secret(Ok(Some((String::new()).into())))
         );
     });
     assert_eq!(
@@ -168,7 +168,7 @@ fn blocking_host_reuses_the_same_status_policy_and_preserves_scopes() {
         }
         assert_eq!(
             blocking.answer_with_ports(host, &secret(None)),
-            IoAnswer::Secret(Ok(Some(String::new())))
+            IoAnswer::Secret(Ok(Some((String::new()).into())))
         );
     });
 }
@@ -210,11 +210,11 @@ fn forget_still_delegates_the_exact_requested_identity_without_fallback() {
         );
         assert_eq!(
             answer_ports(Some(host), &secret(None)),
-            IoAnswer::Secret(Ok(Some("app-token".to_string())))
+            IoAnswer::Secret(Ok(Some(("app-token".to_string()).into())))
         );
         assert_eq!(
             answer_ports(Some(host), &secret(Some("u2"))),
-            IoAnswer::Secret(Ok(Some("second-user-token".to_string())))
+            IoAnswer::Secret(Ok(Some(("second-user-token".to_string()).into())))
         );
         assert_eq!(
             answer_ports(Some(host), &forget(None)),

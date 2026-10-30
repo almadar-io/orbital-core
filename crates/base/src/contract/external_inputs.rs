@@ -78,6 +78,20 @@ pub fn find_external_input(
         .find(|i| i.orbital == orbital && i.trait_name == trait_name && i.event == event)
 }
 
+/// The entities a `call-service` provider acting as the caller may read: every persisted entity, once, in schema
+/// order (each orbital's primary entity, then its auxiliaries). Rows stay filtered by each entity's `@read` policy at
+/// read time.
+pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for def in crate::policy::inline_entity_defs(schema) {
+        if def.persistence == Some(crate::schema::types::Persistence::Runtime) || out.contains(&def.name) {
+            continue;
+        }
+        out.push(def.name.clone());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +159,41 @@ mod tests {
         assert!(find_external_input(&s, "TaskOrbital", "TaskPersistor", "SAVE").is_none());
         assert!(find_external_input(&s, "TaskOrbital", "Other", "DO_CREATE").is_none());
         assert!(find_external_input(&s, "Other", "TaskPersistor", "DO_CREATE").is_none());
+    }
+
+    #[test]
+    fn readable_entities_are_the_persisted_ones_once_in_schema_order() {
+        let mut s = schema();
+        assert_eq!(readable_entities_of(&s), vec!["Task".to_string()]);
+        let runtime: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "A",
+                "entity": { "name": "Scratch", "persistence": "runtime", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                "auxiliaryEntities": [
+                    { "name": "Note", "collection": "notes", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                    { "name": "Note", "collection": "notes", "fields": [{ "name": "id", "type": "string", "required": true }] }
+                ],
+                "traits": [], "pages": []
+            }]
+        }))
+        .unwrap();
+        assert_eq!(readable_entities_of(&runtime), vec!["Note".to_string()]);
+        let two: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [
+                { "name": "TaskOrbital",
+                  "entity": { "name": "Task", "collection": "tasks", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                  "auxiliaryEntities": [{ "name": "Comment", "collection": "comments", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] }],
+                  "traits": [], "pages": [] },
+                { "name": "ProjectOrbital",
+                  "entity": { "name": "Project", "collection": "projects", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                  "traits": [], "pages": [] }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(readable_entities_of(&two), vec!["Task".to_string(), "Comment".to_string(), "Project".to_string()]);
+        s.orbitals.clear();
+        assert!(readable_entities_of(&s).is_empty());
     }
 }

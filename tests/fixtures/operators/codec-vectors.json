@@ -350,9 +350,9 @@
     "source": "non-string input"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b",
+      "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
       "Hi There",
       "hex"
     ],
@@ -360,9 +360,9 @@
     "source": "RFC 4231 test case 1 (key 0x0b x20)"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b\u000b",
+      "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
       "Hi There",
       "base64"
     ],
@@ -370,9 +370,9 @@
     "source": "RFC 4231 test case 1"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "Jefe",
+      "SmVmZQ==",
       "what do ya want for nothing?",
       "hex"
     ],
@@ -380,9 +380,9 @@
     "source": "RFC 4231 test case 2"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "Jefe",
+      "SmVmZQ==",
       "what do ya want for nothing?",
       "base64"
     ],
@@ -390,9 +390,9 @@
     "source": "RFC 4231 test case 2"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019",
+      "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==",
       "x",
       "hex"
     ],
@@ -400,9 +400,9 @@
     "source": "RFC 4231 case 4 key (0x01..0x19) with text data, node crypto reference"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s=",
       "Test Using Larger Than Block-Size Key - Hash Key First",
       "hex"
     ],
@@ -410,7 +410,7 @@
     "source": "key longer than block size (RFC 4231 case 6 shape, text key), node crypto reference"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
       "",
       "",
@@ -420,9 +420,9 @@
     "source": "empty key and message, node crypto reference"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "héllo wörld ✓ 😀",
+      "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA==",
       "héllo wörld ✓ 😀",
       "hex"
     ],
@@ -430,9 +430,9 @@
     "source": "UTF-8 key and message, node crypto reference"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
-      "k",
+      "aw==",
       "m",
       "base32"
     ],
@@ -440,7 +440,7 @@
     "source": "unknown encoding"
   },
   {
-    "op": "hmac/sha256",
+    "op": "hmac/sha256-bytes",
     "args": [
       1,
       "m",

@@ -166,3 +166,24 @@ fn exec_dist_9_a_request_waiting_for_the_lane_keeps_its_session() {
     assert_eq!(name_in(&done(progress.expect("the waiting request kept its session"))), json!("app"));
     assert!(!server.kernel().frame_sessions().contains(&"tab-a".to_string()), "freed once its waiting request ended");
 }
+
+#[test]
+fn exec_tick_4_a_freed_session_releases_the_traits_its_client_mounted() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let stream = server.open_session_stream("tab-a");
+    done(server.start("Main", mount("tab-a", None)).unwrap());
+    assert!(server.kernel().trait_mounted("Editor"));
+    assert!(server.close_session_stream(stream));
+    assert!(!server.kernel().trait_mounted("Editor"), "the freed session's mounts left with it");
+}
+
+#[test]
+fn exec_tick_4_control_another_clients_mount_outlives_a_freed_session() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let stream = server.open_session_stream("tab-a");
+    let _other = server.open_session_stream("tab-b");
+    done(server.start("Main", mount("tab-a", None)).unwrap());
+    done(server.start("Main", mount("tab-b", None)).unwrap());
+    server.close_session_stream(stream);
+    assert!(server.kernel().trait_mounted("Editor"), "tab-b still holds it");
+}

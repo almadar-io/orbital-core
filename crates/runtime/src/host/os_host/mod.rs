@@ -13,6 +13,7 @@ pub mod sys;
 
 pub use orbital_core_base::os_grants::*;
 
+use orbital_core_base::secret::Secret;
 use orbital_core_base::value::Value;
 use orbital_core_base::os::{family_of, OsError, OsErrorKind, OsFamily, OsOp};
 use crate::resumable::{CallSite, IoAnswer, IoRequest};
@@ -115,6 +116,8 @@ pub struct OsHost<'a> {
     pub grants: &'a OsGrants,
     pub handles: &'a OsHandles,
     pub on_event: &'a dyn Fn(Option<&CallSite>, Value),
+    /// Where an `os/send` credential segment's value is read, at the boundary; `None` holds no credential.
+    pub secrets: Option<&'a dyn crate::secret_source::SecretSource>,
 }
 
 
@@ -203,6 +206,12 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
         Ok(resolved) => resolved,
         Err(error) => return IoAnswer::Os(Err(error)),
     };
+    let held = |name: &str| host.secrets.ok_or_else(|| "no credential source is configured".to_string())?.secret(name);
+    let source: Option<&dyn Fn(&str) -> Result<Option<String>, String>> = host.secrets.map(|_| &held as &dyn Fn(&str) -> Result<Option<String>, String>);
+    let resolved = match orbital_core_base::os::resolve_credential_segments(*op, &resolved, source) {
+        Ok(resolved) => resolved,
+        Err(error) => return IoAnswer::Os(Err(error)),
+    };
     let args = &resolved;
     if let Some(started) = defer(*op, args, key.as_deref(), site.as_ref(), host) {
         return match started {
@@ -210,7 +219,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
             Err(error) => IoAnswer::Os(Err(error)),
         };
     }
-    IoAnswer::Os(dispatch(*op, args, key.as_deref(), site.as_ref(), host))
+    IoAnswer::Os(dispatch(*op, args, key.as_deref(), site.as_ref(), host).map(Secret::new))
 }
 
 #[cfg(test)]
@@ -234,6 +243,7 @@ mod tests {
             grants: &grants,
             handles: &handles,
             on_event: &on_event,
+            secrets: None,
         })
     }
 
@@ -244,10 +254,30 @@ mod tests {
     fn os_answer(op: OsOp, args: Vec<Value>, grants: &OsGrants, handles: &OsHandles) -> Result<Value, OsError> {
         let on_event = |_: Option<&CallSite>, _: Value| {};
         let request = IoRequest::Os { op, args, key: None, site: None };
-        match answer_os(Some(&OsHost { grants, handles, on_event: &on_event }), &request) {
-            IoAnswer::Os(answer) => answer,
+        match answer_os(Some(&OsHost { grants, handles, on_event: &on_event, secrets: None }), &request) {
+            IoAnswer::Os(answer) => answer.map(Secret::into_inner),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_native_host_refuses_os_fetch_typed_and_names_the_ports_it_speaks_http_over() {
+        let (grants, handles) = (OsGrants::default(), OsHandles::default());
+        let error = os_answer(OsOp::Fetch, vec![Value::string("GET"), Value::string("https://a.example.test/")], &grants, &handles).expect_err("a native host performs no fetch");
+        assert_eq!(error.kind, OsErrorKind::Unsupported);
+        assert!(error.message.contains("os/tcp-connect") && error.message.contains("os/tls-upgrade"), "{}", error.message);
+        let control = os_answer(OsOp::Exists, vec![Value::string("/")], &grants, &handles);
+        assert_ne!(control.err().map(|e| e.kind), Some(OsErrorKind::Unsupported), "control: a supported op is not refused as unsupported");
+    }
+
+    #[test]
+    fn a_native_host_refuses_a_streamed_os_fetch_typed_and_answers_no_handle_for_it() {
+        let (grants, handles) = (OsGrants::default(), OsHandles::default());
+        let request = Value::object(orbital_core_base::value::ValueMap::from_iter([("stream".into(), Value::Bool(true))]));
+        let error = os_answer(OsOp::Fetch, vec![Value::string("GET"), Value::string("https://a.example.test/"), request], &grants, &handles).expect_err("a native host performs no fetch, streamed or not");
+        assert_eq!(error.kind, OsErrorKind::Unsupported);
+        let recv = os_answer(OsOp::Recv, vec![Value::Number(1.0), Value::Number(16.0)], &grants, &handles).expect_err("no socket 1 is open");
+        assert_ne!(recv.kind, OsErrorKind::Unsupported, "control: os/recv on a native host is a socket read, refused as a closed handle, not as a fetch");
     }
 
     /// Operators whose success payload the table declares but this host cannot answer in a unit fixture, each
@@ -266,6 +296,7 @@ mod tests {
         ("os/tty-size", "needs a terminal"),
         ("os/tcp-listen", "a stream: its first answer arrives through the completion sink (net/tests.rs)"),
         ("os/tls-upgrade", "a kernel op: the kernel answers it and a host implements no TLS (kernel/tls_sockets.rs)"),
+        ("os/fetch", "a browser host performs it; a native host refuses it typed (a_native_host_refuses_os_fetch_typed...)"),
         ("os/dns-resolve", "needs a resolver"),
         ("os/mmio-read", "no devices on this host"),
         ("os/mmio-write", "no devices on this host"),
@@ -686,7 +717,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 11, 31, 5, 4]);
+        assert_eq!(counts, [32, 18, 12, 31, 5, 4]);
     }
 
     #[test]

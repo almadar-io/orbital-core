@@ -141,3 +141,53 @@ fn a_trait_listed_on_two_boot_pages_mounts_once() {
     );
     assert_eq!(names(k.boot_mounts(ProtocolSide::Server)), ["T"]);
 }
+
+fn composer_kernel(child_reads_payload: bool) -> RuntimeKernel {
+    let child_effect = if child_reads_payload {
+        serde_json::json!(["render-ui", "main", { "type": "text", "content": "@callsitePayload.label" }])
+    } else {
+        serde_json::json!(["render-ui", "main", { "type": "text", "content": "plain" }])
+    };
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Host", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [] },
+                        { "from": "idle", "to": "idle", "event": "SHOW",
+                          "effects": [["render-ui", "main", { "type": "stack", "children": ["@trait.Child"] }]] }] } },
+                { "name": "Child", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [child_effect] }] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Host" }, { "ref": "Child" }] }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+#[test]
+fn an_embedded_child_reading_its_composers_payload_is_left_out_of_the_route_mounts() {
+    assert_eq!(names(composer_kernel(true).route_mounts("/")), ["Host"]);
+}
+
+#[test]
+fn control_an_embedded_child_that_reads_no_payload_mounts_with_the_page() {
+    assert_eq!(names(composer_kernel(false).route_mounts("/")), ["Host", "Child"]);
+}
+
+#[test]
+fn control_a_child_its_composer_has_composed_is_mounted_again() {
+    let kernel = composer_kernel(true);
+    kernel.composed_callsite.write().insert("Child".into(), Value::object(ValueMap::default()));
+    assert_eq!(names(kernel.route_mounts("/")), ["Host", "Child"]);
+}

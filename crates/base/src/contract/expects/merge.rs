@@ -190,7 +190,7 @@ pub(super) fn merge_field(prior: &Value, field: &Value) -> Result<Value, String>
 
 /// Union two expectation shapes field by field: requiredness and value lists widen, ranges
 /// narrow, nested properties and items merge; incompatible constraints are an error. The
-/// derivation-side twin of `@almadar/core` `mergeExpectationShape` (the JS composer's).
+/// composer's merge too (its TS twin, `@almadar/core` `mergeExpectationShape`, is archived).
 pub fn merge_expectation_shape(
     existing: Option<&Value>,
     incoming: Option<&Value>,

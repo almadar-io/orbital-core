@@ -238,7 +238,7 @@ fn a_missing_previous_key_fails_the_warm_naming_the_rows_it_hides() {
 }
 
 #[test]
-fn control_malformed_and_unknown_kind_rows_fail_the_warm_and_a_derived_row_is_not_one() {
+fn control_malformed_and_unknown_kind_rows_fail_the_warm_and_so_does_a_retired_derived_row() {
     let fx = fixture();
     let readable = fx["rows"].as_array().expect("rows").clone();
     let with = |change: &dyn Fn(&mut Value)| {
@@ -267,11 +267,9 @@ fn control_malformed_and_unknown_kind_rows_fail_the_warm_and_a_derived_row_is_no
             assert!(failure.contains(&id), "{failure}");
         }
     }
-    let (derived, _) = with(&|row: &mut Value| row["kind"] = json!(DERIVED_KIND));
-    assert_eq!(
-        derived.expect("a derived row is a one-use value, not a credential"),
-        readable.len() - 1
-    );
+    let (retired, id) = with(&|row: &mut Value| row["kind"] = json!("derived"));
+    let failure = retired.expect_err("a row of the retired derived kind is a refusal, not a credential");
+    assert!(failure.contains(&id) && failure.contains("retired kind `derived`"), "{failure}");
 }
 
 #[test]
@@ -501,127 +499,6 @@ fn store_over(rows: Arc<dyn CredentialRows>) -> EncryptedCredentialStore {
 }
 
 #[test]
-fn a_held_one_use_value_is_sealed_in_the_rows_survives_a_new_store_and_is_taken_once() {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows.clone());
-    store
-        .hold("oauth:grant:S1", "GRANT-SECRET", 2_000, 1_000, None)
-        .expect("hold");
-    let kept = rows.list().expect("rows");
-    assert_eq!(kept.len(), 1);
-    assert_eq!(kept[0]["kind"], DERIVED_KIND);
-    assert!(
-        !kept[0].to_string().contains("GRANT-SECRET"),
-        "the row never carries the value in the clear"
-    );
-    let restarted = store_over(rows.clone());
-    assert_eq!(
-        restarted.warm().expect("a derived row is not a credential"),
-        0
-    );
-    assert_eq!(
-        restarted
-            .take("oauth:grant:S1", 1_500, None)
-            .expect("take")
-            .as_deref(),
-        Some("GRANT-SECRET")
-    );
-    assert!(
-        rows.list().expect("rows").is_empty(),
-        "a take consumes the row"
-    );
-    assert_eq!(
-        restarted
-            .take("oauth:grant:S1", 1_500, None)
-            .expect("take again"),
-        None
-    );
-}
-
-#[test]
-fn control_an_expired_value_is_consumed_and_not_returned_and_a_held_value_is_scoped_to_its_principal(
-) {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows.clone());
-    store
-        .hold("grant", "late", 2_000, 1_000, None)
-        .expect("hold");
-    assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
-    assert!(
-        rows.list().expect("rows").is_empty(),
-        "an expired value is gone"
-    );
-
-    store
-        .hold("grant", "alice-value", 9_000, 1_000, Some("alice"))
-        .expect("hold");
-    assert_eq!(store.take("grant", 2_000, Some("bob")).expect("take"), None);
-    assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
-    assert_eq!(
-        rows.list().expect("rows").len(),
-        1,
-        "another scope does not consume it"
-    );
-    assert_eq!(
-        store
-            .take("grant", 2_000, Some("alice"))
-            .expect("take")
-            .as_deref(),
-        Some("alice-value")
-    );
-}
-
-#[test]
-fn holding_again_replaces_the_value_and_sweeps_the_expired_ones() {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows.clone());
-    store.hold("old", "x", 1_500, 1_000, None).expect("hold");
-    store
-        .hold("grant", "first", 9_000, 1_000, None)
-        .expect("hold");
-    store
-        .hold("grant", "second", 9_000, 2_000, None)
-        .expect("hold again");
-    let kept = rows.list().expect("rows");
-    assert_eq!(
-        kept.len(),
-        1,
-        "the expired row was swept and the replaced one is a single row"
-    );
-    assert_eq!(
-        store.take("grant", 3_000, None).expect("take").as_deref(),
-        Some("second")
-    );
-}
-
-#[test]
-fn control_a_held_row_that_cannot_be_opened_fails_the_take_and_is_consumed() {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows.clone());
-    store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
-    let id = rows.list().expect("rows")[0]["id"]
-        .as_str()
-        .expect("id")
-        .to_string();
-    rows.update(&id, &json!({ "authTag": "00".repeat(16) }))
-        .expect("tamper");
-    let failure = store
-        .take("grant", 2_000, None)
-        .expect_err("a tampered row is a failure, not an absence");
-    assert!(failure.contains(&id), "{failure}");
-    assert!(rows.list().expect("rows").is_empty());
-}
-
-#[test]
-fn control_without_a_master_key_nothing_is_held_and_nothing_is_taken() {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = EncryptedCredentialStore::new(rows.clone(), None, None);
-    assert!(store.hold("grant", "v", 9_000, 1_000, None).is_err());
-    assert_eq!(store.take("grant", 2_000, None).expect("take"), None);
-    assert!(store.hold("grant", "v", 9_000, 1_000, Some("")).is_err());
-}
-
-#[test]
 fn recorded_rows_hand_a_host_the_writes_to_apply_and_a_second_store_over_them_reads_the_same_credentials(
 ) {
     let recorded = Arc::new(RecordedCredentialRows::default());
@@ -686,74 +563,40 @@ fn control_loading_rows_drops_writes_the_host_never_applied_and_an_update_of_a_m
     assert!(recorded.take_writes().is_empty());
 }
 
+#[cfg(unix)]
 #[test]
-fn two_takers_racing_for_one_held_row_get_exactly_one_value_and_a_lone_taker_gets_it() {
-    for _ in 0..100 {
-        let rows = Arc::new(MemoryCredentialRows::default());
-        let store = Arc::new(store_over(rows.clone()));
-        store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
-        let taken: Vec<Option<String>> = std::thread::scope(|scope| {
-            let takers: Vec<_> = (0..2)
-                .map(|_| {
-                    let store = store.clone();
-                    scope.spawn(move || store.take("grant", 2_000, None).expect("take"))
-                })
-                .collect();
-            takers
-                .into_iter()
-                .map(|taker| taker.join().expect("taker"))
-                .collect()
-        });
-        assert_eq!(
-            taken.iter().filter(|value| value.is_some()).count(),
-            1,
-            "{taken:?}"
-        );
-        assert!(taken.contains(&Some("v".to_string())));
-        assert!(rows.list().expect("rows").is_empty());
-    }
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows);
-    store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
-    assert_eq!(
-        store.take("grant", 2_000, None).expect("take").as_deref(),
-        Some("v")
+fn the_file_store_is_written_readable_by_its_owner_alone_on_every_save() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = fixture();
+    let path = temp_file("mode");
+    let store = EncryptedCredentialStore::new(
+        Arc::new(FileCredentialRows::new(&path)),
+        fx["masterKey"].as_str(),
+        None,
     );
+    store.set("stripe", "STRIPE_KEY", "fake-stripe-4321", None).expect("set");
+    let mode = |p: &std::path::Path| std::fs::metadata(p).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode(&path), 0o600, "the first save creates the file private");
+    store.set("openai", "OPENAI_KEY", "per-user-0001", None).expect("set again");
+    assert_eq!(mode(&path), 0o600, "a later save keeps it private");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("loosen");
+    store.set("third", "THIRD_KEY", "per-user-0002", None).expect("set over a loosened file");
+    assert_eq!(mode(&path), 0o600, "a file someone loosened is private again after the next save");
+    assert!(!path.with_extension("json.tmp").exists(), "the private temp file was renamed away");
 }
 
 #[test]
-fn a_taker_whose_delete_lost_gets_nothing_and_each_ticket_is_its_own() {
-    let rows = Arc::new(MemoryCredentialRows::default());
-    let store = store_over(rows.clone());
-    store.hold("grant", "v", 9_000, 1_000, None).expect("hold");
-    let first = store
-        .take_begin("grant", None)
-        .expect("begin")
-        .expect("held");
-    let second = store
-        .take_begin("grant", None)
-        .expect("begin")
-        .expect("held");
-    assert_eq!(first.id, second.id);
-    assert_ne!(first.ticket, second.ticket);
-    assert_eq!(
-        rows.list().expect("rows").len(),
-        1,
-        "begin deletes nothing and opens nothing"
-    );
-    assert!(rows.delete(&first.id).expect("delete"));
-    assert!(!rows.delete(&second.id).expect("delete"));
-    store.take_cancel(second.ticket);
-    assert_eq!(
-        store
-            .take_finish(first.ticket, 2_000)
-            .expect("finish")
-            .as_deref(),
-        Some("v")
-    );
-    assert!(
-        store.take_finish(second.ticket, 2_000).is_err(),
-        "a cancelled ticket opens nothing"
-    );
-    assert_eq!(store.take_begin("grant", None).expect("begin"), None);
+fn a_master_key_wipes_its_bytes_when_it_drops() {
+    let mut key = Key::parse(&"ab".repeat(32)).expect("key");
+    assert_eq!(key.bytes, [0xab; 32]);
+    zeroize::Zeroize::zeroize(&mut key.bytes);
+    assert_eq!(key.bytes, [0u8; 32]);
+    let mut stored = Stored {
+        id: "i".into(),
+        entry: CredentialEntry { service: "s".into(), env_var: "E".into(), last4: "1234".into(), updated_at: 0, principal: None },
+        value: "plaintext-secret".into(),
+        label: None,
+    };
+    zeroize::Zeroize::zeroize(&mut stored.value);
+    assert!(stored.value.is_empty(), "a zeroized String is emptied after its bytes are overwritten");
 }

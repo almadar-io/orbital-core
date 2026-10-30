@@ -290,7 +290,7 @@ fn known_site(
     registry: Option<Option<&str>>,
 ) -> Option<RunsOn> {
     if let Some(op) = crate::os::OsOp::from_name(operator) {
-        return Some(if op.is_kv() { RunsOn::Any } else { RunsOn::Server });
+        return Some(if op.is_kv() || op.runs_on_any_host() { RunsOn::Any } else { RunsOn::Server });
     }
     if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
         return Some(*site);
@@ -454,6 +454,7 @@ mod tests {
         assert_eq!(runs_on("behavior/resolve"), RunsOn::Server);
         assert_eq!(runs_on("program/eval"), RunsOn::Server);
         assert_eq!(runs_on("program/validate"), RunsOn::Server);
+        assert_eq!(runs_on("program/prove"), RunsOn::Server);
         assert_eq!(
             runs_on("math/abs"),
             RunsOn::Any,

@@ -12,11 +12,12 @@ use crate::resumable::IoPort;
 use orbital_core_base::codec;
 use orbital_core_base::http_wire::SecretScope;
 use orbital_core_base::os::{OsError, OsOp};
+use orbital_core_base::secret::{Secret, SecretText};
 use orbital_core_base::tab::{TabAsk, TabFailure};
 use orbital_core_base::value::Value;
 
 /// What a protocol driver needs its host for; each variant maps onto one journaled `IoPort` wrapper.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum DriverAsk {
     Secret {
         name: String,
@@ -24,14 +25,14 @@ pub enum DriverAsk {
     },
     SecretSet {
         name: String,
-        value: String,
+        value: Secret<String>,
         ttl_ms: u64,
         scope: SecretScope,
     },
     /// Replace the host-held credential `name` with `value`, durably (a rotated refresh token).
     SecretRotate {
         name: String,
-        value: String,
+        value: Secret<String>,
         scope: SecretScope,
     },
     /// `bytes` of host CSPRNG output (journaled by the kernel, so a replay is deterministic).
@@ -54,73 +55,15 @@ pub enum DriverAsk {
 }
 
 /// The host's answer to a [`DriverAsk`], one variant per ask.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum DriverAnswer {
-    Secret(Result<Option<String>, String>),
+    Secret(Result<Option<Secret<String>>, String>),
     SecretSet(Result<(), String>),
     SecretRotate(Result<(), String>),
-    Random(Result<Vec<u8>, String>),
+    Random(Result<Secret<Vec<u8>>, String>),
     Clock(Result<i64, String>),
     Os(Result<Value, OsError>),
     Tab(Result<Value, TabFailure>),
-}
-
-impl std::fmt::Debug for DriverAsk {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Secret { name, scope } => f
-                .debug_struct("Secret")
-                .field("name", name)
-                .field("scope", scope)
-                .finish(),
-            Self::SecretSet {
-                name,
-                ttl_ms,
-                scope,
-                ..
-            } => f
-                .debug_struct("SecretSet")
-                .field("name", name)
-                .field("value", &"<redacted>")
-                .field("ttl_ms", ttl_ms)
-                .field("scope", scope)
-                .finish(),
-            Self::SecretRotate { name, scope, .. } => f
-                .debug_struct("SecretRotate")
-                .field("name", name)
-                .field("value", &"<redacted>")
-                .field("scope", scope)
-                .finish(),
-            Self::Random { bytes } => f.debug_struct("Random").field("bytes", bytes).finish(),
-            Self::Clock => f.write_str("Clock"),
-            Self::Os { op, args, key } => f
-                .debug_struct("Os")
-                .field("op", op)
-                .field("args", args)
-                .field("key", key)
-                .finish(),
-            Self::Tab { ask } => f.debug_struct("Tab").field("ask", ask).finish(),
-        }
-    }
-}
-
-impl std::fmt::Debug for DriverAnswer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Secret(Ok(Some(_))) => f.write_str("Secret(Ok(Some(<redacted>)))"),
-            Self::Secret(other) => f.debug_tuple("Secret").field(other).finish(),
-            Self::SecretSet(r) => f.debug_tuple("SecretSet").field(r).finish(),
-            Self::SecretRotate(r) => f.debug_tuple("SecretRotate").field(r).finish(),
-            Self::Clock(r) => f.debug_tuple("Clock").field(r).finish(),
-            Self::Random(Ok(_)) => f.write_str("Random(Ok(<redacted>))"),
-            Self::Random(Err(message)) => f
-                .debug_tuple("Random")
-                .field(&Err::<(), _>(message))
-                .finish(),
-            Self::Os(r) => f.debug_tuple("Os").field(r).finish(),
-            Self::Tab(r) => f.debug_tuple("Tab").field(r).finish(),
-        }
-    }
 }
 
 /// What a driver does next: ask its host for one thing, or finish.
@@ -142,14 +85,14 @@ enum DriverAskWire {
     #[serde(rename_all = "camelCase")]
     SecretSet {
         name: String,
-        value: String,
+        value: SecretText,
         ttl_ms: u64,
         #[serde(default, skip_serializing_if = "SecretScope::is_app")]
         scope: SecretScope,
     },
     SecretRotate {
         name: String,
-        value: String,
+        value: SecretText,
         #[serde(default, skip_serializing_if = "SecretScope::is_app")]
         scope: SecretScope,
     },
@@ -182,13 +125,13 @@ impl From<&DriverAsk> for DriverAskWire {
                 scope,
             } => Self::SecretSet {
                 name: name.clone(),
-                value: value.clone(),
+                value: SecretText::new(value.clone()),
                 ttl_ms: *ttl_ms,
                 scope: *scope,
             },
             DriverAsk::SecretRotate { name, value, scope } => Self::SecretRotate {
                 name: name.clone(),
-                value: value.clone(),
+                value: SecretText::new(value.clone()),
                 scope: *scope,
             },
             DriverAsk::Random { bytes } => Self::Random { bytes: *bytes },
@@ -214,12 +157,12 @@ impl From<DriverAskWire> for DriverAsk {
                 scope,
             } => Self::SecretSet {
                 name,
-                value,
+                value: value.into_inner(),
                 ttl_ms,
                 scope,
             },
             DriverAskWire::SecretRotate { name, value, scope } => {
-                Self::SecretRotate { name, value, scope }
+                Self::SecretRotate { name, value: value.into_inner(), scope }
             }
             DriverAskWire::Random { bytes } => Self::Random { bytes },
             DriverAskWire::Clock => Self::Clock,
@@ -245,7 +188,7 @@ impl<'de> Deserialize<'de> for DriverAsk {
 #[serde(tag = "kind", rename_all = "camelCase")]
 enum DriverAnswerWire {
     Secret {
-        result: Settled<Option<String>, String>,
+        result: Settled<Option<SecretText>, String>,
     },
     SecretSet {
         result: Settled<(), String>,
@@ -254,7 +197,7 @@ enum DriverAnswerWire {
         result: Settled<(), String>,
     },
     Random {
-        result: Settled<String, String>,
+        result: Settled<SecretText, String>,
     },
     Clock {
         result: Settled<i64, String>,
@@ -271,7 +214,7 @@ impl From<&DriverAnswer> for DriverAnswerWire {
     fn from(answer: &DriverAnswer) -> Self {
         match answer {
             DriverAnswer::Secret(r) => Self::Secret {
-                result: r.clone().into(),
+                result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
             DriverAnswer::SecretSet(r) => Self::SecretSet {
                 result: r.clone().into(),
@@ -285,7 +228,7 @@ impl From<&DriverAnswer> for DriverAnswerWire {
             DriverAnswer::Random(r) => Self::Random {
                 result: r
                     .as_ref()
-                    .map(|bytes| codec::base64_encode(bytes))
+                    .map(|bytes| SecretText::new(Secret::new(codec::base64_encode(bytes.expose()))))
                     .map_err(Clone::clone)
                     .into(),
             },
@@ -304,17 +247,22 @@ impl TryFrom<DriverAnswerWire> for DriverAnswer {
 
     fn try_from(wire: DriverAnswerWire) -> Result<Self, String> {
         Ok(match wire {
-            DriverAnswerWire::Secret { result } => Self::Secret(result.into()),
+            DriverAnswerWire::Secret { result } => {
+                let result: Result<Option<SecretText>, String> = result.into();
+                Self::Secret(result.map(|value| value.map(SecretText::into_inner)))
+            }
             DriverAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
             DriverAnswerWire::SecretRotate { result } => Self::SecretRotate(result.into()),
             DriverAnswerWire::Os { result } => Self::Os(result.into()),
             DriverAnswerWire::Tab { result } => Self::Tab(result.into()),
             DriverAnswerWire::Clock { result } => Self::Clock(result.into()),
             DriverAnswerWire::Random { result } => {
-                let result: Result<String, String> = result.into();
+                let result: Result<SecretText, String> = result.into();
                 Self::Random(match result {
-                    Ok(text) => Ok(codec::base64_decode(&text)
-                        .map_err(|e| format!("random bytes are not base64: {e}"))?),
+                    Ok(text) => Ok(Secret::new(
+                        codec::base64_decode(text.into_inner().expose())
+                            .map_err(|e| format!("random bytes are not base64: {e}"))?,
+                    )),
                     Err(message) => Err(message),
                 })
             }
@@ -414,12 +362,12 @@ pub(crate) fn drive<D: Driver>(
                 ttl_ms,
                 scope,
             } => DriverAnswer::SecretSet(
-                owner(scope).and_then(|who| io.store_secret(&name, &value, ttl_ms, who)),
+                owner(scope).and_then(|who| io.store_secret(&name, value.expose(), ttl_ms, who)),
             ),
             DriverAsk::SecretRotate { name, value, scope } => DriverAnswer::SecretRotate(
-                owner(scope).and_then(|who| io.rotate_secret(&name, &value, who)),
+                owner(scope).and_then(|who| io.rotate_secret(&name, value.expose(), who)),
             ),
-            DriverAsk::Random { bytes } => DriverAnswer::Random(io.random(bytes)),
+            DriverAsk::Random { bytes } => DriverAnswer::Random(io.random(bytes).map(Secret::new)),
             DriverAsk::Clock => DriverAnswer::Clock(io.clock()),
             DriverAsk::Os { op, args, key } => DriverAnswer::Os(io.os(op, &args, key.as_deref())),
             DriverAsk::Tab { ask } => DriverAnswer::Tab(io.tab(&ask, ctx.key)),
@@ -436,7 +384,6 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use orbital_core_base::os_grants::tcp_target_allowed;
     use crate::resumable::{Exchange, HostAnswered, IoAnswer, IoRequest};
     use orbital_core_base::os::OsErrorKind;
 
@@ -459,16 +406,13 @@ mod tests {
     }
 
     impl Toy {
-        fn start(target: &str, egress: &[String]) -> (Toy, DriverStep) {
+        fn start() -> (Toy, DriverStep) {
             let toy = Toy { phase: Phase::Sent };
-            let step = match tcp_target_allowed(target, egress) {
-                Ok(_) => DriverStep::Ask(DriverAsk::Os {
-                    op: OsOp::Send,
-                    args: vec![handle(), Value::string("PING")],
-                    key: None,
-                }),
-                Err(refusal) => DriverStep::Done(Err(Value::string(refusal.message()))),
-            };
+            let step = DriverStep::Ask(DriverAsk::Os {
+                op: OsOp::Send,
+                args: vec![handle(), Value::string("PING")],
+                key: None,
+            });
             (toy, step)
         }
     }
@@ -502,17 +446,13 @@ mod tests {
                 key: None,
                 site: None,
             },
-            IoAnswer::Os(answer),
+            IoAnswer::Os(answer.map(Secret::new)),
         )
     }
 
-    fn egress() -> Vec<String> {
-        vec!["redis://cache.internal:6379".to_string()]
-    }
-
-    fn run(journal: Vec<Exchange>, target: &str) -> (DriveEnd, Vec<IoRequest>) {
+    fn run(journal: Vec<Exchange>) -> (DriveEnd, Vec<IoRequest>) {
         let port = IoPort::new(Arc::new(HostAnswered), None, None);
-        let (mut driver, step) = Toy::start(target, &egress());
+        let (mut driver, step) = Toy::start();
         let (end, step_end) = port.run_step(journal, || {
             drive(&port, &mut driver, step, DriveContext::default())
         });
@@ -538,20 +478,20 @@ mod tests {
                 Ok(Value::string("PONG")),
             ),
         ];
-        let (end, pending) = run(journal, "redis://cache.internal");
+        let (end, pending) = run(journal);
         assert_eq!(end, DriveEnd::Done(Ok(Value::string("PONG"))));
         assert!(pending.is_empty());
     }
 
     #[test]
     fn an_unanswered_ask_suspends_with_exactly_one_pending_ask() {
-        let (end, pending) = run(Vec::new(), "redis://cache.internal");
+        let (end, pending) = run(Vec::new());
         assert_eq!(end, DriveEnd::AwaitingHost);
         assert!(matches!(
             pending.as_slice(),
             [IoRequest::Os { op: OsOp::Send, .. }]
         ));
-        let (end, pending) = run(vec![sent()], "redis://cache.internal");
+        let (end, pending) = run(vec![sent()]);
         assert_eq!(end, DriveEnd::AwaitingHost);
         assert!(matches!(
             pending.as_slice(),
@@ -567,21 +507,8 @@ mod tests {
             Value::string("PING"),
             Err(refusal.clone()),
         )];
-        let (end, pending) = run(journal, "redis://cache.internal");
+        let (end, pending) = run(journal);
         assert_eq!(end, DriveEnd::Done(Err(failure(&refusal))));
         assert!(pending.is_empty());
     }
-
-    #[test]
-    fn control_a_target_outside_egress_finishes_without_asking() {
-        let (end, pending) = run(Vec::new(), "redis://other.internal:6379");
-        assert_eq!(
-            end,
-            DriveEnd::Done(Err(Value::String(
-                ("egress denied: redis://other.internal:6379".to_string()).into()
-            )))
-        );
-        assert!(pending.is_empty());
-    }
-
 }

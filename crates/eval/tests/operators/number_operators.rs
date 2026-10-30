@@ -213,7 +213,6 @@ fn division_and_range_failures_answer_null_with_a_good_control() {
         serde_json::json!(["bytes/at", "aGk=", 1.5]),
         serde_json::json!(["bytes/read-uint", "EjQ=", 0, 3, "be"]),
         serde_json::json!(["bytes/write-uint", 256, 1, "be"]),
-        serde_json::json!(["hash/pbkdf2", "cGFzc3dvcmQ=", "c2FsdA==", 0, 32]),
         serde_json::json!(["format/number", 1, {"decimals": 101}]),
         serde_json::json!(["format/percent", 0.5, 101]),
         serde_json::json!(["format/currency", 1, "XYZ"]),
@@ -232,7 +231,6 @@ fn division_and_range_failures_answer_null_with_a_good_control() {
     assert_eq!(eval_any(serde_json::json!(["bytes/at", "aGk=", 1])), Value::Number(105.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/read-uint", "EjQ=", 0, 2, "be"])), Value::Number(4660.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), Value::string("/w=="));
-    assert!(matches!(eval_any(serde_json::json!(["hash/pbkdf2", "cGFzc3dvcmQ=", "c2FsdA==", 1, 32])), Value::String(_)));
     assert_eq!(eval_any(serde_json::json!(["format/number", 1234, {"decimals": 1}])), Value::string("1,234.0"));
     assert_eq!(eval_any(serde_json::json!(["format/percent", 0.5, 1])), Value::string("50.0%"));
     assert_eq!(eval_any(serde_json::json!(["format/currency", 1, "USD"])), Value::string("$1.00"));

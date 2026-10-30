@@ -27,30 +27,6 @@ fn a_kernel_with_no_grant_declaring_program_grants_nothing() {
 }
 
 #[test]
-fn a_redis_egress_entry_authorizes_the_driver_connect_and_a_program_with_neither_is_refused() {
-    use orbital_core_base::os_grants::NetKind;
-    let k = kernel();
-    k.register_schema(
-        serde_json::from_value(
-            json!({ "name": "r", "egress": ["redis://cache.internal:6379"], "typeContractVersion": 1, "orbitals": [] }),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(k
-        .os_grants()
-        .net_allows("cache.internal", 6379, NetKind::Tcp));
-    let bare = kernel();
-    bare.register_schema(
-        serde_json::from_value(json!({ "name": "r", "typeContractVersion": 1, "orbitals": [] })).unwrap(),
-    )
-    .unwrap();
-    assert!(!bare
-        .os_grants()
-        .net_allows("cache.internal", 6379, NetKind::Tcp));
-}
-
-#[test]
 fn the_registered_programs_grants_are_unioned_without_duplicates() {
     let k = kernel();
     k.register_schema(schema(

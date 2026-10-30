@@ -28,6 +28,12 @@ pub(super) fn entropy_from(io: Arc<IoPort>) -> EntropySource {
     })
 }
 
+/// The sealed-output boundary of a dispatch: an operator that draws entropy runs on entropy the kernel draws fresh and
+/// never journals, and the port journals only its output.
+pub(super) fn sealed_from(io: Arc<IoPort>) -> SealedOutputs {
+    SealedOutputs::new(move |op, args, compute| io.sealed(op, args, compute))
+}
+
 /// Holds a request thread's viewer; dropping it forgets the viewer.
 pub struct ViewerGuard {
     pub(super) slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,

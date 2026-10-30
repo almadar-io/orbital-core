@@ -130,6 +130,7 @@ impl NativeHost {
             grants: &self.grants,
             handles: &self.handles,
             on_event: &on_event,
+            secrets: Some(self.secrets.as_ref()),
         };
         let ports = PortHost {
             secrets: self.secrets.as_ref(),

@@ -37,7 +37,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | Setenv | Unsetenv | Environ | WatchEnv | StdinRead | StdoutWrite | StderrWrite
         | Isatty | TtySize => OsFamily::Process,
         TcpConnect | TcpListen | TlsUpgrade | Send | Recv | UdpBind | Sendto | Recvfrom
-        | DnsResolve | Shutdown | WatchPort => OsFamily::Net,
+        | DnsResolve | Shutdown | WatchPort | Fetch => OsFamily::Net,
         ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
         | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
@@ -141,6 +141,7 @@ os_ops! {
     DnsResolve => ("os/dns-resolve", Single),
     Shutdown => ("os/shutdown", Single),
     WatchPort => ("os/watch-port", Stream),
+    Fetch => ("os/fetch", Single),
     ClockMonotonic => ("os/clock-monotonic", Single),
     Uid => ("os/uid", Single),
     Gid => ("os/gid", Single),
@@ -199,6 +200,12 @@ impl OsOp {
     fn table_entry(self) -> &'static crate::language::registry::EmbeddedOperator {
         crate::language::registry::get_operator(self.name())
             .unwrap_or_else(|| panic!("the operator table declares no `{}`", self.name()))
+    }
+
+    /// Whether the operation is answered by the host on either side: `os/fetch` is the browser host's only ask, and
+    /// `os/recv` and `os/close` read and release the handle of a streamed fetch there (a native host's sockets).
+    pub fn runs_on_any_host(self) -> bool {
+        matches!(self, OsOp::Fetch | OsOp::Recv | OsOp::Close)
     }
 
     /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
@@ -323,6 +330,49 @@ pub fn accepts_arity(op: OsOp, count: usize) -> bool {
     (op.min_args()..=op.max_args()).contains(&count)
 }
 
+/// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential }` objects
+/// becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
+/// followed by the value of the credential it names (an empty name is bytes alone). `source` reads a credential by
+/// name; `None` holds none. The credential value exists only in the returned operand: the program, the journal and
+/// the answer never hold it. Any other op, or a data operand that is already bytes, is returned as it is.
+pub fn resolve_credential_segments(
+    op: OsOp,
+    args: &[crate::value::Value],
+    source: Option<&dyn Fn(&str) -> Result<Option<String>, String>>,
+) -> Result<Vec<crate::value::Value>, OsError> {
+    use crate::value::Value;
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let (OsOp::Send, Some(Value::Array(segments))) = (op, args.get(1)) else {
+        return Ok(args.to_vec());
+    };
+    let invalid = |at: usize, what: &str| OsError::new(OsErrorKind::Invalid, format!("{}: segment {} {what}", op.name(), at + 1));
+    let denied = |what: &str| OsError::new(OsErrorKind::Denied, format!("{}: {what}", op.name()));
+    let mut bytes = Vec::new();
+    for (at, segment) in segments.iter().enumerate() {
+        let Value::Object(fields) = segment else {
+            return Err(invalid(at, "is not a { bytes, credential } object"));
+        };
+        let (Some(Value::String(text)), Some(Value::String(name))) = (fields.get("bytes"), fields.get("credential")) else {
+            return Err(invalid(at, "needs a bytes text and a credential name"));
+        };
+        bytes.extend(STANDARD.decode(text.as_str()).map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?);
+        if name.as_str().is_empty() {
+            continue;
+        }
+        let held = source
+            .ok_or_else(|| denied("no credential source is configured"))?(name.as_str())
+            .map_err(|message| OsError::new(OsErrorKind::Io, format!("{}: credential {name}: {message}", op.name())))?;
+        match held {
+            Some(value) => bytes.extend_from_slice(value.as_bytes()),
+            None => return Err(denied(&format!("credential {name} is not held"))),
+        }
+    }
+    let mut resolved = args.to_vec();
+    resolved[1] = Value::string(STANDARD.encode(&bytes));
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,7 +390,7 @@ mod tests {
             assert!(op.name().starts_with("os/") || op.is_kv());
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 101);
+        assert_eq!(OsOp::ALL.len(), 102);
         assert_eq!(OsOp::from_name("http"), None);
     }
 

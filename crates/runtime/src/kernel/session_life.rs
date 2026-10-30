@@ -21,6 +21,7 @@ struct Life {
 pub(super) struct SessionLives {
     lives: Mutex<HashMap<String, Life>>,
     pending: RwLock<Option<Arc<dyn SessionPending>>>,
+    mounts: Arc<RwLock<mount_ledger::MountLedger>>,
     views: Arc<view_record::ViewRecords>,
     frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
@@ -30,19 +31,21 @@ pub(super) struct SessionLives {
 
 impl SessionLives {
     pub(super) fn new(
+        mounts: Arc<RwLock<mount_ledger::MountLedger>>,
         views: Arc<view_record::ViewRecords>,
         frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
         carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
         state_manager: Arc<RwLock<StateMachineManager>>,
         ended: Arc<RwLock<HashSet<String>>>,
     ) -> Self {
-        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), views, frames, carried_rows, state_manager, ended }
+        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
     pub(super) fn free(&self, session: &str) {
         dispatch_scope::drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
         self.views.drop_session(session);
+        self.mounts.write().release(session);
         self.ended.write().insert(session.to_string());
     }
 

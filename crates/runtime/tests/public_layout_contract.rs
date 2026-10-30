@@ -551,8 +551,10 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // once) and the viewer it was started as (one `Arc`: concurrent requests keep their own `@user`). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
     // driver's dispatch (one `Box`, EXEC-STORE-4). 808: plus the kernel lane's hold, its keyed hold (one `Box`) and the
-    // queued seed asks (P-017 K3).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 808, "Progress");
+    // queued seed asks (P-017 K3). 816: plus the dispatch's delivery count (`DispatchMemory.delivered`, one `usize`,
+    // 00d3e70): the settle-pass cap counts the deliveries of the dispatch, so the counter lives with the dispatch's
+    // memory in the run that `Progress::Await` carries; boxing 8 bytes would add a pointer and an allocation per parked dispatch.
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 816, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     assert_eq!(size_of::<ResolveProgress>(), 416, "ResolveProgress");
     // 568: plus the entity's `@invariant` propositions (`Option<Vec<SExpression>>`, 24 bytes, G-ORB-384).

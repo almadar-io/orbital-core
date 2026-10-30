@@ -19,7 +19,7 @@ use crate::support::TestKernel;
 fn tls_client_hello(seed: u8) -> Vec<Value> {
     let (mut stream, first) = TlsStream::upgrade("db.internal", Value::Number(5.0));
     assert_eq!(first, TlsEvent::Ask(DriverAsk::Random { bytes: 32 }), "the seed is a journaled random ask");
-    assert_eq!(stream.resume(DriverAnswer::Random(Ok(vec![seed; 32]))), TlsEvent::Ask(DriverAsk::Clock), "the time is the journaled clock");
+    assert_eq!(stream.resume(DriverAnswer::Random(Ok((vec![seed; 32]).into()))), TlsEvent::Ask(DriverAsk::Clock), "the time is the journaled clock");
     match stream.resume(DriverAnswer::Clock(Ok(1_760_000_000_000))) {
         TlsEvent::Ask(DriverAsk::Os { op: OsOp::Send, args, .. }) => args,
         other => panic!("the handshake begins with a raw os/send, got {other:?}"),

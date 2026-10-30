@@ -314,29 +314,11 @@ fn http_default_port(scheme: &str) -> Option<u16> {
     }
 }
 
-/// The schemes a raw TCP protocol driver connects under, each with its default port, as the operator table declares them (`defaultPorts`).
-pub fn tcp_default_port(scheme: &str) -> Option<u16> {
-    crate::language::registry::tcp_scheme_default_port(scheme)
-}
-
-fn egress_default_port(scheme: &str) -> Option<u16> {
-    http_default_port(scheme).or_else(|| tcp_default_port(scheme))
-}
-
 /// Splits `scheme://authority` off `url`; the rest (path, query) is returned as is. Only `http` and `https`.
 pub fn split_url(url: &str) -> Option<(OriginParts, &str)> {
-    split_with(url, http_default_port)
-}
-
-/// [`split_url`] for a TCP protocol target: only the schemes of [`tcp_default_port`].
-pub fn split_tcp_url(url: &str) -> Option<(OriginParts, &str)> {
-    split_with(url, tcp_default_port)
-}
-
-fn split_with(url: &str, default_port_of: fn(&str) -> Option<u16>) -> Option<(OriginParts, &str)> {
     let (scheme, rest) = url.split_once("://")?;
     let scheme = scheme.to_ascii_lowercase();
-    let default_port = default_port_of(scheme.as_str())?;
+    let default_port = http_default_port(scheme.as_str())?;
     let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
     let (authority, remainder) = rest.split_at(end);
     if authority.is_empty() || authority.contains(['@', ' ']) {
@@ -368,9 +350,9 @@ fn split_with(url: &str, default_port_of: fn(&str) -> Option<u16>) -> Option<(Or
     ))
 }
 
-/// One `egress` entry: `scheme://host[:port]` for an http(s) origin or a TCP protocol origin.
+/// One `egress` entry: `scheme://host[:port]` for an http(s) origin.
 pub fn parse_egress_entry(entry: &str) -> Option<OriginParts> {
-    match split_with(entry, egress_default_port)? {
+    match split_url(entry)? {
         (parts, "") => Some(parts),
         _ => None,
     }
@@ -794,20 +776,4 @@ pub fn origin_allowed(url_or_origin: &str, egress: &[String]) -> bool {
         .iter()
         .filter_map(|entry| parse_egress_entry(entry))
         .any(|allowed| allowed == target)
-}
-
-/// A TCP connect target (`<scheme>://host[:port]`, a scheme the operator table declares a default port for) against `egress`:
-/// exact scheme, host and port, the default port of the scheme when none is written. Refuses with
-/// [`HttpRefusal::EgressDenied`]; an `http(s)` entry never authorizes a TCP target.
-pub fn tcp_target_allowed(origin: &str, egress: &[String]) -> Result<OriginParts, HttpRefusal> {
-    let denied = || HttpRefusal::EgressDenied(origin.to_string());
-    let (target, rest) = split_tcp_url(origin).ok_or_else(denied)?;
-    if !rest.is_empty() {
-        return Err(denied());
-    }
-    if egress.iter().filter_map(|entry| parse_egress_entry(entry)).any(|allowed| allowed == target) {
-        Ok(target)
-    } else {
-        Err(denied())
-    }
 }

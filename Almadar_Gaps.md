@@ -38,9 +38,7 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-087** — The type of `(object/merge a b)` is nullable even when both arguments are present (non-null) maps, so a program must wrap the merge in `default … {}` to use it, a fallback that hides a type error rather than stating a contract. Found 2026-10-29 in std-agent-builder's strict-typing pass. Fix: the signature's result is non-null when every argument is non-null (nullable only when an argument is `T?`), in the one expression checker; then drop the `default` in std-agent-builder. orbital-core base type_compat / signature [mechanical] — prevention rung: (1) the type system. Root cause: A4.
 
-Next code: `G-ORBITAL-CORE-088`
-
-
+Next code: `G-ORBITAL-CORE-089`
 
 - **G-ORBITAL-CORE-066** — `type_compat` rejects a list literal whose elements mix `{ text : string? }` and `{ text : string }` against a declared `[{ text : string? }]`: a one-element list passes, two elements with the two shapes fail (the element types are not joined to the declared optional), so authors fake presence (the 2026-10-26 std-mock-seed generator now gives failed date cells `text: ""` + `kind: "clock"` instead of a null text) [mechanical]. Owner: orbital-core base type_compat (list element join). Repro: scratchpad probe `clifix2/tt.lolo` — `(emit E { cells: [{ text: (if c "a" null) }, { text: "b" }] })` with `E { cells : [Cell]! }`, `type Cell = { text : string? }`. Rung: (1) the type system. Root cause: A4.
 

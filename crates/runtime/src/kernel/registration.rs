@@ -573,6 +573,7 @@ impl RuntimeKernel {
         *fork.presentation.nav_pages.write() = self.presentation.nav_pages.read().clone();
         *fork.capture_children.write() = self.capture_children.read().clone();
         *fork.i18n.write() = self.i18n.read().clone();
+        *fork.mount_ledger.write() = self.mount_ledger.read().clone();
         *fork.grants.managed_credentials.write() = self.grants.managed_credentials.read().clone();
         *fork.sessions.current_user.write() = self.sessions.current_user.read().clone();
         fork.deliveries

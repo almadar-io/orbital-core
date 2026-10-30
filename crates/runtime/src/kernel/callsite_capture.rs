@@ -74,8 +74,13 @@ fn contains_prefixed(value: &serde_json::Value, prefix: &str) -> bool {
     }
 }
 
+/// Whether a resolved config value holds an `@callsitePayload.<field>` binding.
+pub fn config_references_callsite_payload(config: &serde_json::Value) -> bool {
+    contains_prefixed(config, CALLSITE_PAYLOAD_PREFIX)
+}
+
 /// Whether the trait's own config or state machine reads `@callsitePayload.<field>`.
-fn references_callsite_payload(def: &TraitDefinition) -> bool {
+pub fn references_callsite_payload(def: &TraitDefinition) -> bool {
     def.config
         .as_ref()
         .is_some_and(|config| contains_prefixed(&as_json(config), CALLSITE_PAYLOAD_PREFIX))

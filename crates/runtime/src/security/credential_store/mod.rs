@@ -1,8 +1,8 @@
 //! The encrypted credential store: one AES-256-GCM row per (credential name, principal) kept through a row port, the master
 //! key held alone in `ALMADAR_CREDENTIAL_MASTER_KEY`. A row carries `service`, `envVar`, hex `ciphertext` / `iv` / `authTag`,
 //! `keyId`, `updatedAt`, `principal` and an optional clear `label`. A stored value shadows its environment counterpart.
-//! A one-use value (a pending OAuth grant) is a row of kind `derived` in the same rows: sealed the same way, with an
-//! `expiresAt`, consumed by [`EncryptedCredentialStore::take`]. A row that cannot be read is a failure, never an absence.
+//! A row that cannot be read is a failure, never an absence; so is a row of the retired kind `derived` (a held one-use value),
+//! which this store no longer reads or writes.
 //! Everything here compiles on wasm32 except the file medium; a host whose rows answer asynchronously keeps the store over
 //! [`RecordedCredentialRows`] and applies the recorded writes itself.
 #[cfg(not(feature = "std"))]
@@ -29,8 +29,8 @@ pub const CREDENTIAL_PREVIOUS_MASTER_KEY_ENV: &str = "ALMADAR_CREDENTIAL_MASTER_
 pub const CREDENTIALS_FILE_ENV: &str = "ALMADAR_CREDENTIALS_FILE";
 #[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_CREDENTIALS_FILE: &str = ".almadar/dev-credentials.json";
-/// The `kind` of a row holding a one-use value; a credential row carries no `kind`.
-pub const DERIVED_KIND: &str = "derived";
+/// The retired `kind` of a row that held a one-use value; a credential row carries no `kind`.
+const RETIRED_DERIVED_KIND: &str = "derived";
 
 /// The persistence the store uses: whole rows, as JSON objects carrying their `id`.
 pub trait CredentialRows: Send + Sync {
@@ -225,7 +225,7 @@ impl FileCredentialRows {
         let tmp = PathBuf::from(tmp);
         let text =
             serde_json::to_string_pretty(rows).map_err(|e| format!("credential file: {e}"))?;
-        std::fs::write(&tmp, text).map_err(|e| format!("credential file: {e}"))?;
+        write_private(&tmp, text.as_bytes()).map_err(|e| format!("credential file: {e}"))?;
         std::fs::rename(&tmp, &self.path).map_err(|e| format!("credential file: {e}"))
     }
 }
@@ -315,8 +315,24 @@ fn chrono_free_now_ms() -> i64 {
     orbital_core_base::time_util::now_millis()
 }
 
+/// Write `bytes` to `path` readable by the owner alone (0600 where the platform has file modes).
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(bytes)
+}
+
 struct Key {
     bytes: [u8; 32],
+}
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.bytes);
+    }
 }
 
 impl Key {
@@ -381,6 +397,12 @@ struct Stored {
     label: Option<String>,
 }
 
+impl Drop for Stored {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.value);
+    }
+}
+
 impl std::fmt::Debug for Stored {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Stored")
@@ -410,17 +432,6 @@ pub struct EncryptedCredentialStore {
 struct State {
     warmed: bool,
     by_identity: HashMap<String, Stored>,
-    /// Held one-use rows found by [`EncryptedCredentialStore::take_begin`] whose delete the taker has not yet answered,
-    /// by ticket: two takers of one row each hold their own.
-    taking: HashMap<u64, Value>,
-    tickets: u64,
-}
-
-/// A held one-use row [`EncryptedCredentialStore::take_begin`] found: the row to delete, and the ticket to finish or cancel with.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HeldTake {
-    pub ticket: u64,
-    pub id: String,
 }
 
 impl std::fmt::Debug for EncryptedCredentialStore {
@@ -500,12 +511,14 @@ impl EncryptedCredentialStore {
                 &mut buffer,
             )
             .map_err(|_| "credential encryption failed".to_string())?;
-        Ok(Sealed {
+        let sealed = Sealed {
             ciphertext: hex(&buffer),
             iv: hex(&iv),
             auth_tag: hex(&tag),
             key_id: master.id(),
-        })
+        };
+        zeroize::Zeroize::zeroize(&mut buffer);
+        Ok(sealed)
     }
 
     fn open_with(key: &Key, row: &Sealed, name: &str, principal: Option<&str>) -> Option<String> {
@@ -514,15 +527,15 @@ impl EncryptedCredentialStore {
         let mut buffer = unhex(&row.ciphertext)?;
         let aad = principal.map(|_| storage_key(name, principal));
         let cipher = Aes256Gcm::new_from_slice(&key.bytes).ok()?;
-        cipher
-            .decrypt_in_place_detached(
-                Nonce::from_slice(&iv),
-                aad.as_deref().unwrap_or("").as_bytes(),
-                &mut buffer,
-                Tag::from_slice(&tag),
-            )
-            .ok()?;
-        Some(String::from_utf8_lossy(&buffer).into_owned())
+        let opened = cipher.decrypt_in_place_detached(
+            Nonce::from_slice(&iv),
+            aad.as_deref().unwrap_or("").as_bytes(),
+            &mut buffer,
+            Tag::from_slice(&tag),
+        );
+        let plain = opened.is_ok().then(|| String::from_utf8_lossy(&buffer).into_owned());
+        zeroize::Zeroize::zeroize(&mut buffer);
+        plain
     }
 
     /// Decrypt one row, choosing the key by its stamped `keyId`: the current key, then the rotation-window previous key. A row
@@ -573,7 +586,6 @@ impl EncryptedCredentialStore {
     }
 
     /// The rows that cannot be read, as `rows` holds them: a row that is malformed, of an unknown kind, or that no held key opens.
-    /// A row of kind `derived` is a one-use value, read when it is taken, not here.
     fn scan(&self, rows: &[Value]) -> (HashMap<String, Stored>, Vec<String>) {
         let mut found = HashMap::new();
         let mut unreadable = Vec::new();
@@ -584,9 +596,12 @@ impl EncryptedCredentialStore {
             };
             match row.get("kind") {
                 None => {}
-                Some(kind) if kind.as_str() == Some(DERIVED_KIND) => continue,
-                Some(_) => {
-                    unreadable.push(label());
+                Some(kind) => {
+                    unreadable.push(if kind.as_str() == Some(RETIRED_DERIVED_KIND) {
+                        format!("{} (retired kind `{RETIRED_DERIVED_KIND}`: a held one-use value this store no longer keeps)", label())
+                    } else {
+                        label()
+                    });
                     continue;
                 }
             }
@@ -807,9 +822,6 @@ impl EncryptedCredentialStore {
         }
         let (mut rotated, mut already_current) = (0u64, 0u64);
         for row in rows {
-            if row.get("kind").is_some() {
-                continue;
-            }
             let (Some((id, service, env_var, principal)), Some(sealed)) =
                 (Self::identity_of(&row), Self::sealed_of(&row))
             else {
@@ -858,143 +870,6 @@ impl EncryptedCredentialStore {
             already_current,
             unreadable: 0,
         })
-    }
-
-    fn held_row(rows: &[Value], name: &str, principal: Option<&str>) -> Option<Value> {
-        rows.iter()
-            .find(|row| {
-                row.get("kind").and_then(Value::as_str) == Some(DERIVED_KIND)
-                    && row["envVar"].as_str() == Some(name)
-                    && row.get("principal").and_then(Value::as_str) == principal
-            })
-            .cloned()
-    }
-
-    /// Keep `value` sealed in the rows as a one-use value of `name` (for `principal`) until `expires_at` (epoch ms),
-    /// replacing one already held. Held values that expired by `now` are deleted on the way.
-    pub fn hold(
-        &self,
-        name: &str,
-        value: &str,
-        expires_at: i64,
-        now: i64,
-        principal: Option<&str>,
-    ) -> Result<(), String> {
-        if principal.is_some_and(str::is_empty) {
-            return Err("credential principal must be a nonempty string".to_string());
-        }
-        let sealed = self.seal(value, name, principal)?;
-        let mut live = Vec::new();
-        for row in self.rows.list()? {
-            let expired = row.get("kind").and_then(Value::as_str) == Some(DERIVED_KIND)
-                && row["expiresAt"]
-                    .as_f64()
-                    .is_some_and(|at| (at as i64) <= now);
-            let id = text_of(&row, "id").map(str::to_string);
-            match (expired, id) {
-                (true, Some(id)) => {
-                    self.rows.delete(&id)?;
-                }
-                _ => live.push(row),
-            }
-        }
-        let mut data = Map::new();
-        data.insert("kind".into(), json!(DERIVED_KIND));
-        data.insert("envVar".into(), json!(name));
-        data.insert("ciphertext".into(), json!(sealed.ciphertext));
-        data.insert("iv".into(), json!(sealed.iv));
-        data.insert("authTag".into(), json!(sealed.auth_tag));
-        data.insert("keyId".into(), json!(sealed.key_id));
-        data.insert("expiresAt".into(), json!(expires_at));
-        if let Some(who) = principal {
-            data.insert("principal".into(), json!(who));
-        }
-        let data = Value::Object(data);
-        match Self::held_row(&live, name, principal)
-            .as_ref()
-            .and_then(|row| text_of(row, "id"))
-        {
-            Some(id) => self.rows.update(id, &data),
-            None => self.rows.create(&data).map(|_| ()),
-        }
-    }
-
-    /// Find the one-use value held for `name` (for `principal`) and answer its row id and a ticket, without opening it. The
-    /// taker then deletes that row, and only the delete that removes it goes on to [`Self::take_finish`]; one that finds it
-    /// gone calls [`Self::take_cancel`]. Without a master key nothing is held.
-    pub fn take_begin(
-        &self,
-        name: &str,
-        principal: Option<&str>,
-    ) -> Result<Option<HeldTake>, String> {
-        if !self.enabled() {
-            return Ok(None);
-        }
-        let Some(row) = Self::held_row(&self.rows.list()?, name, principal) else {
-            return Ok(None);
-        };
-        let id = text_of(&row, "id")
-            .ok_or_else(|| format!("a held one-use credential row of {name} carries no id"))?
-            .to_string();
-        let mut state = self.state.lock();
-        state.tickets += 1;
-        let ticket = state.tickets;
-        state.taking.insert(ticket, row);
-        Ok(Some(HeldTake { ticket, id }))
-    }
-
-    /// Open the row [`Self::take_begin`] found, after the taker's delete removed it. A value that expired by `now` is
-    /// consumed and not returned; a row that cannot be read is a failure.
-    pub fn take_finish(&self, ticket: u64, now: i64) -> Result<Option<String>, String> {
-        let row = self.state.lock().taking.remove(&ticket).ok_or_else(|| {
-            format!("no held one-use credential row is being taken under ticket {ticket}")
-        })?;
-        let id = text_of(&row, "id").unwrap_or_default();
-        let expires_at = row["expiresAt"]
-            .as_f64()
-            .ok_or_else(|| format!("held one-use credential row {id} carries no expiry"))?;
-        if (expires_at as i64) <= now {
-            return Ok(None);
-        }
-        let name = text_of(&row, "envVar")
-            .ok_or_else(|| format!("held one-use credential row {id} carries no name"))?;
-        let principal = row.get("principal").and_then(Value::as_str);
-        let sealed = Self::sealed_of(&row)
-            .ok_or_else(|| format!("held one-use credential row {id} is malformed"))?;
-        self.open(&sealed, text_of(&row, "keyId"), name, principal)
-            .map(Some)
-            .ok_or_else(|| {
-                format!("held one-use credential row {id} cannot be opened by the held keys")
-            })
-    }
-
-    /// Forget a row [`Self::take_begin`] found whose delete another taker won.
-    pub fn take_cancel(&self, ticket: u64) {
-        self.state.lock().taking.remove(&ticket);
-    }
-
-    /// Remove and return the one-use value held for `name` (for `principal`): the single read of it, over this store's own
-    /// rows. Of several takers racing for one row only the one whose delete removes it gets the value.
-    pub fn take(
-        &self,
-        name: &str,
-        now: i64,
-        principal: Option<&str>,
-    ) -> Result<Option<String>, String> {
-        let Some(held) = self.take_begin(name, principal)? else {
-            return Ok(None);
-        };
-        match self.rows.delete(&held.id) {
-            Ok(true) => self.take_finish(held.ticket, now),
-            Ok(false) => {
-                self.take_cancel(held.ticket);
-                Ok(None)
-            }
-            Err(error) => {
-                self.take_cancel(held.ticket);
-                Err(error)
-            }
-        }
     }
 
     /// The store's state for the kernel's `credentialStoreList` ask: whether it can encrypt and the service and name of every

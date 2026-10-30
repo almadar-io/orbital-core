@@ -8,16 +8,34 @@ use std::prelude::v1::*;
 use super::wire::AppliedWire;
 use super::FoldBase;
 use crate::effects::response::EventResponse;
+use orbital_core_base::bus_event::EmittedEvent;
 use orbital_core_base::sync::Mutex;
 use super::ticket_queue::TicketQueue;
 use std::collections::{BTreeSet, HashSet};
 
+/// Who has already run an emit that is delivered to its listeners alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EmitOrigin {
+    /// Another client's push: the emitter's own arm did not run here.
+    Peer,
+    /// A live message of this client's own running call: the emitter's own arm ran as that call's progress dispatch.
+    Own,
+}
+
+/// What a flight folds: a host's answer, or an emit delivered to its listeners alone.
+pub(super) enum Work {
+    Answer {
+        response: EventResponse,
+        already_delivered: HashSet<(String, String)>,
+        base: Option<FoldBase>,
+    },
+    Emit(EmittedEvent, EmitOrigin),
+}
+
 /// An answer waiting for the flights ahead of it.
 struct QueuedFold {
     flight: u64,
-    response: EventResponse,
-    already_delivered: HashSet<(String, String)>,
-    base: Option<FoldBase>,
+    work: Work,
 }
 
 /// An answer folded now, or the ticket it waits under.
@@ -48,9 +66,7 @@ pub(super) struct FoldOrder {
 }
 
 pub(super) struct Ready {
-    pub(super) response: EventResponse,
-    pub(super) already_delivered: HashSet<(String, String)>,
-    pub(super) base: Option<FoldBase>,
+    pub(super) work: Work,
 }
 
 impl FoldOrder {
@@ -66,9 +82,7 @@ impl FoldOrder {
     pub(super) fn admit(
         &self,
         flight: u64,
-        response: EventResponse,
-        already_delivered: HashSet<(String, String)>,
-        base: Option<FoldBase>,
+        work: Work,
     ) -> Result<Result<Ready, u64>, String> {
         let mut s = self.state.lock();
         if !s.open.contains(&flight) {
@@ -76,22 +90,13 @@ impl FoldOrder {
         }
         let oldest = s.open.first() == Some(&flight);
         if oldest && !s.queued.any(|q| q.flight == flight) {
-            return Ok(Ok(Ready {
-                response,
-                already_delivered,
-                base,
-            }));
+            return Ok(Ok(Ready { work }));
         }
         let ticket = s.next_ticket;
         s.next_ticket += 1;
         s.queued.push(
             ticket,
-            QueuedFold {
-                flight,
-                response,
-                already_delivered,
-                base,
-            },
+            QueuedFold { flight, work },
         );
         Ok(Err(ticket))
     }
@@ -101,14 +106,7 @@ impl FoldOrder {
         let mut s = self.state.lock();
         let oldest = *s.open.first()?;
         let (ticket, q) = s.queued.take_first(|q| q.flight == oldest)?;
-        Some((
-            ticket,
-            Ready {
-                response: q.response,
-                already_delivered: q.already_delivered,
-                base: q.base,
-            },
-        ))
+        Some((ticket, Ready { work: q.work }))
     }
 
     /// The flight ended (its legs are folded, or the host gave up on them); answers still queued for it are dropped.

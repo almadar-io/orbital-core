@@ -113,7 +113,7 @@ fn random_bytes_asks_the_host_once_and_emits_base64url_without_padding() {
             json!(["random-bytes", 2, routes()]),
             go(None),
             |request| match request {
-                IoRequest::Random { bytes: 2 } => IoAnswer::Random(Ok(vec![0xfb, 0xff])),
+                IoRequest::Random { bytes: 2 } => IoAnswer::Random(Ok((vec![0xfb, 0xff]).into())),
                 other => panic!("the fixture asks for {other:?}"),
             },
         );
@@ -145,7 +145,7 @@ fn a_bad_count_fails_the_effect_before_any_ask() {
 fn control_the_bounds_one_and_1024_are_asked() {
     for good in [1u32, 1024] {
         let (_, seen) = run(json!(["random-bytes", good, routes()]), go(None), |_| {
-            IoAnswer::Random(Ok(vec![0; good as usize]))
+            IoAnswer::Random(Ok((vec![0; good as usize]).into()))
         });
         assert_eq!(seen, vec![IoRequest::Random { bytes: good }]);
     }
@@ -165,13 +165,13 @@ fn a_host_failure_fires_the_failure_route() {
 #[test]
 fn a_keyed_random_bytes_echoes_its_key_in_success_and_failure_and_an_unkeyed_one_adds_none() {
     let keyed = |count: Json| json!(["random-bytes", count, {"key": "@payload.principal", "emit": {"success": "OK", "failure": "BAD"}}]);
-    let (ok, _) = run(keyed(json!(2)), go(None), |_| IoAnswer::Random(Ok(vec![0xfb, 0xff])));
+    let (ok, _) = run(keyed(json!(2)), go(None), |_| IoAnswer::Random(Ok((vec![0xfb, 0xff]).into())));
     assert_eq!(payload_of(&ok, "OK"), json!({ "value": "-_8", "key": "evil" }));
     let (down, _) = run(keyed(json!(2)), go(None), |_| IoAnswer::Random(Err("entropy source down".to_string())));
     assert_eq!(payload_of(&down, "BAD"), json!({ "error": "entropy source down", "key": "evil" }));
     let (bad_count, _) = run(keyed(json!(0)), go(None), |request| panic!("asked {request:?}"));
     assert_eq!(payload_of(&bad_count, "BAD")["key"], "evil");
-    let (plain, _) = run(json!(["random-bytes", 2, routes()]), go(None), |_| IoAnswer::Random(Ok(vec![0xfb, 0xff])));
+    let (plain, _) = run(json!(["random-bytes", 2, routes()]), go(None), |_| IoAnswer::Random(Ok((vec![0xfb, 0xff]).into())));
     assert_eq!(payload_of(&plain, "OK"), json!({ "value": "-_8" }));
     let (empty, _) = run(json!(["random-bytes", 2, {"key": "", "emit": {"success": "OK", "failure": "BAD"}}]), go(None), |request| panic!("asked {request:?}"));
     assert!(emitted(&empty).iter().all(|(event, _)| *event != "OK"), "an empty key never draws");
@@ -388,13 +388,13 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
         assert_eq!(back, request, "{wire}");
     }
     let wire =
-        serde_json::to_value(IoAnswerWire::from(&IoAnswer::Random(Ok(vec![1, 2, 3])))).unwrap();
+        serde_json::to_value(IoAnswerWire::from(&IoAnswer::Random(Ok((vec![1, 2, 3]).into())))).unwrap();
     assert_eq!(
         wire,
         json!({ "kind": "random", "result": { "ok": "AQID" } })
     );
     let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire).unwrap().into();
-    assert_eq!(back, IoAnswer::Random(Ok(vec![1, 2, 3])));
+    assert_eq!(back, IoAnswer::Random(Ok((vec![1, 2, 3]).into())));
     let bad: IoAnswerWire =
         serde_json::from_value(json!({ "kind": "random", "result": { "ok": "!!" } })).unwrap();
     assert!(matches!(IoAnswer::from(bad), IoAnswer::Random(Err(_))));
@@ -402,7 +402,7 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
 
 #[test]
 fn a_random_answer_and_a_secret_set_value_are_redacted_in_debug() {
-    let random = format!("{:?}", IoAnswer::Random(Ok(vec![9, 9, 9])));
+    let random = format!("{:?}", IoAnswer::Random(Ok((vec![9, 9, 9]).into())));
     assert!(
         !random.contains('9') && random.contains("redacted"),
         "{random}"
@@ -420,6 +420,9 @@ fn a_random_answer_and_a_secret_set_value_are_redacted_in_debug() {
 }
 
 mod credential_admin_effects {
+    const RSA_SIGNING_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDBmj4cs/1X1KKS\nd7w4cQLXwY2/zQSivWFyZTFem1GZVnlg223x1KbrF+XtLGmIlWw4U6Ily/uiz645\nZFKwDJ4IRAGs89pnrAB8gR46c0aLRNYKfOpsu0ox0QZre8hgBQF5oUTdGXFQW4Sv\ndGVkM4zMtWCcb+nWWeM1+G86ghU57hjMj/5cnYEwv+waqAOnC7aMGQBNfol9lk4r\n48QKWa5TCibIbo3Hcs5UkqNZYsX+rJrUBtOk1f1/1fhXTAvWsMFudkcYH+M5hmif\nI+O20LVfOV7C2N4DhuWuk/sHHNyJVtwBnZjo3uAdEH2z1lK09JJSFwxkza6QYSRI\ndLC56SAlAgMBAAECggEALGnQhvAplc0TcItkVARk9Q8TkCUdw6GzabVaMoxqF0W1\nuakNG1W/5x3H4vV1zl4NAgz5nTci5pJDMypXJ8j1Ngs34S/d8juMrwNF5n3MeKWV\nfrlyY/hBSJVdpimy6YgscvUyoZA1JQyhr0iB/A8xZULUw36PA9wCGj8AcUknSm70\npQZHB+58X0JG+M+XlU6xW+Tb0V8r6CFGWSxhdOYaXwIBhdBJKvh1KiIHkCDPqX5i\nPsP09EsX7oDsS/+S/INVgqX/q89+ehPdzY19hXgWRD9sbH2h75ImIh/Axy52tJl/\nKCFptgFIf7WBuzJ93iMOVriCR+vncNSj1Gdm0pBq3wKBgQDx7kUsc23zRs8ca+30\n8OpMc81q/qcWBGzs+Fj941hdMRzYzUpk1+Re36Dj5PH1HPc6/h1c/Ip7c8dN1zds\nnJjbhCTpOMuLxhXy81jtWwVr9O4arc0rKH5ZjrDAmTeGtoPMhFjxKdWuljrB/1VA\ndZVhp2S4DPzPJcYu9RUs0JkkvwKBgQDM3H0Z6qiJwUSXVka9kY8rv0ntjr76UUWI\n+E7aHvENElt/YYFeaAG+Suib+bEJ6yqfJlrfF2Gut5PrC14jc9heO2CKkHa5R/8M\nzNALNZ3YSYwAaGlRLrAlRhc7Xe2uPww+Nev4X3O+NUO5MKgLzxgBzWjl+ND6K9Ck\nrsOon43AGwKBgQCsz5MPvmASf0jft2ShKxlhhPJ9c+sr+ftIhdkjeaqb3sIJRxLV\n17Tj4/+L6fS/LnKW6/9TdX0B0+DQhGOtrGovm0O2aABVFiiFgzfJS9QimjEeU3mT\nU3h1RkyRNqCIFIUuqHbTxRtCe0L7YgSmZ5dNywFRys0mtofK8PuwKEzMBwKBgQDJ\nP20SEajBsv/r35Cc16qbIk7AtTM9eqthk/T6Z90Lp1YFO8c389qKktIRr+fQQ5pa\nP/aTJEgMuEDybPdswnfykkgTtzk6aNTQQT+7U0+d0xpaqDeVzdSyuTlHU82TGFKx\npo0KMNLmLzM5cOgUubvuwVhkWtsIeBR+Q0TomN1KswKBgGtczq6Jm7Ic4+WZGzh7\nNVqwdthUdR5EdBjxi5I9SVIS1Rb6pH4Y2cUOBGCz55STj4heV3d0IRS0QCw3TtFi\n0coDp2D6a2eEZDeqdywBQVg8NYpKJI74XyXu+Ogkn0T3vQZtN+BH1fHrTfbSdTa/\nAM812eZIeiLOTXTbKy88Y2Xy\n-----END PRIVATE KEY-----\n";
+    const RSA_SIGNATURE_OF_SIGN_ME: &str = "ZNheFwSQUoc3hijIwW3RCdNxljDrGANFey5HEtyMvYys8RMSrC3Unkq7ya6CpBJEltkF6/tpaBoglMlH9TSxZolEThukPFL8+vtR7EEch6I4oceaDqjOE6lxhKJfbU3v8elFyaMaxByOxklNcoKnqzNLBdH/waaJhkyLHg9gQ0beE5L1aKe90US3pjdAO3RCPp3kWUHeQSEm697MS5DJjlW/m1G8292iJaYf53B9hPPP9XcC9EVvRRf57ZwJJ3/RnVexo4UFEPkyqvmaPzL6h324ArZdV2veCtloWOG+fhOWM2LzDKRJwUS/7u8mdcmX8Z/ETOkbXQ946nfuXHOXLQ==";
+
     use super::*;
     use orbital_core_runtime::credential_admin::{RotateCounts, StoreListing, StoredName};
 
@@ -435,7 +438,7 @@ mod credential_admin_effects {
             IoRequest::CredentialStoreRotate => IoAnswer::CredentialStoreRotate(Ok(RotateCounts { rotated: 2, already_current: 1, unreadable: 0 })),
             IoRequest::CredentialModeRead => IoAnswer::CredentialModeRead(Ok(Some("real".into()))),
             IoRequest::CredentialModeWrite { mode } => IoAnswer::CredentialModeWrite(Ok(mode.clone())),
-            IoRequest::Secret { name, .. } => IoAnswer::Secret(Ok((name == "SALT").then(|| "held".to_string()))),
+            IoRequest::Secret { name, .. } => IoAnswer::Secret(Ok((name == "SALT").then(|| "held".into()))),
             other => panic!("the fixture asks for {other:?}"),
         }
     }
@@ -453,7 +456,7 @@ mod credential_admin_effects {
 
         let (saved, seen) = answer(json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "salt-value-1111"}, routes()]), signed_in());
         assert_eq!(saved, json!({ "saved": true }));
-        assert!(matches!(seen.last(), Some(IoRequest::CredentialStoreWrite { service, name, value }) if service == "apikeys" && name == "SALT" && value == "salt-value-1111"));
+        assert!(matches!(seen.last(), Some(IoRequest::CredentialStoreWrite { service, name, value }) if service == "apikeys" && name == "SALT" && value.expose() == "salt-value-1111"));
         assert!(!format!("{seen:?}").contains("salt-value"), "the stored value never shows in a Debug of the asks");
 
         let (removed, _) = answer(json!(["credential-remove", {"envVar": "SALT"}, routes()]), signed_in());
@@ -514,8 +517,9 @@ mod credential_admin_effects {
     }
 
     #[test]
-    fn a_scrypt_salt_credential_is_resolved_by_the_kernel_and_never_reaches_program_data() {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+    fn a_credential_operand_is_resolved_by_the_kernel_and_never_reaches_program_data() {
+        let schema_for = |call: Json| -> OrbitalSchema {
+            serde_json::from_value(json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Keys",
@@ -526,15 +530,22 @@ mod credential_admin_effects {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "GO", "effects": [
-                                ["let", [["h", ["hash/scrypt", "sk_live_", "@config.salt"]]],
+                                ["let", [["h", call.clone()]],
                                     ["emit", "OK", { "hash": "@h", "salt": "@config.salt" }]]
                             ] },
                             { "from": "idle", "to": "done", "event": "OK" }
                         ]
                     } }]
             }]
-        }))
-        .unwrap();
+            }))
+            .unwrap()
+        };
+        for (call, name, value, expected) in [
+            (json!(["hash/scrypt", "sk_live_", "@config.salt"]), "SALT_NAME", "00112233445566778899", "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940"),
+            (json!(["hmac/sha256", "@config.salt", "what do ya want for nothing?", "hex"]), "SALT_NAME", "Jefe", "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"),
+            (json!(["rsa/sign", "@config.salt", "sign me"]), "SALT_NAME", RSA_SIGNING_KEY, RSA_SIGNATURE_OF_SIGN_ME),
+        ] {
+        let schema = schema_for(call.clone());
         let go = |salt: Option<&'static str>| {
             let server = EmbeddedServer::new(schema.clone()).unwrap();
             let mut seen = Vec::new();
@@ -551,7 +562,7 @@ mod credential_admin_effects {
                                     IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
                                     IoRequest::Secret { name, principal } => {
                                         seen.push((name.clone(), principal.clone()));
-                                        IoAnswer::Secret(Ok(salt.map(str::to_string)))
+                                        IoAnswer::Secret(Ok(salt.map(Into::into)))
                                     }
                                     other => panic!("the fixture asks for {other:?}"),
                                 },
@@ -564,14 +575,15 @@ mod credential_admin_effects {
             };
             (response, seen)
         };
-        let (held, seen) = go(Some("00112233445566778899"));
-        assert_eq!(seen, vec![("SALT_NAME".to_string(), None)]);
+        let (held, seen) = go(Some(value));
+        assert_eq!(seen, vec![(name.to_string(), None)], "{call}");
         let hashed = payload_of(&held, "OK");
-        assert_eq!(hashed["hash"], "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940");
-        assert_eq!(hashed["salt"], "SALT_NAME", "the program sees the credential's name, never its value");
-        assert!(!hashed.to_string().contains("00112233445566778899"));
+        assert_eq!(hashed["hash"], expected, "{call}");
+        assert_eq!(hashed["salt"], name, "the program sees the credential's name, never its value");
+        assert!(!hashed.to_string().contains(value));
         let (absent, _) = go(None);
-        assert_eq!(payload_of(&absent, "OK")["hash"], Json::Null, "no value held: the hash is null");
+        assert_eq!(payload_of(&absent, "OK")["hash"], Json::Null, "{call}: no value held: the result is null");
+        }
     }
 
     #[test]
@@ -664,6 +676,93 @@ mod os_effects {
         );
         let IoRequest::Os { args, .. } = &seen[0] else { panic!("an os ask") };
         assert_eq!(serde_json::to_value(args).unwrap(), json!(["evil"]));
+    }
+
+    fn fetch_server(effect: Json, egress: Json) -> EmbeddedServer {
+        let mut schema = serde_json::to_value(schema_with(effect, json!({}))).unwrap();
+        schema["egress"] = egress;
+        EmbeddedServer::new(serde_json::from_value(schema).unwrap()).unwrap()
+    }
+
+    fn fetch(url: &str) -> Json {
+        json!(["os/fetch", "GET", url, { "headers": [{ "name": "accept", "value": "application/json" }] }, routes()])
+    }
+
+    #[test]
+    fn a_fetch_of_a_declared_origin_asks_the_host_for_the_method_url_and_request_and_routes_its_answer() {
+        let answer = json!({ "status": 404, "headers": [{ "name": "content-type", "value": "text/plain" }], "body": "bm9wZQ==" });
+        let (response, seen) = run_on(fetch_server(fetch("https://api.example.test/items"), json!(["https://api.example.test"])), go(None), |_| {
+            IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap()))
+        });
+        let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
+        assert_eq!(*op, OsOp::Fetch);
+        assert_eq!(
+            serde_json::to_value(args).unwrap(),
+            json!(["GET", "https://api.example.test/items", { "headers": [{ "name": "accept", "value": "application/json" }] }])
+        );
+        assert_eq!(payload_of(&response, "OK"), json!({ "status": 404.0, "headers": [{ "name": "content-type", "value": "text/plain" }], "body": "bm9wZQ==" }), "a non-2xx status is a success answer");
+    }
+
+    #[test]
+    fn a_fetch_of_an_origin_the_program_does_not_declare_is_denied_without_asking_the_host() {
+        for egress in [json!([]), json!(["https://other.example.test"]), json!(["http://api.example.test"])] {
+            let (response, seen) = run_on(fetch_server(fetch("https://api.example.test/items"), egress.clone()), go(None), |request| {
+                panic!("an undeclared origin must not reach the host, asked {request:?}")
+            });
+            assert!(seen.is_empty(), "{egress}");
+            assert_eq!(
+                payload_of(&response, "BAD"),
+                json!({ "error": "os/fetch: https://api.example.test/items is not an origin the program declares in egress", "kind": "denied" }),
+                "{egress}"
+            );
+        }
+    }
+
+    fn streamed_fetch(url: &str) -> Json {
+        json!(["os/fetch", "GET", url, { "stream": true }, routes()])
+    }
+
+    #[test]
+    fn a_streamed_fetch_of_a_declared_origin_reaches_the_host_raw_and_its_handle_answer_is_routed() {
+        let head = json!({ "status": 200, "headers": [{ "name": "content-type", "value": "text/event-stream" }], "body": "", "handle": 3 });
+        let (response, seen) = run_on(fetch_server(streamed_fetch("https://api.example.test/events"), json!(["https://api.example.test"])), go(None), |_| {
+            IoAnswer::Os(Ok(serde_json::from_value(head.clone()).unwrap()))
+        });
+        let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
+        assert_eq!(*op, OsOp::Fetch);
+        assert_eq!(serde_json::to_value(args).unwrap(), json!(["GET", "https://api.example.test/events", { "stream": true }]));
+        assert_eq!(payload_of(&response, "OK"), json!({ "status": 200.0, "headers": [{ "name": "content-type", "value": "text/event-stream" }], "body": "", "handle": 3.0 }));
+    }
+
+    #[test]
+    fn a_streamed_fetch_of_an_origin_the_program_does_not_declare_is_denied_without_asking_the_host() {
+        let (response, seen) = run_on(fetch_server(streamed_fetch("https://api.example.test/events"), json!(["https://other.example.test"])), go(None), |request| {
+            panic!("an undeclared origin must not reach the host, asked {request:?}")
+        });
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "BAD")["kind"], json!("denied"));
+    }
+
+    #[test]
+    fn an_os_recv_on_a_handle_the_kernel_holds_no_tls_socket_for_is_the_hosts_to_answer() {
+        let (response, seen) = run(json!(["os/recv", 3, 4096, routes()]), go(None), |_| {
+            IoAnswer::Os(Ok(serde_json::from_value(json!({ "data": "YWJj", "eof": false })).unwrap()))
+        });
+        let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
+        assert_eq!(*op, OsOp::Recv);
+        assert_eq!(serde_json::to_value(args).unwrap(), json!([3.0, 4096.0]));
+        assert_eq!(payload_of(&response, "OK"), json!({ "data": "YWJj", "eof": false }));
+    }
+
+    #[test]
+    fn a_fetch_url_that_is_not_text_is_invalid_without_asking_the_host() {
+        let (response, seen) = run_on(
+            fetch_server(json!(["os/fetch", "GET", 7, routes()]), json!(["https://api.example.test"])),
+            go(None),
+            |request| panic!("a malformed fetch must not reach the host, asked {request:?}"),
+        );
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "BAD")["kind"], json!("invalid"));
     }
 
     #[test]
@@ -881,8 +980,8 @@ mod lowering {
         use orbital_core_base::runs_on::{runs_on, RunsOn};
         use orbital_core_base::os::OsOp;
         for op in OsOp::ALL {
-            let site = if op.is_kv() { RunsOn::Any } else { RunsOn::Server };
-            assert_eq!(runs_on(op.name()), site, "{}: a kv store is reachable from both sides, every other os/* effect runs on the server", op.name());
+            let site = if op.is_kv() || op.runs_on_any_host() { RunsOn::Any } else { RunsOn::Server };
+            assert_eq!(runs_on(op.name()), site, "{}: a kv store, os/fetch and the os/recv and os/close that read and release a streamed fetch handle (the table's runsOn is any: a browser host answers them, a native host answers sockets) are reachable from both sides, every other os/* effect runs on the server", op.name());
         }
         assert_eq!(runs_on("os/path-join"), RunsOn::Any);
         assert_eq!(runs_on("os/fork"), RunsOn::Any);
@@ -1052,7 +1151,7 @@ mod os_completion {
             Arc::new(move |request: &IoRequest| match request {
                 IoRequest::Os { .. } => {
                     let on_event = |_: Option<&CallSite>, _: Value| {};
-                    answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event }), request)
+                    answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None }), request)
                 }
                 other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
             })
@@ -1099,7 +1198,7 @@ mod os_completion {
         let answer: Arc<CompletionAnswerer> = Arc::new(move |request: &IoRequest| match request {
             IoRequest::Os { .. } => {
                 let on_event = |_: Option<&CallSite>, _: Value| {};
-                answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event }), request)
+                answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None }), request)
             }
             other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
         });
@@ -1190,7 +1289,7 @@ mod os_completion {
         let handles = OsHandles::default();
         let grants = OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() };
         let on_event = |_: Option<&CallSite>, _: Value| {};
-        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
+        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None };
         let spawn = IoRequest::Os {
             op: OsOp::Spawn,
             args: vec![
@@ -1202,7 +1301,7 @@ mod os_completion {
             site: None,
         };
         let IoAnswer::Os(Ok(spawned)) = answer_os(Some(&host), &spawn) else { panic!("spawn") };
-        let fd = spawned.get_path("stdout").cloned().expect("a stdout fd");
+        let fd = spawned.expose().get_path("stdout").cloned().expect("a stdout fd");
         let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None };
         assert!(matches!(answer_os(Some(&host), &read), IoAnswer::Os(Ok(_))));
     }
@@ -1714,7 +1813,7 @@ mod os_twin {
         handles.completions.set_sink(Shared::new(Collect(StdMutex::new(told))));
         let mut arrived: HashMap<String, Json> = HashMap::new();
         let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
-        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event };
+        let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None };
         let native = orbital_core_runtime::native_host::NativeHost::new(
             Shared::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
             Shared::new(NoSecrets),
@@ -1757,7 +1856,7 @@ mod os_twin {
             let expect = substitute(&vars, &step["expect"]);
             match answer {
                 Ok(value) => {
-                    let actual = serde_json::to_value(&value).unwrap();
+                    let actual = serde_json::to_value(value.expose()).unwrap();
                     let want = expect.get("ok").unwrap_or_else(|| panic!("{name}: answered ok {actual}, expected {expect}"));
                     assert!(matches(&actual, want), "{name}: {actual} vs {want}");
                     if let Some(binds) = step.get("bind").and_then(Json::as_object) {
@@ -1788,7 +1887,7 @@ fn draw_effect() -> Json {
 
 fn draw_with(answer: Vec<u8>) -> (Json, Vec<IoRequest>) {
     let (response, seen) = run(draw_effect(), go(None), |request| match request {
-        IoRequest::Random { bytes: 4 } => IoAnswer::Random(Ok(answer.clone())),
+        IoRequest::Random { bytes: 4 } => IoAnswer::Random(Ok((answer.clone()).into())),
         other => panic!("the fixture asks for {other:?}"),
     });
     (payload_of(&response, "OK"), seen)
@@ -1837,10 +1936,10 @@ mod kv_asks {
 
     fn ask(handles: &OsHandles, grants: &OsGrants, op: &str, args: Vec<Value>) -> Result<Value, OsError> {
         let on_event = |_: Option<&CallSite>, _: Value| {};
-        let host = OsHost { grants, handles, on_event: &on_event };
+        let host = OsHost { grants, handles, on_event: &on_event, secrets: None };
         let op = OsOp::from_name(op).unwrap_or_else(|| panic!("{op} is not an op"));
         match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None }) {
-            IoAnswer::Os(answer) => answer,
+            IoAnswer::Os(answer) => answer.map(orbital_core_base::secret::Secret::into_inner),
             other => panic!("{other:?}"),
         }
     }

@@ -300,7 +300,7 @@ impl IoPort {
         }
     }
 
-    pub(crate) fn secret(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+    pub(crate) fn secret(&self, name: &str, principal: Option<&str>) -> Result<Option<Secret<String>>, String> {
         match self.ask(|| IoRequest::Secret {
             name: name.to_string(),
             principal: principal.map(str::to_string),
@@ -320,7 +320,7 @@ impl IoPort {
     ) -> Result<(), String> {
         match self.ask(|| IoRequest::SecretSet {
             name: name.to_string(),
-            value: value.to_string(),
+            value: Secret::new(value.to_string()),
             ttl_ms,
             principal: principal.map(str::to_string),
         }) {
@@ -333,7 +333,7 @@ impl IoPort {
     pub(crate) fn rotate_secret(&self, name: &str, value: &str, principal: Option<&str>) -> Result<(), String> {
         match self.ask(|| IoRequest::SecretRotate {
             name: name.to_string(),
-            value: value.to_string(),
+            value: Secret::new(value.to_string()),
             principal: principal.map(str::to_string),
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
@@ -352,7 +352,7 @@ impl IoPort {
             site: self.os_site(op, key),
         }) {
             Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
-            Asked::Answer(IoAnswer::Os(out)) => out,
+            Asked::Answer(IoAnswer::Os(out)) => out.map(Secret::into_inner),
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
                 Ok(Value::Null)
@@ -391,7 +391,7 @@ impl IoPort {
     pub(crate) fn random(&self, bytes: u32) -> Result<Vec<u8>, String> {
         match self.ask(|| IoRequest::Random { bytes }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
-            Asked::Answer(IoAnswer::Random(out)) => out,
+            Asked::Answer(IoAnswer::Random(out)) => out.map(Secret::into_inner),
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -429,7 +429,7 @@ impl IoPort {
     pub(crate) fn credential_store_read(&self, name: &str) -> Result<Option<String>, String> {
         match self.ask(|| IoRequest::CredentialStoreRead { name: name.to_string() }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
-            Asked::Answer(IoAnswer::CredentialStoreRead(out)) => out,
+            Asked::Answer(IoAnswer::CredentialStoreRead(out)) => out.map(|value| value.map(Secret::into_inner)),
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }
@@ -438,7 +438,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialStoreWrite {
             service: service.to_string(),
             name: name.to_string(),
-            value: value.to_string(),
+            value: Secret::new(value.to_string()),
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreWrite(out)) => out,

@@ -39,6 +39,7 @@ fn ask(grants: OsGrants, op: OsOp, args: &[Value]) -> Result<Value, OsError> {
         grants: &grants,
         handles: &handles,
         on_event: &on_event,
+        secrets: None,
     };
     answer(op, args, None, None, &host).expect("sys answers this op")
 }

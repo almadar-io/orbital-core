@@ -280,7 +280,15 @@ operator_kind! {
     HashMd5Op => HashMd5Op,
     HashScryptOp => HashScryptOp,
     HashPbkdf2Op => HashPbkdf2Op,
+    HashMd5CredentialOp => HashMd5CredentialOp,
+    CredentialByteLengthOp => CredentialByteLengthOp,
     HmacSha256Op => HmacSha256Op,
+    HmacSha256BytesOp => HmacSha256BytesOp,
+    EcdsaP256SignOp => EcdsaP256SignOp,
+    RsaSignOp => RsaSignOp,
+    EcdhP256EphemeralOp => EcdhP256EphemeralOp,
+    AesGcmSealOp => AesGcmSealOp,
+    AesGcmOpenOp => AesGcmOpenOp,
     RsaVerifyOp => RsaVerifyOp,
     EcdsaP256VerifyOp => EcdsaP256VerifyOp,
     GzipCompressOp => GzipCompressOp,
@@ -454,6 +462,8 @@ impl OperatorKind {
         matches!(
             self,
             Self::MathRandomOp
+                | Self::RsaSignOp
+                | Self::EcdhP256EphemeralOp
                 | Self::MathRandomIntOp
                 | Self::ArrayShuffleOp
                 | Self::ProbBetaOp

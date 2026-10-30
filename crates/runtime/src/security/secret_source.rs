@@ -34,18 +34,6 @@ pub trait SecretSource: Send + Sync {
             Some(_) => Err(NO_USER_CREDENTIALS.to_string()),
         }
     }
-    /// Keep a one-use value (a pending OAuth grant) until `ttl_ms` has passed, for [`Self::take_secret_of`] to take once.
-    /// A host with a credential store keeps it sealed there, so it outlives the process; the default is
-    /// [`Self::store_secret_of`].
-    fn hold_secret_of(
-        &self,
-        name: &str,
-        value: &str,
-        ttl_ms: u64,
-        principal: Option<&str>,
-    ) -> Result<(), String> {
-        self.store_secret_of(name, value, ttl_ms, principal)
-    }
     /// Replace the credential `name` of `principal` (or the app-wide one when `None`) with `value`, durably: a
     /// rotated refresh token, unlike [`Self::store_secret_of`]'s expiring derived secret.
     fn rotate_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
@@ -60,11 +48,6 @@ pub trait SecretSource: Send + Sync {
     /// replacement of a credential that already exists.
     fn persist_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no durable credentials".to_string())
-    }
-    /// Remove and return the derived secret `name` of `principal` (or the app-wide one when `None`): the one read
-    /// of a one-use value such as a pending OAuth grant.
-    fn take_secret_of(&self, _name: &str, _principal: Option<&str>) -> Result<Option<String>, String> {
-        Err("this host keeps no derived secrets to take".to_string())
     }
     /// Whether [`Self::persist_secret_of`] keeps a value on this host.
     fn durable_credentials(&self) -> bool {

@@ -5,6 +5,7 @@ fn context() -> BindingContext {
     BindingContextBuilder::new()
         .payload(serde_json::from_value(json!({ "invalidBase64": "!" })).unwrap())
         .build()
+        .with_secret("Jefe", "Jefe".to_string())
 }
 
 fn evaluate(op: &str, args: &[Json], ctx: &BindingContext) -> Result<Value, OrbitalError> {

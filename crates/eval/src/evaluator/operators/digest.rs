@@ -165,13 +165,15 @@ impl Operator for HashScryptOp {
     }
 }
 
-/// hash/pbkdf2 (password, salt, iterations, length) - PBKDF2-HMAC-SHA256 (RFC 8018) of bytes, answering length bytes
+/// hash/pbkdf2 (credential, salt, iterations, length) - PBKDF2-HMAC-SHA256 (RFC 8018) answering length bytes. The password
+/// is a credential slot: a secret-typed @config knob naming the credential whose value (its UTF-8 bytes) the kernel
+/// resolves into the evaluation. Null when the credential is not held or an operand is not canonical base64 or a count.
 pub struct HashPbkdf2Op;
 impl Operator for HashPbkdf2Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hash/pbkdf2";
         require_arity!(args, OP, == 4);
-        let password = bytes_in(&args[0], ctx)?;
+        let password = credential_value(&args[0], ctx)?;
         let salt = bytes_in(&args[1], ctx)?;
         let count = |arg: &SExpression| -> Result<Option<u32>, OrbitalError> {
             let n = eval_expr(arg, ctx)?.number().map_err(OrbitalError::Eval)?;
@@ -184,8 +186,36 @@ impl Operator for HashPbkdf2Op {
         else {
             return Ok(Value::Null);
         };
-        let key = codec::pbkdf2_hmac_sha256(&password, &salt, iterations, length as usize);
+        let key = codec::pbkdf2_hmac_sha256(password.as_bytes(), &salt, iterations, length as usize);
         Ok(Value::string(codec::base64_encode(&key)))
+    }
+}
+
+/// hash/md5-credential (credential, suffix, encoding) - MD5 (RFC 1321) of the credential's value followed by the UTF-8
+/// `suffix`, as lower-case hex or standard base64: the first step of the Postgres md5 login, whose password never
+/// becomes a program value. The credential is a slot as in hash/pbkdf2. Null when it is not held.
+pub struct HashMd5CredentialOp;
+impl Operator for HashMd5CredentialOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "hash/md5-credential", == 3);
+        let suffix = string_arg(&args[1], ctx)?;
+        let encoding = string_arg(&args[2], ctx)?;
+        let Some(value) = credential_value(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
+        let mut data = value.as_bytes().to_vec();
+        data.extend_from_slice(suffix.as_bytes());
+        digest_or_null(&codec::md5(&data), &encoding)
+    }
+}
+
+/// credential/byte-length (credential) - the length in UTF-8 bytes of the credential's value, so a program can frame a
+/// wire message around a segment the host fills in. The credential is a slot as in hash/pbkdf2. Null when it is not held.
+pub struct CredentialByteLengthOp;
+impl Operator for CredentialByteLengthOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "credential/byte-length", == 1);
+        Ok(credential_value(&args[0], ctx)?.map_or(Value::Null, |value| Value::Number(value.len() as f64)))
     }
 }
 
@@ -403,19 +433,145 @@ impl Operator for BrotliDecompressOp {
     }
 }
 
-/// hmac/sha256 (key, message, encoding)
+/// The value of the credential an operator operand names, held in the evaluation by the kernel; `None` when it holds none.
+fn credential_value<'a>(arg: &SExpression, ctx: &'a BindingContext) -> Result<Option<&'a str>, OrbitalError> {
+    let name = string_arg(arg, ctx)?;
+    Ok(ctx.secret(&name))
+}
+
+/// hmac/sha256 (credential, message, encoding) - the key is a credential slot: a secret-typed @config knob naming the
+/// credential whose value the kernel resolves into the evaluation. Null when the credential is not held.
 pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hmac/sha256", == 3);
-        let key = string_arg(&args[0], ctx)?;
         let message = string_arg(&args[1], ctx)?;
         let encoding = string_arg(&args[2], ctx)?;
+        let Some(key) = credential_value(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
         digest_text(
             &codec::hmac_sha256(key.as_bytes(), message.as_bytes()),
             &encoding,
             "hmac/sha256",
         )
+    }
+}
+
+/// hmac/sha256-bytes (key, message, encoding) - HMAC-SHA256 under a bytes key that is a program value (a derived key such
+/// as a SigV4 chain step); a non-canonical base64 key answers null
+pub struct HmacSha256BytesOp;
+impl Operator for HmacSha256BytesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "hmac/sha256-bytes", == 3);
+        let key = bytes_in(&args[0], ctx)?;
+        let message = string_arg(&args[1], ctx)?;
+        let encoding = string_arg(&args[2], ctx)?;
+        let Some(key) = key else {
+            return Ok(Value::Null);
+        };
+        digest_text(
+            &codec::hmac_sha256(&key, message.as_bytes()),
+            &encoding,
+            "hmac/sha256-bytes",
+        )
+    }
+}
+
+/// ecdsa/p256-sign (credential, message) - ECDSA P-256 / SHA-256, RFC 6979 deterministic, 64 raw r||s bytes. The key is a
+/// credential slot holding a PKCS#8 PEM private key. Null when the credential is not held or is not such a key.
+pub struct EcdsaP256SignOp;
+impl Operator for EcdsaP256SignOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ecdsa/p256-sign", == 2);
+        let message = string_arg(&args[1], ctx)?;
+        let Some(pem) = credential_value(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
+        Ok(codec::ecdsa_p256_sha256_sign(pem, message.as_bytes())
+            .map_or(Value::Null, |signature| Value::string(codec::base64_encode(&signature))))
+    }
+}
+
+/// rsa/sign (credential, message) - RSASSA-PKCS1-v1_5 / SHA-256, blinded; the signature is as long as the modulus. The key
+/// is a credential slot holding a PKCS#8 PEM private key of at least 2048 bits. Null when the credential is not held or is
+/// not such a key.
+pub struct RsaSignOp;
+impl Operator for RsaSignOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "rsa/sign", == 2);
+        let name = string_arg(&args[0], ctx)?;
+        let message = string_arg(&args[1], ctx)?;
+        let Some(pem) = ctx.secret(&name) else {
+            return Ok(Value::Null);
+        };
+        ctx.sealed("rsa/sign", &[Value::string(name.clone()), Value::string(message.clone())], |seed| {
+            codec::rsa_pkcs1_sha256_sign(pem, message.as_bytes(), seed)
+                .map_or(Value::Null, |signature| Value::string(codec::base64_encode(&signature)))
+        })
+    }
+}
+
+/// ecdh/p256-ephemeral (peer) - generate an ephemeral P-256 key inside the operator and answer { public, shared }: the
+/// 65-byte SEC1 public key and the 32-byte shared x coordinate with the SEC1 `peer` point. The ephemeral secret never
+/// leaves the operator. Null when the peer is not a point on the curve.
+pub struct EcdhP256EphemeralOp;
+impl Operator for EcdhP256EphemeralOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ecdh/p256-ephemeral", == 1);
+        let Some(peer) = bytes_in(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
+        ctx.sealed("ecdh/p256-ephemeral", &[Value::string(codec::base64_encode(&peer))], |seed| {
+            codec::ecdh_p256_ephemeral(&peer, seed).map_or(Value::Null, |exchange| {
+                Value::Object(
+                    [
+                        ("public", Value::string(codec::base64_encode(&exchange.public))),
+                        ("shared", Value::string(codec::base64_encode(&exchange.shared))),
+                    ]
+                    .into_iter()
+                    .map(|(key, value)| (key.into(), value))
+                    .collect(),
+                )
+            })
+        })
+    }
+}
+
+fn gcm(args: &[SExpression], ctx: &BindingContext, op: &str, seal: bool) -> EvalResult {
+    require_arity!(args, op, == 4);
+    let (key, nonce, data, aad) = (
+        bytes_in(&args[0], ctx)?,
+        bytes_in(&args[1], ctx)?,
+        bytes_in(&args[2], ctx)?,
+        bytes_in(&args[3], ctx)?,
+    );
+    let (Some(key), Some(nonce), Some(data), Some(aad)) = (key, nonce, data, aad) else {
+        return Ok(Value::Null);
+    };
+    let out = if seal {
+        codec::aes128_gcm_seal(&key, &nonce, &data, &aad)
+    } else {
+        codec::aes128_gcm_open(&key, &nonce, &data, &aad)
+    };
+    Ok(out.map_or(Value::Null, |bytes| Value::string(codec::base64_encode(&bytes))))
+}
+
+/// aes-gcm/seal (key, nonce, plaintext, aad) - AES-128-GCM; ciphertext followed by the 16-byte tag. Null when the key is not
+/// 16 bytes, the nonce not 12, or an operand is not canonical base64.
+pub struct AesGcmSealOp;
+impl Operator for AesGcmSealOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        gcm(args, ctx, "aes-gcm/seal", true)
+    }
+}
+
+/// aes-gcm/open (key, nonce, sealed, aad) - AES-128-GCM open of ciphertext followed by its tag. Null when the tag does not
+/// verify or an operand is malformed.
+pub struct AesGcmOpenOp;
+impl Operator for AesGcmOpenOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        gcm(args, ctx, "aes-gcm/open", false)
     }
 }
 
@@ -463,12 +619,13 @@ mod tests {
     fn pbkdf2_hex(password: &[u8], salt: &[u8], iterations: i64, length: i64) -> String {
         let form = serde_json::json!([
             "hash/pbkdf2",
-            codec::base64_encode(password),
+            "PW",
             codec::base64_encode(salt),
             iterations,
             length
         ]);
-        match eval(form) {
+        let ctx = held("PW", std::str::from_utf8(password).expect("text"));
+        match eval_in(&ctx, form) {
             Ok(Value::String(b64)) => codec::hex(&codec::base64_decode(&b64).expect("bytes")),
             other => panic!("expected bytes, got {other:?}"),
         }
@@ -720,8 +877,8 @@ mod tests {
             pbkdf2_hex(b"password", b"pepper", 1, 32),
             pbkdf2_hex(b"password", b"salt", 1, 32)
         );
-        let pw = codec::base64_encode(b"password");
         let salt = codec::base64_encode(b"salt");
+        let ctx = held("PW", "password");
         for (iterations, length) in [
             (0.0, 32.0),
             (1.5, 32.0),
@@ -730,21 +887,45 @@ mod tests {
             (1.0, 2.5),
         ] {
             assert_eq!(
-                eval(serde_json::json!([
-                    "hash/pbkdf2",
-                    pw,
-                    salt,
-                    iterations,
-                    length
-                ]))
-                .unwrap(),
+                eval_in(&ctx, serde_json::json!(["hash/pbkdf2", "PW", salt, iterations, length])).unwrap(),
                 Value::Null
             );
         }
         assert_eq!(
-            eval(serde_json::json!(["hash/pbkdf2", "%%", salt, 1, 32])).unwrap(),
+            eval_in(&ctx, serde_json::json!(["hash/pbkdf2", "PW", "%%", 1, 32])).unwrap(),
             Value::Null
         );
+        assert_eq!(
+            eval(serde_json::json!(["hash/pbkdf2", "PW", salt, 1, 32])).unwrap(),
+            Value::Null,
+            "an evaluation holding no credential never derives from the name"
+        );
+        assert!(eval_in(&ctx, serde_json::json!(["hash/pbkdf2", serde_json::Value::Null, salt, 1, 32])).is_err());
+    }
+
+    #[test]
+    fn md5_credential_hashes_the_held_value_then_the_suffix_and_is_null_without_it() {
+        let ctx = held("PW", "pass");
+        let form = |suffix: &str| serde_json::json!(["hash/md5-credential", "PW", suffix, "hex"]);
+        let md5_hex = |bytes: &[u8]| codec::hex(&codec::md5(bytes));
+        assert_eq!(text(eval_in(&ctx, form("word"))), md5_hex(b"password"));
+        assert_ne!(text(eval_in(&ctx, form("word"))), text(eval_in(&ctx, form("words"))), "control: the suffix is hashed");
+        assert_eq!(text(eval_in(&ctx, form(""))), md5_hex(b"pass"));
+        assert_eq!(eval_in(&held("OTHER", "pass"), form("word")).unwrap(), Value::Null);
+        assert_eq!(eval(form("word")).unwrap(), Value::Null);
+        assert_eq!(eval_in(&ctx, serde_json::json!(["hash/md5-credential", "PW", "word", "base32"])).unwrap(), Value::Null, "as hash/md5 answers an unknown encoding");
+        assert!(eval_in(&ctx, serde_json::json!(["hash/md5-credential", serde_json::Value::Null, "word", "hex"])).is_err());
+    }
+
+    #[test]
+    fn credential_byte_length_counts_utf8_bytes_of_the_held_value_and_is_null_without_it() {
+        let form = serde_json::json!(["credential/byte-length", "PW"]);
+        assert_eq!(eval_in(&held("PW", "pass"), form.clone()).unwrap(), Value::Number(4.0));
+        assert_eq!(eval_in(&held("PW", "pässwörd"), form.clone()).unwrap(), Value::Number(10.0), "bytes, not characters");
+        assert_eq!(eval_in(&held("PW", ""), form.clone()).unwrap(), Value::Number(0.0));
+        assert_eq!(eval_in(&held("OTHER", "pass"), form.clone()).unwrap(), Value::Null);
+        assert_eq!(eval(form).unwrap(), Value::Null);
+        assert!(eval_in(&held("PW", "pass"), serde_json::json!(["credential/byte-length", serde_json::Value::Null])).is_err());
     }
 
     #[test]
@@ -835,5 +1016,167 @@ mod tests {
             assert!(eval(form.clone()).is_err(), "{form}");
         }
         assert!(eval(serde_json::json!(["ecdsa/p256-verify", EC_X, EC_Y, "header.payload"])).is_err());
+    }
+
+    const SIGN_RSA_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDBmj4cs/1X1KKS\nd7w4cQLXwY2/zQSivWFyZTFem1GZVnlg223x1KbrF+XtLGmIlWw4U6Ily/uiz645\nZFKwDJ4IRAGs89pnrAB8gR46c0aLRNYKfOpsu0ox0QZre8hgBQF5oUTdGXFQW4Sv\ndGVkM4zMtWCcb+nWWeM1+G86ghU57hjMj/5cnYEwv+waqAOnC7aMGQBNfol9lk4r\n48QKWa5TCibIbo3Hcs5UkqNZYsX+rJrUBtOk1f1/1fhXTAvWsMFudkcYH+M5hmif\nI+O20LVfOV7C2N4DhuWuk/sHHNyJVtwBnZjo3uAdEH2z1lK09JJSFwxkza6QYSRI\ndLC56SAlAgMBAAECggEALGnQhvAplc0TcItkVARk9Q8TkCUdw6GzabVaMoxqF0W1\nuakNG1W/5x3H4vV1zl4NAgz5nTci5pJDMypXJ8j1Ngs34S/d8juMrwNF5n3MeKWV\nfrlyY/hBSJVdpimy6YgscvUyoZA1JQyhr0iB/A8xZULUw36PA9wCGj8AcUknSm70\npQZHB+58X0JG+M+XlU6xW+Tb0V8r6CFGWSxhdOYaXwIBhdBJKvh1KiIHkCDPqX5i\nPsP09EsX7oDsS/+S/INVgqX/q89+ehPdzY19hXgWRD9sbH2h75ImIh/Axy52tJl/\nKCFptgFIf7WBuzJ93iMOVriCR+vncNSj1Gdm0pBq3wKBgQDx7kUsc23zRs8ca+30\n8OpMc81q/qcWBGzs+Fj941hdMRzYzUpk1+Re36Dj5PH1HPc6/h1c/Ip7c8dN1zds\nnJjbhCTpOMuLxhXy81jtWwVr9O4arc0rKH5ZjrDAmTeGtoPMhFjxKdWuljrB/1VA\ndZVhp2S4DPzPJcYu9RUs0JkkvwKBgQDM3H0Z6qiJwUSXVka9kY8rv0ntjr76UUWI\n+E7aHvENElt/YYFeaAG+Suib+bEJ6yqfJlrfF2Gut5PrC14jc9heO2CKkHa5R/8M\nzNALNZ3YSYwAaGlRLrAlRhc7Xe2uPww+Nev4X3O+NUO5MKgLzxgBzWjl+ND6K9Ck\nrsOon43AGwKBgQCsz5MPvmASf0jft2ShKxlhhPJ9c+sr+ftIhdkjeaqb3sIJRxLV\n17Tj4/+L6fS/LnKW6/9TdX0B0+DQhGOtrGovm0O2aABVFiiFgzfJS9QimjEeU3mT\nU3h1RkyRNqCIFIUuqHbTxRtCe0L7YgSmZ5dNywFRys0mtofK8PuwKEzMBwKBgQDJ\nP20SEajBsv/r35Cc16qbIk7AtTM9eqthk/T6Z90Lp1YFO8c389qKktIRr+fQQ5pa\nP/aTJEgMuEDybPdswnfykkgTtzk6aNTQQT+7U0+d0xpaqDeVzdSyuTlHU82TGFKx\npo0KMNLmLzM5cOgUubvuwVhkWtsIeBR+Q0TomN1KswKBgGtczq6Jm7Ic4+WZGzh7\nNVqwdthUdR5EdBjxi5I9SVIS1Rb6pH4Y2cUOBGCz55STj4heV3d0IRS0QCw3TtFi\n0coDp2D6a2eEZDeqdywBQVg8NYpKJI74XyXu+Ogkn0T3vQZtN+BH1fHrTfbSdTa/\nAM812eZIeiLOTXTbKy88Y2Xy\n-----END PRIVATE KEY-----\n";
+    const SIGN_RSA_N: &str = "wZo+HLP9V9Sikne8OHEC18GNv80Eor1hcmUxXptRmVZ5YNtt8dSm6xfl7SxpiJVsOFOiJcv7os+uOWRSsAyeCEQBrPPaZ6wAfIEeOnNGi0TWCnzqbLtKMdEGa3vIYAUBeaFE3RlxUFuEr3RlZDOMzLVgnG/p1lnjNfhvOoIVOe4YzI/+XJ2BML/sGqgDpwu2jBkATX6JfZZOK+PEClmuUwomyG6Nx3LOVJKjWWLF/qya1AbTpNX9f9X4V0wL1rDBbnZHGB/jOYZonyPjttC1XzlewtjeA4blrpP7BxzciVbcAZ2Y6N7gHRB9s9ZStPSSUhcMZM2ukGEkSHSwuekgJQ==";
+    const SIGN_RSA_SIGNATURE: &str = "ZNheFwSQUoc3hijIwW3RCdNxljDrGANFey5HEtyMvYys8RMSrC3Unkq7ya6CpBJEltkF6/tpaBoglMlH9TSxZolEThukPFL8+vtR7EEch6I4oceaDqjOE6lxhKJfbU3v8elFyaMaxByOxklNcoKnqzNLBdH/waaJhkyLHg9gQ0beE5L1aKe90US3pjdAO3RCPp3kWUHeQSEm697MS5DJjlW/m1G8292iJaYf53B9hPPP9XcC9EVvRRf57ZwJJ3/RnVexo4UFEPkyqvmaPzL6h324ArZdV2veCtloWOG+fhOWM2LzDKRJwUS/7u8mdcmX8Z/ETOkbXQ946nfuXHOXLQ==";
+    const SIGN_EC_PEM: &str = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgmw9yTiz7OigR+moX\newgXsK22MQNuX+kaIXWFYCkTrWOhRANCAAQR4vtdQBhGwJ5fkkPa7e+gusRThJWP\nfyd8sRcpFm95DUKDGQqcgdOUFry+OqdrGs+pLubBE9jFwRtIf63TxheS\n-----END PRIVATE KEY-----\n";
+    const SIGN_EC_PUBLIC: &str = "BBHi+11AGEbAnl+SQ9rt76C6xFOElY9/J3yxFykWb3kNQoMZCpyB05QWvL46p2saz6ku5sET2MXBG0h/rdPGF5I=";
+
+    fn held(name: &str, value: &str) -> BindingContext {
+        let mut ctx = BindingContext::default().with_secret(name, value.to_string());
+        ctx.set_sealed_outputs(seeded(0x5e));
+        ctx
+    }
+
+    fn seeded(byte: u8) -> crate::evaluator::context::SealedOutputs {
+        crate::evaluator::context::SealedOutputs::new(move |_, _, compute| Ok(compute([byte; 32])))
+    }
+
+    fn eval_in(ctx: &BindingContext, form: serde_json::Value) -> EvalResult {
+        let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+        eval_expr(&expr, ctx)
+    }
+
+    fn text(result: EvalResult) -> String {
+        match result {
+            Ok(Value::String(s)) => s.into_inner(),
+            other => panic!("expected a string, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hmac_sha256_reads_its_key_from_the_held_credential_and_is_null_without_it() {
+        let form = serde_json::json!(["hmac/sha256", "SIGNING", "what do ya want for nothing?", "hex"]);
+        assert_eq!(
+            text(eval_in(&held("SIGNING", "Jefe"), form.clone())),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(eval_in(&held("OTHER", "Jefe"), form.clone()).unwrap(), Value::Null);
+        assert_eq!(eval(form).unwrap(), Value::Null, "an evaluation holding no credential never signs with the name as a key");
+        let bad = serde_json::json!(["hmac/sha256", "SIGNING", "m", "base32"]);
+        assert!(eval_in(&held("SIGNING", "Jefe"), bad).is_err());
+    }
+
+    #[test]
+    fn hmac_sha256_bytes_takes_a_bytes_key_program_value() {
+        let jefe = codec::base64_encode(b"Jefe");
+        let form = serde_json::json!(["hmac/sha256-bytes", jefe, "what do ya want for nothing?", "hex"]);
+        assert_eq!(text(eval(form)), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+        assert_eq!(eval(serde_json::json!(["hmac/sha256-bytes", "%not base64", "m", "hex"])).unwrap(), Value::Null);
+        assert!(eval(serde_json::json!(["hmac/sha256-bytes", serde_json::Value::Null, "m", "hex"])).is_err());
+    }
+
+    #[test]
+    fn ecdsa_p256_sign_matches_rfc6979_and_verifies_under_the_public_key() {
+        const RFC6979_KEY: &str = "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721";
+        let mut der = codec::hex_decode("3041020100301306072a8648ce3d020106082a8648ce3d030107042730250201010420").expect("hex");
+        der.extend(codec::hex_decode(RFC6979_KEY).expect("hex"));
+        let body = codec::base64_encode(&der);
+        let (first, rest) = body.split_at(64);
+        let pem = format!("-----BEGIN PRIVATE KEY-----\n{first}\n{rest}\n-----END PRIVATE KEY-----\n");
+        let signature = text(eval_in(&held("EC", &pem), serde_json::json!(["ecdsa/p256-sign", "EC", "sample"])));
+        let raw = codec::base64_decode(&signature).expect("base64");
+        assert_eq!(
+            codec::hex(&raw),
+            "efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
+        );
+        let public = codec::base64_decode(SIGN_EC_PUBLIC).expect("base64");
+        let (x, y) = (codec::base64_encode(&public[1..33]), codec::base64_encode(&public[33..65]));
+        let ctx = held("EC", SIGN_EC_PEM);
+        let first = text(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"])));
+        assert_eq!(first, text(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"]))), "RFC 6979 is deterministic");
+        assert_eq!(verdict(serde_json::json!(["ecdsa/p256-verify", x, y, "header.payload", first])), "valid");
+        assert_eq!(verdict(serde_json::json!(["ecdsa/p256-verify", x, y, "header.payloaD", first])), "mismatch");
+    }
+
+    #[test]
+    fn ecdsa_p256_sign_is_null_without_a_key_and_for_a_key_that_is_not_pkcs8_ec() {
+        let form = serde_json::json!(["ecdsa/p256-sign", "EC", "m"]);
+        assert_eq!(eval(form.clone()).unwrap(), Value::Null);
+        assert_eq!(eval_in(&held("EC", "not a pem"), form.clone()).unwrap(), Value::Null);
+        assert_eq!(eval_in(&held("EC", SIGN_RSA_PEM), form.clone()).unwrap(), Value::Null, "an RSA key is not an EC key");
+        assert!(eval_in(&held("EC", SIGN_EC_PEM), serde_json::json!(["ecdsa/p256-sign", serde_json::Value::Null, "m"])).is_err());
+    }
+
+    #[test]
+    fn rsa_sign_matches_openssl_and_verifies_under_the_public_key() {
+        let ctx = held("RSA", SIGN_RSA_PEM);
+        let signature = text(eval_in(&ctx, serde_json::json!(["rsa/sign", "RSA", "sign me"])));
+        assert_eq!(signature, SIGN_RSA_SIGNATURE, "PKCS#1 v1.5 is deterministic: blinding must not change the bytes");
+        let mut other = held("RSA", SIGN_RSA_PEM);
+        other.set_sealed_outputs(seeded(1));
+        assert_eq!(text(eval_in(&other, serde_json::json!(["rsa/sign", "RSA", "sign me"]))), SIGN_RSA_SIGNATURE);
+        assert_eq!(verdict(serde_json::json!(["rsa/verify", SIGN_RSA_N, "AQAB", "sign me", signature])), "valid");
+        assert_eq!(verdict(serde_json::json!(["rsa/verify", SIGN_RSA_N, "AQAB", "sign mE", signature])), "mismatch");
+    }
+
+    #[test]
+    fn rsa_sign_is_null_without_a_key_and_for_a_key_that_is_not_pkcs8_rsa_and_needs_an_entropy_source() {
+        let form = serde_json::json!(["rsa/sign", "RSA", "m"]);
+        assert_eq!(eval(form.clone()).unwrap(), Value::Null);
+        assert_eq!(eval_in(&held("RSA", SIGN_EC_PEM), form.clone()).unwrap(), Value::Null);
+        let no_entropy = BindingContext::default().with_secret("RSA", SIGN_RSA_PEM.to_string());
+        assert!(eval_in(&no_entropy, form).is_err(), "blinding needs the kernel's sealed boundary");
+        assert!(eval_in(&held("RSA", SIGN_RSA_PEM), serde_json::json!(["rsa/sign", "RSA", serde_json::Value::Null])).is_err());
+    }
+
+    #[test]
+    fn ecdh_p256_ephemeral_answers_the_public_key_and_the_shared_secret_from_one_seed() {
+        let ctx = held("UNUSED", "x");
+        let form = serde_json::json!(["ecdh/p256-ephemeral", SIGN_EC_PUBLIC]);
+        let Ok(Value::Object(fields)) = eval_in(&ctx, form.clone()) else { panic!("expected an exchange") };
+        let field = |name: &str| match fields.get(name) {
+            Some(Value::String(s)) => codec::base64_decode(s.as_str()).expect("base64"),
+            other => panic!("{name}: {other:?}"),
+        };
+        let (public, shared) = (field("public"), field("shared"));
+        assert_eq!((public.len(), public[0], shared.len()), (65, 4, 32));
+        let again = eval_in(&ctx, form.clone()).unwrap();
+        assert_eq!(again, Value::Object(fields.clone()), "one seed, one ephemeral key");
+        let mut other = held("UNUSED", "x");
+        other.set_sealed_outputs(seeded(2));
+        assert_ne!(eval_in(&other, form).unwrap(), again, "another seed, another key");
+        let unseeded = BindingContext::default();
+        assert!(eval_in(&unseeded, serde_json::json!(["ecdh/p256-ephemeral", SIGN_EC_PUBLIC])).is_err());
+    }
+
+    #[test]
+    fn ecdh_p256_ephemeral_is_null_for_a_peer_that_is_not_a_curve_point_or_not_base64() {
+        let ctx = held("UNUSED", "x");
+        let off_curve = codec::base64_encode(&[4u8; 65]);
+        assert_eq!(eval_in(&ctx, serde_json::json!(["ecdh/p256-ephemeral", off_curve])).unwrap(), Value::Null);
+        assert_eq!(eval_in(&ctx, serde_json::json!(["ecdh/p256-ephemeral", "%not base64"])).unwrap(), Value::Null);
+        assert!(eval_in(&ctx, serde_json::json!(["ecdh/p256-ephemeral", serde_json::Value::Null])).is_err());
+    }
+
+    #[test]
+    fn aes_gcm_seal_and_open_match_the_nist_vector_and_refuse_a_forged_tag() {
+        let zero16 = codec::base64_encode(&[0u8; 16]);
+        let zero12 = codec::base64_encode(&[0u8; 12]);
+        let empty = codec::base64_encode(&[]);
+        let sealed = text(eval(serde_json::json!(["aes-gcm/seal", zero16, zero12, zero16, empty])));
+        assert_eq!(
+            codec::hex(&codec::base64_decode(&sealed).expect("base64")),
+            "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf"
+        );
+        assert_eq!(text(eval(serde_json::json!(["aes-gcm/open", zero16, zero12, sealed, empty]))), zero16);
+        let mut forged = codec::base64_decode(&sealed).expect("base64");
+        forged[0] ^= 1;
+        assert_eq!(
+            eval(serde_json::json!(["aes-gcm/open", zero16, zero12, codec::base64_encode(&forged), empty])).unwrap(),
+            Value::Null
+        );
+        let aad = codec::base64_encode(b"a");
+        assert_eq!(eval(serde_json::json!(["aes-gcm/open", zero16, zero12, sealed, aad])).unwrap(), Value::Null, "the aad is bound");
+        let short = codec::base64_encode(&[0u8; 15]);
+        assert_eq!(eval(serde_json::json!(["aes-gcm/seal", short, zero12, zero16, empty])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["aes-gcm/seal", zero16, short, zero16, empty])).unwrap(), Value::Null);
+        for position in 1..=4 {
+            let mut form = serde_json::json!(["aes-gcm/seal", zero16, zero12, zero16, empty]);
+            form[position] = serde_json::Value::Null;
+            assert!(eval(form.clone()).is_err(), "{form}");
+        }
     }
 }

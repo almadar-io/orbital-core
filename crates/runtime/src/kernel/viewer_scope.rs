@@ -126,18 +126,56 @@ impl RuntimeKernel {
     /// Run the next dispatches as the viewer's `locale` until the guard drops. A program
     /// that declares locales refuses one it does not declare; one without accepts any.
     pub fn enter_locale(&self, locale: Option<&str>) -> Result<LocaleGuard, KernelError> {
-        if let Some(locale) = locale {
-            let i18n = self.i18n.read();
-            if !i18n.locales.is_empty() && !i18n.locales.iter().any(|l| l == locale) {
-                return Err(KernelError::Internal(format!(
-                    "locale \"{locale}\" is not one of the program's declared locales [{}]",
-                    i18n.locales.join(", ")
-                )));
-            }
+        if let Some(message) = self.locale_refusal(locale) {
+            return Err(KernelError::Internal(message));
         }
         *self.step.dispatch_locale.write() = locale.map(str::to_string);
         Ok(LocaleGuard {
             slot: Arc::clone(&self.step.dispatch_locale),
+        })
+    }
+
+    /// Why `locale` cannot be a viewer's: the program declares locales and this is not one of them.
+    pub fn locale_refusal(&self, locale: Option<&str>) -> Option<String> {
+        let locale = locale?;
+        let i18n = self.i18n.read();
+        (!i18n.locales.is_empty() && !i18n.locales.iter().any(|l| l == locale)).then(|| {
+            format!(
+                "locale \"{locale}\" is not one of the program's declared locales [{}]",
+                i18n.locales.join(", ")
+            )
+        })
+    }
+
+    /// This host holds the circuit state: a client's copy of it (`traits` / `entityByTrait`) is taken only on a
+    /// delegated leg, a request that names a `targetTrait` or carries a mount, and any other request carrying one is
+    /// refused with `client-circuit-state-refused` (EXEC-DIST-11). A stateless host (EXEC-DIST-5) leaves this off: its
+    /// client's copy is the state.
+    pub fn set_stateful(&self, stateful: bool) {
+        self.stateful.store(stateful, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Why a server-role host refuses `request` before it is admitted, the one admission every host calls: a `locale`
+    /// the program does not declare (EXEC-DIST-12), and, once [`Self::set_stateful`], circuit state on a request that
+    /// is not a delegated leg (EXEC-DIST-11). A host strips and checks nothing itself.
+    pub fn refusal(&self, request: &EventRequest) -> Option<EventResponse> {
+        if let Some(message) = self.locale_refusal(request.locale.as_deref()) {
+            return Some(EventResponse::refused_request(TransitionRejectionCode::LocaleNotDeclared, &request.event, message));
+        }
+        if !self.stateful.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let carries = request.traits.is_some() || request.entity_by_trait.is_some();
+        let delegated = request.target_trait.is_some() || request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
+        (carries && !delegated).then(|| {
+            EventResponse::refused_request(
+                TransitionRejectionCode::ClientCircuitStateRefused,
+                &request.event,
+                format!(
+                    "{}: a server holds its own circuit state; carried traits/entityByTrait are accepted only on a delegated leg (a targetTrait or a mount)",
+                    request.event
+                ),
+            )
         })
     }
 

@@ -1,4 +1,4 @@
-//! Effects the host answers: access checks, random bytes, http, redis, postgres, os, beacons, on-device models, tabs and page facts.
+//! Effects the host answers: access checks, random bytes, http, redis, os, beacons, on-device models, tabs and page facts.
 
 use super::*;
 

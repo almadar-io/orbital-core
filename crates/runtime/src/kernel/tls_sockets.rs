@@ -21,6 +21,7 @@ use crate::driver::{drive, DriveContext, DriveEnd, Driver, DriverAnswer, DriverA
 use crate::tls::session::{roots_from_pem, web_roots, Recorded};
 use crate::tls::{TlsEvent, TlsStream};
 use orbital_core_base::os::OsOp;
+use orbital_core_base::secret::Secret;
 use orbital_core_base::os_grants::NetKind;
 use orbital_core_base::sync::Mutex;
 use rustls::RootCertStore;
@@ -590,6 +591,7 @@ impl RuntimeKernel {
         key: Option<&str>,
     ) -> Option<Result<Value, OsError>> {
         match op {
+            OsOp::Fetch => self.fetch_refusal(op, args).map(Err),
             OsOp::TlsUpgrade => Some(self.tls_handshake(op, args)),
             OsOp::TcpConnect if args.len() > 2 => Some(self.tls_handshake(op, args)),
             OsOp::Send | OsOp::Recv | OsOp::Close => {
@@ -601,6 +603,18 @@ impl RuntimeKernel {
             }
             _ => None,
         }
+    }
+
+    /// The kernel's policy for an `os/fetch`: the url must be text and its origin one the programs declare in `egress`.
+    /// `None` lets the host perform the fetch.
+    fn fetch_refusal(&self, op: OsOp, args: &[Value]) -> Option<OsError> {
+        let Some(Value::String(url)) = args.get(1) else {
+            return Some(fail(op, OsErrorKind::Invalid, "the url must be text"));
+        };
+        if orbital_core_base::http_wire::origin_allowed(url, &self.grants.egress.read()) {
+            return None;
+        }
+        Some(fail(op, OsErrorKind::Denied, &format!("{url} is not an origin the program declares in egress")))
     }
 
     fn tls_handshake(&self, op: OsOp, args: &[Value]) -> Result<Value, OsError> {
@@ -679,7 +693,8 @@ impl RuntimeKernel {
         args: &[Value],
         key: Option<&str>,
     ) -> Result<Value, OsError> {
-        let (traffic, plain) = traffic_of(op, args)?;
+        let resolved = self.resolve_segments(op, args)?;
+        let (traffic, plain) = traffic_of(op, &resolved)?;
         self.tls_claim(op, sock, traffic, key)?;
         let (mut stream, start_len) = self.tls_stream(op, sock)?;
         let first = match traffic {
@@ -745,6 +760,21 @@ impl RuntimeKernel {
             done: None,
         };
         self.finish_traffic(run, first_step)
+    }
+
+    /// The credential segments of a TLS `os/send` are filled in here, before the plaintext is framed into records: the
+    /// kernel asks each credential by name, so the journal holds the names and a replay asks again, and the host sees
+    /// only ciphertext.
+    fn resolve_segments(&self, op: OsOp, args: &[Value]) -> Result<Vec<Value>, OsError> {
+        let awaiting = std::cell::Cell::new(false);
+        let held = |name: &str| {
+            self.io.secret(name, None).map(|held| held.map(Secret::into_inner)).inspect_err(|message| awaiting.set(message == AWAITING_HOST))
+        };
+        let resolved = orbital_core_base::os::resolve_credential_segments(op, args, Some(&held));
+        if awaiting.get() {
+            return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST));
+        }
+        resolved
     }
 
     fn finish_traffic(&self, mut run: TrafficRun, step: DriverStep) -> Result<Value, OsError> {
@@ -1008,6 +1038,8 @@ mod tests {
         ops: Vec<OsOp>,
         defer_recv: bool,
         deferred: Vec<String>,
+        secrets: Vec<(String, String)>,
+        asked: Vec<String>,
     }
 
     impl Wire {
@@ -1019,6 +1051,8 @@ mod tests {
                 ops: Vec::new(),
                 defer_recv: false,
                 deferred: Vec::new(),
+                secrets: Vec::new(),
+                asked: Vec::new(),
             }
         }
 
@@ -1034,7 +1068,15 @@ mod tests {
                     IoAnswer::ServiceDeferred
                 }
                 IoRequest::Random { bytes } => {
-                    IoAnswer::Random(Ok(vec![self.seed; *bytes as usize]))
+                    IoAnswer::Random(Ok(vec![self.seed; *bytes as usize].into()))
+                }
+                IoRequest::Secret { name, .. } => {
+                    self.asked.push(name.clone());
+                    IoAnswer::Secret(Ok(self
+                        .secrets
+                        .iter()
+                        .find(|(held, _)| held == name)
+                        .map(|(_, value)| Secret::new(value.clone()))))
                 }
                 IoRequest::Clock => IoAnswer::Clock(Ok((NOW * 1000) as i64)),
                 IoRequest::Os {
@@ -1048,7 +1090,7 @@ mod tests {
                 }
                 IoRequest::Os { op, args, .. } => {
                     self.ops.push(*op);
-                    IoAnswer::Os(self.os(*op, args))
+                    IoAnswer::Os(self.os(*op, args).map(Into::into))
                 }
                 other => IoAnswer::Service(Err(format!("unexpected {other:?}"))),
             }
@@ -1159,6 +1201,57 @@ mod tests {
         );
         assert_eq!(wire.ops.last(), Some(&OsOp::Close));
         assert!(!server.kernel().tls_pending("none"));
+    }
+
+    fn segment_schema(segments: Json) -> orbital_core_base::schema::types::OrbitalSchema {
+        schema_chain(
+            vec![connect_tls(true, "localhost")],
+            grants(),
+            vec![
+                ("CONNECTED", vec![json!(["os/send", 5, segments, routes("SENT")])]),
+                ("SENT", vec![json!(["os/close", 5, routes("CLOSED")])]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_credential_segment_of_a_tls_send_reaches_the_peer_and_neither_the_host_nor_the_journal_sees_it() {
+        let segments = json!([
+            { "bytes": codec::base64_encode(b"AUTH "), "credential": "REDIS_PASSWORD" },
+            { "bytes": codec::base64_encode(b"\r\n"), "credential": "" }
+        ]);
+        let server = EmbeddedServer::new(segment_schema(segments)).expect("server");
+        let mut wire = Wire::new(7);
+        wire.secrets.push(("REDIS_PASSWORD".to_string(), "hunter2-pass".to_string()));
+        let response = run(&server, &mut wire);
+        assert_eq!(payload(&response, "SENT"), Some(json!({ "bytes": 19.0 })), "the program sees the plaintext length, credential included");
+        assert_eq!(wire.server.app_received(), b"AUTH hunter2-pass\r\n", "the peer decrypted the credential");
+        assert_eq!(wire.asked, vec!["REDIS_PASSWORD".to_string()], "the kernel asked the credential by name");
+        assert!(wire.sent.iter().all(|raw| !contains(raw, b"hunter2-pass")), "the host sees only ciphertext");
+        let shown = format!("{response:?} {:?}", wire.asked);
+        assert!(!shown.contains("hunter2-pass"), "the response never shows the credential: {shown}");
+        assert!(payload(&response, "BAD").is_none());
+    }
+
+    #[test]
+    fn control_a_tls_send_of_a_credential_nobody_holds_fails_before_any_application_byte() {
+        let segments = json!([{ "bytes": codec::base64_encode(b"AUTH "), "credential": "MISSING" }]);
+        let server = EmbeddedServer::new(segment_schema(segments)).expect("server");
+        let mut wire = Wire::new(7);
+        let response = run(&server, &mut wire);
+        let bad = payload(&response, "BAD").expect("the send failed");
+        assert_eq!(bad["kind"], json!("denied"), "{bad}");
+        assert!(payload(&response, "SENT").is_none());
+        assert!(wire.server.app_received().is_empty(), "no application byte reached the peer");
+        assert_eq!(wire.asked, vec!["MISSING".to_string()]);
+    }
+
+    #[test]
+    fn control_a_tls_send_of_plain_bytes_asks_no_credential() {
+        let server = EmbeddedServer::new(schema(vec![connect_tls(true, "localhost")], grants())).expect("server");
+        let mut wire = Wire::new(7);
+        let _ = run(&server, &mut wire);
+        assert!(wire.asked.is_empty());
     }
 
     #[test]

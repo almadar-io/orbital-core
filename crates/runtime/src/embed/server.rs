@@ -6,7 +6,7 @@
 use std::prelude::v1::*;
 
 use super::ticket_queue::TicketQueue;
-use super::wire::{CallSiteWire, Settled, IoReplyWire, NextWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
+use super::wire::{CallSiteWire, FiredTick, Settled, IoReplyWire, NextWire, PendingRequestWire, ResolveProgressWire, ServerProgressWire};
 use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::executor::{ServiceHandler, SubstrateHandler};
 use crate::resumable::{completion_event, CallSite, DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest, Progress, ResolveContinuation, ResolveProgress};
@@ -16,7 +16,7 @@ use crate::config::KernelConfig;
 use crate::tick_clock::{Calendar, TickClock};
 use crate::kernel::{EntryError, FrameWrite, KernelError, RequestSession, RuntimeKernel, SessionActive, SessionStream};
 use crate::entity_source::EntitySource;
-use crate::effects::response::{EventRequest, EventResponse};
+use crate::effects::response::{EventRequest, EventResponse, LifecycleEvent};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::os::{OsError, OsOp};
@@ -25,7 +25,7 @@ use orbital_core_base::os_grants::{resolve_anchored_args, EnvSnapshot, FsMode, O
 use orbital_core_base::os_grants::{OsGrants, OsRequirement};
 use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::sync::Mutex;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Where a server dispatch stands.
@@ -129,8 +129,8 @@ pub struct EmbeddedServer {
     kernel: RuntimeKernel,
     orbital_traits: HashMap<String, Vec<String>>,
     default_user: Mutex<Value>,
-    /// The traits some client has mounted: a tick that is not `[background]` fires only for these.
-    tick_mount: Mutex<BTreeSet<String>>,
+    /// The coalesced relay of tick-stamped dispatches to the other clients.
+    tick_relay: Mutex<super::tick_relay::TickRelay>,
     /// Which declared ticks are due on each pass ([`Self::tick_pass`]), the clock every host runs.
     ticks: Mutex<TickClock>,
     flights: Mutex<HashMap<u64, Flight>>,
@@ -217,7 +217,7 @@ impl EmbeddedServer {
             kernel,
             orbital_traits,
             default_user: Mutex::new(default_user),
-            tick_mount: Mutex::new(BTreeSet::new()),
+            tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
             queued: Mutex::new(TicketQueue::default()),
@@ -239,7 +239,7 @@ impl EmbeddedServer {
             kernel,
             orbital_traits: self.orbital_traits.clone(),
             default_user: Mutex::new(self.default_user.lock().clone()),
-            tick_mount: Mutex::new(self.tick_mount.lock().clone()),
+            tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
             queued: Mutex::new(TicketQueue::default()),
@@ -280,7 +280,7 @@ impl EmbeddedServer {
             kernel,
             orbital_traits,
             default_user: Mutex::new(self.default_user.lock().clone()),
-            tick_mount: Mutex::new(BTreeSet::new()),
+            tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
             queued: Mutex::new(TicketQueue::default()),
@@ -354,17 +354,27 @@ impl EmbeddedServer {
         Ok(())
     }
 
-    /// One pass of the tick clock at monotonic `now_ms`: the `(trait, tick)` pairs due now that this server runs, the
-    /// `[background]` ticks and those of a trait some client has mounted ([`Self::set_tick_mount`]). The host starts
-    /// each as a `runTick` request. Same selection as the native host's tick pass for `[background]` ticks.
-    pub fn tick_pass(&self, now_ms: u64) -> Vec<(String, String)> {
-        let due = self.ticks.lock().due(now_ms, Calendar::local_now);
-        let mounted = self.tick_mount.lock();
+    /// One pass of the tick clock at monotonic `now_ms`: the `(orbital, trait, tick)` triples due now that this server
+    /// runs, the `[background]` ticks and those of a trait some client has mounted ([`Self::mount_client`]). The host
+    /// starts each as a `runTick` request to the orbital named. Same selection as the native host's tick pass for
+    /// `[background]` ticks.
+    pub fn tick_pass(&self, now_ms: u64) -> Vec<FiredTick> {
+        let mut clock = self.ticks.lock();
+        let due = clock.due(now_ms, Calendar::local_now);
         due.into_iter()
             .filter(|(trait_name, tick)| {
-                mounted.contains(trait_name) || self.kernel.tick_of(trait_name, tick).is_some_and(|t| t.background)
+                self.kernel.trait_mounted(trait_name) || self.kernel.tick_of(trait_name, tick).is_some_and(|t| t.background)
+            })
+            .filter_map(|(trait_name, tick)| {
+                let orbital = clock.orbital_of(&trait_name, &tick)?.to_string();
+                Some(FiredTick { orbital, trait_name, tick })
             })
             .collect()
+    }
+
+    /// Whether the program declares any tick: a host runs its timer only then.
+    pub fn declares_ticks(&self) -> bool {
+        !self.ticks.lock().is_empty()
     }
 
     /// Stop the tick clock; declared ticks and their phase are kept.
@@ -382,14 +392,53 @@ impl EmbeddedServer {
         self.ticks.lock().is_paused()
     }
 
-    /// The traits whose mount-scoped ticks fire: the host's union of what its clients have mounted.
-    pub fn set_tick_mount(&self, traits: Vec<String>) {
-        *self.tick_mount.lock() = traits.into_iter().collect();
+    /// This host holds the circuit state ([`RuntimeKernel::set_stateful`]).
+    pub fn set_stateful(&self, stateful: bool) {
+        self.kernel.set_stateful(stateful);
+    }
+
+    /// `client` has mounted `traits` of `orbital`: their mount-scoped ticks fire while any client holds them. A request
+    /// derives this itself ([`Self::start`]); a host calls it for a mount it makes outside a request.
+    pub fn mount_client(&self, client: &str, orbital: &str, traits: Vec<String>) {
+        self.kernel.mount_client(client, orbital, traits);
+    }
+
+    /// `client` has unmounted `traits` of `orbital`.
+    pub fn unmount_client(&self, client: &str, orbital: &str, traits: Vec<String>) {
+        self.kernel.unmount_client(client, orbital, traits);
+    }
+
+    /// `client` is gone: everything it had mounted is released. A session the kernel frees (EXEC-DIST-9) releases its
+    /// client the same way.
+    pub fn release_client(&self, client: &str) {
+        self.kernel.release_client(client);
+    }
+
+    /// Queue the tick-stamped dispatch `request` of `orbital` for the coalesced peer relay: newest per (origin client,
+    /// orbital, event) wins. `Some(ms)` when it opened a window, which the host flushes after that long
+    /// ([`Self::flush_tick_relay`]); `None` for a request with no tick or one joining an open window.
+    pub fn relay_tick(&self, orbital: &str, request: &EventRequest) -> Option<u64> {
+        self.tick_relay.lock().queue(orbital, request)
+    }
+
+    /// The window's cadence in ms; the default is 50 (≈20 Hz).
+    pub fn set_tick_relay_interval(&self, interval_ms: u64) {
+        self.tick_relay.lock().set_interval(interval_ms);
+    }
+
+    /// Every item queued since the window opened, in first-arrival order; the window closes.
+    pub fn flush_tick_relay(&self) -> Vec<crate::effects::LiveBroadcastItem> {
+        self.tick_relay.lock().flush()
     }
 
     /// The kernel's mounts for a host start on `side` (EXEC-ENDPOINT-3).
     pub fn boot_mounts(&self, side: orbital_core_base::protocols::ProtocolSide) -> Vec<crate::effects::response::MountSeed> {
         self.kernel.boot_mounts(side)
+    }
+
+    /// The answer to one [`crate::kernel::contract_query::ContractQuery`] about the registered program, as JSON.
+    pub fn contract_query(&self, query: crate::kernel::contract_query::ContractQuery) -> Result<serde_json::Value, String> {
+        self.kernel.contract_query(query)
     }
 
     /// The kernel's mounts for a client opening `route_path` (EXEC-ENDPOINT-3).
@@ -503,6 +552,12 @@ impl EmbeddedServer {
     /// While a parked dispatch holds the lane, or earlier requests still wait for it, the request is queued behind
     /// them and answered `Queued`; the host starts nothing itself (EXEC-CONC-2).
     pub fn start(&self, orbital: &str, request: EventRequest) -> Result<ServerProgress, String> {
+        if let Some(refused) = self.kernel.refusal(&request) {
+            return Ok(ServerProgress::Done(refused));
+        }
+        if self.record_mount(orbital, &request) {
+            return Ok(ServerProgress::Done(EventResponse::success("")));
+        }
         let admitted = self.admit(&request)?;
         let mut queued = self.queued.lock();
         if self.lane_held() || !queued.is_empty() {
@@ -512,6 +567,26 @@ impl EmbeddedServer {
         }
         drop(queued);
         self.start_now(orbital, request, admitted)
+    }
+
+    /// The client's mount ledger follows its requests (EXEC-TICK-4): a mount batch or a lifecycle event mounts the traits
+    /// it names for the client, `$UNMOUNT` releases them. A request naming no client is no client's mount (the host's own
+    /// boot mount). Answers whether the request was an unmount, which dispatches nothing.
+    fn record_mount(&self, orbital: &str, request: &EventRequest) -> bool {
+        let unmount = request.event == orbital_core_base::bus_event::UNMOUNT_EVENT;
+        let Some(client) = request.client_id.as_deref() else {
+            return unmount;
+        };
+        let traits: Vec<String> = match request.mount.as_ref() {
+            Some(seeds) => seeds.iter().map(|seed| seed.r#trait.clone()).collect(),
+            None => request.target_trait.iter().cloned().collect(),
+        };
+        if unmount {
+            self.kernel.unmount_client(client, orbital, traits);
+        } else if request.mount.is_some() || LifecycleEvent::parse(&request.event).is_some() {
+            self.kernel.mount_client(client, orbital, traits);
+        }
+        unmount
     }
 
     /// Admit `request` into its session as it arrives (EXEC-DIST-9), so a request waiting for the lane holds it.
@@ -825,7 +900,7 @@ impl EmbeddedServer {
                 )))
             }
         };
-        if !background && !self.tick_mount.lock().contains(&run.trait_name) {
+        if !background && !self.kernel.trait_mounted(&run.trait_name) {
             return Ok(ServerProgress::Done(EventResponse::success("")));
         }
         let progress = self

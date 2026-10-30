@@ -193,6 +193,70 @@ fn an_empty_declared_list_is_an_inert_rejection() {
     );
 }
 
+fn stateful() -> EmbeddedServer {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.set_stateful(true);
+    server
+}
+
+fn refusal_code(response: &EventResponse) -> TransitionRejectionCode {
+    response.rejections.as_ref().expect("a typed rejection")[0].code
+}
+
+#[test]
+fn a_stateful_host_refuses_carried_traits_without_a_target_or_a_mount() {
+    let request = EventRequest {
+        event: "NEXT".to_string(),
+        traits: Some(vec![carried("Wizard", "second"), carried("Other", "first")]),
+        ..Default::default()
+    };
+    let (response, _) = drive(&stateful(), request);
+    assert!(!response.success);
+    assert_eq!(refusal_code(&response), TransitionRejectionCode::ClientCircuitStateRefused);
+    assert!(response.states.is_empty(), "nothing was seeded or run: {:?}", response.states);
+}
+
+#[test]
+fn a_stateful_host_refuses_carried_rows_without_a_target_or_a_mount_too() {
+    let request = EventRequest {
+        event: "SEND".to_string(),
+        entity_by_trait: Some(ValueMap::from([("Composer".into(), row(json!({ "content": "x" })))])),
+        ..Default::default()
+    };
+    let (response, created) = drive(&stateful(), request);
+    assert_eq!(refusal_code(&response), TransitionRejectionCode::ClientCircuitStateRefused);
+    assert!(created.is_empty());
+}
+
+#[test]
+fn control_a_stateful_host_admits_a_delegated_leg_and_a_request_carrying_nothing() {
+    let (leg, created) = drive(&stateful(), send(Some(json!({ "content": "typed" }))));
+    assert!(leg.success && created.len() == 1, "a targeted leg is the client role's delegated leg");
+    let mount = EventRequest {
+        event: "INIT".to_string(),
+        client_id: Some("tab-1".to_string()),
+        mount: Some(vec![MountSeed { r#trait: "Wizard".to_string(), event: LifecycleEvent::Init }]),
+        traits: Some(vec![carried("Wizard", "second")]),
+        ..Default::default()
+    };
+    let (mounted, _) = drive(&stateful(), mount);
+    assert!(mounted.rejections.as_ref().is_none_or(|r| r.iter().all(|r| r.code != TransitionRejectionCode::ClientCircuitStateRefused)));
+    let plain = EventRequest { event: "NEXT".to_string(), ..Default::default() };
+    let (response, _) = drive(&stateful(), plain);
+    assert!(response.success, "a request carrying no circuit state is admitted");
+}
+
+#[test]
+fn control_a_stateless_host_takes_the_clients_copy_on_any_request() {
+    let request = EventRequest {
+        event: "NEXT".to_string(),
+        traits: Some(vec![carried("Wizard", "second")]),
+        ..Default::default()
+    };
+    let (response, _) = drive(&EmbeddedServer::new(schema()).unwrap(), request);
+    assert!(response.rejections.as_ref().is_none_or(|r| r.iter().all(|r| r.code != TransitionRejectionCode::ClientCircuitStateRefused)));
+}
+
 // A carried row is addressed by its own id (G-CROSS-256, ruled 2026-10-18; JS twin: `evaluateOrbitalEvent`'s per-trait
 // address). A `[runtime]` row carried with an id is that row, never the singleton's seeded row; an id-carrying row of a
 // `[shared]` entity stays out of the one shared frame.

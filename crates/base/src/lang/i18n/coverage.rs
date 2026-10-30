@@ -177,14 +177,121 @@ mod tests {
     use super::*;
     use crate::i18n::tables;
 
+    fn complete(code: &str) -> I18nDefinition {
+        let mut def = tables::english().clone();
+        def.meta.code = code.to_string();
+        def.meta.name = code.to_string();
+        for section in SECTIONS {
+            let map = match section {
+                "keywords" => &mut def.keywords,
+                "shapes" => &mut def.shapes,
+                "tags" => &mut def.tags,
+                "categories" => &mut def.categories,
+                "capabilities" => &mut def.capabilities,
+                "annotations" => &mut def.annotations,
+                "sigils" => &mut def.sigils,
+                "effects" => &mut def.effects,
+                "types" => &mut def.types,
+                "units" => &mut def.units,
+                "literals" => &mut def.literals,
+                "reservedEvents" => &mut def.reserved_events,
+                "orb" => &mut def.orb,
+                _ => &mut def.operators,
+            };
+            for value in map.values_mut() {
+                *value = format!("{code}:{value}");
+            }
+        }
+        def
+    }
+
+    fn defs_with(lang: I18nDefinition) -> BTreeMap<String, I18nDefinition> {
+        BTreeMap::from([
+            ("en".to_string(), tables::english().clone()),
+            (lang.meta.code.clone(), lang),
+        ])
+    }
+
+    fn key_problems(
+        defs: &BTreeMap<String, I18nDefinition>,
+    ) -> Vec<(String, String, ProblemKind, String)> {
+        check_translation_coverage(defs)
+            .into_iter()
+            .filter(|p| matches!(p.kind, ProblemKind::Missing | ProblemKind::Orphan))
+            .map(|p| (p.lang, p.section, p.kind, p.key))
+            .collect()
+    }
+
     #[test]
-    fn baked_tables_report_every_problem() {
-        // Not a pass/fail assertion here: the ar/sl tables are still being
-        // completed by parallel agents. This just proves the gate runs and
-        // reports something concrete for every language.
-        let problems = check_translation_coverage(tables::definitions());
-        let ar_problems = problems.iter().filter(|p| p.lang == "ar").count();
-        let sl_problems = problems.iter().filter(|p| p.lang == "sl").count();
-        eprintln!("ar coverage problems: {ar_problems}, sl coverage problems: {sl_problems}");
+    fn pack_completeness_control_a_full_pack_has_no_key_problem() {
+        assert_eq!(key_problems(&defs_with(complete("qz"))), Vec::new());
+    }
+
+    #[test]
+    fn pack_completeness_reports_a_missing_orb_key_and_an_orphan_effect() {
+        let mut pack = complete("qz");
+        pack.orb.remove("typeContractVersion");
+        pack.effects
+            .insert("lambda".to_string(), "qz:lambda".to_string());
+        assert_eq!(
+            key_problems(&defs_with(pack)),
+            vec![
+                (
+                    "qz".to_string(),
+                    "effects".to_string(),
+                    ProblemKind::Orphan,
+                    "lambda".to_string()
+                ),
+                (
+                    "qz".to_string(),
+                    "orb".to_string(),
+                    ProblemKind::Missing,
+                    "typeContractVersion".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn pack_completeness_reports_an_orphan_operator_and_an_empty_value() {
+        let mut pack = complete("qz");
+        pack.operators
+            .insert("nonexistent/orphan-operator".to_string(), "qz:x".to_string());
+        pack.keywords.insert("state".to_string(), String::new());
+        let problems = check_translation_coverage(&defs_with(pack));
+        assert!(problems.iter().any(|p| p.kind == ProblemKind::Orphan
+            && p.section == "operators"
+            && p.key == "nonexistent/orphan-operator"));
+        assert!(problems
+            .iter()
+            .any(|p| p.kind == ProblemKind::Empty && p.section == "keywords" && p.key == "state"));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn installed_packs_carry_exactly_the_english_key_set() {
+        let start = match std::env::var_os("ORB_VOCAB_PACKS_FROM") {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => std::env::current_dir().unwrap(),
+        };
+        let packs =
+            super::super::packs::discover_vocabulary_packs(&start, &start.join(".no-user-store"))
+                .unwrap_or_else(|e| panic!("{e}"));
+        let mut defs = BTreeMap::from([("en".to_string(), tables::english().clone())]);
+        for pack in &packs {
+            defs.insert(pack.definition.meta.code.clone(), pack.definition.clone());
+        }
+        let problems = key_problems(&defs);
+        assert!(
+            problems.is_empty(),
+            "{} pack key problem(s) in {:?}:\n{}",
+            problems.len(),
+            packs.iter().map(|p| p.package.as_str()).collect::<Vec<_>>(),
+            problems
+                .iter()
+                .map(|(lang, section, kind, key)| format!("  [{lang}] {section}.{kind:?}: {key}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
     }
 }

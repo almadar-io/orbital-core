@@ -672,6 +672,11 @@ pub(super) fn answer(
             OsErrorKind::Unsupported,
             "streaming host not implemented",
         )),
+        OsOp::Fetch => Err(err(
+            op,
+            OsErrorKind::Unsupported,
+            "a browser host performs a fetch; this host speaks the protocol over os/tcp-connect and os/tls-upgrade",
+        )),
         _ => return None,
     })
 }

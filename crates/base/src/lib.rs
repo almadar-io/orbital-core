@@ -90,10 +90,14 @@ pub mod runs_on;
 pub mod expects;
 #[path = "contract/external_inputs.rs"]
 pub mod external_inputs;
+#[path = "contract/payload_check.rs"]
+pub mod payload_check;
 #[path = "contract/service_params.rs"]
 pub mod service_params;
 #[path = "contract/listen_match.rs"]
 pub mod listen_match;
+#[path = "contract/event_wires.rs"]
+pub mod event_wires;
 #[path = "contract/policy.rs"]
 pub mod policy;
 #[path = "contract/entity_vocabulary.rs"]
@@ -102,6 +106,8 @@ pub mod entity_vocabulary;
 pub mod identity;
 #[path = "contract/viewer.rs"]
 pub mod viewer;
+#[path = "contract/validation_report.rs"]
+pub mod validation_report;
 #[path = "contract/dispatch_mode.rs"]
 pub mod dispatch_mode;
 #[path = "contract/inbound.rs"]
@@ -140,6 +146,8 @@ pub mod project;
 // security — token & secret shapes (the kernel signs; base holds the wire types)
 #[path = "security/jwt_alg.rs"]
 pub mod jwt_alg;
+#[path = "security/secret.rs"]
+pub mod secret;
 #[path = "security/secrets.rs"]
 pub mod secrets;
 

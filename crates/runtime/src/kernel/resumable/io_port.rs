@@ -34,6 +34,8 @@ pub(crate) struct IoPort {
     /// Entity type -> the `[persistent: tbl]` collection it declares; sent to its store driver (EXEC-STORE-4).
     pub(super) collections: RwLock<HashMap<String, String>>,
     pub(super) store_seq: std::sync::atomic::AtomicU64,
+    /// Where a sealed operator's fresh entropy comes from; never journaled.
+    pub(super) entropy: Arc<dyn Fn() -> Result<[u8; 32], String> + Send + Sync>,
 }
 
 pub(super) struct Installed<'a> {
@@ -73,7 +75,61 @@ impl IoPort {
             store_drivers: RwLock::new(HashMap::new()),
             collections: RwLock::new(HashMap::new()),
             store_seq: std::sync::atomic::AtomicU64::new(0),
+            entropy: Arc::new(fresh_entropy),
         }
+    }
+
+    /// This port draws a sealed operator's entropy from `entropy`.
+    #[cfg(test)]
+    pub(crate) fn with_entropy(mut self, entropy: impl Fn() -> Result<[u8; 32], String> + Send + Sync + 'static) -> Self {
+        self.entropy = Arc::new(entropy);
+        self
+    }
+
+    /// Run the sealed operator `op` over `args`: `compute` gets fresh entropy that is never journaled, and the journal
+    /// records the output it returns. A replay answers from the recorded output without running `compute`, and the same
+    /// step run twice outside a replay draws different entropy.
+    pub(crate) fn sealed(&self, op: &str, args: &[Value], compute: &mut dyn FnMut([u8; 32]) -> Value) -> Result<Value, String> {
+        let request = IoRequest::Sealed { op: op.to_string(), args: args.to_vec() };
+        let in_step = {
+            let mut slot = self.ledger.lock();
+            match slot.as_mut().filter(|ledger| ledger.thread == orbital_core_base::sync::current_thread()) {
+                None => false,
+                Some(ledger) => {
+                    if ledger.diverged.is_some() {
+                        return Err(AWAITING_HOST.to_string());
+                    }
+                    let next = (0..ledger.journal.len()).find(|i| !ledger.claimed.has(*i));
+                    match next {
+                        Some(i) => {
+                            let recorded = &ledger.journal[i];
+                            if let (true, IoAnswer::Sealed(out)) = (recorded.request == request, &recorded.answer) {
+                                let out = out.clone();
+                                ledger.claimed.claim(i);
+                                return out;
+                            }
+                            ledger.diverged = Some(ResumeError::Diverged {
+                                recorded: Box::new(recorded.request.clone()),
+                                got: Box::new(request),
+                            });
+                            return Err(AWAITING_HOST.to_string());
+                        }
+                        None if ledger.blocked => return Err(AWAITING_HOST.to_string()),
+                        None => true,
+                    }
+                }
+            }
+        };
+        let entropy = (self.entropy)()?;
+        let output = compute(entropy);
+        if in_step {
+            if let Some(ledger) = self.ledger.lock().as_mut() {
+                ledger.journal.push(Exchange::new(request, IoAnswer::Sealed(Ok(output.clone()))));
+                let at = ledger.journal.len() - 1;
+                ledger.claimed.claim(at);
+            }
+        }
+        Ok(output)
     }
 
     /// The create batch that writes `rows` of a store-bound `entity_type` through its driver; `None` when unbound.

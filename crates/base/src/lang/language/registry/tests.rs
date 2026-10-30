@@ -245,15 +245,8 @@ fn the_host_effects_are_the_tables_closed_calls_with_their_option_keys_request_a
 }
 
 #[test]
-fn tcp_default_ports_are_the_tables_per_scheme() {
-    for (scheme, port) in [("redis", 6379), ("rediss", 6379), ("postgres", 5432), ("postgresql", 5432)] {
-        assert_eq!(tcp_scheme_default_port(scheme), Some(port), "{scheme}");
-    }
-    for scheme in ["http", "https", "mysql", ""] {
-        assert_eq!(tcp_scheme_default_port(scheme), None, "control: {scheme}");
-    }
-    assert_eq!(get_operator("redis").map(|op| op.default_ports.len()), Some(2));
-    assert_eq!(get_operator("fetch").map(|op| op.default_ports.is_empty()), Some(true));
+fn the_redis_operator_is_retired_and_no_operator_connects_under_a_scheme() {
+    assert!(get_operator("redis").is_none(), "std-redis speaks RESP over os/tcp-connect");
 }
 
 #[test]

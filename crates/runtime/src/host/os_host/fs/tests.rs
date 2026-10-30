@@ -1,6 +1,7 @@
 use super::super::args::bytes_value;
 use super::super::{OsHandles, OsHost};
 use super::*;
+use orbital_core_base::secret::Secret;
 use orbital_core_base::os::OsErrorKind;
 use orbital_core_base::os_grants::{FsGrant, FsMode, OsGrants};
 use orbital_core_base::value::ValueMap;
@@ -68,6 +69,7 @@ impl Fx {
             grants: &self.grants,
             handles: &self.handles,
             on_event: &on_event,
+            secrets: None,
         };
         answer(op, &args, None, None, &host)
             .unwrap_or_else(|| Err(OsError::new(OsErrorKind::Closed, "not an open handle")))
@@ -1138,6 +1140,7 @@ fn watching_files_is_unsupported_until_the_streaming_host_exists() {
 }
 mod finite_fs_completion {
     use super::*;
+use orbital_core_base::secret::Secret;
     use crate::entity_source::InMemoryEntityCache;
     use crate::native_host::NativeHost;
     use crate::os_host::completion::{CompletionTestPhase, OsCompletionSink};
@@ -1227,6 +1230,7 @@ mod finite_fs_completion {
                 let fd = match kind {
                     "file" => {
                         let IoAnswer::Os(Ok(opened)) = host.answer(&request(OsOp::Open, vec![fx.s("file"), st("r")], None)) else { panic!("inline Open") };
+                        let opened = opened.into_inner();
                         let Value::Number(fd) = get(&opened, "fd") else { panic!("Open descriptor") };
                         *fd as i64
                     }
@@ -1250,7 +1254,7 @@ mod finite_fs_completion {
                     result
                 } else {
                     let IoAnswer::Os(result) = host.answer(&request(OsOp::Close, vec![n(fd)], None)) else { panic!("inline Close") };
-                    result
+                    result.map(Secret::into_inner)
                 };
                 if kind == "unknown" {
                     assert_eq!(result, Err(OsError::new(OsErrorKind::Closed, "os/close: not an open handle")));
@@ -1283,7 +1287,7 @@ mod finite_fs_completion {
         assert!(matches!(host.answer(&request(OsOp::Chdir, vec![fx.s("second")], None)), IoAnswer::Os(Ok(_))));
         paused.release.send(()).unwrap();
         let (_, result) = delivered.recv_timeout(Duration::from_secs(5)).expect("read completion");
-        assert_eq!(result, Ok(expected));
+        assert_eq!(result, Ok(expected.into_inner()));
         terminal(&paused, lease);
         assert_eq!(handles.fs.cwd.lock().as_ref(), Some(&fx.p("second")));
     }
@@ -1312,7 +1316,7 @@ mod finite_fs_completion {
         assert!(matches!(later_host.answer(&request(OsOp::ReadFile, vec![st("./file")], None)), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Denied, .. }))));
         paused.release.send(()).unwrap();
         let (_, result) = delivered.recv_timeout(Duration::from_secs(5)).expect("original-context completion");
-        assert_eq!(result, Ok(expected));
+        assert_eq!(result, Ok(expected.into_inner()));
         terminal(&paused, lease);
     }
 

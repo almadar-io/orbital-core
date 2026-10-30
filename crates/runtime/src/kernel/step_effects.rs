@@ -127,7 +127,7 @@ impl RuntimeKernel {
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut PendingSets,
     ) {
-        let secreted = self.with_scrypt_salts(effect_expr, ctx, evaluator);
+        let secreted = self.with_operator_credentials(effect_expr, ctx, evaluator);
         let ctx = secreted.as_ref().unwrap_or(ctx);
         // Only control flow reads the mirrored `@entity` here; a leaf mirrors it itself so it can
         // release the view before its `set` writes into it in place.
@@ -237,10 +237,10 @@ impl RuntimeKernel {
         self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data);
     }
 
-    /// `ctx` with the value of every credential a `hash/scrypt` in `expr` names as its salt, resolved through the host's
-    /// `Secret` ask. The value lives only in the evaluation context: it is not a binding and never reaches program data.
-    /// `None` when `expr` hashes nothing or every salt is already held.
-    pub(super) fn with_scrypt_salts(
+    /// `ctx` with the value of every credential an operator in `CREDENTIAL_OPERATORS` names in `expr`, resolved through the
+    /// host's `Secret` ask. The value lives only in the evaluation context: it is not a binding and never reaches program
+    /// data. `None` when `expr` names no credential or every one is already held.
+    pub(super) fn with_operator_credentials(
         &self,
         expr: &SExpression,
         ctx: &BindingContext,
@@ -248,28 +248,29 @@ impl RuntimeKernel {
     ) -> Option<BindingContext> {
         fn collect<'a>(expr: &'a SExpression, out: &mut Vec<&'a SExpression>) {
             if let SExpression::Array(items) = expr {
-                if matches!(items.first(), Some(SExpression::String(head)) if head == "hash/scrypt")
-                {
-                    out.extend(items.get(2));
+                if let Some(SExpression::String(head)) = items.first() {
+                    if let Some(entry) = orbital_core_base::secrets::CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head) {
+                        out.extend(items.get(entry.operand));
+                    }
                 }
                 for item in items {
                     collect(item, out);
                 }
             }
         }
-        let mut salts = Vec::new();
-        collect(expr, &mut salts);
+        let mut operands = Vec::new();
+        collect(expr, &mut operands);
         let mut held: Option<BindingContext> = None;
-        for salt in salts {
+        for operand in operands {
             let current = held.as_ref().unwrap_or(ctx);
-            let Ok(Value::String(name)) = evaluator.evaluate(salt, current) else {
+            let Ok(Value::String(name)) = evaluator.evaluate(operand, current) else {
                 continue;
             };
             if current.secret(&name).is_some() {
                 continue;
             }
             if let Ok(Some(value)) = self.io.secret(&name, None) {
-                if !value.is_empty() {
+                if !value.expose().is_empty() {
                     held = Some(current.clone().with_secret(&name, value));
                 }
             }
@@ -609,6 +610,12 @@ impl RuntimeKernel {
     /// (the dispatch's own draw state lives in its context), so a dispatch only clones it.
     pub(super) fn prob_entropy(&self) -> EntropySource {
         self.prob_entropy.clone()
+    }
+
+    /// The boundary a cryptographic operator that draws entropy runs through: the entropy is fresh and never journaled,
+    /// the journal records the operator's output, and a replay returns it without running the operator.
+    pub(super) fn sealed_outputs(&self) -> SealedOutputs {
+        self.sealed_outputs.clone()
     }
 }
 

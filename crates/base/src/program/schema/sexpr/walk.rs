@@ -86,6 +86,84 @@ impl ValueSlot {
     }
 }
 
+/// Which argument slots a declared `returnSemantics` kind draws a call's result from, independent of any call: the
+/// one derivation of the kind, applied to a call by [`plan_value_sources`] and carried by the operator table as
+/// `valueSourceSlots` (pinned to this derivation by the table drift test).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ValueSourceSlots {
+    /// `branch-union`: every argument after the condition.
+    Branches,
+    /// `union-of-args`, `coalesce`: every argument.
+    Args,
+    /// `last-of-args`: the last argument.
+    Last,
+    /// `lambda-result`: the body of the last lambda argument.
+    LambdaResult,
+    /// `identity-of-arg<N>`, `union-of-args<i,j>`: the listed arguments.
+    Listed { args: Vec<usize> },
+}
+
+impl ValueSourceSlots {
+    /// The slots a kind names, or `None` for an undeclared or non-provenance kind and for a malformed selection.
+    pub fn of_semantics(sem: &str) -> Option<Self> {
+        match sem {
+            "branch-union" => Some(Self::Branches),
+            "union-of-args" | "coalesce" => Some(Self::Args),
+            "last-of-args" => Some(Self::Last),
+            "lambda-result" => Some(Self::LambdaResult),
+            _ => {
+                let indices = sem
+                    .strip_prefix("identity-of-arg<")
+                    .or_else(|| sem.strip_prefix("union-of-args<"))
+                    .and_then(|rest| rest.strip_suffix('>'))?;
+                let args: Vec<usize> = indices
+                    .split(',')
+                    .map(|n| n.trim().parse().ok())
+                    .collect::<Option<_>>()?;
+                Some(Self::Listed { args })
+            }
+        }
+    }
+
+    fn apply(
+        &self,
+        arg_count: usize,
+        is_lambda: impl Fn(usize) -> bool,
+        condition_dead: bool,
+        skip_dead_branches: bool,
+    ) -> Option<Vec<ValueSlot>> {
+        let slots: Vec<ValueSlot> = match self {
+            Self::Branches => {
+                if arg_count < 2 {
+                    return None;
+                }
+                let first_branch = if skip_dead_branches && condition_dead { 2 } else { 1 };
+                (first_branch..arg_count).map(ValueSlot::Arg).collect()
+            }
+            Self::Args => (0..arg_count).map(ValueSlot::Arg).collect(),
+            Self::Last => arg_count
+                .checked_sub(1)
+                .map(ValueSlot::Arg)
+                .into_iter()
+                .collect(),
+            Self::LambdaResult => (0..arg_count)
+                .rev()
+                .find(|&i| is_lambda(i))
+                .map(ValueSlot::LambdaBody)
+                .into_iter()
+                .collect(),
+            Self::Listed { args } => {
+                if args.iter().any(|&i| i >= arg_count) {
+                    return None;
+                }
+                args.iter().copied().map(ValueSlot::Arg).collect()
+            }
+        };
+        (!slots.is_empty() || matches!(self, Self::Branches)).then_some(slots)
+    }
+}
+
 /// The single interpreter of `returnSemantics` provenance kinds: which
 /// argument slots of the call `op(args…)` its result draws from, or `None`
 /// when the operator is undeclared, declares a non-provenance kind, or the
@@ -98,46 +176,7 @@ pub(super) fn plan_value_sources(
     condition_dead: bool,
 ) -> Option<Vec<ValueSlot>> {
     let sem = (walk.lookup)(op)?.semantics?;
-    let slots: Vec<ValueSlot> = match sem {
-        "branch-union" => {
-            if arg_count < 2 {
-                return None;
-            }
-            let first_branch = if walk.skip_dead_branches && condition_dead {
-                2
-            } else {
-                1
-            };
-            (first_branch..arg_count).map(ValueSlot::Arg).collect()
-        }
-        "union-of-args" | "coalesce" => (0..arg_count).map(ValueSlot::Arg).collect(),
-        "last-of-args" => arg_count
-            .checked_sub(1)
-            .map(ValueSlot::Arg)
-            .into_iter()
-            .collect(),
-        "lambda-result" => (0..arg_count)
-            .rev()
-            .find(|&i| is_lambda(i))
-            .map(ValueSlot::LambdaBody)
-            .into_iter()
-            .collect(),
-        _ => {
-            let indices = sem
-                .strip_prefix("identity-of-arg<")
-                .or_else(|| sem.strip_prefix("union-of-args<"))
-                .and_then(|rest| rest.strip_suffix('>'))?;
-            let indices: Vec<usize> = indices
-                .split(',')
-                .map(|n| n.trim().parse().ok())
-                .collect::<Option<_>>()?;
-            if indices.iter().any(|&i| i >= arg_count) {
-                return None;
-            }
-            indices.into_iter().map(ValueSlot::Arg).collect()
-        }
-    };
-    (!slots.is_empty() || sem == "branch-union").then_some(slots)
+    ValueSourceSlots::of_semantics(sem)?.apply(arg_count, is_lambda, condition_dead, walk.skip_dead_branches)
 }
 
 /// Borrowed view of a recognized FC-5 dynamic-children tuple

@@ -1,6 +1,6 @@
-//! The TLS byte stream a TCP protocol driver (redis, postgres) wraps by composition. It is a step machine on the
+//! The TLS byte stream over a socket the program already connected. It is a step machine on the
 //! shared [`Driver`] contract: every call returns a [`TlsEvent`], and an `Ask` is answered through
-//! [`TlsStream::resume`]. Connecting asks `os/tcp-connect`, the journaled `Random` seed and the journaled clock;
+//! [`TlsStream::resume`]. Upgrading a connected socket asks the journaled `Random` seed and the journaled clock;
 //! the handshake then moves ciphertext through `os/send` and `os/recv`. A wrapper forwards the answer to the
 //! stream while [`TlsStream::is_waiting`] and handles it itself otherwise.
 #[cfg(not(feature = "std"))]
@@ -14,7 +14,6 @@ use orbital_core_base::value::Value;
 
 use super::session::{web_roots, Poll, Recorded, Replayed, TlsClient};
 use crate::driver::{Driver, DriverAnswer, DriverAsk, DriverStep};
-use orbital_core_base::os_grants::tcp_target_allowed;
 
 const RECV_BYTES: f64 = 16384.0;
 
@@ -38,7 +37,6 @@ pub enum TlsEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Awaiting {
-    Connect,
     Seed,
     Clock,
     Alert,
@@ -83,52 +81,8 @@ fn os_ask(op: OsOp, args: Vec<Value>) -> TlsEvent {
 }
 
 impl TlsStream {
-    /// Connect to `origin` (`rediss://host[:port]`, `postgres://host[:port]`, ...), refused unless `egress` lists it.
-    pub fn connect(origin: &str, egress: &[String]) -> (Self, TlsEvent) {
-        Self::connect_with_roots(origin, egress, web_roots())
-    }
-
-    pub fn connect_with_roots(
-        origin: &str,
-        egress: &[String],
-        roots: RootCertStore,
-    ) -> (Self, TlsEvent) {
-        let mut stream = Self {
-            host: String::new(),
-            roots: Some(roots),
-            alpn: Vec::new(),
-            sock: Value::Null,
-            seed: [0u8; 32],
-            client: None,
-            awaiting: None,
-            goal: Goal::Idle,
-            inbox: Vec::new(),
-            eof_seen: false,
-            after_close: None,
-            now: 0,
-            record: false,
-            survive_timeout: false,
-            host_error: None,
-        };
-        let target = match tcp_target_allowed(origin, egress) {
-            Ok(target) => target,
-            Err(refusal) => return (stream, TlsEvent::Failed(refusal.message())),
-        };
-        stream.host = target.host().to_string();
-        stream.awaiting = Some(Awaiting::Connect);
-        let ask = os_ask(
-            OsOp::TcpConnect,
-            vec![
-                Value::string(stream.host.clone()),
-                Value::Number(f64::from(target.port())),
-            ],
-        );
-        (stream, ask)
-    }
-
-    /// Start TLS over `sock`, already connected to `host` and past the protocol's in-band TLS request (Postgres'
-    /// SSLRequest): the handshake asks the journaled seed and clock, then moves ciphertext. The caller has checked
-    /// `host` against `egress`.
+    /// Start TLS over `sock`, already connected to `host` and past the protocol's in-band TLS request, if it has one: the handshake asks the journaled seed and clock, then moves ciphertext. The socket's
+    /// `net` grant was checked where it was made.
     pub fn upgrade(host: &str, sock: Value) -> (Self, TlsEvent) {
         let stream = Self {
             host: host.to_string(),
@@ -310,24 +264,8 @@ impl TlsStream {
                     TlsEvent::Failed("tls: the stream closed with no outcome".to_string())
                 })
             }
-            (Awaiting::Connect, DriverAnswer::Os(Ok(reply))) => {
-                let Value::Object(fields) = reply else {
-                    return TlsEvent::Failed(
-                        "tls: os/tcp-connect did not answer a socket".to_string(),
-                    );
-                };
-                let Some(sock) = fields.get("sock").cloned() else {
-                    return TlsEvent::Failed(
-                        "tls: os/tcp-connect did not answer a socket".to_string(),
-                    );
-                };
-                self.sock = sock;
-                self.awaiting = Some(Awaiting::Seed);
-                TlsEvent::Ask(DriverAsk::Random { bytes: 32 })
-            }
-            (Awaiting::Connect, DriverAnswer::Os(Err(error))) => TlsEvent::Failed(error.message),
             (Awaiting::Seed, DriverAnswer::Random(Ok(bytes))) => {
-                match <[u8; 32]>::try_from(bytes.as_slice()) {
+                match <[u8; 32]>::try_from(bytes.expose().as_slice()) {
                     Ok(seed) => {
                         self.seed = seed;
                         self.awaiting = Some(Awaiting::Clock);
@@ -532,11 +470,6 @@ pub(crate) mod tests {
     const KEY: &[u8] = include_bytes!("testdata/key.der");
     const NOT_BEFORE: u64 = 1_792_209_645;
     pub(crate) const NOW: u64 = 1_792_209_700;
-    const ORIGIN: &str = "rediss://localhost:6379";
-
-    fn egress() -> Vec<String> {
-        vec![ORIGIN.to_string()]
-    }
 
     pub(crate) fn roots() -> RootCertStore {
         let mut roots = RootCertStore::empty();
@@ -709,6 +642,10 @@ pub(crate) mod tests {
             }
         }
 
+        pub(crate) fn app_received(&self) -> &[u8] {
+            &self.app_in
+        }
+
         pub(crate) fn take(&mut self, want: usize) -> Vec<u8> {
             let n = want.min(self.outbound.len());
             self.outbound.drain(..n).collect()
@@ -740,13 +677,6 @@ pub(crate) mod tests {
             }
             match request {
                 IoRequest::Os {
-                    op: OsOp::TcpConnect,
-                    ..
-                } => IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
-                    "sock".into(),
-                    Value::Number(1.0),
-                )])))),
-                IoRequest::Os {
                     op: OsOp::Send,
                     args,
                     ..
@@ -757,10 +687,10 @@ pub(crate) mod tests {
                     let bytes = codec::base64_decode(text).expect("base64");
                     self.server.receive(&bytes);
                     self.sent.push(bytes);
-                    IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([(
+                    IoAnswer::Os(Ok((Value::object(ValueMap::from_iter([(
                         "bytes".into(),
                         Value::Number(0.0),
-                    )]))))
+                    )]))).into()))
                 }
                 IoRequest::Os {
                     op: OsOp::Recv,
@@ -772,19 +702,19 @@ pub(crate) mod tests {
                     };
                     let data = self.server.take(want as usize);
                     assert!(!data.is_empty(), "the client read with nothing to read");
-                    IoAnswer::Os(Ok(Value::object(ValueMap::from_iter([
+                    IoAnswer::Os(Ok((Value::object(ValueMap::from_iter([
                         (
                             "data".into(),
                             Value::String(codec::base64_encode(&data).into()),
                         ),
                         ("eof".into(), Value::Bool(false)),
-                    ]))))
+                    ]))).into()))
                 }
                 IoRequest::Os {
                     op: OsOp::Close, ..
-                } => IoAnswer::Os(Ok(Value::Null)),
+                } => IoAnswer::Os(Ok(Value::Null.into())),
                 IoRequest::Random { bytes } => {
-                    IoAnswer::Random(Ok(vec![self.client_seed; *bytes as usize]))
+                    IoAnswer::Random(Ok(vec![self.client_seed; *bytes as usize].into()))
                 }
                 IoRequest::Clock => IoAnswer::Clock(Ok((self.clock_secs * 1000) as i64)),
                 other => panic!("unexpected request {other:?}"),
@@ -798,8 +728,8 @@ pub(crate) mod tests {
     }
 
     impl PingPong {
-        fn start(egress: &[String]) -> (Self, DriverStep) {
-            let (tls, event) = TlsStream::connect_with_roots(ORIGIN, egress, roots());
+        fn start() -> (Self, DriverStep) {
+            let (tls, event) = TlsStream::upgrade_with("localhost", Value::Number(1.0), roots(), Vec::new());
             let mut driver = Self {
                 tls,
                 got: Vec::new(),
@@ -845,9 +775,9 @@ pub(crate) mod tests {
         }
     }
 
-    fn step_of(journal: Vec<Exchange>, egress: &[String]) -> (DriveEnd, crate::resumable::StepEnd) {
+    fn step_of(journal: Vec<Exchange>) -> (DriveEnd, crate::resumable::StepEnd) {
         let port = IoPort::new(Arc::new(HostAnswered), None, None);
-        let (mut driver, step) = PingPong::start(egress);
+        let (mut driver, step) = PingPong::start();
         port.run_step(journal, || {
             drive(&port, &mut driver, step, DriveContext::default())
         })
@@ -865,7 +795,7 @@ pub(crate) mod tests {
         let mut host = Host::new(client_seed, clock_secs);
         let mut journal: Vec<Exchange> = Vec::new();
         loop {
-            let (end, step_end) = step_of(journal.clone(), &egress());
+            let (end, step_end) = step_of(journal.clone());
             assert!(
                 step_end.diverged.is_none(),
                 "the replayed driver diverged from its journal"
@@ -904,7 +834,7 @@ pub(crate) mod tests {
         );
 
         for _ in 0..2 {
-            let (replayed, step_end) = step_of(run.journal.clone(), &egress());
+            let (replayed, step_end) = step_of(run.journal.clone());
             assert_eq!(replayed, run.end);
             assert!(step_end.diverged.is_none() && step_end.pending.is_empty());
         }
@@ -918,8 +848,8 @@ pub(crate) mod tests {
         assert_ne!(run.sent[0], other.sent[0]);
 
         let mut forged = run.journal.clone();
-        forged[1] = other.journal[1].clone();
-        let (_, step_end) = step_of(forged, &egress());
+        forged[0] = other.journal[0].clone();
+        let (_, step_end) = step_of(forged);
         assert!(
             step_end.diverged.is_some(),
             "a journaled seed that differs must diverge the replayed sends"
@@ -951,23 +881,6 @@ pub(crate) mod tests {
     fn control_a_certificate_at_the_valid_time_connects() {
         let run = live(7, NOT_BEFORE + 1);
         assert_eq!(run.end, DriveEnd::Done(Ok(Value::string("pong"))));
-    }
-
-    #[test]
-    fn a_target_outside_egress_is_refused_before_any_ask() {
-        let (end, step_end) = step_of(Vec::new(), &["rediss://other.internal:6379".to_string()]);
-        assert_eq!(
-            end,
-            DriveEnd::Done(Err(Value::string(format!("egress denied: {ORIGIN}"))))
-        );
-        assert!(step_end.pending.is_empty());
-    }
-
-    #[test]
-    fn control_an_https_egress_entry_never_authorizes_a_tls_tcp_target() {
-        let (end, step_end) = step_of(Vec::new(), &["https://localhost:6379".to_string()]);
-        assert!(matches!(end, DriveEnd::Done(Err(_))));
-        assert!(step_end.pending.is_empty());
     }
 
     #[test]
@@ -1007,7 +920,7 @@ pub(crate) mod tests {
         let (mut stream, first) =
             TlsStream::upgrade_with("localhost", Value::Number(5.0), roots(), alpn);
         assert_eq!(first, TlsEvent::Ask(DriverAsk::Random { bytes: 32 }));
-        stream.resume(DriverAnswer::Random(Ok(vec![7u8; 32])));
+        stream.resume(DriverAnswer::Random(Ok((vec![7u8; 32]).into())));
         match stream.resume(DriverAnswer::Clock(Ok((NOW * 1000) as i64))) {
             TlsEvent::Ask(DriverAsk::Os {
                 op: OsOp::Send,

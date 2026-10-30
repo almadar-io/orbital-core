@@ -251,50 +251,17 @@ mod tests {
     }
 
     #[test]
-    fn a_derived_secret_is_taken_once_in_its_own_scope() {
+    fn a_derived_secret_is_read_in_its_own_scope_until_it_expires() {
         let creds = Credentials::default();
-        creds
-            .store_secret_of("grant", "v", 60_000, Some("alice"))
-            .unwrap();
-        assert_eq!(creds.take_secret_of("grant", Some("bob")), Ok(None));
-        assert_eq!(creds.take_secret_of("grant", None), Ok(None));
-        assert_eq!(
-            creds.take_secret_of("grant", Some("alice")),
-            Ok(Some("v".to_string()))
-        );
-        assert_eq!(creds.take_secret_of("grant", Some("alice")), Ok(None));
+        creds.store_secret_of("grant", "v", 60_000, Some("alice")).unwrap();
+        assert_eq!(creds.secret_of("grant", Some("bob")), Ok(None));
+        assert_eq!(creds.secret_of("grant", None), Ok(None));
+        assert_eq!(creds.secret_of("grant", Some("alice")), Ok(Some("v".to_string())));
         creds.store_secret_of("grant", "app", 60_000, None).unwrap();
-        assert_eq!(
-            creds.take_secret_of("grant", None),
-            Ok(Some("app".to_string()))
-        );
-        assert_eq!(creds.take_secret_of("grant", None), Ok(None));
-    }
-
-    #[test]
-    fn control_an_expired_derived_secret_is_not_taken() {
-        let creds = Credentials::default();
-        creds
-            .store_secret_of("grant", "v", 1, Some("alice"))
-            .unwrap();
+        assert_eq!(creds.secret_of("grant", None), Ok(Some("app".to_string())));
+        creds.store_secret_of("short", "v", 1, Some("alice")).unwrap();
         std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(creds.take_secret_of("grant", Some("alice")), Ok(None));
-    }
-
-    #[test]
-    fn control_a_held_value_that_expired_is_not_taken_and_a_host_without_a_store_holds_in_memory() {
-        use crate::credential_store::MemoryCredentialRows;
-        let rows = Arc::new(MemoryCredentialRows::default());
-        let stored = Credentials::default().with_encrypted_store(encrypted(rows.clone())).unwrap();
-        stored.hold_secret_of("grant", "v", 1, None).unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-        assert_eq!(stored.take_secret_of("grant", None), Ok(None));
-        assert!(crate::credential_store::CredentialRows::list(rows.as_ref()).unwrap().is_empty());
-        let bare = Credentials::default();
-        bare.hold_secret_of("grant", "v", 60_000, Some("alice")).unwrap();
-        assert_eq!(bare.take_secret_of("grant", Some("alice")), Ok(Some("v".to_string())));
-        stored.store_secret_of("ticket", "t", 60_000, None).unwrap();
-        assert_eq!(stored.take_secret_of("ticket", None), Ok(Some("t".to_string())), "a minted one-use value is still taken from memory");
+        assert_eq!(creds.secret_of("short", Some("alice")), Ok(None), "an expired derived secret reads as absent");
     }
 
     #[test]
@@ -451,24 +418,6 @@ impl SecretSource for Credentials {
         Ok(())
     }
 
-    fn hold_secret_of(
-        &self,
-        name: &str,
-        value: &str,
-        ttl_ms: u64,
-        principal: Option<&str>,
-    ) -> Result<(), String> {
-        let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) else {
-            return self.store_secret_of(name, value, ttl_ms, principal);
-        };
-        let now = orbital_core_base::time_util::now_millis();
-        if ttl_ms == 0 {
-            return store.take(name, now, principal).map(|_| ());
-        }
-        let expires_at = now.saturating_add(i64::try_from(ttl_ms).unwrap_or(i64::MAX));
-        store.hold(name, value, expires_at, now, principal)
-    }
-
     fn persist_secret_of(
         &self,
         name: &str,
@@ -487,32 +436,6 @@ impl SecretSource for Credentials {
             .durable
             .insert((name.to_string(), who.to_string()), value.to_string());
         Ok(())
-    }
-
-    fn take_secret_of(
-        &self,
-        name: &str,
-        principal: Option<&str>,
-    ) -> Result<Option<String>, String> {
-        if let Some(store) = self.encrypted.as_ref().filter(|store| store.enabled()) {
-            let held = store.take(name, orbital_core_base::time_util::now_millis(), principal)?;
-            if held.is_some() {
-                return Ok(held);
-            }
-        }
-        let now = Instant::now();
-        let taken = match principal {
-            None => self.minted.lock().map_err(|_| POISONED)?.remove(name),
-            Some(who) => self
-                .users
-                .lock()
-                .map_err(|_| POISONED)?
-                .derived
-                .remove(&(name.to_string(), who.to_string())),
-        };
-        Ok(taken
-            .filter(|(_, expires_at)| *expires_at > now)
-            .map(|(value, _)| value))
     }
 
     fn forget_of(&self, name: &str, principal: Option<&str>) -> Result<(), String> {

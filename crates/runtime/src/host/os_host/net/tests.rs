@@ -35,6 +35,7 @@ fn with_host<R>(grants: OsGrants, check: impl FnOnce(&OsHost<'_>) -> R) -> R {
         grants: &grants,
         handles: &handles,
         on_event: &on_event,
+        secrets: None,
     })
 }
 
@@ -150,7 +151,7 @@ fn a_keyed_tcp_listen_streams_each_accepted_connection_to_the_message_route_unti
     let rx = collecting_sink(&handles);
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
-    let listening = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event };
+    let listening = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event, secrets: None };
     let site = listen_site();
     let bound = answer(OsOp::TcpListen, &[s("127.0.0.1"), n(0)], Some("l1"), Some(&site), &listening)
         .expect("net answers tcp-listen")
@@ -164,7 +165,7 @@ fn a_keyed_tcp_listen_streams_each_accepted_connection_to_the_message_route_unti
     let contract = orbital_core_base::emit_contract::success_payload("os/tcp-listen", orbital_core_base::emit_contract::CallVariant::Plain);
     assert!(orbital_core_base::emit_contract::undeclared_reads(&names, &contract, &[]).is_empty(), "the published contract must expose every field the listener returns");
     let connect_grants = tcp_grant(port as u16);
-    let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event };
+    let client = OsHost { grants: &connect_grants, handles: &handles, on_event: &on_event, secrets: None };
     let mut accepted = Vec::new();
     for _ in 0..2 {
         let sock = field(&ask(&client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).expect("connected"), "sock");
@@ -200,7 +201,7 @@ fn a_keyed_tcp_listen_streams_each_accepted_connection_to_the_message_route_unti
 fn accept_one(handles: &OsHandles, rx: &mpsc::Receiver<Fired>) -> (i64, TcpStream) {
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
-    let host = OsHost { grants: &listen_grants, handles, on_event: &on_event };
+    let host = OsHost { grants: &listen_grants, handles, on_event: &on_event, secrets: None };
     let bound = answer(OsOp::TcpListen, &[s("127.0.0.1"), n(0)], Some("lc"), Some(&listen_site()), &host)
         .expect("answered")
         .expect("listening");
@@ -226,7 +227,7 @@ fn an_accepted_connection_takes_sends_over_time_reads_a_second_request_and_repor
     let (conn, mut client) = accept_one(&handles, &rx);
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let none = OsGrants::default();
-    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event, secrets: None };
     client.write_all(b"req1").expect("write");
     assert_eq!(field(&ask(&host, OsOp::Recv, &[n(conn), n(16)]).expect("read"), "data"), bytes_value(b"req1"));
     for chunk in [b"a", b"b"] {
@@ -265,7 +266,7 @@ fn a_keyed_send_to_a_peer_that_never_reads_returns_at_once_and_completes_later()
     let (conn, client) = accept_one(&handles, &rx);
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let none = OsGrants::default();
-    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event, secrets: None };
     let big = vec![b'a'; 16 * 1024 * 1024];
     let started = Instant::now();
     assert!(send_later(&[n(conn), bytes_value(&big)], "s1", &listen_site(), &host).is_ok());
@@ -289,7 +290,7 @@ fn keyed_sends_on_one_socket_are_written_in_call_order_and_never_interleave() {
     let (conn, mut client) = accept_one(&handles, &rx);
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let none = OsGrants::default();
-    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event, secrets: None };
     let first = vec![b'a'; 2 * 1024 * 1024];
     let total = first.len() + 6;
     assert!(send_later(&[n(conn), bytes_value(&first)], "s1", &listen_site(), &host).is_ok());
@@ -316,7 +317,7 @@ fn closing_a_connection_with_a_pending_keyed_recv_ends_it_at_once() {
     let (conn, mut client) = accept_one(&handles, &rx);
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let none = OsGrants::default();
-    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event };
+    let host = OsHost { grants: &none, handles: &handles, on_event: &on_event, secrets: None };
     assert!(recv_later(&[n(conn), n(16)], "watch", &listen_site(), &host).is_ok());
     std::thread::sleep(Duration::from_millis(50));
     answer(OsOp::Close, &[n(conn)], None, None, &host).expect("a socket").expect("closed");
@@ -338,7 +339,7 @@ fn cancelling_a_listen_key_ends_its_stream_and_a_listen_needs_a_key_a_sink_and_a
     let handles = OsHandles::default();
     let on_event = |_: Option<&CallSite>, _: Value| {};
     let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
-    let host = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event };
+    let host = OsHost { grants: &listen_grants, handles: &handles, on_event: &on_event, secrets: None };
     let site = listen_site();
     let args = [s("127.0.0.1"), n(0)];
     let no_sink = answer(OsOp::TcpListen, &args, Some("l0"), Some(&site), &host).expect("answered");
@@ -387,14 +388,14 @@ fn listening_needs_the_listen_grant_the_program_check_requires_and_a_tcp_grant_a
         let _rx = collecting_sink(&handles);
         let on_event = |_: Option<&CallSite>, _: Value| {};
         let listen_only = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
-        let host = OsHost { grants: &listen_only, handles: &handles, on_event: &on_event };
+        let host = OsHost { grants: &listen_only, handles: &handles, on_event: &on_event, secrets: None };
         assert!(
             answer(op, &args, Some(key), Some(&site), &host).expect("answered").is_ok(),
             "{}: a listen grant alone listens",
             op.name()
         );
         let tcp_only = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Tcp])]);
-        let host = OsHost { grants: &tcp_only, handles: &handles, on_event: &on_event };
+        let host = OsHost { grants: &tcp_only, handles: &handles, on_event: &on_event, secrets: None };
         let denied = answer(op, &args, Some("other"), Some(&site), &host).expect("answered");
         assert_eq!(kind_of(denied), OsErrorKind::Denied, "control {}: a tcp grant does not listen", op.name());
         handles.close_all();
@@ -704,4 +705,67 @@ fn watching_a_port_is_unsupported_and_bad_arguments_are_invalid() {
         );
         assert!(answer(OsOp::Cwd, &[], None, None, host).is_none());
     });
+}
+
+use crate::os_host::answer_os;
+use orbital_core_base::secret::Secret;
+use crate::resumable::{IoAnswer, IoRequest};
+
+struct Held(&'static str, &'static str);
+
+impl crate::secret_source::SecretSource for Held {
+    fn secret(&self, name: &str) -> Result<Option<String>, String> {
+        Ok((name == self.0).then(|| self.1.to_string()))
+    }
+}
+
+fn send_request(sock: &Value, segments: Vec<Value>) -> IoRequest {
+    IoRequest::Os { op: OsOp::Send, args: vec![sock.clone(), Value::array(segments)], key: None, site: None }
+}
+
+fn answered(host: &OsHost<'_>, request: &IoRequest) -> Result<Value, OsError> {
+    match answer_os(Some(host), request) {
+        IoAnswer::Os(answer) => answer.map(Secret::into_inner),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_os_send_credential_segment_is_filled_in_at_the_boundary_and_the_request_names_only_the_credential() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept");
+        let mut buf = vec![0u8; 23];
+        conn.read_exact(&mut buf).expect("read");
+        buf
+    });
+    let (grants, handles) = (tcp_grant(port), OsHandles::default());
+    let on_event = |_: Option<&CallSite>, _: Value| {};
+    let held = Held("REDIS_PW", "s3cret-pässword");
+    let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: Some(&held) };
+    let sock = field(&ask(&host, OsOp::TcpConnect, &[s("127.0.0.1"), n(port as i64)]).expect("connect"), "sock");
+    let segment = |text: &str, credential: &str| {
+        Value::object(orbital_core_base::value::ValueMap::from_iter([("bytes".into(), bytes_value(text.as_bytes())), ("credential".into(), s(credential))]))
+    };
+    let request = send_request(&sock, vec![segment("AUTH ", "REDIS_PW"), segment("\r\n", "")]);
+    let shown = format!("{request:?}");
+    assert!(shown.contains("REDIS_PW") && !shown.contains("s3cret"), "the journaled request names the credential only: {shown}");
+    let sent = answered(&host, &request).expect("send");
+    assert_eq!(field(&sent, "bytes"), Value::Number(23.0), "the credential's UTF-8 bytes are counted");
+    assert_eq!(server.join().expect("server"), "AUTH s3cret-pässword\r\n".as_bytes());
+    assert!(!format!("{sent:?}").contains("s3cret"), "the answer holds no value");
+
+    let unheld = send_request(&sock, vec![segment("x", "OTHER")]);
+    assert_eq!(kind_of(answered(&host, &unheld)), OsErrorKind::Denied, "an unheld credential sends nothing");
+    let malformed = send_request(&sock, vec![Value::object(orbital_core_base::value::ValueMap::from_iter([("bytes".into(), s("%%")), ("credential".into(), s(""))]))]);
+    assert_eq!(kind_of(answered(&host, &malformed)), OsErrorKind::Invalid);
+    let nameless = send_request(&sock, vec![Value::object(orbital_core_base::value::ValueMap::from_iter([("bytes".into(), s(""))]))]);
+    assert_eq!(kind_of(answered(&host, &nameless)), OsErrorKind::Invalid);
+    let bare = send_request(&sock, vec![s("AAAA")]);
+    assert_eq!(kind_of(answered(&host, &bare)), OsErrorKind::Invalid, "a segment is an object");
+    let blind = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None };
+    assert_eq!(kind_of(answered(&blind, &send_request(&sock, vec![segment("", "REDIS_PW")]))), OsErrorKind::Denied, "no credential source");
+    assert!(answered(&blind, &send_request(&sock, vec![segment("", "")])).is_ok(), "control: bytes alone need no source");
+    handles.close_all();
 }

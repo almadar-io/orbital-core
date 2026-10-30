@@ -97,6 +97,9 @@ impl RuntimeKernel {
                         if out.iter().any(|seed| seed.r#trait == trait_name) {
                             continue;
                         }
+                        if self.awaits_composer(trait_name) {
+                            continue;
+                        }
                         if let Some(event) = self.lifecycle_event_of(trait_name) {
                             out.push(crate::effects::response::MountSeed { r#trait: trait_name.to_string(), event });
                         }
@@ -107,15 +110,43 @@ impl RuntimeKernel {
         out
     }
 
+    fn mount_state_of(&self, trait_name: &str) -> Option<String> {
+        self.get_state(trait_name, None)
+            .map(|s| s.current_state)
+            .or_else(|| self.get_initial_state(trait_name))
+    }
+
+    /// Whether `trait_name` is an embedded child that reads its composer's `@callsitePayload` and only repaints on
+    /// mount, and its composer has not composed it yet: the composer's capture pass paints it, as the compiled path
+    /// renders it inline, so a mount of its own would paint it without that payload.
+    fn awaits_composer(&self, trait_name: &str) -> bool {
+        use super::callsite_capture::{config_references_callsite_payload, references_callsite_payload, repaint_lifecycle_event};
+        if !self.capture_children.read().values().any(|children| children.iter().any(|child| child == trait_name)) {
+            return false;
+        }
+        if self.composed_callsite.read().contains_key(trait_name) {
+            return false;
+        }
+        let Some(def) = self.registry.trait_definitions.read().get(trait_name).cloned() else {
+            return false;
+        };
+        let reads_payload = references_callsite_payload(&def)
+            || self
+                .trait_config(trait_name)
+                .and_then(|config| serde_json::to_value(&config).ok())
+                .is_some_and(|config| config_references_callsite_payload(&config));
+        reads_payload
+            && self
+                .mount_state_of(trait_name)
+                .is_some_and(|state| repaint_lifecycle_event(&def, &state).is_some())
+    }
+
     /// The first lifecycle event (`INIT`, `LOAD`, `$MOUNT`) the trait handles from its current state, or its
     /// initial state when it has none yet; `None` when it handles none, so it is not seeded.
     pub(super) fn lifecycle_event_of(&self, trait_name: &str) -> Option<crate::effects::response::LifecycleEvent> {
         use crate::effects::response::LifecycleEvent;
         let def = self.registry.trait_definitions.read().get(trait_name).cloned()?;
-        let state = self
-            .get_state(trait_name, None)
-            .map(|s| s.current_state)
-            .or_else(|| self.get_initial_state(trait_name))?;
+        let state = self.mount_state_of(trait_name)?;
         [LifecycleEvent::Init, LifecycleEvent::Load, LifecycleEvent::Mount].into_iter().find(|event| {
             def.state_machine.transitions.iter().any(|t| t.event == event.as_str() && t.from.matches(&state))
         })

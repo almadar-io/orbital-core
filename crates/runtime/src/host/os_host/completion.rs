@@ -11,6 +11,7 @@ use crate::resumable::{
     drive_blocking, CallRoutes, CallSite, DispatchError, DispatchOutcomes, IoAnswer, IoRequest, Progress,
 };
 use orbital_core_base::os::OsError;
+use orbital_core_base::secret::Secret;
 use orbital_core_base::value::Value;
 use orbital_core_base::sync::{Condvar, Mutex};
 use std::collections::HashMap;
@@ -545,7 +546,7 @@ impl KernelCompletionSink {
                 Some(TlsCompletion::Ask { op, args }) => {
                     parked = true;
                     raw = match (self.answer)(&IoRequest::Os { op, args, key: None, site: None }) {
-                        IoAnswer::Os(answer) => answer,
+                        IoAnswer::Os(answer) => answer.map(Secret::into_inner),
                         other => Err(OsError::new(orbital_core_base::os::OsErrorKind::Io, format!("unexpected host answer {other:?}"))),
                     };
                 }
@@ -662,6 +663,7 @@ mod tests {
             grants: &grants,
             handles: &handles,
             on_event: &on_event,
+            secrets: None,
         };
         let host = PortHost {
             secrets: &NoSecrets,
@@ -745,6 +747,20 @@ mod tests {
     }
 
     #[test]
+    fn a_key_re_armed_after_cancel_is_freed_by_its_own_completion_and_not_by_the_cancelled_one() {
+        let completions = Completions::default();
+        let first = completions.begin_lease("shared").expect("first lease");
+        assert!(completions.begin_lease("shared").is_none());
+        assert!(completions.cancel("shared"));
+        let second = completions.begin_lease("shared").expect("re-armed lease");
+        assert!(!completions.claim_current("shared", first));
+        assert!(completions.is_live("shared"));
+        assert!(completions.claim_current("shared", second));
+        assert!(!completions.is_live("shared"));
+        assert!(completions.begin_lease("shared").is_some());
+    }
+
+    #[test]
     fn a_completion_after_its_kernel_ended_dispatches_nothing() {
         let (sink, kernel, ran) = lone_sink();
         drop(kernel);
@@ -814,7 +830,7 @@ mod tests {
         {
             let _viewer = kernel.enter_viewer(viewer("ada"));
             let scope = sink.begin_dispatch_for(Some("tab-1"));
-            assert!(matches!(scope.answer(&|_| IoAnswer::Os(Ok(Value::Null)), &listens("s1")), IoAnswer::Os(Ok(_))));
+            assert!(matches!(scope.answer(&|_| IoAnswer::Os(Ok(Value::Null.into())), &listens("s1")), IoAnswer::Os(Ok(_))));
         }
         for _ in 0..2 {
             complete_on_a_thread(&sink, "s1", "MSG").join().expect("s1");
@@ -883,7 +899,7 @@ mod tests {
     fn a_stream_event_waits_for_the_dispatch_that_opened_the_stream_and_a_refused_open_is_not_waited_for() {
         let (sink, _kernel, ran) = lone_sink();
         let open = sink.begin_dispatch();
-        let opened = open.answer(&|_| IoAnswer::Os(Ok(Value::Null)), &listens("s1"));
+        let opened = open.answer(&|_| IoAnswer::Os(Ok(Value::Null.into())), &listens("s1"));
         assert!(matches!(opened, IoAnswer::Os(Ok(_))));
         let refused = open.answer(&|_| IoAnswer::Os(Err(OsError::new(OsErrorKind::Denied, "no"))), &listens("s2"));
         assert!(matches!(refused, IoAnswer::Os(Err(_))));

@@ -61,7 +61,25 @@ fn every_shared_vector_matches() {
 fn an_unknown_digest_encoding_answers_null_for_hash_and_errors_for_hmac() {
     assert!(eval("hash/sha256", &[json!("abc"), json!("hex")]).is_ok_and(|v| v.is_string()));
     assert_eq!(eval("hash/sha256", &[json!("abc"), json!("octal")]), Ok(Json::Null));
-    assert!(eval("hmac/sha256", &[json!("k"), json!("m"), json!("octal")]).is_err());
+    assert!(eval("hmac/sha256-bytes", &[json!("aw=="), json!("m"), json!("octal")]).is_err());
+    let held = BindingContextBuilder::new().build().with_secret("K", "k".to_string());
+    let expr = serde_json::from_value(json!(["hmac/sha256", "K", "m", "octal"])).unwrap();
+    assert!(Evaluator::new().evaluate(&expr, &held).is_err());
+}
+
+#[test]
+fn hmac_reads_its_key_from_a_held_credential_and_a_key_that_is_a_value_is_not_a_key() {
+    let call = |ctx: &orbital_core_eval::evaluator::context::BindingContext| {
+        let expr = serde_json::from_value(json!(["hmac/sha256", "K", "m", "hex"])).unwrap();
+        Evaluator::new().evaluate(&expr, ctx)
+    };
+    let held = BindingContextBuilder::new().build().with_secret("K", "k".to_string());
+    let signed = call(&held).unwrap();
+    let by_value = eval("hmac/sha256-bytes", &[json!("aw=="), json!("m"), json!("hex")]);
+    assert_eq!(by_value.map(|v| v.as_str().map(str::to_string)), Ok(signed.as_str().map(str::to_string)));
+    let other = BindingContextBuilder::new().build().with_secret("K", "k2".to_string());
+    assert_ne!(call(&other).unwrap(), signed, "another credential value signs differently");
+    assert_eq!(call(&BindingContextBuilder::new().build()).unwrap(), Value::Null, "the name is never the key");
 }
 
 #[test]
@@ -69,6 +87,9 @@ fn missing_arguments_are_arity_errors() {
     assert!(eval("base64/encode", &[]).is_err());
     assert!(eval("hash/sha256", &[json!("abc")]).is_err());
     assert!(eval("hmac/sha256", &[json!("k"), json!("m")]).is_err());
+    for op in ["hmac/sha256-bytes", "ecdsa/p256-sign", "rsa/sign", "ecdh/p256-ephemeral", "aes-gcm/seal", "aes-gcm/open"] {
+        assert!(eval(op, &[]).is_err(), "{op}");
+    }
 }
 
 #[test]

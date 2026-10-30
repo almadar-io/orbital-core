@@ -75,12 +75,12 @@ fn no_debug_of_a_secret_ask_answer_or_journal_shows_a_secret_value() {
     let journal = vec![
         Exchange::new(
             IoRequest::Secret { name: "TOKEN".to_string(), principal: None },
-            IoAnswer::Secret(Ok(Some(secret.to_string()))),
+            IoAnswer::Secret(Ok(Some((secret.to_string()).into()))),
         ),
         Exchange::new(
             IoRequest::SecretSet {
                 name: "oauth2:t".to_string(),
-                value: secret.to_string(),
+                value: (secret.to_string()).into(),
                 ttl_ms: 5,
                 principal: None,
             },
@@ -103,6 +103,7 @@ fn a_blocking_random_answer_is_fresh_csprng_output_of_the_asked_length() {
     else {
         panic!("expected random bytes")
     };
+    let (a, b) = (a.expose(), b.expose());
     assert_eq!((a.len(), b.len()), (32, 32));
     assert_ne!(a, b);
     assert!(a.iter().any(|byte| *byte != 0));
@@ -128,7 +129,7 @@ fn control_with_no_pinned_clock_the_clock_ask_goes_to_the_host() {
 fn a_random_ask_is_journaled_and_replayed_without_asking_again() {
     let port = port();
     let ask = IoRequest::Random { bytes: 4 };
-    let recorded = vec![Exchange::new(ask, IoAnswer::Random(Ok(vec![1, 2, 3, 4])))];
+    let recorded = vec![Exchange::new(ask, IoAnswer::Random(Ok((vec![1, 2, 3, 4]).into())))];
     let (bytes, end) = port.run_step(recorded.clone(), || port.random(4));
     assert_eq!(bytes, Ok(vec![1, 2, 3, 4]));
     assert!(end.pending.is_empty() && end.diverged.is_none());
@@ -141,10 +142,10 @@ fn os_ask(op: OsOp, path: &str) -> IoRequest {
 }
 
 fn os_ok() -> IoAnswer {
-    IoAnswer::Os(Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([(
+    IoAnswer::Os(Ok((Value::object(orbital_core_base::value::ValueMap::from_iter([(
         "data".into(),
         Value::String(("hi".to_string()).into()),
-    )]))))
+    )]))).into()))
 }
 
 #[test]
@@ -186,7 +187,7 @@ fn an_os_ask_is_answered_only_by_an_os_answer_or_a_cancel() {
     let ask = os_ask(OsOp::ReadFile, "/a");
     assert!(os_ok().answers(&ask));
     assert!(IoAnswer::ServiceCancelled.answers(&ask));
-    assert!(!IoAnswer::Random(Ok(vec![1])).answers(&ask));
+    assert!(!IoAnswer::Random(Ok((vec![1]).into())).answers(&ask));
     assert!(!IoAnswer::Clock(Ok(1)).answers(&ask));
     assert!(!os_ok().answers(&IoRequest::Random { bytes: 1 }));
     assert!(!os_ok().answers(&IoRequest::CancelCall { key: "k".into() }));
@@ -291,7 +292,7 @@ fn a_secret_ask_for_another_principal_diverges_from_the_recorded_one() {
         IoAnswer::Secret(Ok(Some("v".into()))),
     )];
     let (value, end) = port.run_step(recorded.clone(), || port.secret("t", Some("u1")));
-    assert_eq!(value, Ok(Some("v".to_string())));
+    assert_eq!(value, Ok(Some(Secret::new("v".to_string()))));
     assert!(end.diverged.is_none());
     let (_, end) = port.run_step(recorded.clone(), || port.secret("t", Some("u2")));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
@@ -594,4 +595,133 @@ fn a_keyed_os_ask_may_be_left_pending_and_an_unkeyed_one_may_not() {
         matches!(deferred(os(None)), Err(ResumeError::WrongKind(_))),
         "control: an unkeyed os ask has nothing to answer it later"
     );
+}
+
+fn seed_of(byte: u8) -> [u8; 32] {
+    let mut seed = [byte; 32];
+    seed[0] = byte.wrapping_add(1);
+    seed
+}
+
+fn ecdh_peer() -> String {
+    let peer = p256::SecretKey::from_slice(&[7u8; 32]).expect("scalar").public_key();
+    let point = p256::elliptic_curve::sec1::ToEncodedPoint::to_encoded_point(&peer, false);
+    orbital_core_base::codec::base64_encode(point.as_bytes())
+}
+
+fn ecdh_compute(peer: &str, runs: Arc<AtomicUsize>) -> impl FnMut([u8; 32]) -> Value {
+    let peer = orbital_core_base::codec::base64_decode(peer).expect("base64");
+    move |seed| {
+        runs.fetch_add(1, Ordering::SeqCst);
+        match orbital_core_base::codec::ecdh_p256_ephemeral(&peer, seed) {
+            Some(exchange) => Value::object(ValueMap::from_iter([
+                ("public".into(), Value::string(orbital_core_base::codec::base64_encode(&exchange.public))),
+                ("shared".into(), Value::string(orbital_core_base::codec::base64_encode(&exchange.shared))),
+            ])),
+            None => Value::Null,
+        }
+    }
+}
+
+fn sealed_args(peer: &str) -> Vec<Value> {
+    vec![Value::string(peer.to_string())]
+}
+
+fn journal_text(journal: &[Exchange]) -> String {
+    let mut text = format!("{journal:?}");
+    for exchange in journal {
+        if let IoRequest::Sealed { args, .. } = &exchange.request {
+            text.push_str(&serde_json::to_string(args).expect("args json"));
+        }
+        if let IoAnswer::Sealed(Ok(value)) = &exchange.answer {
+            text.push_str(&serde_json::to_string(value).expect("answer json"));
+        }
+    }
+    text
+}
+
+fn forms_of(bytes: &[u8]) -> Vec<String> {
+    vec![
+        orbital_core_base::codec::hex(bytes),
+        orbital_core_base::codec::base64_encode(bytes),
+        format!("{bytes:?}"),
+    ]
+}
+
+#[test]
+fn a_sealed_operator_journals_its_output_only_and_a_replay_answers_without_running_it() {
+    use p256::elliptic_curve::rand_core::SeedableRng;
+    let peer = ecdh_peer();
+    let seed = seed_of(0x40);
+    let runs = Arc::new(AtomicUsize::new(0));
+    let port = port().with_entropy(move || Ok(seed));
+    let (first, end) = port.run_step(Vec::new(), || {
+        port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))
+    });
+    let first = first.expect("an exchange");
+    assert!(end.pending.is_empty() && end.diverged.is_none());
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
+    assert!(matches!(end.journal.as_slice(), [Exchange { request: IoRequest::Sealed { .. }, answer: IoAnswer::Sealed(Ok(_)) }]));
+
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
+    let scalar = p256::FieldBytes::from(p256::NonZeroScalar::random(&mut rng));
+    let text = journal_text(&end.journal);
+    for needle in forms_of(&seed).into_iter().chain(forms_of(scalar.as_slice())) {
+        assert!(!text.contains(&needle), "the journal holds {needle}");
+    }
+    assert!(text.contains("ecdh/p256-ephemeral") && text.contains(&peer), "control: the operator and its operands are recorded");
+
+    let replay_port = port_with_entropy_failing();
+    let (again, end) = replay_port.run_step(end.journal, || {
+        replay_port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))
+    });
+    assert_eq!(again.expect("replayed"), first, "a replay returns the recorded output");
+    assert_eq!(runs.load(Ordering::SeqCst), 1, "the operator is not run again");
+    assert!(end.pending.is_empty() && end.diverged.is_none());
+}
+
+fn port_with_entropy_failing() -> IoPort {
+    port().with_entropy(|| Err("a replay never draws entropy".to_string()))
+}
+
+#[test]
+fn two_sealed_runs_outside_a_replay_draw_different_entropy() {
+    let peer = ecdh_peer();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let port = port();
+    let run = || {
+        port.run_step(Vec::new(), || {
+            port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))
+        })
+        .0
+        .expect("an exchange")
+    };
+    let (a, b) = (run(), run());
+    assert_ne!(a, b, "fresh host entropy: the ephemeral key differs");
+    assert_eq!(runs.load(Ordering::SeqCst), 2);
+    let direct = port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)));
+    assert!(direct.is_ok(), "outside a step the operator runs in place");
+}
+
+#[test]
+fn a_sealed_replay_whose_operands_changed_diverges_and_a_drawing_failure_is_an_error() {
+    let peer = ecdh_peer();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let recorded = {
+        let port = port();
+        port.run_step(Vec::new(), || {
+            port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))
+        })
+        .1
+        .journal
+    };
+    let port = port_with_entropy_failing();
+    let (out, end) = port.run_step(recorded, || port.sealed("ecdh/p256-ephemeral", &sealed_args("AAAA"), &mut ecdh_compute(&peer, Arc::clone(&runs))));
+    assert!(out.is_err() && matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    let (out, end) = port.run_step(Vec::new(), || {
+        port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))
+    });
+    assert_eq!(out, Err("a replay never draws entropy".to_string()));
+    assert!(end.journal.is_empty(), "nothing was recorded");
+    assert_eq!(runs.load(Ordering::SeqCst), 1);
 }

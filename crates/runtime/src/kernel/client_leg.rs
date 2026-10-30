@@ -645,6 +645,47 @@ impl RuntimeKernel {
         Ok((outcomes, frames_applied))
     }
 
+    /// Deliver an emit to its declared listeners only: guards and payload mapping run, the emitter's own arm does not,
+    /// and neither `host_fans_out` nor the emit's `dispatched` stamp narrows who hears it (the push of another
+    /// client's emit, which must run the listeners here and nothing else).
+    pub fn deliver_emit_to_listeners(
+        &self,
+        emitted: &orbital_core_base::bus_event::EmittedEvent,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.deliver_to_listeners(emitted, false)
+    }
+
+    /// [`Self::deliver_emit_to_listeners`] for the live message of this client's own running call: the emitter ran its own
+    /// arm as that call's progress dispatch, so a same-name listener route back to it is that arm again (EXEC-DIST-8).
+    pub fn deliver_origin_emit_to_listeners(
+        &self,
+        emitted: &orbital_core_base::bus_event::EmittedEvent,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.deliver_to_listeners(emitted, true)
+    }
+
+    fn deliver_to_listeners(
+        &self,
+        emitted: &orbital_core_base::bus_event::EmittedEvent,
+        emitter_ran: bool,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let source = emitted.source.clone().unwrap_or_default();
+        let source_trait = source.r#trait.clone().unwrap_or_default();
+        let payload = emitted.payload.clone().unwrap_or(Value::Null);
+        let ran: &[String] = if emitter_ran { std::slice::from_ref(&source_trait) } else { &[] };
+        let mut fanned: Vec<CascadeItem> = Vec::new();
+        self.collect_listener_targets(&source, &source_trait, &emitted.event, &payload, ran, &mut fanned);
+        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+        self.run_cascade(
+            RUNTIME_SINGLETON,
+            fanned.into(),
+            &mut DispatchVisits::default(),
+            &mut DispatchMemory::default(),
+            &mut outcomes,
+        )?;
+        Ok(outcomes)
+    }
+
     /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
     /// `from` state, and each carried row is folded into its trait's frame (`@entity`), so the leg replays
     /// The traits a mount reviving an ended session carries its own copy of (EXEC-DIST-9): their states and rows come from

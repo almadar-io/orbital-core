@@ -30,6 +30,7 @@ p384 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 hmac = { version = "0.12", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
 orbital-core-base = { path = "../base", default-features = false }
 orbital-core-eval = { path = "../eval", default-features = false }
@@ -55,7 +56,7 @@ std = [
     "url/std",
     "dep:getrandom",
 ]
-# The raw-socket store drivers (Postgres, Redis, their TLS stream): a server-role capability the browser kernel build leaves out.
+# The raw-socket store drivers (Redis, their TLS stream): a server-role capability the browser kernel build leaves out.
 wire-drivers = ["std"]
 async = ["std", "orbital-core-eval/async"]
 client-http = ["std", "dep:ureq", "ureq/tls"]

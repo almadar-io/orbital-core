@@ -198,15 +198,27 @@ fn http_request(items: &[Value]) -> Option<&Map<String, Value>> {
 
 fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
     each_http_call(expr, &mut |items| check_credential_slots(items, secrets, path, out));
-    each_scrypt_salt(expr, &mut |salt| {
-        let is_secret_knob = salt
+    each_operator_credential(expr, &mut |slot, operand| {
+        let is_secret_knob = operand
             .as_str()
             .and_then(config_knob)
             .is_some_and(|knob| secrets.contains(&knob));
         if !is_secret_knob {
             out.push(SecretFlowViolation::CredentialNotSecret {
                 path: path.to_string(),
-                slot: SCRYPT_SALT_SLOT.to_string(),
+                slot: slot.to_string(),
+            });
+        }
+    });
+    each_os_send_segment(expr, &mut |operand| {
+        let is_secret_knob = operand
+            .as_str()
+            .and_then(config_knob)
+            .is_some_and(|knob| secrets.contains(&knob));
+        if !is_secret_knob {
+            out.push(SecretFlowViolation::CredentialNotSecret {
+                path: path.to_string(),
+                slot: OS_SEND_SEGMENT_SLOT.to_string(),
             });
         }
     });
@@ -317,34 +329,111 @@ pub fn http_credential_slots(expr: &Value) -> Vec<(String, &Value)> {
     out
 }
 
-/// The credential slot of every `credential-status` and `credential-forget`, and the salt of every `hash/scrypt`, in
-/// `expr`, as written.
+/// The credential slot of every `credential-status` and `credential-forget`, and the credential operand of every
+/// operator in [`CREDENTIAL_OPERATORS`], in `expr`, as written.
 fn effect_credential_slots(expr: &Value) -> Vec<&Value> {
     let mut out = Vec::new();
     each_credential_effect(expr, &mut |_, items| out.extend(items.get(1)));
-    each_scrypt_salt(expr, &mut |salt| out.push(salt));
+    each_operator_credential(expr, &mut |_, operand| out.push(operand));
+    each_os_send_segment(expr, &mut |operand| out.push(operand));
     out
 }
 
-/// The slot name of a `hash/scrypt` salt in a [`SecretFlowViolation::CredentialNotSecret`].
-pub const SCRYPT_SALT_SLOT: &str = "hash/scrypt.salt";
+/// An operator operand that names a credential the kernel resolves itself: the evaluation holds the value, the program
+/// never receives it. `operand` is the index in the call form, the operator name at 0.
+pub struct CredentialOperand {
+    pub operator: &'static str,
+    pub operand: usize,
+    pub slot: &'static str,
+}
 
-/// Every `["hash/scrypt", input, salt]` salt argument in `expr`: a credential slot the kernel resolves itself.
-fn each_scrypt_salt<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a Value)) {
+/// Every operator whose operand is a credential slot (EXEC-SECRET: the host resolves the name at the boundary, never a
+/// program value, never journaled). The kernel, the secret-flow rules and the credential declarations read this one table.
+pub const CREDENTIAL_OPERATORS: &[CredentialOperand] = &[
+    CredentialOperand { operator: "hash/scrypt", operand: 2, slot: "hash/scrypt.salt" },
+    CredentialOperand { operator: "hmac/sha256", operand: 1, slot: "hmac/sha256.key" },
+    CredentialOperand { operator: "ecdsa/p256-sign", operand: 1, slot: "ecdsa/p256-sign.key" },
+    CredentialOperand { operator: "rsa/sign", operand: 1, slot: "rsa/sign.key" },
+    CredentialOperand { operator: "hash/pbkdf2", operand: 1, slot: "hash/pbkdf2.password" },
+    CredentialOperand { operator: "hash/md5-credential", operand: 1, slot: "hash/md5-credential.credential" },
+    CredentialOperand { operator: "credential/byte-length", operand: 1, slot: "credential/byte-length.credential" },
+];
+
+/// The slot name of a credential segment of an `os/send` payload in a [`SecretFlowViolation::CredentialNotSecret`].
+pub const OS_SEND_SEGMENT_SLOT: &str = "os/send.segment";
+
+/// The index of the data operand of an `os/send` call form, the operator name at 0.
+const OS_SEND_DATA: usize = 2;
+
+/// The segments of the data operand of an `os/send` call: a list of `{ bytes, credential }` objects. A segment is its
+/// bytes followed by the value of the credential it names, which the host fills in at the boundary; an empty credential
+/// name is a segment of bytes alone.
+fn os_send_segments(items: &[Value]) -> Option<&[Value]> {
+    if items.first().and_then(Value::as_str) != Some("os/send") {
+        return None;
+    }
+    items.get(OS_SEND_DATA).and_then(Value::as_array).map(Vec::as_slice)
+}
+
+/// The credential name operand of a segment, when the segment is a `{ credential }` object.
+fn segment_credential(segment: &Value) -> Option<&Value> {
+    segment.as_object().and_then(|fields| fields.get("credential"))
+}
+
+/// Whether a segment's credential operand names no credential: the empty literal.
+fn is_no_credential(operand: &Value) -> bool {
+    operand.as_str() == Some("")
+}
+
+/// Every credential segment of every `os/send` payload in `expr`: a credential slot the host resolves at the boundary.
+/// A segment that names no credential is bytes alone and is not a slot.
+fn each_os_send_segment<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a Value)) {
     match expr {
         Value::Array(items) => {
-            if items.first().and_then(Value::as_str) == Some("hash/scrypt") {
-                if let Some(salt) = items.get(2) {
-                    visit(salt);
+            for segment in os_send_segments(items).into_iter().flatten() {
+                if let Some(credential) = segment_credential(segment).filter(|operand| !is_no_credential(operand)) {
+                    visit(credential);
                 }
             }
             for item in items {
-                each_scrypt_salt(item, visit);
+                each_os_send_segment(item, visit);
             }
         }
         Value::Object(map) => {
             for value in map.values() {
-                each_scrypt_salt(value, visit);
+                each_os_send_segment(value, visit);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The credential operand of a call form whose head is in [`CREDENTIAL_OPERATORS`].
+pub fn credential_operand<'a>(items: &'a [Value]) -> Option<(&'static str, &'a Value)> {
+    let head = items.first().and_then(Value::as_str)?;
+    let entry = CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head)?;
+    items.get(entry.operand).map(|operand| (entry.slot, operand))
+}
+
+fn credential_operand_index(items: &[Value]) -> Option<usize> {
+    let head = items.first().and_then(Value::as_str)?;
+    CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head).map(|entry| entry.operand)
+}
+
+/// Every credential operand of every operator in [`CREDENTIAL_OPERATORS`] in `expr`, with its slot name.
+fn each_operator_credential<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'static str, &'a Value)) {
+    match expr {
+        Value::Array(items) => {
+            if let Some((slot, operand)) = credential_operand(items) {
+                visit(slot, operand);
+            }
+            for item in items {
+                each_operator_credential(item, visit);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                each_operator_credential(value, visit);
             }
         }
         _ => {}
@@ -382,10 +471,12 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         Value::Array(items) => {
             let http = is_http(items);
             let credential = credential_effect(items).is_some();
-            let scrypt = items.first().and_then(Value::as_str) == Some("hash/scrypt");
+            let slot_index = credential_operand_index(items);
+            let segments = os_send_segments(items).is_some();
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
-                    _ if scrypt && index == 2 && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
+                    _ if segments && index == OS_SEND_DATA => scan_segment_reads(item, secrets, path, out),
+                    _ if slot_index == Some(index) && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
                     _ if credential && index == 1 => {
                         if matches!(items.first().and_then(Value::as_str), Some("credential-status")) {
@@ -413,6 +504,24 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             }
         }
         _ => {}
+    }
+}
+
+fn scan_segment_reads(segments: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    for segment in segments.as_array().into_iter().flatten() {
+        match segment.as_object().filter(|fields| fields.contains_key("credential")) {
+            Some(fields) => {
+                for (key, value) in fields {
+                    let allowed_leaf = key == "credential"
+                        && (is_no_credential(value)
+                            || value.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)));
+                    if !allowed_leaf {
+                        scan_reads(value, secrets, path, out);
+                    }
+                }
+            }
+            None => scan_reads(segment, secrets, path, out),
+        }
     }
 }
 
@@ -738,6 +847,59 @@ mod tests {
         let leaked = codes(&program(config(), json!([["hash/scrypt", "@config.apiKey", "@config.apiKey"]])));
         assert_eq!(leaked, vec![SECRET_OUTSIDE_AUTH_CODE], "the secret as the hashed input leaks it");
         assert_eq!(codes(&program(config(), json!([["set", "@entity.x", "@config.apiKey"]]))), vec![SECRET_OUTSIDE_AUTH_CODE]);
+    }
+
+    #[test]
+    fn every_credential_operator_takes_a_secret_knob_in_its_slot_and_nowhere_else() {
+        for entry in CREDENTIAL_OPERATORS {
+            let call = |operand: &str| {
+                let mut items = vec![json!(entry.operator)];
+                items.extend((1..=entry.operand.max(2)).map(|i| if i == entry.operand { json!(operand) } else { json!("@payload.m") }));
+                json!([["let", [["v", Value::Array(items)]], ["emit", "OK", { "v": "@v" }]]])
+            };
+            let op = entry.operator;
+            assert!(codes(&program(config(), call("@config.apiKey"))).is_empty(), "{op}: a secret knob is the slot");
+            for bad in ["@config.plain", "LITERAL", "@payload.name"] {
+                assert_eq!(codes(&program(config(), call(bad))), vec![CREDENTIAL_NOT_SECRET_CODE], "{op} {bad}");
+            }
+            let declared = program_credentials(&json!({ "orbitals": [{ "name": "O", "traits": [{
+                "config": { "apiKey": { "type": "secret", "default": "SLOT_CREDENTIAL", "description": "d" } },
+                "stateMachine": { "transitions": [{ "effects": call("@config.apiKey") }] }
+            }] }] }));
+            assert_eq!(declared.len(), 1, "{op}: the credential the slot names is declared");
+            assert_eq!(declared[0].env_var, "SLOT_CREDENTIAL");
+        }
+        let leaked = json!([["hmac/sha256", "@config.apiKey", "@config.apiKey", "hex"]]);
+        assert_eq!(codes(&program(config(), leaked)), vec![SECRET_OUTSIDE_AUTH_CODE], "the secret as the message leaks it");
+        let control = json!([["hmac/sha256", "@config.apiKey", "@payload.m", "hex"]]);
+        assert!(codes(&program(config(), control)).is_empty());
+    }
+
+    #[test]
+    fn an_os_send_credential_segment_takes_a_secret_knob_and_nowhere_else() {
+        let send = |credential: Value| {
+            json!([["os/send", "@payload.sock", [
+                { "bytes": ["bytes/from-string", "AUTH "], "credential": "" },
+                { "bytes": ["bytes/from-string", "x"], "credential": credential }
+            ], { "key": "s" }]])
+        };
+        assert!(codes(&program(config(), send(json!("@config.apiKey")))).is_empty(), "a secret knob is the slot");
+        assert!(codes(&program(config(), send(json!("")))).is_empty(), "the empty name is bytes alone");
+        for bad in ["@config.plain", "LITERAL", "@payload.name"] {
+            assert_eq!(codes(&program(config(), send(json!(bad)))), vec![CREDENTIAL_NOT_SECRET_CODE], "{bad}");
+        }
+        let leaking = json!([["os/send", "@payload.sock", [{ "bytes": "@config.apiKey", "credential": "" }], { "key": "s" }]]);
+        assert_eq!(codes(&program(config(), leaking)), vec![SECRET_OUTSIDE_AUTH_CODE], "a secret knob in a segment's bytes is a read");
+        let beside = json!([["os/send", "@payload.sock", [{ "bytes": "@config.apiKey", "credential": "@config.apiKey" }], { "key": "s" }]]);
+        assert_eq!(codes(&program(config(), beside)), vec![SECRET_OUTSIDE_AUTH_CODE], "the credential slot does not legalise the bytes");
+        let declared = |credential: Value| {
+            program_credentials(&json!({ "orbitals": [{ "name": "O", "traits": [{
+                "config": { "apiKey": { "type": "secret", "default": "SEND_CREDENTIAL", "description": "d" } },
+                "stateMachine": { "transitions": [{ "effects": send(credential) }] }
+            }] }] }))
+        };
+        assert_eq!(declared(json!("@config.apiKey")).iter().map(|c| c.env_var.as_str()).collect::<Vec<_>>(), vec!["SEND_CREDENTIAL"]);
+        assert!(declared(json!("")).is_empty(), "bytes alone declare nothing");
     }
 
     #[test]

@@ -21,6 +21,8 @@ pub enum Verdict {
     /// A counterexample the evaluator confirms, on an obligation the model does not over-approximate.
     Violated {
         counterexample: serde_json::Value,
+        /// Why the proposition fails: the proposition, and how many conditions reaching the site held on the model.
+        reason: String,
     },
     Unproved {
         reason: String,
@@ -33,6 +35,88 @@ pub struct Finding {
     pub proposition: Proposition,
     pub site: String,
     pub verdict: Verdict,
+}
+
+/// How a spec proposition fared: a counterexample the evaluator confirmed, or a proof the prover could not make.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProveVerdict {
+    Violated,
+    Unproved,
+}
+
+/// The proposition a finding is about.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ProvedProposition {
+    Row {
+        entity: String,
+        #[cfg_attr(feature = "ts-export", ts(type = "JsonValue"))]
+        expr: orbital_core_base::schema::SExpression,
+    },
+    State {
+        #[serde(rename = "trait")]
+        trait_name: String,
+        state: String,
+        #[cfg_attr(feature = "ts-export", ts(type = "JsonValue"))]
+        expr: orbital_core_base::schema::SExpression,
+    },
+    Transition {
+        #[serde(rename = "trait")]
+        trait_name: String,
+        from: String,
+        event: String,
+        to: String,
+        #[cfg_attr(feature = "ts-export", ts(type = "JsonValue"))]
+        expr: orbital_core_base::schema::SExpression,
+    },
+}
+
+/// One spec proposition the program cannot be proved to keep. `counterexample` is the confirmed one of a `violated`
+/// finding, or the possible one an `unproved` finding found.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProveFinding {
+    pub verdict: ProveVerdict,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(type = "JsonValue"))]
+    pub counterexample: Option<serde_json::Value>,
+    pub site: String,
+    pub proposition: ProvedProposition,
+}
+
+/// What `program/prove` answers: every proposition not proved, in obligation order.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ProveReport {
+    pub findings: Vec<ProveFinding>,
+}
+
+impl Finding {
+    /// The finding as the report prints it; a proved proposition is no finding.
+    pub fn unproved(self) -> Option<ProveFinding> {
+        let proposition = match self.proposition {
+            Proposition::Row { entity, expr } => ProvedProposition::Row { entity, expr },
+            Proposition::State { trait_name, state, expr } => ProvedProposition::State { trait_name, state, expr },
+            Proposition::Transition { trait_name, from, event, to, expr } => {
+                ProvedProposition::Transition { trait_name, from, event, to, expr }
+            }
+        };
+        let (verdict, reason, counterexample) = match self.verdict {
+            Verdict::Proved => return None,
+            Verdict::Violated { counterexample, reason } => (ProveVerdict::Violated, reason, Some(counterexample)),
+            Verdict::Unproved { reason, counterexample } => (ProveVerdict::Unproved, reason, counterexample),
+        };
+        Some(ProveFinding { verdict, reason, counterexample, site: self.site, proposition })
+    }
+}
+
+/// The report of proving every spec proposition of the program.
+pub fn prove_report(schema: &OrbitalSchema) -> ProveReport {
+    ProveReport { findings: prove(schema).into_iter().filter_map(Finding::unproved).collect() }
 }
 
 /// Every obligation the program's spec propositions owe, with its verdict.
@@ -145,8 +229,18 @@ fn judge(o: &obligations::Obligation) -> Verdict {
                     counterexample: Some(cex),
                 }
             } else {
+                let goal = orbital_core_base::schema::format_sexpr(match &o.proposition {
+                    Proposition::Row { expr, .. } | Proposition::State { expr, .. } | Proposition::Transition { expr, .. } => expr,
+                });
+                let held = o.assumptions.len();
+                let reason = if held == 0 {
+                    format!("`{goal}` is false on the counterexample the evaluator confirmed")
+                } else {
+                    format!("`{goal}` is false on the counterexample the evaluator confirmed, while the {held} condition(s) reaching the site hold")
+                };
                 Verdict::Violated {
                     counterexample: cex,
+                    reason,
                 }
             }
         }

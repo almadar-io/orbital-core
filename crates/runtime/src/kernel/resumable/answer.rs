@@ -15,6 +15,19 @@ pub(super) fn os_random(_bytes: u32) -> Result<Vec<u8>, String> {
     Err("random: the host must answer Random".to_string())
 }
 
+/// Thirty-two bytes of fresh operating-system entropy for a sealed operator. Drawn by the kernel, never journaled.
+#[cfg(feature = "std")]
+pub(crate) fn fresh_entropy() -> Result<[u8; 32], String> {
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| format!("entropy: {e}"))?;
+    Ok(seed)
+}
+
+#[cfg(not(feature = "std"))]
+pub(crate) fn fresh_entropy() -> Result<[u8; 32], String> {
+    Err("entropy: this build has no operating-system entropy".to_string())
+}
+
 /// `cancel-call` of a deferred keyed `os/` call: its pending completion is dropped, so its outcome never fires a route.
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub(crate) fn os_completion_cancelled(host: &PortHost<'_>, key: &str) -> bool {
@@ -50,7 +63,7 @@ pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswe
         (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),
         (IoRequest::Tab { .. }, _) => IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST))),
         (IoRequest::Secret { name, principal }, Some(host)) => {
-            IoAnswer::Secret(host.secrets.secret_of(name, principal.as_deref()))
+            IoAnswer::Secret(host.secrets.secret_of(name, principal.as_deref()).map(|value| value.map(Secret::new)))
         }
         (IoRequest::Secret { .. }, None) => IoAnswer::Secret(Err(NO_PORT_HOST.to_string())),
         (
@@ -61,13 +74,16 @@ pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswe
                 principal,
             },
             Some(host),
-        ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value, *ttl_ms, principal.as_deref())),
+        ) => IoAnswer::SecretSet(host.secrets.store_secret_of(name, value.expose(), *ttl_ms, principal.as_deref())),
         (IoRequest::SecretSet { .. }, None) => IoAnswer::SecretSet(Err(NO_PORT_HOST.to_string())),
         (IoRequest::SecretRotate { name, value, principal }, Some(host)) => {
-            IoAnswer::SecretRotate(host.secrets.rotate_secret_of(name, value, principal.as_deref()))
+            IoAnswer::SecretRotate(host.secrets.rotate_secret_of(name, value.expose(), principal.as_deref()))
         }
         (IoRequest::SecretRotate { .. }, None) => IoAnswer::SecretRotate(Err(NO_PORT_HOST.to_string())),
-        (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes)),
+        (IoRequest::Random { bytes }, _) => IoAnswer::Random(os_random(*bytes).map(Secret::new)),
+        (IoRequest::Sealed { op, .. }, _) => {
+            IoAnswer::Sealed(Err(format!("{op}: a sealed operator is answered by the kernel, never by a host")))
+        }
         (IoRequest::Clock, _) => IoAnswer::Clock(Ok(orbital_core_base::time_util::now_millis())),
         (IoRequest::Os { .. }, _) => answer_os_host(host, request),
         (IoRequest::CredentialStatus { name, principal }, Some(host)) => {
@@ -91,10 +107,10 @@ pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswe
         (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_PORT_HOST.to_string())),
         (IoRequest::CredentialStoreList, Some(host)) => IoAnswer::CredentialStoreList(host.secrets.credential_store_list()),
         (IoRequest::CredentialStoreRead { name }, Some(host)) => {
-            IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name))
+            IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name).map(|value| value.map(Secret::new)))
         }
         (IoRequest::CredentialStoreWrite { service, name, value }, Some(host)) => {
-            IoAnswer::CredentialStoreWrite(host.secrets.credential_store_write(service, name, value))
+            IoAnswer::CredentialStoreWrite(host.secrets.credential_store_write(service, name, value.expose()))
         }
         (IoRequest::CredentialStoreRemove { name }, Some(host)) => {
             IoAnswer::CredentialStoreRemove(host.secrets.credential_store_remove(name))

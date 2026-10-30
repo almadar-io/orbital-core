@@ -257,8 +257,10 @@ impl CallBindings {
     }
 }
 
-/// Declared argument positions for a unique field projection relationship.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Declared argument positions for a unique field projection relationship; the operator table carries it as
+/// `fieldProjection` (pinned to [`Signature::field_projection`] by the table drift test).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FieldProjection {
     pub source_arg: usize,
     pub key_arg: usize,

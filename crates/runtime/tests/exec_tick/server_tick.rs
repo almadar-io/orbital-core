@@ -10,8 +10,9 @@ use {orbital_core_base::bus_event::tick_event_key, orbital_core_runtime::effects
 use {
     orbital_core_base::schema::types::OrbitalSchema,
     orbital_core_base::value::Value,
-    orbital_core_runtime::effects::response::{EventRequest, EventResponse},
+    orbital_core_runtime::effects::response::{EventRequest, EventResponse, LifecycleEvent, MountSeed},
 };
+use orbital_core_base::bus_event::UNMOUNT_EVENT;
 
 fn trait_with_tick(name: &str, emit: &str, background: bool, applies_to: Option<Json>) -> Json {
     let mut tick = json!({ "name": "beat", "interval": 10, "effects": [["emit", emit, {}]] });
@@ -140,23 +141,129 @@ fn an_unmounted_trait_s_tick_is_paused() {
     assert!(response.success);
 }
 
+fn mount_request(client: &str, trait_name: &str) -> EventRequest {
+    EventRequest {
+        event: "INIT".to_string(),
+        client_id: Some(client.to_string()),
+        mount: Some(vec![MountSeed { r#trait: trait_name.to_string(), event: LifecycleEvent::Init }]),
+        ..Default::default()
+    }
+}
+
+fn unmount_request(client: &str, trait_name: &str) -> EventRequest {
+    EventRequest {
+        event: UNMOUNT_EVENT.to_string(),
+        client_id: Some(client.to_string()),
+        target_trait: Some(trait_name.to_string()),
+        ..Default::default()
+    }
+}
+
+fn start_done(server: &EmbeddedServer, request: EventRequest) -> EventResponse {
+    match server.start("Board", request).unwrap() {
+        ServerProgress::Done(response) => response,
+        other => panic!("expected a finished request, got {other:?}"),
+    }
+}
+
 #[test]
 fn mounting_the_trait_starts_its_tick_and_unmounting_pauses_it_again() {
     let server = EmbeddedServer::new(schema()).unwrap();
-    server.set_tick_mount(vec!["Scoped".to_string()]);
+    server.mount_client("tab-1", "Board", vec!["Scoped".to_string()]);
     assert_eq!(
         emitted(&drive(&server, tick("Scoped", None), &["a"])),
         ["SCOPED_PULSE"]
     );
-    server.set_tick_mount(Vec::new());
+    server.unmount_client("tab-1", "Board", vec!["Scoped".to_string()]);
     assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
 }
 
 #[test]
 fn control_mounting_another_trait_does_not_start_this_tick() {
     let server = EmbeddedServer::new(schema()).unwrap();
-    server.set_tick_mount(vec!["Background".to_string()]);
+    server.mount_client("tab-1", "Board", vec!["Background".to_string()]);
     assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
+}
+
+#[test]
+fn a_mount_request_enters_the_ledger_and_an_unmount_request_leaves_it() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    assert_eq!(emitted(&drive(&server, tick("Scoped", None), &["a"])), ["SCOPED_PULSE"]);
+    let left = start_done(&server, unmount_request("tab-1", "Scoped"));
+    assert!(left.success && !left.transitioned);
+    assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
+}
+
+#[test]
+fn a_trait_two_clients_mounted_ticks_until_the_last_one_leaves() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    start_done(&server, mount_request("tab-2", "Scoped"));
+    start_done(&server, unmount_request("tab-1", "Scoped"));
+    assert_eq!(emitted(&drive(&server, tick("Scoped", None), &["a"])), ["SCOPED_PULSE"]);
+    start_done(&server, unmount_request("tab-2", "Scoped"));
+    assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
+}
+
+#[test]
+fn releasing_a_client_unmounts_everything_it_held_and_only_its_own() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.mount_client("tab-1", "Board", vec!["Scoped".to_string(), "InRunning".to_string()]);
+    server.mount_client("tab-2", "Board", vec!["InRunning".to_string()]);
+    server.release_client("tab-1");
+    assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
+    assert!(server.kernel().trait_mounted("InRunning"), "control: tab-2 still holds it");
+    server.release_client("tab-2");
+    assert!(!server.kernel().trait_mounted("InRunning"));
+}
+
+#[test]
+fn a_mount_naming_no_client_is_no_clients_and_a_forked_session_keeps_the_ledger() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let mut boot = mount_request("x", "Scoped");
+    boot.client_id = None;
+    start_done(&server, boot);
+    assert!(!server.kernel().trait_mounted("Scoped"));
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    let fork = server.fork_session().unwrap();
+    assert!(fork.kernel().trait_mounted("Scoped"));
+}
+
+#[test]
+fn the_tick_pass_names_the_declaring_orbital() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    server.mount_client("tab-1", "Board", vec!["Scoped".to_string()]);
+    let fired = server.tick_pass(0);
+    assert!(fired.is_empty(), "the first pass only captures the phase");
+    let fired = server.tick_pass(10);
+    let names: Vec<(&str, &str, &str)> =
+        fired.iter().map(|f| (f.orbital.as_str(), f.trait_name.as_str(), f.tick.as_str())).collect();
+    assert!(names.contains(&("Board", "Scoped", "beat")), "{names:?}");
+    assert!(names.contains(&("Board", "Background", "beat")), "{names:?}");
+    assert!(names.iter().all(|(orbital, _, _)| *orbital == "Board"));
+}
+
+#[test]
+fn the_server_relays_tick_stamped_dispatches_coalesced() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let stamped = |x: f64| EventRequest {
+        event: "MOVED".to_string(),
+        payload: Some(Value::Number(x)),
+        client_id: Some("tab-1".to_string()),
+        tick: Some("beat".to_string()),
+        source_trait: Some("Scoped".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(server.relay_tick("Board", &stamped(1.0)), Some(50));
+    assert_eq!(server.relay_tick("Board", &stamped(2.0)), None);
+    server.set_tick_relay_interval(20);
+    let items = server.flush_tick_relay();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].payload, Some(Value::Number(2.0)));
+    assert_eq!(server.relay_tick("Board", &stamped(3.0)), Some(20));
+    let unstamped = EventRequest { tick: None, ..stamped(4.0) };
+    assert_eq!(server.relay_tick("Board", &unstamped), None, "control: no tick, no relay");
 }
 
 #[test]

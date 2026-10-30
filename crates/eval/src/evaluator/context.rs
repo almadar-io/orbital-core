@@ -47,6 +47,26 @@ impl std::fmt::Debug for EntropySource {
     }
 }
 
+/// How a cryptographic operator that draws entropy crosses into the kernel: the operator hands over its name, its
+/// operands and a closure that runs it on 32 bytes of fresh entropy. The kernel runs the closure with entropy it draws
+/// itself and records only the answer; a replay answers from the record without running the closure.
+#[derive(Clone)]
+pub struct SealedOutputs(Arc<dyn Fn(&str, &[Value], &mut dyn FnMut([u8; 32]) -> Value) -> Result<Value, String> + Send + Sync>);
+
+impl SealedOutputs {
+    pub fn new(
+        source: impl Fn(&str, &[Value], &mut dyn FnMut([u8; 32]) -> Value) -> Result<Value, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self(Arc::new(source))
+    }
+}
+
+impl std::fmt::Debug for SealedOutputs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SealedOutputs")
+    }
+}
+
 /// The `prob/*` stream of one evaluation: Mulberry32, the generator `@almadar/evaluator` ran, and the rejection flag
 /// `prob/condition` raises inside a `prob/posterior` / `prob/infer` sample. Shared by every child context, so a
 /// `prob/sample` loop and a lambda body advance one stream.
@@ -166,6 +186,8 @@ pub struct BindingContext {
     prob: Arc<ProbState>,
     /// The dispatch's seed source for an unseeded `prob/*` stream; `None` in a pure evaluation.
     prob_entropy: Option<EntropySource>,
+    /// The kernel's boundary for operators that draw entropy and must not journal it; `None` in a pure evaluation.
+    sealed: Option<SealedOutputs>,
     /// A local the scope reads at most once (a reduce accumulator its body reads once): the read moves it out,
     /// so a write to it (`array/append @acc …`) is in place instead of a copy of the whole accumulator.
     linear: Option<Arc<LinearLocal>>,
@@ -246,27 +268,37 @@ impl LocalFrame {
 }
 
 /// The credential values of one evaluation. `Debug` shows only the names.
-#[derive(Clone, Default)]
-pub struct SecretValues(HashMap<String, String>);
-
-impl std::fmt::Debug for SecretValues {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_list().entries(self.0.keys()).finish()
-    }
-}
+#[derive(Clone, Default, Debug)]
+pub struct SecretValues(HashMap<String, orbital_core_base::secret::Secret<String>>);
 
 impl BindingContext {
     /// This context with the credential `name` holding `value` for the operators that take a credential slot.
-    pub fn with_secret(mut self, name: &str, value: String) -> Self {
+    pub fn with_secret(mut self, name: &str, value: impl Into<orbital_core_base::secret::Secret<String>>) -> Self {
         let mut held = (*self.secrets).clone();
-        held.0.insert(name.to_string(), value);
+        held.0.insert(name.to_string(), value.into());
         self.secrets = Arc::new(held);
         self
     }
 
     /// The value of the credential `name` the kernel resolved for this evaluation.
     pub fn secret(&self, name: &str) -> Option<&str> {
-        self.secrets.0.get(name).map(String::as_str)
+        self.secrets.0.get(name).map(|value| value.expose().as_str())
+    }
+
+    /// Run `op` over `args` through the kernel's sealed boundary: `compute` is given 32 bytes of fresh entropy that
+    /// never reach the journal, and the answer it returns is what the journal records and a replay returns. Without a
+    /// boundary the operation fails with a message.
+    pub fn sealed(&self, op: &str, args: &[Value], mut compute: impl FnMut([u8; 32]) -> Value) -> Result<Value, OrbitalError> {
+        let source = self.sealed.as_ref().ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: this evaluation has no sealed-output boundary")))
+        })?;
+        (source.0)(op, args, &mut compute).map_err(|message| OrbitalError::Eval(EvalError::InvalidArgument(message)))
+    }
+
+    /// Give this evaluation the kernel's sealed boundary.
+    pub fn set_sealed_outputs(&mut self, source: SealedOutputs) -> &mut Self {
+        self.sealed = Some(source);
+        self
     }
 
     /// The `prob/*` stream and rejection flag of this evaluation.
@@ -445,6 +477,7 @@ impl BindingContext {
             secrets: Arc::clone(&self.secrets),
             prob: Arc::clone(&self.prob),
             prob_entropy: self.prob_entropy.clone(),
+            sealed: self.sealed.clone(),
             linear: self.linear.clone(),
         }
     }

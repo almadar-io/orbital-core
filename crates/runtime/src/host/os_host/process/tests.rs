@@ -25,6 +25,7 @@ fn call(g: &OsGrants, h: &OsHandles, op: OsOp, args: Vec<Value>) -> Result<Value
         grants: g,
         handles: h,
         on_event: &on_event,
+        secrets: None,
     };
     answer(op, &args, None, None, &host).expect("process op")
 }
@@ -549,6 +550,7 @@ fn ask_wait(
         grants: g,
         handles: h,
         on_event: &on_event,
+        secrets: None,
     };
     answer_os(
         Some(&host),
@@ -610,7 +612,7 @@ fn control_an_unkeyed_wait_still_blocks_until_the_child_exits() {
         "returned before the child ended"
     );
     let done = match answer {
-        IoAnswer::Os(Ok(done)) => done,
+        IoAnswer::Os(Ok(done)) => done.into_inner(),
         other => panic!("a plain answer, got {other:?}"),
     };
     assert_eq!(field(&done, "code"), Value::Number(4.0));
@@ -627,12 +629,14 @@ fn control_a_keyed_wait_with_no_sink_or_no_route_is_answered_in_place() {
     else {
         panic!("no sink answers in place")
     };
+    let done = done.into_inner();
     assert_eq!(field(&done, "code"), Value::Number(5.0));
     let completed = with_sink(&h);
     let r = call(&g, &h, OsOp::Spawn, sh("exit 6", &[])).expect("spawn");
     let IoAnswer::Os(Ok(done)) = ask_wait(&g, &h, field(&r, "pid"), Some("k"), None) else {
         panic!("no site answers in place")
     };
+    let done = done.into_inner();
     assert_eq!(field(&done, "code"), Value::Number(6.0));
     assert!(completed
         .recv_timeout(std::time::Duration::from_millis(200))

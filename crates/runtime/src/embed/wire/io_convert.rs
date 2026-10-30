@@ -119,6 +119,7 @@ impl From<IoRequestWire> for IoRequest {
             },
             IoRequestWire::Random { bytes } => Self::Random { bytes },
             IoRequestWire::Clock => Self::Clock,
+            IoRequestWire::Sealed { op, args } => Self::Sealed { op, args },
             IoRequestWire::Os { op, args, key, site } => Self::Os {
                 op,
                 args,
@@ -249,6 +250,7 @@ impl From<&IoRequest> for IoRequestWire {
             },
             IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
             IoRequest::Clock => Self::Clock,
+            IoRequest::Sealed { op, args } => Self::Sealed { op: op.clone(), args: args.clone() },
             IoRequest::Os { op, args, key, site } => Self::Os {
                 op: *op,
                 args: args.clone(),
@@ -376,12 +378,13 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::Random(r) => Self::Random {
                 result: r
                     .as_ref()
-                    .map(|bytes| orbital_core_base::codec::base64_encode(bytes))
+                    .map(|bytes| SecretText::new(Secret::new(orbital_core_base::codec::base64_encode(bytes.expose()))))
                     .map_err(Clone::clone)
                     .into(),
             },
             IoAnswer::Clock(r) => Self::Clock { result: r.clone().into() },
-            IoAnswer::Os(r) => Self::Os { result: r.clone().into() },
+            IoAnswer::Sealed(r) => Self::Sealed { result: r.clone().into() },
+            IoAnswer::Os(r) => Self::Os { result: r.as_ref().map(|value| value.expose().clone()).map_err(Clone::clone).into() },
             IoAnswer::CredentialStatus(r) => Self::CredentialStatus {
                 result: r.clone().into(),
             },
@@ -453,13 +456,19 @@ impl From<IoAnswerWire> for IoAnswer {
             IoAnswerWire::SecretSet { result } => Self::SecretSet(result.into()),
             IoAnswerWire::SecretRotate { result } => Self::SecretRotate(result.into()),
             IoAnswerWire::Random { result } => {
-                let result: Result<String, String> = result.into();
+                let result: Result<SecretText, String> = result.into();
                 Self::Random(result.and_then(|text| {
-                    orbital_core_base::codec::base64_decode(&text).map_err(|e| format!("random: not base64: {e}"))
+                    orbital_core_base::codec::base64_decode(text.into_inner().expose())
+                        .map(Secret::new)
+                        .map_err(|e| format!("random: not base64: {e}"))
                 }))
             }
             IoAnswerWire::Clock { result } => Self::Clock(result.into()),
-            IoAnswerWire::Os { result } => Self::Os(result.into()),
+            IoAnswerWire::Sealed { result } => Self::Sealed(result.into()),
+            IoAnswerWire::Os { result } => {
+                let result: Result<Value, OsError> = result.into();
+                Self::Os(result.map(Secret::new))
+            }
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
             IoAnswerWire::CredentialStoreList { result } => Self::CredentialStoreList(result.into()),

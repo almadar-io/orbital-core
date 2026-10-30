@@ -86,7 +86,7 @@ pub(crate) fn ask(port: &IoPort, op: CredentialAdminOp, request: &Value) -> Resu
         }
         CredentialAdminOp::Remove => Ok(object(vec![("removed", Value::Bool(port.credential_store_remove(&text(request, op, "envVar")?)?))])),
         CredentialAdminOp::Test => {
-            let held = port.secret(&text(request, op, "envVar")?, None)?.is_some_and(|value| !value.is_empty());
+            let held = port.secret(&text(request, op, "envVar")?, None)?.is_some_and(|value| !value.expose().is_empty());
             Ok(object(vec![("held", Value::Bool(held))]))
         }
         CredentialAdminOp::Mode => {

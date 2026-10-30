@@ -11,6 +11,7 @@
 use std::prelude::v1::*;
 
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
+use orbital_core_base::secret::Secret;
 use orbital_core_base::value::{Value, ValueMap};
 use crate::credential_admin::{RotateCounts, StoreListing};
 use crate::entity_source::{EntitySource, QueryAnswer};

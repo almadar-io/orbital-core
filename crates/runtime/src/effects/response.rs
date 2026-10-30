@@ -444,6 +444,10 @@ pub enum TransitionRejectionCode {
     InboundOnlyEvent,
     /// An effect of the trait's transition failed; its later effects did not run.
     EffectFailed,
+    /// The request's `locale` is not one of the locales the program declares.
+    LocaleNotDeclared,
+    /// A server-role request carried circuit state (`traits` / `entityByTrait`) without being a delegated leg.
+    ClientCircuitStateRefused,
 }
 
 /// Mirrors `@almadar/core` `TransitionRejection`: why a trait (or the whole request)
@@ -653,6 +657,25 @@ impl EventResponse {
             rejections: Some(vec![TransitionRejection {
                 code,
                 trait_name: Some(trait_name.to_string()),
+                from: None,
+                event: Some(event.to_string()),
+                states_declaring_event: None,
+                transition: None,
+                guard: None,
+                error: None,
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// A request refused whole, for `code`, before any trait is chosen: the rejection names the event only.
+    pub fn refused_request(code: TransitionRejectionCode, event: &str, message: String) -> Self {
+        Self {
+            success: false,
+            error: Some(message),
+            rejections: Some(vec![TransitionRejection {
+                code,
+                trait_name: None,
                 from: None,
                 event: Some(event.to_string()),
                 states_declaring_event: None,

@@ -179,26 +179,7 @@ impl OrbitalSchema {
         if let Some(own) = &orbital.os_grants {
             grants.union(own);
         }
-        grants.union(&self.egress_net_grants());
         grants
-    }
-
-    /// The raw TCP targets the app's `egress` declares (`<scheme>://` origins of the schemes the operator
-    /// table declares) as `net` grants: the one declaration a protocol driver's `os/tcp-connect` is authorized by, so the
-    /// host's net check, the validator and the io-gate manifest all see the target without a second `net` entry.
-    pub fn egress_net_grants(&self) -> crate::os_grants::OsGrants {
-        let net = self
-            .egress
-            .iter()
-            .flatten()
-            .filter_map(|entry| crate::http_wire::parse_egress_entry(entry))
-            .filter(|origin| crate::http_wire::tcp_default_port(origin.scheme()).is_some())
-            .map(|origin| crate::os_grants::NetGrant {
-                target: format!("{}:{}", origin.host(), origin.port()),
-                kinds: vec![crate::os_grants::NetKind::Tcp],
-            })
-            .collect();
-        crate::os_grants::OsGrants { net, ..Default::default() }
     }
 
     /// The `os/` grants of a set of orbitals: the explicit union of each one's effective grants.
@@ -217,7 +198,6 @@ impl OrbitalSchema {
     pub fn program_os_grants(&self) -> crate::os_grants::OsGrants {
         let mut grants = self.os_grants.clone().unwrap_or_default();
         grants.union(&self.os_grants_of(&self.orbitals));
-        grants.union(&self.egress_net_grants());
         grants
     }
 

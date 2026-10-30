@@ -112,8 +112,18 @@ fn control_a_request_without_a_locale_renders_the_first_declared() {
 
 #[test]
 fn edge_a_locale_the_program_does_not_declare_is_refused() {
-    let err = init(&server(), Some("fr")).unwrap_err();
-    assert!(err.contains("\"fr\""), "{err}");
+    let refused = init(&server(), Some("fr")).unwrap();
+    assert!(!refused.success);
+    assert!(refused.error.as_deref().is_some_and(|e| e.contains("\"fr\"")), "{:?}", refused.error);
+    let rejections = refused.rejections.as_ref().expect("a typed rejection");
+    assert_eq!(rejections[0].code, orbital_core_runtime::effects::response::TransitionRejectionCode::LocaleNotDeclared);
+    assert!(refused.client_effects().is_empty(), "nothing ran");
+}
+
+#[test]
+fn control_a_program_declaring_no_locales_admits_any_locale() {
+    let bare = EmbeddedServer::new(schema()).unwrap();
+    assert!(init(&bare, Some("fr")).unwrap().success);
 }
 
 // A message the viewer's catalog lacks answers null (`i18n/t` is a failable operator, owner ruling 2026-10-25), never a key

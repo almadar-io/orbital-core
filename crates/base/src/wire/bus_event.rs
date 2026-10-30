@@ -112,6 +112,9 @@ impl ServerEffectCode {
     }
 }
 
+/// The event that releases a mounted trait on its host (`UNMOUNT_EVENT` in `@almadar/core`).
+pub const UNMOUNT_EVENT: &str = "$UNMOUNT";
+
 /// The event a tick firing carries on the wire (a `runTick` leg's `event`). Twin of
 /// `@almadar/runtime` `tickEventKey`.
 pub fn tick_event_key(tick: &str) -> String {

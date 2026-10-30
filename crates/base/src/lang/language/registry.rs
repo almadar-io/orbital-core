@@ -348,9 +348,14 @@ pub struct EmbeddedOperator {
     /// arity, options and request.
     #[serde(rename = "closedCall", default)]
     pub closed_call: Option<EmbeddedClosedCall>,
-    /// The default port of each URL scheme the operator connects under (`defaultPorts` in the operator table).
-    #[serde(rename = "defaultPorts", default)]
-    pub default_ports: HashMap<String, u16>,
+    /// The argument slots the declared `returnSemantics` draws a call's result from (`valueSourceSlots` in the operator
+    /// table). Pinned to `ValueSourceSlots::of_semantics` by `tests/runs_on_drift.rs`.
+    #[serde(rename = "valueSourceSlots", default)]
+    pub value_source_slots: Option<crate::schema::ValueSourceSlots>,
+    /// The source, key and default arguments of a field-projecting operator (`fieldProjection` in the operator table).
+    /// Pinned to `Signature::field_projection` by `tests/runs_on_drift.rs`.
+    #[serde(rename = "fieldProjection", default)]
+    pub field_projection: Option<crate::signature::FieldProjection>,
 }
 
 /// What a host effect's call is held to beyond its parameter types.
@@ -493,17 +498,6 @@ pub fn emit_slots() -> &'static HashSet<String> {
     })
 }
 
-/// The default port the installed operator table declares for a raw TCP URL scheme ; `None`
-/// for any other scheme, or before a table is installed.
-pub fn tcp_scheme_default_port(scheme: &str) -> Option<u16> {
-    static PORTS: OnceLock<HashMap<String, u16>> = OnceLock::new();
-    crate::language_data::operator_data().ok()?;
-    PORTS
-        .get_or_init(|| operators().values().flat_map(|op| op.default_ports.iter().map(|(scheme, port)| (scheme.clone(), *port))).collect())
-        .get(scheme)
-        .copied()
-}
-
 /// The host effects the installed operator table holds to a closed call shape (`closedCall`).
 pub fn closed_call_effects() -> impl Iterator<Item = &'static str> {
     operators().iter().filter(|(_, op)| op.closed_call.is_some()).map(|(name, _)| name.as_str())
@@ -602,6 +596,15 @@ pub fn program_host_effects() -> impl Iterator<Item = &'static str> {
     operators()
         .iter()
         .filter(|(_, op)| op.host.as_deref() == Some("program"))
+        .map(|(name, _)| name.as_str())
+}
+
+/// Every side-effecting operator the installed operator table routes to the host's own ports (`host: "substrate"`):
+/// `audio/*` and `auth/*` answer through the host, the `llm/*` and workspace families through the shared substrate.
+pub fn substrate_host_effects() -> impl Iterator<Item = &'static str> {
+    operators()
+        .iter()
+        .filter(|(_, op)| op.host.as_deref() == Some("substrate") && op.has_side_effects)
         .map(|(name, _)| name.as_str())
 }
 

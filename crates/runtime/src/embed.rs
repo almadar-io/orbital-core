@@ -7,6 +7,7 @@ use std::prelude::v1::*;
 
 pub mod eval_wire;
 mod fold_order;
+mod tick_relay;
 pub(crate) mod ticket_queue;
 pub mod memory;
 pub mod server;
@@ -23,6 +24,7 @@ pub use server::os_glob_matches;
 use crate::config::KernelConfig;
 use crate::effects::response::{EventRequest, EventResponse};
 use crate::effects::response::{MountSeed, TransitionHop};
+use orbital_core_base::bus_event::EmittedEvent;
 use crate::entity_source::EntitySource;
 use crate::entity_source::InMemoryEntityCache;
 use crate::kernel::{already_delivered_from, ClientDispatch, EntryError, FrameWrite, RuntimeKernel, TraitSnapshot};
@@ -40,7 +42,7 @@ use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use wire::{
-    AmbiguousTrait, AppliedWire, DispatchWire, FiredTick, FrameDispatch, FrameWire, MountFailure,
+    AmbiguousTrait, AppliedWire, Entered, Left, DispatchWire, FiredTick, FrameDispatch, FrameWire, MountFailure,
     MountLegWire, MountWire, RoutedLeg, SeedWire, SnapshotWire, StatefulLegWire,
 };
 
@@ -122,6 +124,13 @@ pub struct EmbeddedKernel {
     frame_effect_results: std::sync::atomic::AtomicBool,
     /// The flights of the dispatches that owe the host a leg, and the answers waiting for their turn (EXEC-CONC-8).
     fold_order: fold_order::FoldOrder,
+    /// The traits whose lifecycle seed the host has been answered, by owning orbital: what the page entered and has not left.
+    entered: Mutex<std::collections::BTreeMap<String, String>>,
+    /// The identity of the page the host last entered: another key is a new mount.
+    mount_key: Mutex<Option<String>>,
+    /// The page the host just left and the traits it had entered: a re-enter under the same key before any other page is
+    /// that mount continuing (a strict-mode remount), not a new one.
+    departed: Mutex<Option<(String, std::collections::BTreeMap<String, String>)>>,
 }
 
 /// Parse the host's light/dark toggle.
@@ -166,6 +175,9 @@ impl EmbeddedKernel {
             mounted: Mutex::new(None),
             frame_effect_results: std::sync::atomic::AtomicBool::new(false),
             fold_order: fold_order::FoldOrder::default(),
+            entered: Mutex::new(std::collections::BTreeMap::new()),
+            mount_key: Mutex::new(None),
+            departed: Mutex::new(None),
         })
     }
 
@@ -543,6 +555,16 @@ impl EmbeddedKernel {
             }
             merged.frames = Some(painted);
         }
+        self.applied_wire(outcomes, merged, frames.resync)
+    }
+
+    /// The wire a fold answers with: its outcomes merged into `merged` (already sealed), the legs its arms owe the host.
+    fn applied_wire(
+        &self,
+        outcomes: Vec<(String, ProcessEventResult)>,
+        mut merged: EventResponse,
+        resync: Option<crate::kernel::FramesResync>,
+    ) -> Result<AppliedWire, String> {
         merged.fold_rerenders(&self.kernel.rerender_stale());
         let hops = TransitionHop::of_outcomes(&outcomes);
         merged.transitions = (!hops.is_empty()).then_some(hops);
@@ -567,8 +589,47 @@ impl EmbeddedKernel {
             applied,
             response: merged,
             server_legs,
-            resync: frames.resync,
+            resync,
         })
+    }
+
+    /// [`Self::fold_in_order`] for an emit that entered from outside the kernel (another client's push): it is delivered
+    /// to its declared listeners only, guards and payload mapping included, whatever `host_fans_out` and the emit's
+    /// `dispatched` stamp say. Folded now or queued behind older flights, exactly as an answer is.
+    pub fn deliver_emit_to_listeners(&self, flight: u64, emitted: EmittedEvent) -> Result<FoldProgress, String> {
+        self.deliver_emit(flight, emitted, fold_order::EmitOrigin::Peer)
+    }
+
+    /// [`Self::deliver_emit_to_listeners`] for a live message of this client's own running call, whose emitter ran its own
+    /// arm as that call's progress dispatch: a listener route back to the emitter under the emitted name is that arm again
+    /// and does not run twice; every other listener hears the emit.
+    pub fn deliver_origin_emit(&self, flight: u64, emitted: EmittedEvent) -> Result<FoldProgress, String> {
+        self.deliver_emit(flight, emitted, fold_order::EmitOrigin::Own)
+    }
+
+    fn deliver_emit(&self, flight: u64, emitted: EmittedEvent, origin: fold_order::EmitOrigin) -> Result<FoldProgress, String> {
+        match self.fold_order.admit(flight, fold_order::Work::Emit(emitted, origin))? {
+            Ok(ready) => self.fold_ready(ready.work).map(|applied| FoldProgress::Applied(Box::new(applied))),
+            Err(ticket) => Ok(FoldProgress::Queued { ticket }),
+        }
+    }
+
+    fn fold_ready(&self, work: fold_order::Work) -> Result<AppliedWire, String> {
+        match work {
+            fold_order::Work::Answer { response, already_delivered, base } => {
+                self.apply_server_response_since(&response, &already_delivered, base.as_ref())
+            }
+            fold_order::Work::Emit(emitted, origin) => {
+                let outcomes = match origin {
+                    fold_order::EmitOrigin::Peer => self.kernel.deliver_emit_to_listeners(&emitted),
+                    fold_order::EmitOrigin::Own => self.kernel.deliver_origin_emit_to_listeners(&emitted),
+                }
+                .map_err(|e| e.to_string())?;
+                let mut merged = EventResponse::from_process_results(&outcomes, "", "");
+                self.kernel.seal_outcomes(&mut merged, &outcomes, None, false);
+                self.applied_wire(outcomes, merged, None)
+            }
+        }
     }
 
     /// Open a flight for work the kernel did not wire (a dispatch the host ran on its own, a frame's browser leg).
@@ -585,10 +646,8 @@ impl EmbeddedKernel {
         already_delivered: HashSet<(String, String)>,
         base: Option<FoldBase>,
     ) -> Result<FoldProgress, String> {
-        match self.fold_order.admit(flight, response, already_delivered, base)? {
-            Ok(ready) => self
-                .apply_server_response_since(&ready.response, &ready.already_delivered, ready.base.as_ref())
-                .map(|applied| FoldProgress::Applied(Box::new(applied))),
+        match self.fold_order.admit(flight, fold_order::Work::Answer { response, already_delivered, base })? {
+            Ok(ready) => self.fold_ready(ready.work).map(|applied| FoldProgress::Applied(Box::new(applied))),
             Err(ticket) => Ok(FoldProgress::Queued { ticket }),
         }
     }
@@ -597,7 +656,7 @@ impl EmbeddedKernel {
     /// The host calls it after each flight ends until it is `None`.
     pub fn next_fold(&self) -> Option<FoldedNext> {
         let (ticket, ready) = self.fold_order.take_next()?;
-        let outcome = self.apply_server_response_since(&ready.response, &ready.already_delivered, ready.base.as_ref());
+        let outcome = self.fold_ready(ready.work);
         Some(FoldedNext { ticket, outcome })
     }
 
@@ -723,8 +782,8 @@ impl EmbeddedKernel {
                         });
                     }
                     let at = fired.len();
-                    fired.push(FiredTick { trait_name, tick });
-                    let FiredTick { trait_name, tick } = &fired[at];
+                    fired.push(FiredTick { orbital: orbital.to_string(), trait_name, tick });
+                    let FiredTick { trait_name, tick, .. } = &fired[at];
                     outcomes.push((trait_name.clone(), dispatched.outcome));
                     // Own writes are sealed only when a cascade is about to read them, in tick order; ticks with no
                     // cascade between them seal together.
@@ -939,9 +998,77 @@ impl EmbeddedKernel {
 
     /// Declare a new mount: a routed delivery reaches none of `traits` before its own INIT, and
     /// the tick clock runs the ticks of `traits` only.
-    pub fn remount(&self, traits: Vec<String>) {
+    /// The page it replaces is gone: the answer is the traits it had entered that the new mount does not hold, with the
+    /// legs that release them on their hosts. The new mount has entered none yet ([`Self::enter`]).
+    pub fn remount(&self, traits: Vec<String>) -> Vec<Left> {
         *self.mounted.lock() = Some(traits.iter().cloned().collect());
-        self.kernel.remount_traits(traits);
+        self.kernel.remount_traits(traits.clone());
+        let mut entered = self.entered.lock();
+        let gone = std::mem::take(&mut *entered);
+        gone.into_iter()
+            .filter(|(name, _)| !traits.contains(name))
+            .map(|(name, orbital)| self.unmount_leg(name, orbital))
+            .collect()
+    }
+
+    /// The page identified by `mount_key` now holds `traits`, opened at `route_path` (`None`: no route, nothing seeded).
+    /// A key other than the one held is a new mount: [`Self::remount`] first, so every trait enters afresh and the old
+    /// page's traits that are gone leave. Otherwise the traits not entered yet are added to the mount and answered with the
+    /// seeds the kernel mounts them by (route order, a child awaiting its composer left out), and the traits entered
+    /// earlier that are no longer in the set leave. Every leave carries the leg that releases the trait on its host.
+    /// A key re-entered right after [`Self::leave`] with no other page between is the same mount continuing: the traits it
+    /// had entered are entered again without their seeds, so a lifecycle event never runs twice for one mount.
+    pub fn enter(&self, route_path: Option<&str>, mount_key: &str, traits: Vec<String>) -> Result<Entered, String> {
+        let mut owned = Vec::with_capacity(traits.len());
+        for name in &traits {
+            owned.push((name.clone(), self.owning_orbital(name)?.to_string()));
+        }
+        let resumed = match self.departed.lock().take() {
+            Some((key, held)) if key == mount_key => held,
+            _ => std::collections::BTreeMap::new(),
+        };
+        let fresh = self.mount_key.lock().replace(mount_key.to_string()).as_deref() != Some(mount_key);
+        let mut left = if fresh { self.remount(traits.clone()) } else { Vec::new() };
+        let resumed: Vec<String> = resumed.into_keys().filter(|name| traits.contains(name)).collect();
+        if !resumed.is_empty() {
+            self.entered.lock().extend(owned.iter().filter(|(name, _)| resumed.contains(name)).cloned());
+            self.kernel.unmount_traits(resumed.clone());
+        }
+        let (entering, leaving) = {
+            let mut entered = self.entered.lock();
+            let leaving: Vec<String> = entered.keys().filter(|name| !traits.contains(name)).cloned().collect();
+            let entering: Vec<String> = traits.iter().filter(|name| !entered.contains_key(*name)).cloned().collect();
+            entered.extend(owned);
+            (entering, leaving)
+        };
+        left.extend(self.unmount(leaving));
+        if !entering.is_empty() {
+            self.mount(entering.clone());
+        }
+        let seeds = match route_path {
+            Some(path) => self.route_mounts(path).into_iter().filter(|seed| entering.contains(&seed.r#trait)).collect(),
+            None => Vec::new(),
+        };
+        Ok(Entered { seeds, left })
+    }
+
+    /// Every trait the page entered leaves (the page closes): the legs that release them on their hosts.
+    pub fn leave(&self) -> Vec<Left> {
+        let key = self.mount_key.lock().take();
+        let held = self.entered.lock().clone();
+        *self.departed.lock() = key.map(|key| (key, held));
+        let all: Vec<String> = self.entered.lock().keys().cloned().collect();
+        self.unmount(all)
+    }
+
+    fn unmount_leg(&self, trait_name: String, orbital: String) -> Left {
+        let leg = EventRequest {
+            event: orbital_core_base::bus_event::UNMOUNT_EVENT.to_string(),
+            target_trait: Some(trait_name.clone()),
+            client_id: Some(self.client_id.clone()),
+            ..Default::default()
+        };
+        Left { trait_name, orbital, leg }
     }
 
     /// Add traits to the current mount without dropping those already mounted. The first mount a
@@ -954,14 +1081,20 @@ impl EmbeddedKernel {
         self.kernel.mount_traits(traits);
     }
 
-    /// Traits leaving the mount: their ticks stop and nothing stays held for them.
-    pub fn unmount(&self, traits: Vec<String>) {
+    /// Traits leaving the mount: their ticks stop and nothing stays held for them. The answer is the leg that releases
+    /// each trait the page had entered on its host.
+    pub fn unmount(&self, traits: Vec<String>) -> Vec<Left> {
         if let Some(mounted) = self.mounted.lock().as_mut() {
             for t in &traits {
                 mounted.remove(t);
             }
         }
+        let left = {
+            let mut entered = self.entered.lock();
+            traits.iter().filter_map(|name| entered.remove_entry(name)).collect::<Vec<_>>()
+        };
         self.kernel.unmount_traits(traits);
+        left.into_iter().map(|(name, orbital)| self.unmount_leg(name, orbital)).collect()
     }
 
     /// The host's report of whether `trait_name`'s rendered output is on screen (its `[visible]` ticks).

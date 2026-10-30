@@ -136,6 +136,7 @@ impl RuntimeKernel {
             .pages(self.presentation.nav_pages.read().clone());
         let mut ctx = self.with_viewer_i18n(ctx).build();
         ctx.set_prob_entropy(self.prob_entropy());
+        ctx.set_sealed_outputs(self.sealed_outputs());
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
             &self.sessions.current_user.read(),

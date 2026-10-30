@@ -470,6 +470,85 @@ pub fn ecdsa_p256_sha256_verify(x: &[u8], y: &[u8], message: &[u8], signature: &
     }
 }
 
+/// A signing key held as a PEM string, or the closed reason it cannot sign: the PEM is not a PKCS#8 key of the kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignFailure {
+    Key,
+}
+
+/// The 64-byte raw r||s ECDSA P-256 / SHA-256 signature of `message` under a PKCS#8 PEM private key. The nonce is
+/// deterministic (RFC 6979), so the same key and message always sign to the same bytes, and the `p256` scalar arithmetic is
+/// constant time. The key is zeroized when it drops.
+pub fn ecdsa_p256_sha256_sign(pem: &str, message: &[u8]) -> Result<[u8; 64], SignFailure> {
+    use p256::ecdsa::signature::Signer;
+    use p256::pkcs8::DecodePrivateKey;
+    let key = p256::ecdsa::SigningKey::from_pkcs8_pem(pem).map_err(|_| SignFailure::Key)?;
+    let signature: p256::ecdsa::Signature = key.sign(message);
+    Ok(signature.to_bytes().into())
+}
+
+/// RSASSA-PKCS1-v1_5 / SHA-256 (RFC 8017 section 8.2.1) under a PKCS#8 PEM private key. The private operation is blinded
+/// with a ChaCha20 stream seeded from `seed`; a modulus under [`RSA_MIN_MODULUS_BYTES`] is refused. The key is zeroized when
+/// it drops.
+pub fn rsa_pkcs1_sha256_sign(pem: &str, message: &[u8], seed: [u8; 32]) -> Result<Vec<u8>, SignFailure> {
+    use rand_chacha::rand_core::SeedableRng;
+    use rsa::pkcs8::DecodePrivateKey;
+    use rsa::signature::{RandomizedSigner, SignatureEncoding};
+    use rsa::traits::PublicKeyParts;
+    let key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).map_err(|_| SignFailure::Key)?;
+    if key.size() < RSA_MIN_MODULUS_BYTES {
+        return Err(SignFailure::Key);
+    }
+    let signing = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key);
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
+    let signature = signing.try_sign_with_rng(&mut rng, message).map_err(|_| SignFailure::Key)?;
+    Ok(signature.to_vec())
+}
+
+/// An ephemeral P-256 ECDH exchange: the SEC1 uncompressed public key of the key generated here (65 bytes) and the 32-byte
+/// shared x coordinate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EcdhExchange {
+    pub public: Vec<u8>,
+    pub shared: [u8; 32],
+}
+
+/// Generate an ephemeral P-256 key from `seed` and derive the shared secret with `peer`, a SEC1 point (compressed or not).
+/// `None` when `peer` is not a point on the curve. The ephemeral secret never leaves this function.
+pub fn ecdh_p256_ephemeral(peer: &[u8], seed: [u8; 32]) -> Option<EcdhExchange> {
+    use p256::elliptic_curve::sec1::ToEncodedPoint;
+    use rand_chacha::rand_core::SeedableRng;
+    let peer = p256::PublicKey::from_sec1_bytes(peer).ok()?;
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
+    let secret = p256::ecdh::EphemeralSecret::random(&mut rng);
+    let public = p256::PublicKey::from(&secret).to_encoded_point(false).as_bytes().to_vec();
+    let shared = secret.diffie_hellman(&peer);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(shared.raw_secret_bytes());
+    Some(EcdhExchange { public, shared: out })
+}
+
+/// AES-128-GCM seal: ciphertext followed by the 16-byte tag. `None` when the key is not 16 bytes or the nonce not 12.
+pub fn aes128_gcm_seal(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    if key.len() != 16 || nonce.len() != 12 {
+        return None;
+    }
+    let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).ok()?;
+    cipher.encrypt(aes_gcm::Nonce::from_slice(nonce), Payload { msg: plaintext, aad }).ok()
+}
+
+/// AES-128-GCM open of ciphertext followed by its tag. `None` when the key or nonce is the wrong size or the tag does not
+/// verify.
+pub fn aes128_gcm_open(key: &[u8], nonce: &[u8], sealed: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit, Payload};
+    if key.len() != 16 || nonce.len() != 12 {
+        return None;
+    }
+    let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).ok()?;
+    cipher.decrypt(aes_gcm::Nonce::from_slice(nonce), Payload { msg: sealed, aad }).ok()
+}
+
 /// One regular file of a tar archive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TarFile {
@@ -513,6 +592,37 @@ pub fn tar_files(archive: &[u8]) -> Result<Vec<TarFile>, String> {
 /// Lower-case hex.
 pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod key_exchange_tests {
+    use super::*;
+
+    #[test]
+    fn the_ephemeral_exchange_derives_the_secret_the_peer_derives() {
+        use p256::elliptic_curve::sec1::ToEncodedPoint;
+        let peer = p256::SecretKey::from_slice(&[7u8; 32]).expect("scalar");
+        let peer_public = peer.public_key().to_encoded_point(false);
+        let exchange = ecdh_p256_ephemeral(peer_public.as_bytes(), [9u8; 32]).expect("exchange");
+        assert_eq!(exchange.public.len(), 65);
+        let theirs = p256::PublicKey::from_sec1_bytes(&exchange.public).expect("point");
+        let derived = p256::ecdh::diffie_hellman(peer.to_nonzero_scalar(), theirs.as_affine());
+        assert_eq!(derived.raw_secret_bytes().as_slice(), exchange.shared.as_slice());
+        assert_eq!(ecdh_p256_ephemeral(peer_public.as_bytes(), [9u8; 32]), Some(exchange.clone()));
+        assert_ne!(ecdh_p256_ephemeral(peer_public.as_bytes(), [8u8; 32]).expect("exchange").public, exchange.public);
+        assert_eq!(ecdh_p256_ephemeral(&[4u8; 65], [9u8; 32]), None);
+        assert_eq!(ecdh_p256_ephemeral(&[], [9u8; 32]), None);
+    }
+
+    #[test]
+    fn aes_gcm_refuses_a_wrong_sized_key_or_nonce_and_a_forged_tag() {
+        let sealed = aes128_gcm_seal(&[1u8; 16], &[2u8; 12], b"hello", b"aad").expect("sealed");
+        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"aad").as_deref(), Some(&b"hello"[..]));
+        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"bad"), None);
+        assert_eq!(aes128_gcm_open(&[3u8; 16], &[2u8; 12], &sealed, b"aad"), None);
+        assert_eq!(aes128_gcm_seal(&[1u8; 32], &[2u8; 12], b"x", b""), None);
+        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 8], &sealed, b"aad"), None);
+    }
 }
 
 #[cfg(test)]

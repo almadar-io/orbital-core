@@ -1050,3 +1050,47 @@ fn control_a_fold_that_owes_nothing_posts_one_leg() {
     kernel.dispatch("InvoiceList", None, "ADD", Value::Null).unwrap();
     assert_eq!(bridge.calls.lock().len(), 1);
 }
+
+/// The listen-source shape the web shell dispatches (`listen-source-routing.test.ts`, "RouteCatalog.CREATE ->
+/// RouteCreate"): the emitter declares no arm for the event, a listener names it as its source. The hops below
+/// are the delivery both hosts must answer with, hop for hop.
+fn listen_source_kernel() -> ClientKernel {
+    let catalog = serde_json::json!({
+        "name": "RouteCatalog", "dispatch": "client",
+        "stateMachine": { "states": [{ "name": "browsing", "isInitial": true }], "transitions": [] }
+    });
+    let create = serde_json::json!({
+        "name": "RouteCreate", "dispatch": "client",
+        "listens": [{ "event": "CREATE", "triggers": "CREATE", "source": { "kind": "trait", "trait": "RouteCatalog" } }],
+        "stateMachine": {
+            "states": [{ "name": "closed", "isInitial": true }, { "name": "open" }],
+            "transitions": [{ "from": "closed", "to": "open", "event": "CREATE" }]
+        }
+    });
+    ClientKernel::new(schema_of(vec![orbital("RouteOrbital", "Route", vec![catalog, create])]), None).unwrap()
+}
+
+fn delivered_states(response: &EventResponse) -> Vec<(String, String)> {
+    let mut states: Vec<(String, String)> = response.states.iter().map(|(t, s)| (t.clone(), s.clone())).collect();
+    states.sort();
+    states
+}
+
+#[test]
+fn a_listen_source_dispatch_delivers_the_listener_with_the_states_the_web_shell_gets() {
+    let kernel = listen_source_kernel();
+    let response = kernel.dispatch("RouteCatalog", None, "CREATE", Value::Null).unwrap();
+    assert!(response.transitioned);
+    assert_eq!(
+        delivered_states(&response),
+        vec![("RouteCatalog".to_string(), "browsing".to_string()), ("RouteCreate".to_string(), "open".to_string())]
+    );
+}
+
+#[test]
+fn control_an_event_nobody_listens_to_delivers_nothing() {
+    let kernel = listen_source_kernel();
+    let response = kernel.dispatch("RouteCatalog", None, "UNRELATED", Value::Null).unwrap();
+    assert!(!response.transitioned);
+    assert!(delivered_states(&response).iter().all(|(t, s)| t != "RouteCreate" || s == "closed"));
+}
