@@ -81,3 +81,15 @@ fn a_list_and_a_call_separate_their_items_with_a_comma() {
         "control: an empty list has no separator"
     );
 }
+
+#[test]
+fn credential_connect_prints_its_request_object() {
+    let request = OirExpr::object(
+        [("credential".to_string(), OirExpr::string("token_name"))]
+            .into_iter()
+            .collect(),
+    );
+    let printed = pretty_print_expr(&OirExpr::effect(crate::ir::effects::OirEffect::credential_connect(request, None)));
+    assert!(printed.starts_with("credential-connect("), "{printed}");
+    assert!(printed.contains("credential: \"token_name\""), "{printed}");
+}

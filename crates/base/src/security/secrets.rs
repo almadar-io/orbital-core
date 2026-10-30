@@ -10,13 +10,14 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::os::SegmentEncode;
+use crate::os::{SegmentEncode, SegmentScope};
 use serde_json::{Map, Value};
 
 pub const CREDENTIAL_NOT_SECRET_CODE: &str = "ORB_HTTP_AUTH_CREDENTIAL_NOT_SECRET";
 pub const SECRET_OUTSIDE_AUTH_CODE: &str = "ORB_SECRET_OUTSIDE_AUTH";
 pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLOT_INVALID";
 pub const SEGMENT_ENCODE_INVALID_CODE: &str = "ORB_OS_SEND_SEGMENT_ENCODE_INVALID";
+pub const SEGMENT_SCOPE_INVALID_CODE: &str = "ORB_OS_SEND_SEGMENT_SCOPE_INVALID";
 
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub enum SecretFlowViolation {
     CredentialStatusSlotInvalid { path: String },
     /// An `os/send` segment whose `encode` is not a literal `base64`, `uri` or `form`.
     SegmentEncodeInvalid { path: String },
+    /// An `os/send` segment whose `scope` is not a literal `app` or `user`.
+    SegmentScopeInvalid { path: String },
     /// An `http` auth credential slot that is not a `secret`-typed knob.
     CredentialNotSecret { path: String, slot: String },
     /// A `secret`-typed knob read anywhere but an auth credential slot.
@@ -35,6 +38,7 @@ impl SecretFlowViolation {
         match self {
             Self::CredentialStatusSlotInvalid { .. } => CREDENTIAL_STATUS_SLOT_INVALID_CODE,
             Self::SegmentEncodeInvalid { .. } => SEGMENT_ENCODE_INVALID_CODE,
+            Self::SegmentScopeInvalid { .. } => SEGMENT_SCOPE_INVALID_CODE,
             Self::CredentialNotSecret { .. } => CREDENTIAL_NOT_SECRET_CODE,
             Self::OutsideAuth { .. } => SECRET_OUTSIDE_AUTH_CODE,
         }
@@ -45,6 +49,7 @@ impl SecretFlowViolation {
             Self::CredentialNotSecret { path, .. }
             | Self::OutsideAuth { path }
             | Self::SegmentEncodeInvalid { path }
+            | Self::SegmentScopeInvalid { path }
             | Self::CredentialStatusSlotInvalid { path } => path,
         }
     }
@@ -64,6 +69,10 @@ impl SecretFlowViolation {
                 "an `os/send` segment `encode` is one of the literals {}",
                 SegmentEncode::NAMES.join(", ")
             ),
+            Self::SegmentScopeInvalid { .. } => format!(
+                "an `os/send` segment `scope` is one of the literals {}",
+                SegmentScope::NAMES.join(", ")
+            ),
             Self::OutsideAuth { .. } => {
                 "a `secret`-typed knob is read outside an `http` auth credential slot".to_string()
             }
@@ -79,6 +88,7 @@ impl SecretFlowViolation {
                 "Declare `<knob>: secret = \"CREDENTIAL_NAME\"` in config and pass @config.<knob>"
             }
             Self::SegmentEncodeInvalid { .. } => "Write the encode as the literal \"base64\", \"uri\" or \"form\"",
+            Self::SegmentScopeInvalid { .. } => "Write the scope as the literal \"app\" or \"user\"",
             Self::OutsideAuth { .. } => {
                 "Secrets are credential names the host resolves; use them only in `http` auth"
             }
@@ -102,6 +112,9 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
 /// The credential keys of an OAuth client object: the `client` / `clients.<name>` of an `oauth-client` auth and the
 /// client operand of `oauth-authorize`.
 pub const OAUTH_CLIENT_SLOTS: &[&str] = &["clientId", "clientSecret"];
+
+/// The fields of a `credential-connect` request that name a credential: all three must be secret knobs.
+const CREDENTIAL_CONNECT_SLOTS: &[&str] = &["credential", "clientId", "clientSecret"];
 
 /// The credential name a slot value carries: a bare `@config.<knob>` string, or a `{ credential, scope? }` object.
 pub fn slot_credential(value: &Value) -> Option<&str> {
@@ -225,6 +238,25 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             }
         }
     });
+    each_call(expr, "credential-connect", &mut |items| {
+        let Some(Value::Object(request)) = items.get(1) else {
+            out.push(SecretFlowViolation::CredentialNotSecret {
+                path: path.to_string(),
+                slot: "credential-connect.request".to_string(),
+            });
+            return;
+        };
+        for slot in CREDENTIAL_CONNECT_SLOTS {
+            let Some(value) = request.get(*slot) else { continue };
+            let is_secret_knob = value.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob));
+            if !is_secret_knob {
+                out.push(SecretFlowViolation::CredentialNotSecret {
+                    path: path.to_string(),
+                    slot: format!("credential-connect.{slot}"),
+                });
+            }
+        }
+    });
     each_operator_credential(expr, &mut |slot, operand| {
         let is_secret_knob = operand
             .as_str()
@@ -244,6 +276,13 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         };
         if !known {
             out.push(SecretFlowViolation::SegmentEncodeInvalid { path: path.to_string() });
+        }
+        let scope_known = match segment.get("scope") {
+            None => true,
+            Some(scope) => scope.as_str().and_then(SegmentScope::from_name).is_some(),
+        };
+        if !scope_known {
+            out.push(SecretFlowViolation::SegmentScopeInvalid { path: path.to_string() });
         }
     });
     each_os_send_segment(expr, &mut |operand| {
@@ -414,6 +453,11 @@ fn effect_credential_slots(expr: &Value) -> Vec<&Value> {
     each_credential_effect(expr, &mut |_, items| out.extend(items.get(1)));
     each_operator_credential(expr, &mut |_, operand| out.push(operand));
     each_os_send_segment(expr, &mut |operand| out.push(operand));
+    each_call(expr, "credential-connect", &mut |items| {
+        if let Some(Value::Object(request)) = items.get(1) {
+            out.extend(CREDENTIAL_CONNECT_SLOTS.iter().filter_map(|slot| request.get(*slot)));
+        }
+    });
     each_call(expr, "oauth-authorize", &mut |items| {
         let mut slots = Vec::new();
         if let Some(client) = authorize_client(items) {
@@ -581,9 +625,11 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             let slot_index = credential_operand_index(items);
             let segments = os_send_segments(items).is_some();
             let authorize = items.first().and_then(Value::as_str) == Some("oauth-authorize");
+            let connect = items.first().and_then(Value::as_str) == Some("credential-connect");
             for (index, item) in items.iter().enumerate() {
                 match (http, item) {
                     (_, Value::Object(client)) if authorize && index == 1 => scan_client_reads(client, secrets, path, out),
+                    (_, Value::Object(request)) if connect && index == 1 => scan_connect_reads(request, secrets, path, out),
                     _ if segments && index == OS_SEND_DATA => scan_segment_reads(item, secrets, path, out),
                     _ if slot_index == Some(index) && item.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob)) => {}
                     (true, Value::Object(request)) => scan_request_reads(request, secrets, path, out),
@@ -613,6 +659,16 @@ fn scan_reads(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             }
         }
         _ => {}
+    }
+}
+
+fn scan_connect_reads(request: &Map<String, Value>, secrets: &[&str], path: &str, out: &mut Vec<SecretFlowViolation>) {
+    for (key, value) in request {
+        let allowed_leaf = CREDENTIAL_CONNECT_SLOTS.contains(&key.as_str())
+            && value.as_str().and_then(config_knob).is_some_and(|knob| secrets.contains(&knob));
+        if !allowed_leaf {
+            scan_reads(value, secrets, path, out);
+        }
     }
 }
 
@@ -983,6 +1039,33 @@ mod tests {
         }
     }
 
+    fn connect_request(credential: &str, client_id: &str, client_secret: &str) -> Value {
+        json!({
+            "credential": credential, "tokenEndpoint": "https://auth.example/token", "grant": "authorization_code",
+            "code": "@payload.code", "redirectUri": "https://app.example/cb", "verifier": "@payload.verifier",
+            "clientId": client_id, "clientSecret": client_secret, "clientAuth": "basic"
+        })
+    }
+
+    #[test]
+    fn credential_connect_takes_secret_knobs_for_the_credential_and_both_client_slots() {
+        let ok = json!([["credential-connect", connect_request("@config.apiKey", "@config.apiKey", "@config.apiKey"), { "emit": { "success": "OK" } }]]);
+        assert!(codes(&program(config(), ok)).is_empty(), "control: secret knobs everywhere");
+        for slot in ["credential", "clientId", "clientSecret"] {
+            let mut request = connect_request("@config.apiKey", "@config.apiKey", "@config.apiKey");
+            request[slot] = json!("@config.plain");
+            let found = secret_flow_violations(&program(config(), json!([["credential-connect", request]])));
+            assert_eq!(found.len(), 1, "{slot}");
+            assert_eq!(found[0].code(), CREDENTIAL_NOT_SECRET_CODE, "{slot}");
+            assert!(found[0].message().contains(&format!("credential-connect.{slot}")), "{slot}: {}", found[0].message());
+        }
+        let declared = program_credentials(&json!({ "orbitals": [{ "name": "ConnectOrbital", "traits": [{
+            "config": { "apiKey": { "type": "secret", "default": "CONNECTED_TOKEN", "description": "connected" } },
+            "stateMachine": { "transitions": [{ "effects": [["credential-connect", connect_request("@config.apiKey", "@config.apiKey", "@config.apiKey")]] }] }
+        }] }] }));
+        assert_eq!(declared.len(), 1, "a credential the connect effect names is declared once");
+    }
+
     #[test]
     fn a_secret_read_in_a_credential_effects_options_is_still_outside_auth() {
         let found = codes(&program(config(), json!([["credential-status", "@config.apiKey", { "x": "@config.apiKey" }]])));
@@ -1087,6 +1170,21 @@ mod tests {
         }
         let plain = json!([["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "@config.apiKey" }], { "key": "s" }]]);
         assert!(codes(&program(config(), plain)).is_empty(), "control: no encode");
+    }
+
+    #[test]
+    fn an_os_send_segment_scope_is_app_or_user() {
+        let send = |scope: Value| {
+            json!([["os/send", "@payload.sock", [
+                { "bytes": ["bytes/from-string", "AUTH "], "credential": "@config.apiKey", "scope": scope }
+            ], { "key": "s" }]])
+        };
+        for ok in ["app", "user"] {
+            assert!(codes(&program(config(), send(json!(ok)))).is_empty(), "{ok}");
+        }
+        for bad in [json!("team"), json!("User"), json!(""), json!(7), json!("@payload.who"), json!(null)] {
+            assert_eq!(codes(&program(config(), send(bad.clone()))), vec![SEGMENT_SCOPE_INVALID_CODE], "{bad}");
+        }
     }
 
     #[test]

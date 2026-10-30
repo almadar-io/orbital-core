@@ -170,6 +170,17 @@ impl NodeLowerer {
         Ok(OirExpr::effect(OirEffect::credential_admin(op, request, emit)))
     }
 
+    pub(super) fn resolve_credential_connect_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+        // Format: ["credential-connect", { credential, tokenEndpoint, ... }, { emit? }?]
+        if !(1..=2).contains(&args.len()) {
+            return Err(LowerError::InvalidSExpr(
+                "credential-connect takes a request object and optional options".to_string(),
+            ));
+        }
+        let emit = self.resolve_emit_only_options("credential-connect", args.get(1))?;
+        Ok(OirExpr::effect(OirEffect::credential_connect(self.resolve_sexpr(&args[0])?, emit)))
+    }
+
     pub(super) fn resolve_access_check_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
         // Format: ["access-check", { entity, action, row, viewer }, { emit? }?]
         if !(1..=2).contains(&args.len()) {

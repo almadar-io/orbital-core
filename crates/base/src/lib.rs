@@ -144,6 +144,8 @@ pub mod generate;
 pub mod project;
 
 // security — token & secret shapes (the kernel signs; base holds the wire types)
+#[path = "security/credential_grant.rs"]
+pub mod credential_grant;
 #[path = "security/jwt_alg.rs"]
 pub mod jwt_alg;
 #[path = "security/secret.rs"]

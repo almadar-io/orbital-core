@@ -4,7 +4,7 @@
 use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
-use crate::credential_admin::{CredentialStanding, RotateCounts, StoreListing};
+use crate::credential_admin::{ClientAuth, ConnectFailure, CredentialGrant, CredentialStanding, EnvTails, RotateCounts, StoreListing};
 use crate::effects::executor::{ServiceCaller, SubstrateFailure};
 use crate::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts, PendingRequest, RequestId};
 use orbital_core_base::ir::effects::PageFactField;
@@ -309,7 +309,7 @@ mod serde_index;
 mod io_wire;
 mod io_convert;
 pub use io_wire::{
-    IoAnswerWire, IoReplyWire, IoRequestWire, ModelFailureKindWire,
+    CredentialGrantWire, IoAnswerWire, IoReplyWire, IoRequestWire, ModelFailureKindWire,
     ModelFailureWire, PageFactFieldWire, PageFactsWire, PendingRequestWire, ResolveProgressWire,
     NextWire, ServerProgressWire,
 };

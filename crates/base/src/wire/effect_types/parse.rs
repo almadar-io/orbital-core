@@ -40,6 +40,7 @@ pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
         admin if crate::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
             parse_credential_admin(admin, args)
         }
+        "credential-connect" => parse_credential_connect(args),
         "access-check" => parse_access_check(args),
         "browser/page-facts" => parse_page_facts(args),
         "browser/prompt" => parse_prompt(args),
@@ -481,6 +482,20 @@ pub(super) fn parse_credential_admin(head: &str, args: &[SExpression]) -> Option
         Value::Null
     };
     Some(Effect::CredentialAdmin { op, request, emit })
+}
+
+/// `["credential-connect", request, { emit? }?]`.
+pub(super) fn parse_credential_connect(args: &[SExpression]) -> Option<Effect> {
+    if !(1..=2).contains(&args.len()) {
+        return None;
+    }
+    let emit = args
+        .get(1)
+        .and_then(|options| parse_emit_config(&Value::from(options.clone())));
+    Some(Effect::CredentialConnect {
+        request: Value::from(args[0].clone()),
+        emit,
+    })
 }
 
 /// `["access-check", request, { emit? }?]`.

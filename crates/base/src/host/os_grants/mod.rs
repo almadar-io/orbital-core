@@ -163,6 +163,14 @@ pub fn os_grant_needs(op: OsOp) -> &'static [OsGrantNeed] {
         .unwrap_or_else(|| panic!("the operator table declares no `grant` for `{}`", op.name()))
 }
 
+/// [`os_grant_needs`] for a running kernel: the typed language-data error when no operator table is installed.
+pub fn try_os_grant_needs(op: OsOp) -> Result<&'static [OsGrantNeed], crate::language_data::LanguageDataError> {
+    op.try_table_entry()?.grant.as_deref().ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
+        path: Default::default(),
+        reason: format!("the operator table declares no `grant` for `{}`", op.name()),
+    })
+}
+
 /// A path glob (`**` any number of segments, `*` and `?` within one) and the modes it grants.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

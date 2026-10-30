@@ -391,11 +391,14 @@ pub(super) fn wait_later(
 }
 
 /// The signal names the operator table's `os/kill` declares for its `signal` parameter.
-fn table_signal_names() -> Vec<&'static str> {
-    orbital_core_base::language::registry::get_operator(OsOp::Kill.name())
-        .and_then(|operator| operator.params.get(1))
+fn table_signal_names(op: OsOp) -> Result<Vec<&'static str>, OsError> {
+    let declared_by = OsOp::Kill;
+    let entry = declared_by.try_table_entry().map_err(|e| err(OsErrorKind::Unsupported, op, format!("{}: {e}", e.code())))?;
+    entry
+        .params
+        .get(1)
         .and_then(|param| param.ty.literal_strings())
-        .expect("the operator table declares os/kill's signal as a closed set of names")
+        .ok_or_else(|| err(OsErrorKind::Unsupported, op, "the operator table declares no closed set of signal names"))
 }
 
 #[cfg(unix)]
@@ -416,7 +419,7 @@ fn libc_signal(name: &str) -> Option<i32> {
 
 #[cfg(unix)]
 fn signal_number(value: &Value, op: OsOp) -> Result<i32, OsError> {
-    let names = table_signal_names();
+    let names = table_signal_names(op)?;
     match value {
         Value::String(name) if names.contains(&name.as_str()) => libc_signal(name)
             .ok_or_else(|| err(OsErrorKind::Unsupported, op, format!("this host has no signal {name}"))),

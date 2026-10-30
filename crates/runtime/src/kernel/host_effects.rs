@@ -120,7 +120,7 @@ impl RuntimeKernel {
         }
     }
 
-    /// Run `random-bytes`, `credential-status` or `credential-forget` through one journaled ask.
+    /// Run `random-bytes`, `credential-status`, `credential-forget` or `credential-connect` through one journaled ask.
     pub(super) fn run_host_effect(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
         let principal = ServiceCaller::of_user(&ctx.user).map(|caller| caller.principal);
         match effect {
@@ -206,6 +206,29 @@ impl RuntimeKernel {
                     Err(message) => EffectResult::failed(effect.clone(), &message),
                 }
             }
+            Effect::CredentialConnect { request, .. } => {
+                let failure = |failure: crate::credential_admin::ConnectFailure| {
+                    http_failure(
+                        effect,
+                        Value::object(ValueMap::from_iter([
+                            ("error".into(), Value::String(failure.message.into())),
+                            ("kind".into(), Value::String(failure.kind.as_str().to_string().into())),
+                        ])),
+                    )
+                };
+                match crate::credential_admin::CredentialGrant::from_request(request, principal.as_deref())
+                    .and_then(|grant| self.io.credential_connect(grant))
+                {
+                    Ok(standing) => EffectResult::executed_with_value(
+                        effect.clone(),
+                        Value::object(ValueMap::from_iter([
+                            ("connected".into(), Value::Bool(standing.connected)),
+                            ("label".into(), Value::String(standing.label.unwrap_or_default().into())),
+                        ])),
+                    ),
+                    Err(error) => failure(error),
+                }
+            }
             Effect::CredentialAdmin { op, request, .. } => match (if self.os_grants().credentials_allow(orbital_core_base::os_grants::CredentialKind::Admin) {
                 Ok(())
             } else {
@@ -228,7 +251,7 @@ impl RuntimeKernel {
     }
 
     /// Run an `os/<op>` effect through one journaled ask. A streaming op needs a key, so `cancel-call` can end it.
-    pub(super) fn run_os(&self, effect: &Effect) -> EffectResult {
+    pub(super) fn run_os(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
         let Effect::Os { op, args, key, .. } = effect else {
             return EffectResult::noop(effect.clone(), "not an os effect");
         };
@@ -265,13 +288,15 @@ impl RuntimeKernel {
             ])),
             (None, payload) => payload,
         };
+        let caller = ServiceCaller::of_user(&ctx.user);
+        let principal = caller.as_ref().map(|caller| caller.principal.as_str());
         #[cfg(feature = "wire-drivers")]
-        let outcome = self.tls_os(*op, args, key).unwrap_or_else(|| self.io.os(*op, args, key));
+        let outcome = self.tls_os(*op, args, key, principal).unwrap_or_else(|| self.io.os(*op, args, key, principal));
         #[cfg(not(feature = "wire-drivers"))]
         let outcome = if op.is_kernel_owned() {
             Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
         } else {
-            self.io.os(*op, args, key)
+            self.io.os(*op, args, key, principal)
         };
         match outcome {
             Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),

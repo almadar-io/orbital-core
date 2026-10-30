@@ -31,6 +31,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use std::collections::HashMap;
+
 use crate::language::registry::{get_operator, OperatorTypeRef, OperatorTypeRefKind};
 use crate::os::OsOp;
 use crate::sync::OnceLock;
@@ -63,10 +65,12 @@ pub struct ShapeField {
     pub name: &'static str,
     pub field_type: &'static str,
     pub fields: &'static [ShapeField],
+    /// The object may carry keys beyond `fields` (the table's `open`).
+    pub open: bool,
 }
 
 const fn field(name: &'static str, field_type: &'static str) -> ShapeField {
-    ShapeField { name, field_type, fields: &[] }
+    ShapeField { name, field_type, fields: &[], open: false }
 }
 
 /// What distinguishes a call site within one operator's contract.
@@ -246,6 +250,10 @@ fn table_payload(op: &str, declared: Option<&OperatorTypeRef>) -> ProducedPayloa
     let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = declared else {
         panic!("the operator table declares a payload for `{op}` that is not an object");
     };
+    ProducedPayload::Shape(shape_of_fields(fields))
+}
+
+fn shape_of_fields(fields: &HashMap<String, OperatorTypeRef>) -> &'static [ShapeField] {
     let mut names: Vec<&String> = fields.keys().collect();
     names.sort_unstable();
     let shape: Vec<ShapeField> = names
@@ -253,15 +261,33 @@ fn table_payload(op: &str, declared: Option<&OperatorTypeRef>) -> ProducedPayloa
         .map(|name| ShapeField {
             name: Box::leak(name.clone().into_boxed_str()),
             field_type: Box::leak(fields[name].kind_name().to_string().into_boxed_str()),
-            fields: &[],
+            fields: nested_shape(&fields[name]),
+            open: nested_open(&fields[name]),
         })
         .collect();
-    ProducedPayload::Shape(Box::leak(shape.into_boxed_slice()))
+    Box::leak(shape.into_boxed_slice())
 }
 
-const CREDENTIAL_OPS: [&str; 8] = [
+fn nested_open(declared: &OperatorTypeRef) -> bool {
+    match declared {
+        OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { open, .. }) => open.unwrap_or(false),
+        OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of }) => nested_open(of),
+        _ => false,
+    }
+}
+
+fn nested_shape(declared: &OperatorTypeRef) -> &'static [ShapeField] {
+    match declared {
+        OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) => shape_of_fields(fields),
+        OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of }) => nested_shape(of),
+        _ => &[],
+    }
+}
+
+const CREDENTIAL_OPS: [&str; 9] = [
     "credential-status",
     "credential-forget",
+    "credential-connect",
     "credential-list",
     "credential-set",
     "credential-remove",
@@ -355,6 +381,7 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
             ProducedPayload::Shape(HOST_FAILURE_SHAPE)
         }
+        "credential-connect" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
         "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
         | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "persist" => match variant {
@@ -527,6 +554,7 @@ mod tests {
         for op in ["credential-status", "credential-forget"] {
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
         }
+        assert_eq!(failure_payload("credential-connect", CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "a connect failure names its kind");
         for op in ["credential-list", "credential-set", "credential-remove", "credential-test", "credential-mode", "credential-rotate"] {
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE), "{op}");
         }

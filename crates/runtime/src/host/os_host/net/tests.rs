@@ -720,7 +720,7 @@ impl crate::secret_source::SecretSource for Held {
 }
 
 fn send_request(sock: &Value, segments: Vec<Value>) -> IoRequest {
-    IoRequest::Os { op: OsOp::Send, args: vec![sock.clone(), Value::array(segments)], key: None, site: None }
+    IoRequest::Os { op: OsOp::Send, args: vec![sock.clone(), Value::array(segments)], key: None, site: None, principal: None }
 }
 
 fn answered(host: &OsHost<'_>, request: &IoRequest) -> Result<Value, OsError> {
@@ -767,5 +767,57 @@ fn an_os_send_credential_segment_is_filled_in_at_the_boundary_and_the_request_na
     let blind = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None };
     assert_eq!(kind_of(answered(&blind, &send_request(&sock, vec![segment("", "REDIS_PW")]))), OsErrorKind::Denied, "no credential source");
     assert!(answered(&blind, &send_request(&sock, vec![segment("", "")])).is_ok(), "control: bytes alone need no source");
+    handles.close_all();
+}
+
+struct PerViewer;
+
+impl crate::secret_source::SecretSource for PerViewer {
+    fn secret(&self, name: &str) -> Result<Option<String>, String> {
+        Ok((name == "TOKEN").then(|| "app".to_string()))
+    }
+
+    fn secret_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+        match principal {
+            None => self.secret(name),
+            Some(who) => Ok((name == "TOKEN").then(|| format!("tok-{who}"))),
+        }
+    }
+}
+
+#[test]
+fn the_viewer_of_an_os_send_ask_picks_the_value_of_a_user_segment() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().expect("accept");
+        let mut buf = vec![0u8; "tok-alice/tok-bob/app".len()];
+        conn.read_exact(&mut buf).expect("read");
+        buf
+    });
+    let (grants, handles) = (tcp_grant(port), OsHandles::default());
+    let on_event = |_: Option<&CallSite>, _: Value| {};
+    let host = OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: Some(&PerViewer) };
+    let sock = field(&ask(&host, OsOp::TcpConnect, &[s("127.0.0.1"), n(port as i64)]).expect("connect"), "sock");
+    let segment = |scope: Option<&str>, tail: &str| {
+        let mut fields = vec![("bytes".into(), bytes_value(tail.as_bytes())), ("credential".into(), s("TOKEN"))];
+        if let Some(scope) = scope {
+            fields.push(("scope".into(), s(scope)));
+        }
+        Value::object(orbital_core_base::value::ValueMap::from_iter(fields))
+    };
+    let as_viewer = |viewer: Option<&str>, segments: Vec<Value>| match send_request(&sock, segments) {
+        IoRequest::Os { op, args, key, site, .. } => IoRequest::Os { op, args, key, site, principal: viewer.map(str::to_string) },
+        other => other,
+    };
+    let user = segment(Some("user"), "");
+    let slash = Value::object(orbital_core_base::value::ValueMap::from_iter([("bytes".into(), bytes_value(b"/")), ("credential".into(), s(""))]));
+    answered(&host, &as_viewer(Some("alice"), vec![user.clone(), slash.clone()])).expect("alice");
+    answered(&host, &as_viewer(Some("bob"), vec![user.clone(), slash])).expect("bob");
+    answered(&host, &as_viewer(Some("alice"), vec![segment(None, "")])).expect("an app segment ignores the viewer");
+    assert_eq!(server.join().expect("server"), b"tok-alice/tok-bob/app".to_vec());
+    assert_eq!(kind_of(answered(&host, &as_viewer(None, vec![user]))), OsErrorKind::Denied, "a user segment needs a viewer");
+    let unknown = segment(Some("team"), "");
+    assert_eq!(kind_of(answered(&host, &as_viewer(Some("alice"), vec![unknown]))), OsErrorKind::Invalid, "an unknown scope is refused");
     handles.close_all();
 }

@@ -2812,6 +2812,58 @@ fn an_empty_list_takes_its_type_from_a_sibling_binding_and_never_from_nothing() 
 }
 
 #[test]
+fn a_fold_with_a_present_start_answers_the_start_type_and_a_nullable_step_or_start_answers_optional() {
+    let reduce = op(
+        json!([
+            p("arr", list(var("T"))),
+            p("init", var("A")),
+            p(
+                "fn",
+                json!({ "kind": "fn", "params": [var("A"), var("T")], "returns": var("A") })
+            ),
+        ]),
+        var("A"),
+        Some(3),
+    );
+    let fold = |start: OirType, returned: OirType| {
+        let sig = Signature::of(&reduce);
+        let mut b = CallBindings::new();
+        sig.bind(&mut b, 0, &ty(s_arr(OirType::Number)), Mode::Static)
+            .unwrap();
+        sig.bind(&mut b, 1, &ty(start), Mode::Static).unwrap();
+        let body = |_: &[Option<OirType>]| Some(returned.clone());
+        let lambda = Actual {
+            known: None,
+            text: None,
+            texts: None,
+            lambda: Some(&body),
+        };
+        sig.bind(&mut b, 2, &lambda, Mode::Static).unwrap();
+        sig.finish(&b, 3)
+            .map(|()| sig.result(&b))
+            .map_err(|(_, m)| m)
+    };
+    let optional = |inner: OirType| OirType::Optional {
+        inner: Box::new(inner),
+    };
+    assert_eq!(
+        fold(OirType::Number, OirType::Number),
+        Ok(Some(OirType::Number)),
+        "a present start and a plain step answer the start type"
+    );
+    assert_eq!(
+        fold(OirType::Number, optional(OirType::Number)),
+        Ok(Some(optional(OirType::Number))),
+        "a step answering T? makes the fold T?"
+    );
+    assert_eq!(
+        fold(optional(OirType::Number), OirType::Number),
+        Ok(Some(optional(OirType::Number))),
+        "a null-able start makes the fold T?"
+    );
+}
+
+#[test]
 fn at_run_time_a_value_always_has_a_kind() {
     let eq = op(
         json!([p("a", var("T")), p("b", var("T"))]),

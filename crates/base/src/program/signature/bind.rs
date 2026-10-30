@@ -467,6 +467,9 @@ pub(super) fn bind_unknown(
             let first = lambda(&inputs);
             if let Some(result) = &first {
                 bind_type(returns, &Actual::of_type(result.clone()), b, mode)?;
+                if result.is_optional() {
+                    note_absent(returns, b);
+                }
             }
             if !params
                 .iter()

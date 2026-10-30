@@ -205,6 +205,15 @@ pub enum OirEffect {
         emit: Option<OirEmitConfig>,
     },
 
+    /// Exchange an OAuth code for a token the host's credential store keeps; `request` is the closed parameter object
+    /// `{ credential, scope?, tokenEndpoint, grant, code, redirectUri, verifier?, clientId, clientSecret?, clientAuth,
+    /// scopes? }`, success carries `{ connected, label }`. Server-only.
+    CredentialConnect {
+        request: OirExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<OirEmitConfig>,
+    },
+
     /// One credential administration effect (`crate::credential_admin`); `request` is the closed parameter object (for
     /// the request object). Server-only.
     CredentialAdmin {
@@ -468,6 +477,7 @@ impl OirEffect {
             Self::Os { op, .. } => op.name(),
             Self::CredentialStatus { .. } => "credential-status",
             Self::CredentialForget { .. } => "credential-forget",
+            Self::CredentialConnect { .. } => "credential-connect",
             Self::CredentialAdmin { op, .. } => op.name(),
             Self::AccessCheck { .. } => "access-check",
             Self::Spawn { .. } => "spawn",

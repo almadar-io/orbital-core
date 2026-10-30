@@ -62,13 +62,6 @@ impl Operator for ObjectSetOp {
         let path = eval_expr(&args[1], ctx)?.text()?.to_string();
         let value = eval_expr(&args[2], ctx)?;
 
-        if orbital_core_base::value::split_path(&path)
-            .iter()
-            .any(|segment| super::util::is_refused_key(segment))
-        {
-            return Ok(Value::Null);
-        }
-
         let mut result = match obj {
             Value::Object(o) => Value::Object(o),
             _ => return Err(obj.kind_error("object").into()),
@@ -103,14 +96,12 @@ pub struct ObjectMergeOp;
 impl Operator for ObjectMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         let mut result = ValueMap::default();
-        let mut refused = false;
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
             match val {
                 Value::Object(obj) => {
                     for (k, v) in obj {
-                        refused |= super::util::is_refused_key(&k);
                         result.insert(k, v);
                     }
                 }
@@ -118,9 +109,6 @@ impl Operator for ObjectMergeOp {
             }
         }
 
-        if refused {
-            return Ok(Value::Null);
-        }
         Ok(Value::object(result))
     }
 }
@@ -157,9 +145,6 @@ impl Operator for ObjectFromEntriesOp {
                 .into());
             };
             let key = key.text()?.to_string();
-            if super::util::is_refused_key(&key) {
-                return Ok(Value::Null);
-            }
             result.insert(key.into(), value.clone());
         }
 
@@ -171,12 +156,9 @@ impl Operator for ObjectFromEntriesOp {
 pub struct ObjectDeepMergeOp;
 impl Operator for ObjectDeepMergeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        fn deep_merge(base: ValueMap, overlay: ValueMap) -> Option<ValueMap> {
+        fn deep_merge(base: ValueMap, overlay: ValueMap) -> ValueMap {
             let mut result = base;
             for (key, value) in overlay {
-                if super::util::is_refused_key(&key) {
-                    return None;
-                }
                 match (result.get(&key), &value) {
                     (Some(Value::Object(base_obj)), Value::Object(overlay_obj)) => {
                         result.insert(
@@ -184,37 +166,27 @@ impl Operator for ObjectDeepMergeOp {
                             Value::object(deep_merge(
                                 (**base_obj).clone(),
                                 (**overlay_obj).clone(),
-                            )?),
+                            )),
                         );
                     }
                     _ => {
-                        if super::util::has_refused_key_in(&value) {
-                            return None;
-                        }
                         result.insert(key, value);
                     }
                 }
             }
-            Some(result)
+            result
         }
 
         let mut result = ValueMap::default();
-        let mut refused = false;
 
         for arg in args {
             let val = eval_expr(arg, ctx)?;
             match val {
-                Value::Object(obj) => match deep_merge(result.clone(), obj.into_inner()) {
-                    Some(merged) => result = merged,
-                    None => refused = true,
-                },
+                Value::Object(obj) => result = deep_merge(result, obj.into_inner()),
                 _ => return Err(val.kind_error("object").into()),
             }
         }
 
-        if refused {
-            return Ok(Value::Null);
-        }
         Ok(Value::object(result))
     }
 }
@@ -400,7 +372,6 @@ impl Operator for ObjectMapKeysOp {
         let (params, body) = require_lambda!(mapper);
 
         let mut result = ValueMap::default();
-        let mut refused = false;
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -410,13 +381,9 @@ impl Operator for ObjectMapKeysOp {
                 child_ctx.set_local(&params[1], value.clone());
             }
             let new_key = eval_expr(&body, &child_ctx)?.text()?.to_string();
-            refused |= super::util::is_refused_key(&new_key);
             result.insert(new_key.into(), value);
         }
 
-        if refused {
-            return Ok(Value::Null);
-        }
         Ok(Value::object(result))
     }
 }

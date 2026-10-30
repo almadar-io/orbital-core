@@ -41,6 +41,7 @@ pub(super) fn is_thrown_failure(result: &EffectResult) -> bool {
         | Effect::Os { emit, .. }
         | Effect::CredentialStatus { emit, .. }
         | Effect::CredentialForget { emit, .. }
+        | Effect::CredentialConnect { emit, .. }
         | Effect::CredentialAdmin { emit, .. }
         | Effect::AccessCheck { emit, .. } => !routed(emit),
         _ => false,

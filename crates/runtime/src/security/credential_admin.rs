@@ -2,17 +2,23 @@
 //! supplies the store and the mode flag; the `std-credential-admin` program owns every rule over what they answer.
 use serde::{Deserialize, Serialize};
 
+use orbital_core_base::http_wire::{closed_keys, parse_slot_object, text_field, SecretScope};
+use orbital_core_base::secret::Secret;
 use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::credential_admin::CredentialAdminOp;
 
 use crate::resumable::IoPort;
 
-/// One stored credential row as the store reports it: its service and credential name, never its value.
+/// One stored credential row as the store reports it: its service and credential name, and the last four characters of a
+/// secret of eight or more, never its value.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredName {
     pub service: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub last4: Option<String>,
 }
 
 /// The credential store's state: whether it can encrypt (a master key is present) and the rows it holds.
@@ -21,6 +27,36 @@ pub struct StoredName {
 pub struct StoreListing {
     pub enabled: bool,
     pub entries: Vec<StoredName>,
+}
+
+/// One declared credential name the host's environment holds: the last four characters of a value of eight or more,
+/// never the value.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvTail {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub last4: Option<String>,
+}
+
+impl EnvTail {
+    /// The tail of `value` held under `name`: `last4` only from eight characters up.
+    pub fn of(name: &str, value: &str) -> Self {
+        let count = value.chars().count();
+        let last4 = (count >= 8).then(|| value.chars().skip(count - 4).collect());
+        Self { name: name.to_string(), last4 }
+    }
+}
+
+/// A host's answer to the environment-tails ask: the tails of the names its environment holds, or that it has no
+/// environment to read (a browser, a host without one).
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum EnvTails {
+    Held { tails: Vec<EnvTail> },
+    Unsupported,
 }
 
 /// What `credential-status` reports of one credential: whether the host holds a value, and the non-secret account label
@@ -37,6 +73,138 @@ impl CredentialStanding {
     /// A standing with no label.
     pub fn of(connected: bool) -> Self {
         Self { connected, label: None }
+    }
+}
+
+pub use orbital_core_base::credential_grant::ClientAuth;
+
+/// One `credential-connect` ask: the code exchange the host's credential store performs. `name`, `client_id` and
+/// `client_secret` name credentials the store resolves; `code` and `verifier` are the single-use values, which never print.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialGrant {
+    pub name: String,
+    pub principal: Option<String>,
+    pub token_endpoint: String,
+    pub grant: String,
+    pub code: Secret<String>,
+    pub redirect_uri: String,
+    pub verifier: Option<Secret<String>>,
+    pub client_id: String,
+    pub client_secret: Option<String>,
+    pub client_auth: ClientAuth,
+    pub scopes: Vec<String>,
+}
+
+/// Why a `credential-connect` did not connect.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectFailureKind {
+    Unavailable,
+    Unsigned,
+    Denied,
+    InvalidGrant,
+    InvalidClient,
+    Transport,
+    Malformed,
+    Refused,
+}
+
+impl ConnectFailureKind {
+    /// The word a failure payload carries as `kind`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::Unsigned => "unsigned",
+            Self::Denied => "denied",
+            Self::InvalidGrant => "invalid_grant",
+            Self::InvalidClient => "invalid_client",
+            Self::Transport => "transport",
+            Self::Malformed => "malformed",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+/// A host's failure answer to a `credential-connect`.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectFailure {
+    pub kind: ConnectFailureKind,
+    pub message: String,
+}
+
+impl ConnectFailure {
+    pub fn new(kind: ConnectFailureKind, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
+}
+
+/// The message of a host whose credential store cannot connect.
+pub const NO_CONNECT: &str = "this host holds no credential store that can connect";
+
+impl CredentialGrant {
+    /// The grant a `credential-connect` request object names, for `viewer` (the dispatch's signed-in user).
+    pub fn from_request(request: &Value, viewer: Option<&str>) -> Result<Self, ConnectFailure> {
+        const WHAT: &str = "credential-connect";
+        let refused = |message: String| ConnectFailure::new(ConnectFailureKind::Refused, format!("{WHAT}: {message}"));
+        let by_refusal = |refusal: orbital_core_base::http_wire::HttpRefusal| ConnectFailure::new(ConnectFailureKind::Refused, refusal.message());
+        let Value::Object(fields) = request else {
+            return Err(refused("takes a request object".to_string()));
+        };
+        closed_keys(
+            fields,
+            &[
+                "credential", "scope", "tokenEndpoint", "grant", "code", "redirectUri", "verifier", "clientId",
+                "clientSecret", "clientAuth", "scopes",
+            ],
+            WHAT,
+        )
+        .map_err(by_refusal)?;
+        let mut slot = ValueMap::new();
+        for key in ["credential", "scope"] {
+            if let Some(value) = fields.get(key) {
+                slot.insert(key.into(), value.clone());
+            }
+        }
+        let slot = parse_slot_object(&slot, WHAT).map_err(by_refusal)?;
+        let principal = match slot.scope {
+            SecretScope::App => None,
+            SecretScope::User => match viewer {
+                Some(viewer) => Some(viewer.to_string()),
+                None => return Err(ConnectFailure::new(ConnectFailureKind::Unsigned, format!("{WHAT}: nobody is signed in"))),
+            },
+        };
+        let text = |key: &str| text_field(fields, key, WHAT).map_err(by_refusal);
+        let optional = |key: &str| fields.get(key).map(|_| text(key)).transpose();
+        let client_auth = match text("clientAuth")?.as_str() {
+            "body" => ClientAuth::Body,
+            "basic" => ClientAuth::Basic,
+            "none" => ClientAuth::None,
+            _ => return Err(refused("clientAuth must be body, basic or none".to_string())),
+        };
+        let scopes = match fields.get("scopes") {
+            None => Vec::new(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .map(|item| item.as_str().map(str::to_string))
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| refused("scopes must be a list of text".to_string()))?,
+            Some(_) => return Err(refused("scopes must be a list of text".to_string())),
+        };
+        Ok(Self {
+            name: slot.name,
+            principal,
+            token_endpoint: text("tokenEndpoint")?,
+            grant: text("grant")?,
+            code: Secret::new(text("code")?),
+            redirect_uri: text("redirectUri")?,
+            verifier: optional("verifier")?.map(Secret::new),
+            client_id: text("clientId")?,
+            client_secret: optional("clientSecret")?,
+            client_auth,
+            scopes,
+        })
     }
 }
 
@@ -76,7 +244,13 @@ pub(crate) fn ask(port: &IoPort, op: CredentialAdminOp, request: &Value) -> Resu
             let entries = listing
                 .entries
                 .into_iter()
-                .map(|entry| object(vec![("service", Value::String(entry.service.into())), ("name", Value::String(entry.name.into()))]))
+                .map(|entry| {
+                    let mut row = vec![("service", Value::String(entry.service.into())), ("name", Value::String(entry.name.into()))];
+                    if let Some(tail) = entry.last4 {
+                        row.push(("last4", Value::String(tail.into())));
+                    }
+                    object(row)
+                })
                 .collect::<Vec<_>>();
             Ok(object(vec![("enabled", Value::Bool(listing.enabled)), ("entries", Value::array(entries))]))
         }

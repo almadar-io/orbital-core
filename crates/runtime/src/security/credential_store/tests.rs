@@ -77,6 +77,27 @@ fn rows_written_by_the_js_store_open_to_the_plaintexts_the_js_store_resolves() {
 }
 
 #[test]
+fn the_listing_shows_the_last_four_characters_of_a_secret_of_eight_or_more_and_nothing_for_a_shorter_one() {
+    let fx = fixture();
+    let store = EncryptedCredentialStore::new(Arc::new(MemoryCredentialRows::default()), fx["masterKey"].as_str(), None);
+    store.set("stripe", "LONG", "sk-live-abcd1234", None).expect("set");
+    store.set("stripe", "EIGHT", "12345678", None).expect("set");
+    store.set("stripe", "SEVEN", "1234567", None).expect("set");
+    store.set("stripe", "WIDE", "secret-\u{e9}\u{e8}\u{ea}\u{eb}", None).expect("set");
+    let mut tails: Vec<(String, Option<String>)> = store.listing().expect("listing").entries.into_iter().map(|e| (e.name, e.last4)).collect();
+    tails.sort();
+    assert_eq!(
+        tails,
+        vec![
+            ("EIGHT".to_string(), Some("5678".to_string())),
+            ("LONG".to_string(), Some("1234".to_string())),
+            ("SEVEN".to_string(), None),
+            ("WIDE".to_string(), Some("\u{e9}\u{e8}\u{ea}\u{eb}".to_string())),
+        ]
+    );
+}
+
+#[test]
 fn a_label_is_kept_in_the_clear_beside_the_ciphertext_and_is_never_the_secret() {
     let fx = fixture();
     let rows = Arc::new(MemoryCredentialRows::default());
@@ -596,7 +617,368 @@ fn a_master_key_wipes_its_bytes_when_it_drops() {
         entry: CredentialEntry { service: "s".into(), env_var: "E".into(), last4: "1234".into(), updated_at: 0, principal: None },
         value: "plaintext-secret".into(),
         label: None,
+        oauth: None,
     };
     zeroize::Zeroize::zeroize(&mut stored.value);
     assert!(stored.value.is_empty(), "a zeroized String is emptied after its bytes are overwritten");
+}
+
+mod oauth_connect {
+    use super::*;
+    use crate::credential_admin::{ClientAuth, ConnectFailureKind, CredentialGrant, CredentialStanding};
+    use std::sync::Mutex as StdMutex;
+
+    struct Fake {
+        reply: Result<(u16, String), TransportError>,
+        seen: StdMutex<Vec<(String, Vec<(String, String)>, String)>>,
+    }
+
+    impl Fake {
+        fn answering(status: u16, body: &str) -> Self {
+            Self { reply: Ok((status, body.to_string())), seen: StdMutex::default() }
+        }
+    }
+
+    impl CredentialTransport for Fake {
+        fn post_form(&self, endpoint: &str, headers: &[(String, String)], body: &str) -> Result<(u16, String), TransportError> {
+            self.seen.lock().unwrap().push((endpoint.to_string(), headers.to_vec(), body.to_string()));
+            self.reply.clone()
+        }
+    }
+
+    const GOOD: &str = r#"{"access_token":"ACCESS-TOKEN-7777","token_type":"Bearer","refresh_token":"REFRESH-TOKEN-8888","expires_in":3600}"#;
+
+    fn store() -> (Arc<MemoryCredentialRows>, EncryptedCredentialStore) {
+        let rows = Arc::new(MemoryCredentialRows::default());
+        let store = EncryptedCredentialStore::new(rows.clone(), Some(&"ab".repeat(32)), None);
+        store.set("google", "CLIENT_ID", "client-id-1", None).unwrap();
+        store.set("google", "CLIENT_SECRET", "client-secret-2", None).unwrap();
+        (rows, store)
+    }
+
+    fn grant(principal: Option<&str>, auth: ClientAuth) -> CredentialGrant {
+        CredentialGrant {
+            name: "DRIVE".to_string(),
+            principal: principal.map(str::to_string),
+            token_endpoint: "https://auth.example/token".to_string(),
+            grant: "authorization_code".to_string(),
+            code: "one-time-CODE".into(),
+            redirect_uri: "https://app.example/cb".to_string(),
+            verifier: Some("pkce-VERIFIER".into()),
+            client_id: "CLIENT_ID".to_string(),
+            client_secret: Some("CLIENT_SECRET".to_string()),
+            client_auth: auth,
+            scopes: vec![],
+        }
+    }
+
+    #[test]
+    fn success_persists_an_oauth_row_per_principal_and_answers_only_connected_and_label() {
+        let (rows, store) = store();
+        let fake = Fake::answering(200, GOOD);
+        let standing = store.connect(&grant(Some("u1"), ClientAuth::Body), &fake).unwrap();
+        assert_eq!(standing, CredentialStanding { connected: true, label: None });
+        let seen = fake.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "https://auth.example/token");
+        assert!(seen[0].2.contains("client_id=client-id-1") && seen[0].2.contains("client_secret=client-secret-2"), "the store resolved the client");
+        assert!(seen[0].2.contains("code=one-time-CODE"));
+        assert_eq!(store.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-TOKEN-7777"), "secret_of answers the access token");
+        assert_eq!(store.resolve("DRIVE", Some("u2")), None);
+        assert_eq!(store.resolve("DRIVE", None), None);
+        let row = rows.list().unwrap().into_iter().find(|row| row["envVar"] == "DRIVE").expect("row");
+        assert_eq!(row["kind"], "oauth");
+        let shown = serde_json::to_string(&standing_json(&standing)).unwrap();
+        assert!(!shown.contains("TOKEN"), "the answer carries no token: {shown}");
+        assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("TOKEN-")), "rows hold ciphertext only");
+        let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+        restarted.warm().unwrap();
+        assert_eq!(restarted.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-TOKEN-7777"), "the row survives a restart");
+        assert!(store.entries(Some("u1")).iter().all(|entry| entry.last4.is_empty()), "no token tail is shown");
+    }
+
+    fn standing_json(standing: &CredentialStanding) -> Value {
+        serde_json::to_value(standing).unwrap()
+    }
+
+    #[test]
+    fn basic_auth_sends_the_resolved_client_in_the_header() {
+        let (_, store) = store();
+        let fake = Fake::answering(200, GOOD);
+        store.connect(&grant(None, ClientAuth::Basic), &fake).unwrap();
+        let seen = fake.seen.lock().unwrap();
+        let header = seen[0].1.iter().find(|(k, _)| k == "Authorization").expect("header");
+        assert_eq!(header.1, format!("Basic {}", orbital_core_base::codec::base64_encode(b"client-id-1:client-secret-2")));
+        assert!(!seen[0].2.contains("client_secret"));
+    }
+
+    #[test]
+    fn failures_map_to_their_kinds_and_persist_nothing() {
+        let cases = [
+            (200, r#"{"error":"invalid_grant"}"#, ConnectFailureKind::InvalidGrant),
+            (401, r#"{"error":"invalid_client"}"#, ConnectFailureKind::InvalidClient),
+            (200, r#"{"access_token":"LEAK-ME","token_type":"mac"}"#, ConnectFailureKind::Malformed),
+            (502, "bad gateway", ConnectFailureKind::Malformed),
+        ];
+        for (status, body, kind) in cases {
+            let (rows, store) = store();
+            let before = rows.list().unwrap().len();
+            let failure = store.connect(&grant(Some("u1"), ClientAuth::Body), &Fake::answering(status, body)).unwrap_err();
+            assert_eq!(failure.kind, kind, "{body}");
+            assert!(!failure.message.contains("LEAK-ME"));
+            assert_eq!(rows.list().unwrap().len(), before, "{body}: nothing persisted");
+            assert_eq!(store.resolve("DRIVE", Some("u1")), None);
+        }
+    }
+
+    #[test]
+    fn a_transport_error_is_transport_and_a_missing_client_credential_is_refused_before_any_post() {
+        let (rows, store) = store();
+        let down = Fake { reply: Err(TransportError("egress denied".into())), seen: StdMutex::default() };
+        let failure = store.connect(&grant(None, ClientAuth::Body), &down).unwrap_err();
+        assert_eq!((failure.kind, failure.message.as_str()), (ConnectFailureKind::Transport, "egress denied"));
+        let mut missing = grant(None, ClientAuth::Body);
+        missing.client_id = "NOPE".to_string();
+        let silent = Fake::answering(200, GOOD);
+        assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+        assert!(silent.seen.lock().unwrap().is_empty());
+        assert_eq!(rows.list().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_store_without_a_master_key_is_unavailable() {
+        let store = EncryptedCredentialStore::new(Arc::new(MemoryCredentialRows::default()), None, None);
+        let failure = store.connect(&grant(None, ClientAuth::Body), &Fake::answering(200, GOOD)).unwrap_err();
+        assert_eq!(failure.kind, ConnectFailureKind::Unavailable);
+    }
+
+    #[test]
+    fn connecting_over_a_plain_row_replaces_it_and_setting_over_an_oauth_row_replaces_that() {
+        let (rows, store) = store();
+        store.set("x", "DRIVE", "plain-value-1", Some("u1")).unwrap();
+        store.connect(&grant(Some("u1"), ClientAuth::Body), &Fake::answering(200, GOOD)).unwrap();
+        assert_eq!(store.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-TOKEN-7777"));
+        store.set("x", "DRIVE", "plain-value-2", Some("u1")).unwrap();
+        let fresh = EncryptedCredentialStore::new(rows.clone(), Some(&"ab".repeat(32)), None);
+        fresh.warm().expect("every row readable");
+        assert_eq!(fresh.resolve("DRIVE", Some("u1")).as_deref(), Some("plain-value-2"));
+        assert_eq!(rows.list().unwrap().iter().filter(|row| row["envVar"] == "DRIVE").count(), 1);
+    }
+
+    #[test]
+    fn the_credentials_host_connects_through_its_transport_and_is_unavailable_without_one() {
+        use crate::secret_source::SecretSource;
+        let (_, store) = store();
+        let store = Arc::new(store);
+        let bare = crate::credentials::Credentials::default().with_encrypted_store(store.clone()).unwrap();
+        assert_eq!(bare.connect_of(&grant(Some("u1"), ClientAuth::Body)).unwrap_err().kind, ConnectFailureKind::Unavailable);
+        let host = bare.with_grant_transport(Arc::new(Fake::answering(200, GOOD)));
+        let standing = host.connect_of(&grant(Some("u1"), ClientAuth::Body)).unwrap();
+        assert!(standing.connected);
+        assert_eq!(host.secret_of("DRIVE", Some("u1")), Ok(Some("ACCESS-TOKEN-7777".to_string())));
+    }
+
+    mod refresh {
+        use super::*;
+        use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+
+        struct Scripted {
+            replies: StdMutex<Vec<Result<(u16, String), TransportError>>>,
+            calls: AtomicUsize,
+            bodies: StdMutex<Vec<String>>,
+        }
+
+        impl Scripted {
+            fn new(replies: Vec<Result<(u16, String), TransportError>>) -> Self {
+                Self { replies: StdMutex::new(replies), calls: AtomicUsize::new(0), bodies: StdMutex::default() }
+            }
+            fn ok(body: &str) -> Result<(u16, String), TransportError> {
+                Ok((200, body.to_string()))
+            }
+        }
+
+        impl CredentialTransport for Scripted {
+            fn post_form(&self, _: &str, _: &[(String, String)], body: &str) -> Result<(u16, String), TransportError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.bodies.lock().unwrap().push(body.to_string());
+                std::thread::sleep(std::time::Duration::from_millis(40));
+                let mut replies = self.replies.lock().unwrap();
+                assert!(!replies.is_empty(), "an unexpected extra refresh");
+                replies.remove(0)
+            }
+        }
+
+        const ROTATED: &str = r#"{"access_token":"ACCESS-2","token_type":"Bearer","refresh_token":"REFRESH-2","expires_in":3600}"#;
+        const KEPT: &str = r#"{"access_token":"ACCESS-3","token_type":"Bearer","expires_in":3600}"#;
+
+        fn clocked() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
+            let now = Arc::new(AtomicI64::new(1_000_000));
+            let rows = Arc::new(MemoryCredentialRows::default());
+            let clock = now.clone();
+            let store = EncryptedCredentialStore::new(rows.clone(), Some(&"ab".repeat(32)), None)
+                .with_clock(Box::new(move || clock.load(Ordering::SeqCst)));
+            store.set("google", "CLIENT_ID", "client-id-1", None).unwrap();
+            store.set("google", "CLIENT_SECRET", "client-secret-2", None).unwrap();
+            (now, rows, Arc::new(store))
+        }
+
+        fn connected() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
+            let (now, rows, store) = clocked();
+            store.connect(&grant(Some("u1"), ClientAuth::Body), &Fake::answering(200, GOOD)).unwrap();
+            (now, rows, store)
+        }
+
+        fn expire(now: &AtomicI64) {
+            now.fetch_add(3_600_000, Ordering::SeqCst);
+        }
+
+        #[test]
+        fn a_token_that_is_not_expired_is_answered_without_a_transport_call() {
+            let (_, _, store) = connected();
+            let transport = Scripted::new(vec![]);
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&transport)).unwrap().as_deref(), Some("ACCESS-TOKEN-7777"));
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        }
+
+        #[test]
+        fn an_expired_token_refreshes_once_under_eight_concurrent_resolves_and_rotation_persists() {
+            let (now, rows, store) = connected();
+            expire(&now);
+            let transport = Arc::new(Scripted::new(vec![Scripted::ok(ROTATED)]));
+            let handles: Vec<_> = (0..8)
+                .map(|_| {
+                    let (store, transport) = (store.clone(), transport.clone());
+                    std::thread::spawn(move || store.resolve_fresh("DRIVE", Some("u1"), Some(transport.as_ref())).unwrap())
+                })
+                .collect();
+            for handle in handles {
+                assert_eq!(handle.join().unwrap().as_deref(), Some("ACCESS-2"));
+            }
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+            let body = transport.bodies.lock().unwrap()[0].clone();
+            assert!(body.starts_with("grant_type=refresh_token&refresh_token=REFRESH-TOKEN-8888"), "{body}");
+            assert!(body.contains("client_id=client-id-1"));
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-2"));
+            let next = Scripted::new(vec![Scripted::ok(KEPT)]);
+            expire(&now);
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&next)).unwrap().as_deref(), Some("ACCESS-3"));
+            assert!(next.bodies.lock().unwrap()[0].contains("refresh_token=REFRESH-2"), "the rotated token is the one used next");
+        }
+
+        #[test]
+        fn a_refresh_answer_without_a_new_refresh_token_keeps_the_old_one() {
+            let (now, _, store) = connected();
+            expire(&now);
+            store.resolve_fresh("DRIVE", Some("u1"), Some(&Scripted::new(vec![Scripted::ok(KEPT)]))).unwrap();
+            expire(&now);
+            let next = Scripted::new(vec![Scripted::ok(ROTATED)]);
+            store.resolve_fresh("DRIVE", Some("u1"), Some(&next)).unwrap();
+            assert!(next.bodies.lock().unwrap()[0].contains("refresh_token=REFRESH-TOKEN-8888"));
+        }
+
+        #[test]
+        fn invalid_grant_drops_the_row_and_the_status_is_then_not_connected() {
+            let (now, rows, store) = connected();
+            expire(&now);
+            let transport = Scripted::new(vec![Ok((400, r#"{"error":"invalid_grant"}"#.to_string()))]);
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&transport)).unwrap(), None);
+            assert_eq!(store.resolve("DRIVE", Some("u1")), None);
+            assert!(!rows.list().unwrap().iter().any(|row| row["envVar"] == "DRIVE"));
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&Scripted::new(vec![]))).unwrap(), None);
+        }
+
+        #[test]
+        fn a_transport_failure_keeps_the_row_and_returns_a_typed_error_without_token_text() {
+            let (now, _, store) = connected();
+            expire(&now);
+            let down = Scripted::new(vec![Err(TransportError("egress denied".into()))]);
+            let failure = store.resolve_fresh("DRIVE", Some("u1"), Some(&down)).unwrap_err();
+            assert_eq!((failure.kind, failure.message.as_str()), (ConnectFailureKind::Transport, "egress denied"));
+            assert!(!failure.message.contains("TOKEN"));
+            assert_eq!(store.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-TOKEN-7777"), "the row is kept");
+            let up = Scripted::new(vec![Scripted::ok(ROTATED)]);
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&up)).unwrap().as_deref(), Some("ACCESS-2"));
+        }
+
+        #[test]
+        fn an_expired_row_with_no_refresh_token_answers_not_held() {
+            let (now, _, store) = clocked();
+            let body = r#"{"access_token":"ONLY-ACCESS","token_type":"Bearer","expires_in":3600}"#;
+            store.connect(&grant(Some("u1"), ClientAuth::Body), &Fake::answering(200, body)).unwrap();
+            expire(&now);
+            let transport = Scripted::new(vec![]);
+            assert_eq!(store.resolve_fresh("DRIVE", Some("u1"), Some(&transport)).unwrap(), None);
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+        }
+
+        fn refresh_grant(auth: ClientAuth) -> CredentialGrant {
+            let mut ask = grant(Some("u1"), auth);
+            ask.grant = "refresh_token".to_string();
+            ask.code = "".into();
+            ask.redirect_uri = String::new();
+            ask.verifier = None;
+            ask
+        }
+
+        #[test]
+        fn the_explicit_refresh_grant_exchanges_the_stored_refresh_token_and_answers_connected() {
+            let (_, rows, store) = connected();
+            let transport = Scripted::new(vec![Scripted::ok(ROTATED)]);
+            let standing = store.connect(&refresh_grant(ClientAuth::Body), &transport).unwrap();
+            assert_eq!(standing, CredentialStanding { connected: true, label: None });
+            assert!(transport.bodies.lock().unwrap()[0].contains("refresh_token=REFRESH-TOKEN-8888"));
+            assert_eq!(store.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-2"));
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("DRIVE", Some("u1")).as_deref(), Some("ACCESS-2"));
+        }
+
+        #[test]
+        fn the_explicit_refresh_grant_without_a_stored_refresh_token_fails_typed_and_posts_nothing() {
+            let (_, _, store) = clocked();
+            let transport = Scripted::new(vec![]);
+            let none = store.connect(&refresh_grant(ClientAuth::Body), &transport).unwrap_err();
+            assert_eq!(none.kind, ConnectFailureKind::InvalidGrant);
+            let body = r#"{"access_token":"ONLY-ACCESS","token_type":"Bearer"}"#;
+            store.connect(&grant(Some("u1"), ClientAuth::Body), &Fake::answering(200, body)).unwrap();
+            let held = store.connect(&refresh_grant(ClientAuth::Body), &transport).unwrap_err();
+            assert_eq!(held.kind, ConnectFailureKind::InvalidGrant);
+            assert_eq!(transport.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(store.resolve("DRIVE", Some("u1")).as_deref(), Some("ONLY-ACCESS"));
+        }
+
+        #[test]
+        fn an_expired_app_scope_row_refreshes_on_secret_and_a_live_one_makes_no_call() {
+            use crate::secret_source::SecretSource;
+            let (now, _, store) = clocked();
+            store.connect(&grant(None, ClientAuth::Body), &Fake::answering(200, GOOD)).unwrap();
+            let live = Arc::new(Scripted::new(vec![]));
+            let host = crate::credentials::Credentials::default()
+                .with_encrypted_store(store.clone())
+                .unwrap()
+                .with_grant_transport(live.clone());
+            assert_eq!(host.secret("DRIVE"), Ok(Some("ACCESS-TOKEN-7777".to_string())));
+            assert_eq!(live.calls.load(Ordering::SeqCst), 0);
+            expire(&now);
+            let due = Arc::new(Scripted::new(vec![Scripted::ok(ROTATED)]));
+            let host = host.with_grant_transport(due.clone());
+            assert_eq!(host.secret("DRIVE"), Ok(Some("ACCESS-2".to_string())));
+            assert_eq!(due.calls.load(Ordering::SeqCst), 1);
+            assert_eq!(host.secret("DRIVE"), Ok(Some("ACCESS-2".to_string())));
+            assert_eq!(due.calls.load(Ordering::SeqCst), 1);
+        }
+
+        #[test]
+        fn the_credentials_host_refreshes_on_secret_of_through_its_transport() {
+            use crate::secret_source::SecretSource;
+            let (now, _, store) = connected();
+            expire(&now);
+            let host = crate::credentials::Credentials::default()
+                .with_encrypted_store(store)
+                .unwrap()
+                .with_grant_transport(Arc::new(Scripted::new(vec![Scripted::ok(ROTATED)])));
+            assert_eq!(host.secret_of("DRIVE", Some("u1")), Ok(Some("ACCESS-2".to_string())));
+        }
+    }
 }

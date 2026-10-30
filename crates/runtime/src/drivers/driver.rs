@@ -369,7 +369,7 @@ pub(crate) fn drive<D: Driver>(
             ),
             DriverAsk::Random { bytes } => DriverAnswer::Random(io.random(bytes).map(Secret::new)),
             DriverAsk::Clock => DriverAnswer::Clock(io.clock()),
-            DriverAsk::Os { op, args, key } => DriverAnswer::Os(io.os(op, &args, key.as_deref())),
+            DriverAsk::Os { op, args, key } => DriverAnswer::Os(io.os(op, &args, key.as_deref(), None)),
             DriverAsk::Tab { ask } => DriverAnswer::Tab(io.tab(&ask, ctx.key)),
         };
         if io.suspended() {
@@ -444,7 +444,7 @@ mod tests {
                 op,
                 args,
                 key: None,
-                site: None,
+                site: None, principal: None,
             },
             IoAnswer::Os(answer.map(Secret::new)),
         )

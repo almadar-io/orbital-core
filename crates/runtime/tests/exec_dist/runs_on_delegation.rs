@@ -261,3 +261,48 @@ fn control_a_server_kernel_lists_no_host_ask_for_a_routed_sign_in() {
     let routes = serde_json::json!({ "emit": { "success": "SIGNED_IN", "failure": "SIGN_IN_FAILED" } });
     assert!(host_asks(&host_ask_kernel(false, sign_in(routes)), the_email()).0.is_empty());
 }
+
+fn consent(options: serde_json::Value) -> serde_json::Value {
+    serde_json::json!(["auth/consent", { "authorizeUrl": "@payload.url" }, options])
+}
+
+fn the_authorize_url() -> Value {
+    Value::object(orbital_core_base::value::ValueMap::from_iter([("url".into(), Value::String("https://idp.example/authorize?state=s1".to_string().into()))]))
+}
+
+fn place_consent_on_the_client() {
+    let sites = std::collections::BTreeMap::from([("auth/consent".to_string(), "client".to_string())]);
+    orbital_core_base::runs_on::install_operator_sites(&sites).unwrap();
+}
+
+#[test]
+fn an_auth_consent_ask_hands_the_authorize_url_to_the_host_with_its_return_address() {
+    use orbital_core_base::client_effect::{ClientEffect, HostAskCompletion};
+    place_consent_on_the_client();
+    let routes = serde_json::json!({ "key": "consent-1", "emit": { "success": "CONSENT_GRANTED", "failure": "CONSENT_FAILED" } });
+    let (asks, statuses) = host_asks(&host_ask_kernel(true, consent(routes)), the_authorize_url());
+    let ClientEffect::HostAsk { op, args, completion } = &asks[0] else { panic!("a host ask: {asks:?}") };
+    assert_eq!(op, "auth/consent");
+    assert_eq!(args.len(), 1, "the request is the one argument, the options are the routes: {args:?}");
+    assert_eq!(
+        completion,
+        &Some(HostAskCompletion {
+            trait_name: "Chrome".into(),
+            entity_id: None,
+            key: Some("consent-1".into()),
+            success: Some("CONSENT_GRANTED".into()),
+            failure: Some("CONSENT_FAILED".into()),
+        })
+    );
+    assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
+    let wire = serde_json::to_value(&asks[0]).unwrap();
+    assert_eq!(wire[1], "auth/consent");
+    assert_eq!(wire[2], serde_json::json!([{ "authorizeUrl": "https://idp.example/authorize?state=s1" }]));
+}
+
+#[test]
+fn control_a_server_kernel_lists_no_host_ask_for_a_routed_auth_consent() {
+    place_consent_on_the_client();
+    let routes = serde_json::json!({ "emit": { "success": "CONSENT_GRANTED", "failure": "CONSENT_FAILED" } });
+    assert!(host_asks(&host_ask_kernel(false, consent(routes)), the_authorize_url()).0.is_empty());
+}

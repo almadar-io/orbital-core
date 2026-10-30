@@ -1204,6 +1204,7 @@ use orbital_core_base::secret::Secret;
                 entity_id: "singleton".into(),
                 emit: CallRoutes { success: Some("DONE".into()), failure: Some("FAILED".into()), ..Default::default() },
             }),
+            principal: None,
         }
     }
 
@@ -1335,6 +1336,7 @@ use orbital_core_base::secret::Secret;
                 entity_id: "singleton".into(),
                 emit: CallRoutes { failure: Some("FAILED".into()), ..Default::default() },
             }),
+            principal: None,
         };
         match host.answer(&request(None)) {
             IoAnswer::Os(Err(error)) => assert_eq!(error, expected),

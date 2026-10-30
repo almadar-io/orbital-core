@@ -127,6 +127,10 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             credential: ctx.resolve_value_checked(&credential)?.into_owned(),
             emit,
         },
+        Effect::CredentialConnect { request, emit } => Effect::CredentialConnect {
+            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            emit,
+        },
         Effect::CredentialAdmin { op, request, emit } => Effect::CredentialAdmin {
             op,
             request: ctx.resolve_value_checked(&request)?.into_owned(),

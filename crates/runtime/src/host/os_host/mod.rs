@@ -194,6 +194,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
         args,
         key,
         site,
+        principal,
     } = request
     else {
         return IoAnswer::Service(Err("not an os request".to_string()));
@@ -206,9 +207,10 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
         Ok(resolved) => resolved,
         Err(error) => return IoAnswer::Os(Err(error)),
     };
-    let held = |name: &str| host.secrets.ok_or_else(|| "no credential source is configured".to_string())?.secret(name);
-    let source: Option<&dyn Fn(&str) -> Result<Option<String>, String>> = host.secrets.map(|_| &held as &dyn Fn(&str) -> Result<Option<String>, String>);
-    let resolved = match orbital_core_base::os::resolve_credential_segments(*op, &resolved, source) {
+    let held = |name: &str, owner: Option<&str>| host.secrets.ok_or_else(|| "no credential source is configured".to_string())?.secret_of(name, owner);
+    let source: Option<&dyn Fn(&str, Option<&str>) -> Result<Option<String>, String>> =
+        host.secrets.map(|_| &held as &dyn Fn(&str, Option<&str>) -> Result<Option<String>, String>);
+    let resolved = match orbital_core_base::os::resolve_credential_segments(*op, &resolved, principal.as_deref(), source) {
         Ok(resolved) => resolved,
         Err(error) => return IoAnswer::Os(Err(error)),
     };
@@ -231,7 +233,7 @@ mod tests {
             op,
             args: Vec::new(),
             key: None,
-            site: None,
+            site: None, principal: None,
         }
     }
 
@@ -253,7 +255,7 @@ mod tests {
 
     fn os_answer(op: OsOp, args: Vec<Value>, grants: &OsGrants, handles: &OsHandles) -> Result<Value, OsError> {
         let on_event = |_: Option<&CallSite>, _: Value| {};
-        let request = IoRequest::Os { op, args, key: None, site: None };
+        let request = IoRequest::Os { op, args, key: None, site: None, principal: None };
         match answer_os(Some(&OsHost { grants, handles, on_event: &on_event, secrets: None }), &request) {
             IoAnswer::Os(answer) => answer.map(Secret::into_inner),
             other => panic!("{other:?}"),
@@ -769,13 +771,13 @@ mod tests {
                 (OsOp::IrqWait, vec![Value::Number(33.0)]),
                 (OsOp::IrqAck, vec![Value::Number(33.0)]),
             ] {
-                let request = IoRequest::Os { op, args, key: Some("k".into()), site: None };
+                let request = IoRequest::Os { op, args, key: Some("k".into()), site: None, principal: None };
                 let IoAnswer::Os(Err(error)) = answer_os(Some(host), &request) else { panic!("{} must fail", op.name()) };
                 assert_eq!(error.kind, OsErrorKind::Unsupported, "{}", op.name());
                 assert!(error.message.contains("no devices"), "{}", error.message);
             }
         });
-        let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None };
+        let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None, principal: None };
         let IoAnswer::Os(Err(error)) = answer_os(None, &request) else { panic!("no host must deny") };
         assert_eq!(error.kind, OsErrorKind::Denied, "control: no host denies before any device question");
     }
@@ -787,7 +789,7 @@ mod tests {
                 op: OsOp::Close,
                 args: vec![Value::Number(99.0)],
                 key: None,
-                site: None,
+                site: None, principal: None,
             };
             match answer_os(Some(host), &request) {
                 IoAnswer::Os(Err(error)) => assert_eq!(error.kind, OsErrorKind::Closed),

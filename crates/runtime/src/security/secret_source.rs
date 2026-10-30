@@ -39,6 +39,17 @@ pub trait SecretSource: Send + Sync {
     fn rotate_secret_of(&self, _name: &str, _value: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no rotatable credentials".to_string())
     }
+    /// Exchange the grant's code at its token endpoint and keep the result as the credential `grant.name`; this host's
+    /// store cannot, unless it overrides this.
+    fn connect_of(
+        &self,
+        _grant: &crate::credential_admin::CredentialGrant,
+    ) -> Result<crate::credential_admin::CredentialStanding, crate::credential_admin::ConnectFailure> {
+        Err(crate::credential_admin::ConnectFailure::new(
+            crate::credential_admin::ConnectFailureKind::Unavailable,
+            crate::credential_admin::NO_CONNECT,
+        ))
+    }
     /// Drop the credential `name` of `principal` (or the app-wide one when `None`).
     fn forget_of(&self, _name: &str, _principal: Option<&str>) -> Result<(), String> {
         Err("this host keeps no credentials to forget".to_string())
@@ -57,6 +68,10 @@ pub trait SecretSource: Send + Sync {
     /// no store.
     fn credential_store_list(&self) -> Result<Option<crate::credential_admin::StoreListing>, String> {
         Ok(None)
+    }
+    /// The tails of the `names` this host's own environment holds; [`EnvTails::Unsupported`] when it reads none.
+    fn credential_env_tails(&self, _names: &[String]) -> Result<crate::credential_admin::EnvTails, String> {
+        Ok(crate::credential_admin::EnvTails::Unsupported)
     }
     /// The stored value of credential `name`, from the store only.
     fn credential_store_read(&self, _name: &str) -> Result<Option<String>, String> {

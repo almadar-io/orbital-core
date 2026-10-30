@@ -100,12 +100,21 @@ pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswe
         (IoRequest::CredentialForget { name, principal }, Some(host)) => {
             IoAnswer::CredentialForget(host.secrets.forget_of(name, principal.as_deref()))
         }
+        (IoRequest::CredentialConnect { grant }, Some(host)) => IoAnswer::CredentialConnect(host.secrets.connect_of(grant)),
+        (IoRequest::CredentialConnect { .. }, None) => IoAnswer::CredentialConnect(Err(
+            crate::credential_admin::ConnectFailure::new(
+                crate::credential_admin::ConnectFailureKind::Unavailable,
+                crate::credential_admin::NO_CONNECT,
+            ),
+        )),
         (IoRequest::Deliver { envelope, .. }, _) => IoAnswer::Deliver(Err(DeliverRefusal {
             kind: DeliverRefusalKind::Down,
             id: envelope.id.clone(),
         })),
         (IoRequest::CredentialStatus { .. }, None) => IoAnswer::CredentialStatus(Err(NO_PORT_HOST.to_string())),
         (IoRequest::CredentialForget { .. }, None) => IoAnswer::CredentialForget(Err(NO_PORT_HOST.to_string())),
+        (IoRequest::CredentialEnvTails { names }, Some(host)) => IoAnswer::CredentialEnvTails(host.secrets.credential_env_tails(names)),
+        (IoRequest::CredentialEnvTails { .. }, None) => IoAnswer::CredentialEnvTails(Ok(crate::credential_admin::EnvTails::Unsupported)),
         (IoRequest::CredentialStoreList, Some(host)) => IoAnswer::CredentialStoreList(host.secrets.credential_store_list()),
         (IoRequest::CredentialStoreRead { name }, Some(host)) => {
             IoAnswer::CredentialStoreRead(host.secrets.credential_store_read(name).map(|value| value.map(Secret::new)))

@@ -371,6 +371,12 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
             name: "n".into(),
             principal: None,
         },
+        IoRequest::CredentialConnect {
+            grant: Box::new(
+                orbital_core_runtime::credential_admin::CredentialGrant::from_request(&serde_json::from_value(connect_request()).unwrap(), None)
+                    .unwrap(),
+            ),
+        },
         IoRequest::Secret {
             name: "n".into(),
             principal: Some("u".into()),
@@ -387,6 +393,13 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
         let back: IoRequest = serde_json::from_str::<IoRequestWire>(&wire).unwrap().into();
         assert_eq!(back, request, "{wire}");
     }
+    let refused = IoAnswer::CredentialConnect(Err(orbital_core_runtime::credential_admin::ConnectFailure::new(
+        orbital_core_runtime::credential_admin::ConnectFailureKind::InvalidGrant,
+        "the code was already used",
+    )));
+    let wire = serde_json::to_value(IoAnswerWire::from(&refused)).unwrap();
+    assert_eq!(wire, json!({ "kind": "credentialConnect", "result": { "error": { "kind": "invalid_grant", "message": "the code was already used" } } }));
+    assert_eq!(serde_json::from_value::<IoAnswerWire>(wire).map(IoAnswer::from).unwrap(), refused);
     let wire =
         serde_json::to_value(IoAnswerWire::from(&IoAnswer::Random(Ok((vec![1, 2, 3]).into())))).unwrap();
     assert_eq!(
@@ -419,6 +432,57 @@ fn a_random_answer_and_a_secret_set_value_are_redacted_in_debug() {
     assert!(!set.contains("hunter2"), "{set}");
 }
 
+fn connect_request() -> Json {
+    json!({
+        "credential": "tok_name", "tokenEndpoint": "https://auth.example/token", "grant": "authorization_code",
+        "code": "single-use-code-7", "redirectUri": "https://app.example/cb", "verifier": "pkce-verifier-9",
+        "clientId": "client_name", "clientSecret": "secret_name", "clientAuth": "basic", "scopes": ["openid"]
+    })
+}
+
+#[test]
+fn credential_connect_on_a_bare_host_answers_unavailable_and_the_ask_hides_code_and_verifier() {
+    let (response, seen) = run(
+        json!(["credential-connect", connect_request(), routes()]),
+        go(None),
+        |request| orbital_core_runtime::resumable::answer_ports(None, request),
+    );
+    assert_eq!(seen.len(), 1);
+    assert!(matches!(&seen[0], IoRequest::CredentialConnect { grant } if grant.name == "tok_name" && grant.principal.is_none()));
+    assert_eq!(
+        payload_of(&response, "BAD"),
+        json!({ "error": "this host holds no credential store that can connect", "kind": "unavailable" })
+    );
+    let shown = format!("{seen:?}");
+    assert!(shown.contains("tok_name") && shown.contains("client_name"), "control: credential names show: {shown}");
+    assert!(!shown.contains("single-use-code-7") && !shown.contains("pkce-verifier-9"), "leaked: {shown}");
+}
+
+#[test]
+fn credential_connect_for_the_viewer_needs_a_signed_in_viewer_and_a_closed_request() {
+    let mut user_scoped = connect_request();
+    user_scoped["scope"] = json!("user");
+    let (response, seen) = run(json!(["credential-connect", user_scoped.clone(), routes()]), go(None), |request| {
+        panic!("an anonymous user-scoped connect must not ask the host, asked {request:?}")
+    });
+    assert!(seen.is_empty());
+    assert_eq!(payload_of(&response, "BAD")["kind"], json!("unsigned"));
+    let (_, seen) = run(json!(["credential-connect", user_scoped, routes()]), go(signed_in()), |request| match request {
+        IoRequest::CredentialConnect { grant } if grant.principal.as_deref() == Some("u1") => {
+            IoAnswer::CredentialConnect(Ok(CredentialStanding { connected: true, label: Some("me@x".into()) }))
+        }
+        other => panic!("the fixture asks for {other:?}"),
+    });
+    assert_eq!(seen.len(), 1);
+    let mut extra = connect_request();
+    extra["principal"] = json!("other");
+    let (response, seen) = run(json!(["credential-connect", extra, routes()]), go(signed_in()), |request| {
+        panic!("an unknown key must not ask the host, asked {request:?}")
+    });
+    assert!(seen.is_empty());
+    assert_eq!(payload_of(&response, "BAD")["kind"], json!("refused"));
+}
+
 mod credential_admin_effects {
     const RSA_SIGNING_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDBmj4cs/1X1KKS\nd7w4cQLXwY2/zQSivWFyZTFem1GZVnlg223x1KbrF+XtLGmIlWw4U6Ily/uiz645\nZFKwDJ4IRAGs89pnrAB8gR46c0aLRNYKfOpsu0ox0QZre8hgBQF5oUTdGXFQW4Sv\ndGVkM4zMtWCcb+nWWeM1+G86ghU57hjMj/5cnYEwv+waqAOnC7aMGQBNfol9lk4r\n48QKWa5TCibIbo3Hcs5UkqNZYsX+rJrUBtOk1f1/1fhXTAvWsMFudkcYH+M5hmif\nI+O20LVfOV7C2N4DhuWuk/sHHNyJVtwBnZjo3uAdEH2z1lK09JJSFwxkza6QYSRI\ndLC56SAlAgMBAAECggEALGnQhvAplc0TcItkVARk9Q8TkCUdw6GzabVaMoxqF0W1\nuakNG1W/5x3H4vV1zl4NAgz5nTci5pJDMypXJ8j1Ngs34S/d8juMrwNF5n3MeKWV\nfrlyY/hBSJVdpimy6YgscvUyoZA1JQyhr0iB/A8xZULUw36PA9wCGj8AcUknSm70\npQZHB+58X0JG+M+XlU6xW+Tb0V8r6CFGWSxhdOYaXwIBhdBJKvh1KiIHkCDPqX5i\nPsP09EsX7oDsS/+S/INVgqX/q89+ehPdzY19hXgWRD9sbH2h75ImIh/Axy52tJl/\nKCFptgFIf7WBuzJ93iMOVriCR+vncNSj1Gdm0pBq3wKBgQDx7kUsc23zRs8ca+30\n8OpMc81q/qcWBGzs+Fj941hdMRzYzUpk1+Re36Dj5PH1HPc6/h1c/Ip7c8dN1zds\nnJjbhCTpOMuLxhXy81jtWwVr9O4arc0rKH5ZjrDAmTeGtoPMhFjxKdWuljrB/1VA\ndZVhp2S4DPzPJcYu9RUs0JkkvwKBgQDM3H0Z6qiJwUSXVka9kY8rv0ntjr76UUWI\n+E7aHvENElt/YYFeaAG+Suib+bEJ6yqfJlrfF2Gut5PrC14jc9heO2CKkHa5R/8M\nzNALNZ3YSYwAaGlRLrAlRhc7Xe2uPww+Nev4X3O+NUO5MKgLzxgBzWjl+ND6K9Ck\nrsOon43AGwKBgQCsz5MPvmASf0jft2ShKxlhhPJ9c+sr+ftIhdkjeaqb3sIJRxLV\n17Tj4/+L6fS/LnKW6/9TdX0B0+DQhGOtrGovm0O2aABVFiiFgzfJS9QimjEeU3mT\nU3h1RkyRNqCIFIUuqHbTxRtCe0L7YgSmZ5dNywFRys0mtofK8PuwKEzMBwKBgQDJ\nP20SEajBsv/r35Cc16qbIk7AtTM9eqthk/T6Z90Lp1YFO8c389qKktIRr+fQQ5pa\nP/aTJEgMuEDybPdswnfykkgTtzk6aNTQQT+7U0+d0xpaqDeVzdSyuTlHU82TGFKx\npo0KMNLmLzM5cOgUubvuwVhkWtsIeBR+Q0TomN1KswKBgGtczq6Jm7Ic4+WZGzh7\nNVqwdthUdR5EdBjxi5I9SVIS1Rb6pH4Y2cUOBGCz55STj4heV3d0IRS0QCw3TtFi\n0coDp2D6a2eEZDeqdywBQVg8NYpKJI74XyXu+Ogkn0T3vQZtN+BH1fHrTfbSdTa/\nAM812eZIeiLOTXTbKy88Y2Xy\n-----END PRIVATE KEY-----\n";
     const RSA_SIGNATURE_OF_SIGN_ME: &str = "ZNheFwSQUoc3hijIwW3RCdNxljDrGANFey5HEtyMvYys8RMSrC3Unkq7ya6CpBJEltkF6/tpaBoglMlH9TSxZolEThukPFL8+vtR7EEch6I4oceaDqjOE6lxhKJfbU3v8elFyaMaxByOxklNcoKnqzNLBdH/waaJhkyLHg9gQ0beE5L1aKe90US3pjdAO3RCPp3kWUHeQSEm697MS5DJjlW/m1G8292iJaYf53B9hPPP9XcC9EVvRRf57ZwJJ3/RnVexo4UFEPkyqvmaPzL6h324ArZdV2veCtloWOG+fhOWM2LzDKRJwUS/7u8mdcmX8Z/ETOkbXQ946nfuXHOXLQ==";
@@ -427,7 +491,28 @@ mod credential_admin_effects {
     use orbital_core_runtime::credential_admin::{RotateCounts, StoreListing, StoredName};
 
     fn listing() -> StoreListing {
-        StoreListing { enabled: true, entries: vec![StoredName { service: "apikeys".into(), name: "SALT".into() }] }
+        StoreListing { enabled: true, entries: vec![
+            StoredName { service: "apikeys".into(), name: "SALT".into(), last4: Some("1111".into()) },
+            StoredName { service: "apikeys".into(), name: "SHORT".into(), last4: None },
+        ] }
+    }
+
+    fn installed_services() -> Json {
+        orbital_core_base::language::registry::baked_service_catalog()
+            .iter()
+            .map(|service| {
+                let credentials: Vec<Json> = service
+                    .credentials
+                    .iter()
+                    .map(|c| json!({ "envVar": c.env_var, "required": c.required, "description": c.description }))
+                    .collect();
+                let mut row = json!({ "name": service.name, "credentials": credentials });
+                if let Some(backend) = &service.backend {
+                    row["backend"] = json!(backend);
+                }
+                row
+            })
+            .collect()
     }
 
     fn store(request: &IoRequest) -> IoAnswer {
@@ -451,7 +536,11 @@ mod credential_admin_effects {
     #[test]
     fn each_credential_operator_makes_its_one_raw_store_ask_and_answers_the_raw_reply() {
         let (listed, seen) = answer(json!(["credential-list", {}, routes()]), signed_in());
-        assert_eq!(listed, json!({ "enabled": true, "entries": [{ "service": "apikeys", "name": "SALT" }], "declared": [] }));
+        assert_eq!(
+            listed,
+            json!({ "enabled": true, "entries": [{ "service": "apikeys", "name": "SALT", "last4": "1111" }, { "service": "apikeys", "name": "SHORT" }], "env": [], "declared": [], "services": installed_services() }),
+            "control: a row the store reports no tail for answers without a last4 key"
+        );
         assert_eq!(seen, vec![IoRequest::CredentialStoreList]);
 
         let (saved, seen) = answer(json!(["credential-set", {"service": "apikeys", "envVar": "SALT", "value": "salt-value-1111"}, routes()]), signed_in());
@@ -477,6 +566,123 @@ mod credential_admin_effects {
         assert_eq!(held, json!({ "held": true }));
         let (missing, _) = answer(json!(["credential-test", {"envVar": "OTHER"}, routes()]), signed_in());
         assert_eq!(missing, json!({ "held": false }));
+    }
+
+    fn declaring() -> OrbitalSchema {
+        let read = |knob: &str| json!(["hmac/sha256", format!("@config.{knob}"), "x", "hex"]);
+        serde_json::from_value(json!({
+            "name": "App",
+            "osGrants": { "credentials": ["admin"] },
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "config": {
+                        "long": { "type": "secret", "default": "ENV_LONG", "description": "l" },
+                        "short": { "type": "secret", "default": "ENV_SHORT", "description": "s" },
+                        "unset": { "type": "secret", "default": "ENV_UNSET", "description": "u" }
+                    },
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "GO", "effects": [["credential-list", {}, routes()]] },
+                            { "from": "idle", "to": "idle", "event": "READ", "effects": [
+                                ["let", [["a", read("long")], ["b", read("short")], ["c", read("unset")]], ["emit", "OK", { "a": "@a" }]]
+                            ] },
+                            { "from": "idle", "to": "done", "event": "OK" },
+                            { "from": "idle", "to": "failed", "event": "BAD" }
+                        ]
+                    } }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    const FULL_VALUE: &str = "abcdefgh6789";
+
+    fn listed_with(answer_tails: impl Fn(&IoRequest) -> IoAnswer) -> (Json, Vec<IoRequest>) {
+        let server = EmbeddedServer::new(declaring()).unwrap();
+        let (response, seen) = run_on(server, go(signed_in()), |request| match request {
+            IoRequest::CredentialStoreList => IoAnswer::CredentialStoreList(Ok(Some(listing()))),
+            IoRequest::CredentialEnvTails { .. } => answer_tails(request),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        (payload_of(&response, "OK"), seen)
+    }
+
+    fn host_env(request: &IoRequest) -> IoAnswer {
+        use orbital_core_runtime::credentials::Credentials;
+        use orbital_core_runtime::resumable::{answer_ports, PortHost};
+        let creds = Credentials::from_env(
+            [("ENV_LONG", FULL_VALUE), ("ENV_SHORT", "abcde"), ("OTHER", "zzzzzzzzzzzz")]
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+        );
+        let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
+        answer_ports(Some(&PortHost { secrets: &creds, on_event: &on_event, os: None }), request)
+    }
+
+    #[test]
+    fn credential_list_adds_the_declared_env_names_the_hosts_environment_holds_with_their_last4() {
+        let (listed, seen) = listed_with(host_env);
+        assert_eq!(listed["env"], json!([{ "name": "ENV_LONG", "last4": "6789" }, { "name": "ENV_SHORT" }]));
+        assert_eq!(
+            seen,
+            vec![
+                IoRequest::CredentialStoreList,
+                IoRequest::CredentialEnvTails { names: vec!["ENV_LONG".into(), "ENV_SHORT".into(), "ENV_UNSET".into()] },
+            ],
+            "the ask names the declared credentials and nothing else"
+        );
+    }
+
+    #[test]
+    fn the_env_ask_carries_and_journals_no_value() {
+        let (listed, seen) = listed_with(host_env);
+        let answer = host_env(&seen[1]);
+        let wire = serde_json::to_string(&orbital_core_runtime::embed::wire::IoAnswerWire::from(&answer)).unwrap();
+        for text in [format!("{seen:?}"), format!("{answer:?}"), wire, listed.to_string()] {
+            assert!(!text.contains(FULL_VALUE), "{text}");
+            assert!(!text.contains("abcde\""), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_kernel_with_no_host_answers_an_empty_env_and_an_unsupported_host_does_the_same() {
+        use orbital_core_runtime::credential_admin::EnvTails;
+        let (bare, _) = listed_with(|request| orbital_core_runtime::resumable::answer_ports(None, request));
+        assert_eq!(bare["env"], json!([]));
+        assert_eq!(bare["enabled"], true, "control: the rest of the reply is untouched");
+        let (unsupported, _) = listed_with(|_| IoAnswer::CredentialEnvTails(Ok(EnvTails::Unsupported)));
+        assert_eq!(unsupported["env"], json!([]));
+    }
+
+    #[test]
+    fn a_program_declaring_no_credential_asks_no_env_tails() {
+        let (_, seen) = answer(json!(["credential-list", {}, routes()]), signed_in());
+        assert_eq!(seen, vec![IoRequest::CredentialStoreList]);
+    }
+
+    #[test]
+    fn the_wire_round_trips_the_env_tails_ask_and_answers() {
+        use orbital_core_runtime::credential_admin::{EnvTail, EnvTails};
+        use orbital_core_runtime::embed::wire::{IoAnswerWire, IoRequestWire};
+        let request = IoRequest::CredentialEnvTails { names: vec!["A".into(), "B".into()] };
+        let wire = serde_json::to_value(IoRequestWire::from(&request)).unwrap();
+        assert_eq!(wire, json!({ "kind": "credentialEnvTails", "names": ["A", "B"] }));
+        assert_eq!(IoRequest::from(serde_json::from_value::<IoRequestWire>(wire).unwrap()), request);
+        for answer in [
+            IoAnswer::CredentialEnvTails(Ok(EnvTails::Held { tails: vec![EnvTail { name: "A".into(), last4: Some("6789".into()) }, EnvTail { name: "B".into(), last4: None }] })),
+            IoAnswer::CredentialEnvTails(Ok(EnvTails::Unsupported)),
+            IoAnswer::CredentialEnvTails(Err("env unreadable".into())),
+        ] {
+            let wire = serde_json::to_value(IoAnswerWire::from(&answer)).unwrap();
+            let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire.clone()).unwrap().into();
+            assert_eq!(back, answer, "{wire}");
+        }
+        let unsupported = serde_json::to_value(IoAnswerWire::from(&IoAnswer::CredentialEnvTails(Ok(EnvTails::Unsupported)))).unwrap();
+        assert_eq!(unsupported, json!({ "kind": "credentialEnvTails", "result": { "ok": { "kind": "unsupported" } } }));
     }
 
     #[test]
@@ -608,7 +814,7 @@ mod credential_admin_effects {
         assert!(!format!("{:?}", IoRequest::CredentialStoreWrite { service: "s".into(), name: "n".into(), value: "hunter2".into() }).contains("hunter2"));
         assert!(!format!("{:?}", IoAnswer::CredentialStoreRead(Ok(Some("hunter2".into())))).contains("hunter2"));
         let answers = [
-            IoAnswer::CredentialStoreList(Ok(Some(StoreListing { enabled: true, entries: vec![StoredName { service: "s".into(), name: "n".into() }] }))),
+            IoAnswer::CredentialStoreList(Ok(Some(StoreListing { enabled: true, entries: vec![StoredName { service: "s".into(), name: "n".into(), last4: Some("6789".into()) }] }))),
             IoAnswer::CredentialStoreList(Ok(None)),
             IoAnswer::CredentialStoreRead(Ok(Some("v".into()))),
             IoAnswer::CredentialStoreRead(Ok(None)),
@@ -647,7 +853,7 @@ mod os_effects {
             },
         );
         assert_eq!(seen.len(), 1);
-        let IoRequest::Os { op, args, key, site } = &seen[0] else { panic!("an os ask") };
+        let IoRequest::Os { op, args, key, site, .. } = &seen[0] else { panic!("an os ask") };
         assert_eq!(*op, OsOp::ReadFile);
         assert_eq!(serde_json::to_value(args).unwrap(), json!(["/data/a.txt"]));
         assert!(key.is_none() && site.is_none());
@@ -789,7 +995,7 @@ mod os_effects {
                 |_| IoAnswer::Os(Ok(serde_json::from_value(payload.clone()).unwrap())),
             );
             assert_eq!(seen.len(), 1);
-            let IoRequest::Os { op, args, key, site } = &seen[0] else { panic!("an os ask") };
+            let IoRequest::Os { op, args, key, site, .. } = &seen[0] else { panic!("an os ask") };
             assert_eq!(*op, OsOp::StdinRead);
             assert_eq!(args, &vec![orbital_core_base::value::Value::Number(2.0)]);
             assert!(key.is_none() && site.is_none(), "plain stdin is one bounded read");
@@ -821,7 +1027,7 @@ mod os_effects {
             op: OsOp::TcpConnect,
             args: vec![Value::string("db.internal"), Value::Number(5432.0)],
             key: Some("k".into()),
-            site: None,
+            site: None, principal: None,
         };
         let wire = serde_json::to_value(IoRequestWire::from(&request)).unwrap();
         assert_eq!(
@@ -1299,11 +1505,11 @@ mod os_completion {
                 serde_json::from_value(json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
             ],
             key: None,
-            site: None,
+            site: None, principal: None,
         };
         let IoAnswer::Os(Ok(spawned)) = answer_os(Some(&host), &spawn) else { panic!("spawn") };
         let fd = spawned.expose().get_path("stdout").cloned().expect("a stdout fd");
-        let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None };
+        let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None, principal: None };
         assert!(matches!(answer_os(Some(&host), &read), IoAnswer::Os(Ok(_))));
     }
 
@@ -1840,7 +2046,7 @@ mod os_twin {
                 .collect();
             let key = step.get("key").and_then(Json::as_str).map(str::to_string);
             let site = key.as_ref().map(|_| routed_site());
-            let request = IoRequest::Os { op, args, key: key.clone(), site };
+            let request = IoRequest::Os { op, args, key: key.clone(), site, principal: None };
             let answered = if through_native_host { native.answer(&request) } else { answer_os(Some(&host), &request) };
             if let Some(deferred) = step.get("deferred") {
                 assert!(matches!(answered, IoAnswer::ServiceDeferred), "{name}: {answered:?}");
@@ -1939,7 +2145,7 @@ mod kv_asks {
         let on_event = |_: Option<&CallSite>, _: Value| {};
         let host = OsHost { grants, handles, on_event: &on_event, secrets: None };
         let op = OsOp::from_name(op).unwrap_or_else(|| panic!("{op} is not an op"));
-        match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None }) {
+        match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None, principal: None }) {
             IoAnswer::Os(answer) => answer.map(orbital_core_base::secret::Secret::into_inner),
             other => panic!("{other:?}"),
         }

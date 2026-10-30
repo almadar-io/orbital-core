@@ -54,6 +54,7 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("browser/tab-watch", RunsOn::Client),
     ("call-service", RunsOn::Server),
     ("cancel-call", RunsOn::Server),
+    ("credential-connect", RunsOn::Server),
     ("credential-forget", RunsOn::Server),
     ("credential-list", RunsOn::Server),
     ("credential-mode", RunsOn::Server),

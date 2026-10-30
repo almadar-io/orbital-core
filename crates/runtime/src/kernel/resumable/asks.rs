@@ -140,6 +140,8 @@ pub enum IoRequest {
         args: Vec<Value>,
         key: Option<String>,
         site: Option<CallSite>,
+        /// The signed-in viewer's id, set by the kernel from the dispatch's `@user`, for a `scope: "user"` credential segment.
+        principal: Option<String>,
     },
     /// Whether the host holds a value for the credential `name` (for `principal` when set).
     CredentialStatus {
@@ -151,9 +153,18 @@ pub enum IoRequest {
         name: String,
         principal: Option<String>,
     },
+    /// Exchange an OAuth code at the grant's token endpoint and keep the result under its credential name. The code and
+    /// verifier are [`Secret`]s, so the journaled ask never shows them.
+    CredentialConnect {
+        grant: Box<crate::credential_admin::CredentialGrant>,
+    },
     /// The credential store's state: whether it can encrypt (a master key is present) and the service and name of every
     /// stored row, never a value. Answered `None` by a host that holds no store.
     CredentialStoreList,
+    /// The last four characters of each of `names` the host's own environment holds, never a value.
+    CredentialEnvTails {
+        names: Vec<String>,
+    },
     /// The stored value of credential `name`, from the store only (no environment fallthrough).
     CredentialStoreRead {
         name: String,
@@ -299,7 +310,9 @@ pub enum IoAnswer {
     Os(Result<Secret<Value>, OsError>),
     CredentialStatus(Result<crate::credential_admin::CredentialStanding, String>),
     CredentialForget(Result<(), String>),
+    CredentialConnect(Result<crate::credential_admin::CredentialStanding, crate::credential_admin::ConnectFailure>),
     CredentialStoreList(Result<Option<StoreListing>, String>),
+    CredentialEnvTails(Result<crate::credential_admin::EnvTails, String>),
     CredentialStoreRead(Result<Option<Secret<String>>, String>),
     CredentialStoreWrite(Result<(), String>),
     CredentialStoreRemove(Result<bool, String>),
@@ -409,7 +422,9 @@ impl IoAnswer {
                 | (IoRequest::Os { .. }, IoAnswer::Os(_) | IoAnswer::ServiceCancelled)
                 | (IoRequest::CredentialStatus { .. }, IoAnswer::CredentialStatus(_))
                 | (IoRequest::CredentialForget { .. }, IoAnswer::CredentialForget(_))
+                | (IoRequest::CredentialConnect { .. }, IoAnswer::CredentialConnect(_))
                 | (IoRequest::CredentialStoreList, IoAnswer::CredentialStoreList(_))
+                | (IoRequest::CredentialEnvTails { .. }, IoAnswer::CredentialEnvTails(_))
                 | (IoRequest::CredentialStoreRead { .. }, IoAnswer::CredentialStoreRead(_))
                 | (IoRequest::CredentialStoreWrite { .. }, IoAnswer::CredentialStoreWrite(_))
                 | (IoRequest::CredentialStoreRemove { .. }, IoAnswer::CredentialStoreRemove(_))

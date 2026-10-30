@@ -76,6 +76,7 @@ impl EffectExecutor {
             | Effect::Os { .. }
             | Effect::CredentialStatus { .. }
             | Effect::CredentialForget { .. }
+            | Effect::CredentialConnect { .. }
             | Effect::CredentialAdmin { .. }
             | Effect::AccessCheck { .. } => {
                 EffectResult::noop(effect.clone(), "host effects are run by the kernel, which owns its host I/O")

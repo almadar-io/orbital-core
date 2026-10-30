@@ -225,3 +225,21 @@ fn parse_host_effects_read_their_argument_and_emit() {
     assert!(is_known_effect_name("access-check"));
     assert!(parse_effect(&serde_json::from_str(r#"["access-check"]"#).unwrap()).is_none(), "control: the request is required");
 }
+
+#[test]
+fn credential_connect_parses_its_request_and_emit() {
+    let expr: SExpression = serde_json::from_str(
+        r#"["credential-connect", {"credential": "tok", "clientId": "cid"}, {"emit": {"success": "S", "failure": "F"}}]"#,
+    )
+    .unwrap();
+    let parsed = parse_effect(&expr).unwrap();
+    assert_eq!(parsed.operator(), "credential-connect");
+    match parsed {
+        Effect::CredentialConnect { request, emit } => {
+            assert_eq!(request.get_path("credential"), Some(&Value::string("tok")));
+            assert_eq!(emit.and_then(|e| e.failure).as_deref(), Some("F"));
+        }
+        other => panic!("expected CredentialConnect, got {other:?}"),
+    }
+    assert!(parse_effect(&serde_json::from_str(r#"["credential-connect"]"#).unwrap()).is_none(), "control: the request is required");
+}

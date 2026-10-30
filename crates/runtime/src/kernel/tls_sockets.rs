@@ -589,6 +589,7 @@ impl RuntimeKernel {
         op: OsOp,
         args: &[Value],
         key: Option<&str>,
+        principal: Option<&str>,
     ) -> Option<Result<Value, OsError>> {
         match op {
             OsOp::Fetch => self.fetch_refusal(op, args).map(Err),
@@ -599,7 +600,7 @@ impl RuntimeKernel {
                 if !self.tls.contains(sock) {
                     return None;
                 }
-                Some(self.tls_traffic(op, sock, args, key))
+                Some(self.tls_traffic(op, sock, args, key, principal))
             }
             _ => None,
         }
@@ -692,8 +693,9 @@ impl RuntimeKernel {
         sock: i64,
         args: &[Value],
         key: Option<&str>,
+        principal: Option<&str>,
     ) -> Result<Value, OsError> {
-        let resolved = self.resolve_segments(op, args)?;
+        let resolved = self.resolve_segments(op, args, principal)?;
         let (traffic, plain) = traffic_of(op, &resolved)?;
         self.tls_claim(op, sock, traffic, key)?;
         let (mut stream, start_len) = self.tls_stream(op, sock)?;
@@ -722,7 +724,7 @@ impl RuntimeKernel {
         {
             if matches!(raw_op, OsOp::Send | OsOp::Recv) && self.io.os_site(op, Some(key)).is_some()
             {
-                let answer = self.io.os(*raw_op, raw_args, Some(key));
+                let answer = self.io.os(*raw_op, raw_args, Some(key), None);
                 if self.io.peek_call_verdict() == Some(CallVerdict::Deferred) {
                     self.tls_park(sock, traffic, key);
                     self.tls.pending.lock().insert(
@@ -765,12 +767,12 @@ impl RuntimeKernel {
     /// The credential segments of a TLS `os/send` are filled in here, before the plaintext is framed into records: the
     /// kernel asks each credential by name, so the journal holds the names and a replay asks again, and the host sees
     /// only ciphertext.
-    fn resolve_segments(&self, op: OsOp, args: &[Value]) -> Result<Vec<Value>, OsError> {
+    fn resolve_segments(&self, op: OsOp, args: &[Value], principal: Option<&str>) -> Result<Vec<Value>, OsError> {
         let awaiting = std::cell::Cell::new(false);
-        let held = |name: &str| {
-            self.io.secret(name, None).map(|held| held.map(Secret::into_inner)).inspect_err(|message| awaiting.set(message == AWAITING_HOST))
+        let held = |name: &str, owner: Option<&str>| {
+            self.io.secret(name, owner).map(|held| held.map(Secret::into_inner)).inspect_err(|message| awaiting.set(message == AWAITING_HOST))
         };
-        let resolved = orbital_core_base::os::resolve_credential_segments(op, args, Some(&held));
+        let resolved = orbital_core_base::os::resolve_credential_segments(op, args, principal, Some(&held));
         if awaiting.get() {
             return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST));
         }
@@ -1040,6 +1042,8 @@ mod tests {
         deferred: Vec<String>,
         secrets: Vec<(String, String)>,
         asked: Vec<String>,
+        asked_for: Vec<Option<String>>,
+        viewer: Option<Json>,
     }
 
     impl Wire {
@@ -1053,6 +1057,8 @@ mod tests {
                 deferred: Vec::new(),
                 secrets: Vec::new(),
                 asked: Vec::new(),
+                asked_for: Vec::new(),
+                viewer: None,
             }
         }
 
@@ -1070,12 +1076,17 @@ mod tests {
                 IoRequest::Random { bytes } => {
                     IoAnswer::Random(Ok(vec![self.seed; *bytes as usize].into()))
                 }
-                IoRequest::Secret { name, .. } => {
+                IoRequest::Secret { name, principal } => {
                     self.asked.push(name.clone());
+                    self.asked_for.push(principal.clone());
+                    let held = |name: &String| match principal {
+                        Some(who) => format!("{name}@{who}"),
+                        None => name.clone(),
+                    };
                     IoAnswer::Secret(Ok(self
                         .secrets
                         .iter()
-                        .find(|(held, _)| held == name)
+                        .find(|(stored, _)| *stored == held(name))
                         .map(|(_, value)| Secret::new(value.clone()))))
                 }
                 IoRequest::Clock => IoAnswer::Clock(Ok((NOW * 1000) as i64)),
@@ -1129,6 +1140,7 @@ mod tests {
         let request = EventRequest {
             event: event.to_string(),
             target_trait: Some("Host".to_string()),
+            user: wire.viewer.as_ref().map(|user| serde_json::from_value(user.clone()).expect("user")),
             ..Default::default()
         };
         let mut progress = server.start("Main", request).expect("start");
@@ -1231,6 +1243,30 @@ mod tests {
         let shown = format!("{response:?} {:?}", wire.asked);
         assert!(!shown.contains("hunter2-pass"), "the response never shows the credential: {shown}");
         assert!(payload(&response, "BAD").is_none());
+    }
+
+    #[test]
+    fn a_user_segment_of_a_tls_send_asks_the_dispatchs_viewer_and_without_one_sends_nothing() {
+        let segments = json!([
+            { "bytes": codec::base64_encode(b"AUTH "), "credential": "TOKEN", "scope": "user" }
+        ]);
+        let server = EmbeddedServer::new(segment_schema(segments)).expect("server");
+        for viewer in ["alice", "bob"] {
+            let mut wire = Wire::new(7);
+            wire.secrets.push((format!("TOKEN@{viewer}"), format!("tok-{viewer}")));
+            wire.viewer = Some(json!({ "id": viewer }));
+            let response = run(&server, &mut wire);
+            assert!(payload(&response, "BAD").is_none(), "{viewer}");
+            assert_eq!(wire.server.app_received(), format!("AUTH tok-{viewer}").as_bytes(), "{viewer}");
+            assert_eq!(wire.asked_for, vec![Some(viewer.to_string())], "the viewer reached the resolver");
+        }
+        let mut anonymous = Wire::new(7);
+        anonymous.secrets.push(("TOKEN".to_string(), "app-token".to_string()));
+        let response = run(&server, &mut anonymous);
+        let bad = payload(&response, "BAD").expect("the send failed");
+        assert_eq!(bad["kind"], json!("denied"), "{bad}");
+        assert!(anonymous.asked.is_empty(), "no credential was asked without a viewer");
+        assert!(anonymous.server.app_received().is_empty());
     }
 
     #[test]
@@ -1393,7 +1429,7 @@ mod tests {
                                     op: OsOp::Recv,
                                     key: Some(key),
                                     site: Some(_),
-                                    args,
+                                    args, principal: None,
                                 } => {
                                     deferred_ask = Some((key.clone(), args.clone()));
                                     IoAnswer::ServiceDeferred

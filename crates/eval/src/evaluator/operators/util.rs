@@ -2,25 +2,6 @@
 
 use orbital_core_base::value::Value;
 
-/// The key no operator writes into an object it builds: a host that copies the result into a plain object would let
-/// it reach the prototype. Every key-writing object operator answers null for it the same way.
-pub const REFUSED_KEY: &str = "__proto__";
-
-pub fn is_refused_key(key: &str) -> bool {
-    key == REFUSED_KEY
-}
-
-/// [`is_refused_key`] over every key of a value, at any depth.
-pub fn has_refused_key_in(value: &Value) -> bool {
-    match value {
-        Value::Object(map) => map
-            .iter()
-            .any(|(key, inner)| is_refused_key(key) || has_refused_key_in(inner)),
-        Value::Array(items) => items.iter().any(has_refused_key_in),
-        _ => false,
-    }
-}
-
 /// Structural deep-equality over `Value`. Numbers compare exactly (IEEE `==`).
 ///
 /// Single definition shared by `validate/equals` and `object/equals` (these

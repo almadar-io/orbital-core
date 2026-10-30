@@ -28,6 +28,11 @@ pub fn operators_json() -> &'static str {
         .as_str()
 }
 
+/// [`operators_json`] for a running kernel: the typed error when no operator table is installed.
+pub fn try_operators_json() -> Result<&'static str, crate::language_data::LanguageDataError> {
+    Ok(crate::language_data::operator_data()?.operators.as_str())
+}
+
 /// Operator type reference, mirror of `OperatorTypeRef` in `packages/almadar-std/types.ts`.
 ///
 /// A bare string names a concrete type (`"number"`, `"string"`, `"boolean"`, `"void"`, a std struct such as
@@ -428,6 +433,10 @@ pub struct FailableOperator {
     /// Argument positions whose value, typed non-optional, cannot make the call fail (`tree/fold` of a present value).
     #[serde(rename = "unlessPresent", default)]
     pub unless_present: Vec<usize>,
+    /// Argument positions whose value, proved an object (a Map, a struct, a row or an object literal), cannot make the
+    /// call fail (`object/set` of an object).
+    #[serde(rename = "unlessObject", default)]
+    pub unless_object: Vec<usize>,
     /// Argument positions where a value proved nonzero (a divisor), at least zero (a square root's argument) or above
     /// zero (a logarithm's) cannot make the call fail.
     #[serde(rename = "unlessNonZero", default)]
@@ -481,6 +490,18 @@ pub fn parsed_operators() -> &'static OperatorsSchema {
 /// All operators keyed by name (e.g. `"+"`, `"render-ui"`, `"behavior/compose"`).
 pub fn operators() -> &'static HashMap<String, EmbeddedOperator> {
     &parsed_operators().operators
+}
+
+/// [`operators`] for a running kernel (dispatch, wasm or native): the typed language-data error when no operator table
+/// is installed, never a panic.
+pub fn try_operators() -> Result<&'static HashMap<String, EmbeddedOperator>, crate::language_data::LanguageDataError> {
+    crate::language_data::operator_data()?;
+    Ok(operators())
+}
+
+/// [`get_operator`] for a running kernel: the typed language-data error when no operator table is installed.
+pub fn lookup_operator(name: &str) -> Result<Option<&'static EmbeddedOperator>, crate::language_data::LanguageDataError> {
+    Ok(try_operators()?.get(name))
 }
 
 /// Every slot an effect's `emit` options map declares in the operator table: the names an emit map may route a
@@ -663,9 +684,9 @@ pub use patterns::{
     EmbeddedPattern, EmbeddedPatternProp, EmbeddedPayloadField, RequiredFlag, PATTERNS,
 };
 pub use services::{
-    baked_service_actions, baked_service_credentials, baked_service_registry, lolo_spelling,
-    parse_service_registry_data, response_shape_fields, services_json, EmbeddedParamItems,
-    EmbeddedParamMember, EmbeddedServiceCredential, EmbeddedServiceParam, ResponseShapeField,
+    baked_service_actions, baked_service_catalog, baked_service_credentials, baked_service_registry, lolo_spelling,
+    parse_service_catalog, parse_service_registry_data, response_shape_fields, services_json, EmbeddedParamItems,
+    EmbeddedParamMember, EmbeddedService, EmbeddedServiceCredential, EmbeddedServiceParam, ResponseShapeField,
     ServiceRegistryData, EVENT_ADDRESS_TYPE,
 };
 

@@ -340,7 +340,7 @@ impl RuntimeKernel {
                 ctx,
                 effect_results,
                 CallShape::OS,
-                |e, _| self.run_os(e),
+                |e, _| self.run_os(e, ctx),
             ),
             Effect::BrowserPrompt { emit, .. } | Effect::BrowserEmbed { emit, .. } => self
                 .exec_call(
@@ -395,6 +395,7 @@ impl RuntimeKernel {
             Effect::RandomBytes { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialConnect { emit, .. }
             | Effect::CredentialAdmin { emit, .. } => self.exec_call(
                 &effect,
                 emit.as_ref(),

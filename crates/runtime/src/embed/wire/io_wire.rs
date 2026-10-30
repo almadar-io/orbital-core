@@ -119,6 +119,8 @@ pub enum IoRequestWire {
         key: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         site: Option<CallSiteWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        principal: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     CredentialStatus {
@@ -132,7 +134,11 @@ pub enum IoRequestWire {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    CredentialConnect { grant: CredentialGrantWire },
     CredentialStoreList,
+    #[serde(rename_all = "camelCase")]
+    CredentialEnvTails { names: Vec<String> },
     #[serde(rename_all = "camelCase")]
     CredentialStoreRead { name: String },
     #[serde(rename_all = "camelCase")]
@@ -148,6 +154,66 @@ pub enum IoRequestWire {
     CredentialModeRead,
     #[serde(rename_all = "camelCase")]
     CredentialModeWrite { mode: String },
+}
+
+/// A `credential-connect` ask on the wire: the code and verifier travel as plain text to the host that exchanges them.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialGrantWire {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+    pub token_endpoint: String,
+    pub grant: String,
+    #[cfg_attr(test, ts(type = "string"))]
+    pub code: SecretText,
+    pub redirect_uri: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "string"))]
+    pub verifier: Option<SecretText>,
+    pub client_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    pub client_auth: ClientAuth,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+impl From<&CredentialGrant> for CredentialGrantWire {
+    fn from(grant: &CredentialGrant) -> Self {
+        Self {
+            name: grant.name.clone(),
+            principal: grant.principal.clone(),
+            token_endpoint: grant.token_endpoint.clone(),
+            grant: grant.grant.clone(),
+            code: SecretText::new(grant.code.clone()),
+            redirect_uri: grant.redirect_uri.clone(),
+            verifier: grant.verifier.clone().map(SecretText::new),
+            client_id: grant.client_id.clone(),
+            client_secret: grant.client_secret.clone(),
+            client_auth: grant.client_auth,
+            scopes: grant.scopes.clone(),
+        }
+    }
+}
+
+impl From<CredentialGrantWire> for CredentialGrant {
+    fn from(wire: CredentialGrantWire) -> Self {
+        Self {
+            name: wire.name,
+            principal: wire.principal,
+            token_endpoint: wire.token_endpoint,
+            grant: wire.grant,
+            code: wire.code.into_inner(),
+            redirect_uri: wire.redirect_uri,
+            verifier: wire.verifier.map(SecretText::into_inner),
+            client_id: wire.client_id,
+            client_secret: wire.client_secret,
+            client_auth: wire.client_auth,
+            scopes: wire.scopes,
+        }
+    }
 }
 
 /// Why the on-device model or embedder gave no answer.
@@ -330,8 +396,14 @@ pub enum IoAnswerWire {
     CredentialForget {
         result: Settled<(), String>,
     },
+    CredentialConnect {
+        result: Settled<CredentialStanding, ConnectFailure>,
+    },
     CredentialStoreList {
         result: Settled<Option<StoreListing>, String>,
+    },
+    CredentialEnvTails {
+        result: Settled<EnvTails, String>,
     },
     CredentialStoreRead {
         #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]

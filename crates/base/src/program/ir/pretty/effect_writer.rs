@@ -118,6 +118,11 @@ impl PrettyPrinter {
                 self.write_expr(expr);
                 self.write(")");
             }
+            OirEffect::CredentialConnect { request, .. } => {
+                self.write("credential-connect(");
+                self.write_expr(request);
+                self.write(")");
+            }
             OirEffect::CredentialAdmin { op, request, .. } => {
                 self.write(op.name());
                 self.write("(");

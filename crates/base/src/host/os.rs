@@ -202,6 +202,14 @@ impl OsOp {
             .unwrap_or_else(|| panic!("the operator table declares no `{}`", self.name()))
     }
 
+    /// [`Self::table_entry`] for a running kernel: the typed language-data error when no operator table is installed.
+    pub fn try_table_entry(self) -> Result<&'static crate::language::registry::EmbeddedOperator, crate::language_data::LanguageDataError> {
+        crate::language::registry::lookup_operator(self.name())?.ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
+            path: Default::default(),
+            reason: format!("the operator table declares no `{}`", self.name()),
+        })
+    }
+
     /// Whether the operation is answered by the host on either side: `os/fetch` is the browser host's only ask, and
     /// `os/recv` and `os/close` read and release the handle of a streamed fetch there (a native host's sockets).
     pub fn runs_on_any_host(self) -> bool {
@@ -330,6 +338,25 @@ pub fn accepts_arity(op: OsOp, count: usize) -> bool {
     (op.min_args()..=op.max_args()).contains(&count)
 }
 
+/// Whose credential an `os/send` segment names: the app's, or the signed-in viewer's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentScope {
+    App,
+    User,
+}
+
+impl SegmentScope {
+    pub const NAMES: [&'static str; 2] = ["app", "user"];
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "app" => Some(Self::App),
+            "user" => Some(Self::User),
+            _ => None,
+        }
+    }
+}
+
 /// How a credential segment's value is encoded as the host substitutes it: the `encode` field of an `os/send` segment,
 /// and the second argument of `credential/byte-length`. The one definition of the three encoders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,13 +393,14 @@ impl SegmentEncode {
 /// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential, encode? }`
 /// objects becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
 /// followed by the value of the credential it names, passed through its `encode` when it has one (an empty name is
-/// bytes alone). `source` reads a credential by
-/// name; `None` holds none. The credential value exists only in the returned operand: the program, the journal and
+/// bytes alone). A segment's `scope` is `app` (default) or `user`; a user segment reads the credential of `principal`
+/// (the signed-in viewer) and is denied with none. `source` reads a credential by name and principal; `None` holds none. The credential value exists only in the returned operand: the program, the journal and
 /// the answer never hold it. Any other op, or a data operand that is already bytes, is returned as it is.
 pub fn resolve_credential_segments(
     op: OsOp,
     args: &[crate::value::Value],
-    source: Option<&dyn Fn(&str) -> Result<Option<String>, String>>,
+    principal: Option<&str>,
+    source: Option<&dyn Fn(&str, Option<&str>) -> Result<Option<String>, String>>,
 ) -> Result<Vec<crate::value::Value>, OsError> {
     use crate::value::Value;
     use base64::engine::general_purpose::STANDARD;
@@ -399,11 +427,21 @@ pub fn resolve_credential_segments(
             ),
             Some(_) => return Err(invalid(at, &format!("encode must be one of {}", SegmentEncode::NAMES.join(", ")))),
         };
+        let scope = match fields.get("scope") {
+            None => SegmentScope::App,
+            Some(Value::String(requested)) => SegmentScope::from_name(requested.as_str())
+                .ok_or_else(|| invalid(at, &format!("scope must be one of {}", SegmentScope::NAMES.join(", "))))?,
+            Some(_) => return Err(invalid(at, &format!("scope must be one of {}", SegmentScope::NAMES.join(", ")))),
+        };
         if name.as_str().is_empty() {
             continue;
         }
+        let owner = match scope {
+            SegmentScope::App => None,
+            SegmentScope::User => Some(principal.ok_or_else(|| denied(&format!("segment {} needs a signed-in viewer", at + 1)))?),
+        };
         let held = source
-            .ok_or_else(|| denied("no credential source is configured"))?(name.as_str())
+            .ok_or_else(|| denied("no credential source is configured"))?(name.as_str(), owner)
             .map_err(|message| OsError::new(OsErrorKind::Io, format!("{}: credential {name}: {message}", op.name())))?;
         match held {
             Some(value) => match encode {
@@ -708,16 +746,16 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("vectors")
     }
 
-    fn held(name: &str, value: &str) -> impl Fn(&str) -> Result<Option<String>, String> {
+    fn held(name: &str, value: &str) -> impl Fn(&str, Option<&str>) -> Result<Option<String>, String> {
         let (name, value) = (name.to_string(), value.to_string());
-        move |asked| Ok((asked == name).then(|| value.clone()))
+        move |asked, _| Ok((asked == name).then(|| value.clone()))
     }
 
     fn send_resolved(segment: serde_json::Value, value: &str) -> Result<Vec<u8>, OsError> {
         use base64::Engine;
         let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
         let source = held("CRED", value);
-        let resolved = resolve_credential_segments(OsOp::Send, &args, Some(&source))?;
+        let resolved = resolve_credential_segments(OsOp::Send, &args, None, Some(&source))?;
         let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
         Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
     }
@@ -750,5 +788,47 @@ mod tests {
         }
         let bytes_alone = json!({ "bytes": "QQ==", "credential": "", "encode": "form" });
         assert_eq!(send_resolved(bytes_alone, "x").expect("resolved"), b"A".to_vec());
+    }
+
+    fn send_as(segment: serde_json::Value, principal: Option<&str>) -> Result<Vec<u8>, OsError> {
+        use base64::Engine;
+        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let source = |name: &str, owner: Option<&str>| Ok((name == "CRED").then(|| format!("value-of-{}", owner.unwrap_or("app"))));
+        let resolved = resolve_credential_segments(OsOp::Send, &args, principal, Some(&source))?;
+        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
+        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+    }
+
+    #[test]
+    fn a_user_segment_reads_the_viewers_credential_and_two_viewers_get_two_values() {
+        let segment = json!({ "bytes": "", "credential": "CRED", "scope": "user" });
+        assert_eq!(send_as(segment.clone(), Some("alice")).expect("alice"), b"value-of-alice".to_vec());
+        assert_eq!(send_as(segment, Some("bob")).expect("bob"), b"value-of-bob".to_vec());
+    }
+
+    #[test]
+    fn a_user_segment_without_a_viewer_is_denied_before_any_value_is_read() {
+        let segment = json!({ "bytes": "", "credential": "CRED", "scope": "user" });
+        let error = send_as(segment, None).expect_err("denied");
+        assert_eq!(error.kind, OsErrorKind::Denied);
+        assert_eq!(error.message, "os/send: segment 1 needs a signed-in viewer");
+    }
+
+    #[test]
+    fn an_app_segment_ignores_the_viewer_and_the_default_scope_is_app() {
+        for segment in [json!({ "bytes": "", "credential": "CRED" }), json!({ "bytes": "", "credential": "CRED", "scope": "app" })] {
+            assert_eq!(send_as(segment.clone(), Some("alice")).expect("viewer"), b"value-of-app".to_vec());
+            assert_eq!(send_as(segment, None).expect("no viewer"), b"value-of-app".to_vec());
+        }
+    }
+
+    #[test]
+    fn an_unknown_or_non_text_segment_scope_is_refused() {
+        for bad in [json!("team"), json!("USER"), json!(""), json!(1), json!(null)] {
+            let segment = json!({ "bytes": "", "credential": "CRED", "scope": bad });
+            let error = send_as(segment, Some("alice")).expect_err("refused");
+            assert_eq!(error.kind, OsErrorKind::Invalid, "{bad}");
+            assert!(error.message.contains("scope"), "{}", error.message);
+        }
     }
 }

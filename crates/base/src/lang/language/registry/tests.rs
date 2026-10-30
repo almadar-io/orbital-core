@@ -68,6 +68,32 @@ fn shaped_registry() -> ServiceRegistryData {
 }
 
 #[test]
+fn the_service_catalog_lists_each_service_with_its_backend_and_credentials_sorted_by_name() {
+    let catalog = parse_service_catalog(
+        r#"{"services": {
+            "stripe": {"backend": "production", "actions": [], "credentials": [
+                {"envVar": "STRIPE_KEY", "required": true, "description": "live key"},
+                {"envVar": "STRIPE_HOOK", "description": "webhook"}]},
+            "files": {"backend": "mock", "actions": []},
+            "bare": {"actions": []}}}"#,
+    )
+    .unwrap();
+    let shown: Vec<(&str, Option<&str>, Vec<(&str, bool, &str)>)> = catalog
+        .iter()
+        .map(|s| (s.name.as_str(), s.backend.as_deref(), s.credentials.iter().map(|c| (c.env_var.as_str(), c.required, c.description.as_str())).collect()))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            ("bare", None, vec![]),
+            ("files", Some("mock"), vec![]),
+            ("stripe", Some("production"), vec![("STRIPE_KEY", true, "live key"), ("STRIPE_HOOK", false, "webhook")]),
+        ]
+    );
+    assert!(parse_service_catalog(r#"{"services": {}}"#).unwrap().is_empty(), "control: an empty registry lists no service");
+}
+
+#[test]
 fn a_registry_action_exposes_its_response_shape_sorted_and_typed() {
     let registry = shaped_registry();
     let shape = registry.response_shape("files", "upload").expect("shape");
@@ -227,7 +253,7 @@ fn the_host_effects_are_the_tables_closed_calls_with_their_option_keys_request_a
     assert_eq!(
         names,
         [
-            "access-check", "credential-forget", "credential-list", "credential-mode", "credential-remove",
+            "access-check", "credential-connect", "credential-forget", "credential-list", "credential-mode", "credential-remove",
             "credential-rotate", "credential-set", "credential-status", "credential-test", "random-bytes"
         ]
     );
@@ -263,4 +289,36 @@ fn sigil_context_rules_come_from_the_installed_core() {
         known_contexts(),
         ["guard", "effect", "tick"].into_iter().collect()
     );
+}
+
+const NO_LANGUAGE_CHILD: &str = "ORBITAL_BASE_TEST_NO_OPERATOR_TABLE";
+const NO_LANGUAGE_TEST: &str = "language::registry::tests::a_running_kernel_reads_the_operator_table_through_the_typed_sibling";
+
+#[test]
+fn a_running_kernel_reads_the_operator_table_through_the_typed_sibling() {
+    if std::env::var_os(NO_LANGUAGE_CHILD).is_none() {
+        let table = lookup_operator("array/find").expect("control: the installed table answers");
+        assert!(table.is_some(), "control: array/find is in the installed table");
+        assert!(try_operators().is_ok());
+        let empty = std::env::temp_dir().join(format!("orbital-base-no-table-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "--nocapture", "--test-threads=1", NO_LANGUAGE_TEST])
+            .env(NO_LANGUAGE_CHILD, "1")
+            .env("HOME", &empty)
+            .env("USERPROFILE", &empty)
+            .current_dir(&empty)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(&empty).ok();
+        let report = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success() && report.contains("1 passed"), "{report}");
+        return;
+    }
+    let error = lookup_operator("array/find").unwrap_err();
+    assert_eq!(error.code(), crate::language_data::CODE_STD_NOT_INSTALLED);
+    assert!(try_operators().is_err());
+    assert_eq!(try_operators_json().unwrap_err(), error);
+    assert_eq!(crate::os::OsOp::Spawn.try_table_entry().unwrap_err(), error);
+    assert_eq!(crate::os_grants::try_os_grant_needs(crate::os::OsOp::Spawn).unwrap_err(), error);
 }

@@ -348,12 +348,13 @@ impl IoPort {
 
     /// One `os/<op>` ask, journaled. A streaming op, and a keyed op that defers its completion under a declared
     /// route, carries the call site its events dispatch to; the host may answer the latter `ServiceDeferred`.
-    pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>) -> Result<Value, OsError> {
+    pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>, principal: Option<&str>) -> Result<Value, OsError> {
         match self.ask(|| IoRequest::Os {
             op,
             args: args.to_vec(),
             key: key.map(str::to_string),
             site: self.os_site(op, key),
+            principal: principal.map(str::to_string),
         }) {
             Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
             Asked::Answer(IoAnswer::Os(out)) => out.map(Secret::into_inner),
@@ -423,10 +424,30 @@ impl IoPort {
         }
     }
 
+    pub(crate) fn credential_connect(
+        &self,
+        grant: crate::credential_admin::CredentialGrant,
+    ) -> Result<crate::credential_admin::CredentialStanding, crate::credential_admin::ConnectFailure> {
+        use crate::credential_admin::{ConnectFailure, ConnectFailureKind, NO_CONNECT};
+        match self.ask(|| IoRequest::CredentialConnect { grant: Box::new(grant) }) {
+            Asked::Direct => Err(ConnectFailure::new(ConnectFailureKind::Unavailable, NO_CONNECT)),
+            Asked::Answer(IoAnswer::CredentialConnect(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(ConnectFailure::new(ConnectFailureKind::Malformed, AWAITING_HOST)),
+        }
+    }
+
     pub(crate) fn credential_store_list(&self) -> Result<Option<StoreListing>, String> {
         match self.ask(|| IoRequest::CredentialStoreList) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreList(out)) => out,
+            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    pub(crate) fn credential_env_tails(&self, names: &[String]) -> Result<crate::credential_admin::EnvTails, String> {
+        match self.ask(|| IoRequest::CredentialEnvTails { names: names.to_vec() }) {
+            Asked::Direct => Ok(crate::credential_admin::EnvTails::Unsupported),
+            Asked::Answer(IoAnswer::CredentialEnvTails(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
         }
     }

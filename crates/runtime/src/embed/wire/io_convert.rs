@@ -120,11 +120,12 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::Random { bytes } => Self::Random { bytes },
             IoRequestWire::Clock => Self::Clock,
             IoRequestWire::Sealed { op, args } => Self::Sealed { op, args },
-            IoRequestWire::Os { op, args, key, site } => Self::Os {
+            IoRequestWire::Os { op, args, key, site, principal } => Self::Os {
                 op,
                 args,
                 key,
                 site: site.map(CallSite::from),
+                principal,
             },
             IoRequestWire::CredentialStatus { name, principal } => {
                 Self::CredentialStatus { name, principal }
@@ -132,7 +133,9 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::CredentialForget { name, principal } => {
                 Self::CredentialForget { name, principal }
             }
+            IoRequestWire::CredentialConnect { grant } => Self::CredentialConnect { grant: Box::new(grant.into()) },
             IoRequestWire::CredentialStoreList => Self::CredentialStoreList,
+            IoRequestWire::CredentialEnvTails { names } => Self::CredentialEnvTails { names },
             IoRequestWire::CredentialStoreRead { name } => Self::CredentialStoreRead { name },
             IoRequestWire::CredentialStoreWrite { service, name, value } => {
                 Self::CredentialStoreWrite { service, name, value: value.into_inner() }
@@ -251,11 +254,12 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
             IoRequest::Clock => Self::Clock,
             IoRequest::Sealed { op, args } => Self::Sealed { op: op.clone(), args: args.clone() },
-            IoRequest::Os { op, args, key, site } => Self::Os {
+            IoRequest::Os { op, args, key, site, principal } => Self::Os {
                 op: *op,
                 args: args.clone(),
                 key: key.clone(),
                 site: site.as_ref().map(CallSiteWire::from),
+                principal: principal.clone(),
             },
             IoRequest::CredentialStatus { name, principal } => Self::CredentialStatus {
                 name: name.clone(),
@@ -265,7 +269,9 @@ impl From<&IoRequest> for IoRequestWire {
                 name: name.clone(),
                 principal: principal.clone(),
             },
+            IoRequest::CredentialConnect { grant } => Self::CredentialConnect { grant: CredentialGrantWire::from(grant.as_ref()) },
             IoRequest::CredentialStoreList => Self::CredentialStoreList,
+            IoRequest::CredentialEnvTails { names } => Self::CredentialEnvTails { names: names.clone() },
             IoRequest::CredentialStoreRead { name } => Self::CredentialStoreRead { name: name.clone() },
             IoRequest::CredentialStoreWrite { service, name, value } => Self::CredentialStoreWrite {
                 service: service.clone(),
@@ -392,7 +398,9 @@ impl From<&IoAnswer> for IoAnswerWire {
             IoAnswer::CredentialForget(r) => Self::CredentialForget {
                 result: r.clone().into(),
             },
+            IoAnswer::CredentialConnect(r) => Self::CredentialConnect { result: r.clone().into() },
             IoAnswer::CredentialStoreList(r) => Self::CredentialStoreList { result: r.clone().into() },
+            IoAnswer::CredentialEnvTails(r) => Self::CredentialEnvTails { result: r.clone().into() },
             IoAnswer::CredentialStoreRead(r) => Self::CredentialStoreRead {
                 result: r.clone().map(|value| value.map(SecretText::new)).into(),
             },
@@ -473,7 +481,9 @@ impl From<IoAnswerWire> for IoAnswer {
             }
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
+            IoAnswerWire::CredentialConnect { result } => Self::CredentialConnect(result.into()),
             IoAnswerWire::CredentialStoreList { result } => Self::CredentialStoreList(result.into()),
+            IoAnswerWire::CredentialEnvTails { result } => Self::CredentialEnvTails(result.into()),
             IoAnswerWire::CredentialStoreRead { result } => {
                 let result: Result<Option<SecretText>, String> = result.into();
                 Self::CredentialStoreRead(result.map(|value| value.map(SecretText::into_inner)))

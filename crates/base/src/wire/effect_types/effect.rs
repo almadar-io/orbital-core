@@ -87,6 +87,15 @@ pub enum Effect {
         emit: Option<FetchEmit>,
     },
 
+    /// Exchange an OAuth code for a token the host's credential store keeps (`request` is `{ credential, scope?,
+    /// tokenEndpoint, grant, code, redirectUri, verifier?, clientId, clientSecret?, clientAuth, scopes? }`); success
+    /// carries `{ connected, label }`. Server-only.
+    CredentialConnect {
+        request: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        emit: Option<FetchEmit>,
+    },
+
     /// One credential administration effect (`crate::credential_admin`): the kernel decides, the host answers only
     /// the raw store and mode-flag asks. Server-only.
     CredentialAdmin {
@@ -250,6 +259,7 @@ impl Effect {
             | Effect::Os { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialConnect { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
             | Effect::AccessCheck { emit, .. }
             | Effect::Fetch { emit, .. }
@@ -280,6 +290,7 @@ impl Effect {
             | Effect::Os { emit, .. }
             | Effect::CredentialStatus { emit, .. }
             | Effect::CredentialForget { emit, .. }
+            | Effect::CredentialConnect { emit, .. }
             | Effect::CredentialAdmin { emit, .. }
             | Effect::AccessCheck { emit, .. }
             | Effect::Fetch { emit, .. }
@@ -315,6 +326,7 @@ impl Effect {
             | Effect::PersistBatch { .. }
             | Effect::CredentialStatus { .. }
             | Effect::CredentialForget { .. }
+            | Effect::CredentialConnect { .. }
             | Effect::CredentialAdmin { .. }
             | Effect::AccessCheck { .. }
             | Effect::Fetch { .. }
@@ -342,6 +354,7 @@ impl Effect {
             Effect::Os { op, .. } => op.name(),
             Effect::CredentialStatus { .. } => "credential-status",
             Effect::CredentialForget { .. } => "credential-forget",
+            Effect::CredentialConnect { .. } => "credential-connect",
             Effect::CredentialAdmin { op, .. } => op.name(),
             Effect::AccessCheck { .. } => "access-check",
             Effect::RenderUi { .. } => "render-ui",

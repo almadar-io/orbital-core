@@ -119,6 +119,7 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
+            | Self::CredentialConnect { request: expr, .. }
             | Self::CredentialAdmin { request: expr, .. }
             | Self::AccessCheck { request: expr, .. } => {
                 expr.collect_bindings()
@@ -349,6 +350,7 @@ impl OirEffect {
             | Self::CredentialForget {
                 credential: expr, ..
             }
+            | Self::CredentialConnect { request: expr, .. }
             | Self::CredentialAdmin { request: expr, .. }
             | Self::AccessCheck { request: expr, .. } => out.push(expr),
             Self::Spawn { props, .. } => out.push(props),

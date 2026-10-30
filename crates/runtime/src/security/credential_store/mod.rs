@@ -380,6 +380,24 @@ fn last4(value: &str) -> String {
     String::from_utf16_lossy(&units[units.len().saturating_sub(4)..])
 }
 
+/// The last four characters of a secret of eight or more; a shorter one shows nothing, so a tail never reveals half of it.
+fn masked_tail(value: &str) -> Option<String> {
+    let count = value.chars().count();
+    (count >= 8).then(|| value.chars().skip(count - 4).collect())
+}
+
+/// The row kind of an OAuth grant; a plain credential row carries no `kind`.
+const OAUTH_KIND: &str = "oauth";
+
+/// What one row seals and what the warmed entry then holds.
+struct RowBody<'a> {
+    plaintext: &'a str,
+    kind: Option<&'static str>,
+    last4: String,
+    value: String,
+    oauth: Option<oauth::OauthRecord>,
+}
+
 /// Masked view of one stored credential, safe to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialEntry {
@@ -395,11 +413,16 @@ struct Stored {
     entry: CredentialEntry,
     value: String,
     label: Option<String>,
+    /// Present on an `oauth` row, whose `value` is the access token; a refresh rotates it.
+    oauth: Option<oauth::OauthRecord>,
 }
 
 impl Drop for Stored {
     fn drop(&mut self) {
         zeroize::Zeroize::zeroize(&mut self.value);
+        if let Some(record) = &mut self.oauth {
+            record.zeroize();
+        }
     }
 }
 
@@ -419,13 +442,16 @@ struct Sealed {
 }
 
 pub type IvSource = dyn Fn() -> [u8; 12] + Send + Sync;
+pub type ClockMillis = dyn Fn() -> i64 + Send + Sync;
 
 pub struct EncryptedCredentialStore {
     rows: Arc<dyn CredentialRows>,
     master: Option<Key>,
     previous: Option<Key>,
     iv: Box<IvSource>,
+    clock: Box<ClockMillis>,
     state: Mutex<State>,
+    flights: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 #[derive(Default)]
@@ -474,8 +500,16 @@ impl EncryptedCredentialStore {
             master: master_hex.and_then(Key::parse),
             previous: previous_hex.and_then(Key::parse),
             iv,
+            clock: Box::new(orbital_core_base::time_util::now_millis),
             state: Mutex::new(State::default()),
+            flights: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The same store reading time from `clock` (epoch milliseconds) for token expiry and row stamps.
+    pub fn with_clock(mut self, clock: Box<ClockMillis>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// The keys from the environment. In production (`NODE_ENV=production`) a missing or malformed master key is an error.
@@ -594,17 +628,18 @@ impl EncryptedCredentialStore {
                 text_of(row, "id")
                     .map_or_else(|| format!("(row {position}, no id)"), str::to_string)
             };
-            match row.get("kind") {
-                None => {}
+            let oauth_row = match row.get("kind").map(|kind| kind.as_str()) {
+                None => false,
+                Some(Some(OAUTH_KIND)) => true,
                 Some(kind) => {
-                    unreadable.push(if kind.as_str() == Some(RETIRED_DERIVED_KIND) {
+                    unreadable.push(if kind == Some(RETIRED_DERIVED_KIND) {
                         format!("{} (retired kind `{RETIRED_DERIVED_KIND}`: a held one-use value this store no longer keeps)", label())
                     } else {
                         label()
                     });
                     continue;
                 }
-            }
+            };
             let (Some((id, service, env_var, principal)), Some(sealed)) =
                 (Self::identity_of(row), Self::sealed_of(row))
             else {
@@ -615,6 +650,18 @@ impl EncryptedCredentialStore {
                 unreadable.push(label());
                 continue;
             };
+            let (value, last4, oauth) = if oauth_row {
+                match oauth::OauthRecord::parse(&value) {
+                    Some(record) => (record.access.clone(), String::new(), Some(record)),
+                    None => {
+                        unreadable.push(label());
+                        continue;
+                    }
+                }
+            } else {
+                let tail = last4(&value);
+                (value, tail, None)
+            };
             found.insert(
                 storage_key(env_var, principal),
                 Stored {
@@ -622,12 +669,13 @@ impl EncryptedCredentialStore {
                     entry: CredentialEntry {
                         service: service.to_string(),
                         env_var: env_var.to_string(),
-                        last4: last4(&value),
+                        last4,
                         updated_at: row["updatedAt"].as_f64().map_or(0, |ms| ms as i64),
                         principal: principal.map(str::to_string),
                     },
                     value,
                     label: text_of(row, "label").map(str::to_string),
+                    oauth,
                 },
             );
         }
@@ -720,6 +768,23 @@ impl EncryptedCredentialStore {
         found
     }
 
+    fn listed_rows(&self) -> Vec<StoredName> {
+        let mut found: Vec<StoredName> = self
+            .state
+            .lock()
+            .by_identity
+            .values()
+            .filter(|stored| stored.entry.principal.is_none())
+            .map(|stored| StoredName {
+                service: stored.entry.service.clone(),
+                name: stored.entry.env_var.clone(),
+                last4: stored.oauth.is_none().then(|| masked_tail(&stored.value)).flatten(),
+            })
+            .collect();
+        found.sort_by(|a, b| a.service.cmp(&b.service).then_with(|| a.name.cmp(&b.name)));
+        found
+    }
+
     /// Upsert one credential: encrypt, persist, keep the warmed entry. A row's label is left as it is.
     pub fn set(
         &self,
@@ -747,9 +812,21 @@ impl EncryptedCredentialStore {
         if label.is_some_and(str::is_empty) {
             return Err("credential label must be a nonempty string".to_string());
         }
+        let kept = RowBody { plaintext: value, kind: None, last4: last4(value), value: value.to_string(), oauth: None };
+        self.store_row(service, env_var, principal, label, kept)
+    }
+
+    fn store_row(
+        &self,
+        service: &str,
+        env_var: &str,
+        principal: Option<&str>,
+        label: Option<&str>,
+        body: RowBody<'_>,
+    ) -> Result<CredentialEntry, String> {
         self.ensure_warm()?;
-        let sealed = self.seal(value, env_var, principal)?;
-        let updated_at = orbital_core_base::time_util::now_millis();
+        let sealed = self.seal(body.plaintext, env_var, principal)?;
+        let updated_at = (self.clock)();
         let key = storage_key(env_var, principal);
         let mut data = Map::new();
         data.insert("service".into(), json!(service));
@@ -759,6 +836,9 @@ impl EncryptedCredentialStore {
         data.insert("authTag".into(), json!(sealed.auth_tag));
         data.insert("keyId".into(), json!(sealed.key_id));
         data.insert("updatedAt".into(), json!(updated_at));
+        if let Some(kind) = body.kind {
+            data.insert("kind".into(), json!(kind));
+        }
         if let Some(who) = principal {
             data.insert("principal".into(), json!(who));
         }
@@ -768,16 +848,21 @@ impl EncryptedCredentialStore {
         let data = Value::Object(data);
         let mut state = self.state.lock();
         let (id, kept_label) = match state.by_identity.get(&key) {
-            Some(existing) => {
+            Some(existing) if existing.oauth.is_some() == body.oauth.is_some() => {
                 self.rows.update(&existing.id, &data)?;
                 (existing.id.clone(), existing.label.clone())
+            }
+            Some(existing) => {
+                let created = self.rows.create(&data)?;
+                self.rows.delete(&existing.id)?;
+                (created, None)
             }
             None => (self.rows.create(&data)?, None),
         };
         let entry = CredentialEntry {
             service: service.to_string(),
             env_var: env_var.to_string(),
-            last4: last4(value),
+            last4: body.last4,
             updated_at,
             principal: principal.map(str::to_string),
         };
@@ -786,8 +871,9 @@ impl EncryptedCredentialStore {
             Stored {
                 id,
                 entry: entry.clone(),
-                value: value.to_string(),
+                value: body.value,
                 label: label.map(str::to_string).or(kept_label),
+                oauth: body.oauth,
             },
         );
         Ok(entry)
@@ -856,7 +942,7 @@ impl EncryptedCredentialStore {
             data.insert("keyId".into(), json!(fresh.key_id));
             data.insert(
                 "updatedAt".into(),
-                json!(orbital_core_base::time_util::now_millis()),
+                json!((self.clock)()),
             );
             if let Some(who) = principal {
                 data.insert("principal".into(), json!(who));
@@ -878,17 +964,13 @@ impl EncryptedCredentialStore {
         self.ensure_warm()?;
         Ok(StoreListing {
             enabled: self.enabled(),
-            entries: self
-                .entries(None)
-                .into_iter()
-                .map(|entry| StoredName {
-                    service: entry.service,
-                    name: entry.env_var,
-                })
-                .collect(),
+            entries: self.listed_rows(),
         })
     }
 }
+
+mod oauth;
+pub use oauth::{CredentialTransport, TransportError};
 
 #[cfg(test)]
 mod tests;

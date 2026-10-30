@@ -388,6 +388,7 @@ impl NodeLowerer {
             admin if orbital_core_base::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
                 self.resolve_credential_admin_effect(admin, args)
             }
+            "credential-connect" => self.resolve_credential_connect_effect(args),
             "access-check" => self.resolve_access_check_effect(args),
 
             // OS trigger effects (server-side only)

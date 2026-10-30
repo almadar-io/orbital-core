@@ -97,15 +97,40 @@ impl RuntimeKernel {
         Ok(found)
     }
 
-    /// `credential-list`'s raw reply with the credentials the registered programs declare beside the store's rows; any
+    /// `credential-list`'s raw reply with the credentials the registered programs declare and the installed services registry's catalog beside the store's rows; any
     /// other reply as it is.
     pub(super) fn with_declared(&self, op: orbital_core_base::credential_admin::CredentialAdminOp, reply: Value) -> Result<Value, String> {
         use orbital_core_base::credential_admin::CredentialAdminOp;
         let (CredentialAdminOp::List, Value::Object(mut fields)) = (op, reply.clone()) else {
             return Ok(reply);
         };
-        let declared = self
-            .program_credentials()?
+        let credentials = self.program_credentials()?;
+        let mut names: Vec<String> = Vec::new();
+        for credential in &credentials {
+            if !names.contains(&credential.env_var) {
+                names.push(credential.env_var.clone());
+            }
+        }
+        let held = if names.is_empty() {
+            crate::credential_admin::EnvTails::Held { tails: Vec::new() }
+        } else {
+            self.io.credential_env_tails(&names)?
+        };
+        let env = match held {
+            crate::credential_admin::EnvTails::Held { tails } => tails
+                .into_iter()
+                .map(|tail| {
+                    let mut row = ValueMap::from_iter([("name".into(), Value::String(tail.name.into()))]);
+                    if let Some(last4) = tail.last4 {
+                        row.insert("last4".into(), Value::String(last4.into()));
+                    }
+                    Value::object(row)
+                })
+                .collect::<Vec<_>>(),
+            crate::credential_admin::EnvTails::Unsupported => Vec::new(),
+        };
+        fields.insert("env".into(), Value::array(env));
+        let declared = credentials
             .into_iter()
             .map(|credential| {
                 Value::object(ValueMap::from_iter([
@@ -116,6 +141,31 @@ impl RuntimeKernel {
             })
             .collect::<Vec<_>>();
         fields.insert("declared".into(), Value::array(declared));
+        let services = orbital_core_base::language::registry::baked_service_catalog()
+            .iter()
+            .map(|service| {
+                let credentials = service
+                    .credentials
+                    .iter()
+                    .map(|credential| {
+                        Value::object(ValueMap::from_iter([
+                            ("envVar".into(), Value::String(credential.env_var.clone().into())),
+                            ("required".into(), Value::Bool(credential.required)),
+                            ("description".into(), Value::String(credential.description.clone().into())),
+                        ]))
+                    })
+                    .collect::<Vec<_>>();
+                let mut fields = ValueMap::from_iter([
+                    ("name".into(), Value::String(service.name.clone().into())),
+                    ("credentials".into(), Value::array(credentials)),
+                ]);
+                if let Some(backend) = &service.backend {
+                    fields.insert("backend".into(), Value::String(backend.clone().into()));
+                }
+                Value::object(fields)
+            })
+            .collect::<Vec<_>>();
+        fields.insert("services".into(), Value::array(services));
         Ok(Value::object(fields))
     }
 

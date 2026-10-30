@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::credential_store::EncryptedCredentialStore;
+use crate::credential_store::{CredentialTransport, EncryptedCredentialStore};
 use crate::secret_source::SecretSource;
 
 /// One signed-in user's credentials, keyed by `(name, principal)`: derived secrets that expire, and durable ones
@@ -33,6 +33,8 @@ pub struct Credentials {
     minted: Arc<Mutex<HashMap<String, (String, Instant)>>>,
     users: Arc<Mutex<UserSlots>>,
     encrypted: Option<Arc<EncryptedCredentialStore>>,
+    /// How the store reaches a token endpoint; without one a `credential-connect` is unavailable.
+    grant_transport: Option<Arc<dyn CredentialTransport>>,
     /// `ALMADAR_CREDENTIALS_SOURCE=store`: every credential but a host setting answers from the store alone.
     store_source: bool,
 }
@@ -56,6 +58,7 @@ impl Credentials {
             minted: Arc::default(),
             users: Arc::default(),
             encrypted: None,
+            grant_transport: None,
         }
     }
 
@@ -69,6 +72,11 @@ impl Credentials {
         store.warm()?;
         self.encrypted = Some(store);
         Ok(self)
+    }
+
+    pub fn with_grant_transport(mut self, transport: Arc<dyn CredentialTransport>) -> Self {
+        self.grant_transport = Some(transport);
+        self
     }
 
     pub fn with_store(mut self, store: HashMap<String, String>) -> Self {
@@ -332,19 +340,32 @@ mod tests {
     }
 }
 
+impl Credentials {
+    fn fresh(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
+        let Some(store) = self.encrypted.as_ref() else {
+            return Ok(None);
+        };
+        store
+            .resolve_fresh(name, principal, self.grant_transport.as_deref())
+            .map_err(|failure| format!("credential `{name}`: {}", failure.message))
+    }
+}
+
 impl SecretSource for Credentials {
     fn secret(&self, name: &str) -> Result<Option<String>, String> {
-        let mut minted = self
-            .minted
-            .lock()
-            .map_err(|_| "credential cache lock poisoned")?;
-        if let Some((value, expires_at)) = minted.get(name) {
-            if *expires_at > Instant::now() {
-                return Ok(Some(value.clone()));
+        {
+            let mut minted = self
+                .minted
+                .lock()
+                .map_err(|_| "credential cache lock poisoned")?;
+            if let Some((value, expires_at)) = minted.get(name) {
+                if *expires_at > Instant::now() {
+                    return Ok(Some(value.clone()));
+                }
+                minted.remove(name);
             }
-            minted.remove(name);
         }
-        if let Some(stored) = self.encrypted.as_ref().and_then(|store| store.resolve(name, None)) {
+        if let Some(stored) = self.fresh(name, None)? {
             return Ok(Some(stored));
         }
         if self.store_source && !HOST_SETTING_VARS.contains(&name) {
@@ -374,21 +395,34 @@ impl SecretSource for Credentials {
             return self.secret(name);
         };
         let key = (name.to_string(), who.to_string());
-        let mut users = self.users.lock().map_err(|_| POISONED)?;
-        let live = users
-            .derived
-            .get(&key)
-            .map(|(value, expires_at)| (value.clone(), *expires_at));
-        if let Some((value, expires_at)) = live {
-            if expires_at > Instant::now() {
-                return Ok(Some(value));
+        {
+            let mut users = self.users.lock().map_err(|_| POISONED)?;
+            let live = users
+                .derived
+                .get(&key)
+                .map(|(value, expires_at)| (value.clone(), *expires_at));
+            if let Some((value, expires_at)) = live {
+                if expires_at > Instant::now() {
+                    return Ok(Some(value));
+                }
+                users.derived.remove(&key);
             }
-            users.derived.remove(&key);
+            if let Some(held) = users.durable.get(&key) {
+                return Ok(Some(held.clone()));
+            }
         }
-        if let Some(held) = users.durable.get(&key) {
-            return Ok(Some(held.clone()));
+        self.fresh(name, Some(who))
+    }
+
+    fn connect_of(
+        &self,
+        grant: &crate::credential_admin::CredentialGrant,
+    ) -> Result<crate::credential_admin::CredentialStanding, crate::credential_admin::ConnectFailure> {
+        use crate::credential_admin::{ConnectFailure, ConnectFailureKind, NO_CONNECT};
+        match (&self.encrypted, &self.grant_transport) {
+            (Some(store), Some(transport)) => store.connect(grant, transport.as_ref()),
+            _ => Err(ConnectFailure::new(ConnectFailureKind::Unavailable, NO_CONNECT)),
         }
-        Ok(self.encrypted.as_ref().and_then(|store| store.resolve(name, Some(who))))
     }
 
     fn label_of(&self, name: &str, principal: Option<&str>) -> Result<Option<String>, String> {
@@ -464,8 +498,16 @@ impl SecretSource for Credentials {
         self.encrypted.as_ref().map(|store| store.listing()).transpose()
     }
 
+    fn credential_env_tails(&self, names: &[String]) -> Result<crate::credential_admin::EnvTails, String> {
+        let tails = names
+            .iter()
+            .filter_map(|name| self.env.get(name).filter(|value| !value.is_empty()).map(|value| crate::credential_admin::EnvTail::of(name, value)))
+            .collect();
+        Ok(crate::credential_admin::EnvTails::Held { tails })
+    }
+
     fn credential_store_read(&self, name: &str) -> Result<Option<String>, String> {
-        Ok(self.encrypted.as_ref().and_then(|store| store.resolve(name, None)))
+        self.fresh(name, None)
     }
 
     fn credential_store_write(&self, service: &str, name: &str, value: &str) -> Result<(), String> {

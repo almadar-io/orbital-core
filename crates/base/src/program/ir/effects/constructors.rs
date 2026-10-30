@@ -275,6 +275,11 @@ impl OirEffect {
         Self::CredentialForget { credential, emit }
     }
 
+    /// Create a credential-connect effect
+    pub fn credential_connect(request: OirExpr, emit: Option<OirEmitConfig>) -> Self {
+        Self::CredentialConnect { request, emit }
+    }
+
     /// Create a credential administration effect
     pub fn credential_admin(
         op: crate::credential_admin::CredentialAdminOp,

@@ -208,29 +208,52 @@ pub struct EmbeddedServiceCredential {
     pub description: String,
 }
 
+/// One service of the services registry with its backend and declared credentials.
+#[derive(Debug, Clone, Deserialize)]
+pub struct EmbeddedService {
+    #[serde(skip)]
+    pub name: String,
+    #[serde(default)]
+    pub backend: Option<String>,
+    #[serde(default)]
+    pub credentials: Vec<EmbeddedServiceCredential>,
+}
+
+/// The services of raw services-registry.json text, sorted by name.
+pub fn parse_service_catalog(raw: &str) -> Result<Vec<EmbeddedService>, serde_json::Error> {
+    #[derive(Deserialize)]
+    struct ServicesRegistry {
+        #[serde(default)]
+        services: HashMap<String, EmbeddedService>,
+    }
+    let registry: ServicesRegistry = serde_json::from_str(raw)?;
+    let mut catalog: Vec<EmbeddedService> = registry
+        .services
+        .into_iter()
+        .map(|(name, service)| EmbeddedService { name, ..service })
+        .collect();
+    catalog.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(catalog)
+}
+
+/// The installed services registry's services, parsed once.
+pub fn baked_service_catalog() -> &'static [EmbeddedService] {
+    static CATALOG: OnceLock<Vec<EmbeddedService>> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        parse_service_catalog(services_json())
+            .expect("installed services-registry.json is corrupt — reinstall @almadar/core")
+    })
+}
+
 /// Service name → declared credential env vars, from the baked services
 /// registry. Drives the generated `.env.example` / `SECRETS.md` manifest for
 /// the services a schema actually invokes.
 pub fn baked_service_credentials() -> &'static HashMap<String, Vec<EmbeddedServiceCredential>> {
     static MAP: OnceLock<HashMap<String, Vec<EmbeddedServiceCredential>>> = OnceLock::new();
     MAP.get_or_init(|| {
-        #[derive(Deserialize)]
-        struct ServiceEntry {
-            #[serde(default)]
-            credentials: Vec<EmbeddedServiceCredential>,
-        }
-        #[derive(Deserialize)]
-        struct ServicesRegistry {
-            #[serde(default)]
-            services: HashMap<String, ServiceEntry>,
-        }
-        let raw = services_json();
-        let registry: ServicesRegistry = serde_json::from_str(raw)
-            .expect("installed services-registry.json is corrupt — reinstall @almadar/core");
-        registry
-            .services
-            .into_iter()
-            .map(|(name, entry)| (name, entry.credentials))
+        baked_service_catalog()
+            .iter()
+            .map(|service| (service.name.clone(), service.credentials.clone()))
             .collect()
     })
 }

@@ -175,7 +175,7 @@ fn a_signal_outside_the_closed_set_is_invalid() {
 #[test]
 fn the_signals_are_exactly_the_names_the_operator_table_declares() {
     use orbital_core_base::language::registry::get_operator;
-    let declared = table_signal_names();
+    let declared = table_signal_names(OsOp::Kill).expect("the language is installed");
     assert_eq!(declared.len(), 9);
     for name in &declared {
         assert!(libc_signal(name).is_some(), "the host maps {name}");
@@ -559,6 +559,7 @@ fn ask_wait(
             args: vec![pid],
             key: key.map(str::to_string),
             site,
+            principal: None,
         },
     )
 }

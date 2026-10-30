@@ -82,8 +82,8 @@ pub fn matches_semantic_pattern(operator: &str, value: &str) -> Result<bool, Orb
     let cache = COMPILED.get_or_init(Default::default);
     let mut cache = cache.lock();
     if !cache.contains_key(operator) {
-        let pattern = orbital_core_base::language::registry::operators()
-            .get(operator)
+        let pattern = orbital_core_base::language::registry::lookup_operator(operator)
+            .map_err(|e| OrbitalError::Eval(EvalError::InvalidArgument(format!("{}: {e}", e.code()))))?
             .and_then(|meta| meta.pattern.as_deref())
             .ok_or_else(|| {
                 OrbitalError::Eval(EvalError::InvalidArgument(format!(

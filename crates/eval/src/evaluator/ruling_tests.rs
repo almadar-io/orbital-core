@@ -1,4 +1,4 @@
-//! Kernel rulings of 2026-10-18: declared arity is a bound, `__proto__` is refused as a key, `validate/check` takes rules
+//! Kernel rulings of 2026-10-18: declared arity is a bound, `__proto__` is an ordinary key, `validate/check` takes rules
 //! by field, `str/template` and `str/truncate` follow the kernel.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
@@ -93,18 +93,32 @@ fn control_the_declared_arity_runs_and_a_variadic_operator_takes_any_count() {
 }
 
 #[test]
-fn every_key_writing_object_operator_answers_null_for_proto() {
-    for call in [
-        r#"["object/set", {"a": 1}, "__proto__.x", 1]"#,
-        r#"["object/set", {"a": 1}, "a.__proto__", 1]"#,
-        r#"["object/merge", {"a": 1}, {"__proto__": {"x": 1}}]"#,
-        r#"["object/deepMerge", {"a": {"b": 1}}, {"a": {"__proto__": 1}}]"#,
-        r#"["object/deepMerge", {"a": 1}, {"b": {"__proto__": 1}}]"#,
-        r#"["object/fromEntries", [["__proto__", 1]]]"#,
-        r#"["object/mapKeys", {"a": 1}, ["fn", "k", "__proto__"]]"#,
-    ] {
-        assert_eq!(ok(call), Value::Null, "{call}");
-    }
+fn proto_is_an_ordinary_own_key_in_every_key_writing_object_operator() {
+    assert_eq!(ok(r#"["object/get", ["object/set", {"a": 1}, "__proto__", 7], "__proto__"]"#), num(7.0));
+    assert_eq!(ok(r#"["object/get", ["object/set", {"a": 1}, "__proto__.x", 1], "__proto__.x"]"#), num(1.0));
+    assert_eq!(ok(r#"["object/get", ["object/set", {"a": {"b": 0}}, "a.__proto__", 2], "a.__proto__"]"#), num(2.0));
+    assert_eq!(ok(r#"["object/get", ["object/merge", {"a": 1}, {"__proto__": 3}], "__proto__"]"#), num(3.0));
+    assert_eq!(
+        ok(r#"["object/get", ["object/deepMerge", {"a": {"b": 1}}, {"a": {"__proto__": 4}}], "a.__proto__"]"#),
+        num(4.0)
+    );
+    assert_eq!(ok(r#"["object/get", ["object/fromEntries", [["__proto__", 5]]], "__proto__"]"#), num(5.0));
+    assert_eq!(
+        ok(r#"["object/get", ["object/mapKeys", {"a": 6}, ["fn", "k", "__proto__"]], "__proto__"]"#),
+        num(6.0)
+    );
+    assert_eq!(
+        ok(r#"["object/keys", ["object/set", {"a": 1}, "__proto__", 7]]"#),
+        ok(r#"["list", "a", "__proto__"]"#)
+    );
+    assert_eq!(ok(r#"["object/has", ["object/set", {"a": 1}, "__proto__", 7], "__proto__"]"#), Value::Bool(true));
+}
+
+#[test]
+fn object_set_on_an_object_with_a_computed_proto_key_is_not_null() {
+    let call = r#"["object/set", {"a": 1}, ["str/concat", "__pro", "to__"], 9]"#;
+    assert_ne!(ok(call), Value::Null);
+    assert_eq!(ok(&format!(r#"["object/get", {call}, "__proto__"]"#)), num(9.0));
 }
 
 #[test]

@@ -146,7 +146,9 @@ impl BlockingHost<'_> {
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
+            | IoRequest::CredentialConnect { .. }
             | IoRequest::CredentialStoreList
+            | IoRequest::CredentialEnvTails { .. }
             | IoRequest::CredentialStoreRead { .. }
             | IoRequest::CredentialStoreWrite { .. }
             | IoRequest::CredentialStoreRemove { .. }
@@ -173,7 +175,9 @@ impl BlockingHost<'_> {
             | IoRequest::Os { .. }
             | IoRequest::CredentialStatus { .. }
             | IoRequest::CredentialForget { .. }
+            | IoRequest::CredentialConnect { .. }
             | IoRequest::CredentialStoreList
+            | IoRequest::CredentialEnvTails { .. }
             | IoRequest::CredentialStoreRead { .. }
             | IoRequest::CredentialStoreWrite { .. }
             | IoRequest::CredentialStoreRemove { .. }

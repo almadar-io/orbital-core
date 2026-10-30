@@ -439,7 +439,11 @@ pub(super) fn literal_list_pick(expr: &SExpression) -> Option<Vec<SExpression>> 
 /// and the command of `os/spawn`, as the operator table's `grant` names them. A host resolves them to absolute
 /// paths before the call runs; the `cwd` option of `os/spawn` may be one too.
 pub fn anchored_arg_positions(op: OsOp) -> Vec<usize> {
-    let mut at: Vec<usize> = os_grant_needs(op)
+    anchored_positions_of(os_grant_needs(op))
+}
+
+fn anchored_positions_of(needs: &[OsGrantNeed]) -> Vec<usize> {
+    let mut at: Vec<usize> = needs
         .iter()
         .filter_map(|need| match need {
             OsGrantNeed::Fs { path, .. } | OsGrantNeed::FsOpen { path, .. } => Some(*path),
@@ -455,7 +459,11 @@ pub fn anchored_arg_positions(op: OsOp) -> Vec<usize> {
 /// The host and port positions of `op` that may be written as an `env` anchor (`{ anchor: { env: NAME } }`); a host
 /// resolves them to the boot value (the port as a number) before the call runs.
 pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
-    os_grant_needs(op).iter().find_map(|need| match need {
+    anchored_net_of(os_grant_needs(op))
+}
+
+fn anchored_net_of(needs: &[OsGrantNeed]) -> Option<(usize, usize)> {
+    needs.iter().find_map(|need| match need {
         OsGrantNeed::Net { host, port: Some(port), .. } => Some((*host, *port)),
         _ => None,
     })
@@ -467,6 +475,8 @@ pub fn anchored_net_args(op: OsOp) -> Option<(usize, usize)> {
 /// check then runs on the plain value against the boot-resolved grants.
 pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> Result<Vec<Value>, OsError> {
     let refuse = |why: String| OsError::new(OsErrorKind::Denied, format!("{}: {why}", op.name()));
+    let needs = try_os_grant_needs(op)
+        .map_err(|e| OsError::new(OsErrorKind::Unsupported, format!("{}: {}: {e}", op.name(), e.code())))?;
     // An `env` anchor that is unset or empty names nothing: the target is absent, not refused.
     let unset = |anchor: &GrantAnchor| match anchor {
         GrantAnchor::Env(name) if anchors.env.get(name).is_none_or(str::is_empty) => {
@@ -484,14 +494,14 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
         }
     };
     let mut out = args.to_vec();
-    for at in anchored_arg_positions(op) {
+    for at in anchored_positions_of(needs) {
         if let Some(value) = out.get(at) {
             if let Some(resolved) = path(value)? {
                 out[at] = resolved;
             }
         }
     }
-    for need in os_grant_needs(op) {
+    for need in needs {
         let OsGrantNeed::Exec { options: at, .. } = need else { continue };
         if let Some(Value::Object(options)) = out.get_mut(*at) {
             if let Some(cwd) = options.get("cwd") {
@@ -501,7 +511,7 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
             }
         }
     }
-    if let Some((host_at, port_at)) = anchored_net_args(op) {
+    if let Some((host_at, port_at)) = anchored_net_of(needs) {
         for (at, is_port) in [(host_at, false), (port_at, true)] {
             let Some(AnchoredPath { anchor, path: None }) = out.get(at).and_then(AnchoredPath::from_value) else {
                 continue;
