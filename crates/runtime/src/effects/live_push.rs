@@ -51,9 +51,9 @@ pub struct StreamItem {
 impl StreamItem {
     pub fn of_outcomes(outcomes: &[(String, crate::ProcessEventResult)]) -> Vec<Self> {
         let mut items = Vec::new();
-        for (_, result) in outcomes {
+        for (trait_name, result) in outcomes {
             for effect_result in &result.effect_results {
-                if let Some(effect) = ClientEffect::from_effect(&effect_result.effect) {
+                if let Some(effect) = ClientEffect::from_result_in(effect_result, Some((trait_name.as_str(), crate::process_result::frame_row(&result.entity_id)))) {
                     items.push(Self::effect(effect));
                 } else if let orbital_core_base::effect_types::Effect::Emit { event, payload } = &effect_result.effect {
                     items.push(Self::event(EmittedEvent {

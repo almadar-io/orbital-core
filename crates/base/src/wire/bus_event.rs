@@ -7,7 +7,7 @@ use serde::Serialize;
 
 /// The `@event.source` keys of [`BusEventSource`] (core's `deliveryRecordValue`); the wire struct
 /// also carries `pendingKey` and `persistSuccess`, which a delivery record's value leaves out.
-pub const BUS_EVENT_SOURCE_FIELDS: [&str; 10] = [
+pub const BUS_EVENT_SOURCE_FIELDS: [&str; 11] = [
     "orbital",
     "orbitalId",
     "trait",
@@ -18,6 +18,7 @@ pub const BUS_EVENT_SOURCE_FIELDS: [&str; 10] = [
     "fromBridge",
     "dispatched",
     "originClientId",
+    "instanceKey",
 ];
 
 /// Mirror of `BusEventSource` (`bus.ts`). Identifies the origin of an emitted event —
@@ -57,6 +58,10 @@ pub struct BusEventSource {
     /// other connected clients. On the wire, not an `@event.source` binding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_success: Option<bool>,
+    /// The row of the emitting trait's entity that made the emit, when the trait's rows are addressed by a `per`
+    /// listener (EXEC-STEP-1a). A listener with a `per` clause evaluates its own key; one without ignores this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_key: Option<String>,
 }
 
 impl BusEventSource {

@@ -58,6 +58,7 @@ pub fn answer_ports(host: Option<&PortHost<'_>>, request: &IoRequest) -> IoAnswe
             hostname: String::new(),
             referrer: String::new(),
             screen_width: None,
+            href: String::new(),
         })),
         (IoRequest::Prompt { .. }, _) => IoAnswer::Prompt(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST))),
         (IoRequest::Embed { .. }, _) => IoAnswer::Embed(Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST))),

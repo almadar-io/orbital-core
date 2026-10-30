@@ -433,6 +433,14 @@ impl RuntimeKernel {
                             _ => Value::Null,
                         },
                     ),
+                    (
+                        "href".into(),
+                        Value::String(if pick(PageFactField::Href) {
+                            facts.href.into()
+                        } else {
+                            String::new().into()
+                        }),
+                    ),
                 ]);
                 if let Some(key) = &key {
                     payload.insert("key".into(), Value::string(key.clone()));

@@ -281,7 +281,7 @@ impl RuntimeKernel {
             if !outcome.executed {
                 continue;
             }
-            let fields = written.entry(self.trait_frame_key(trait_name)).or_default();
+            let fields = written.entry(self.row_frame_key(trait_name, &outcome.entity_id)).or_default();
             fields.extend(
                 outcome
                     .written_values()
@@ -291,10 +291,12 @@ impl RuntimeKernel {
                 fields.insert("id".to_string().into(), id.clone());
             }
         }
-        written
+        let mut writes: Vec<(String, FrameWrite)> = written
             .into_iter()
             .map(|(key, fields)| (key, FrameWrite::Fields(fields)))
-            .collect()
+            .collect();
+        writes.extend(self.take_removed_rows().into_iter().map(|frame| (frame, FrameWrite::Removed)));
+        writes
     }
 
     /// Seal what `outcomes` wrote onto `response`: [`Self::frame_writes`] then [`Self::seal_frames`].

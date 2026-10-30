@@ -24,6 +24,7 @@
     "config": "config",
     "when": "when",
     "with": "with",
+    "per": "per",
     "from": "from",
     "to": "to",
     "every": "every",
@@ -1130,6 +1131,7 @@
     "workspace/write-plan": "workspace/write-plan",
     "workspace/write-schema": "workspace/write-schema",
     "xml/parse": "xml/parse",
-    "xml/valid": "xml/valid"
+    "xml/valid": "xml/valid",
+    "yaml/parse": "yaml/parse"
   }
 }

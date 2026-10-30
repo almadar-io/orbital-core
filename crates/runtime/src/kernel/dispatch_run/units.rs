@@ -333,6 +333,9 @@ impl RuntimeKernel {
                 if let Some(result) = result {
                     outcomes.push((scope.clone(), result.released()));
                 }
+                if tick.is_none() && self.is_keyed_row(scope, eid) {
+                    self.drop_quiet_row(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), eid, scope, eid)?;
+                }
                 *idx += 1;
                 Ok(Flow::More)
             }
@@ -481,7 +484,7 @@ impl RuntimeKernel {
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
     ) -> Result<bool, Fault> {
-        let Some(item) = cascade.queue.pop_front() else {
+        let Some(mut item) = cascade.queue.pop_front() else {
             return Ok(false);
         };
         cascade.settle_pass();
@@ -497,6 +500,49 @@ impl RuntimeKernel {
                 return Ok(true);
             }
         }
+        if let Some(listen_key) = item.listen_key.clone() {
+            match self.resolve_listen_key(&listen_key, &item.source_payload) {
+                Err(reason) => {
+                    let mut refused = Vec::new();
+                    self.refuse_key(&item, &listen_key, &reason, &mut refused)?;
+                    cascade.queue.extend(refused);
+                    return Ok(true);
+                }
+                Ok(row) => {
+                    let missing = self.keyed_instance_missing(&item.trait_name, &row);
+                    if missing {
+                        if let Err(fault) = self.create_keyed_row(&item.trait_name, &row) {
+                            cascade.queue.push_front(item);
+                            return Err(fault);
+                        }
+                    }
+                    item.listen_key = None;
+                    item.row = Some(row.clone());
+                    if missing {
+                        let init = CascadeItem {
+                            trait_name: item.trait_name.clone(),
+                            event: keyed_rows::ROW_INIT_EVENT.to_string(),
+                            payload: null_payload(),
+                            delivery: null_payload(),
+                            source_payload: null_payload(),
+                            listen_guard: None,
+                            fans_out: false,
+                            repaint: None,
+                            completion: false,
+                            listen_key: None,
+                            row: Some(row),
+                        };
+                        cascade.queue.push_front(item);
+                        cascade.queue.push_front(init);
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+        let outer_eid = eid;
+        let row_id: String = item.row.clone().unwrap_or_else(|| eid.to_string());
+        let keyed = item.row.is_some() || self.is_keyed_row(&item.trait_name, eid);
+        let eid = row_id.as_str();
         let from = self.current_state_name(&item.trait_name, Some(eid));
         let frame = self.step_frame(&item.trait_name, eid);
         if self.io.suspended() {
@@ -519,6 +565,9 @@ impl RuntimeKernel {
                 &view,
             ) {
                 debug!(trait_name = %item.trait_name, event = %item.event, "fanout:listen-guard-blocked");
+                if keyed {
+                    self.drop_quiet_row(&[], &cascade.queue, outer_eid, &item.trait_name, eid)?;
+                }
                 return Ok(true);
             }
         }
@@ -612,12 +661,18 @@ impl RuntimeKernel {
             cascade
                 .queue
                 .extend(self.mount.write().release_after(&t, &ev));
-            outcomes.push((t, result.released()));
+            outcomes.push((t.clone(), result.released()));
         }
-        for item in own.into_iter().rev() {
+        for mut item in own.into_iter().rev() {
+            if keyed {
+                item.row = Some(row_id.clone());
+            }
             cascade.queue.push_front(item);
         }
         cascade.queue.extend(fanned);
+        if keyed {
+            self.drop_quiet_row(&[], &cascade.queue, outer_eid, &t, eid)?;
+        }
         Ok(true)
     }
 }

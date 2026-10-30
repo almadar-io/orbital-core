@@ -169,6 +169,7 @@ operator_kind! {
     CsvParseOp => CsvParseOp,
     XmlParseOp => XmlParseOp,
     XmlValidOp => XmlValidOp,
+    YamlParseOp => YamlParseOp,
     LastOp => LastOp,
     LeOp => LeOp,
     LetOp => LetOp,

@@ -87,7 +87,7 @@ pub(super) fn keyed_call_completion_emit(
                 key,
             ),
         ),
-        (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_)) => return None,
+        (None, EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked) => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
@@ -143,7 +143,7 @@ pub(super) fn substrate_completion_emit(
             emit.failure.clone()?,
             error_payload(result, result.return_value.clone()),
         ),
-        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
     let payload = with_key(payload, key);
     Some(EffectResult::executed(Effect::Emit { event, payload }))
@@ -191,7 +191,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
             }
             (emit.failure.clone()?, payload)
         }
-        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
@@ -252,7 +252,7 @@ pub(super) fn persist_completion_emit(
             };
             (event, payload)
         }
-        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => return None,
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
     let envelope = EffectResult::executed(Effect::Emit { event, payload });
     Some(match result.outcome {

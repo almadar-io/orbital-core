@@ -72,6 +72,7 @@ fn name_only_listener_hears(source: Json) -> bool {
         source: Some(ListenSource::Trait { trait_name: "Play".into(), trait_id: None }),
         payload_mapping: None,
         guard: None,
+        key: None,
         subscription_id: SubscriptionId(0),
     };
     let source: BusEventSource = serde_json::from_value(source).unwrap();

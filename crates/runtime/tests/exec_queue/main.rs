@@ -13,6 +13,7 @@ mod emit_marked_dispatched;
 mod listen_source_identity;
 mod listener_delivery_does_not_refan;
 mod own_emit_fans_out_once;
+mod per_listen_instances;
 mod projected_payload;
 mod qualified_listen_without_source;
 mod relay_payload_fields_do_not_key_frames;

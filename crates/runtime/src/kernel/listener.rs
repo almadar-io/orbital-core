@@ -41,6 +41,9 @@ pub struct ListenerInfo {
     /// Optional guard gating whether the listener fires.
     pub guard: Option<Arc<SExpression>>,
 
+    /// The `per` clause: the row of the listening entity the delivery steps (EXEC-STEP-1a).
+    pub key: Option<Arc<SExpression>>,
+
     /// Subscription ID for unsubscribing.
     pub subscription_id: SubscriptionId,
 }
@@ -167,6 +170,7 @@ impl ListenerManager {
             source,
             payload_mapping: info_mapping,
             guard: info_guard,
+            key: listen.key.clone().map(Arc::new),
             subscription_id,
         };
 
@@ -242,6 +246,11 @@ impl ListenerManager {
             .collect()
     }
 
+    /// Whether some listener of `trait_name` carries a `per` clause: its rows are addressed by key.
+    pub fn is_keyed(&self, trait_name: &str) -> bool {
+        self.listeners.read().get(trait_name).is_some_and(|ls| ls.iter().any(|l| l.key.is_some()))
+    }
+
     /// The trait names in first-registration order.
     pub fn order(&self) -> Vec<String> {
         self.order.read().clone()
@@ -287,6 +296,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -317,6 +327,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -369,6 +380,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -403,6 +415,7 @@ mod tests {
             tier: None,
             payload_mapping: None,
             guard: Some(serde_json::from_str(r#"["=", "@payload.status", "active"]"#).unwrap()),
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -452,6 +465,7 @@ mod tests {
             payload_mapping: Some(mapping),
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -486,6 +500,7 @@ mod tests {
             payload_mapping: Some(mapping),
             source: None,
             guard: Some(serde_json::from_str::<SExpression>(r#"["=", "@payload.kind", "new"]"#).unwrap()),
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -511,6 +526,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -534,6 +550,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -548,6 +565,7 @@ mod tests {
             payload_mapping: None,
             source: None,
             guard: None,
+            key: None,
             event_id: None,
             triggers_id: None,
         };
@@ -578,6 +596,7 @@ mod tests {
                 tier: None,
                 payload_mapping: None,
                 guard: None,
+                key: None,
                 event_id: None,
                 triggers_id: None,
             },
@@ -591,6 +610,7 @@ mod tests {
                 tier: None,
                 payload_mapping: None,
                 guard: None,
+                key: None,
                 event_id: None,
                 triggers_id: None,
             },

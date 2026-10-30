@@ -353,6 +353,7 @@ impl From<&IoAnswer> for IoAnswerWire {
                         hostname: facts.hostname.clone(),
                         referrer: facts.referrer.clone(),
                         screen_width: facts.screen_width,
+                        href: facts.href.clone(),
                     })
                     .map_err(Clone::clone)
                     .into(),
@@ -438,6 +439,7 @@ impl From<IoAnswerWire> for IoAnswer {
                     hostname: facts.hostname,
                     referrer: facts.referrer,
                     screen_width: facts.screen_width,
+                    href: facts.href,
                 }))
             }
             IoAnswerWire::Prompt { result } => {

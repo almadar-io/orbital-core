@@ -89,7 +89,7 @@ fn routes() -> Json {
 }
 
 fn facts(hostname: &str, referrer: &str, width: Option<f64>) -> PageFacts {
-    PageFacts { available: true, hostname: hostname.into(), referrer: referrer.into(), screen_width: width }
+    PageFacts { available: true, hostname: hostname.into(), referrer: referrer.into(), screen_width: width, href: format!("https://{hostname}/page?q=1") }
 }
 
 // --- page facts ---------------------------------------------------------------------------------------------
@@ -103,7 +103,7 @@ fn page_facts_ask_the_host_once_in_list_order_and_emit_flat() {
     assert_eq!(seen, vec![IoRequest::PageFacts { fields: vec![PageFactField::Referrer, PageFactField::ScreenWidth] }]);
     assert_eq!(
         payload_of(&response, "OK"),
-        json!({ "available": true, "hostname": "", "referrer": "https://r.example/", "screenWidth": 1280.0 })
+        json!({ "available": true, "hostname": "", "referrer": "https://r.example/", "screenWidth": 1280.0, "href": "" })
     );
 }
 
@@ -114,18 +114,31 @@ fn page_facts_keep_unrequested_facts_at_their_defaults_whatever_the_host_answers
     });
     assert_eq!(
         payload_of(&response, "OK"),
-        json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null })
+        json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null, "href": "" })
     );
+}
+
+#[test]
+fn page_facts_href_is_the_full_location_when_requested_and_empty_when_not() {
+    let answer = |_: &IoRequest| IoAnswer::PageFacts(Ok(facts("site.example", "", None)));
+    let (response, seen) = run(json!(["browser/page-facts", ["href"], routes()]), answer);
+    assert_eq!(seen, vec![IoRequest::PageFacts { fields: vec![PageFactField::Href] }]);
+    assert_eq!(
+        payload_of(&response, "OK"),
+        json!({ "available": true, "hostname": "", "referrer": "", "screenWidth": null, "href": "https://site.example/page?q=1" })
+    );
+    let (response, _) = run(json!(["browser/page-facts", ["hostname"], routes()]), answer);
+    assert_eq!(payload_of(&response, "OK").get("href"), Some(&json!("")));
 }
 
 #[test]
 fn page_facts_with_no_page_are_available_false_with_the_defaults() {
     let (response, _) = run(json!(["browser/page-facts", ["hostname", "referrer", "screenWidth"], routes()]), |_| {
-        IoAnswer::PageFacts(Ok(PageFacts { available: false, hostname: "x".into(), referrer: "y".into(), screen_width: Some(5.0) }))
+        IoAnswer::PageFacts(Ok(PageFacts { available: false, hostname: "x".into(), referrer: "y".into(), screen_width: Some(5.0), href: "https://x/".into() }))
     });
     assert_eq!(
         payload_of(&response, "OK"),
-        json!({ "available": false, "hostname": "", "referrer": "", "screenWidth": null })
+        json!({ "available": false, "hostname": "", "referrer": "", "screenWidth": null, "href": "" })
     );
 }
 
@@ -158,7 +171,7 @@ fn page_facts_key_is_evaluated_and_echoed_on_success_and_failure_and_absent_mean
     });
     assert_eq!(
         payload_of(&response, "OK"),
-        json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null, "key": "k:hello" })
+        json!({ "available": true, "hostname": "site.example", "referrer": "", "screenWidth": null, "href": "", "key": "k:hello" })
     );
     let (response, _) = run(keyed(json!("fixed")), |_| IoAnswer::PageFacts(Err("blocked".into())));
     assert_eq!(payload_of(&response, "BAD"), json!({ "error": "blocked", "key": "fixed" }));

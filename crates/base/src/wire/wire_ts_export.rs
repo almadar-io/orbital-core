@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 use crate::client_effect::ClientEffect;
+use crate::client_effect::HostAskCompletion;
 use crate::client_effect::NavigateOptions;
 use crate::row_set::RowCompareOp;
 use crate::row_set::RowPredicate;
@@ -61,8 +62,8 @@ impl TS for Value {
 declared_by_hand!(
     ClientEffect,
     "ClientEffect",
-    "[\"render-ui\", string, JsonObject | null] | [\"navigate\", string] | [\"navigate\", string, { [key in string]: string } | null] | [\"navigate\", string, { [key in string]: string } | null, NavigateOptions] | [\"navigate-back\"]",
-    [NavigateOptions]
+    "[\"render-ui\", string, JsonObject | null] | [\"navigate\", string] | [\"navigate\", string, { [key in string]: string } | null] | [\"navigate\", string, { [key in string]: string } | null, NavigateOptions] | [\"navigate-back\"] | [\"host-ask\", string, Array<JsonValue>] | [\"host-ask\", string, Array<JsonValue>, HostAskCompletion]",
+    [NavigateOptions, HostAskCompletion]
 );
 declared_by_hand!(
     DispatchMode,

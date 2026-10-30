@@ -265,7 +265,7 @@ pub(super) fn page_fact_fields(
     use orbital_core_base::ir::effects::PageFactField;
     let Value::Array(words) = value else {
         return Err(
-            "browser/page-facts: the fields must be a list of hostname, referrer, screenWidth"
+            "browser/page-facts: the fields must be a list of hostname, referrer, screenWidth, href"
                 .to_string(),
         );
     };
@@ -276,7 +276,7 @@ pub(super) fn page_fact_fields(
     for word in words {
         let text = word.to_string_value();
         let field = PageFactField::parse(&text).ok_or_else(|| {
-            format!("browser/page-facts: {text} is not one of hostname, referrer, screenWidth")
+            format!("browser/page-facts: {text} is not one of hostname, referrer, screenWidth, href")
         })?;
         if fields.contains(&field) {
             return Err(format!("browser/page-facts: {text} is listed twice"));

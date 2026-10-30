@@ -343,6 +343,10 @@ pub struct OirListener {
     /// the source payload. `None` delivers the source payload unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_mapping: Option<crate::ir::expr::OirFields>,
+    /// `per <expr>`: the row of the listening entity this delivery steps (EXEC-STEP-1a), evaluated over the source
+    /// payload when the delivery is processed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<crate::ir::expr::OirExpr>,
     /// Event to trigger internally
     pub triggers: String,
 }
@@ -359,6 +363,7 @@ impl OirListener {
             source_any: false,
             guard: None,
             payload_mapping: None,
+            key: None,
             triggers: triggers.into(),
         }
     }

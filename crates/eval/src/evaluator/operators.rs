@@ -58,6 +58,7 @@ pub mod tree;
 pub mod util;
 pub mod vector;
 pub mod xml;
+pub mod yaml;
 
 pub use anim::*;
 pub use array::*;
@@ -85,6 +86,7 @@ pub use system::*;
 pub use tree::*;
 pub use vector::*;
 pub use xml::*;
+pub use yaml::*;
 
 /// The names a raw-body callback of operator `name` binds (see [`OperatorKind::raw_callback_params`]).
 pub fn raw_callback_params(name: &str) -> Option<&'static [&'static str]> {
@@ -192,6 +194,9 @@ operator_dispatch! {
         // XML
         "xml/parse" => K::XmlParseOp,
         "xml/valid" => K::XmlValidOp,
+
+        // YAML
+        "yaml/parse" => K::YamlParseOp,
 
         // Path building (for dynamic field paths in set effect)
         "path" => K::PathOp,

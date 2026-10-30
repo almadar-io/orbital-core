@@ -113,6 +113,7 @@ fn bus_event_source_fields_are_exactly_the_wire_keys() {
         origin_client_id: Some(String::new()),
         pending_key: Some(String::new()),
         persist_success: Some(true),
+        instance_key: Some(String::new()),
     };
     let json = serde_json::to_value(full).unwrap();
     let mut keys: Vec<&str> = json

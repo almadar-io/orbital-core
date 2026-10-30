@@ -355,7 +355,7 @@ pub enum OirEffect {
     },
 
     /// Read the requested page facts, in list order. Success `result` is `PAGE_FACTS_SHAPE`:
-    /// `{ available, hostname, referrer, screenWidth }`; a fact that was not requested keeps its default.
+    /// `{ available, hostname, referrer, screenWidth, href }`; a fact that was not requested keeps its default.
     BrowserPageFacts {
         fields: Vec<PageFactField>,
         /// String-typed expression echoed as `key` in the success and failure payloads.
@@ -416,18 +416,20 @@ pub enum PageFactField {
     Hostname,
     Referrer,
     ScreenWidth,
+    Href,
 }
 
 impl PageFactField {
     /// Every fact, in the spelling a program writes it.
-    pub const ALL: [PageFactField; 3] = [Self::Hostname, Self::Referrer, Self::ScreenWidth];
+    pub const ALL: [PageFactField; 4] = [Self::Hostname, Self::Referrer, Self::ScreenWidth, Self::Href];
 
-    /// The bare word a program writes (`hostname`, `referrer`, `screenWidth`).
+    /// The bare word a program writes (`hostname`, `referrer`, `screenWidth`, `href`).
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hostname => "hostname",
             Self::Referrer => "referrer",
             Self::ScreenWidth => "screenWidth",
+            Self::Href => "href",
         }
     }
 

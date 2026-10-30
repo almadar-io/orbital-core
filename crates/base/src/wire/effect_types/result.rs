@@ -276,6 +276,19 @@ impl EffectResult {
         matches!(self.outcome, EffectOutcome::NoOp(_))
     }
 
+    /// A `runsOn: client` host-port effect a client dispatch hands to its client host (`ClientEffect::HostAsk`).
+    pub fn host_asked(effect: Effect) -> Self {
+        Self {
+            outcome: EffectOutcome::HostAsked,
+            ..Self::executed(effect)
+        }
+    }
+
+    /// Check if the effect was handed to the client host as an ask
+    pub fn is_host_asked(&self) -> bool {
+        matches!(self.outcome, EffectOutcome::HostAsked)
+    }
+
     /// Check if the effect was delegated
     pub fn is_delegated(&self) -> bool {
         matches!(self.outcome, EffectOutcome::Delegated(_))
@@ -298,6 +311,9 @@ pub enum EffectOutcome {
 
     /// Effect was delegated to another environment
     Delegated(RuntimeEnvironment),
+
+    /// A `runsOn: client` host-port effect the client dispatch hands to the client host as a `host-ask` client effect
+    HostAsked,
 
     /// Effect execution failed
     Failed,

@@ -96,6 +96,7 @@ pub const PAGE_FACTS_SHAPE: &[ShapeField] = &[
     field("hostname", "string"),
     field("referrer", "string"),
     field("screenWidth", "number"),
+    field("href", "string"),
 ];
 
 /// `browser/tab-list` hands back the open tabs (`{ tab, url, title, active }` each) and the call's key.

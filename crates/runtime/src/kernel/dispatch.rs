@@ -65,6 +65,7 @@ impl RuntimeKernel {
         );
 
         self.ensure_trait_loaded(trait_name)?;
+        self.settle_deferred_asks(trait_name, entity_id, event_name, &payload);
         let trait_def = self
             .registry.trait_definitions
             .read()
@@ -269,7 +270,7 @@ impl RuntimeKernel {
                 cascade_dropped: Vec::new(),
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
-                emit_source: self.emit_source(trait_name),
+                emit_source: self.emit_source_on(trait_name, entity_id),
                 failure,
                 written,
                 callsite_payload: capture,
@@ -348,7 +349,7 @@ impl RuntimeKernel {
                 cascade_dropped: Vec::new(),
                 cascade_cut: None,
                 consumed_emits: Vec::new(),
-                emit_source: self.emit_source(trait_name),
+                emit_source: self.emit_source_on(trait_name, entity_id),
                 failure: None,
                 written: SharedEntity::null(),
                 callsite_payload: None,

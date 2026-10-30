@@ -140,6 +140,17 @@ struct CascadeItem {
     repaint: Option<RepaintJob>,
     /// The reply or failure an effect's completion fired: a distinct delivery, never skipped as a repeat.
     completion: bool,
+    /// A listener's `per` clause, evaluated against `source_payload` when the delivery is processed.
+    listen_key: Option<ListenKey>,
+    /// The row this delivery steps: the evaluated `per` key, or the row of the step that queued it.
+    row: Option<String>,
+}
+
+/// A `per` clause awaiting evaluation, with the trait whose emit the listener heard (who hears a refusal).
+#[derive(Clone)]
+struct ListenKey {
+    expr: Arc<SExpression>,
+    emitter: String,
 }
 
 /// An embedded child to re-render under the payload of the transition that composed it
@@ -412,6 +423,10 @@ pub struct RuntimeKernel {
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
     /// The current mount's lifecycle (see [`MountLifecycle`]).
     mount: Arc<RwLock<MountLifecycle>>,
+    /// Keyed asks a row's step deferred and the host has not completed, per (trait, session-folded row).
+    deferred_asks: RwLock<HashMap<(String, String), Vec<keyed_rows::DeferredAsk>>>,
+    /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
+    removed_rows: RwLock<Vec<(Option<String>, String)>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
@@ -721,6 +736,8 @@ impl RuntimeKernel {
                 nav_pages: Arc::new(RwLock::new(Value::array(Vec::new()))),
             },
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
+            deferred_asks: RwLock::new(HashMap::new()),
+            removed_rows: RwLock::new(Vec::new()),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
     }
@@ -1016,6 +1033,7 @@ mod ticks;
 mod client_leg;
 mod frames;
 mod cascade;
+mod keyed_rows;
 mod step_effects;
 mod host_effects;
 mod repaint;

@@ -132,6 +132,34 @@ impl RuntimeKernel {
         *origin = held;
     }
 
+    /// The refusal of a delivery whose `per` key is not a non-empty string.
+    pub(super) fn key_refusal(&self, trait_name: &str, event: &str) -> DeliveryRefused {
+        let instance = self.config.unit.clone().unwrap_or_default();
+        let (seq, ordinal) = {
+            let mut deliveries = self.deliveries.write();
+            match deliveries.held.as_mut() {
+                Some(held) => {
+                    let at = (held.seq, held.emits);
+                    held.emits += 1;
+                    at
+                }
+                None => (0, 0),
+            }
+        };
+        let causal_id = format!("{instance}#{seq}");
+        DeliveryRefused {
+            id: envelope_id(&instance, &causal_id, seq, ordinal),
+            to: InstanceRef {
+                instance,
+                orbital: self.orbital_of_trait(trait_name).unwrap_or_default(),
+                trait_name: Some(trait_name.to_string()),
+            },
+            event: event.to_string(),
+            reason: DeliverRefusalKind::KeyInvalid,
+            causal_id,
+        }
+    }
+
     /// Ask the host to deliver each `emit` of the step whose declared listener is placed in another unit, in
     /// result order then listener registration order. A refusal is recorded on the emit's result as a
     /// [`DeliveryRefused`]; the returned message is the step's failure when nothing the emitter's listens would

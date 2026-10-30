@@ -20,6 +20,8 @@ xxhash-rust = { version = "0.8.15", default-features = false, features = ["xxh3"
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 regex = { version = "1.10", default-features = false, features = ["unicode"] }
 quick-xml = { version = "0.38", optional = true }
+saphyr = { version = "=0.0.6", optional = true }
+saphyr-parser = { version = "=0.0.6", optional = true }
 icu_collator = { version = "2.3", default-features = false, features = ["unstable", "compiled_data"] }
 ts-rs = { version = "12.0.1", optional = true }
 orbital-core-base = { path = "../base", default-features = false }
@@ -42,6 +44,8 @@ std = [
     "base64/std",
     "regex/default",
     "dep:quick-xml",
+    "dep:saphyr",
+    "dep:saphyr-parser",
     "icu_collator/default",
 ]
 ts-export = ["std", "dep:ts-rs"]

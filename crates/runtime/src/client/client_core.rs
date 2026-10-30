@@ -943,6 +943,9 @@ impl ClientCore {
                 debug!("Navigate-back effect");
                 self.navigate_back();
             }
+            ClientEffect::HostAsk { op, .. } => {
+                tracing::error!(op = %op, trait_name = origin_trait, "host-ask: this client core has no host to answer it");
+            }
         }
     }
 

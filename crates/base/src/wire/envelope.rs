@@ -51,6 +51,8 @@ pub enum DeliverRefusalKind {
     Down,
     /// The payload contradicts the receiving event's declaration (G-CROSS-335).
     PayloadInvalid,
+    /// A listener's `per` key is not a non-empty string (EXEC-STEP-1a).
+    KeyInvalid,
 }
 
 impl DeliverRefusalKind {
@@ -63,6 +65,7 @@ impl DeliverRefusalKind {
             Self::Denied => "denied",
             Self::Down => "down",
             Self::PayloadInvalid => "payload-invalid",
+            Self::KeyInvalid => "key-invalid",
         }
     }
 }

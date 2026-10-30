@@ -200,6 +200,7 @@ pub enum PageFactFieldWire {
     Hostname,
     Referrer,
     ScreenWidth,
+    Href,
 }
 
 impl From<PageFactField> for PageFactFieldWire {
@@ -208,6 +209,7 @@ impl From<PageFactField> for PageFactFieldWire {
             PageFactField::Hostname => Self::Hostname,
             PageFactField::Referrer => Self::Referrer,
             PageFactField::ScreenWidth => Self::ScreenWidth,
+            PageFactField::Href => Self::Href,
         }
     }
 }
@@ -218,6 +220,7 @@ impl From<PageFactFieldWire> for PageFactField {
             PageFactFieldWire::Hostname => Self::Hostname,
             PageFactFieldWire::Referrer => Self::Referrer,
             PageFactFieldWire::ScreenWidth => Self::ScreenWidth,
+            PageFactFieldWire::Href => Self::Href,
         }
     }
 }
@@ -231,6 +234,7 @@ pub struct PageFactsWire {
     pub hostname: String,
     pub referrer: String,
     pub screen_width: Option<f64>,
+    pub href: String,
 }
 
 /// A host's answer to one request; `kind` must be the one the request calls for.

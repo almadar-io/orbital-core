@@ -606,6 +606,8 @@ impl RuntimeKernel {
                     fans_out: true,
                     repaint: None,
                     completion: false,
+                    listen_key: None,
+                    row: None,
                 });
                 continue;
             }

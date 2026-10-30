@@ -35,6 +35,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
     put_str("transition", &source.transition);
     put_str("tick", &source.tick);
     put_str("originClientId", &source.origin_client_id);
+    put_str("instanceKey", &source.instance_key);
     if let Some(v) = source.from_bridge {
         src.insert("fromBridge".into(), Value::Bool(v));
     }
@@ -835,11 +836,11 @@ impl EventResponse {
             for (index, er) in result.effect_results.iter().enumerate() {
                 // A failed client effect or `emit` reached no one: its operands never resolved, so it paints nothing.
                 if er.is_failed()
-                    && (matches!(er.effect, Effect::Emit { .. }) || ClientEffect::from_effect(&er.effect).is_some())
+                    && (matches!(er.effect, Effect::Emit { .. }) || ClientEffect::from_result(er).is_some())
                 {
                     continue;
                 }
-                if let Some(ce) = ClientEffect::from_effect(&er.effect) {
+                if let Some(ce) = ClientEffect::from_result_in(er, Some((trait_name, crate::process_result::frame_row(&result.entity_id)))) {
                     client_effects_by_trait.push(ClientEffectByTrait {
                         trait_name: trait_name.to_string(),
                         effect: ce,

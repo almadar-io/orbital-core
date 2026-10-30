@@ -350,6 +350,11 @@ pub struct ListenDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guard: Option<SExpression>,
 
+    /// `per <expr>`: the row of the listener's entity this delivery steps (EXEC-STEP-1a). Evaluated against the raw
+    /// source payload when the delivery is processed; it must name a non-empty string.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<SExpression>,
+
     /// Source-scope descriptor parsed from the `.lolo` authoring layer.
     /// See the runtime-side `ListenSourceDescriptor` for the matching shape.
     /// `None` subscribes without a source restriction; local payload declarations do not lower here.

@@ -79,7 +79,7 @@ impl RuntimeKernel {
             let failed = ran.iter().find(|r| r.is_failed());
             let status = if failed.is_some() {
                 EffectRunStatus::Failed
-            } else if ran.iter().any(|r| r.is_executed() || r.is_delegated()) {
+            } else if ran.iter().any(|r| r.is_executed() || r.is_delegated() || r.is_host_asked()) {
                 EffectRunStatus::Executed
             } else {
                 EffectRunStatus::Skipped
@@ -442,6 +442,9 @@ impl RuntimeKernel {
                 }
                 (result, verdict)
             };
+        if verdict == Some(CallVerdict::Deferred) {
+            self.note_deferred_ask(key.as_deref(), emit.map(routes_of).unwrap_or_default());
+        }
         if verdict.is_some_and(|v| shape.settles.is_some_and(|settles| settles.contains(&v))) {
             result = EffectResult::executed(resolved);
         }
@@ -484,6 +487,9 @@ impl RuntimeKernel {
             self.io.set_call_site(None);
             (result, verdict)
         };
+        if verdict == Some(CallVerdict::Deferred) {
+            self.note_deferred_ask(key.as_deref(), emit.as_ref().map(routes_of).unwrap_or_default());
+        }
         if verdict == Some(CallVerdict::Cancelled) {
             result = EffectResult::executed(resolved);
         } else if let Effect::CallService { emit: routes, .. } = &mut result.effect {
@@ -519,6 +525,9 @@ impl RuntimeKernel {
         };
         let verdict = self.io.take_call_verdict();
         self.io.set_call_site(None);
+        if verdict == Some(CallVerdict::Deferred) {
+            self.note_deferred_ask(key.as_deref(), emit.as_ref().map(routes_of).unwrap_or_default());
+        }
         if let Effect::Custom { emit: routes, .. } = &mut result.effect {
             routes.clone_from(emit);
         }
@@ -546,6 +555,9 @@ impl RuntimeKernel {
         let mut result = self.effect_executor.execute(&resolved, ctx);
         let verdict = self.io.take_call_verdict();
         self.io.set_call_site(None);
+        if verdict == Some(CallVerdict::Deferred) {
+            self.note_deferred_ask(key.as_deref(), routes_of(op_emit));
+        }
         if let Effect::Custom { emit: routes, .. } = &mut result.effect {
             *routes = Some(op_emit.clone());
         }
@@ -744,4 +756,9 @@ fn push_with_completion(
 ) {
     effect_results.push(result);
     effect_results.extend(completion.map(EffectResult::as_completion));
+}
+
+/// The events that end a keyed ask declared with `emit`: success, failure and cancelled routes.
+fn routes_of(emit: &FetchEmit) -> Vec<String> {
+    [&emit.success, &emit.failure, &emit.cancelled].into_iter().flatten().cloned().collect()
 }

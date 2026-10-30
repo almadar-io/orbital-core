@@ -1,7 +1,7 @@
 //! Client-effect wire grammar — the Rust mirror of `@almadar/core`'s
 //! `ClientEffectTuple` (`packages/almadar-core/src/types/bus.ts`).
 //!
-//! The client only ever receives `render-ui` / `navigate` / `navigate-back` on this
+//! The client only ever receives `render-ui` / `navigate` / `navigate-back` / `host-ask` on this
 //! channel (server-only effects report through `ServerEffectResult`, and `emit`
 //! surfaces as `EmittedEvent` — see `effects::response`). The wire shape is a JSON
 //! ARRAY whose arity carries which trailing fields are present, so this is the one
@@ -16,7 +16,7 @@ use serde::ser::SerializeSeq;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-use crate::effect_types::Effect;
+use crate::effect_types::{Effect, EffectOutcome, EffectResult};
 
 /// `{ crumb?: string }` — the optional fourth element of a `navigate` tuple.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
@@ -44,6 +44,77 @@ pub enum ClientEffect {
         options: Option<NavigateOptions>,
     },
     NavigateBack,
+    /// `["host-ask", op, [args...]]`: a `runsOn: client` host-port effect (`auth/sign-out`, `audio/*`) the client host
+    /// answers, its arguments resolved by the kernel.
+    HostAsk {
+        op: String,
+        args: Vec<Value>,
+        /// Where the host returns its answer; `None` for an ask that routes none (`auth/sign-out`, `audio/*`).
+        completion: Option<HostAskCompletion>,
+    },
+}
+
+/// The return address of a `host-ask` that declared `emit` routes (EXEC-DIST-13): the trait that asked, the frame it
+/// asked on when that frame is a row, the call's `key`, and the events its two outcomes fire. The host answers once
+/// by dispatching the event of the outcome it reached to `trait_name`; a route the ask did not declare is absent and
+/// that outcome fires nothing.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct HostAskCompletion {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub success: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<String>,
+}
+
+impl HostAskCompletion {
+    /// The completion a host-asked `effect` declares on `trait_name`'s `entity` frame: its resolved `key` and its
+    /// `emit` routes. `None` when it declares neither.
+    pub fn of(effect: &Effect, trait_name: &str, entity: Option<&str>) -> Option<Self> {
+        let Effect::Custom { key, emit, .. } = effect else {
+            return None;
+        };
+        let key = key.as_ref().and_then(Value::as_str).map(str::to_string);
+        let success = emit.as_ref().and_then(|e| e.success.clone());
+        let failure = emit.as_ref().and_then(|e| e.failure.clone());
+        if success.is_none() && failure.is_none() {
+            return None;
+        }
+        Some(Self {
+            trait_name: trait_name.to_string(),
+            entity: entity.map(str::to_string),
+            key,
+            success,
+            failure,
+        })
+    }
+
+    fn from_value(value: &Value) -> Result<Self, String> {
+        let text = |field: &str| -> Result<Option<String>, String> {
+            match value.get_path(field) {
+                None => Ok(None),
+                Some(v) => v
+                    .as_str()
+                    .map(|s| Some(s.to_string()))
+                    .ok_or_else(|| format!("host-ask tuple: completion {field} must be a string")),
+            }
+        };
+        let trait_name = text("trait")?
+            .ok_or_else(|| "host-ask tuple: completion needs the asking trait".to_string())?;
+        Ok(Self {
+            trait_name,
+            entity: text("entity")?,
+            key: text("key")?,
+            success: text("success")?,
+            failure: text("failure")?,
+        })
+    }
 }
 
 impl ClientEffect {
@@ -61,6 +132,25 @@ impl ClientEffect {
                 .clone()
                 .unwrap_or_else(|| Value::Object(Default::default())),
         )
+    }
+
+    /// The wire tuple of an effect a dispatch ran: [`Self::from_effect`], or the `host-ask` of an effect the client
+    /// handed to its host ([`EffectResult::host_asked`]).
+    pub fn from_result(result: &EffectResult) -> Option<ClientEffect> {
+        Self::from_result_in(result, None)
+    }
+
+    /// [`Self::from_result`] for an effect `trait_name` ran on `entity` (its frame when that is a row): a host ask
+    /// that declared `emit` routes carries them as its return address.
+    pub fn from_result_in(result: &EffectResult, site: Option<(&str, Option<&str>)>) -> Option<ClientEffect> {
+        match (&result.outcome, &result.effect) {
+            (EffectOutcome::HostAsked, Effect::Custom { name, args, .. }) => Some(ClientEffect::HostAsk {
+                op: name.clone(),
+                args: args.clone(),
+                completion: site.and_then(|(trait_name, entity)| HostAskCompletion::of(&result.effect, trait_name, entity)),
+            }),
+            _ => Self::from_effect(&result.effect),
+        }
     }
 
     /// Convert a resolved internal [`Effect`] to its wire tuple, if the effect is client-targeted in tuple form
@@ -145,6 +235,16 @@ impl Serialize for ClientEffect {
                 seq.serialize_element("navigate-back")?;
                 seq.end()
             }
+            ClientEffect::HostAsk { op, args, completion } => {
+                let mut seq = serializer.serialize_seq(Some(if completion.is_some() { 4 } else { 3 }))?;
+                seq.serialize_element("host-ask")?;
+                seq.serialize_element(op)?;
+                seq.serialize_element(args)?;
+                if let Some(completion) = completion {
+                    seq.serialize_element(completion)?;
+                }
+                seq.end()
+            }
         }
     }
 }
@@ -155,7 +255,7 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
     type Value = ClientEffect;
 
     fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("a client-effect tuple: [\"render-ui\"|\"navigate\"|\"navigate-back\", ...]")
+        f.write_str("a client-effect tuple: [\"render-ui\"|\"navigate\"|\"navigate-back\"|\"host-ask\", ...]")
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -217,6 +317,26 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
                 })
             }
             "navigate-back" => Ok(ClientEffect::NavigateBack),
+            "host-ask" => {
+                if !(3..=4).contains(&items.len()) {
+                    return Err(DeError::custom(
+                        "host-ask tuple takes an operator and its arguments: [\"host-ask\", op, [args]] or [\"host-ask\", op, [args], completion]",
+                    ));
+                }
+                let op = items[1]
+                    .as_str()
+                    .ok_or_else(|| DeError::custom("host-ask tuple: op must be a string"))?
+                    .to_string();
+                let args = items[2]
+                    .as_array()
+                    .ok_or_else(|| DeError::custom("host-ask tuple: args must be an array"))?
+                    .to_vec();
+                let completion = items
+                    .get(3)
+                    .map(|v| HostAskCompletion::from_value(v).map_err(DeError::custom))
+                    .transpose()?;
+                Ok(ClientEffect::HostAsk { op, args, completion })
+            }
             other => Err(DeError::custom(format!(
                 "unknown client-effect tag: {other}"
             ))),
@@ -406,6 +526,111 @@ mod tests {
         assert_eq!(
             ClientEffect::from_effect(&Effect::NavigateBack),
             Some(ClientEffect::NavigateBack)
+        );
+    }
+
+    #[test]
+    fn host_ask_arity_3_carries_the_op_and_its_arguments() {
+        let effect = ClientEffect::HostAsk {
+            op: "audio/play-sound".to_string(),
+            args: vec![Value::String("footstep".to_string().into())],
+            completion: None,
+        };
+        roundtrip(&effect, r#"["host-ask","audio/play-sound",["footstep"]]"#);
+        let bare = ClientEffect::HostAsk { op: "auth/sign-out".to_string(), args: vec![], completion: None };
+        roundtrip(&bare, r#"["host-ask","auth/sign-out",[]]"#);
+    }
+
+    #[test]
+    fn host_ask_arity_4_carries_the_return_address() {
+        let routed = ClientEffect::HostAsk {
+            op: "auth/sign-in".to_string(),
+            args: vec![],
+            completion: Some(HostAskCompletion {
+                trait_name: "SignIn".to_string(),
+                entity: Some("row-1".to_string()),
+                key: Some("k".to_string()),
+                success: Some("SIGNED_IN".to_string()),
+                failure: Some("SIGN_IN_FAILED".to_string()),
+            }),
+        };
+        roundtrip(
+            &routed,
+            r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","entity":"row-1","key":"k","success":"SIGNED_IN","failure":"SIGN_IN_FAILED"}]"#,
+        );
+        let success_only = ClientEffect::HostAsk {
+            op: "auth/sign-in".to_string(),
+            args: vec![],
+            completion: Some(HostAskCompletion { trait_name: "SignIn".to_string(), success: Some("OK".to_string()), ..Default::default() }),
+        };
+        roundtrip(&success_only, r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","success":"OK"}]"#);
+    }
+
+    #[test]
+    fn a_completion_is_declared_only_by_routes_and_names_its_trait() {
+        let routed = |key: Option<&str>, success: Option<&str>, failure: Option<&str>| Effect::Custom {
+            name: "auth/sign-in".to_string(),
+            args: vec![],
+            key: key.map(|k| Value::String(k.to_string().into())),
+            emit: Some(crate::effect_types::FetchEmit { success: success.map(str::to_string), failure: failure.map(str::to_string), ..Default::default() }),
+        };
+        let asked = EffectResult::host_asked(routed(Some("k"), Some("OK"), Some("BAD")));
+        assert_eq!(
+            ClientEffect::from_result_in(&asked, Some(("SignIn", Some("row-1")))),
+            Some(ClientEffect::HostAsk {
+                op: "auth/sign-in".to_string(),
+                args: vec![],
+                completion: Some(HostAskCompletion {
+                    trait_name: "SignIn".to_string(),
+                    entity: Some("row-1".to_string()),
+                    key: Some("k".to_string()),
+                    success: Some("OK".to_string()),
+                    failure: Some("BAD".to_string()),
+                }),
+            })
+        );
+        let undeclared = EffectResult::host_asked(routed(None, None, None));
+        assert_eq!(
+            ClientEffect::from_result_in(&undeclared, Some(("SignIn", None))),
+            Some(ClientEffect::HostAsk { op: "auth/sign-in".to_string(), args: vec![], completion: None }),
+            "control: an ask with no route has no return address"
+        );
+    }
+
+    #[test]
+    fn a_malformed_host_ask_tuple_is_refused() {
+        for (wire, reason) in [
+            (r#"["host-ask","auth/sign-out"]"#, "takes an operator and its arguments"),
+            (r#"["host-ask","auth/sign-out",[],{"trait":"T"},1]"#, "takes an operator and its arguments"),
+            (r#"["host-ask","auth/sign-in",[],1]"#, "completion"),
+            (r#"["host-ask","auth/sign-in",[],{"success":"OK"}]"#, "completion needs the asking trait"),
+            (r#"["host-ask","auth/sign-in",[],{"trait":"T","success":3}]"#, "completion success must be a string"),
+            (r#"["host-ask",3,[]]"#, "op must be a string"),
+            (r#"["host-ask","audio/play-sound","footstep"]"#, "args must be an array"),
+        ] {
+            let err = serde_json::from_str::<ClientEffect>(wire).unwrap_err().to_string();
+            assert!(err.contains(reason), "{wire}: {err}");
+        }
+    }
+
+    #[test]
+    fn only_a_host_asked_result_is_a_host_ask() {
+        let custom = Effect::Custom {
+            name: "auth/sign-out".to_string(),
+            args: vec![],
+            key: None,
+            emit: None,
+        };
+        assert_eq!(
+            ClientEffect::from_result(&EffectResult::host_asked(custom.clone())),
+            Some(ClientEffect::HostAsk { op: "auth/sign-out".to_string(), args: vec![], completion: None })
+        );
+        assert_eq!(ClientEffect::from_result(&EffectResult::executed(custom.clone())), None, "control: a server-run custom effect reaches no client");
+        assert_eq!(ClientEffect::from_result(&EffectResult::noop(custom, "x")), None);
+        assert_eq!(
+            ClientEffect::from_result(&EffectResult::executed(Effect::NavigateBack)),
+            Some(ClientEffect::NavigateBack),
+            "control: the tuple effects still convert from their result"
         );
     }
 

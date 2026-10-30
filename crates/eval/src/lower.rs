@@ -495,7 +495,7 @@ impl NodeLowerer {
             "browser/page-facts" => {
                 let Some(SExpression::Array(words)) = args.first() else {
                     return Err(LowerError::InvalidSExpr(
-                        "browser/page-facts takes a list of page facts (hostname, referrer, screenWidth)".to_string(),
+                        "browser/page-facts takes a list of page facts (hostname, referrer, screenWidth, href)".to_string(),
                     ));
                 };
                 let mut fields = Vec::with_capacity(words.len());
@@ -503,7 +503,7 @@ impl NodeLowerer {
                     let word = self.sexpr_as_str(word, "(browser/page-facts …) a page fact")?;
                     let field = orbital_core_base::ir::effects::PageFactField::parse(&word).ok_or_else(|| {
                         LowerError::InvalidSExpr(format!(
-                            "(browser/page-facts …) \"{word}\" is not one of hostname referrer screenWidth"
+                            "(browser/page-facts …) \"{word}\" is not one of hostname referrer screenWidth href"
                         ))
                     })?;
                     fields.push(field);

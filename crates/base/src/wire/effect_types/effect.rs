@@ -179,7 +179,7 @@ pub enum Effect {
     },
 
     /// Read the requested page facts through the host (client-site). `fields` is the list of bare words
-    /// (`hostname`, `referrer`, `screenWidth`), checked when the effect runs.
+    /// (`hostname`, `referrer`, `screenWidth`, `href`), checked when the effect runs.
     BrowserPageFacts {
         fields: Value,
         /// The `key:` expression, resolved to a non-empty string; echoed as `key` in the success and failure payloads.

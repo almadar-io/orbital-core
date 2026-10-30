@@ -351,6 +351,7 @@ pub struct PageFacts {
     pub hostname: String,
     pub referrer: String,
     pub screen_width: Option<f64>,
+    pub href: String,
 }
 
 impl IoAnswer {

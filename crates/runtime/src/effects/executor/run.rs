@@ -12,7 +12,8 @@ impl EffectExecutor {
         if self.environment.is_client() && matches!(effect, Effect::Custom { .. }) {
             match orbital_core_base::runs_on::runs_on_known(effect.operator()) {
                 Some(RunsOn::Server) => return self.delegate_to_server(effect.clone()),
-                Some(_) => {}
+                Some(RunsOn::Client) => return self.ask_client_host(effect.clone()),
+                Some(RunsOn::Any) => {}
                 None => {
                     let reason = format!(
                         "{} cannot be placed: no operator table is installed and the program carries no operatorSites entry for it; recompile the client program",
@@ -126,6 +127,28 @@ impl EffectExecutor {
         }
         let reason = format!("{} is server-only", effect.operator());
         EffectResult::noop(effect, &reason)
+    }
+
+    /// A `runsOn: client` host-port effect on a client: the dispatch hands it to the client host as a `host-ask`
+    /// client effect, which answers it. The host's answer is no part of this dispatch, so an effect that routes a
+    /// completion (`emit`, a key) has nowhere to deliver it and fails by name.
+    pub(super) fn ask_client_host(&self, effect: Effect) -> EffectResult {
+        if let Effect::Custom { name, key, emit, .. } = &effect {
+            let routed = emit.as_ref().is_some_and(|e| e.success.is_some() || e.failure.is_some());
+            let reason = if emit.as_ref().is_some_and(|e| e.cancelled.is_some() || e.on_message.is_some()) {
+                Some(format!("{name} runs on the client host, which answers a host ask once and cannot cancel or stream it: declare only emit.success and emit.failure"))
+            } else if key.is_some() && !routed {
+                Some(format!("{name} runs on the client host: a key names a completion, so declare emit.success or emit.failure"))
+            } else if key.as_ref().is_some_and(|k| k.as_str().is_none_or(str::is_empty)) {
+                Some(format!("{name}: the key must be one non-empty text"))
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                return EffectResult::failed(effect, &reason);
+            }
+        }
+        EffectResult::host_asked(effect)
     }
 
     pub(super) fn do_emit(&self, event: &str, payload: &Value) -> EffectResult {

@@ -128,3 +128,135 @@ fn without_a_delegate_a_client_skips_a_server_effect_by_name() {
     assert!(result.is_noop(), "{result:?}");
     assert!(format!("{:?}", result.outcome).contains("random-bytes is server-only"));
 }
+
+fn host_ask_kernel(env_client: bool, effect: serde_json::Value) -> orbital_core_runtime::kernel::RuntimeKernel {
+    let schema = serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Chrome", "linkedEntity": "Shell",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "SIGN_OUT", "effects": [effect] }] } }]
+        }]
+    });
+    let t = if env_client { crate::support::TestKernel::client() } else { crate::support::TestKernel::server() };
+    t.build(schema)
+}
+
+fn host_asks(kernel: &orbital_core_runtime::kernel::RuntimeKernel, payload: Value) -> (Vec<orbital_core_base::client_effect::ClientEffect>, Vec<orbital_core_runtime::EffectRunStatus>) {
+    let outcomes = kernel.dispatch("Chrome", None, "SIGN_OUT", payload).unwrap();
+    let response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, "Chrome", "SIGN_OUT");
+    let statuses = outcomes.iter().flat_map(|(_, r)| r.effect_runs.iter().map(|run| run.status.clone())).collect();
+    (response.client_effects().into_iter().cloned().collect(), statuses)
+}
+
+#[test]
+fn a_client_dispatch_hands_a_client_site_host_port_effect_to_its_host_as_a_host_ask() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let sign_out = host_asks(&host_ask_kernel(true, serde_json::json!(["auth/sign-out"])), Value::Null).0;
+    assert_eq!(sign_out, vec![ClientEffect::HostAsk { op: "auth/sign-out".into(), args: vec![], completion: None }]);
+    let sound = host_asks(&host_ask_kernel(true, serde_json::json!(["audio/play-sound", "footstep"])), Value::Null).0;
+    assert_eq!(sound, vec![ClientEffect::HostAsk { op: "audio/play-sound".into(), args: vec![Value::String("footstep".to_string().into())], completion: None }]);
+}
+
+#[test]
+fn a_host_ask_carries_its_arguments_resolved_and_the_effect_ran_not_skipped() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let kernel = host_ask_kernel(true, serde_json::json!(["audio/change-music", "@payload.track"]));
+    let payload = Value::object(orbital_core_base::value::ValueMap::from_iter([("track".into(), Value::String("theme".to_string().into()))]));
+    let (asks, statuses) = host_asks(&kernel, payload);
+    assert_eq!(asks, vec![ClientEffect::HostAsk { op: "audio/change-music".into(), args: vec![Value::String("theme".to_string().into())], completion: None }]);
+    assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
+}
+
+#[test]
+fn control_a_server_kernel_asks_no_client_host_and_a_pure_effect_makes_no_host_ask() {
+    assert!(host_asks(&host_ask_kernel(false, serde_json::json!(["auth/sign-out"])), Value::Null).0.is_empty(), "the server role answers the ask itself, or fails by name");
+    assert!(host_asks(&host_ask_kernel(true, serde_json::json!(["set", "@entity.x", 1])), Value::Null).0.is_empty());
+}
+
+#[test]
+fn a_host_ask_that_cannot_return_its_completion_fails_by_name_instead_of_losing_it() {
+    let exec = EffectExecutor::new(RuntimeEnvironment::Client);
+    let keyed = Effect::Custom { name: "auth/sign-out".into(), args: vec![], key: Some(Value::String("k".to_string().into())), emit: None };
+    let result = exec.execute(&keyed, &BindingContext::new());
+    assert!(result.is_failed(), "{result:?}");
+    assert!(result.error.as_deref().is_some_and(|e| e.contains("auth/sign-out runs on the client host")), "{result:?}");
+    let plain = exec.execute(&custom("auth/sign-out"), &BindingContext::new());
+    assert!(plain.is_host_asked(), "control: the same ask with no key is handed to the host: {plain:?}");
+}
+
+fn sign_in(options: serde_json::Value) -> serde_json::Value {
+    serde_json::json!(["auth/sign-in", { "method": "email", "email": "@payload.email", "password": "pw" }, options])
+}
+
+fn the_email() -> Value {
+    Value::object(orbital_core_base::value::ValueMap::from_iter([("email".into(), Value::String("ada@example.com".to_string().into()))]))
+}
+
+#[test]
+fn a_host_ask_that_declares_emit_routes_carries_its_return_address() {
+    use orbital_core_base::client_effect::{ClientEffect, HostAskCompletion};
+    let routes = serde_json::json!({ "key": "login-1", "emit": { "success": "SIGNED_IN", "failure": "SIGN_IN_FAILED" } });
+    let (asks, statuses) = host_asks(&host_ask_kernel(true, sign_in(routes)), the_email());
+    let ClientEffect::HostAsk { op, args, completion } = &asks[0] else { panic!("a host ask: {asks:?}") };
+    assert_eq!(op, "auth/sign-in");
+    assert_eq!(args.len(), 1, "the request is the one argument, the options are the routes: {args:?}");
+    assert_eq!(
+        completion,
+        &Some(HostAskCompletion {
+            trait_name: "Chrome".into(),
+            entity: None,
+            key: Some("login-1".into()),
+            success: Some("SIGNED_IN".into()),
+            failure: Some("SIGN_IN_FAILED".into()),
+        })
+    );
+    assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
+    let wire = serde_json::to_value(&asks[0]).unwrap();
+    assert_eq!(wire[0], "host-ask");
+    assert_eq!(wire[3], serde_json::json!({ "trait": "Chrome", "key": "login-1", "success": "SIGNED_IN", "failure": "SIGN_IN_FAILED" }));
+}
+
+#[test]
+fn a_host_ask_with_one_declared_route_returns_on_that_route_only() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let (asks, _) = host_asks(&host_ask_kernel(true, sign_in(serde_json::json!({ "emit": { "success": "SIGNED_IN" } }))), the_email());
+    let ClientEffect::HostAsk { completion: Some(completion), .. } = &asks[0] else { panic!("{asks:?}") };
+    assert_eq!((completion.success.as_deref(), completion.failure.as_deref(), completion.key.as_deref()), (Some("SIGNED_IN"), None, None));
+}
+
+#[test]
+fn control_a_host_ask_with_no_routes_has_no_return_address() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let (asks, _) = host_asks(&host_ask_kernel(true, serde_json::json!(["auth/sign-out"])), Value::Null);
+    assert!(matches!(&asks[0], ClientEffect::HostAsk { completion: None, .. }), "{asks:?}");
+}
+
+#[test]
+fn a_host_ask_cannot_declare_a_cancelled_or_streaming_route() {
+    let exec = EffectExecutor::new(RuntimeEnvironment::Client);
+    for emit in [
+        orbital_core_base::effect_types::FetchEmit { success: Some("OK".into()), cancelled: Some("STOPPED".into()), ..Default::default() },
+        orbital_core_base::effect_types::FetchEmit { success: Some("OK".into()), on_message: Some("MSG".into()), ..Default::default() },
+    ] {
+        let ask = Effect::Custom { name: "auth/sign-in".into(), args: vec![], key: None, emit: Some(emit) };
+        let result = exec.execute(&ask, &BindingContext::new());
+        assert!(result.error.as_deref().is_some_and(|e| e.contains("cannot cancel or stream")), "{result:?}");
+    }
+    let empty_key = Effect::Custom {
+        name: "auth/sign-in".into(),
+        args: vec![],
+        key: Some(Value::String(String::new().into())),
+        emit: Some(orbital_core_base::effect_types::FetchEmit { success: Some("OK".into()), ..Default::default() }),
+    };
+    assert!(exec.execute(&empty_key, &BindingContext::new()).error.as_deref().is_some_and(|e| e.contains("non-empty")));
+}
+
+#[test]
+fn control_a_server_kernel_lists_no_host_ask_for_a_routed_sign_in() {
+    let routes = serde_json::json!({ "emit": { "success": "SIGNED_IN", "failure": "SIGN_IN_FAILED" } });
+    assert!(host_asks(&host_ask_kernel(false, sign_in(routes)), the_email()).0.is_empty());
+}

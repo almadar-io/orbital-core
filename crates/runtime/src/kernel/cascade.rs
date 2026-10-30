@@ -18,7 +18,7 @@ impl RuntimeKernel {
         direct_scopes: &[String],
         fans_out: bool,
     ) -> StepFollowups {
-        let source = self.emit_source(trait_name);
+        let source = self.emit_source_on(trait_name, result.map_or(RUNTIME_SINGLETON, |r| r.entity_id.as_str()));
         let mut own: Vec<CascadeItem> = Vec::new();
         let mut fanned = Vec::new();
         let mut consumed_emits = Vec::new();
@@ -120,6 +120,8 @@ impl RuntimeKernel {
             fans_out: false,
             repaint: Some(job),
             completion: false,
+            listen_key: None,
+            row: None,
         }
     }
 
@@ -149,6 +151,8 @@ impl RuntimeKernel {
                 fans_out: false,
                 repaint: None,
                 completion,
+                listen_key: None,
+                row: None,
             });
         }
         let fanned_before = fanned.len();
@@ -238,6 +242,8 @@ impl RuntimeKernel {
                 fans_out: false,
                 repaint: None,
                 completion: false,
+                listen_key: l.key.map(|expr| ListenKey { expr, emitter: source_trait.to_string() }),
+                row: None,
             });
         }
     }

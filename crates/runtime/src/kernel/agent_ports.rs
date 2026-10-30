@@ -357,6 +357,6 @@ pub(super) fn agent_port_completion_emit(
             }))
         }
         EffectOutcome::Failed => super::substrate_completion_emit(emit, result, key),
-        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) => None,
+        EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => None,
     }
 }

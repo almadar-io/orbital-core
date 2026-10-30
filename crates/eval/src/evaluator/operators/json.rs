@@ -42,18 +42,24 @@ impl Operator for JsonParseOp {
         let Ok(parsed) = parse_json::<serde_json::Value>(s).map(json_to_value) else {
             return Ok(Value::Null);
         };
-        let Some((shape, declared)) = run_time_shape(&args[1])? else {
-            return Ok(parsed);
-        };
-        match super::arg_types::misfit_of_shape(&parsed, &declared) {
-            None => Ok(parsed),
-            Some((path, actual)) => {
-                tracing::debug!(
-                    target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
-                    "json/parse: the value is not of the shape {shape}: at `{path}` it is {actual}"
-                );
-                Ok(Value::Null)
-            }
+        typed_decode("json/parse", parsed, &args[1])
+    }
+}
+
+/// The shape check every `*/parse` operator that takes a declared shape shares: the value decoded from the text is returned
+/// when it is of the shape the second operand names, `Value::Null` when it is not.
+pub(super) fn typed_decode(op: &str, parsed: Value, shape_arg: &SExpression) -> EvalResult {
+    let Some((shape, declared)) = run_time_shape(shape_arg)? else {
+        return Ok(parsed);
+    };
+    match super::arg_types::misfit_of_shape(&parsed, &declared) {
+        None => Ok(parsed),
+        Some((path, actual)) => {
+            tracing::debug!(
+                target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                "{op}: the value is not of the shape {shape}: at `{path}` it is {actual}"
+            );
+            Ok(Value::Null)
         }
     }
 }

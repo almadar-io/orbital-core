@@ -29,6 +29,11 @@ pub fn public_entity_id(entity_id: &str) -> &str {
     }
 }
 
+/// The row a frame key names, or `None` for the runtime singleton: a return address names a frame only when it is a row.
+pub fn frame_row(entity_id: &str) -> Option<&str> {
+    (entity_id != RUNTIME_SINGLETON).then_some(entity_id)
+}
+
 /// The store row a frame key reads: the runtime singleton's row is `singleton`.
 pub(crate) fn store_row_id(entity_id: &str) -> &str {
     public_entity_id(entity_id)
