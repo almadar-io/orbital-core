@@ -2,6 +2,7 @@
 //! and dropping a row once it is quiet.
 
 use super::*;
+use crate::step_replay::PendingAsk;
 use orbital_core_base::envelope::DELIVERY_REJECTED;
 use std::collections::BTreeMap;
 
@@ -10,9 +11,21 @@ use std::collections::BTreeMap;
 pub(super) struct DeferredAsk {
     pub(super) key: String,
     pub(super) routes: Vec<String>,
+    pub(super) call: DeferredCall,
+    pub(super) seq: u64,
 }
 
 pub(super) const ROW_FRAME_SEPARATOR: char = '\u{1e}';
+
+/// The key a dispatch's path memory (`@prevEvents`, `@prevStates`) is kept under: the trait, or for a keyed row the
+/// trait qualified by the row (EXEC-STEP-1).
+pub(super) fn memory_scope(trait_name: &str, row: &str, keyed: bool) -> String {
+    if keyed {
+        format!("{trait_name}{ROW_FRAME_SEPARATOR}{row}")
+    } else {
+        trait_name.to_string()
+    }
+}
 pub(super) const ROW_INIT_EVENT: &str = "INIT";
 
 impl RuntimeKernel {
@@ -249,6 +262,7 @@ impl RuntimeKernel {
 
     /// Record a keyed ask the step in flight deferred, to be ended by an event of `routes` carrying its `key`.
     pub(super) fn note_deferred_ask(&self, key: Option<&str>, routes: Vec<String>) {
+        let call = self.io.take_deferred_call();
         let Some(key) = key else { return };
         let Some((trait_name, _)) = self.step.step_site.read().clone() else {
             return;
@@ -259,17 +273,138 @@ impl RuntimeKernel {
             .read()
             .clone()
             .unwrap_or_else(|| RUNTIME_SINGLETON.to_string());
+        let Some(call) = call else {
+            tracing::error!(key, "kernel: a deferred ask carries no call");
+            return;
+        };
         let mut asks = self.deferred_asks.write();
         let list = asks
             .entry((trait_name, self.session_eid(&row)))
             .or_default();
-        let ask = DeferredAsk {
-            key: key.to_string(),
-            routes,
-        };
-        if !list.contains(&ask) {
-            list.push(ask);
+        if !list
+            .iter()
+            .any(|ask| ask.key == key && ask.routes == routes)
+        {
+            let seq = self
+                .deferred_seq
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            list.push(DeferredAsk {
+                key: key.to_string(),
+                routes,
+                call,
+                seq,
+            });
         }
+    }
+
+    /// The keyed asks the host deferred and no event has ended yet, in the order they were recorded.
+    pub fn pending_asks(&self) -> Vec<PendingAsk> {
+        let asks = self.deferred_asks.read();
+        let mut pending: Vec<(u64, PendingAsk)> = asks
+            .iter()
+            .flat_map(|((trait_name, _), list)| {
+                list.iter().map(move |ask| {
+                    (
+                        ask.seq,
+                        PendingAsk {
+                            trait_name: trait_name.clone(),
+                            operator: ask.call.operator.clone(),
+                            args: ask.call.args.clone(),
+                            key: ask.key.clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        pending.sort_by_key(|(seq, _)| *seq);
+        pending.into_iter().map(|(_, ask)| ask).collect()
+    }
+
+    /// The deferred asks named by `keys` end, as `cancel-call` of those keys ends them on the host: a row left with
+    /// none is checked for quiet when the step that cancelled them is over.
+    pub(super) fn end_asks_of_keys(&self, keys: &[&str]) {
+        let emptied = {
+            let mut asks = self.deferred_asks.write();
+            let mut emptied = Vec::new();
+            for (slot, list) in asks.iter_mut() {
+                let before = list.len();
+                list.retain(|ask| !keys.contains(&ask.key.as_str()));
+                if list.is_empty() && before > 0 {
+                    emptied.push(slot.clone());
+                }
+            }
+            asks.retain(|_, list| !list.is_empty());
+            emptied
+        };
+        self.queue_quiet_checks(emptied);
+    }
+
+    /// A keyed ask of `row` ended outside any dispatch, as a stream does when its source ends and the host closes the
+    /// key: its record goes, and the row is dropped if that leaves it quiet (EXEC-STEP-1b).
+    pub fn end_keyed_ask(&self, trait_name: &str, row: &str, key: &str) -> Result<(), KernelError> {
+        let _lane = self
+            .lane
+            .enter(None)
+            .map_err(|e| KernelError::Internal(e.to_string()))?;
+        self.end_asks_of_row_key(trait_name, row, key);
+        self.drop_settled_rows(&[], &VecDeque::new(), RUNTIME_SINGLETON)
+            .map_err(|fault| match fault {
+                Fault::Kernel(error) => error,
+                Fault::Suspended => KernelError::Internal(
+                    "the end of a keyed ask suspended outside a dispatch".to_string(),
+                ),
+            })
+    }
+
+    /// The row of `trait_name` named `row` lost its last deferred ask outside a step of its own.
+    pub(super) fn end_asks_of_row_key(&self, trait_name: &str, row: &str, key: &str) {
+        let slot = (trait_name.to_string(), self.session_eid(row));
+        let emptied = {
+            let mut asks = self.deferred_asks.write();
+            let Some(list) = asks.get_mut(&slot) else {
+                return;
+            };
+            let before = list.len();
+            list.retain(|ask| ask.key != key);
+            let emptied = list.is_empty() && before > 0;
+            if list.is_empty() {
+                asks.remove(&slot);
+            }
+            emptied
+        };
+        if emptied {
+            self.queue_quiet_checks(vec![slot]);
+        }
+    }
+
+    fn queue_quiet_checks(&self, slots: Vec<(String, String)>) {
+        let mut checks = self.settled_rows.write();
+        for (trait_name, eid) in slots {
+            let row = eid.split(SESSION_SEPARATOR).next().unwrap_or_default();
+            if self.session_eid(row) == eid
+                && !checks.iter().any(|(t, r)| *t == trait_name && r == row)
+            {
+                checks.push((trait_name, row.to_string()));
+            }
+        }
+    }
+
+    /// Drop each row whose pending ask ended during the step that just ran, if it is now quiet (EXEC-STEP-1b).
+    pub(super) fn drop_settled_rows(
+        &self,
+        queued_in: &[&[CascadeItem]],
+        queue: &VecDeque<CascadeItem>,
+        default_row: &str,
+    ) -> Result<(), Fault> {
+        let checks = std::mem::take(&mut *self.settled_rows.write());
+        for (trait_name, row) in checks {
+            if self.is_keyed_row(&trait_name, &row)
+                && !self.keyed_instance_missing(&trait_name, &row)
+            {
+                self.drop_quiet_row(queued_in, queue, default_row, &trait_name, &row)?;
+            }
+        }
+        Ok(())
     }
 
     /// An event of `trait_name` on `row` ends the deferred asks it answers.

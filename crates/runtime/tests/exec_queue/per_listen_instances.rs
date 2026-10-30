@@ -246,6 +246,7 @@ fn a_key_that_is_not_a_non_empty_string_is_refused_never_the_singleton() {
     }
 }
 
+// EXEC-STEP-1b: a quiet keyed row is dropped, a later delivery recreates it from defaults.
 #[test]
 fn a_quiet_row_is_dropped_and_a_later_delivery_recreates_it_from_defaults() {
     let (k, cache) = kernel(per_payload_key(), true);
@@ -300,6 +301,78 @@ fn a_refused_key_with_no_declared_listener_for_the_rejection_fails_the_dispatch(
     assert!(
         message.contains("key-invalid") && message.contains("DELIVERY_REJECTED"),
         "{message}"
+    );
+}
+
+fn memory_program() -> Json {
+    let mut program = schema(per_payload_key(), false);
+    let seen = |extra: &str| json!({ "key": "@entity.id", "prior": ["array/len", "@prevEvents"], "left": ["array/len", "@prevStates"], "via": extra });
+    program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"]
+        .as_array_mut()
+        .unwrap()
+        .extend([
+            json!({ "from": "idle", "to": "idle", "event": "TWO_KEYS", "effects": [
+                ["emit", "SEND", { "key": "A", "n": 1 }],
+                ["emit", "SEND", { "key": "B", "n": 2 }]
+            ] }),
+            json!({ "from": "idle", "to": "idle", "event": "ONE_KEY_TWICE", "effects": [
+                ["emit", "SEND", { "key": "A", "n": 1 }],
+                ["emit", "SEND", { "key": "A", "n": 2 }]
+            ] }),
+        ]);
+    let arms = program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"]
+        .as_array_mut()
+        .unwrap();
+    arms[0] = json!({ "from": "idle", "to": "busy", "event": "SEND", "effects": [
+        ["set", "@entity.val", "@payload.n"],
+        ["emit", "SENT", seen("sent")]
+    ] });
+    arms[3] = json!({ "from": "busy", "to": "busy", "event": "SEND", "effects": [
+        ["emit", "REFUSED", seen("refused")]
+    ] });
+    program
+}
+
+fn memory_kernel() -> RuntimeKernel {
+    crate::support::TestKernel::server().build(memory_program())
+}
+
+fn dispatch_caller(k: &RuntimeKernel, event: &str) -> Vec<(String, Json)> {
+    emits(&k.dispatch("Caller", None, event, val(json!({}))).unwrap())
+}
+
+#[test]
+fn prev_events_and_prev_states_are_per_row_not_per_trait() {
+    let k = memory_kernel();
+    let emitted = dispatch_caller(&k, "TWO_KEYS");
+    let sent = named(&emitted, "SENT");
+    assert_eq!(sent.len(), 2, "{emitted:?}");
+    for payload in &sent {
+        assert_eq!(
+            payload["prior"],
+            json!(1),
+            "a row's log holds only its own deliveries, the current one included: {payload}"
+        );
+        assert_eq!(payload["left"], json!(0), "{payload}");
+    }
+}
+
+#[test]
+fn control_the_same_row_keeps_its_own_delivery_and_state_memory() {
+    let k = memory_kernel();
+    let emitted = dispatch_caller(&k, "ONE_KEY_TWICE");
+    assert_eq!(named(&emitted, "SENT")[0]["prior"], json!(1), "{emitted:?}");
+    let refused = named(&emitted, "REFUSED");
+    assert_eq!(refused.len(), 1, "{emitted:?}");
+    assert_eq!(
+        refused[0]["prior"],
+        json!(2),
+        "the row saw its own first delivery: {emitted:?}"
+    );
+    assert_eq!(
+        refused[0]["left"],
+        json!(1),
+        "it left idle once: {emitted:?}"
     );
 }
 
@@ -457,6 +530,140 @@ mod keyed_completion {
             held(&server),
             None,
             "the completion landed and the quiet row was dropped"
+        );
+    }
+
+    fn cancelling_program() -> Json {
+        let mut p = program();
+        let call = json!(["call-service", "svc", "work", {}, { "key": "@payload.key", "emit": { "success": "DONE", "failure": "FAILED" } }]);
+        p["orbitals"][0]["traits"][0]["stateMachine"]["transitions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "from": "idle", "to": "idle", "event": "STOP", "effects": [["emit", "CANCEL", { "key": "@payload.key" }]] }));
+        p["orbitals"][1]["traits"][0]["listens"]
+            .as_array_mut()
+            .unwrap()
+            .push(listen("CANCEL", "CANCEL", "Caller", per_payload_key()));
+        p["orbitals"][1]["traits"][0]["stateMachine"]["transitions"] = json!([
+            { "from": "idle", "to": "idle", "event": "SEND", "effects": [call] },
+            { "from": "idle", "to": "idle", "event": "CANCEL", "effects": [["cancel-call", "@payload.key"]] }
+        ]);
+        p
+    }
+
+    fn run_deferring(server: &EmbeddedServer, event: &str, payload: Json) {
+        let mut progress = server
+            .start("CallerOrbital", caller_request(event, payload))
+            .unwrap();
+        loop {
+            match progress {
+                ServerProgress::Done(_) => return,
+                ServerProgress::Await { flight, requests } => {
+                    let replies = requests
+                        .into_iter()
+                        .map(|pending| IoReply {
+                            id: pending.id,
+                            answer: match pending.request {
+                                IoRequest::CancelCall { .. } => IoAnswer::Cancelled(Ok(())),
+                                _ => IoAnswer::ServiceDeferred,
+                            },
+                        })
+                        .collect();
+                    progress = server.resume(flight, replies).unwrap();
+                }
+                ServerProgress::Queued { ticket } => panic!("queued {ticket}"),
+            }
+        }
+    }
+
+    fn held(server: &EmbeddedServer, row: &str) -> Option<String> {
+        server
+            .kernel()
+            .get_state("PerKey", Some(row))
+            .map(|s| s.current_state)
+    }
+
+    #[test]
+    fn a_cancel_call_of_the_rows_own_key_ends_its_pending_ask_and_the_quiet_row_drops() {
+        let server = EmbeddedServer::new(support_schema(cancelling_program())).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        assert_eq!(
+            held(&server, "A").as_deref(),
+            Some("idle"),
+            "the pending ask keeps the row"
+        );
+        run_deferring(&server, "STOP", json!({ "key": "A" }));
+        assert_eq!(
+            held(&server, "A"),
+            None,
+            "the cancelled ask no longer keeps the row"
+        );
+    }
+
+    #[test]
+    fn control_a_cancel_of_another_key_leaves_the_pending_ask_and_its_row() {
+        let server = EmbeddedServer::new(support_schema(cancelling_program())).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        run_deferring(&server, "STOP", json!({ "key": "B" }));
+        assert_eq!(
+            held(&server, "A").as_deref(),
+            Some("idle"),
+            "A's ask is still pending"
+        );
+        assert_eq!(
+            held(&server, "B"),
+            None,
+            "B had nothing pending and is quiet"
+        );
+    }
+
+    #[test]
+    fn a_cancel_call_issued_by_another_row_drops_the_row_whose_ask_it_ended() {
+        let mut p = cancelling_program();
+        let arms = p["orbitals"][1]["traits"][0]["stateMachine"]["transitions"]
+            .as_array_mut()
+            .unwrap();
+        arms[1] = json!({ "from": "idle", "to": "idle", "event": "CANCEL", "effects": [["cancel-call", "A"]] });
+        let server = EmbeddedServer::new(support_schema(p)).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        run_deferring(&server, "STOP", json!({ "key": "B" }));
+        assert_eq!(
+            held(&server, "A"),
+            None,
+            "B's step cancelled A's key, so A is quiet and dropped"
+        );
+    }
+
+    #[test]
+    fn the_end_of_a_rows_stream_ends_its_pending_ask_and_the_quiet_row_drops() {
+        let server = EmbeddedServer::new(support_schema(cancelling_program())).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        assert_eq!(
+            held(&server, "A").as_deref(),
+            Some("idle"),
+            "the open stream keeps the row"
+        );
+        server.kernel().end_keyed_ask("PerKey", "A", "A").unwrap();
+        assert_eq!(
+            held(&server, "A"),
+            None,
+            "the stream ended, so the quiet row is dropped"
+        );
+    }
+
+    #[test]
+    fn control_the_end_of_another_key_leaves_the_rows_pending_ask() {
+        let server = EmbeddedServer::new(support_schema(cancelling_program())).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        server
+            .kernel()
+            .end_keyed_ask("PerKey", "A", "other")
+            .unwrap();
+        server.kernel().end_keyed_ask("PerKey", "B", "A").unwrap();
+        assert_eq!(
+            held(&server, "A").as_deref(),
+            Some("idle"),
+            "A's own key has not ended"
         );
     }
 

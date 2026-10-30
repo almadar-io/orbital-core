@@ -195,6 +195,7 @@ fn a_mount_request_enters_the_ledger_and_an_unmount_request_leaves_it() {
     assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
 }
 
+// EXEC-TICK-6: the kernel keeps who has mounted what; a tick fires while some client holds its trait.
 #[test]
 fn a_trait_two_clients_mounted_ticks_until_the_last_one_leaves() {
     let server = EmbeddedServer::new(schema()).unwrap();

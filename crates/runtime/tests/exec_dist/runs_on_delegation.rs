@@ -152,6 +152,7 @@ fn host_asks(kernel: &orbital_core_runtime::kernel::RuntimeKernel, payload: Valu
     (response.client_effects().into_iter().cloned().collect(), statuses)
 }
 
+// EXEC-DIST-13: a client-site host-port effect is handed to the host as a host-ask.
 #[test]
 fn a_client_dispatch_hands_a_client_site_host_port_effect_to_its_host_as_a_host_ask() {
     use orbital_core_base::client_effect::ClientEffect;

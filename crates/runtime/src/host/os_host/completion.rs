@@ -25,6 +25,10 @@ pub trait OsCompletionSink: Send + Sync {
     /// `emit.failure`, each with `key` beside it. A sink that dispatches nothing ignores it.
     fn settle(&self, _site: &CallSite, _key: &str, _outcome: Result<Value, Value>) {}
 
+    /// A keyed stream's source ended and the host closed its key, with no event: the ask is over. A sink that keeps no
+    /// record of asks ignores it.
+    fn ended(&self, _site: &CallSite, _key: &str) {}
+
     /// One event of a keyed stream: the completion of the call's `onMessage` route, the call staying open.
     fn message(&self, site: &CallSite, key: &str, event: Value) {
         let routed = CallSite {
@@ -90,6 +94,15 @@ impl Completions {
 
     pub(crate) fn is_current(&self, key: &str, lease: u64) -> bool {
         self.live.lock().get(key).is_some_and(|current| *current == lease)
+    }
+
+    /// The source of stream `key` ended: close the key and tell the sink, unless `cancel-call` or a new ask took it first.
+    pub(crate) fn end_stream(&self, key: &str, lease: u64, site: &CallSite) {
+        if self.cancel_current(key, lease) {
+            if let Some(sink) = self.sink() {
+                sink.ended(site, key);
+            }
+        }
     }
 
     pub(crate) fn message(&self, key: &str, lease: u64, site: &CallSite, event: Value) -> bool {
@@ -198,7 +211,7 @@ impl Completions {
                     }
                     StreamPoll::Idle => std::thread::sleep(STREAM_IDLE),
                     StreamPoll::Ended => {
-                        completions.cancel_current(&key, lease);
+                        completions.end_stream(&key, lease, &site);
                         return;
                     }
                 }
@@ -524,6 +537,16 @@ impl OsCompletionSink for KernelCompletionSink {
     fn settle(&self, site: &CallSite, key: &str, outcome: Result<Value, Value>) {
         if let Some((event, payload)) = crate::resumable::substrate_completion_event(site, key, outcome) {
             self.dispatch_completion(site, key, event, payload);
+        }
+    }
+
+    fn ended(&self, site: &CallSite, key: &str) {
+        let Some(kernel) = self.kernel.upgrade() else { return };
+        self.wait_for_owner(&kernel, key);
+        let requester = self.requesters.lock().remove(key).map(|(requester, _)| requester).unwrap_or_default();
+        let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
+        if let Err(error) = kernel.end_keyed_ask(&site.trait_name, &site.entity_id, key) {
+            tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, key, error = %error, "the end of a stream could not settle its row");
         }
     }
 }
@@ -941,6 +964,52 @@ mod tests {
         complete_on_a_thread(&sink, "k1", "NOW").join().expect("k1");
         assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).as_deref(), Ok("NOW"));
         drop(open);
+    }
+
+    struct Ends(Mutex<Vec<String>>);
+    impl OsCompletionSink for Ends {
+        fn complete(&self, _: &CallSite, _: &str, _: Result<Value, OsError>) {}
+        fn ended(&self, _: &CallSite, key: &str) {
+            self.0.lock().push(key.to_string());
+        }
+    }
+
+    fn open_stream(completions: &Arc<Completions>, key: &str, polls: Vec<StreamPoll>) {
+        let mut polls = polls.into_iter();
+        let answer = Completions::open_substrate_stream(completions, key, &site(None, None), move || {
+            polls.next().unwrap_or(StreamPoll::Idle)
+        });
+        assert!(matches!(answer, IoAnswer::ServiceDeferred));
+    }
+
+    fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !done() {
+            assert!(std::time::Instant::now() < limit, "timed out waiting for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_stream_whose_source_ends_tells_the_sink_its_key_ended() {
+        let completions = Arc::new(Completions::default());
+        let ends = Arc::new(Ends(Mutex::new(Vec::new())));
+        completions.set_sink(ends.clone());
+        open_stream(&completions, "s1", vec![StreamPoll::Item(exited(1.0)), StreamPoll::Ended]);
+        wait_until("the end", || !ends.0.lock().is_empty());
+        assert_eq!(*ends.0.lock(), vec!["s1".to_string()]);
+        assert!(completions.live_keys().is_empty());
+    }
+
+    #[test]
+    fn control_a_stream_cancelled_by_cancel_call_does_not_report_an_end() {
+        let completions = Arc::new(Completions::default());
+        let ends = Arc::new(Ends(Mutex::new(Vec::new())));
+        completions.set_sink(ends.clone());
+        open_stream(&completions, "s2", vec![]);
+        assert!(completions.cancel("s2"));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(ends.0.lock().is_empty(), "cancel-call ends the ask in the kernel, not through the host");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use super::process_result::{
     null_payload, store_row_id, ProcessEventResult, RuntimeStats, RUNTIME_SINGLETON,
 };
 use super::render_store::RenderStore;
-use super::resumable::{CallRoutes, CallSite, CallVerdict, IoPort};
+use super::resumable::{CallRoutes, CallSite, CallVerdict, DeferredCall, IoPort};
 use orbital_core_base::dispatch_mode::DispatchMode;
 
 use super::row_query::{
@@ -425,6 +425,10 @@ pub struct RuntimeKernel {
     mount: Arc<RwLock<MountLifecycle>>,
     /// Keyed asks a row's step deferred and the host has not completed, per (trait, session-folded row).
     deferred_asks: RwLock<HashMap<(String, String), Vec<keyed_rows::DeferredAsk>>>,
+    /// The order the kernel recorded its deferred asks in.
+    deferred_seq: std::sync::atomic::AtomicU64,
+    /// Keyed rows (trait, row) of this session whose last pending ask ended since the last step ended.
+    settled_rows: RwLock<Vec<(String, String)>>,
     /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
     removed_rows: RwLock<Vec<(Option<String>, String)>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
@@ -737,6 +741,8 @@ impl RuntimeKernel {
             },
             mount: Arc::new(RwLock::new(MountLifecycle::default())),
             deferred_asks: RwLock::new(HashMap::new()),
+            deferred_seq: std::sync::atomic::AtomicU64::new(0),
+            settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }

@@ -13,11 +13,11 @@ use crate::resumable::{
     drive_blocking, BlockingHost, DispatchOutcomes, IoAnswer, IoRequest, PortHost,
 };
 use crate::secret_source::SecretSource;
+use orbital_core_base::dispatch_mode::DispatchMode;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_base::schema::types::{OrbitalSchema, TraitDefinition, TraitReference};
 use orbital_core_base::sync::Mutex;
 use orbital_core_base::value::Value;
-use orbital_core_base::dispatch_mode::DispatchMode;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -123,6 +123,20 @@ pub struct StepOutcome {
     pub ensures: Vec<PlayedEnsures>,
 }
 
+/// A keyed ask the host deferred and no event has ended: the operator and arguments as the kernel dispatched them,
+/// its key and the trait whose step made it.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingAsk {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub operator: String,
+    #[cfg_attr(test, ts(type = "Array<JsonValue>"))]
+    pub args: Vec<Value>,
+    pub key: String,
+}
+
 /// One step of a replay: every outcome of the cascade its event started, and the states and rows after it.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,6 +148,7 @@ pub struct StepResult {
     pub entities: serde_json::Map<String, serde_json::Value>,
     #[cfg_attr(test, ts(type = "EventPayload | null"))]
     pub entity_after: serde_json::Value,
+    pub pending_asks: Vec<PendingAsk>,
 }
 
 /// What `orb execute --steps` prints for a replay that ran, and `program/step { report: "raw" }` answers.
@@ -465,14 +480,25 @@ pub fn play_steps(
             .into_iter()
             .map(|(name, (state, _))| (name, state))
             .collect();
-        reports.push(StepResult { outcomes, states, entities, entity_after });
+        let pending_asks = kernel.pending_asks();
+        reports.push(StepResult {
+            outcomes,
+            states,
+            entities,
+            entity_after,
+            pending_asks,
+        });
     }
     let dispatch_modes = kernel
         .trait_snapshot(None)
         .into_iter()
         .map(|(name, (_, mode))| (name, mode))
         .collect();
-    Ok(StepReport { success: true, steps: reports, dispatch_modes })
+    Ok(StepReport {
+        success: true,
+        steps: reports,
+        dispatch_modes,
+    })
 }
 
 #[cfg(test)]
@@ -485,6 +511,13 @@ mod tests {
     const MODES: &str = r#"{"name":"EditorApp","typeContractVersion":1,"orbitals":[{"name":"Editor","entity":{"name":"Doc","persistence":"runtime","fields":[{"name":"id","type":"string"},{"name":"count","type":"number","default":0}]},"pages":[],"traits":[{"name":"Modes","linkedEntity":"Doc","stateMachine":{"states":[{"name":"NORMAL","isInitial":true},{"name":"INSERT"},{"name":"VISUAL"}],"transitions":[{"from":"NORMAL","to":"INSERT","event":"KEY","guard":["=","@payload.key","i"],"effects":[["set","@entity.count",["+","@entity.count",1]]]},{"from":"NORMAL","to":"VISUAL","event":"KEY","guard":["=","@payload.key","v"]}]}}]}]}"#;
 
     const KEYED: &str = r#"{"name":"KeyedApp","typeContractVersion":1,"orbitals":[{"name":"Keys","entity":{"name":"Job","persistence":"runtime","fields":[{"name":"id","type":"string"},{"name":"len","type":"number","default":-1}]},"pages":[],"traits":[{"name":"Host","linkedEntity":"Job","config":{"password":{"type":"secret","default":"PW_NAME","description":"the password credential"}},"stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[{"from":"idle","to":"idle","event":"GO","effects":[["set","@entity.len",["default",["credential/byte-length","@config.password"],-1]]]}]}}]}]}"#;
+
+    const ASKING: &str = r#"{"name":"AskApp","typeContractVersion":1,"orbitals":[{"name":"Asks","entity":{"name":"Call","persistence":"runtime","fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Caller","linkedEntity":"Call","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[
+        {"from":"idle","to":"idle","event":"GO","effects":[["let",[["path","/items"]],["if",true,["os/read-file",["str/concat","/data","@path"],{"key":"first","emit":{"success":"DONE","failure":"FAILED"}}]]]]},
+        {"from":"idle","to":"idle","event":"GO_TWO","effects":[["os/read-file","/a",{"key":"a","emit":{"success":"DONE","failure":"FAILED"}}],["os/stat","/b",{"key":"b","emit":{"success":"DONE","failure":"FAILED"}}]]},
+        {"from":"idle","to":"idle","event":"PLAIN","effects":[["set","@entity.id","x"]]},
+        {"from":"idle","to":"idle","event":"DONE"}
+    ]}}]}]}"#;
 
     fn play(steps: serde_json::Value) -> Result<serde_json::Value, String> {
         play_on(MODES, steps)
@@ -688,13 +721,28 @@ mod tests {
             { "trait": "Modes", "event": "KEY", "payload": { "key": "i" } }
         ]))
         .unwrap();
-        let typed: StepReport = serde_json::from_value(report.clone()).expect("the report is a StepReport");
+        let typed: StepReport =
+            serde_json::from_value(report.clone()).expect("the report is a StepReport");
         assert!(typed.success);
         let outcome = &typed.steps[0].outcomes[0];
-        assert_eq!((outcome.trait_name.as_str(), outcome.orbital.as_str(), outcome.event.as_str()), ("Modes", "Editor", "KEY"));
-        assert_eq!((outcome.previous_state.as_str(), outcome.new_state.as_str()), ("NORMAL", "INSERT"));
+        assert_eq!(
+            (
+                outcome.trait_name.as_str(),
+                outcome.orbital.as_str(),
+                outcome.event.as_str()
+            ),
+            ("Modes", "Editor", "KEY")
+        );
+        assert_eq!(
+            (outcome.previous_state.as_str(), outcome.new_state.as_str()),
+            ("NORMAL", "INSERT")
+        );
         assert_eq!(outcome.fired_arm, Some(0));
-        assert_eq!(serde_json::to_value(&typed).unwrap(), report, "the typed report prints what the replay printed");
+        assert_eq!(
+            serde_json::to_value(&typed).unwrap(),
+            report,
+            "the typed report prints what the replay printed"
+        );
         let refusal = serde_json::json!({ "success": false, "error": "no" });
         let parsed: StepRefusal = serde_json::from_value(refusal.clone()).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), refusal);
@@ -702,5 +750,107 @@ mod tests {
             serde_json::from_value::<StepReport>(refusal).is_err(),
             "control: a refusal carries no steps, so it is not a report"
         );
+    }
+
+    fn pending_of(
+        report: &serde_json::Value,
+        step: usize,
+    ) -> Vec<(String, String, serde_json::Value, String)> {
+        report["steps"][step]["pendingAsks"]
+            .as_array()
+            .unwrap_or_else(|| panic!("pendingAsks is a list: {report}"))
+            .iter()
+            .map(|a| {
+                (
+                    a["trait"].as_str().unwrap().to_string(),
+                    a["operator"].as_str().unwrap().to_string(),
+                    a["args"].clone(),
+                    a["key"].as_str().unwrap().to_string(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_keyed_ask_nested_in_let_and_if_is_listed_pending_with_its_evaluated_args_and_key() {
+        let report = play_on(
+            ASKING,
+            serde_json::json!([{ "trait": "Caller", "event": "GO" }]),
+        )
+        .unwrap();
+        let pending = pending_of(&report, 0);
+        assert_eq!(pending.len(), 1, "{report}");
+        assert_eq!(pending[0].0, "Caller");
+        assert_eq!(pending[0].1, "os/read-file");
+        assert_eq!(
+            pending[0].2,
+            serde_json::json!(["/data/items"]),
+            "the path is evaluated, not authored: {report}"
+        );
+        assert_eq!(pending[0].3, "first");
+    }
+
+    #[test]
+    fn an_answered_ask_is_not_listed_and_the_one_still_waiting_is() {
+        let report = play_on(
+            ASKING,
+            serde_json::json!([
+                { "trait": "Caller", "event": "GO_TWO" },
+                { "trait": "Caller", "event": "DONE", "payload": { "key": "a" } },
+                { "trait": "Caller", "event": "DONE", "payload": { "key": "b" } }
+            ]),
+        )
+        .unwrap();
+        let keys = |step| {
+            pending_of(&report, step)
+                .into_iter()
+                .map(|p| p.3)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(keys(0), ["a", "b"], "{report}");
+        assert_eq!(
+            keys(1),
+            ["b"],
+            "a: answered by its completion event: {report}"
+        );
+        assert!(keys(2).is_empty(), "b: answered too: {report}");
+    }
+
+    #[test]
+    fn control_a_step_with_no_ask_lists_none() {
+        let report = play_on(
+            ASKING,
+            serde_json::json!([{ "trait": "Caller", "event": "PLAIN" }]),
+        )
+        .unwrap();
+        assert_eq!(
+            report["steps"][0]["pendingAsks"],
+            serde_json::json!([]),
+            "{report}"
+        );
+    }
+
+    #[test]
+    fn two_pending_asks_keep_the_order_the_kernel_recorded_them() {
+        let report = play_on(
+            ASKING,
+            serde_json::json!([{ "trait": "Caller", "event": "GO_TWO" }]),
+        )
+        .unwrap();
+        let pending = pending_of(&report, 0);
+        assert_eq!(
+            pending.iter().map(|p| p.3.as_str()).collect::<Vec<_>>(),
+            ["a", "b"],
+            "{report}"
+        );
+        assert_eq!(
+            pending
+                .iter()
+                .map(|p| p.2[0].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/a", "/b"]
+        );
+        let typed: StepReport = serde_json::from_value(report.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&typed).unwrap(), report);
     }
 }

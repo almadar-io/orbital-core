@@ -85,6 +85,7 @@ mod tests {
         }
     }
 
+    // EXEC-TICK-7: the kernel coalesces the peer relay, newest per (client, orbital, event).
     #[test]
     fn newest_per_key_wins_and_the_first_item_opens_the_window() {
         let mut relay = TickRelay::default();

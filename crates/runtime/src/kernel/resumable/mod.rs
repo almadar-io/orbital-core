@@ -56,7 +56,7 @@ pub use continuation::{
     ResolveProgress, ResumeError,
 };
 pub use hosts::{BlockingHost, HostAnswered, PortHost};
-pub(crate) use io_port::IoPort;
+pub(crate) use io_port::{DeferredCall, IoPort};
 pub(crate) use io_port_calls::DeliverAsk;
 pub(crate) use ledger::{
     number_requests, Asks, EnsureIndexes, Exchange, ReadCache, StepEnd, StoreAsk, AWAITING_HOST,

@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// An ask the host answered `ServiceDeferred`: the operator and its arguments as the kernel dispatched them.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DeferredCall {
+    pub(crate) operator: String,
+    pub(crate) args: Vec<Value>,
+}
+
 /// The one door the kernel's I/O goes through.
 pub(crate) struct IoPort {
     pub(super) source: Arc<dyn EntitySource>,
@@ -13,6 +20,8 @@ pub(crate) struct IoPort {
     pub(super) site: Mutex<Option<CallSite>>,
     /// How the host settled the last `call-service`, when not by a result or an error.
     pub(super) verdict: Mutex<Option<CallVerdict>>,
+    /// The ask the host deferred, as the kernel put it: kept with the `Deferred` verdict until the kernel records it.
+    pub(super) deferred_call: Mutex<Option<DeferredCall>>,
     /// The `key` of the substrate op being run, stamped on its ask with `site`.
     pub(super) substrate_key: Mutex<Option<String>>,
     /// What the host's query push-down honours, per entity type; an entity not listed is never sent a query.
@@ -63,6 +72,7 @@ impl IoPort {
             gate: Mutex::new(()),
             site: Mutex::new(None),
             verdict: Mutex::new(None),
+            deferred_call: Mutex::new(None),
             substrate_key: Mutex::new(None),
             query_capabilities: RwLock::new(HashMap::new()),
             write_capabilities: RwLock::new(HashMap::new()),
@@ -404,6 +414,11 @@ impl IoPort {
     /// How the host settled the last `call-service`, when not by a result or an error.
     pub(crate) fn take_call_verdict(&self) -> Option<CallVerdict> {
         self.verdict.lock().take()
+    }
+
+    /// The ask the host deferred (operator and evaluated arguments), once.
+    pub(crate) fn take_deferred_call(&self) -> Option<DeferredCall> {
+        self.deferred_call.lock().take()
     }
 
     pub(crate) fn has_service(&self) -> bool {

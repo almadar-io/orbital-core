@@ -321,6 +321,10 @@ pub struct EmbeddedOperator {
     /// The options that name a dispatch's target (`targetOptions`, on `program/dispatch`).
     #[serde(rename = "targetOptions", default)]
     pub target_options: Vec<String>,
+    /// The orb release that introduced each option, by path from its parameter (`options/key`, `options/emit/onMessage`);
+    /// a path covers everything under it. An option not listed predates the table.
+    #[serde(rename = "optionSince", default)]
+    pub option_since: std::collections::BTreeMap<String, String>,
     /// 0-indexed argument position of the operator's lambda/callback, when it
     /// takes one. The sexpr validator rejects a `(fn …)` form at any OTHER
     /// argument position — the decidable wrong-arg-order class
@@ -496,6 +500,11 @@ pub fn emit_slots() -> &'static HashSet<String> {
         }
         slots
     })
+}
+
+/// The orb release the installed operator table was admitted against; `None` before a table is loaded.
+pub fn running_release() -> Option<&'static str> {
+    crate::language_data::operator_data_if_loaded().map(|data| data.running.as_str())
 }
 
 /// The host effects the installed operator table holds to a closed call shape (`closedCall`).

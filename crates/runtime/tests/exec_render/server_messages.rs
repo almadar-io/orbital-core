@@ -110,6 +110,7 @@ fn control_a_request_without_a_locale_renders_the_first_declared() {
     assert!(page.contains("\"content\":\"en\""), "{page}");
 }
 
+// EXEC-DIST-12: a locale the program does not declare is refused at admission.
 #[test]
 fn edge_a_locale_the_program_does_not_declare_is_refused() {
     let refused = init(&server(), Some("fr")).unwrap();

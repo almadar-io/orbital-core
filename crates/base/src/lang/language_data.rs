@@ -94,6 +94,8 @@ impl LanguageData {
 /// The canonical operator table plus where it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperatorData {
+    /// The orb release the table was admitted against: the version a host passed into discovery.
+    pub running: String,
     pub std_version: String,
     pub root: PathBuf,
     pub operators: String,
@@ -256,6 +258,7 @@ pub fn load_operator_data_for(
     let block = read_language_block(STD_PACKAGE, start_dir, user_store, running)?;
     let operators = block.read("operators")?;
     let data = OperatorData {
+        running: running.to_string(),
         operators,
         std_version: block.pkg.version,
         root: block.pkg.root,
@@ -266,6 +269,8 @@ pub fn load_operator_data_for(
 
 /// Every category and operator entry reads as this binary's registry types, so a table from a newer std (a new type
 /// kind, a new required field) is refused here, naming the entry, instead of panicking where the registry is first read.
+/// Each `optionSince` names a plain release and an option its operator declares; a program that states one newer than
+/// the running orb is refused where it is validated.
 pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataError> {
     use crate::language::registry::{EmbeddedCategory, EmbeddedOperator};
     let invalid = |reason: String| LanguageDataError::Invalid {
@@ -289,7 +294,8 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
     }
     let operators = section("operators")?;
     for (name, meta) in operators {
-        serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+        let operator = serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+        check_option_since(data, name, meta, &operator)?;
     }
     for (name, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
         if operators.get(name).and_then(|meta| meta.get(field)).and_then(Value::as_array).is_none() {
@@ -302,6 +308,65 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
         }
     }
     Ok(())
+}
+
+fn check_option_since(
+    data: &OperatorData,
+    name: &str,
+    meta: &Value,
+    operator: &crate::language::registry::EmbeddedOperator,
+) -> Result<(), LanguageDataError> {
+    let refuse = |reason: String| LanguageDataError::Unreadable {
+        package: STD_PACKAGE,
+        version: data.std_version.clone(),
+        entry: format!("operator `{name}`"),
+        reason,
+    };
+    let params = meta.get("params").and_then(Value::as_array);
+    for (option, since) in &operator.option_since {
+        semver::Version::parse(since)
+            .ok()
+            .filter(|v| v.pre.is_empty() && v.build.is_empty())
+            .ok_or_else(|| refuse(format!("`optionSince` {option:?} is {since:?}, not a release version")))?;
+        let segments: Vec<&str> = option.split('/').collect();
+        let declared = segments.split_first().is_some_and(|(param, rest)| {
+            !rest.is_empty()
+                && params
+                    .into_iter()
+                    .flatten()
+                    .find(|p| p.get("name").and_then(Value::as_str) == Some(*param))
+                    .and_then(|p| p.get("type"))
+                    .is_some_and(|ty| declares_path(ty, rest))
+        });
+        if !declared {
+            return Err(refuse(format!("`optionSince` names {option:?}, which is not an option the operator declares")));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the operator-table type `ty` declares the object-field path `segments`; an array's element and a union's
+/// branches are looked through.
+fn declares_path(ty: &Value, segments: &[&str]) -> bool {
+    let Some((first, rest)) = segments.split_first() else {
+        return true;
+    };
+    if ty.get("kind").and_then(Value::as_str) == Some("object") {
+        return ty
+            .get("fields")
+            .and_then(|fields| fields.get(*first))
+            .is_some_and(|field| declares_path(field, rest));
+    }
+    match ty.get("of") {
+        Some(Value::Array(branches)) => branches.iter().any(|branch| declares_path(branch, segments)),
+        Some(inner @ Value::Object(_)) => declares_path(inner, segments),
+        _ => false,
+    }
+}
+
+/// Whether the release `since` is newer than the release `running`.
+pub fn release_newer(since: &str, running: &str) -> Result<bool, semver::Error> {
+    Ok(semver::Version::parse(since)? > semver::Version::parse(running)?)
 }
 
 /// Operators whose canonical category targets `rust` but that the evaluator
@@ -668,11 +733,12 @@ pub fn parse_language_bundle(
         themes,
     };
     let ops = OperatorData {
+        running: running.to_string(),
         std_version: version(std, "std")?,
         root: PathBuf::new(),
         operators,
     };
-    check_operator_entries(&ops)?;
+check_operator_entries(&ops)?;
     let packs = value
         .get("vocabularies")
         .and_then(Value::as_array)

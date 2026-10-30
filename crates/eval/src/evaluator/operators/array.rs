@@ -1547,6 +1547,110 @@ mod strict_tests {
         );
     }
 
+    fn inner_reduce(acc_name: &str, item: &str, body_item: serde_json::Value) -> serde_json::Value {
+        json!([
+            "array/reduce",
+            ["array/range", 0, 2],
+            [],
+            ["fn", [acc_name, item], ["array/concat", format!("@{acc_name}"), ["list", body_item]]]
+        ])
+    }
+
+    #[test]
+    fn a_nested_reduce_reusing_the_accumulator_name_reads_its_own() {
+        let inner = inner_reduce("acc", "j", json!(["+", "@i", "@j"]));
+        assert_eq!(
+            run(json!([
+                "array/reduce",
+                ["array/range", 0, 2],
+                [],
+                ["fn", ["acc", "i"], ["array/concat", "@acc", inner]]
+            ]))
+            .unwrap(),
+            json!([0.0, 1.0, 1.0, 2.0])
+        );
+    }
+
+    #[test]
+    fn the_outer_accumulator_is_read_again_after_the_inner_reduce_returns() {
+        let inner = inner_reduce("acc", "j", json!("@j"));
+        assert_eq!(
+            run(json!([
+                "array/reduce",
+                ["array/range", 0, 2],
+                [],
+                ["fn", ["acc", "i"], ["array/concat", inner, "@acc"]]
+            ]))
+            .unwrap(),
+            json!([0.0, 1.0, 0.0, 1.0])
+        );
+    }
+
+    #[test]
+    fn three_nested_reduces_sharing_a_name_each_read_their_own() {
+        let innermost = inner_reduce("acc", "k", json!(["+", ["+", "@i", "@j"], "@k"]));
+        let middle = json!([
+            "array/reduce",
+            ["array/range", 0, 2],
+            [],
+            ["fn", ["acc", "j"], ["array/concat", "@acc", innermost]]
+        ]);
+        assert_eq!(
+            run(json!([
+                "array/reduce",
+                ["array/range", 0, 2],
+                [],
+                ["fn", ["acc", "i"], ["array/concat", "@acc", middle]]
+            ]))
+            .unwrap(),
+            json!([0.0, 1.0, 1.0, 2.0, 1.0, 2.0, 2.0, 3.0])
+        );
+    }
+
+    #[test]
+    fn a_let_inside_a_reduce_shadows_the_accumulator_and_the_fn_restores_it() {
+        assert_eq!(
+            run(json!([
+                "array/reduce",
+                [1, 2],
+                [],
+                ["fn", ["acc", "i"], ["array/concat", "@acc", ["let", [["acc", ["list", "@i"]]], "@acc"]]]
+            ]))
+            .unwrap(),
+            json!([1.0, 2.0])
+        );
+    }
+
+    #[test]
+    fn a_reduce_inside_a_let_of_the_same_name_reads_its_own_accumulator() {
+        assert_eq!(
+            run(json!([
+                "let",
+                [["acc", [100]]],
+                [
+                    "array/concat",
+                    ["array/reduce", [1, 2], [], ["fn", ["acc", "i"], ["array/concat", "@acc", ["list", "@i"]]]],
+                    "@acc"
+                ]
+            ]))
+            .unwrap(),
+            json!([1.0, 2.0, 100.0])
+        );
+    }
+
+    #[test]
+    fn nested_map_params_shadow_and_the_outer_param_returns_after() {
+        assert_eq!(
+            run(json!([
+                "array/map",
+                [1, 2],
+                ["fn", "x", ["array/concat", ["array/map", [10, 20], ["fn", "x", ["+", "@x", 1]]], ["list", "@x"]]]
+            ]))
+            .unwrap(),
+            json!([[11.0, 21.0, 1.0], [11.0, 21.0, 2.0]])
+        );
+    }
+
     #[test]
     fn counts_and_indexes_are_whole_numbers_in_range() {
         assert_eq!(

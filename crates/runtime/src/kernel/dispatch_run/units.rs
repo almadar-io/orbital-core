@@ -200,7 +200,8 @@ impl RuntimeKernel {
         }
         let mut memory = DispatchMemory::default();
         if let Some(log) = &log {
-            memory.seed(&trait_name, log);
+            let keyed = self.is_keyed_row(&trait_name, &eid);
+            memory.seed(&keyed_rows::memory_scope(&trait_name, &eid, keyed), log);
         }
         let seed_delivery = Arc::new(match &delivery {
             Some(d) => d.value(),
@@ -284,7 +285,8 @@ impl RuntimeKernel {
                     *idx += 1;
                     return Ok(Flow::More);
                 }
-                let view = memory.view(scope, seed_delivery);
+                let remembered = keyed_rows::memory_scope(scope, eid, self.is_keyed_row(scope, eid));
+                let view = memory.view(&remembered, seed_delivery);
                 let ran = match tick {
                     Some(tick) => {
                         self.process_tick_in_dispatch(scope, eid, &tick.state_entity, &tick.name)
@@ -325,9 +327,9 @@ impl RuntimeKernel {
                     result.consumed_emits = followups.consumed_emits;
                 }
                 if let (Some(result), None) = (&result, tick.as_ref()) {
-                    memory.record_delivery(scope, seed_delivery, view);
+                    memory.record_delivery(&remembered, seed_delivery, view);
                     if result.executed {
-                        memory.record_transition(scope, &result.previous_state, &result.new_state);
+                        memory.record_transition(&remembered, &result.previous_state, &result.new_state);
                     }
                 }
                 if let Some(result) = result {
@@ -336,6 +338,7 @@ impl RuntimeKernel {
                 if tick.is_none() && self.is_keyed_row(scope, eid) {
                     self.drop_quiet_row(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), eid, scope, eid)?;
                 }
+                self.drop_settled_rows(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), eid)?;
                 *idx += 1;
                 Ok(Flow::More)
             }
@@ -555,7 +558,8 @@ impl RuntimeKernel {
             debug!(trait_name = %item.trait_name, event = %item.event, from = %from, "fanout:visited-skip");
             return Ok(true);
         }
-        let view = memory.view(&item.trait_name, &item.delivery);
+        let remembered = keyed_rows::memory_scope(&item.trait_name, eid, keyed);
+        let view = memory.view(&remembered, &item.delivery);
         if let Some(guard) = &item.listen_guard {
             if !listen_guard_passes(
                 guard,
@@ -652,9 +656,9 @@ impl RuntimeKernel {
             result.consumed_emits = consumed_emits;
         }
         if let Some(result) = &result {
-            memory.record_delivery(&t, &delivery, view);
+            memory.record_delivery(&remembered, &delivery, view);
             if result.executed {
-                memory.record_transition(&t, &result.previous_state, &result.new_state);
+                memory.record_transition(&remembered, &result.previous_state, &result.new_state);
             }
         }
         if let Some(result) = result {
@@ -673,6 +677,7 @@ impl RuntimeKernel {
         if keyed {
             self.drop_quiet_row(&[], &cascade.queue, outer_eid, &t, eid)?;
         }
+        self.drop_settled_rows(&[], &cascade.queue, outer_eid)?;
         Ok(true)
     }
 }

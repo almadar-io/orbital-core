@@ -404,19 +404,24 @@ impl BindingContext {
 
     /// Set a local binding
     pub fn set_local(&mut self, name: impl Into<LocalName>, value: Value) -> &mut Self {
-        self.own_frame().put(name.into(), Some(Arc::new(value)));
+        let name = name.into();
+        self.drop_linear(name.as_str());
+        self.own_frame().put(name, Some(Arc::new(value)));
         self
     }
 
     /// Bind a local to a value another binding already holds, without copying it.
     pub fn set_local_shared(&mut self, name: impl Into<LocalName>, value: Arc<Value>) -> &mut Self {
-        self.own_frame().put(name.into(), Some(value));
+        let name = name.into();
+        self.drop_linear(name.as_str());
+        self.own_frame().put(name, Some(value));
         self
     }
 
     /// Remove a local binding
     pub fn remove_local(&mut self, name: &str) -> Option<Value> {
         let removed = self.locals.get(name).cloned();
+        self.drop_linear(name);
         if removed.is_some() {
             self.own_frame().put(name.into(), None);
         }
@@ -485,8 +490,17 @@ impl BindingContext {
     /// Bind `name` to `value` for a single read: the read takes it. Only for a local the scope reads once
     /// and never rebinds (the caller checks); a local of the same name in an inner scope still wins.
     pub fn set_linear_local(&mut self, name: &str, value: Value) -> &mut Self {
+        if self.locals.get(name).is_some() {
+            self.own_frame().put(name.into(), None);
+        }
         self.linear = Some(Arc::new(LinearLocal { name: name.to_string(), slot: std::sync::Mutex::new(Some(value)) }));
         self
+    }
+
+    fn drop_linear(&mut self, name: &str) {
+        if self.linear.as_ref().is_some_and(|l| l.name == name) {
+            self.linear = None;
+        }
     }
 
     /// The linear local `name`, moved out, once.

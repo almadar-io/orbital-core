@@ -598,6 +598,7 @@ pub fn hex(bytes: &[u8]) -> String {
 mod key_exchange_tests {
     use super::*;
 
+    // EXEC-CRYPTO-2: a sealed operator draws its entropy from the kernel (the seed), never from the program.
     #[test]
     fn the_ephemeral_exchange_derives_the_secret_the_peer_derives() {
         use p256::elliptic_curve::sec1::ToEncodedPoint;
@@ -614,6 +615,7 @@ mod key_exchange_tests {
         assert_eq!(ecdh_p256_ephemeral(&[], [9u8; 32]), None);
     }
 
+    // EXEC-CRYPTO-3: AES-128-GCM seal/open; null on a bad key, nonce or tag.
     #[test]
     fn aes_gcm_refuses_a_wrong_sized_key_or_nonce_and_a_forged_tag() {
         let sealed = aes128_gcm_seal(&[1u8; 16], &[2u8; 12], b"hello", b"aad").expect("sealed");

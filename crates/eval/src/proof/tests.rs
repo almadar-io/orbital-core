@@ -233,6 +233,7 @@ fn an_intrinsic_field_is_never_stored() {
     assert_eq!(only(&program(t, J::Null, inv)), Verdict::Proved);
 }
 
+// EXEC-PROVE-1: the kernel prover answers one finding per proposition it cannot show kept.
 #[test]
 fn an_undecidable_atom_is_unproved_and_named() {
     let inv = row_invariant(json!([">", ["str/len", "@entity.status"], 0]));

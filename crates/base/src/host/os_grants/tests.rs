@@ -2260,6 +2260,7 @@ mod static_check {
         json!({ "fs": [{ "glob": "/data/**", "modes": ["read"] }] })
     }
 
+    // EXEC-GRANTS-1: the kernel static grant check behind program/os-grants.
     #[test]
     fn a_call_outside_the_grants_is_missing_and_inside_is_not() {
         let outside = one(read_data(), json!([["os/read-file", "/etc/passwd"]]));

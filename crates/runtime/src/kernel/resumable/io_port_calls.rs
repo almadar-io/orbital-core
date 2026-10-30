@@ -225,6 +225,10 @@ impl ServiceHandler for IoPort {
             }
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
+                *self.deferred_call.lock() = Some(DeferredCall {
+                    operator: "call-service".to_string(),
+                    args: vec![Value::string(service.to_string()), Value::string(method.to_string()), args.clone()],
+                });
                 Ok(Value::Null)
             }
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
@@ -355,6 +359,7 @@ impl IoPort {
             Asked::Answer(IoAnswer::Os(out)) => out.map(Secret::into_inner),
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
+                *self.deferred_call.lock() = Some(DeferredCall { operator: op.name().to_string(), args: args.to_vec() });
                 Ok(Value::Null)
             }
             Asked::Answer(IoAnswer::ServiceCancelled) => {
@@ -523,6 +528,7 @@ impl SubstrateHandler for IoPort {
             Asked::Answer(IoAnswer::Substrate(out)) => out,
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
+                *self.deferred_call.lock() = Some(DeferredCall { operator: op.to_string(), args: args.to_vec() });
                 Ok(Value::Null)
             }
             Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {

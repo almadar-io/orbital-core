@@ -203,6 +203,7 @@ fn refusal_code(response: &EventResponse) -> TransitionRejectionCode {
     response.rejections.as_ref().expect("a typed rejection")[0].code
 }
 
+// EXEC-DIST-11: a stateful host admits carried circuit state only on a delegated leg.
 #[test]
 fn a_stateful_host_refuses_carried_traits_without_a_target_or_a_mount() {
     let request = EventRequest {

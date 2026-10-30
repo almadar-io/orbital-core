@@ -327,6 +327,50 @@ mod tests {
         assert!(err.to_string().contains("category `other`"), "{err}");
     }
 
+    fn table_with_option_since(since: Value) -> Value {
+        let mut v: Value = serde_json::from_str(&table("-", r#"["rust"]"#)).unwrap();
+        v["operators"]["+"]["params"] = json!([
+            {"name": "a", "type": "number"},
+            {"name": "options", "type": {"kind": "object", "fields": {"key": "string", "emit": {"kind": "object", "fields": {"onMessage": "string"}}}}}
+        ]);
+        v["operators"]["+"]["optionSince"] = since;
+        v
+    }
+
+    #[test]
+    fn a_table_that_states_option_releases_loads_on_an_older_orb_and_records_the_running_release() {
+        let tmp = Tmp::new("ops-since-ok");
+        let table = table_with_option_since(json!({"options/key": "19.0.0", "options/emit/onMessage": "19.1.2"}));
+        install_std(&tmp.0, ">=17.0.0", &table.to_string());
+        let data = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "18.0.5").unwrap();
+        assert_eq!(data.running, "18.0.5");
+        assert!(data.operators.contains("\"optionSince\""));
+
+        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        v["std"]["operators"] = table;
+        let (_, ops, _) = parse_language_bundle(&v.to_string(), "18.0.5").unwrap();
+        assert_eq!(ops.running, "18.0.5");
+    }
+
+    #[test]
+    fn an_option_since_that_is_not_a_release_or_not_a_declared_option_is_refused_naming_the_entry() {
+        let tmp = Tmp::new("ops-since-bad");
+        for (since, needle) in [
+            (json!({"options/key": "19"}), "not a release version"),
+            (json!({"options/key": "19.0.0-rc.1"}), "not a release version"),
+            (json!({"options/missing": "19.0.0"}), "not an option the operator declares"),
+            (json!({"options": "19.0.0"}), "not an option the operator declares"),
+            (json!({"nothere/key": "19.0.0"}), "not an option the operator declares"),
+            (json!({"options/key/deeper": "19.0.0"}), "not an option the operator declares"),
+        ] {
+            install_std(&tmp.0, "^19.0.0", &table_with_option_since(since.clone()).to_string());
+            let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "19.0.0").unwrap_err();
+            assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE", "{since}");
+            let msg = err.to_string();
+            assert!(msg.contains("operator `+`") && msg.contains(needle), "{since}: {msg}");
+        }
+    }
+
     #[test]
     fn a_table_without_the_bus_excluded_events_or_the_dispatch_target_options_is_refused() {
         for (op, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {

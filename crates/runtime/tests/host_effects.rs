@@ -516,6 +516,7 @@ mod credential_admin_effects {
         assert_eq!(payload_of(&response, "BAD"), json!({ "error": "No credential store is installed on this host" }));
     }
 
+    // EXEC-CRYPTO-1: the kernel resolves a credential operand; the program never holds it.
     #[test]
     fn a_credential_operand_is_resolved_by_the_kernel_and_never_reaches_program_data() {
         let schema_for = |call: Json| -> OrbitalSchema {
