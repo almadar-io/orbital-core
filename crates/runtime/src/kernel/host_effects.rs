@@ -3,7 +3,7 @@
 use super::*;
 
 impl RuntimeKernel {
-    /// `access-check`: the registered access policy's verdict on `row` for `viewer`, through the one evaluator
+    /// `access-check`: the registered access policy's verdict on `row` for `identity`, through the one evaluator
     /// fetch and persist enforce (`entity_access`); no host ask.
     pub(super) fn run_access_check(&self, effect: &Effect) -> EffectResult {
         let Effect::AccessCheck { request, .. } = effect else {
@@ -16,9 +16,12 @@ impl RuntimeKernel {
         let fail = |message: String| {
             EffectResult::failed(effect.clone(), &format!("access-check: {message}"))
         };
-        for name in ["entity", "action", "row", "viewer"] {
+        if field("viewer").is_some() {
+            return fail("the request field `viewer` is refused: name the subject row as `identity`".to_string());
+        }
+        for name in ["entity", "action", "row", "identity"] {
             if field(name).is_none() {
-                let hint = if name == "viewer" {
+                let hint = if name == "identity" {
                     " (null for nobody)"
                 } else {
                     ""
@@ -56,12 +59,12 @@ impl RuntimeKernel {
             return fail(format!("`{entity}` is not an entity of this program"));
         };
         let mut viewer_ctx = BindingContext::new();
-        match field("viewer") {
+        match field("identity") {
             Some(Value::Null) | None => {}
-            Some(viewer @ Value::Object(_)) => {
-                viewer_ctx.set_user(viewer.clone());
+            Some(identity @ Value::Object(_)) => {
+                viewer_ctx.set_user(identity.clone());
             }
-            Some(_) => return fail("viewer must be a user object or null".to_string()),
+            Some(_) => return fail("identity must be an [identity] row or null".to_string()),
         }
         let allowed = match action {
             PersistOperation::Read => {

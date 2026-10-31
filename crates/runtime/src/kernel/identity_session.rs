@@ -3,15 +3,35 @@
 //! row of that subject.
 
 use super::step_effects::push_with_completion;
+use crate::effects::frame_delta::FrameIdentity;
 use super::*;
 use orbital_core_base::sealed::VERIFIED;
-use orbital_core_base::viewer::{is_identity_effect, Viewer, SIGN_IN};
+use orbital_core_base::viewer::{is_identity_effect, SIGN_IN};
 
 /// What a session's `@user` is once it took part in the identity effects.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum IdentityBinding {
-    Subject(Arc<str>),
+    /// `user` is a `[runtime]` identity's `@user`, kept in the binding so it is freed with the session; `None` reads
+    /// the `[persistent]` identity's row from its store.
+    Subject { subject: Arc<str>, user: Option<Value> },
     Anonymous,
+}
+
+/// Holds a step's harness identity; dropping it restores the identity the session had.
+pub(crate) struct ReplayIdentity {
+    identities: Arc<RwLock<HashMap<String, IdentityBinding>>>,
+    session: String,
+    previous: Option<IdentityBinding>,
+}
+
+impl Drop for ReplayIdentity {
+    fn drop(&mut self) {
+        let mut identities = self.identities.write();
+        match self.previous.take() {
+            Some(previous) => identities.insert(std::mem::take(&mut self.session), previous),
+            None => identities.remove(&self.session),
+        };
+    }
 }
 
 /// The session key of the program session (ticks, boot, hooks).
@@ -41,9 +61,48 @@ impl RuntimeKernel {
     /// The subject this thread's session is signed in as; `None` when it is signed out or never signed in.
     pub fn session_identity(&self) -> Option<Arc<str>> {
         match self.sessions.identities.read().get(&*self.identity_key()) {
-            Some(IdentityBinding::Subject(subject)) => Some(Arc::clone(subject)),
+            Some(IdentityBinding::Subject { subject, .. }) => Some(Arc::clone(subject)),
             _ => None,
         }
+    }
+
+    /// The identity a response's frame delta carries to the client (EXEC-IDENTITY-4); `None` on a client kernel (it
+    /// mirrors, never owns) and when a persistent identity's row could not be read now (the next delta carries it).
+    pub(super) fn mirrored_identity(&self) -> Option<FrameIdentity> {
+        if self.effect_executor.environment().is_client() {
+            return None;
+        }
+        let binding = self.sessions.identities.read().get(&*self.identity_key()).cloned();
+        match binding {
+            None | Some(IdentityBinding::Anonymous) => Some(FrameIdentity::default()),
+            Some(IdentityBinding::Subject { user: Some(user), .. }) => Some(FrameIdentity { user: Some(user) }),
+            Some(IdentityBinding::Subject { user: None, .. }) => {
+                self.session_user().ok().map(|user| FrameIdentity { user: Some(user) })
+            }
+        }
+    }
+
+    /// A client kernel takes the server's bound identity as its own `@user` (EXEC-IDENTITY-4).
+    pub(super) fn mirror_identity(&self, identity: &FrameIdentity) {
+        let binding = match &identity.user {
+            None => IdentityBinding::Anonymous,
+            Some(user) => match user.get("id") {
+                Some(Value::String(id)) if !id.is_empty() => {
+                    IdentityBinding::Subject { subject: Arc::from(id.as_str()), user: Some(user.clone()) }
+                }
+                _ => {
+                    tracing::error!(site = %self.effect_site(), "kernel: a mirrored identity names no `id`; keeping the held one");
+                    return;
+                }
+            },
+        };
+        self.sessions.identities.write().insert(self.identity_key().to_string(), binding);
+    }
+
+    /// Whether this client kernel has not yet been told its session's identity by a server frame; the browser shows
+    /// `pending` until then. A server kernel owns its identity and is never pending.
+    pub fn identity_pending(&self) -> bool {
+        self.effect_executor.environment().is_client() && !self.sessions.identities.read().contains_key(&*self.identity_key())
     }
 
     fn identity_decl(&self) -> Option<IdentityDecl> {
@@ -58,32 +117,61 @@ impl RuntimeKernel {
         })
     }
 
-    /// The `@user` of the session this thread dispatches in when it took part in the identity effects: its `[identity]`
-    /// row (read like any row, so a store read may suspend the run) or the anonymous viewer. `None` when it never did,
-    /// which leaves the dispatch's own viewer.
-    pub(super) fn session_user(&self) -> Result<Option<Value>, Fault> {
+    /// The `@user` of the session this thread dispatches in (EXEC-IDENTITY-1): its bound `[identity]` row (read like any
+    /// row, so a store read may suspend the run), else the anonymous viewer.
+    pub(super) fn session_user(&self) -> Result<Value, Fault> {
         let binding = {
             let bound = self.sessions.identities.read();
             if bound.is_empty() {
-                return Ok(None);
+                return Ok(self.sessions.anonymous.clone());
             }
             bound.get(&*self.identity_key()).cloned()
         };
         match binding {
-            None => Ok(None),
-            Some(IdentityBinding::Anonymous) => Ok(Some(anonymous_user())),
-            Some(IdentityBinding::Subject(subject)) => {
+            None | Some(IdentityBinding::Anonymous) => Ok(self.sessions.anonymous.clone()),
+            Some(IdentityBinding::Subject { user: Some(user), .. }) => Ok(user),
+            Some(IdentityBinding::Subject { subject, user: None }) => {
                 let Some(decl) = self.identity_decl() else {
-                    return Ok(Some(subject_user(&subject, None)));
+                    return Ok(subject_user(&subject, None));
                 };
                 let found = self.entity_source.find(&decl.name, &subject);
                 if self.io.suspended() {
                     return Err(Fault::Suspended);
                 }
                 let row = found.map_err(KernelError::Internal)?;
-                Ok(Some(subject_user(&subject, row.as_deref())))
+                Ok(subject_user(&subject, row.as_deref()))
             }
         }
+    }
+
+    /// The `@user` of the session this thread is in, for a host that reads on its behalf (row visibility, row
+    /// references); a read that cannot be answered in place is an error, never an empty viewer.
+    pub fn session_viewer(&self) -> Result<Value, KernelError> {
+        self.session_user().map_err(Fault::into_kernel)
+    }
+
+    /// The step harness's identity: `user` (its `id` the subject) is the bound identity of this thread's session until
+    /// the guard drops. Only `program/step` reaches it, on the replay kernel; no program effect does.
+    pub(crate) fn hold_replay_identity(&self, user: Value) -> Result<ReplayIdentity, String> {
+        let subject = match user.get("id") {
+            Some(Value::String(id)) if !id.is_empty() => Arc::from(id.as_str()),
+            _ => return Err("a step identity needs a non-empty `id`".to_string()),
+        };
+        let session = self.identity_key().to_string();
+        let binding = IdentityBinding::Subject { subject, user: Some(user) };
+        let previous = self.sessions.identities.write().insert(session.clone(), binding);
+        Ok(ReplayIdentity { identities: Arc::clone(&self.sessions.identities), session, previous })
+    }
+
+    /// Test only: bind `user` (its `id` the subject) as the identity of this thread's session, as a committed sign-in
+    /// would. Production binds only through `identity/sign-in`.
+    #[cfg(test)]
+    pub(crate) fn bind_test_identity(&self, user: Value) {
+        let Some(Value::String(subject)) = user.get("id").cloned() else {
+            panic!("a test identity needs an id");
+        };
+        let binding = IdentityBinding::Subject { subject: Arc::from(subject.as_str()), user: Some(user) };
+        self.sessions.identities.write().insert(self.identity_key().to_string(), binding);
     }
 
     /// `identity/sign-in` and `identity/sign-out`: a client kernel delegates them to the server (EXEC-IDENTITY-4), a
@@ -159,8 +247,9 @@ impl RuntimeKernel {
         let decl = self
             .identity_decl()
             .ok_or_else(|| refused("no-identity", "the program declares no [identity] entity"))?;
-        if decl.runtime {
-            self.create_runtime_identity(&decl, &subject, verified)?;
+        let user = if decl.runtime {
+            let row = self.runtime_identity_row(&decl, &subject, verified);
+            Some(subject_user(&subject, Some(&row)))
         } else {
             let found = self.entity_source.find(&decl.name, &subject);
             if self.io.suspended() {
@@ -173,8 +262,9 @@ impl RuntimeKernel {
                 }
                 Err(error) => return Err(refused("store", error)),
             }
-        }
-        self.stage_identity(IdentityBinding::Subject(Arc::from(subject.as_str())));
+            None
+        };
+        self.stage_identity(IdentityBinding::Subject { subject: Arc::from(subject.as_str()), user });
         Ok(subject)
     }
 
@@ -188,8 +278,8 @@ impl RuntimeKernel {
     }
 
     /// The row of a `[runtime]` identity: its declared defaults, `id` the subject, and each declared field a verified
-    /// claim of the same name carries.
-    fn create_runtime_identity(&self, decl: &IdentityDecl, subject: &str, verified: &Value) -> Result<(), Refusal> {
+    /// claim of the same name carries. It lives in the session's binding.
+    fn runtime_identity_row(&self, decl: &IdentityDecl, subject: &str, verified: &Value) -> Value {
         let mut row = ValueMap::default();
         if let Some(Value::Array(claims)) = verified.get("claims") {
             for claim in claims.iter() {
@@ -203,12 +293,7 @@ impl RuntimeKernel {
         }
         row.insert("id".into(), Value::string(subject));
         let defaults = self.registry.entity_defaults.read().get(&decl.name).cloned().unwrap_or_default();
-        let row = defaults.merged(&SharedEntity::from_value_ref(&Value::object(row))).to_value();
-        let written = self.entity_source.write(&decl.name, subject, &row);
-        if self.io.suspended() {
-            return Err(Refusal::Suspended);
-        }
-        written.map(|_| ()).map_err(|error| refused("store", error))
+        defaults.merged(&SharedEntity::from_value_ref(&Value::object(row))).to_value()
     }
 }
 
@@ -216,8 +301,10 @@ fn object_of<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::object(fields.into_iter().map(|(key, value)| (key.into(), value)).collect::<ValueMap>())
 }
 
-fn anonymous_user() -> Value {
-    Viewer::anonymous().to_user().unwrap_or(Value::Null)
+/// The anonymous viewer's `@user`.
+pub(super) fn anonymous_user() -> Value {
+    let anonymous = orbital_core_base::viewer::ANONYMOUS;
+    object_of([("id", Value::string(anonymous)), ("role", Value::string(anonymous))])
 }
 
 /// `@user` for `subject`: its row's fields, `id` the subject; the subject alone when it has no row.

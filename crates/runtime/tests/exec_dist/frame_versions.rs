@@ -4,6 +4,7 @@
 
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
+use crate::support::identity;
 use orbital_core_runtime::effects::{FrameDelta, FrameOp};
 use orbital_core_runtime::embed::{EmbeddedKernel, EmbeddedServer, ServerProgress};
 use serde_json::json;
@@ -196,6 +197,7 @@ fn versioned(from: u64, to: u64, ops: Vec<FrameOp>) -> FrameDelta {
         from,
         to,
         ops,
+        identity: None,
     }
 }
 
@@ -390,4 +392,68 @@ fn a_server_tick_writes_the_program_sessions_frame_and_no_clients_view() {
     assert_eq!(held(&frames)["Ticker"]["n"], json!(1.0), "the tab keeps its own frame; the tick did not reach it");
     let program = server.kernel().frames_since(0);
     assert!(program.is_some(), "the program session has its own record");
+}
+
+fn viewer_of(k: &EmbeddedKernel) -> serde_json::Value {
+    serde_json::to_value(k.kernel().session_viewer().unwrap()).unwrap()
+}
+
+fn identity_client() -> EmbeddedKernel {
+    let k = client();
+    identity::enable(k.kernel(), &["role"]);
+    k
+}
+
+fn identity_server() -> EmbeddedServer {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    identity::enable(server.kernel(), &["role"]);
+    server
+}
+
+// EXEC-IDENTITY-4: the server's bound identity reaches the client in its frame delta, so `@user` is one value on both sides.
+#[test]
+fn a_client_reads_the_servers_bound_identity_from_the_frame_that_carries_it() {
+    let server = identity_server();
+    let k = identity_client();
+    assert!(k.kernel().identity_pending(), "before any frame the client has not been told its identity");
+    assert_eq!(viewer_of(&k)["id"], json!("anonymous"));
+    let signed_in = identity::sign_in_server(&server, "tab", "u1", json!({ "role": "admin" }));
+    k.apply_server_response(&signed_in, &HashSet::new()).unwrap();
+    assert!(!k.kernel().identity_pending());
+    let user = viewer_of(&k);
+    assert_eq!((user["id"].clone(), user["role"].clone()), (json!("u1"), json!("admin")));
+}
+
+#[test]
+fn a_sign_out_frame_returns_the_client_to_the_anonymous_viewer() {
+    let server = identity_server();
+    let k = identity_client();
+    k.apply_server_response(&identity::sign_in_server(&server, "tab", "u1", json!({ "role": "admin" })), &HashSet::new()).unwrap();
+    let out = identity::sign_out_server(&server, "tab");
+    assert_eq!(out.frames.as_ref().and_then(|d| d.identity.clone()), Some(Default::default()), "{:?}", out.frames);
+    k.apply_server_response(&out, &HashSet::new()).unwrap();
+    assert_eq!(viewer_of(&k)["id"], json!("anonymous"));
+    assert!(!k.kernel().identity_pending(), "anonymous is a told identity, not a pending one");
+}
+
+#[test]
+fn an_unchanged_identity_is_not_resent_and_a_snapshot_carries_it() {
+    let server = identity_server();
+    let signed_in = identity::sign_in_server(&server, "tab", "u1", json!({ "role": "admin" }));
+    assert!(signed_in.frames.as_ref().is_some_and(|d| d.identity.is_some()));
+    let write = send(&server, request("SET_V", "tab", "v", "one"));
+    assert!(delta(&write).identity.is_none(), "{:?}", write.frames);
+    let in_session = server.kernel().enter_session("tab");
+    let snap = server.kernel().frames_since(0).expect("a record");
+    drop(in_session);
+    assert!(snap.is_snapshot() && snap.identity.clone().is_some_and(|i| i.user.is_some()), "{snap:?}");
+}
+
+#[test]
+fn another_sessions_identity_never_reaches_this_client() {
+    let server = identity_server();
+    identity::sign_in_server(&server, "tab-a", "u1", json!({ "role": "admin" }));
+    let other = send(&server, request("SET_V", "tab-b", "v", "x"));
+    let mirrored = delta(&other).identity.clone().expect("the first delta tells the identity");
+    assert!(mirrored.user.is_none(), "tab-b never signed in: {mirrored:?}");
 }

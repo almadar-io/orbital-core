@@ -88,10 +88,11 @@ impl RuntimeKernel {
             Value::clone(&payload)
         };
 
+        let user = self.session_user()?;
         let ctx = BindingContextBuilder::new()
             .payload(effective_payload.clone())
             .state(Value::string(current_state.current_state.clone()))
-            .user(self.sessions.current_user.read().clone())
+            .user(user.clone())
             .now(stamp.now)
             .current_theme(Value::String(
                 (self.resolve_current_theme_for_trait(trait_name).key).into(),
@@ -102,7 +103,7 @@ impl RuntimeKernel {
         ctx.set_sealed_outputs(self.sealed_outputs());
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
-            &self.sessions.current_user.read(),
+            &user,
         ));
         if let Some(view) = view {
             view.apply(&mut ctx);

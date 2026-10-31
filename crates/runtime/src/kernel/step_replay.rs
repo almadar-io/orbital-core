@@ -1,4 +1,4 @@
-//! Replaying authored steps on a kernel: each step seeds a trait (`from`, `entity`, `viewer`), pins the clock (`now`),
+//! Replaying authored steps on a kernel: each step seeds a trait (`from`, `entity`, `identity`), pins the clock (`now`),
 //! dispatches one event and reports every outcome of the cascade it started. `orb execute --steps` and `program/step`
 //! read this report; the host that owns the program text, its resolution and any live substrate supplies only the
 //! dispatch.
@@ -505,6 +505,32 @@ fn asks_with_key(effect: &orbital_core_base::schema::sexpr::SExpression, key: Op
         .is_some_and(|parts| parts.iter().any(|part| part.get("key") == Some(key)))
 }
 
+/// The snapshot a request's seeds make of a trait's `current` one: its `from` state (empty when none is asked) and the
+/// seed fields written over its row. `program/step` plays from it and the render probe replays from the same one.
+pub fn seeded_snapshot(
+    current: TraitSnapshot,
+    from: Option<&str>,
+    seed: Option<&serde_json::Map<String, serde_json::Value>>,
+) -> Result<TraitSnapshot, String> {
+    let entity = match seed {
+        None => current.entity,
+        Some(fields) => {
+            let mut row = match current.entity {
+                Value::Object(row) => row,
+                _ => Default::default(),
+            };
+            for (key, value) in fields {
+                row.insert(key.clone().into(), to_value(value)?);
+            }
+            Value::Object(row)
+        }
+    };
+    Ok(TraitSnapshot {
+        state: from.map(str::to_string).unwrap_or_default(),
+        entity,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn play_step(
     kernel: &RuntimeKernel,
@@ -534,10 +560,13 @@ fn play_step(
         serde_json::Value::Object(fields) => Some(fields),
         _ => return Err(format!("step {i}: `entity` must be an object of fields")),
     };
-    let viewer = match &step["viewer"] {
+    if !step["viewer"].is_null() {
+        return Err(format!("step {i}: `viewer` is retired; a step names `identity`, the session's bound identity"));
+    }
+    let identity = match &step["identity"] {
         serde_json::Value::Null => None,
         user @ serde_json::Value::Object(_) => Some(to_value(user)?),
-        _ => return Err(format!("step {i}: `viewer` must be a user object or null")),
+        _ => return Err(format!("step {i}: `identity` must be an identity object or null")),
     };
     let settle_ms = match &step["settleMs"] {
         serde_json::Value::Null => None,
@@ -583,38 +612,18 @@ fn play_step(
         }
     };
     if step["from"].is_string() || seed.is_some() {
-        let current = kernel.snapshot_trait(trait_name, None);
-        let entity = match seed {
-            None => current.entity,
-            Some(fields) => {
-                let mut row = match current.entity {
-                    Value::Object(row) => row,
-                    _ => Default::default(),
-                };
-                for (key, value) in fields {
-                    row.insert(key.clone().into(), to_value(value)?);
-                }
-                Value::Object(row)
-            }
-        };
-        kernel.restore_trait(
-            trait_name,
-            None,
-            TraitSnapshot {
-                state: step["from"]
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_default(),
-                entity,
-            },
-        );
+        let snapshot = seeded_snapshot(kernel.snapshot_trait(trait_name, None), step["from"].as_str(), seed)?;
+        kernel.restore_trait(trait_name, None, snapshot);
     }
     clock.pin(now);
     let payload = match &step["payload"] {
         serde_json::Value::Null => Value::Null,
         p => to_value(p)?,
     };
-    let viewing = viewer.map(|user| kernel.enter_viewer(user));
+    let viewing = identity
+        .map(|user| kernel.hold_replay_identity(user))
+        .transpose()
+        .map_err(|e| format!("step {i}: {e}"))?;
     credentials.hold(held);
     let outcomes = dispatch(trait_name, event, payload, settle_ms);
     credentials.hold(BTreeMap::new());
@@ -773,6 +782,77 @@ mod tests {
             &mut |t, e, p, _| replay_dispatch(&kernel, &credentials, t, e, p),
         )
         .map(|report| serde_json::to_value(report).unwrap())
+    }
+
+    const LOGGING: &str = r#"{"name":"LogApp","typeContractVersion":1,"orbitals":[{"name":"Logs","entity":{"name":"Doc","persistence":"runtime","fields":[{"name":"id","type":"string"},{"name":"n","type":"number","default":2}]},"pages":[],"traits":[{"name":"Logger","linkedEntity":"Doc","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[
+        {"from":"idle","to":"idle","event":"LITERAL","effects":[["log","plain line"]]},
+        {"from":"idle","to":"idle","event":"COMPUTED","effects":[["log",["str/concat","n is ","@entity.n"]]]},
+        {"from":"idle","to":"idle","event":"LEVELLED","effects":[["log",["str/concat","n is ","@entity.n"],"debug"]]},
+        {"from":"idle","to":"idle","event":"BROKEN","effects":[["log",["str/concat","n is ",["+","a",1]]]]},
+        {"from":"idle","to":"idle","event":"LOUD","effects":[["log","text","loud"]]}
+    ]}}]}]}"#;
+
+    struct Lines(std::sync::Arc<std::sync::Mutex<Vec<(String, tracing::Level, String)>>>);
+
+    impl tracing::Subscriber for Lines {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            struct Message(String);
+            impl tracing::field::Visit for Message {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                    if field.name() == "message" {
+                        self.0 = format!("{value:?}");
+                    }
+                }
+            }
+            let mut message = Message(String::new());
+            event.record(&mut message);
+            self.0.lock().unwrap().push((event.metadata().target().to_string(), *event.metadata().level(), message.0));
+        }
+    }
+
+    fn logged(event: &str) -> (serde_json::Value, Vec<(String, tracing::Level, String)>) {
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let report = tracing::subscriber::with_default(Lines(lines.clone()), || {
+            play_on(LOGGING, serde_json::json!([{ "trait": "Logger", "event": event }])).unwrap()
+        });
+        let program: Vec<_> = lines.lock().unwrap().iter().filter(|(target, ..)| target == "almadar:program").cloned().collect();
+        (report["steps"][0]["outcomes"][0]["effects"][0].clone(), program)
+    }
+
+    #[test]
+    fn a_log_effect_prints_its_evaluated_message_under_the_program_namespace_at_its_level() {
+        let (effect, lines) = logged("LITERAL");
+        assert_eq!(effect["status"], "executed");
+        assert_eq!(lines, [("almadar:program".to_string(), tracing::Level::INFO, "plain line".to_string())]);
+        let (effect, lines) = logged("COMPUTED");
+        assert_eq!(effect["status"], "executed", "a computed message is a log, not a skipped effect: {effect}");
+        assert_eq!(lines, [("almadar:program".to_string(), tracing::Level::INFO, "n is 2".to_string())]);
+        let (_, lines) = logged("LEVELLED");
+        assert_eq!(lines, [("almadar:program".to_string(), tracing::Level::DEBUG, "n is 2".to_string())]);
+    }
+
+    #[test]
+    fn a_log_message_that_fails_to_evaluate_fails_the_effect_and_prints_nothing() {
+        let (effect, lines) = logged("BROKEN");
+        assert_eq!(effect["status"], "failed", "{effect}");
+        assert!(lines.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn a_log_with_an_unknown_level_is_not_an_effect() {
+        let (effect, lines) = logged("LOUD");
+        assert_eq!(effect["status"], "skipped", "{effect}");
+        assert!(lines.is_empty());
     }
 
     #[test]

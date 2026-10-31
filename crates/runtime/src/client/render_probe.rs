@@ -120,15 +120,10 @@ fn dedup_sorted(mut v: Vec<String>) -> Vec<String> {
     v
 }
 
-/// A fresh in-process kernel for `schema` with the default probe persona bound, so `@read` sees a
-/// viewer. It holds only the rows the program writes itself.
+/// A fresh in-process kernel for `schema`, its session unbound (the anonymous viewer). It holds only the rows the
+/// program writes itself.
 pub fn probe_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, String> {
-    let bridge =
-        Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?);
-    if let Some(user) = crate::persona::default_probe_persona(schema) {
-        bridge.set_current_user(user);
-    }
-    Ok(bridge)
+    Ok(Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?))
 }
 
 /// Probe `schema` through the in-process kernel, restricted to `traits` when given.
@@ -430,12 +425,15 @@ impl ProgramFacts {
     }
 }
 
-/// The render facts of one played request: the client circuit after INIT of the trait's orbital, then
-/// `event` driven from `trait_name` unless it is INIT, reporting each non-`system` slot that trait filled. The
+/// The render facts of one played request: the client circuit after INIT of the trait's orbital, the trait then held in
+/// `from` with `entity` written over its row (as the step seeds it), then `event` driven from `trait_name` unless it is INIT with no entity to seed, reporting each non-`system` slot that trait filled. The
 /// request's `from` state is not restored: a slot its event does not reach after INIT is simply not reported.
+#[allow(clippy::too_many_arguments)]
 pub fn played_render_facts<F>(
     schema: &OrbitalSchema,
     trait_name: &str,
+    from: &str,
+    entity: Option<&serde_json::Map<String, serde_json::Value>>,
     event: &str,
     payload: Value,
     target: &dyn RenderTarget,
@@ -466,7 +464,14 @@ where
     let facts = ProgramFacts::new(schema);
     let trait_union = facts.trait_union(schema.orbitals.len(), &build_app)?;
     let mut app = build_app(idx)?;
-    if event != "INIT" {
+    if event != "INIT" || entity.is_some() {
+        let bridge = app
+            .server_bridge
+            .clone()
+            .ok_or_else(|| "the render probe holds no bridge to seed".to_string())?;
+        bridge
+            .seed_trait(trait_name, from, entity)
+            .map_err(|e| e.to_string())?;
         app.drive_blocking(event, Some(trait_name), payload);
         app.settle(8);
     }
@@ -1097,6 +1102,8 @@ mod tests {
         let slots = played_render_facts(
             &schema,
             "NotesView",
+            "idle",
+            None,
             "INIT",
             Value::Null,
             &target,
@@ -1136,6 +1143,8 @@ mod tests {
         let other = played_render_facts(
             &schema,
             "Elsewhere",
+            "idle",
+            None,
             "INIT",
             Value::Null,
             &target,
@@ -1146,6 +1155,59 @@ mod tests {
             other.unwrap_err().contains("no trait \"Elsewhere\""),
             "control: an unknown trait is refused"
         );
+    }
+
+    fn show_program() -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "t",
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Notes",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "title", "type": "string", "default": "blank" }
+                ] },
+                "traits": [{
+                    "name": "NotesView", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "armed" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT", "effects": [] },
+                            { "from": "armed", "to": "armed", "event": "SHOW", "effects": [
+                                ["render-ui", "main", { "type": "stack", "initialData": "@entity" }]
+                            ] }
+                        ]
+                    }
+                }],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn shown(from: &str, entity: Option<serde_json::Value>) -> Vec<RenderedSlot> {
+        let target = Target { supported: &["stack"], stubs: &[] };
+        let seed = entity.map(|e| e.as_object().cloned().unwrap());
+        played_render_facts(&show_program(), "NotesView", from, seed.as_ref(), "SHOW", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap()
+    }
+
+    #[test]
+    fn the_probe_seeds_the_requests_entity_and_from_state_as_the_step_does() {
+        let slots = shown("armed", Some(serde_json::json!({ "title": "seeded" })));
+        assert_eq!(slots.len(), 1, "{slots:?}");
+        assert_eq!(slots[0].props.as_ref().unwrap()["initialData"]["title"], "seeded");
+    }
+
+    #[test]
+    fn control_a_request_with_no_entity_seed_renders_the_declared_default_row() {
+        let slots = shown("armed", None);
+        assert_eq!(slots.len(), 1, "{slots:?}");
+        assert_eq!(slots[0].props.as_ref().unwrap()["initialData"]["title"], "blank");
+    }
+
+    #[test]
+    fn edge_an_event_the_from_state_does_not_handle_paints_nothing_even_with_a_seed() {
+        let slots = shown("idle", Some(serde_json::json!({ "title": "seeded" })));
+        assert!(slots.is_empty(), "{slots:?}");
     }
 
     fn effects_program(effects: serde_json::Value) -> OrbitalSchema {
@@ -1172,7 +1234,7 @@ mod tests {
 
     fn facts(schema: &OrbitalSchema, with_props: bool) -> Vec<RenderedSlot> {
         let target = Target { supported: &["stack"], stubs: &[] };
-        played_render_facts(schema, "NotesView", "INIT", Value::Null, &target, with_props, |s, _| probe_kernel(s)).unwrap()
+        played_render_facts(schema, "NotesView", "idle", None, "INIT", Value::Null, &target, with_props, |s, _| probe_kernel(s)).unwrap()
     }
 
     #[test]

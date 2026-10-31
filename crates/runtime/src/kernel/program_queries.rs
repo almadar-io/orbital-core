@@ -139,9 +139,8 @@ impl RuntimeKernel {
             return false;
         };
         let reads_payload = references_callsite_payload(&def)
-            || self
-                .trait_config(trait_name)
-                .and_then(|config| serde_json::to_value(&config).ok())
+            || serde_json::to_value(config_defaults_value(&def, &self.registry.trait_definitions.read()))
+                .ok()
                 .is_some_and(|config| config_references_callsite_payload(&config));
         reads_payload
             && self
@@ -201,13 +200,13 @@ impl RuntimeKernel {
     }
 
     /// The config a registered trait's steps bind as `@config` (declared defaults, call-site values, `@user`
-    /// forwards bound to the current viewer); `None` when no such trait is registered.
-    pub fn trait_config(&self, trait_name: &str) -> Option<Value> {
+    /// forwards bound to the session's identity); `None` when no such trait is registered.
+    pub fn trait_config(&self, trait_name: &str) -> Result<Option<Value>, KernelError> {
+        let user = self.session_viewer()?;
         let defs = self.registry.trait_definitions.read();
-        let def = defs.get(trait_name)?.clone();
-        Some(bind_user_forwards(
-            config_defaults_value(&def, &defs),
-            &self.sessions.current_user.read(),
-        ))
+        let Some(def) = defs.get(trait_name) else {
+            return Ok(None);
+        };
+        Ok(Some(bind_user_forwards(config_defaults_value(def, &defs), &user)))
     }
 }

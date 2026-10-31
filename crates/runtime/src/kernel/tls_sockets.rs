@@ -1140,7 +1140,7 @@ mod tests {
         let request = EventRequest {
             event: event.to_string(),
             target_trait: Some("Host".to_string()),
-            user: wire.viewer.as_ref().map(|user| serde_json::from_value(user.clone()).expect("user")),
+            client_id: wire.viewer.as_ref().and_then(|user| user["id"].as_str().map(str::to_string)),
             ..Default::default()
         };
         let mut progress = server.start("Main", request).expect("start");
@@ -1255,6 +1255,10 @@ mod tests {
             let mut wire = Wire::new(7);
             wire.secrets.push((format!("TOKEN@{viewer}"), format!("tok-{viewer}")));
             wire.viewer = Some(json!({ "id": viewer }));
+            {
+                let _session = server.kernel().enter_session(viewer);
+                server.kernel().bind_test_identity(serde_json::from_value(json!({ "id": viewer })).expect("viewer"));
+            }
             let response = run(&server, &mut wire);
             assert!(payload(&response, "BAD").is_none(), "{viewer}");
             assert_eq!(wire.server.app_received(), format!("AUTH tok-{viewer}").as_bytes(), "{viewer}");

@@ -27,8 +27,6 @@ pub mod listener;
 pub mod mock_random;
 #[path = "kernel/payload_validation.rs"]
 pub mod payload_validation;
-#[path = "kernel/persona.rs"]
-pub mod persona;
 #[path = "kernel/propositions.rs"]
 pub mod propositions;
 #[path = "kernel/process_result.rs"]
@@ -147,11 +145,6 @@ pub use kernel::{
 };
 pub use kernel::lazy::{LazyObserver, LazyProgram, LazySource};
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};
-pub use persona::{
-    default_probe_persona, find_persona_in_roster, identity_roster, persona_from_env_for_schema,
-    persona_from_env_spec, resolve_persona_spec, EnvPersona,
-    PERSONA_ENV,
-};
 pub use process_result::{
     CascadeCut, DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult,
     RuntimeStats,

@@ -540,8 +540,8 @@ impl<'a> Translator<'a> {
                 let (SExpression::String(op), args) = items.split_first()? else {
                     return None;
                 };
-                if op == "array/len" && args.len() == 1 {
-                    let name = array_len_var(expr);
+                if is_non_negative_call(expr) {
+                    let name = non_negative_var(expr);
                     if self.info(&name).is_some() {
                         return Some(NumTerm::variable(&name));
                     }
@@ -855,22 +855,34 @@ pub fn binding_texts(expr: &SExpression, out: &mut BTreeSet<String>) {
     }
 }
 
-/// The variable standing for the length of an array the prover cannot see into: a non-negative number.
-pub fn array_len_var(expr: &SExpression) -> String {
+/// The variable standing for the value of a call whose operator declares `sign: nonNegative` (a length or a count) that
+/// the prover cannot see into: a non-negative number.
+pub fn non_negative_var(expr: &SExpression) -> String {
     format!("@len:{}", orbital_core_base::schema::format_sexpr(expr))
 }
 
-/// Every `(array/len …)` an expression reads.
-pub fn array_lens(expr: &SExpression, out: &mut Vec<SExpression>) {
+/// Whether `expr` calls an operator whose table entry declares a result that is never negative.
+fn is_non_negative_call(expr: &SExpression) -> bool {
+    let SExpression::Array(items) = expr else {
+        return false;
+    };
+    let Some((SExpression::String(op), args)) = items.split_first() else {
+        return false;
+    };
+    !args.is_empty()
+        && orbital_core_base::language::registry::get_operator(op)
+            .is_some_and(|o| o.sign == Some(orbital_core_base::language::registry::ResultSign::NonNegative))
+}
+
+/// Every call to a declared non-negative operator an expression reads.
+pub fn non_negative_calls(expr: &SExpression, out: &mut Vec<SExpression>) {
     if let SExpression::Array(items) = expr {
-        if matches!(items.first(), Some(SExpression::String(h)) if h == "array/len")
-            && items.len() == 2
-            && !out.contains(expr)
-        {
+        if is_non_negative_call(expr) && !out.contains(expr) {
             out.push(expr.clone());
         }
         for item in items {
-            array_lens(item, out);
+            non_negative_calls(item, out);
         }
     }
 }
+

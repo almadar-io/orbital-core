@@ -3,6 +3,7 @@
 // re-count as `RuntimeKernel::resolve_rows`; twin of row_set_delivery.rs' `resolve_rows_*` on a directly readable
 // store, and of `almadar-runtime/test/kernel-host-resolve-rows.test.ts` on the JS host.
 
+use crate::support::identity;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerResolve};
 use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest};
 use {orbital_core_runtime::row_query::{row_id, QueryCapabilities, RowPage}, orbital_core_base::row_set::RowSetRef};
@@ -78,7 +79,9 @@ fn server() -> EmbeddedServer {
 /// Resolves `reference` for `viewer`, answering every request from `store`; the requests it made come back too.
 fn resolve(server: &EmbeddedServer, store: &InMemoryEntityCache, reference: &RowSetRef, viewer: &str) -> (RowPage, Vec<IoRequest>) {
     let mut log = Vec::new();
-    let mut progress = server.resolve_rows(reference, &v(&json!({ "id": viewer }))).unwrap();
+    identity::enable(server.kernel(), &[]);
+    identity::sign_in_as(server.kernel(), viewer, viewer, json!({}));
+    let mut progress = server.resolve_rows(reference, Some(viewer)).unwrap();
     loop {
         match progress {
             ServerResolve::Done(page) => return (page, log),
@@ -168,7 +171,7 @@ fn a_host_without_a_query_push_down_is_listed_and_the_result_is_the_same() {
 #[test]
 fn an_abandoned_resolve_flight_is_forgotten_and_cannot_be_resumed() {
     let (server, store) = (server(), store());
-    let ServerResolve::Await { flight, .. } = server.resolve_rows(&reference(None), &v(&json!({ "id": "u1" }))).unwrap() else {
+    let ServerResolve::Await { flight, .. } = server.resolve_rows(&reference(None), None).unwrap() else {
         panic!("a host-answered store awaits");
     };
     assert_eq!(server.in_flight(), 1);
@@ -185,10 +188,14 @@ fn the_json_api_round_trips_a_flight() {
     let (server, twin, store) = (server(), server(), store());
     let reference = reference(None);
     let host = BlockingHost { source: &store as &dyn EntitySource, service: None, substrate: None };
-    let mut typed = twin.resolve_rows(&reference, &v(&json!({ "id": "u1" }))).unwrap();
+    for server in [&server, &twin] {
+        identity::enable(server.kernel(), &[]);
+        identity::sign_in_as(server.kernel(), "u1", "u1", json!({}));
+    }
+    let mut typed = twin.resolve_rows(&reference, Some("u1")).unwrap();
     let mut out: Json = serde_json::from_str(
         &server
-            .resolve_rows_json(&serde_json::to_string(&reference).unwrap(), &json!({ "id": "u1" }).to_string())
+            .resolve_rows_json(&serde_json::to_string(&reference).unwrap(), Some("u1"))
             .unwrap(),
     )
     .unwrap();

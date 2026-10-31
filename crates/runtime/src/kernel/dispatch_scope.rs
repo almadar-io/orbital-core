@@ -1,4 +1,4 @@
-//! Dispatch-scoped state: the stamp, i18n and entropy, and the viewer, session, user and locale guards.
+//! Dispatch-scoped state: the stamp, i18n and entropy, and the session and locale guards.
 
 use super::*;
 
@@ -32,23 +32,6 @@ pub(super) fn entropy_from(io: Arc<IoPort>) -> EntropySource {
 /// never journals, and the port journals only its output.
 pub(super) fn sealed_from(io: Arc<IoPort>) -> SealedOutputs {
     SealedOutputs::new(move |op, args, compute| io.sealed(op, args, compute))
-}
-
-/// Holds a request thread's viewer; dropping it forgets the viewer.
-pub struct ViewerGuard {
-    pub(super) slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
-    pub(super) thread: orbital_core_base::sync::ThreadKey,
-    pub(super) outer: Option<Arc<Value>>,
-}
-
-impl Drop for ViewerGuard {
-    fn drop(&mut self) {
-        let mut slot = self.slot.write();
-        match self.outer.take() {
-            Some(outer) => slot.insert(self.thread, outer),
-            None => slot.remove(&self.thread),
-        };
-    }
 }
 
 /// Holds a request thread's session; dropping it restores the outer one, and a scratch session's frames go with it.
@@ -105,18 +88,6 @@ pub(super) const SESSION_SEPARATOR: char = '\u{1f}';
 
 pub(super) fn session_suffix(session: &str) -> String {
     format!("{SESSION_SEPARATOR}{session}")
-}
-
-/// Puts a run's viewer in the kernel's `@user` slot for one unit and restores the previous one.
-pub(super) struct UserHold {
-    pub(super) slot: Arc<RwLock<Value>>,
-    pub(super) previous: Value,
-}
-
-impl Drop for UserHold {
-    fn drop(&mut self) {
-        *self.slot.write() = std::mem::replace(&mut self.previous, Value::Null);
-    }
 }
 
 /// Holds a dispatch's viewer locale; dropping it clears the slot. JS twin: `OrbitalEventRequest.locale`.

@@ -11,16 +11,16 @@ use crate::resumable::{
 };
 
 impl RuntimeKernel {
-    /// [`Self::resolve_rows`] as a resumable step: it returns [`ResolveProgress::Await`] at the first read the
+    /// [`Self::resolve_rows`] as a resumable step, read in `session` (the program session when `None`): it returns [`ResolveProgress::Await`] at the first read the
     /// host has not answered, and [`ResolveProgress::Done`] with the page once every read is answered.
     pub fn start_resolve_rows(
         &self,
         reference: &RowSetRef,
-        viewer: &Value,
+        session: Option<&str>,
     ) -> Result<ResolveProgress, DispatchError> {
         self.drive_resolve(ResolveContinuation {
             reference: reference.clone(),
-            viewer: viewer.clone(),
+            session: session.map(Arc::from),
             journal: Vec::new(),
             pending: Vec::new(),
             next_id: 0,
@@ -47,6 +47,7 @@ impl RuntimeKernel {
     }
 
     fn drive_resolve(&self, mut c: ResolveContinuation) -> Result<ResolveProgress, DispatchError> {
+        let _in_session = c.session.as_deref().map(|session| self.enter_session(session));
         loop {
             let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
             if c.store.is_none() {
@@ -85,7 +86,7 @@ impl RuntimeKernel {
         let journal = std::mem::take(&mut c.journal);
         let (result, end) = self
             .io
-            .run_step(journal, || self.resolve_rows(&c.reference, &c.viewer));
+            .run_step(journal, || self.resolve_rows(&c.reference));
         if let Some(diverged) = end.diverged {
             return Err(DispatchError::Resume(diverged));
         }

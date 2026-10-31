@@ -101,7 +101,6 @@ struct Seed {
 struct Flight {
     continuation: DispatchContinuation,
     seed: Seed,
-    user: Value,
     /// The client session the dispatch runs in, held active until it ends (EXEC-DIST-9).
     session: Option<SessionActive>,
     /// Set for an untargeted request: the traits it was delivered to and the held state of the orbital's.
@@ -128,7 +127,6 @@ fn clock_of(kernel: &RuntimeKernel) -> Mutex<TickClock> {
 pub struct EmbeddedServer {
     kernel: RuntimeKernel,
     orbital_traits: HashMap<String, Vec<String>>,
-    default_user: Mutex<Value>,
     /// The coalesced relay of tick-stamped dispatches to the other clients.
     tick_relay: Mutex<super::tick_relay::TickRelay>,
     /// Which declared ticks are due on each pass ([`Self::tick_pass`]), the clock every host runs.
@@ -212,12 +210,10 @@ impl EmbeddedServer {
         kernel
             .register_schema(schema)
             .map_err(EntryError::Register)?;
-        let default_user = kernel.get_current_user();
         Ok(Self {
             ticks: clock_of(&kernel),
             kernel,
             orbital_traits,
-            default_user: Mutex::new(default_user),
             tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
@@ -231,7 +227,7 @@ impl EmbeddedServer {
     }
 
     /// A server holding this one's registered program and none of its session ([`RuntimeKernel::fork_session`]):
-    /// its viewer, mounted ticks and locales carry over, nothing a dispatch left does.
+    /// its mounted ticks and locales carry over, nothing a dispatch left does.
     pub fn fork_session(&self) -> Result<Self, EntryError> {
         let (host, config) = host_answered();
         let kernel = self.kernel.fork_session(host, config).map_err(EntryError::ForkSession)?;
@@ -239,7 +235,6 @@ impl EmbeddedServer {
             ticks: clock_of(&kernel),
             kernel,
             orbital_traits: self.orbital_traits.clone(),
-            default_user: Mutex::new(self.default_user.lock().clone()),
             tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
@@ -280,7 +275,6 @@ impl EmbeddedServer {
             ticks: clock_of(&kernel),
             kernel,
             orbital_traits,
-            default_user: Mutex::new(self.default_user.lock().clone()),
             tick_relay: Mutex::new(Default::default()),
             flights: Mutex::new(HashMap::new()),
             streams: Mutex::new(HashMap::new()),
@@ -301,11 +295,6 @@ impl EmbeddedServer {
     /// ([`RuntimeKernel::set_managed_program`]).
     pub fn set_managed_program(&self, program: &serde_json::Value) {
         self.kernel.set_managed_program(program);
-    }
-
-    /// The viewer a request that names none runs as.
-    pub fn set_default_user(&self, user: Value) {
-        *self.default_user.lock() = user;
     }
 
     /// Install the program's declared locales (the first is the default) and merged message catalogs,
@@ -488,17 +477,18 @@ impl EmbeddedServer {
         self.flights.lock().remove(&flight).is_some() || self.resolves.lock().remove(&flight).is_some()
     }
 
-    /// `reference` resolved for `viewer` against the host-answered store (EXEC-RENDER-3): the ids that still
-    /// match its query and the viewer's `@read`, a missing or hidden row omitted and `total` re-counted. Each read
-    /// is a request the host answers, as in a dispatch; resume the flight with [`Self::resume_resolve`].
+    /// `reference` resolved for the session `client_id` names (the program session with none) against the
+    /// host-answered store (EXEC-RENDER-3): the ids that still match its query and the `@read` of that session's
+    /// identity (EXEC-IDENTITY-1), a missing or hidden row omitted and `total` re-counted. Each read is a request the
+    /// host answers, as in a dispatch; resume the flight with [`Self::resume_resolve`].
     pub fn resolve_rows(
         &self,
         reference: &RowSetRef,
-        viewer: &Value,
+        client_id: Option<&str>,
     ) -> Result<ServerResolve, String> {
         let progress = self
             .kernel
-            .start_resolve_rows(reference, viewer)
+            .start_resolve_rows(reference, client_id)
             .map_err(dispatch_error)?;
         Ok(self.settle_resolve(progress))
     }
@@ -521,13 +511,11 @@ impl EmbeddedServer {
         Ok(self.settle_resolve(progress))
     }
 
-    /// [`Self::resolve_rows`] over JSON: the reference and viewer in, a `ResolveProgressWire` out.
-    pub fn resolve_rows_json(&self, ref_json: &str, viewer_json: &str) -> Result<String, String> {
+    /// [`Self::resolve_rows`] over JSON: the reference in, a `ResolveProgressWire` out.
+    pub fn resolve_rows_json(&self, ref_json: &str, client_id: Option<&str>) -> Result<String, String> {
         let reference: RowSetRef =
             serde_json::from_str(ref_json).map_err(|e| format!("parse ref_json: {e}"))?;
-        let viewer: Value =
-            serde_json::from_str(viewer_json).map_err(|e| format!("parse viewer_json: {e}"))?;
-        let progress = self.resolve_rows(&reference, &viewer)?;
+        let progress = self.resolve_rows(&reference, client_id)?;
         serde_json::to_string(&ResolveProgressWire::from(&progress))
             .map_err(|e| format!("serialize: {e}"))
     }
@@ -680,10 +668,6 @@ impl EmbeddedServer {
                 None => EventResponse::error("this host keeps no frames for the session: mount again"),
             }));
         }
-        let user = request
-            .user
-            .clone()
-            .unwrap_or_else(|| self.default_user.lock().clone());
         let _locale = self
             .kernel
             .enter_locale(request.locale.as_deref())
@@ -701,7 +685,6 @@ impl EmbeddedServer {
         });
         let entity_id = request.entity_id.clone().or(carried_id);
         let entity_id = entity_id.as_deref();
-        self.kernel.set_current_user(user.clone());
         let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
         let carries_state = request.traits.is_some() || request.entity_by_trait.is_some();
         if carries_state && !mounting {
@@ -712,7 +695,7 @@ impl EmbeddedServer {
             );
         }
         if let Some(run) = request.run_tick.as_ref() {
-            return self.start_tick(run, entity_id, &request.event, user, session);
+            return self.start_tick(run, entity_id, &request.event, session);
         }
         if let Some(seeds) = request.mount.as_ref().filter(|seeds| !seeds.is_empty()) {
             let first = &seeds[0];
@@ -742,11 +725,11 @@ impl EmbeddedServer {
                 mount: true,
                 carried_rows,
             };
-            return self.settle(progress, seed, user, None, session);
+            return self.settle(progress, seed, None, session);
         }
         if request.target_trait.is_none() {
             if let Some(declared) = request.traits.as_ref() {
-                return self.start_declared(declared, entity_id, &request, payload, user, session);
+                return self.start_declared(declared, entity_id, &request, payload, session);
             }
             let handlers = self
                 .kernel
@@ -787,7 +770,7 @@ impl EmbeddedServer {
                 mount: false,
                 carried_rows: None,
             };
-            return self.settle(progress, seed, user, Some((handlers, held)), session);
+            return self.settle(progress, seed, Some((handlers, held)), session);
         }
         let seed_trait = request
             .target_trait
@@ -816,7 +799,7 @@ impl EmbeddedServer {
             mount: false,
             carried_rows: None,
         };
-        self.settle(progress, seed, user, None, session)
+        self.settle(progress, seed, None, session)
     }
 
     /// The payload check at the API boundary: `Some(error response)` when any of `targets` (trait, the
@@ -839,7 +822,6 @@ impl EmbeddedServer {
         entity_id: Option<&str>,
         request: &EventRequest,
         payload: Value,
-        user: Value,
         session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
         let names: Vec<String> = declared.iter().map(|t| t.r#trait.clone()).collect();
@@ -877,7 +859,7 @@ impl EmbeddedServer {
             mount: false,
             carried_rows: None,
         };
-        self.settle(progress, seed, user, None, session)
+        self.settle(progress, seed, None, session)
     }
 
     fn start_tick(
@@ -885,7 +867,6 @@ impl EmbeddedServer {
         run: &RunTick,
         entity_id: Option<&str>,
         event: &str,
-        user: Value,
         session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
         let background = match self.kernel.tick_of(&run.trait_name, &run.tick) {
@@ -914,7 +895,7 @@ impl EmbeddedServer {
             mount: false,
             carried_rows: None,
         };
-        self.settle(progress, seed, user, None, session)
+        self.settle(progress, seed, None, session)
     }
 
     /// Go on with `flight`, given an answer to each request it is waiting on. A refused set of
@@ -940,7 +921,6 @@ impl EmbeddedServer {
         let Flight {
             continuation,
             seed,
-            user,
             session,
             discovery,
         } = self
@@ -948,13 +928,12 @@ impl EmbeddedServer {
             .lock()
             .remove(&flight)
             .ok_or_else(|| format!("no dispatch is waiting as flight {flight}"))?;
-        self.kernel.set_current_user(user.clone());
         let _in_session = session.as_ref().map(|active| self.kernel.enter_session(active.session()));
         let progress = self
             .kernel
             .resume(continuation, replies)
             .map_err(dispatch_error)?;
-        self.settle(progress, seed, user, discovery, session)
+        self.settle(progress, seed, discovery, session)
     }
 
     /// [`Self::resume`] with the wire's answers.
@@ -1036,10 +1015,13 @@ impl EmbeddedServer {
         Ok(self.os_grants().allows(&need))
     }
 
-    pub fn live_item_delivered(&self, item_json: &str, viewer_json: &str, client_id: Option<&str>) -> Result<bool, String> {
+    /// Whether a live item reaches the client `client_id`: addressed to it, and its entity's `@read` admits the
+    /// identity bound to that client's session.
+    pub fn live_item_delivered(&self, item_json: &str, client_id: Option<&str>) -> Result<bool, String> {
         let item: crate::effects::LiveBroadcastItem = serde_json::from_str(item_json).map_err(|e| format!("parse item_json: {e}"))?;
-        let viewer: Value = serde_json::from_str(viewer_json).map_err(|e| format!("parse viewer_json: {e}"))?;
-        Ok(item.delivered_to(client_id, |item| viewer.is_null() || self.kernel.live_item_visible_to(item, &viewer)))
+        let _in_session = client_id.map(|client| self.kernel.enter_session(client));
+        let viewer = self.kernel.session_viewer().map_err(|e| e.to_string())?;
+        Ok(item.delivered_to(client_id, |item| self.kernel.live_item_visible_to(item, &viewer)))
     }
 
     /// The last settled dispatch's ordered event and effect items; read before another dispatch starts. The response
@@ -1106,7 +1088,6 @@ impl EmbeddedServer {
         &self,
         progress: Progress<DispatchOutcomes>,
         seed: Seed,
-        user: Value,
         discovery: Option<Discovery>,
         session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
@@ -1134,7 +1115,9 @@ impl EmbeddedServer {
                 }));
                 self.kernel.seal_frames(&mut response, writes);
                 self.echo_held_states(&mut response, &seed.trait_name, seed.entity_id.as_deref());
-                *self.dispatch_stream.lock() = crate::effects::live_push::StreamItem::of_outcomes(&outcomes);
+                let mut stream = crate::effects::live_push::StreamItem::of_outcomes(&outcomes);
+                self.kernel.redact_stream_items(&mut stream);
+                *self.dispatch_stream.lock() = stream;
                 Ok(ServerProgress::Done(response))
             }
             Progress::Await {
@@ -1147,7 +1130,6 @@ impl EmbeddedServer {
                     Flight {
                         continuation,
                         seed,
-                        user,
                         session,
                         discovery,
                     },
@@ -1287,7 +1269,7 @@ mod program_context_tests {
                 (json!({"id":"other"}), false),
                 (Json::Null, false),
             ] {
-                let effect = json!(["access-check",{"entity":"Note","action":action,"row":{"ownerId":"owner"},"viewer":viewer},{"emit":{"success":"CHECKED","failure":"FAILED"}}]);
+                let effect = json!(["access-check",{"entity":"Note","action":action,"row":{"ownerId":"owner"},"identity":viewer},{"emit":{"success":"CHECKED","failure":"FAILED"}}]);
                 let mut control = program(
                     "Control",
                     "ControlOrbital",

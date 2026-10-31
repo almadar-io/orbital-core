@@ -125,10 +125,11 @@ impl RuntimeKernel {
         // A tick has no payload (drift D-2).
         let tick_payload = Value::object(ValueMap::default());
 
+        let user = self.session_user()?;
         let ctx = BindingContextBuilder::new()
             .payload(tick_payload)
             .state(Value::string(current_state.clone()))
-            .user(self.sessions.current_user.read().clone())
+            .user(user.clone())
             .now(stamp.now)
             .current_theme(Value::String(
                 (self.resolve_current_theme_for_trait(trait_name).key).into(),
@@ -139,7 +140,7 @@ impl RuntimeKernel {
         ctx.set_sealed_outputs(self.sealed_outputs());
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
-            &self.sessions.current_user.read(),
+            &user,
         ));
 
         let entity_type = trait_def.linked_entity.as_deref().unwrap_or(trait_name);

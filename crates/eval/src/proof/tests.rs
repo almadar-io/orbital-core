@@ -240,13 +240,13 @@ fn an_intrinsic_field_is_never_stored() {
 // EXEC-PROVE-1: the kernel prover answers one finding per proposition it cannot show kept.
 #[test]
 fn an_undecidable_atom_is_unproved_and_named() {
-    let inv = row_invariant(json!([">", ["str/len", "@entity.status"], 0]));
+    let inv = row_invariant(json!([">", ["math/floor", "@entity.status"], 0]));
     let t = json!([{ "from": "open", "to": "open", "event": "ADD",
         "effects": [["persist", "create", "Order", { "total": 1, "status": "open" }]] }]);
     let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, inv)) else {
         panic!()
     };
-    assert!(reason.contains("str/len"), "{reason}");
+    assert!(reason.contains("math/floor"), "{reason}");
 }
 
 #[test]
@@ -375,6 +375,29 @@ fn an_array_length_is_a_non_negative_number() {
         )),
         Verdict::Proved
     ));
+}
+
+#[test]
+fn a_declared_non_negative_operator_result_is_a_non_negative_number() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let create = |total: J| json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": total }]] }]);
+    for call in [
+        json!(["str/len", "@payload.name"]),
+        json!(["array/count", "@payload.rows", ["fn", ["r"], true]]),
+    ] {
+        assert_eq!(
+            only(&program(create(call.clone()), J::Null, inv.clone())),
+            Verdict::Proved,
+            "{call}"
+        );
+        assert!(
+            !matches!(
+                only(&program(create(json!(["-", call, 1])), J::Null, inv.clone())),
+                Verdict::Proved
+            ),
+            "control: one less than a length can be negative"
+        );
+    }
 }
 
 #[test]
@@ -1187,14 +1210,14 @@ fn a_set_in_one_branch_proves_the_restatement_only_on_that_branch() {
 fn an_opaque_write_leaves_the_ensures_unproved_never_passed() {
     let ensures = json!([[">=", "@entity.paid", 0]]);
     let t = json!([pay(
-        json!([["set", "@entity.paid", ["str/len", "@payload.status"]]]),
+        json!([["set", "@entity.paid", ["math/floor", "@payload.status"]]]),
         ensures,
         None
     )]);
     let Verdict::Unproved { reason, .. } = only(&program(t, J::Null, J::Null)) else {
         panic!()
     };
-    assert!(reason.contains("str/len"), "{reason}");
+    assert!(reason.contains("math/floor"), "{reason}");
 }
 
 #[test]

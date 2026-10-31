@@ -135,7 +135,8 @@ impl std::fmt::Debug for DispatchContinuation {
 /// [`RuntimeKernel::resume_resolve_rows`] needs to go on.
 pub struct ResolveContinuation {
     pub(crate) reference: RowSetRef,
-    pub(crate) viewer: Value,
+    /// The session the resolve reads as: its bound identity is the viewer whose `@read` applies.
+    pub(crate) session: Option<Arc<str>>,
     pub(crate) journal: Vec<Exchange>,
     pub(crate) pending: Vec<PendingRequest>,
     pub(crate) next_id: u64,

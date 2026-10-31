@@ -115,6 +115,22 @@ fn deferred_anchored_path(arg: &SExpression) -> Option<&SExpression> {
     (config_rooted(path) || concat_has_config).then_some(path)
 }
 
+/// The anchored paths an argument carries: itself when it is one, else each field of an options object that is
+/// one (`os/spawn`'s `cwd`), with the field's key.
+fn anchored_slots(arg: &SExpression) -> Vec<(Option<&str>, &SExpression)> {
+    if anchored_sexpr(arg).ok().flatten().is_some() {
+        return vec![(None, arg)];
+    }
+    match arg {
+        SExpression::Object(fields) => fields
+            .iter()
+            .filter(|(_, value)| anchored_sexpr(value).ok().flatten().is_some())
+            .map(|(key, value)| (Some(key.as_str()), value))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// What the calls of `op` could still require once their deferred anchored paths are known: each such path read
 /// as far as its leading literal directory, so a grant a deferred call can reach is not unused.
 fn deferred_reach(op: OsOp, positional: &[SExpression]) -> Vec<OsRequirement> {
@@ -592,43 +608,52 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                     needs.extend(as_written.iter().cloned());
                     needs.extend(deferred_reach(op, positional));
                     for (at, arg) in positional.iter().enumerate() {
-                        let Some(path) = deferred_anchored_path(arg) else {
-                            continue;
-                        };
-                        let SExpression::Object(fields) = arg else {
-                            continue;
-                        };
-                        let Some(values) = anchored_path_values(path, &config) else {
-                            out.push(not_static(
-                                &orbital.name,
-                                op,
-                                at + 1,
-                                &site,
-                                Some(OsGrantVia::ConfigUnresolvable),
-                            ));
-                            continue;
-                        };
-                        for value in values {
-                            let mut fields = fields.clone();
-                            fields.insert("path".to_string().into(), value);
-                            let mut substituted = positional.to_vec();
-                            substituted[at] = SExpression::Object(fields);
-                            let Ok(found) =
-                                os_requirements_deferring(op, &substituted, &config_rooted)
-                            else {
+                        for (key, anchored) in anchored_slots(arg) {
+                            let Some(path) = deferred_anchored_path(anchored) else {
                                 continue;
                             };
-                            needs.extend(found.iter().cloned());
-                            for need in found.into_iter().filter(|need| !as_written.contains(need))
-                            {
-                                if !grants.allows(&need) {
-                                    out.push(missing(
-                                        &orbital.name,
-                                        op,
-                                        &need,
-                                        &site,
-                                        Some(OsGrantVia::Config),
-                                    ));
+                            let SExpression::Object(anchored_fields) = anchored else {
+                                continue;
+                            };
+                            let Some(values) = anchored_path_values(path, &config) else {
+                                out.push(not_static(
+                                    &orbital.name,
+                                    op,
+                                    at + 1,
+                                    &site,
+                                    Some(OsGrantVia::ConfigUnresolvable),
+                                ));
+                                continue;
+                            };
+                            for value in values {
+                                let mut fields = anchored_fields.clone();
+                                fields.insert("path".to_string().into(), value);
+                                let mut substituted = positional.to_vec();
+                                substituted[at] = match (key, arg) {
+                                    (Some(key), SExpression::Object(options)) => {
+                                        let mut options = options.clone();
+                                        options.insert(key.to_string().into(), SExpression::Object(fields));
+                                        SExpression::Object(options)
+                                    }
+                                    _ => SExpression::Object(fields),
+                                };
+                                let Ok(found) =
+                                    os_requirements_deferring(op, &substituted, &config_rooted)
+                                else {
+                                    continue;
+                                };
+                                needs.extend(found.iter().cloned());
+                                for need in found.into_iter().filter(|need| !as_written.contains(need))
+                                {
+                                    if !grants.allows(&need) {
+                                        out.push(missing(
+                                            &orbital.name,
+                                            op,
+                                            &need,
+                                            &site,
+                                            Some(OsGrantVia::Config),
+                                        ));
+                                    }
                                 }
                             }
                         }

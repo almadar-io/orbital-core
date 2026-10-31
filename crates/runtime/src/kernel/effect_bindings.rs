@@ -25,6 +25,11 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             event,
             payload: ctx.resolve_dropping_unset_checked(&payload)?,
         },
+        Effect::Log { level, message, data } => Effect::Log {
+            level,
+            message: ctx.resolve_value_checked(&message)?.into_owned(),
+            data,
+        },
         Effect::Navigate {
             path,
             params,
@@ -226,6 +231,7 @@ pub(super) fn resolved_when_run(effect: &Effect) -> bool {
     matches!(
         effect,
         Effect::Emit { .. }
+            | Effect::Log { .. }
             | Effect::CallService { .. }
             | Effect::Os { .. }
             | Effect::BrowserPrompt { .. }

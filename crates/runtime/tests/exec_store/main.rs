@@ -1,6 +1,9 @@
 //! EXEC-STORE family: the store seam, pushed-down queries and writes.
 #![recursion_limit = "256"]
 
+#[path = "../support/mod.rs"]
+mod support;
+
 mod collection_policy_inheritance;
 mod pushdown_compile_cases;
 mod row_intake;

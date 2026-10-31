@@ -70,8 +70,7 @@ pub fn identity_entity_name(schema: &OrbitalSchema) -> Option<&str> {
 /// Owner columns DERIVED from the schema: every relation field pointing at the
 /// `[identity]` entity. Declared in the source (`patientId : Person`), never
 /// inferred from a field name — a name-matching guess would silently scope the
-/// wrong column. `ALMADAR_PERSONA_OWNS` stays as an explicit override/addition
-/// for schemas that have not been migrated to identity-typed columns yet.
+/// wrong column.
 /// The field name `x` reads off `binding` — either the dotted-path form
 /// (`@entity.id`) or the lowered `.lolo` call form (`(object/get @entity id)` →
 /// `["object/get", "@entity", "id"]`, the shape `std-time-tracking`'s `Employee

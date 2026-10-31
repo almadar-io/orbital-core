@@ -362,15 +362,16 @@ impl EffectExecutor {
         }
     }
 
-    pub(super) fn do_log(&self, level: LogLevel, message: &str, data: Option<&Value>) -> EffectResult {
+    pub(super) fn do_log(&self, level: LogLevel, message: &Value, data: Option<&Value>) -> EffectResult {
         let effect = Effect::Log {
             level,
-            message: message.to_string(),
+            message: message.clone(),
             data: data.cloned(),
         };
 
         // Log works in both environments; a program's `(log …)` lines share one namespace.
         use orbital_core_base::logging::ns::PROGRAM;
+        let message = message.to_string_value();
         match level {
             LogLevel::Debug => debug!(target: PROGRAM, data = ?data, "{message}"),
             LogLevel::Info => info!(target: PROGRAM, data = ?data, "{message}"),

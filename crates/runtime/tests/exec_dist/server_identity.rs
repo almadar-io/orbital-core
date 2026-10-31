@@ -1,6 +1,6 @@
 // EXEC-IDENTITY-1, -3, -4 on the embedded server: `identity/sign-in` binds a sealed Verified to the session, `@user` is
 // then the program's `[identity]` row of its subject, `identity/sign-out` returns the session to the anonymous viewer, and
-// a bound session ignores a per-dispatch viewer.
+// a session that never signed in is the anonymous viewer (no host or request supplies a viewer).
 
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
@@ -35,6 +35,11 @@ fn schema(persistence: &str) -> OrbitalSchema {
                     { "name": "role", "type": "string", "default": "member" }] },
             "traits": [
                 { "name": "Gate", "linkedEntity": "Person",
+                    "emits": [
+                        { "event": "VERIFIED", "payloadSchema": [
+                            { "name": "verified", "type": "Verified", "required": true },
+                            { "name": "note", "type": "string", "required": false }] },
+                        { "event": "PLAIN_DONE", "payloadSchema": [{ "name": "note", "type": "string", "required": false }] }],
                     "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "SIGN_IN", "effects": sign_in(json!([])) },
@@ -43,7 +48,8 @@ fn schema(persistence: &str) -> OrbitalSchema {
                                 ["identity/sign-in", "@payload.fake", { "emit": { "success": "IN_OK", "failure": "IN_FAIL" } }]] },
                             { "from": "idle", "to": "idle", "event": "RELAY", "effects": [
                                 ["let", [["v", ["jws/verify", "@payload.token", "@payload.keys", { "issuer": "https://issuer.test", "audience": "app-1" }]]],
-                                    ["emit", "VERIFIED", { "verified": "@v" }]]] },
+                                    ["emit", "VERIFIED", { "verified": "@v", "note": "kept" }]]] },
+                            { "from": "idle", "to": "idle", "event": "PLAIN", "effects": [["emit", "PLAIN_DONE", { "note": "plain" }]] },
                             { "from": "idle", "to": "idle", "event": "SIGN_OUT", "effects": [
                                 ["identity/sign-out", { "emit": { "success": "OUT_OK" } }]] },
                             { "from": "idle", "to": "idle", "event": "READ", "effects": [
@@ -129,7 +135,6 @@ struct Rig {
 impl Rig {
     fn new(persistence: &str, rows: Vec<serde_json::Value>) -> Rig {
         let server = EmbeddedServer::new(schema(persistence)).unwrap();
-        server.set_default_user(serde_json::from_value(json!({ "id": "legacy", "role": "legacy" })).unwrap());
         Rig { server, store: rows }
     }
 
@@ -161,7 +166,7 @@ fn exec_identity_3_signing_in_binds_the_session_and_user_is_the_persistent_ident
     assert_eq!(rig.outcome("SIGN_IN", "tab-a", credential("rs256_valid")), json!("user-1"));
     let read = rig.run("READ", "tab-a", json!({}));
     assert_eq!(read["Gate"]["who"], json!("user-1"));
-    assert_eq!(read["Gate"]["role"], json!("admin"), "the row's own field, not the legacy viewer's");
+    assert_eq!(read["Gate"]["role"], json!("admin"), "the row's own field");
     assert_eq!(read["Gate"]["email"], json!("row@example.com"));
 }
 
@@ -171,8 +176,8 @@ fn exec_identity_3_a_persistent_identity_with_no_row_answers_no_identity_and_bin
     assert_eq!(rig.outcome("SIGN_IN", "tab-a", credential("rs256_valid")), json!("no-identity"));
     assert_eq!(
         rig.viewer("tab-a").0,
-        json!("legacy"),
-        "control: an unbound session keeps the transitional viewer"
+        json!("anonymous"),
+        "control: a session that bound nothing is the anonymous viewer"
     );
 }
 
@@ -199,7 +204,7 @@ fn exec_identity_3_a_value_that_is_not_a_sealed_verified_is_refused_as_unsealed(
     let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
     let fake = json!({ "fake": { "subject": "user-1", "issuer": "x", "audience": "y", "claims": [], "expiresAt": 1 } });
     assert_eq!(rig.outcome("SIGN_IN_FAKE", "tab-a", fake), json!("unsealed"));
-    assert_eq!(rig.viewer("tab-a").0, json!("legacy"));
+    assert_eq!(rig.viewer("tab-a").0, json!("anonymous"));
     assert_eq!(
         rig.outcome("SIGN_IN", "tab-a", credential("rs256_valid")),
         json!("user-1"),
@@ -226,7 +231,7 @@ fn exec_identity_3_signing_out_returns_the_session_to_the_anonymous_viewer() {
 fn exec_identity_1_two_sessions_hold_their_own_identity() {
     let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
     rig.run("SIGN_IN", "tab-a", credential("rs256_valid"));
-    assert_eq!(rig.viewer("tab-b").0, json!("legacy"), "another session is not signed in");
+    assert_eq!(rig.viewer("tab-b").0, json!("anonymous"), "another session is not signed in");
     rig.run("SIGN_IN", "tab-b", credential("rs256_valid"));
     rig.run("SIGN_OUT", "tab-a", json!({}));
     assert_eq!(rig.viewer("tab-a").0, json!("anonymous"));
@@ -238,20 +243,12 @@ fn exec_identity_1_two_sessions_hold_their_own_identity() {
 }
 
 #[test]
-fn exec_identity_1_a_bound_session_ignores_the_dispatch_viewer() {
+fn exec_identity_1_an_unbound_session_reads_the_anonymous_viewer_and_a_bound_one_its_own_identity() {
     let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
-    rig.run("SIGN_IN", "tab-a", credential("rs256_valid"));
-    let as_other = |client: &str| {
-        let mut read = request("READ", client, json!({}));
-        read.user = Some(serde_json::from_value(json!({ "id": "other", "role": "other" })).unwrap());
-        rig.send(read)["Gate"]["who"].clone()
-    };
-    assert_eq!(as_other("tab-a"), json!("user-1"));
-    assert_eq!(
-        as_other("tab-b"),
-        json!("other"),
-        "control: an unbound session takes the dispatch viewer"
-    );
+    assert_eq!(rig.viewer("tab-a"), (json!("anonymous"), json!("anonymous")), "no sign-in, no host viewer: anonymous");
+    rig.run("SIGN_IN", "tab-b", credential("rs256_valid"));
+    assert_eq!(rig.viewer("tab-b"), (json!("user-1"), json!("admin")), "control: the signed-in session reads its identity row");
+    assert_eq!(rig.viewer("tab-c").0, json!("anonymous"), "control: signing in one session leaves another anonymous");
 }
 
 #[test]
@@ -298,7 +295,7 @@ fn exec_identity_1_a_freed_session_forgets_its_identity() {
     assert!(rig.server.close_session_stream(stream));
     assert!(rig.server.kernel().session_ended("tab-a"), "the quiet session was freed");
     rig.server.kernel().revive_session("tab-a");
-    assert_eq!(rig.viewer("tab-a").0, json!("legacy"), "the revived session starts unbound");
+    assert_eq!(rig.viewer("tab-a").0, json!("anonymous"), "the revived session starts unbound");
 }
 
 #[test]
@@ -306,4 +303,45 @@ fn exec_identity_3_an_internal_emit_carries_a_verified_to_a_listener_that_signs_
     let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
     rig.run("RELAY", "tab-a", credential("rs256_valid"));
     assert_eq!(rig.viewer("tab-a"), (json!("user-1"), json!("admin")));
+}
+
+fn emitted(response: &EventResponse, event: &str) -> serde_json::Value {
+    let found = response.emitted_events.iter().find(|emitted| emitted.event == event);
+    serde_json::to_value(found.unwrap_or_else(|| panic!("{event} is emitted: {:?}", response.emitted_events))).unwrap()["payload"].clone()
+}
+
+#[test]
+fn exec_identity_2_a_verified_payload_field_reaches_a_host_as_a_sealed_stub_and_the_other_fields_stay() {
+    let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
+    let response = finish(&rig.server, request("RELAY", "tab-a", credential("rs256_valid")), &rig.store);
+    let payload = emitted(&response, "VERIFIED");
+    assert_eq!(payload["verified"], json!({ "sealed": "Verified" }), "no subject, no claims: {payload}");
+    assert_eq!(payload["note"], json!("kept"), "control: another field of the same payload is intact");
+    assert_eq!(rig.viewer("tab-a"), (json!("user-1"), json!("admin")), "control: the listener inside the kernel still signed in with the real value");
+    let plain = finish(&rig.server, request("PLAIN", "tab-b", json!({})), &rig.store);
+    assert_eq!(emitted(&plain, "PLAIN_DONE"), json!({ "note": "plain" }), "control: an emit declaring no sealed field is untouched");
+}
+
+#[test]
+fn exec_identity_2_the_dispatch_stream_redacts_a_verified_field_too() {
+    let rig = Rig::new("persistent", vec![person("user-1", "admin")]);
+    finish(&rig.server, request("RELAY", "tab-a", credential("rs256_valid")), &rig.store);
+    let stream = rig.server.dispatch_stream_json().unwrap();
+    assert!(stream.contains("\"sealed\":\"Verified\""), "{stream}");
+    assert!(!stream.contains("issuer.test") && !stream.contains("expiresAt"), "no claim of the credential is in the stream: {stream}");
+}
+
+#[test]
+fn exec_identity_1_a_runtime_identity_row_belongs_to_its_session_and_is_freed_with_it() {
+    let rig = Rig::new("runtime", vec![]);
+    let stream_a = rig.server.open_session_stream("tab-a");
+    rig.run("SIGN_IN", "tab-a", credential("rs256_valid"));
+    rig.run("SIGN_IN", "tab-b", credential("rs256_valid"));
+    assert_eq!(rig.server.kernel().entity_source().list("Person").unwrap().len(), 0, "no kernel-wide row keyed by the subject");
+    assert_eq!(rig.viewer("tab-a").0, json!("user-1"));
+    assert!(rig.server.close_session_stream(stream_a));
+    assert!(rig.server.kernel().session_ended("tab-a"));
+    rig.server.kernel().revive_session("tab-a");
+    assert_eq!(rig.viewer("tab-a").0, json!("anonymous"), "the freed session's identity row is gone");
+    assert_eq!(rig.viewer("tab-b").0, json!("user-1"), "control: another session of the same subject keeps its own row");
 }

@@ -72,9 +72,10 @@ impl OsGrants {
                 .exec
                 .iter()
                 .any(|e| e.anchor == *anchor && e.path == *path),
-            OsRequirement::Net { host, port, kinds } => {
-                kinds.iter().any(|kind| self.net_allows(host, *port, *kind))
-            }
+            OsRequirement::Net { host, port, kinds } => kinds.iter().any(|kind| {
+                self.net_allows(host, *port, *kind)
+                    || (host_pattern_suffix(host).is_some() && self.net_names_pattern(host, *port, *kind))
+            }),
             OsRequirement::NetPattern { port, kinds } => self.net_pattern_allows(*port, kinds),
             OsRequirement::Env { name } => self.env_allows(name),
             OsRequirement::Stdio { kind } => self.stdio_allows(*kind),

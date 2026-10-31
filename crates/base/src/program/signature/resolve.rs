@@ -15,14 +15,18 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 let nullable = members.clone().count() < of.len();
                 let only = members.next()?;
                 let inner = if members.clone().next().is_some() {
-                    let variants = std::iter::once(only)
-                        .chain(members)
-                        .map(|member| {
-                            let ty = resolve(member, b)?;
-                            Some(OirField::new(oir_type_kind(&ty), ty))
-                        })
-                        .collect::<Option<Vec<_>>>()?;
-                    OirType::Union { variants: variants.into() }
+                    let mut variants: Vec<OirField> = Vec::new();
+                    for member in std::iter::once(only).chain(members) {
+                        let ty = resolve(member, b)?;
+                        if !variants.iter().any(|v| v.field_type == ty) {
+                            variants.push(OirField::new(oir_type_kind(&ty), ty));
+                        }
+                    }
+                    if let [single] = variants.as_slice() {
+                        single.field_type.clone()
+                    } else {
+                        OirType::Union { variants: variants.into() }
+                    }
                 } else {
                     resolve(only, b)?
                 };
@@ -334,8 +338,13 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 children_of(b.bound(of)?, b.shape.as_deref()?, b.last(result)?, b)
             }
             K::Sexpr { .. } => Some(OirType::SExpr),
-            K::Literal { .. }
-            | K::Record
+            K::Literal { value } => match value {
+                serde_json::Value::String(_) => Some(OirType::String),
+                serde_json::Value::Number(_) => Some(OirType::Number),
+                serde_json::Value::Bool(_) => Some(OirType::Boolean),
+                _ => None,
+            },
+            K::Record
             | K::Fn { .. }
             | K::Entity { .. }
             | K::EntityRef

@@ -1,24 +1,8 @@
-//! Who is viewing: the user, session, locale, theme, and which rows they may read.
+//! Who is viewing: the session, locale, theme, and which rows they may read.
 
 use super::*;
 
 impl RuntimeKernel {
-    pub fn set_current_user(&self, user: Value) {
-        *self.sessions.current_user.write() = user;
-    }
-
-    /// Dispatch as `user` from this thread until the guard drops: the dispatches this thread starts keep this `@user`
-    /// however other requests set theirs meanwhile.
-    pub fn enter_viewer(&self, user: Value) -> ViewerGuard {
-        let thread = orbital_core_base::sync::current_thread();
-        let outer = self.sessions.viewer_by_thread.write().insert(thread, Arc::new(user));
-        ViewerGuard {
-            slot: Arc::clone(&self.sessions.viewer_by_thread),
-            thread,
-            outer,
-        }
-    }
-
     /// Dispatch in `session` from this thread until the guard drops (EXEC-DIST-9): the frames this thread's dispatches
     /// read and write are that session's.
     pub fn enter_session(&self, session: &str) -> SessionGuard {
@@ -76,16 +60,6 @@ impl RuntimeKernel {
         sessions
     }
 
-    /// The viewer this thread entered, for a dispatch that starts now; a host that answers a call later, on another
-    /// thread, re-enters it there.
-    pub fn thread_viewer(&self) -> Option<Arc<Value>> {
-        self.sessions.viewer_by_thread
-            .read()
-            .get(&orbital_core_base::sync::current_thread())
-            .cloned()
-    }
-
-    /// Get the current user.
     /// The dispatch clock: the configured one, else the wall clock.
     pub(crate) fn clock_now(&self) -> f64 {
         match &self.config.clock {
@@ -108,10 +82,6 @@ impl RuntimeKernel {
                 }
             }
         }
-    }
-
-    pub fn get_current_user(&self) -> Value {
-        self.sessions.current_user.read().clone()
     }
 
     /// Install the program's declared locales and merged catalogs (`orb resolve`'s `<stem>.<locale>.json`).
@@ -248,22 +218,9 @@ impl RuntimeKernel {
         resolve_theme_default(&self.presentation.theme_presets.read(), mode.unwrap_or_default())
     }
 
-    /// Narrow `rows` to the ones the CURRENT USER may read, using the entity's
-    /// declared `@read` policy.
+    /// Narrow `rows` to the ones `user` may read, using the entity's declared `@read` policy.
     ///
-    /// Exists so a caller measuring "how much does this persona see" measures the
-    /// same thing a fetch would. Counting straight off the entity store answers a
-    /// different question — the unfiltered store size, identical for every persona —
-    /// which is how `--all-personas` came to report symmetric results for correctly
-    /// ownership-scoped apps (`S-C2-ASYMMETRY-BLIND-TO-OWNERSHIP-ONLY-SCOPING`).
-    ///
-    /// Reuses `apply_read_access`, the one owner of read filtering, rather than
-    /// re-deriving the predicate.
-    pub fn retain_readable(&self, entity_type: &str, rows: &mut Vec<Value>) {
-        self.retain_readable_by(entity_type, rows, &self.get_current_user());
-    }
-
-    /// [`Self::retain_readable`] for the viewer `user`, whatever the kernel's current user is.
+    /// Reuses `apply_read_access`, the one owner of read filtering, rather than re-deriving the predicate.
     pub fn retain_readable_by(&self, entity_type: &str, rows: &mut Vec<Value>, user: &Value) {
         let policy = self
             .registry.entity_policies

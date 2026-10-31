@@ -368,10 +368,9 @@ pub struct KernelCompletionSink {
     requesters: Requesters,
 }
 
-/// Who asked for a deferred key: the viewer and client of the dispatch that deferred it.
+/// Who asked for a deferred key: the client and session of the dispatch that deferred it.
 #[derive(Debug, Clone, Default)]
 pub struct Requester {
-    pub viewer: Option<Arc<Value>>,
     pub client_id: Option<String>,
     /// The frame session of the dispatch that deferred it (EXEC-DIST-9); `None` is the program session.
     pub session: Option<Arc<str>>,
@@ -462,11 +461,10 @@ impl KernelCompletionSink {
         self.begin_dispatch_for(None)
     }
 
-    /// Start tracking one dispatch serving `client_id`; the viewer this thread entered is its requester's.
+    /// Start tracking one dispatch serving `client_id`; the session this thread entered is its requester's.
     pub fn begin_dispatch_for(&self, client_id: Option<&str>) -> DispatchScope {
         let kernel = self.kernel.upgrade();
         self.scope(Arc::new(Requester {
-            viewer: kernel.as_ref().and_then(|kernel| kernel.thread_viewer()),
             client_id: client_id.map(str::to_string),
             session: kernel.as_ref().and_then(|kernel| kernel.thread_session()),
         }))
@@ -582,13 +580,13 @@ impl KernelCompletionSink {
         outcome
     }
 
-    /// EXEC-QUEUE-10: the completion runs as the viewer that asked, and a key it defers again keeps that requester.
+    /// EXEC-QUEUE-10: the completion runs in the session that asked, so `@user` is that session's identity, and a key
+    /// it defers again keeps that requester.
     fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
         // A completion that outlives its kernel has nothing to dispatch into.
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
         let requester = self.requester_of(key);
-        let _viewer = requester.viewer.as_ref().map(|viewer| kernel.enter_viewer((**viewer).clone()));
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
@@ -793,7 +791,7 @@ mod tests {
 
         type Asked = std::sync::mpsc::Receiver<(String, Option<String>, Option<Value>)>;
 
-    /// A sink whose completion dispatches report the event, the client they were delivered for and the viewer they ran as.
+    /// A sink whose completion dispatches report the event, the client they were delivered for and the `@user` their session reads.
     fn requester_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, Asked) {
         use crate::config::KernelConfig;
         use orbital_core_base::effect_types::RuntimeEnvironment;
@@ -807,10 +805,17 @@ mod tests {
         let told = Mutex::new(told);
         let seen = Arc::downgrade(&kernel);
         let done: Arc<CompletionDone> = Arc::new(move |_, event, _, client_id, _| {
-            let viewer = seen.upgrade().and_then(|k| k.thread_viewer()).map(|v| (*v).clone());
+            let viewer = seen.upgrade().map(|k| k.session_viewer().expect("the session's viewer"));
             let _ = told.lock().send((event.to_string(), client_id.map(str::to_string), viewer));
         });
         (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, asked)
+    }
+
+    fn anonymous() -> Value {
+        Value::object(ValueMap::from_iter([
+            ("id".into(), Value::String("anonymous".into())),
+            ("role".into(), Value::String("anonymous".into())),
+        ]))
     }
 
     fn viewer(id: &str) -> Value {
@@ -818,10 +823,11 @@ mod tests {
     }
 
     #[test]
-    fn a_completion_runs_as_the_viewer_and_for_the_client_whose_dispatch_deferred_its_key() {
+    fn a_completion_runs_in_the_session_and_for_the_client_whose_dispatch_deferred_its_key() {
         let (sink, kernel, asked) = requester_sink();
         let asking = {
-            let _viewer = kernel.enter_viewer(viewer("ada"));
+            let _session = kernel.enter_session("tab-1");
+            kernel.bind_test_identity(viewer("ada"));
             let scope = sink.begin_dispatch_for(Some("tab-1"));
             assert!(matches!(scope.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
             scope
@@ -831,27 +837,28 @@ mod tests {
         let (event, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
         assert_eq!(event, "DONE");
         assert_eq!(client.as_deref(), Some("tab-1"));
-        assert_eq!(ran_as, Some(viewer("ada")));
+        assert_eq!(ran_as, Some(viewer("ada")), "the deferring session's identity");
         complete_on_a_thread(&sink, "k1", "AGAIN").join().expect("k1 again");
         let (_, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
-        assert_eq!((client, ran_as), (None, None), "control: a finite key's requester is used once");
+        assert_eq!((client, ran_as), (None, Some(anonymous())), "control: a finite key's requester is used once");
     }
 
     #[test]
-    fn control_a_completion_deferred_with_no_client_or_viewer_runs_with_neither() {
+    fn control_a_completion_deferred_with_no_client_or_session_runs_as_the_anonymous_viewer() {
         let (sink, _kernel, asked) = requester_sink();
         let scope = sink.begin_dispatch();
         assert!(matches!(scope.answer(&deferred, &defers("k2")), IoAnswer::ServiceDeferred));
         drop(scope);
         complete_on_a_thread(&sink, "k2", "DONE").join().expect("k2");
-        assert_eq!(asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched"), ("DONE".to_string(), None, None));
+        assert_eq!(asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched"), ("DONE".to_string(), None, Some(anonymous())));
     }
 
     #[test]
     fn a_stream_keeps_its_requester_for_every_item() {
         let (sink, kernel, asked) = requester_sink();
         {
-            let _viewer = kernel.enter_viewer(viewer("ada"));
+            let _session = kernel.enter_session("tab-1");
+            kernel.bind_test_identity(viewer("ada"));
             let scope = sink.begin_dispatch_for(Some("tab-1"));
             assert!(matches!(scope.answer(&|_| IoAnswer::Os(Ok(Value::Null.into())), &listens("s1")), IoAnswer::Os(Ok(_))));
         }

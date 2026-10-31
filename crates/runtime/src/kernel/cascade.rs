@@ -165,14 +165,13 @@ impl RuntimeKernel {
     }
 
     /// The `@config` root a listener's guard reads: the listening trait's own resolved config defaults.
-    pub(super) fn listener_config(&self, trait_name: &str) -> Value {
+    pub(super) fn listener_config(&self, trait_name: &str) -> Result<Value, Fault> {
+        let user = self.session_user()?;
         let defs = self.registry.trait_definitions.read();
-        match defs.get(trait_name) {
-            Some(def) => {
-                bind_user_forwards(config_defaults_value(def, &defs), &self.sessions.current_user.read())
-            }
+        Ok(match defs.get(trait_name) {
+            Some(def) => bind_user_forwards(config_defaults_value(def, &defs), &user),
             None => Value::Null,
-        }
+        })
     }
 
     /// Whether `trait_name` has an arm for `event` from `state`.
@@ -303,6 +302,63 @@ impl RuntimeKernel {
         self.emit_source(trait_name).orbital
     }
 
+    /// Record which payload fields each of `trait_def`'s emit contracts declares as a sealed type, once at load.
+    pub(super) fn register_sealed_emit_fields(&self, trait_def: &TraitDefinition) {
+        let mut by_event: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        for contract in trait_def.emits.iter().flat_map(|emits| emits.iter()) {
+            let sealed: Vec<(String, String)> = contract
+                .payload_schema
+                .iter()
+                .flatten()
+                .filter(|field| orbital_core_base::sealed::is_sealed_type(&field.field_type))
+                .map(|field| (field.name.clone(), field.field_type.clone()))
+                .collect();
+            if !sealed.is_empty() {
+                by_event.insert(contract.event.clone(), sealed);
+            }
+        }
+        let mut table = self.registry.sealed_emit_fields.write();
+        if by_event.is_empty() {
+            table.remove(&trait_def.name);
+        } else {
+            table.insert(trait_def.name.clone(), by_event);
+        }
+    }
+
+    /// What a host may see of `payload`, an emit of `event` from `trait_name`: a field its contract declares as a
+    /// sealed type becomes `{ sealed: <type> }`, its claims never leaving the kernel (EXEC-IDENTITY-2). Decided from
+    /// the declared type table, not from the value.
+    pub fn redact_sealed_payload(&self, trait_name: &str, event: &str, payload: &mut Option<Value>) {
+        let table = self.registry.sealed_emit_fields.read();
+        let Some(sealed) = table.get(trait_name).and_then(|events| events.get(event)) else {
+            return;
+        };
+        let Some(Value::Object(fields)) = payload else {
+            return;
+        };
+        let mut redacted = (**fields).clone();
+        for (field, type_name) in sealed {
+            if redacted.contains_key(field.as_str()) {
+                let mut stub = ValueMap::default();
+                stub.insert("sealed".into(), Value::string(type_name.clone()));
+                redacted.insert(field.clone().into(), Value::object(stub));
+            }
+        }
+        *payload = Some(Value::object(redacted));
+    }
+
+    /// [`Self::redact_sealed_payload`] for the events of a dispatch stream.
+    pub fn redact_stream_items(&self, items: &mut [crate::effects::live_push::StreamItem]) {
+        for item in items {
+            let crate::effects::live_push::StreamItemPayload::Event(emitted) = &mut item.payload else {
+                continue;
+            };
+            if let Some(trait_name) = emitted.source.as_ref().and_then(|source| source.r#trait.clone()) {
+                self.redact_sealed_payload(&trait_name, &emitted.event.clone(), &mut emitted.payload);
+            }
+        }
+    }
+
     /// Complete the source of each event `response` carries with the emitter's identity: orbital, the ids
     /// the schema carries, and the id of the emit contract. A client matches a `listens` source on these.
     pub fn stamp_emitted_sources(&self, response: &mut EventResponse) {
@@ -314,6 +370,7 @@ impl RuntimeKernel {
                 continue;
             };
             let identity = self.emit_source(&trait_name);
+            self.redact_sealed_payload(&trait_name, &emitted.event, &mut emitted.payload);
             source.orbital = identity.orbital;
             source.orbital_id = identity.orbital_id;
             source.trait_id = identity.trait_id;

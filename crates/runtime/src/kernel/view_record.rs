@@ -4,7 +4,7 @@
 //! the version they start from and never merges rows by its own rules.
 
 use super::*;
-use crate::effects::frame_delta::{FrameDelta, FrameOp};
+use crate::effects::frame_delta::{FrameDelta, FrameIdentity, FrameOp};
 use orbital_core_base::collections::IndexMap;
 use orbital_core_base::sync::Mutex;
 
@@ -25,6 +25,8 @@ pub enum FrameWrite {
 struct ViewRecord {
     version: u64,
     frames: IndexMap<String, SharedEntity>,
+    /// The identity the last delta carried; `None` until one did.
+    identity: Option<FrameIdentity>,
 }
 
 impl ViewRecord {
@@ -90,6 +92,7 @@ impl ViewRecord {
             from: 0,
             to: self.version,
             ops,
+            identity: self.identity.clone(),
         }
     }
 }
@@ -165,6 +168,7 @@ impl RuntimeKernel {
             }
         }
         let writes = merged;
+        let identity = self.mirrored_identity();
         match self.view_cursor() {
             Cursor::None => {
                 let mut ops = Vec::new();
@@ -182,19 +186,26 @@ impl RuntimeKernel {
                         }
                     }
                 }
-                (!ops.is_empty()).then_some(FrameDelta {
+                let identity = identity.filter(|identity| identity.user.is_some());
+                (!ops.is_empty() || identity.is_some()).then_some(FrameDelta {
                     session: None,
                     from: 0,
                     to: 0,
                     ops,
+                    identity,
                 })
             }
             Cursor::Session(session) => {
                 let mut records = self.view_records.records.lock();
                 let record = records.entry(session.clone()).or_default();
                 let mut ops = record.diff(writes);
-                if ops.is_empty() {
+                let sent = record.identity.clone().or_else(|| ops.is_empty().then(FrameIdentity::default));
+                let changed = identity.filter(|current| sent.as_ref() != Some(current));
+                if ops.is_empty() && changed.is_none() {
                     return None;
+                }
+                if changed.is_some() {
+                    record.identity = changed.clone();
                 }
                 if record.version == 0 {
                     ops.insert(0, FrameOp::Clear);
@@ -206,6 +217,7 @@ impl RuntimeKernel {
                     from,
                     to: record.version,
                     ops,
+                    identity: changed,
                 })
             }
         }
@@ -225,6 +237,7 @@ impl RuntimeKernel {
                 from: since,
                 to: since,
                 ops: Vec::new(),
+                identity: None,
             });
         }
         Some(record.snapshot(&session))
@@ -552,6 +565,9 @@ impl RuntimeKernel {
                 FrameWrite::Removed => self.remove_trait_frame(&trait_name, &entity_type, &id),
                 FrameWrite::Replaced(_) => {}
             }
+        }
+        if let Some(identity) = &delta.identity {
+            self.mirror_identity(identity);
         }
         let version = if delta.session.is_some() {
             delta.to

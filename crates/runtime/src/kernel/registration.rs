@@ -254,20 +254,6 @@ impl RuntimeKernel {
             None => {}
         }
 
-        // A bare `ALMADAR_PERSONA` (id/role) resolves against this app's declared
-        // roster — its [identity] entity's authored instances — which construction could
-        // not see. Only fills a still-unset viewer: a later registration must not
-        // clobber a viewer somebody already resolved or set.
-        if let Ok(crate::persona::EnvPersona::Bare(spec)) = crate::persona::persona_from_env_spec()
-        {
-            if matches!(self.get_current_user(), Value::Null) {
-                let roster = crate::persona::identity_roster(&schema);
-                let user = crate::persona::resolve_persona_spec(&spec, &roster)
-                    .map_err(KernelError::Internal)?;
-                self.set_current_user(user);
-            }
-        }
-
         // Populate the entity access table from every declared entity's four
         // directives (additive across registrations — a later schema never
         // clobbers an earlier one's policies for an entity it doesn't itself
@@ -580,7 +566,6 @@ impl RuntimeKernel {
         *child.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
         *child.registry.entity_definitions.write() = definitions;
         *child.registry.entity_defaults.write() = self.registry.entity_defaults.read().clone();
-        child.set_current_user(self.get_current_user());
         child.register_schema(schema)?;
         Ok(child)
     }
@@ -613,6 +598,7 @@ impl RuntimeKernel {
         *fork.registry.schemas.write() = self.registry.schemas.read().clone();
         *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
         *fork.registry.trait_definitions.write() = self.registry.trait_definitions.read().clone();
+        *fork.registry.sealed_emit_fields.write() = self.registry.sealed_emit_fields.read().clone();
         *fork.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
         *fork.registry.embed_index.write() = self.registry.embed_index.read().clone();
         *fork.registry.entity_definitions.write() = self.registry.entity_definitions.read().clone();
@@ -625,7 +611,6 @@ impl RuntimeKernel {
         *fork.i18n.write() = self.i18n.read().clone();
         *fork.mount_ledger.write() = self.mount_ledger.read().clone();
         *fork.grants.managed_credentials.write() = self.grants.managed_credentials.read().clone();
-        *fork.sessions.current_user.write() = self.sessions.current_user.read().clone();
         *fork.sessions.identities.write() = self.sessions.identities.read().clone();
         fork.deliveries
             .write()
@@ -679,6 +664,7 @@ impl RuntimeKernel {
     pub(super) fn register_trait(&self, trait_def: Arc<TraitDefinition>) -> Result<(), KernelError> {
         debug!(trait_name = %trait_def.name, "Registering trait");
         self.state_manager.write().register_shared_trait(Arc::clone(&trait_def));
+        self.register_sealed_emit_fields(&trait_def);
         self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
         Ok(())
     }

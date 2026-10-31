@@ -440,7 +440,7 @@ impl RuntimeKernel {
                 |e, _| self.run_host_effect(e, ctx),
             ),
             // An emit resolves now, against this leaf's scope (`let` locals, earlier sets), as JS does at emit time.
-            Effect::CancelCall { .. } | Effect::Emit { .. } => {
+            Effect::CancelCall { .. } | Effect::Emit { .. } | Effect::Log { .. } => {
                 if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results, || self.effect_site()) {
                     let result = self.effect_executor.execute(&resolved, ctx);
                     if let (Effect::CancelCall { key }, EffectOutcome::Executed) = (&resolved, &result.outcome) {

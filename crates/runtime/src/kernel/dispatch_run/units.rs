@@ -10,7 +10,6 @@ impl RuntimeKernel {
             seed,
             outcomes,
             locale,
-            user,
             origin,
             ..
         } = run;
@@ -32,8 +31,6 @@ impl RuntimeKernel {
         };
         let _stamp = self.hold_stamp(in_flight.now);
         let _locale = self.hold_locale(locale.as_deref());
-        let bound = self.session_user()?;
-        let _user = self.hold_user(bound.as_ref().or(user.as_deref()));
         let committed_from = origin.emits;
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
@@ -65,16 +62,6 @@ impl RuntimeKernel {
                 }
             }
         }
-    }
-
-    /// The run's viewer as the kernel's `@user` for one unit.
-    pub(super) fn hold_user(&self, user: Option<&Value>) -> Option<UserHold> {
-        let user = user?;
-        let previous = std::mem::replace(&mut *self.sessions.current_user.write(), user.clone());
-        Some(UserHold {
-            slot: Arc::clone(&self.sessions.current_user),
-            previous,
-        })
     }
 
     /// The run's viewer locale, held for one unit unless the caller already holds one.
@@ -578,11 +565,18 @@ impl RuntimeKernel {
         }
         let view = memory.view(&keyed_rows::memory_scope(&item.trait_name, eid, keyed), &item.delivery);
         if let Some(guard) = &item.listen_guard {
+            let config = match self.listener_config(&item.trait_name) {
+                Ok(config) => config,
+                Err(fault) => {
+                    cascade.queue.push_front(item);
+                    return Err(fault);
+                }
+            };
             if !listen_guard_passes(
                 guard,
                 &item.source_payload,
                 &from,
-                self.listener_config(&item.trait_name),
+                config,
                 &view,
             ) {
                 debug!(trait_name = %item.trait_name, event = %item.event, "fanout:listen-guard-blocked");

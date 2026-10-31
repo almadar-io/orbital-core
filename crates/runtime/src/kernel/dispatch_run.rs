@@ -121,8 +121,6 @@ pub(crate) struct DispatchRun {
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
     locale: Option<String>,
-    /// The viewer the dispatch was started as (see `enter_viewer`); `None` leaves the kernel's `@user` as it is.
-    user: Option<Arc<Value>>,
     origin: Origin,
     /// The transition the step in flight committed when it suspended (G-CROSS-259).
     provisional: Option<Box<ProvisionalCommit>>,

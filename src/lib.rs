@@ -99,7 +99,6 @@ pub mod runtime {
     pub use orbital_core_runtime::mock_random;
     pub use orbital_core_runtime::motion;
     pub use orbital_core_runtime::payload_validation;
-    pub use orbital_core_runtime::persona;
     pub use orbital_core_runtime::process_result;
     pub use orbital_core_runtime::shared_entity;
     pub use orbital_core_runtime::projected_payload;
@@ -166,14 +165,6 @@ pub mod runtime {
     pub use orbital_core_runtime::listener::ListenerInfo;
     pub use orbital_core_runtime::listener::ListenerManager;
     pub use orbital_core_runtime::listener::TriggerCallback;
-    pub use orbital_core_runtime::persona::default_probe_persona;
-    pub use orbital_core_runtime::persona::find_persona_in_roster;
-    pub use orbital_core_runtime::persona::identity_roster;
-    pub use orbital_core_runtime::persona::persona_from_env_for_schema;
-    pub use orbital_core_runtime::persona::persona_from_env_spec;
-    pub use orbital_core_runtime::persona::resolve_persona_spec;
-    pub use orbital_core_runtime::persona::EnvPersona;
-    pub use orbital_core_runtime::persona::PERSONA_ENV;
     pub use orbital_core_runtime::process_result::DeliveryEntry;
     pub use orbital_core_runtime::process_result::EffectRun;
     pub use orbital_core_runtime::process_result::EffectRunStatus;

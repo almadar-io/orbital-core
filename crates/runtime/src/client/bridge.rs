@@ -56,6 +56,19 @@ pub trait ServerBridge: Send + Sync {
         ))
     }
 
+    /// Hold `trait_name` in the state `from` with `entity` written over its row, as a `program/step` request seeds
+    /// its trait before the event runs. A bridge whose rows live elsewhere refuses.
+    fn seed_trait(
+        &self,
+        _trait_name: &str,
+        _from: &str,
+        _entity: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<(), BridgeError> {
+        Err(BridgeError::InvalidRequest(
+            "this bridge cannot seed a trait".to_string(),
+        ))
+    }
+
     /// Run one scheduled tick of `trait_name` (effects + guard) against the in-memory
     /// entity and return the resulting client effects, so a game's per-frame/interval
     /// `set` effects advance the entity locally. Only the in-process [`KernelBridge`]
@@ -206,11 +219,6 @@ impl KernelBridge {
         seed_into(&self.kernel, &self.entities, entity_type, &rows)
     }
 
-    /// Bind `@user` for every subsequent event this bridge dispatches.
-    pub fn set_current_user(&self, user: Value) {
-        self.kernel.set_current_user(user);
-    }
-
     /// The inline trait names of `orbital`, in declaration order.
     fn orbital_traits(&self, orbital: &str) -> Vec<String> {
         use orbital_core_base::schema::types::TraitReference;
@@ -257,9 +265,7 @@ impl KernelBridge {
 
 impl ServerBridge for KernelBridge {
     fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, BridgeError> {
-        self.kernel
-            .resolve_rows(reference, &self.kernel.get_current_user())
-            .map_err(BridgeError::Server)
+        self.kernel.resolve_rows(reference).map_err(BridgeError::Server)
     }
 
     /// A `mount` request runs every seed's lifecycle event in one dispatch, as
@@ -320,6 +326,22 @@ impl ServerBridge for KernelBridge {
             "bridge:event",
         );
         Ok(response)
+    }
+
+    fn seed_trait(
+        &self,
+        trait_name: &str,
+        from: &str,
+        entity: Option<&serde_json::Map<String, serde_json::Value>>,
+    ) -> Result<(), BridgeError> {
+        let snapshot = crate::step_replay::seeded_snapshot(
+            self.kernel.snapshot_trait(trait_name, None),
+            Some(from),
+            entity,
+        )
+        .map_err(BridgeError::Server)?;
+        self.kernel.restore_trait(trait_name, None, snapshot);
+        Ok(())
     }
 
     fn tick(

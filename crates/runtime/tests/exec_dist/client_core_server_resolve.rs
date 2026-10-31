@@ -1,5 +1,5 @@
 // A `ClientCore` with no client-role kernel resolves a row-set reference through its server bridge: the server holds
-// the rows and applies the viewer's `@read`. Controls: a core with no store errs; a bridge with no route refuses.
+// the rows and applies the entity's `@read`. Controls: a core with no store errs; a bridge with no route refuses.
 
 use orbital_core_runtime::client::bridge::{KernelBridge, ServerBridge};
 use orbital_core_runtime::client::client_core::ClientCore;
@@ -16,7 +16,7 @@ fn schema() -> OrbitalSchema {
             "entity": {
                 "name": "Ticket", "persistence": "persistent",
                 "fields": [{ "name": "id", "type": "string" }, { "name": "owner", "type": "string" }],
-                "read_policy": ["=", ["object/get", "@entity", "owner"], "@user.id"]
+                "read_policy": ["!=", ["object/get", "@entity", "owner"], "u2"]
             },
             "traits": [{
                 "name": "Tickets", "linkedEntity": "Ticket",
@@ -61,12 +61,11 @@ fn server() -> KernelBridge {
         "Ticket",
         vec![row("t1", "u1"), row("t2", "u2"), row("t3", "u1")],
     ).unwrap();
-    server.set_current_user(serde_json::from_value(json!({ "id": "u1" })).unwrap());
     server
 }
 
 #[test]
-fn a_server_hosted_reference_resolves_through_the_bridge_and_omits_a_row_the_viewer_cannot_read() {
+fn a_server_hosted_reference_resolves_through_the_bridge_and_omits_a_row_the_read_policy_hides() {
     let core = ClientCore::new(schema(), Some(Arc::new(server())));
     let page = core.resolve_rows(&reference(&["t3", "t2", "t1"])).unwrap();
     assert_eq!(ids(&page), vec!["t3", "t1"]);

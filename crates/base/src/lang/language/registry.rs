@@ -326,6 +326,10 @@ pub struct EmbeddedOperator {
     /// The options that name a dispatch's target (`targetOptions`, on `program/dispatch`).
     #[serde(rename = "targetOptions", default)]
     pub target_options: Vec<String>,
+    /// A result selected by a literal option (`resultByOption` in the operator table): `returnType` is the result
+    /// when the option is absent, and each declared value of the option answers its own type.
+    #[serde(rename = "resultByOption", default)]
+    pub result_by_option: Option<ResultByOption>,
     /// The orb release that introduced each option, by path from its parameter (`options/key`, `options/emit/onMessage`);
     /// a path covers everything under it. An option not listed predates the table.
     #[serde(rename = "optionSince", default)]
@@ -365,6 +369,35 @@ pub struct EmbeddedOperator {
     /// Pinned to `Signature::field_projection` by `tests/runs_on_drift.rs`.
     #[serde(rename = "fieldProjection", default)]
     pub field_projection: Option<crate::signature::FieldProjection>,
+}
+
+/// A result type chosen by the literal value of one key of the call's trailing `options` object, as the `http`
+/// `presign` request key chooses the signed url over the reply.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ResultByOption {
+    pub option: String,
+    pub results: HashMap<String, OperatorTypeRef>,
+}
+
+impl EmbeddedOperator {
+    /// The result type of the call `args` (the operator name first): `returnType` when the call states no value for
+    /// the selecting option, the declared type of the value it states as a literal; `None` when the value is
+    /// computed or names no declared result, so no type is claimed.
+    pub fn result_for_call(&self, args: &[crate::schema::SExpression]) -> Option<&OperatorTypeRef> {
+        use crate::schema::SExpression;
+        let Some(selector) = &self.result_by_option else {
+            return Some(&self.return_type);
+        };
+        let at = self.params.iter().position(|param| param.name == "options")?;
+        let Some(SExpression::Object(options)) = args.get(at + 1) else {
+            return Some(&self.return_type);
+        };
+        match options.get(selector.option.as_str()) {
+            None | Some(SExpression::Null) => Some(&self.return_type),
+            Some(SExpression::String(value)) => selector.results.get(value.as_str()),
+            Some(_) => None,
+        }
+    }
 }
 
 /// What a host effect's call is held to beyond its parameter types.

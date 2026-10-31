@@ -324,6 +324,15 @@ impl OsGrants {
         })
     }
 
+    /// Whether a grant of `kind` at `port` is the very host pattern `pattern`: what covers a call whose literal host is
+    /// that pattern (a dynamic-host client's config host). A concrete host is still checked by [`Self::net_allows`].
+    pub fn net_names_pattern(&self, pattern: &str, port: u16, kind: NetKind) -> bool {
+        self.net.iter().any(|g| {
+            g.kinds.contains(&kind)
+                && split_target(&g.target).is_some_and(|(h, p)| p == port && h.eq_ignore_ascii_case(pattern))
+        })
+    }
+
     pub fn env_allows(&self, name: &str) -> bool {
         self.env.iter().any(|n| n == name)
     }

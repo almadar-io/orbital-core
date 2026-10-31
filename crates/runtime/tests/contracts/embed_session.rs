@@ -46,9 +46,6 @@ impl Session {
             .get("entityId")
             .and_then(Value::as_str)
             .map(str::to_string);
-        let parsed = |key: &str, what: &str| -> Result<CoreValue, String> {
-            serde_json::from_value(step[key].clone()).map_err(|e| format!("parse {what}: {e}"))
-        };
         match step["op"].as_str().unwrap() {
             "dispatch" => {
                 let payload: CoreValue = step
@@ -110,10 +107,6 @@ impl Session {
             "snapshot" => serde_json::to_value(self.kernel.snapshot()).unwrap(),
             "setThemeMode" => {
                 let result = parse_theme_mode(&s("mode")).map(|m| self.kernel.set_theme_mode(m));
-                self.note(result)
-            }
-            "setUser" => {
-                let result = parsed("user", "user_json").map(|u| self.kernel.set_current_user(u));
                 self.note(result)
             }
             "seed" => {

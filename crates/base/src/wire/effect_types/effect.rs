@@ -136,10 +136,10 @@ pub enum Effect {
     /// Despawn a game entity (client/game only)
     Despawn { entity_id: String },
 
-    /// Log a message
+    /// Log a message: text, or an expression the kernel evaluates when the effect runs (`(log (str/concat …))`).
     Log {
         level: LogLevel,
-        message: String,
+        message: Value,
         data: Option<Value>,
     },
 

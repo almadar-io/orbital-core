@@ -290,9 +290,8 @@ fn resolve_t1_in(program: OrbitalSchema, bound: bool) -> Result<orbital_core_run
     );
     kernel.register_schema(program).unwrap();
     let reference = serde_json::from_value(serde_json::json!({ "entityType": "Ticket", "ids": ["t1"], "total": 1, "query": {} })).unwrap();
-    let viewer = Value::Null;
     let host_rows = InMemoryEntityCache::new();
-    let mut progress = kernel.start_resolve_rows(&reference, &viewer).map_err(|e| e.to_string())?;
+    let mut progress = kernel.start_resolve_rows(&reference, None).map_err(|e| e.to_string())?;
     loop {
         match progress {
             ResolveProgress::Done(page) => return Ok(page),

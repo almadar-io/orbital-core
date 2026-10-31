@@ -2,6 +2,9 @@
 //! 13 `set`, 2 `when`, 1 `render-ui`, over a 14-field entity). Speed pass 2, copies C1-C8: the
 //! pinned numbers only ever go down.
 
+#[path = "support/mod.rs"]
+mod support;
+
 use serde_json::json;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1053,7 +1056,8 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
     let cache = Arc::new(InMemoryEntityCache::new());
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::clone(&cache) as Arc<dyn EntitySource>, Default::default());
     k.register_schema(serde_json::from_value(fixture["schema"].clone()).unwrap()).unwrap();
-    let _viewer = k.enter_viewer(serde_json::from_value(json!({ "id": "u-1" })).unwrap());
+    support::identity::enable(&k, &[]);
+    support::identity::sign_in(&k, "u-1", json!({}));
     let init = retained_per_dispatch(&k, "ContactForm", "INIT", 500);
     let rows_before = cache.list("AuditEntry").unwrap().len();
     let save = retained_per_dispatch(&k, "ContactForm", "SAVE", 500);

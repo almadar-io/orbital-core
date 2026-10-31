@@ -3544,3 +3544,25 @@ fn a_verified_parameter_binds_only_a_verified_never_text_a_record_or_a_literal_o
     assert!(bind(crate::sealed::sealed_record("Verified").expect("record")).is_err(), "a record of the same fields is not a Verified");
     assert!(bind(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }).is_err(), "an object literal is not a Verified");
 }
+
+fn verify_like_result() -> serde_json::Value {
+    json!({ "kind": "union", "of": ["Verified", { "kind": "object", "fields": { "error": "string", "kind": { "kind": "union", "of": [
+        { "kind": "literal", "value": "malformed" }, { "kind": "literal", "value": "expired" }] } } }] })
+}
+
+#[test]
+fn a_union_of_a_sealed_type_and_a_failure_record_with_a_literal_kind_resolves() {
+    let operator = op(json!([p("token", json!("string"))]), verify_like_result(), Some(1));
+    let resolved = Signature::of(&operator).result(&CallBindings::new());
+    let Some(OirType::Union { variants }) = resolved else { panic!("undetermined: {resolved:?}") };
+    assert!(variants.iter().any(|v| v.field_type == crate::sealed::sealed_type_ref("Verified")), "the sealed member stays the nominal Verified");
+    assert!(variants.iter().any(|v| matches!(&v.field_type, OirType::Struct { fields, .. } if fields.iter().any(|f| f.name == "kind" && f.field_type == OirType::String))), "a union of string literals is text");
+}
+
+#[test]
+fn a_sealed_or_unknown_declared_name_in_a_result_resolves_as_a_nominal_ref_and_a_bare_literal_union_of_mixed_types_stays_undetermined() {
+    let sealed = op(json!([]), json!("Verified"), Some(0));
+    assert_eq!(Signature::of(&sealed).result(&CallBindings::new()), Some(crate::sealed::sealed_type_ref("Verified")));
+    let mixed = op(json!([]), json!({ "kind": "union", "of": [{ "kind": "literal", "value": "a" }, { "kind": "literal", "value": 1 }] }), Some(0));
+    assert!(matches!(Signature::of(&mixed).result(&CallBindings::new()), Some(OirType::Union { variants }) if variants.len() == 2), "control: no collapse across types");
+}

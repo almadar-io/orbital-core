@@ -492,7 +492,7 @@ fn test_log_effect() {
 
     let effect = Effect::Log {
         level: LogLevel::Info,
-        message: "Test message".to_string(),
+        message: Value::string("Test message"),
         data: None,
     };
 

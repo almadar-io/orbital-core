@@ -912,6 +912,7 @@ impl EmbeddedKernel {
     pub fn trait_config(&self, trait_name: &str) -> Result<Value, String> {
         self.kernel
             .trait_config(trait_name)
+            .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("trait config: '{trait_name}' is not a registered trait"))
     }
 
@@ -971,10 +972,6 @@ impl EmbeddedKernel {
         self.kernel.set_messages(locales, catalogs);
     }
 
-    pub fn set_current_user(&self, user: Value) {
-        self.kernel.set_current_user(user);
-    }
-
     /// Declare that the host runs the listeners of every emit it marks `dispatched` (see
     /// [`RuntimeKernel::set_host_fans_out`]).
     pub fn set_host_fans_out(&self, fans_out: bool) {
@@ -992,15 +989,14 @@ impl EmbeddedKernel {
         self.frame_effect_results.store(carry, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// A row-set reference resolved against this client's rows for its current user: the one kernel resolver
+    /// A row-set reference resolved against this client's rows for its session's identity: the one kernel resolver
     /// ([`RuntimeKernel::resolve_rows`]) every renderer reaches. A store the client does not hold answers
     /// nothing here; the host resolves those through the server leg.
     pub fn resolve_rows(
         &self,
         reference: &orbital_core_base::row_set::RowSetRef,
     ) -> Result<crate::row_query::RowPage, String> {
-        self.kernel
-            .resolve_rows(reference, &self.kernel.get_current_user())
+        self.kernel.resolve_rows(reference)
     }
 
     /// Seed `entity_type` rows into the entity cache; each row's own `id` is honored.

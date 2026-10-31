@@ -9,14 +9,6 @@ use orbital_core::{EventResponse, OrbitalSchema, RuntimeEnvironment, Value};
 use serde_json::{json, Map, Value as Json};
 use std::sync::Arc;
 
-/// The viewer `@almadar/core`'s `DEFAULT_VIEWER` names, which B1 runs as.
-fn default_viewer() -> Value {
-    serde_json::from_value(json!({
-        "id": "viewer-1", "name": "Dev Viewer", "email": "viewer@example.com", "role": ""
-    }))
-    .expect("default viewer is a Value")
-}
-
 pub struct R0Driver;
 
 pub struct KernelSession {
@@ -47,7 +39,6 @@ impl Driver for R0Driver {
         kernel
             .register_schema(schema)
             .map_err(|e| format!("{}: register_schema: {e}", fixture.name))?;
-        kernel.set_current_user(default_viewer());
         Ok(KernelSession {
             kernel,
             orbital_traits,

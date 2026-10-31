@@ -2,6 +2,7 @@
 // runtime passes `{ principal: user.id, role: user.role }` (`effect-stage.ts`). Providers that act
 // for a person (workspace, connections, credentials) read it instead of a host-supplied guess.
 
+use crate::support::identity;
 use orbital_core_runtime::effects::{ServiceCaller, ServiceHandler};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -63,11 +64,12 @@ fn kernel(handler: Arc<Recording>) -> RuntimeKernel {
     kernel
 }
 
-fn caller_of(user: Option<serde_json::Value>) -> Option<ServiceCaller> {
+fn caller_of(signed_in: Option<(&str, serde_json::Value)>) -> Option<ServiceCaller> {
     let handler = Arc::new(Recording::default());
     let k = kernel(Arc::clone(&handler));
-    if let Some(user) = user {
-        k.set_current_user(serde_json::from_value(user).unwrap());
+    if let Some((subject, claims)) = signed_in {
+        identity::enable(&k, &["role"]);
+        identity::sign_in(&k, subject, claims);
     }
     k.dispatch("Runner", None, "GO", Value::Null).unwrap();
     let callers = handler.callers.lock();
@@ -78,7 +80,7 @@ fn caller_of(user: Option<serde_json::Value>) -> Option<ServiceCaller> {
 #[test]
 fn the_signed_in_viewer_is_the_caller() {
     assert_eq!(
-        caller_of(Some(json!({ "id": "u1", "role": "admin", "email": "u1@x" }))),
+        caller_of(Some(("u1", json!({ "role": "admin", "email": "u1@x" })))),
         Some(ServiceCaller { principal: "u1".into(), role: Some("admin".into()) })
     );
 }
@@ -86,17 +88,12 @@ fn the_signed_in_viewer_is_the_caller() {
 #[test]
 fn edge_a_viewer_without_a_role_has_none() {
     assert_eq!(
-        caller_of(Some(json!({ "id": "u2" }))),
+        caller_of(Some(("u2", json!({})))),
         Some(ServiceCaller { principal: "u2".into(), role: None })
     );
 }
 
 #[test]
-fn control_nobody_signed_in_is_no_caller() {
-    assert_eq!(caller_of(Some(json!(null))), None);
-}
-
-#[test]
-fn edge_a_viewer_without_an_id_is_no_caller() {
-    assert_eq!(caller_of(Some(json!({ "role": "admin" }))), None);
+fn control_a_session_nobody_signed_in_is_no_caller() {
+    assert_eq!(caller_of(None), None, "the anonymous viewer is not a principal");
 }

@@ -52,8 +52,7 @@ pub(super) fn value_to_sexpr(value: &Value) -> SExpression {
     expr
 }
 
-/// Convert an SExpression to a runtime Value for instance seeding. Shared with
-/// `persona::identity_roster`, which materializes the same authored `instances`.
+/// Convert an SExpression to a runtime Value for instance seeding.
 pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
     match sexpr {
         SExpression::String(s) => Value::string(s.clone()),

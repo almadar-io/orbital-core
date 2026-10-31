@@ -122,16 +122,6 @@ impl OrbitalClientRuntime {
         self.kernel.get_state(trait_name, entity_id)
     }
 
-    /// Set the current user
-    pub fn set_current_user(&self, user: Value) {
-        self.kernel.set_current_user(user);
-    }
-
-    /// Get the current user
-    pub fn get_current_user(&self) -> Value {
-        self.kernel.get_current_user()
-    }
-
     /// Cache entity data
     pub fn cache_entity(&self, entity_type: &str, _entity_id: &str, data: Value) {
         let _ = self.kernel.entity_source().create(entity_type, &data);
@@ -300,24 +290,5 @@ mod tests {
         runtime.clear_cache();
         let cached = runtime.get_cached_entity("Counter", "test-1");
         assert!(cached.is_none());
-    }
-
-    #[test]
-    fn test_current_user() {
-        let runtime = OrbitalClientRuntime::new();
-
-        let mut user = ValueMap::default();
-        user.insert("id".into(), Value::string("user-1"));
-        user.insert("name".into(), Value::string("Test User"));
-
-        runtime.set_current_user(Value::object(user));
-
-        let current = runtime.get_current_user();
-        match current {
-            Value::Object(obj) => {
-                assert_eq!(obj.get("id"), Some(&Value::string("user-1")));
-            }
-            _ => panic!("Expected object"),
-        }
     }
 }

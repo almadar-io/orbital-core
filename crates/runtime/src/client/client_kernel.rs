@@ -156,11 +156,6 @@ impl ClientKernel {
         seed_into(self.embedded.kernel(), self.embedded.entities().as_ref(), entity_type, &rows)
     }
 
-    /// Bind `@user` for every subsequent dispatch.
-    pub fn set_current_user(&self, user: Value) {
-        self.embedded.kernel().set_current_user(user);
-    }
-
     /// Set the client's tracked light/dark toggle for every subsequent
     /// `@currentTheme` resolution (§157/C7 `theme-declaration`: `KernelBridge`
     /// already exposes `RuntimeKernel::set_theme_mode` directly — this is the

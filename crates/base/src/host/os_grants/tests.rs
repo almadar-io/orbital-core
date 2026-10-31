@@ -2439,6 +2439,27 @@ mod static_check {
         assert!(has(&dynamic_port, OsGrantFindingCode::TargetNotStatic), "control: a dynamic port stays not static");
     }
 
+    // G-ORBITAL-CORE-096: a connect whose literal host is itself a pattern (a dynamic-host client's config host) is covered by that same pattern grant.
+    #[test]
+    fn a_literal_pattern_host_is_covered_by_the_same_pattern_grant_only() {
+        let connect = json!([["os/tcp-connect", "*.notify.windows.com", 443]]);
+        let same = net_pattern("*.notify.windows.com:443");
+        assert!(one(same.clone(), connect.clone()).is_empty(), "covered");
+        assert!(!unused_final(same.clone(), connect.clone()), "the pattern entry is used");
+        let other_domain = one(net_pattern("*.example.com:443"), connect.clone());
+        assert!(has(&other_domain, OsGrantFindingCode::Missing), "control: another domain's pattern");
+        let wider = one(net_pattern("*.windows.com:443"), connect.clone());
+        assert!(has(&wider, OsGrantFindingCode::Missing), "control: a different pattern is not the same entry");
+        let wrong_port = one(net_pattern("*.notify.windows.com:80"), connect.clone());
+        assert!(has(&wrong_port, OsGrantFindingCode::Missing), "control: other port");
+        let exact = one(net_pattern("db.internal:443"), connect.clone());
+        assert!(has(&exact, OsGrantFindingCode::Missing), "control: an exact grant");
+        assert!(has(&one(json!(null), connect), OsGrantFindingCode::Missing), "control: no grant");
+        let concrete = json!([["os/tcp-connect", "db5.notify.windows.com", 443]]);
+        assert!(one(same, concrete.clone()).is_empty(), "control: a concrete host under the pattern");
+        assert!(has(&one(net_pattern("*.example.com:443"), concrete), OsGrantFindingCode::Missing), "control: concrete host, other domain");
+    }
+
     #[test]
     fn a_malformed_host_pattern_grant_is_an_invalid_entry() {
         for target in [
@@ -2854,6 +2875,47 @@ mod static_check {
         );
         let idle = run(".orb/rows/", OsGrantPass::Final, json!([]));
         assert!(has(&idle, OsGrantFindingCode::Unused), "control: no call at all");
+    }
+
+    #[test]
+    fn the_finished_pass_decides_a_config_fed_anchored_spawn_cwd_by_its_value() {
+        let grant = json!({
+            "exec": ["git"],
+            "anchored": {"fs": [{"anchor": "cwd", "glob": "work/**", "modes": ["read"]}]}
+        });
+        let spawn = json!([["os/spawn", "git", [], {"cwd": {"anchor": "cwd", "path": "@config.dir"}}]]);
+        let run = |dir: &str, pass: OsGrantPass, effects: serde_json::Value| {
+            os_grant_findings(
+                &program(
+                    json!(null),
+                    vec![orbital("Orders", grant.clone(), None, effects, json!({ "dir": { "type": "string", "default": dir } }))],
+                ),
+                pass,
+            )
+        };
+        let covered = run("work/a", OsGrantPass::Final, spawn.clone());
+        assert!(covered.is_empty(), "{covered:?}");
+        let outside = run("src/a", OsGrantPass::Final, spawn.clone());
+        assert!(
+            outside.iter().any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "{outside:?}"
+        );
+        let literal = json!([["os/spawn", "git", [], {"cwd": {"anchor": "cwd", "path": "src/a"}}]]);
+        assert!(
+            has(&run("work/a", OsGrantPass::Written, literal), OsGrantFindingCode::Missing),
+            "control: a literal anchored cwd outside the grant is missing"
+        );
+        let concat = json!([["os/spawn", "git", [], {"cwd": {"anchor": "cwd", "path": ["str/concat", "@config.dir", "@entity.name"]}}]]);
+        assert!(run("work/a/", OsGrantPass::Final, concat.clone()).is_empty(), "a concat cwd under the grant is covered");
+        assert!(has(&run("src/a/", OsGrantPass::Final, concat), OsGrantFindingCode::Missing));
+        let lost = os_grant_findings(
+            &program(json!(null), vec![orbital("Orders", grant.clone(), None, spawn, json!({}))]),
+            OsGrantPass::Final,
+        );
+        assert!(
+            lost.iter().any(|f| f.via == Some(OsGrantVia::ConfigUnresolvable)),
+            "edge: a knob with no value is not static: {lost:?}"
+        );
     }
 
     #[test]

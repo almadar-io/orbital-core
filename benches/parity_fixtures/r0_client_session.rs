@@ -9,13 +9,6 @@ use orbital_core::{OrbitalSchema, Value};
 use serde_json::{json, Map, Value as Json};
 use std::collections::HashMap;
 
-fn default_viewer() -> Value {
-    serde_json::from_value(json!({
-        "id": "viewer-1", "name": "Dev Viewer", "email": "viewer@example.com", "role": ""
-    }))
-    .expect("default viewer is a Value")
-}
-
 pub struct R0ClientDriver;
 
 pub struct EmbeddedSession {
@@ -40,7 +33,6 @@ impl Driver for R0ClientDriver {
             .collect();
         let kernel = EmbeddedKernel::new(schema, "bench")
             .map_err(|e| format!("{}: EmbeddedKernel::new: {e}", fixture.name))?;
-        kernel.set_current_user(default_viewer());
         Ok(EmbeddedSession {
             kernel,
             orbital_traits,

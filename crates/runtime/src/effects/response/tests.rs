@@ -496,7 +496,7 @@ fn dispatch_options(options: serde_json::Value) -> impl Fn(&str) -> Option<serde
 fn a_dispatch_option_record_parses_into_the_typed_request() {
     let options = serde_json::json!({
         "event": "SAVE", "entityId": "", "targetTrait": "Form", "locale": "ar", "mount": [],
-        "traits": [{ "trait": "Form", "from": "idle" }], "viewer": { "id": "u1" },
+        "traits": [{ "trait": "Form", "from": "idle" }],
     });
     let request = super::EventRequest::from_dispatch(serde_json::json!({ "n": "x" }), dispatch_options(options)).expect("parses");
     assert_eq!(request.event, "SAVE");
@@ -505,8 +505,16 @@ fn a_dispatch_option_record_parses_into_the_typed_request() {
     assert_eq!(request.entity_id, None, "an empty text is absent");
     assert_eq!(request.mount, None, "an empty list is absent");
     assert_eq!(request.traits.expect("traits").len(), 1);
-    assert_eq!(request.user, Some(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap()));
     assert!(request.payload.is_some());
+}
+
+#[test]
+fn a_dispatch_option_record_naming_a_viewer_is_refused() {
+    let options = serde_json::json!({ "event": "SAVE", "viewer": { "id": "u1" } });
+    let refused = super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(options)).unwrap_err();
+    assert!(refused.contains("`viewer` is retired"), "{refused}");
+    let null_viewer = serde_json::json!({ "event": "SAVE", "viewer": null });
+    assert!(super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(null_viewer)).is_ok(), "control: a null viewer names nobody");
 }
 
 #[test]

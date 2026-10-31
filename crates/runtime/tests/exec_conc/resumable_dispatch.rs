@@ -1307,11 +1307,13 @@ fn first_request_of_kind(
 }
 
 #[test]
-fn the_dispatchs_user_travels_to_the_service_as_its_caller() {
+fn the_sessions_identity_travels_to_the_service_as_its_caller() {
     let setup = service_call(false);
     let (server, store) = embedded_server(&setup);
     let mut request = request_of(&setup.steps[0]);
-    request["user"] = json!({ "id": "u1", "role": "admin" });
+    crate::support::identity::enable(server.kernel(), &["role"]);
+    crate::support::identity::sign_in_server(&server, "tab-1", "u1", json!({ "role": "admin" }));
+    request["clientId"] = json!("tab-1");
     let call = first_request_of_kind(&server, &setup, &store, "Main", &request, "callService");
     assert_eq!(
         call["caller"],
@@ -1324,7 +1326,7 @@ fn the_dispatchs_user_travels_to_the_service_as_its_caller() {
 }
 
 #[test]
-fn control_a_request_without_a_user_has_no_service_caller() {
+fn control_a_request_in_an_unbound_session_has_no_service_caller() {
     let setup = service_call(false);
     let (server, store) = embedded_server(&setup);
     let call = first_request_of_kind(

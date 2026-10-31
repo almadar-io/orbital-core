@@ -2,7 +2,7 @@ use super::*;
 
 fn log_of(src: &str) -> Option<(LogLevel, String)> {
     match parse_effect(&serde_json::from_str::<SExpression>(src).unwrap())? {
-        Effect::Log { level, message, .. } => Some((level, message)),
+        Effect::Log { level, message, .. } => Some((level, message.as_str()?.to_string())),
         _ => None,
     }
 }

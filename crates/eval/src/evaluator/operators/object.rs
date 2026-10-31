@@ -84,7 +84,7 @@ impl Operator for ObjectHasOp {
         super::with_operand(&args[0], ctx, |obj| {
             let path = eval_expr(&args[1], ctx)?.text()?.to_string();
             match obj {
-                Value::Object(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
+                Value::Object(_) | Value::Sealed(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
                 _ => Err(obj.kind_error("object").into()),
             }
         })
@@ -491,7 +491,7 @@ impl Operator for ObjectGetOp {
         require_arity!(args, "object/get", >= 2);
 
         let found = super::with_operand(&args[0], ctx, |obj| {
-            if !matches!(obj, Value::Object(_) | Value::Array(_)) {
+            if !matches!(obj, Value::Object(_) | Value::Array(_) | Value::Sealed(_)) {
                 return Err(obj.kind_error("object").into());
             }
             let key = eval_expr(&args[1], ctx)?;
@@ -517,6 +517,7 @@ impl Operator for ObjectGetOp {
 #[cfg(test)]
 mod strict_tests {
     use serde_json::json;
+    use orbital_core_base::value::{value_map_with_capacity, Value, ValueMap};
     use {crate::evaluator::context::BindingContextBuilder, crate::evaluator::Evaluator};
 
     fn run(args: serde_json::Value) -> Result<serde_json::Value, String> {
@@ -526,6 +527,33 @@ mod strict_tests {
             .evaluate(&sexpr, &ctx)
             .map(|v| serde_json::to_value(v).unwrap())
             .map_err(|e| e.to_string())
+    }
+
+    fn sealed_run(expr: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut fields = value_map_with_capacity(2);
+        fields.insert("subject".into(), Value::string("user-1"));
+        fields.insert("issuer".into(), Value::string("iss"));
+        let mut payload = ValueMap::default();
+        payload.insert("v".into(), Value::sealed("Verified", fields));
+        let mut ctx = BindingContextBuilder::new().build();
+        ctx.set_payload(Value::object(payload));
+        let sexpr = serde_json::from_value(expr).unwrap();
+        Evaluator::new().evaluate(&sexpr, &ctx).map(|v| serde_json::to_value(v).unwrap()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_sealed_record_answers_has_and_get_by_its_declared_fields_like_a_read() {
+        assert_eq!(sealed_run(json!(["object/has", "@payload.v", "subject"])).unwrap(), json!(true));
+        assert_eq!(sealed_run(json!(["object/has", "@payload.v", "kind"])).unwrap(), json!(false));
+        assert_eq!(sealed_run(json!(["object/get", "@payload.v", "subject"])).unwrap(), json!("user-1"));
+        assert_eq!(sealed_run(json!(["object/get", "@payload.v", "kind", "none"])).unwrap(), json!("none"));
+        assert_eq!(sealed_run(json!("@payload.v.subject")).unwrap(), json!("user-1"));
+    }
+
+    #[test]
+    fn a_sealed_record_is_still_not_an_object_for_writes_and_a_non_object_still_refuses_has() {
+        assert!(sealed_run(json!(["object/set", "@payload.v", "subject", "root"])).is_err());
+        assert!(sealed_run(json!(["object/has", "@payload.v.subject", "x"])).is_err());
     }
 
     #[test]

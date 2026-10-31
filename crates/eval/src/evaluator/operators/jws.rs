@@ -8,9 +8,6 @@ use super::*;
 use orbital_core_base::codec;
 use orbital_core_base::sealed::VERIFIED;
 
-/// The issuer the Firebase auth emulator (std-dev-personas) writes into its unsigned tokens.
-pub const EMULATOR_ISSUER: &str = "firebase-auth-emulator@example.com";
-
 const OPTIONS: [&str; 4] = ["issuer", "audience", "clockSkewMs", "allowUnsigned"];
 
 type Json = serde_json::Map<String, serde_json::Value>;
@@ -157,11 +154,10 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
             }
         }
         "none" => {
-            let emulator = options.allow_unsigned
-                && options.issuer == EMULATOR_ISSUER
-                && claims.get("iss").and_then(serde_json::Value::as_str) == Some(EMULATOR_ISSUER);
-            if !emulator {
-                return refusal("algorithm", "an unsigned token verifies only when the call allows it for the emulator issuer");
+            let accepted = options.allow_unsigned
+                && claims.get("iss").and_then(serde_json::Value::as_str) == Some(options.issuer.as_str());
+            if !accepted {
+                return refusal("algorithm", "an unsigned token verifies only when the call allows it and the token's iss is the call's issuer");
             }
             if !signature_segment.is_empty() {
                 return refusal("malformed", "an unsigned token has an empty signature segment");
@@ -355,19 +351,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unsigned_token_verifies_only_for_the_emulator_issuer_when_the_call_allows_it() {
-        let emulator = unsigned(EMULATOR_ISSUER);
-        let allow = serde_json::json!({ "issuer": EMULATOR_ISSUER, "audience": "app-1", "allowUnsigned": true });
-        assert!(call(&emulator, allow.clone()).is_sealed_as("Verified"));
-        let not_allowed = serde_json::json!({ "issuer": EMULATOR_ISSUER, "audience": "app-1" });
-        assert_eq!(kind(&call(&emulator, not_allowed)), "algorithm", "control: allowUnsigned is off");
-        assert_eq!(kind(&call(&emulator, opts())), "algorithm", "control: a deployment naming its own issuer");
+    fn an_unsigned_token_verifies_only_when_the_call_allows_it_and_the_iss_is_the_calls_issuer() {
+        let issuer = "securetoken.google.com/demo";
+        let dev = unsigned(issuer);
+        let allow = serde_json::json!({ "issuer": issuer, "audience": "app-1", "allowUnsigned": true });
+        assert!(call(&dev, allow.clone()).is_sealed_as("Verified"));
+        let not_allowed = serde_json::json!({ "issuer": issuer, "audience": "app-1" });
+        assert_eq!(kind(&call(&dev, not_allowed)), "algorithm", "control: allowUnsigned is off");
+        assert_eq!(kind(&call(&dev, opts())), "algorithm", "control: a deployment naming another issuer");
         let other = unsigned("https://issuer.test");
-        let other_allow = serde_json::json!({ "issuer": "https://issuer.test", "audience": "app-1", "allowUnsigned": true });
-        assert_eq!(kind(&call(&other, other_allow)), "algorithm", "allowUnsigned never lifts a non-emulator issuer");
-        let mismatch = serde_json::json!({ "issuer": EMULATOR_ISSUER, "audience": "app-1", "allowUnsigned": true });
-        assert_eq!(kind(&call(&other, mismatch)), "algorithm", "the token itself must carry the emulator issuer");
-        let with_signature = format!("{}x", emulator);
+        assert_eq!(kind(&call(&other, allow.clone())), "algorithm", "control: allowUnsigned with a mismatching iss is refused");
+        let expired_claims = codec::base64url_encode(
+            format!(r#"{{"iss":"{issuer}","aud":"other","sub":"dev-1","exp":2000000000}}"#).as_bytes(),
+        );
+        let header = codec::base64url_encode(br#"{"alg":"none","typ":"JWT"}"#);
+        assert_eq!(kind(&call(&format!("{header}.{expired_claims}."), allow.clone())), "audience", "control: other claim checks still run");
+        let with_signature = format!("{}x", dev);
         assert_eq!(kind(&call(&with_signature, allow)), "malformed");
     }
 

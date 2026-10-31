@@ -581,7 +581,7 @@ pub(super) fn parse_despawn(args: &[SExpression]) -> Option<Effect> {
 }
 
 pub(super) fn parse_log(args: &[SExpression]) -> Option<Effect> {
-    let message = args.first()?.as_str()?.to_string();
+    let message = Value::from(args.first()?.clone());
     let level = match args.get(1) {
         None => LogLevel::Info,
         Some(level) => match level.as_str()? {

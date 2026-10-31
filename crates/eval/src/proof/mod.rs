@@ -153,11 +153,11 @@ fn judge(o: &obligations::Obligation) -> Verdict {
     });
     let mut lens = Vec::new();
     for e in o.assumptions.iter().chain(std::iter::once(&o.goal)) {
-        formula::array_lens(e, &mut lens);
+        formula::non_negative_calls(e, &mut lens);
     }
     for len in &lens {
         vars.insert(
-            formula::array_len_var(len),
+            formula::non_negative_var(len),
             formula::VarInfo {
                 sort: formula::Sort::Num,
                 nullable: false,
@@ -169,7 +169,7 @@ fn judge(o: &obligations::Obligation) -> Verdict {
     for len in &lens {
         let nonneg = orbital_core_base::schema::sexpr::SExpression::Array(vec![
             orbital_core_base::schema::sexpr::SExpression::string(">="),
-            orbital_core_base::schema::sexpr::SExpression::string(formula::array_len_var(len)),
+            orbital_core_base::schema::sexpr::SExpression::string(formula::non_negative_var(len)),
             orbital_core_base::schema::sexpr::SExpression::Number(0.0),
         ].into());
         match t.truthy(&nonneg) {

@@ -21,13 +21,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-fn default_viewer() -> Value {
-    serde_json::from_value(json!({
-        "id": "viewer-1", "name": "Dev Viewer", "email": "viewer@example.com", "role": ""
-    }))
-    .expect("default viewer is a Value")
-}
-
 struct DecodedStep {
     trait_name: String,
     event: String,
@@ -71,7 +64,6 @@ impl Driver for FloorDriver {
         kernel
             .register_schema(schema)
             .map_err(|e| format!("{}: register_schema: {e}", fixture.name))?;
-        kernel.set_current_user(default_viewer());
         Ok(FloorSession {
             kernel,
             steps,

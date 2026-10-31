@@ -37,6 +37,20 @@ pub struct FrameDelta {
     pub from: u64,
     pub to: u64,
     pub ops: Vec<FrameOp>,
+    /// The session's bound identity (EXEC-IDENTITY-4), present when it changed since the last delta of this record (a
+    /// snapshot always carries it); absent leaves the client's mirror as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<FrameIdentity>,
+}
+
+/// The `[identity]` row a session is bound to: `user` is its `@user`, absent for the anonymous viewer.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub user: Option<Value>,
 }
 
 impl FrameDelta {
@@ -53,6 +67,7 @@ impl FrameDelta {
             from: 0,
             to: 0,
             ops,
+            identity: None,
         }
     }
 

@@ -192,9 +192,6 @@ pub struct EventRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_trait: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "RawUserClaims"))]
-    pub user: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_id: Option<String>,
     /// The viewer's locale (one of the program's declared `locales`); `None` → the first declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -252,7 +249,7 @@ fn dispatch_option_present(value: &serde_json::Value) -> bool {
 impl EventRequest {
     /// The typed request a `program/dispatch` call names: `payload` and the option record (`option` reads one key of
     /// it). The one parse every host shares; a record that is no event request is refused with the reason, which a host
-    /// answers as `INVALID_REQUEST` (400). `viewer`, when a record, is the request's `user`.
+    /// answers as `INVALID_REQUEST` (400).
     pub fn from_dispatch(
         payload: serde_json::Value,
         option: impl Fn(&str) -> Option<serde_json::Value>,
@@ -267,8 +264,8 @@ impl EventRequest {
         if let Some(traits) = option("traits").filter(|v| !v.is_null()) {
             request.insert("traits".to_string(), traits);
         }
-        if let Some(viewer) = option("viewer").filter(serde_json::Value::is_object) {
-            request.insert("user".to_string(), viewer);
+        if option("viewer").is_some_and(|v| !v.is_null()) {
+            return Err("program/dispatch: `viewer` is retired; a session's `@user` is its bound identity (identity/sign-in)".to_string());
         }
         serde_json::from_value(serde_json::Value::Object(request))
             .map_err(|e| format!("program/dispatch: not an event request: {e}"))
@@ -426,8 +423,6 @@ pub struct ExternalInputRequest {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
 }

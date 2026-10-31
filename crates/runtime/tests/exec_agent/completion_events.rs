@@ -541,7 +541,8 @@ mod agent_ports {
         }
         let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache as Arc<dyn EntitySource>, KernelConfig::default());
         kernel.register_schema(schema).unwrap();
-        kernel.set_current_user(serde_json::from_value(user).unwrap());
+        crate::support::identity::enable(&kernel, &[]);
+        crate::support::identity::sign_in(&kernel, user["id"].as_str().unwrap(), json!({}));
         kernel.dispatch("Reader", None, "GO", Value::Null).unwrap();
         let entity = serde_json::to_value(&kernel.snapshot_trait("Reader", None).entity).unwrap();
         norm(entity["got"].clone())

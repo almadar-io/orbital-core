@@ -2,6 +2,9 @@
 // host ask each, the principal comes from the dispatch's @user and never the program, and a failure fires
 // the declared route with `{ error }` and no ask.
 
+#[path = "support/mod.rs"]
+mod support;
+
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::credential_admin::CredentialStanding;
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -33,12 +36,16 @@ fn schema_with(effect: Json, grants: Json) -> OrbitalSchema {
     .unwrap()
 }
 
+/// The client session a signed-in request runs in; `run_on` signs it in as [`signed_in`] before the request starts.
+const VIEWER_SESSION: &str = "viewer";
+
 fn go(user: Option<Json>) -> EventRequest {
+    assert!(user.is_none() || user == signed_in(), "a request runs as the one signed-in viewer or as nobody");
     EventRequest {
         event: "GO".to_string(),
         target_trait: Some("Host".to_string()),
         payload: Some(serde_json::from_value(json!({ "principal": "evil" })).unwrap()),
-        user: user.map(|u| serde_json::from_value(u).unwrap()),
+        client_id: user.map(|_| VIEWER_SESSION.to_string()),
         ..Default::default()
     }
 }
@@ -61,6 +68,10 @@ fn run_on(
     mut host: impl FnMut(&IoRequest) -> IoAnswer,
 ) -> (EventResponse, Vec<IoRequest>) {
     let mut seen = Vec::new();
+    if request.client_id.as_deref() == Some(VIEWER_SESSION) {
+        support::identity::enable(server.kernel(), &["role"]);
+        support::identity::sign_in_server(&server, VIEWER_SESSION, "u1", json!({ "role": "member" }));
+    }
     let mut progress = server.start("Main", request).unwrap();
     loop {
         match progress {
@@ -1107,7 +1118,7 @@ mod lowering {
             OirEffect::CredentialForget { emit: None, .. }
         ));
         assert_eq!(forget.kind(), "credential-forget");
-        let check = lower(json!(["access-check", { "entity": "Note", "action": "read", "row": {}, "viewer": "@payload.who" }, routes])).unwrap();
+        let check = lower(json!(["access-check", { "entity": "Note", "action": "read", "row": {}, "identity": "@payload.who" }, routes])).unwrap();
         assert!(matches!(&*check, OirEffect::AccessCheck { emit: Some(_), .. }));
         assert_eq!(check.kind(), "access-check");
         assert!(!OirExpr::effect(*check).collect_bindings().is_empty(), "the request's bindings are collected");
@@ -2294,7 +2305,7 @@ mod access_check_effects {
     }
 
     fn check(entity: &str, action: &str, owner: &str, viewer: Json) -> Json {
-        json!(["access-check", { "entity": entity, "action": action, "row": { "ownerId": owner }, "viewer": viewer }, routes()])
+        json!(["access-check", { "entity": entity, "action": action, "row": { "ownerId": owner }, "identity": viewer }, routes()])
     }
 
     fn verdict(effect: Json, user: Option<Json>) -> (EventResponse, Vec<IoRequest>) {
@@ -2347,13 +2358,22 @@ mod access_check_effects {
         );
         let (no_viewer, _) =
             verdict(json!(["access-check", { "entity": "Note", "action": "read", "row": {} }, routes()]), None);
-        assert_eq!(payload_of(&no_viewer, "BAD")["error"], json!("access-check: the request needs `viewer` (null for nobody)"));
+        assert_eq!(payload_of(&no_viewer, "BAD")["error"], json!("access-check: the request needs `identity` (null for nobody)"));
+        let (renamed, _) = verdict(
+            json!(["access-check", { "entity": "Note", "action": "read", "row": {}, "viewer": { "id": "u1" } }, routes()]),
+            None,
+        );
+        assert_eq!(
+            payload_of(&renamed, "BAD")["error"],
+            json!("access-check: the request field `viewer` is refused: name the subject row as `identity`"),
+            "no alias: the old name is refused"
+        );
     }
 
     #[test]
     fn the_request_bindings_resolve_before_the_check() {
         let effect = json!(["access-check",
-            { "entity": "Note", "action": "create", "row": { "ownerId": "@payload.principal" }, "viewer": { "id": "@payload.principal" } },
+            { "entity": "Note", "action": "create", "row": { "ownerId": "@payload.principal" }, "identity": { "id": "@payload.principal" } },
             routes()]);
         let (response, _) = verdict(effect, None);
         assert_eq!(payload_of(&response, "OK"), json!({ "allowed": true }));

@@ -368,10 +368,9 @@ fn resolve_progress_awaits_with_an_unboxed_continuation_and_resumes_by_value() {
         .kernel()
         .set_query_capabilities("Ticket", QueryCapabilities::full());
     let store = tickets_store();
-    let viewer = v(&json!({ "id": "u1" }));
     let mut progress: ResolveProgress = server
         .kernel()
-        .start_resolve_rows(&tickets_ref(), &viewer)
+        .start_resolve_rows(&tickets_ref(), None)
         .unwrap();
     let mut awaits = 0;
     let page: RowPage = loop {
@@ -483,8 +482,7 @@ fn server_resolve_stays_a_two_variant_match() {
     server
         .kernel()
         .set_query_capabilities("Ticket", QueryCapabilities::full());
-    let viewer = v(&json!({ "id": "u1" }));
-    let first = server.resolve_rows(&tickets_ref(), &viewer).unwrap();
+    let first = server.resolve_rows(&tickets_ref(), None).unwrap();
     match first {
         ServerResolve::Done(page) => assert!(page.rows.len() <= 2),
         ServerResolve::Await { flight, requests } => {
@@ -548,7 +546,7 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     assert_eq!(size_of::<ServerProgress>(), 408, "ServerProgress");
     assert_eq!(size_of::<ServerProgressWire>(), 408, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
-    // once) and the viewer it was started as (one `Arc`: concurrent requests keep their own `@user`). 712: plus the
+    // once) (its viewer, one `Arc`, is gone: `@user` is the session's bound identity, EXEC-IDENTITY-1). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
     // driver's dispatch (one `Box`, EXEC-STORE-4). 808: plus the kernel lane's hold, its keyed hold (one `Box`) and the
     // queued seed asks (P-017 K3). 816: plus the dispatch's delivery count (`DispatchMemory.delivered`, one `usize`,
@@ -556,7 +554,8 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // memory in the run that `Progress::Await` carries; boxing 8 bytes would add a pointer and an allocation per parked dispatch.
     // 848: plus the keyed-row drops a step owes (one `VecDeque`, 32 bytes, empty without allocating; G-ORBITAL-CORE-100):
     // each drop runs as its own unit, so a drop parked on the host replays alone under its own journal.
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 848, "Progress");
+    // 840: the run no longer carries the viewer it was started as (`@user` is the session's bound identity, EXEC-IDENTITY-1).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 840, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
     assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");

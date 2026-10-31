@@ -179,17 +179,15 @@ struct RepaintJob {
     visited: Arc<orbital_core_base::sync::Mutex<HashSet<String>>>,
 }
 
-/// Who a dispatch runs as and in which session: the program viewer, each request thread's viewer and session, and
-/// the sessions that have ended.
+/// In which session a dispatch runs and who that session is: each request thread's session, each session's bound
+/// identity, and the sessions that have ended.
 struct Sessions {
-    current_user: Arc<RwLock<Value>>,
-    /// The viewer a request's thread dispatches as (set by [`ViewerGuard`]); a dispatch captures it when it starts, so
-    /// requests served at the same time keep their own `@user`.
-    viewer_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<Value>>>>,
     /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
     /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
+    /// `@user` of a session with no bound identity.
+    anonymous: Value,
     /// Each session that took part in the identity effects, and who it is now (EXEC-IDENTITY-1). The program session
     /// is the empty key. Freed with the session.
     identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
@@ -373,6 +371,9 @@ struct Registry {
     embed_index: Arc<RwLock<EmbedIndex>>,
     /// Each entity's declared row shape, built on its first row check and dropped on every registration.
     row_shapes: RwLock<HashMap<String, Option<Arc<orbital_core_base::ir::types::DeclaredShape>>>>,
+    /// Per emitting trait and event, the payload fields its contract declares as a sealed type (`Verified`) with that
+    /// type's name, built when the trait registers: such a field reaches a host as `{ sealed: <type> }` and no more.
+    sealed_emit_fields: Arc<RwLock<HashMap<String, HashMap<String, Vec<(String, String)>>>>>,
 }
 
 /// What the program may reach outside the kernel: its egress origins, its os grants, and the credentials of
@@ -478,7 +479,6 @@ impl std::fmt::Debug for RuntimeKernel {
             .field("listener_manager", &self.listener_manager)
             .field("schemas", &self.registry.schemas)
             .field("trait_definitions", &self.registry.trait_definitions)
-            .field("current_user", &self.sessions.current_user)
             .field("host_fans_out", &self.host_fans_out)
             .finish()
     }
@@ -668,23 +668,6 @@ impl RuntimeKernel {
 
         let listener_manager = ListenerManager::new(event_bus.clone());
 
-        // No HTTP request stands behind a headless run, so the viewer comes from
-        // `ALMADAR_PERSONA`. Without it `@user.*` is Null and every role gate and
-        // ownership filter silently takes its empty branch (C-KERNEL-USER-NEVER-SET).
-        // A JSON-form spec is self-contained and resolves here; a bare id/role
-        // names a row of the app's OWN [identity] roster, which exists only once
-        // a schema registers — `register_schema` finishes that resolution.
-        let current_user = match crate::persona::persona_from_env_spec() {
-            Ok(crate::persona::EnvPersona::Resolved(user)) => user,
-            Ok(_) => Value::Null,
-            Err(err) => {
-                // A developer who asked to be somebody must never be shown the app
-                // as nobody — report and refuse the bad spec rather than degrade.
-                tracing::error!(error = %err, "invalid {}", crate::persona::PERSONA_ENV);
-                panic!("{}", err);
-            }
-        };
-
         let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
@@ -715,6 +698,7 @@ impl RuntimeKernel {
                 entity_policies,
                 embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
                 row_shapes: RwLock::new(HashMap::new()),
+                sealed_emit_fields: Arc::default(),
             },
             dispatch_observer: RwLock::new(None),
             entity_source,
@@ -723,10 +707,9 @@ impl RuntimeKernel {
             prob_entropy,
             sealed_outputs,
             sessions: Sessions {
-                current_user: Arc::new(RwLock::new(current_user)),
-                viewer_by_thread: Arc::default(),
                 session_by_thread: Arc::default(),
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
+                anonymous: identity_session::anonymous_user(),
                 identities,
                 ended_sessions,
             },
@@ -787,14 +770,15 @@ impl RuntimeKernel {
         }
     }
 
-    /// `reference` resolved against the rows as they are now for `viewer`: the ids that still match the
+    /// `reference` resolved against the rows as they are now for the viewer of this thread's session: the ids that still match the
     /// reference's query and the viewer's `@read`, in the reference's order, a missing or hidden row omitted and
     /// `total` re-counted (Q6). The one resolver every renderer and the embedded API reach, so `@read` is applied
     /// here and nowhere else. A store that answers through the host (the server role) is reached in a dispatch.
-    pub fn resolve_rows(&self, reference: &RowSetRef, viewer: &Value) -> Result<RowPage, String> {
+    pub fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, String> {
         let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
+        let viewer = self.session_viewer().map_err(|e| e.to_string())?;
         let mut ctx = BindingContext::new();
-        ctx.set_user(viewer.clone());
+        ctx.set_user(viewer);
         self.rows.resolve_rows(reference, &ctx)
     }
 
@@ -1107,7 +1091,7 @@ use values::*;
 use config_forward::*;
 use effect_bindings::*;
 use completion::*;
-pub use dispatch_scope::{LocaleGuard, SessionGuard, ViewerGuard};
+pub use dispatch_scope::{LocaleGuard, SessionGuard};
 pub use values::already_delivered_from;
 pub(crate) use values::sexpr_to_value;
 

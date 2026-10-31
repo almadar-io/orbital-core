@@ -433,7 +433,6 @@ impl RuntimeKernel {
             seed: None,
             outcomes: Vec::new(),
             locale: self.step.dispatch_locale.read().clone(),
-            user: self.thread_viewer(),
             origin: self.next_dispatch_origin(),
             provisional: None,
             span,

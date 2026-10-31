@@ -1,6 +1,6 @@
 //! `fetch … { deliver: ids }` (docs/Almadar_Embedded_Kernel_Speed_Design.md section 5): the success payload's `data` is a
 //! `RowSetRef`, a `render-ui` prop holding it leaves the kernel as a `RowSetMarker` leaf (EXEC-STEP-4's one exception),
-//! the response's `dataRefs` carries it, `resolve_rows` re-resolves it against the rows as they are for the viewer
+//! the response's `dataRefs` carries it, `resolve_rows` re-resolves it against the rows as they are for the session's identity
 //! (EXEC-RENDER-3 / Q6), and a kernel write to the referenced entity type repaints the slot with reason `rows-changed`.
 //! The same fixtures run on the JS engine in `almadar-runtime/test/row-set-delivery-twin.test.ts`.
 
@@ -12,6 +12,8 @@ use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::
 use serde_json::{json, Value as Json};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+use crate::support::identity;
 
 fn v(j: &Json) -> Value {
     serde_json::from_value(j.clone()).expect("a value")
@@ -73,7 +75,8 @@ fn seeded(kernel_env: RuntimeEnvironment, schema: OrbitalSchema) -> (RuntimeKern
         KernelConfig::for_environment(kernel_env),
     );
     k.register_schema(schema).unwrap();
-    k.set_current_user(v(&json!({ "id": "u1" })));
+    identity::enable(&k, &[]);
+    identity::sign_in(&k, "u1", json!({}));
     // Seeded AFTER registering: the cache keys its store by the entity's bound collection.
     for row in [
         json!({ "id": "t1", "status": "open", "score": 3, "owner": "u1" }),
@@ -88,6 +91,13 @@ fn seeded(kernel_env: RuntimeEnvironment, schema: OrbitalSchema) -> (RuntimeKern
             .unwrap();
     }
     (k, cache)
+}
+
+/// `reference` resolved in a session of its own signed in as `subject`.
+fn resolve_as(k: &RuntimeKernel, subject: &str, reference: &RowSetRef) -> orbital_core_runtime::row_query::RowPage {
+    identity::sign_in_as(k, subject, subject, json!({}));
+    let _session = k.enter_session(subject);
+    k.resolve_rows(reference).unwrap()
 }
 
 fn list(k: &RuntimeKernel) -> EventResponse {
@@ -153,14 +163,13 @@ fn reference_of(k: &RuntimeKernel) -> RowSetRef {
 fn resolve_rows_returns_the_ids_in_order_and_the_recounted_total() {
     let (k, cache) = seeded(RuntimeEnvironment::Server, schema(json!({ "deliver": "ids" }), "persistent"));
     let reference = reference_of(&k);
-    let viewer = v(&json!({ "id": "u1" }));
-    let page = k.resolve_rows(&reference, &viewer).unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
     let ids: Vec<_> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
     assert_eq!(ids, vec!["t2", "t5"]);
     assert_eq!(page.total, 4);
     // a row deleted since the fetch is omitted and the total is re-counted, not subtracted
     cache.delete("Ticket", "t2").unwrap();
-    let page = k.resolve_rows(&reference, &viewer).unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
     let ids: Vec<_> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
     assert_eq!(ids, vec!["t5"]);
     assert_eq!(page.total, 3);
@@ -168,7 +177,7 @@ fn resolve_rows_returns_the_ids_in_order_and_the_recounted_total() {
     cache
         .write("Ticket", "t5", &v(&json!({ "id": "t5", "status": "closed", "score": 8, "owner": "u1" })))
         .unwrap();
-    let page = k.resolve_rows(&reference, &viewer).unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
     assert!(page.rows.is_empty());
     assert_eq!(page.total, 2);
 }
@@ -179,13 +188,13 @@ fn resolve_rows_applies_the_current_viewers_read_policy_to_a_tampered_ref() {
     let mut reference = reference_of(&k);
     // t6 is u2's row and is open: a client appends it to the window
     reference.ids.push("t6".to_string());
-    let page = k.resolve_rows(&reference, &v(&json!({ "id": "u1" }))).unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
     let ids: Vec<_> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
     assert_eq!(ids, vec!["t2", "t5"], "u1 cannot read u2's row");
     assert_eq!(page.total, 4);
     // control: u2 resolving the same ids reads only their own row (the ref's compiled policy was u1's, so nothing
     // u1 could not read at dispatch time is revealed either)
-    let page = k.resolve_rows(&reference, &v(&json!({ "id": "u2" }))).unwrap();
+    let page = resolve_as(&k, "u2", &reference);
     assert!(page.rows.is_empty(), "the ref's own policy (owner = u1) still applies: {:?}", page.rows);
 }
 
@@ -195,7 +204,7 @@ fn a_ref_without_its_policy_is_resolved_under_the_viewers_alone() {
     let mut reference = reference_of(&k);
     reference.query.policy = None;
     reference.ids = vec!["t6".into(), "t2".into()];
-    let page = k.resolve_rows(&reference, &v(&json!({ "id": "u2" }))).unwrap();
+    let page = resolve_as(&k, "u2", &reference);
     let ids: Vec<_> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
     assert_eq!(ids, vec!["t6"]);
     assert_eq!(page.total, 1, "u2 sees one open row");
@@ -364,7 +373,8 @@ fn host_requests_with(
     host_kernel
         .register_schema(schema(extra_fetch, "persistent"))
         .unwrap();
-    host_kernel.set_current_user(v(&json!({ "id": "u1" })));
+    identity::enable(&host_kernel, &[]);
+    identity::sign_in(&host_kernel, "u1", json!({}));
     if let Some(capabilities) = capabilities {
         host_kernel.set_query_capabilities("Ticket", capabilities);
     }
@@ -497,9 +507,8 @@ fn total_none_on_a_deliver_ids_fetch_carries_the_window_and_resolve_rows_skips_t
     assert_eq!(reference.ids, vec!["t2", "t5"]);
     assert_eq!(reference.total, 2, "the window size, not the count of every match");
     assert_eq!(reference.query.total, Some(RowTotalMode::None));
-    let viewer = v(&json!({ "id": "u1" }));
     cache.delete("Ticket", "t2").unwrap();
-    let page = k.resolve_rows(&reference, &viewer).unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
     let ids: Vec<_> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
     assert_eq!(ids, vec!["t5"]);
     assert_eq!(page.total, 1, "no re-count: the total is the resolved window");

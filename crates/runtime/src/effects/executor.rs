@@ -169,7 +169,7 @@ pub struct FetchPage {
 }
 
 /// Who a `call-service` runs for: the dispatch's `@user` (`{ principal: id, role }`, as the JS runtime
-/// passes it). `None` when nobody is signed in or the viewer has no id.
+/// passes it). `None` when nobody is signed in (the anonymous viewer) or the viewer has no id.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ServiceCaller {
     pub principal: String,
@@ -185,6 +185,9 @@ impl ServiceCaller {
         let Some(Value::String(principal)) = fields.get("id") else {
             return None;
         };
+        if principal.as_str() == orbital_core_base::viewer::ANONYMOUS {
+            return None;
+        }
         let role = match fields.get("role") {
             Some(Value::String(role)) => Some(role.clone()),
             _ => None,

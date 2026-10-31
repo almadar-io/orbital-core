@@ -962,14 +962,98 @@ fn replace_each_match(regex: &regex::Regex, text: &str, replacement: &str) -> St
     out
 }
 
-/// Compiles a pattern of the shared dialect; `None` when it is outside the dialect.
+const COMPILED_REGEX_CACHE_SIZE: usize = 1000;
+
+/// Compiles a pattern of the shared dialect; `None` when it is outside the dialect. Compilation is memoized
+/// per exact pattern text (failures included) in one process-wide LRU shared by every regex-taking operator.
 pub fn compile_shared_regex(pattern: &str) -> Option<regex::Regex> {
-    regex::Regex::new(&translate_shared_regex(pattern)?).ok()
+    type Cache = orbital_core_base::sync::Mutex<lru::LruCache<String, Option<regex::Regex>>>;
+    static COMPILED: orbital_core_base::sync::OnceLock<Cache> =
+        orbital_core_base::sync::OnceLock::new();
+    let cache = COMPILED.get_or_init(|| {
+        let size = std::num::NonZeroUsize::new(COMPILED_REGEX_CACHE_SIZE).expect("non-zero");
+        orbital_core_base::sync::Mutex::new(lru::LruCache::new(size))
+    });
+    if let Some(hit) = cache.lock().get(pattern) {
+        return hit.clone();
+    }
+    let compiled =
+        translate_shared_regex(pattern).and_then(|translated| regex::Regex::new(&translated).ok());
+    cache.lock().put(pattern.to_string(), compiled.clone());
+    compiled
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replace_pattern(text: &str, pattern: &str, replacement: &str) -> Value {
+        let expr: SExpression = serde_json::from_value(serde_json::json!([
+            "str/replace-pattern",
+            text,
+            pattern,
+            replacement
+        ]))
+        .expect("s-expression");
+        eval_expr(&expr, &BindingContext::default()).expect("evaluates")
+    }
+
+    #[test]
+    fn compiled_regex_cache_answers_repeated_calls_identically() {
+        for _ in 0..3 {
+            assert_eq!(
+                replace_pattern("a1b22", "[0-9]+", "#"),
+                Value::string("a#b#")
+            );
+        }
+        assert_eq!(
+            replace_pattern("a1b22", "[a-z]", "_"),
+            Value::string("_1_22")
+        );
+        assert_eq!(
+            replace_pattern("a1b22", "[0-9]+", "#"),
+            Value::string("a#b#")
+        );
+    }
+
+    #[test]
+    fn compiled_regex_cache_answers_an_invalid_pattern_identically() {
+        assert_eq!(replace_pattern("abc", "(unclosed", "x"), Value::Null);
+        assert_eq!(replace_pattern("abc", "(unclosed", "x"), Value::Null);
+        assert_eq!(compile_shared_regex("(unclosed").map(|_| ()), None);
+        assert_eq!(replace_pattern("abc", "b", "x"), Value::string("axc"));
+    }
+
+    #[test]
+    fn compiled_regex_cache_keys_on_the_exact_pattern_text() {
+        assert_eq!(replace_pattern("aAa", "a", "_"), Value::string("_A_"));
+        assert_eq!(replace_pattern("aAa", "A", "_"), Value::string("a_a"));
+        assert_eq!(replace_pattern("aAa", "(?:a|A)", "_"), Value::string("___"));
+        let first = compile_shared_regex("x+").expect("compiles");
+        let second = compile_shared_regex("x+").expect("compiles");
+        assert_eq!(first.as_str(), second.as_str());
+    }
+
+    #[test]
+    fn compiled_regex_cache_evicts_beyond_its_bound_without_changing_answers() {
+        for n in 0..(super::COMPILED_REGEX_CACHE_SIZE + 50) {
+            let pattern = format!("p{n}");
+            assert_eq!(
+                replace_pattern(&format!("p{n}"), &pattern, "z"),
+                Value::string("z")
+            );
+        }
+        assert_eq!(replace_pattern("p0", "p0", "z"), Value::string("z"));
+    }
+
+    #[test]
+    fn replace_pattern_loop_timing() {
+        let start = std::time::Instant::now();
+        for _ in 0..10_000 {
+            replace_pattern("order-12345 ref-678", "[0-9]+", "#");
+        }
+        println!("10k str/replace-pattern calls: {:?}", start.elapsed());
+    }
 
     fn to_int(text: &str) -> Value {
         let expr: SExpression =
