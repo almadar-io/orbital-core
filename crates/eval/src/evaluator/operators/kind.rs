@@ -292,6 +292,7 @@ operator_kind! {
     AesGcmOpenOp => AesGcmOpenOp,
     RsaVerifyOp => RsaVerifyOp,
     EcdsaP256VerifyOp => EcdsaP256VerifyOp,
+    JwsVerifyOp => JwsVerifyOp,
     GzipCompressOp => GzipCompressOp,
     GzipDecompressOp => GzipDecompressOp,
     BrotliCompressOp => BrotliCompressOp,

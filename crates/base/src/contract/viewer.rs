@@ -70,12 +70,37 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
                 .collect::<Result<_, String>>()?,
         ),
         Value::Lambda(_) => return Err(format!("viewer claim {at}: a function is not a claim")),
+        Value::Sealed(_) => return Err(format!("viewer claim {at}: a sealed value is not a claim")),
     })
+}
+
+/// The `id` and `role` of the viewer a session has before it signs in (EXEC-IDENTITY-1).
+pub const ANONYMOUS: &str = "anonymous";
+
+/// The identity effects (EXEC-IDENTITY-3).
+pub const SIGN_IN: &str = "identity/sign-in";
+pub const SIGN_OUT: &str = "identity/sign-out";
+
+/// Whether `operator` is an identity effect, which only a server kernel runs.
+pub fn is_identity_effect(operator: &str) -> bool {
+    operator == SIGN_IN || operator == SIGN_OUT
 }
 
 const NAMED: [&str; 5] = ["id", "email", "name", "role", "permissions"];
 
 impl Viewer {
+    /// Who `@user` is for a session with no bound identity.
+    pub fn anonymous() -> Viewer {
+        Viewer {
+            id: ANONYMOUS.to_string(),
+            email: None,
+            name: None,
+            role: Some(ANONYMOUS.to_string()),
+            permissions: None,
+            claims: Vec::new(),
+        }
+    }
+
     /// The viewer the flat `@user` value names. `Err` when it has no text `id`, a named field of the wrong kind, or a
     /// claim that is not JSON (a function, a non-finite number). A null claim is an absent one.
     pub fn from_user(user: &Value) -> Result<Viewer, String> {
@@ -258,6 +283,16 @@ mod tests {
         }
         assert!(Viewer::from_user(&nan).unwrap_err().contains("score"));
         assert!(Viewer::from_user(&user(json!([]))).is_err());
+    }
+
+    #[test]
+    fn the_anonymous_viewer_is_anonymous_with_the_anonymous_role() {
+        assert_eq!(
+            Viewer::anonymous().to_user().unwrap(),
+            user(json!({ "id": "anonymous", "role": "anonymous" }))
+        );
+        assert!(is_identity_effect("identity/sign-in") && is_identity_effect("identity/sign-out"));
+        assert!(!is_identity_effect("identity/other"));
     }
 
     #[test]

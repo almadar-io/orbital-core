@@ -162,7 +162,7 @@ pub(super) fn error_payload(result: &EffectResult, errors: Option<Value>) -> Val
     Value::object(payload)
 }
 
-pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> Option<EffectResult> {
+pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Option<&str>) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => {
             let event = emit.success.clone()?;
@@ -194,6 +194,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult) -> 
         }
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
+    let payload = with_key(payload, key);
     Some(EffectResult::executed(Effect::Emit { event, payload }))
 }
 
@@ -313,7 +314,7 @@ mod absent_not_null_tests {
         )
         .expect("a fetch effect");
         let failed = EffectResult::failed(fetch, "boom");
-        let payload = emitted(fetch_completion_emit(&routes(), &failed));
+        let payload = emitted(fetch_completion_emit(&routes(), &failed, None));
         assert_no_null(&payload, "fetch failure");
         assert!(payload.as_object().unwrap().get("code").is_none());
 

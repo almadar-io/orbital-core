@@ -32,11 +32,13 @@ impl RuntimeKernel {
         };
         let _stamp = self.hold_stamp(in_flight.now);
         let _locale = self.hold_locale(locale.as_deref());
-        let _user = self.hold_user(user.as_deref());
+        let bound = self.session_user()?;
+        let _user = self.hold_user(bound.as_ref().or(user.as_deref()));
         let committed_from = origin.emits;
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
         let stepped = self.step_seed(in_flight, outcomes);
+        self.settle_identity(stepped.is_ok());
         self.release_origin(origin, committed_from, stepped.is_ok());
         match stepped? {
             Flow::More => Ok(Flow::More),
@@ -125,7 +127,11 @@ impl RuntimeKernel {
                     .and_then(|id| id.as_str().map(str::to_string))
             })
             .collect();
-        // A `[runtime]` entity with no rows ticks once on the `singleton` frame (EXEC-TICK-5).
+        let keyed = self.listener_manager.is_keyed(&plan.trait_name);
+        if ids.is_empty() && keyed {
+            return Ok(());
+        }
+        // A non-keyed `[runtime]` entity with no rows ticks once on the `singleton` frame (EXEC-TICK-5).
         if ids.is_empty() && singleton_entity {
             plans.push_front(SeedPlan {
                 tick: plan.tick.clone().map(|tick| TickSeed {
@@ -138,7 +144,6 @@ impl RuntimeKernel {
         }
         for id in ids.into_iter().rev() {
             plans.push_front(SeedPlan {
-                entity_id: Some(id),
                 trait_name: plan.trait_name.clone(),
                 event_name: plan.event_name.clone(),
                 payload: plan.payload.clone(),
@@ -147,8 +152,10 @@ impl RuntimeKernel {
                 lifecycle_targets: plan.lifecycle_targets.clone(),
                 tick: plan.tick.clone().map(|tick| TickSeed {
                     all_rows: false,
+                    state_entity: if keyed { id.clone() } else { tick.state_entity },
                     ..tick
                 }),
+                entity_id: Some(id),
             });
         }
         Ok(())

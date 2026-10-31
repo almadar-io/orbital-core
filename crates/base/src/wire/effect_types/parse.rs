@@ -235,7 +235,7 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
     let entity_type = args[0].as_str()?.to_string();
 
     // Parse optional config object
-    let (id, filter, limit, offset, order_by, include, deliver, total, nearest, emit) =
+    let (id, filter, limit, offset, order_by, include, deliver, total, nearest, key, emit) =
         if let Some(config) = args.get(1) {
             let config_value = Value::from(config.clone());
             if let Some(obj) = config_value.as_object() {
@@ -261,9 +261,10 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                     _ => None,
                 };
                 let nearest = option("nearest");
+                let key = option("key");
                 let emit = parse_emit_config(&config_value);
                 (
-                    id, filter, limit, offset, order_by, include, deliver, total, nearest, emit,
+                    id, filter, limit, offset, order_by, include, deliver, total, nearest, key, emit,
                 )
             } else {
                 (
@@ -274,6 +275,7 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                     None,
                     None,
                     FetchDeliver::Rows,
+                    None,
                     None,
                     None,
                     None,
@@ -291,6 +293,7 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                 None,
                 None,
                 None,
+                None,
             )
         };
 
@@ -305,6 +308,7 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
         deliver,
         total,
         nearest,
+        key,
         emit,
     })
 }

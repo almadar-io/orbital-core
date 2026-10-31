@@ -626,6 +626,7 @@ impl RuntimeKernel {
         *fork.mount_ledger.write() = self.mount_ledger.read().clone();
         *fork.grants.managed_credentials.write() = self.grants.managed_credentials.read().clone();
         *fork.sessions.current_user.write() = self.sessions.current_user.read().clone();
+        *fork.sessions.identities.write() = self.sessions.identities.read().clone();
         fork.deliveries
             .write()
             .copy_placement(&self.deliveries.read());

@@ -3533,3 +3533,14 @@ fn a_declared_union_result_is_a_determined_union_of_its_members_and_nullable_kee
 fn union_of_named(members: &[(&str, OirType)]) -> OirType {
     OirType::Union { variants: members.iter().map(|(n, t)| crate::ir::types::OirField::new(*n, t.clone())).collect() }
 }
+
+#[test]
+fn a_verified_parameter_binds_only_a_verified_never_text_a_record_or_a_literal_of_its_fields() {
+    let operator = op(json!([p("verified", json!("Verified"))]), json!("void"), Some(2));
+    let signature = Signature::of(&operator);
+    let bind = |actual: OirType| signature.bind(&mut CallBindings::new(), 0, &ty(actual), Mode::Proof);
+    assert!(bind(crate::sealed::sealed_type_ref("Verified")).is_ok(), "a Verified is what jws/verify answers");
+    assert!(bind(OirType::String).is_err(), "text is not a Verified");
+    assert!(bind(crate::sealed::sealed_record("Verified").expect("record")).is_err(), "a record of the same fields is not a Verified");
+    assert!(bind(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }).is_err(), "an object literal is not a Verified");
+}

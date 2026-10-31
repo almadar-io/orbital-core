@@ -38,6 +38,7 @@ pub mod bytes;
 pub mod cast;
 pub mod csv;
 pub mod digest;
+pub mod jws;
 pub mod ease;
 pub mod format;
 pub mod geo;
@@ -67,6 +68,7 @@ pub use bytes::*;
 pub use cast::*;
 pub use csv::*;
 pub use digest::*;
+pub use jws::*;
 pub use ease::*;
 pub use format::*;
 pub use geo::*;
@@ -389,6 +391,7 @@ operator_dispatch! {
         "aes-gcm/open" => K::AesGcmOpenOp,
         "rsa/verify" => K::RsaVerifyOp,
         "ecdsa/p256-verify" => K::EcdsaP256VerifyOp,
+        "jws/verify" => K::JwsVerifyOp,
         "gzip/compress" => K::GzipCompressOp,
         "gzip/decompress" => K::GzipDecompressOp,
         "brotli/compress" => K::BrotliCompressOp,

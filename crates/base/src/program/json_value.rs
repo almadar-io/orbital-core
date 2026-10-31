@@ -27,6 +27,7 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
                 .map(|(k, v)| (k.to_string(), value_to_json(v)))
                 .collect(),
         ),
+        Value::Sealed(sealed) => value_to_json(&Value::object(sealed.fields().clone())),
         Value::Lambda(_) => serde_json::Value::Null,
     }
 }
@@ -64,6 +65,7 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
         }
     };
     match value {
+        Value::Sealed(sealed) => write_value_json(&Value::object(sealed.fields().clone()), indent, depth, out),
         Value::Null | Value::Lambda(_) => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => {

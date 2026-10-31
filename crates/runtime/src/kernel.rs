@@ -190,6 +190,9 @@ struct Sessions {
     /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
+    /// Each session that took part in the identity effects, and who it is now (EXEC-IDENTITY-1). The program session
+    /// is the empty key. Freed with the session.
+    identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
     /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
     ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>>,
 }
@@ -315,6 +318,9 @@ struct StepScope {
     step_frame: Arc<RwLock<Option<String>>>,
     /// The `let` scope each `render-ui` of the running step ran under, by its position in the step's results.
     render_scopes: Arc<RwLock<Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>>>,
+    /// The identity change the running step made (session key, binding): applied when the step commits and dropped
+    /// when it suspends or fails, so a replayed step starts from the identity the first attempt started from.
+    identity_change: RwLock<Option<(String, identity_session::IdentityBinding)>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -682,6 +688,7 @@ impl RuntimeKernel {
         let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
+        let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
@@ -691,6 +698,7 @@ impl RuntimeKernel {
             Arc::clone(&carried_rows),
             Arc::clone(&state_manager),
             Arc::clone(&ended_sessions),
+            Arc::clone(&identities),
         ));
         Self {
             config,
@@ -719,6 +727,7 @@ impl RuntimeKernel {
                 viewer_by_thread: Arc::default(),
                 session_by_thread: Arc::default(),
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
+                identities,
                 ended_sessions,
             },
             session_lives,
@@ -739,6 +748,7 @@ impl RuntimeKernel {
                 step_site: Arc::new(RwLock::new(None)),
                 step_frame: Arc::new(RwLock::new(None)),
                 render_scopes: Arc::new(RwLock::new(Vec::new())),
+                identity_change: RwLock::new(None),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
@@ -1076,6 +1086,7 @@ mod host_effects;
 mod repaint;
 mod viewer_scope;
 mod session_life;
+mod identity_session;
 mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};

@@ -240,3 +240,85 @@ fn control_a_persistent_row_persisted_with_an_id_is_fetched() {
 fn control_a_runtime_row_persisted_without_an_id_is_fetched() {
     assert_eq!(persisted_then_fetched("runtime", json!({ "label": "x" })).len(), 1);
 }
+
+/// The completion events a fetch dispatch fired, as `(event, payload)`, with the fetch declared by `fetch_cfg`
+/// and OPEN dispatched with `payload` over one seeded row `t0`.
+fn fetch_completions(fetch_cfg: serde_json::Value, payload: serde_json::Value) -> Vec<(String, serde_json::Value)> {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
+            "entity": { "name": "Ticket", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "OPEN", "effects": [["fetch", "Ticket", fetch_cfg]] }] } }] }]
+    }))
+    .unwrap();
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(schema).unwrap();
+    cache.write("Ticket", "t0", &serde_json::from_value(json!({ "id": "t0" })).unwrap()).unwrap();
+    let out = k.dispatch("T", None, "OPEN", serde_json::from_value(payload).unwrap()).unwrap();
+    out.iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter_map(|er| match &er.effect {
+            orbital_core_base::effect_types::Effect::Emit { event, payload } => {
+                Some((event.clone(), serde_json::to_value(payload).unwrap()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_keyed_fetch_echoes_its_key_in_the_success_payload() {
+    let emitted = fetch_completions(
+        json!({ "key": "http", "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }),
+        json!({}),
+    );
+    assert_eq!(emitted.len(), 1, "{emitted:?}");
+    assert_eq!(emitted[0].0, "LOADED");
+    assert_eq!(emitted[0].1["key"], json!("http"));
+    assert_eq!(emitted[0].1["data"], json!([{ "id": "t0" }]));
+    assert_eq!(emitted[0].1["totalCount"], json!(1.0));
+}
+
+#[test]
+fn a_keyed_fetch_echoes_its_key_in_the_failure_payload() {
+    let emitted = fetch_completions(
+        json!({ "id": "absent", "key": "picker", "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }),
+        json!({}),
+    );
+    assert_eq!(emitted.len(), 1, "{emitted:?}");
+    assert_eq!(emitted[0].0, "LOAD_FAILED");
+    assert_eq!(emitted[0].1["key"], json!("picker"));
+    assert_eq!(emitted[0].1["code"], json!("not-found"));
+    assert!(emitted[0].1["error"].is_string());
+}
+
+#[test]
+fn a_fetch_key_is_an_expression_evaluated_against_the_step() {
+    let emitted = fetch_completions(
+        json!({ "key": "@payload.kind", "emit": { "success": "LOADED" } }),
+        json!({ "kind": "hook" }),
+    );
+    assert_eq!(emitted[0].1["key"], json!("hook"));
+}
+
+#[test]
+fn control_an_unkeyed_fetch_payloads_are_unchanged() {
+    let success = fetch_completions(json!({ "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }), json!({}));
+    assert_eq!(success[0].1, json!({ "data": [{ "id": "t0" }], "totalCount": 1.0 }));
+    let failure = fetch_completions(
+        json!({ "id": "absent", "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }),
+        json!({}),
+    );
+    let fields: Vec<&str> = failure[0].1.as_object().unwrap().keys().map(String::as_str).collect();
+    assert!(!fields.contains(&"key"), "{fields:?}");
+}
+
+#[test]
+fn edge_a_key_that_is_not_a_non_empty_string_fails_the_fetch_with_no_completion_row() {
+    for key in [json!(""), json!(7)] {
+        let emitted = fetch_completions(json!({ "key": key, "emit": { "success": "LOADED", "failure": "LOAD_FAILED" } }), json!({}));
+        assert!(emitted.is_empty(), "{emitted:?}");
+    }
+}

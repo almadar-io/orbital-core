@@ -440,6 +440,7 @@ impl Operator for ObjectDeepCloneOp {
                     Value::Object(o.iter().map(|(k, v)| (k.clone(), deep_clone(v))).collect())
                 }
                 Value::Lambda(l) => Value::Lambda(l.clone()),
+                Value::Sealed(s) => Value::Sealed(s.clone()),
             }
         }
 

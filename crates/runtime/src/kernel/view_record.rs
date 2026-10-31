@@ -247,10 +247,12 @@ impl RuntimeKernel {
                     .fields()
                     .filter(|fields| !fields.is_empty())
                 {
-                    whole
-                        .entry(self.trait_frame_key(trait_name))
-                        .or_default()
-                        .extend(fields.iter().map(|(k, v)| (k.clone(), (**v).clone())));
+                    let intrinsic = self.trait_shared_intrinsic(trait_name);
+                    for (k, v) in fields.iter() {
+                        let own = intrinsic.as_ref().is_some_and(|names| names.iter().any(|n| n == k.as_str()));
+                        let key = if own { trait_name.clone() } else { self.trait_frame_key(trait_name) };
+                        whole.entry(key).or_default().insert(k.clone(), (**v).clone());
+                    }
                 }
             }
             let eid = self.session_eid(entity_id.unwrap_or(RUNTIME_SINGLETON));
@@ -281,14 +283,25 @@ impl RuntimeKernel {
             if !outcome.executed {
                 continue;
             }
-            let fields = written.entry(self.row_frame_key(trait_name, &outcome.entity_id)).or_default();
-            fields.extend(
-                outcome
-                    .written_values()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            );
-            if let Some(id) = outcome.entity_data.get("id").filter(|id| !id.is_null()) {
-                fields.insert(orbital_core_base::static_key!("id"), id.clone());
+            let intrinsic = self.trait_shared_intrinsic(trait_name);
+            let shared_key = self.row_frame_key(trait_name, &outcome.entity_id);
+            let fields = written.entry(shared_key.clone()).or_default();
+            match &intrinsic {
+                None => fields.extend(outcome.written_values().map(|(k, v)| (k.clone(), v.clone()))),
+                Some(names) => {
+                    let own_key = self.own_row_frame_key(trait_name, &outcome.entity_id);
+                    for (k, v) in outcome.written_values() {
+                        let key = if names.iter().any(|n| n == k.as_str()) { own_key.clone() } else { shared_key.clone() };
+                        written.entry(key).or_default().insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            let id = outcome.entity_data.get("id").filter(|id| !id.is_null());
+            let own_key = intrinsic.as_ref().map(|_| self.own_row_frame_key(trait_name, &outcome.entity_id));
+            for key in std::iter::once(&shared_key).chain(own_key.as_ref()) {
+                if let (Some(fields), Some(id)) = (written.get_mut(key), id) {
+                    fields.insert(orbital_core_base::static_key!("id"), id.clone());
+                }
             }
         }
         let mut writes: Vec<(String, FrameWrite)> = written
@@ -398,7 +411,11 @@ impl RuntimeKernel {
 
     pub(super) fn remove_trait_frame(&self, trait_name: &str, entity_type: &str, entity_id: &str) {
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
-        self.frames.write().remove(&slot);
+        let mut frames = self.frames.write();
+        frames.remove(&slot);
+        if self.shared_intrinsic_fields(entity_type).is_some() {
+            frames.remove(&self.own_frame_slot(trait_name, entity_id));
+        }
     }
 
     /// Fold a server's frame delta into this kernel's frames, at the version it starts from: a delta already applied

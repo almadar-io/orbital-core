@@ -83,6 +83,11 @@ pub(super) fn run_time_shape(
     arg: &SExpression,
 ) -> Result<Option<(String, std::rc::Rc<DeclaredShape>)>, OrbitalError> {
     let text = shape_operand(arg)?;
+    if orbital_core_base::sealed::is_sealed_type(text) {
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "{text} is a sealed type: only the kernel makes one"
+        ))));
+    }
     if text.starts_with('{') {
         let declared = super::arg_types::declared_shape(arg)?;
         let shown = declared

@@ -1049,7 +1049,7 @@ mod oauth_connect {
         fn sa_store() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
             let (now, rows, store) = clocked();
             now.store(SA_NOW_MS, Ordering::SeqCst);
-            store.set("google", "SA_KEY", jwt_fixture()["privateKeyPem"].as_str().unwrap(), None).unwrap();
+            store.set("google", "SA_KEY", &jwt_fixture()["serviceAccount"].to_string(), None).unwrap();
             (now, rows, store)
         }
 
@@ -1069,7 +1069,6 @@ mod oauth_connect {
                 refresh_credential: None,
                 assertion: Some(orbital_core_base::credential_grant::AssertionSpec {
                     signing_key: "SA_KEY".to_string(),
-                    issuer: Some("sa@proj.iam".to_string()),
                     subject: Some("user@example.com".to_string()),
                     audience: "https://oauth2.example/token".to_string(),
                     ttl_seconds: 3600,
@@ -1118,6 +1117,14 @@ mod oauth_connect {
             let silent = Recording::new(vec![]);
             assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
             store.set("google", "BAD_KEY", "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----", None).unwrap();
+            let mut wrong_type = jwt_fixture()["serviceAccount"].clone();
+            wrong_type["type"] = json!("authorized_user");
+            store.set("google", "WRONG_TYPE", &wrong_type.to_string(), None).unwrap();
+            let mut typed = jwt_grant(None);
+            typed.assertion.as_mut().unwrap().signing_key = "WRONG_TYPE".to_string();
+            let typed_failure = store.connect(&typed, &silent).unwrap_err();
+            assert_eq!(typed_failure.kind, ConnectFailureKind::Refused);
+            assert!(typed_failure.message.contains("service_account"), "{}", typed_failure.message);
             let mut bad = jwt_grant(None);
             bad.assertion.as_mut().unwrap().signing_key = "BAD_KEY".to_string();
             let failure = store.connect(&bad, &silent).unwrap_err();
@@ -1265,11 +1272,87 @@ mod oauth_connect {
             assert_eq!(standing, CredentialStanding { connected: true, label: None });
             assert!(post.bodies()[0].starts_with("grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1&client_secret=client-secret-2"), "{}", post.bodies()[0]);
             assert_eq!(store.resolve("DRIVE_USER", None).as_deref(), Some("ACCESS-2"));
-            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("stored-refresh-0001"), "the stored credential is untouched");
+            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("REFRESH-2"), "the rotated token is written back");
             expire(&now);
             let next = Recording::new(vec![(200, KEPT)]);
             assert_eq!(store.resolve_fresh("DRIVE_USER", None, Some(&next)).unwrap().as_deref(), Some("ACCESS-3"));
             assert!(next.bodies()[0].contains("refresh_token=REFRESH-2"), "the row renews with the token it holds");
+        }
+
+        fn stored_credential_names(store: &EncryptedCredentialStore) -> Vec<String> {
+            store.entries(None).into_iter().map(|entry| entry.env_var).collect()
+        }
+
+        #[test]
+        // EXEC-CRYPTO-4: the store makes and refreshes the grant; a rotated refresh token goes back into its stored credential.
+        fn a_rotated_refresh_token_is_written_back_into_the_stored_credential_and_nowhere_else() {
+            let (now, rows, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let names = stored_credential_names(&store);
+            let standing = store.connect(&stored_refresh_grant(), &Recording::new(vec![(200, ROTATED)])).unwrap();
+            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("REFRESH-2"));
+            assert_eq!(store.entries(None).iter().find(|entry| entry.env_var == "DRIVE_REFRESH").map(|entry| entry.service.as_str()), Some("google"), "the credential keeps its service");
+            let mut with_row = names.clone();
+            with_row.push("DRIVE_USER".to_string());
+            with_row.sort();
+            let mut now_names = stored_credential_names(&store);
+            now_names.sort();
+            assert_eq!(now_names, with_row, "no credential other than the row appeared");
+            assert!(!serde_json::to_string(&standing_json(&standing)).unwrap().contains("REFRESH"), "the answer carries no token");
+            assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("REFRESH-") || row.to_string().contains("stored-refresh")), "rows hold ciphertext only");
+            let restarted = EncryptedCredentialStore::new(rows.clone(), Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("DRIVE_REFRESH", None).as_deref(), Some("REFRESH-2"), "the write-back survives a restart");
+            expire(&now);
+            let again = Recording::new(vec![(200, r#"{"access_token":"ACCESS-4","token_type":"Bearer","refresh_token":"REFRESH-4","expires_in":3600}"#)]);
+            assert_eq!(store.resolve_fresh("DRIVE_USER", None, Some(&again)).unwrap().as_deref(), Some("ACCESS-4"));
+            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("REFRESH-4"), "an automatic refresh of the row rotates the same credential");
+            store.remove("DRIVE_USER", None).unwrap();
+            let reconnect = Recording::new(vec![(200, KEPT)]);
+            store.connect(&stored_refresh_grant(), &reconnect).unwrap();
+            assert!(reconnect.bodies()[0].contains("refresh_token=REFRESH-4"), "a dropped row reconnects with the current token");
+        }
+
+        #[test]
+        fn a_provider_that_does_not_rotate_or_echoes_the_same_token_leaves_the_stored_credential_unchanged() {
+            let (now, _, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let stamp = |store: &EncryptedCredentialStore| store.entries(None).iter().find(|entry| entry.env_var == "DRIVE_REFRESH").map(|entry| entry.updated_at);
+            let before = stamp(&store);
+            now.fetch_add(10, Ordering::SeqCst);
+            store.connect(&stored_refresh_grant(), &Recording::new(vec![(200, KEPT)])).unwrap();
+            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("stored-refresh-0001"));
+            assert_eq!(stamp(&store), before, "no write happened");
+            let same = r#"{"access_token":"ACCESS-5","token_type":"Bearer","refresh_token":"stored-refresh-0001","expires_in":3600}"#;
+            store.connect(&stored_refresh_grant(), &Recording::new(vec![(200, same)])).unwrap();
+            assert_eq!(stamp(&store), before, "an echoed token is not a rotation");
+        }
+
+        #[test]
+        fn a_row_from_an_authorization_code_exchange_keeps_its_rotation_in_the_row_only() {
+            let (now, rows, store) = clocked();
+            store.connect(&grant(None, ClientAuth::Body), &Recording::new(vec![(200, GOOD)])).unwrap();
+            let names = stored_credential_names(&store);
+            expire(&now);
+            let rotation = Recording::new(vec![(200, ROTATED)]);
+            assert_eq!(store.resolve_fresh("DRIVE", None, Some(&rotation)).unwrap().as_deref(), Some("ACCESS-2"));
+            assert_eq!(stored_credential_names(&store), names, "no stored credential was written or created");
+            expire(&now);
+            let next = Recording::new(vec![(200, KEPT)]);
+            store.resolve_fresh("DRIVE", None, Some(&next)).unwrap();
+            assert!(next.bodies()[0].contains("refresh_token=REFRESH-2"), "the row holds the rotated token itself");
+            assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("REFRESH-")));
+        }
+
+        #[test]
+        fn a_write_back_that_cannot_land_fails_the_connect_and_keeps_the_prior_row() {
+            let (_, _, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let pending = store.connect_begin(&stored_refresh_grant()).unwrap();
+            store.remove("DRIVE_REFRESH", None).unwrap();
+            assert_eq!(store.connect_finish(pending.ticket, 200, ROTATED).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert_eq!(store.resolve("DRIVE_USER", None), None, "the row was not written");
+            assert_eq!(store.resolve("DRIVE_REFRESH", None), None);
         }
 
         #[test]
@@ -1284,17 +1367,17 @@ mod oauth_connect {
             no_id.client_id = String::new();
             no_id.client_secret = None;
             no_id.client_auth = ClientAuth::None;
-            let post = Recording::new(vec![(200, ROTATED)]);
+            let post = Recording::new(vec![(200, KEPT)]);
             store.connect(&no_id, &post).unwrap();
             assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001");
             let mut public = no_id.clone();
             public.client_id = "CLIENT_ID".to_string();
-            let post = Recording::new(vec![(200, ROTATED)]);
+            let post = Recording::new(vec![(200, KEPT)]);
             store.connect(&public, &post).unwrap();
             assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1");
             let mut body = stored_refresh_grant();
             body.client_secret = Some("CLIENT_SECRET".to_string());
-            let post = Recording::new(vec![(200, ROTATED)]);
+            let post = Recording::new(vec![(200, KEPT)]);
             store.connect(&body, &post).unwrap();
             assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1&client_secret=client-secret-2");
         }
@@ -1323,11 +1406,11 @@ mod oauth_connect {
         #[test]
         fn requests_name_the_keys_of_their_grant_and_refuse_the_keys_of_another() {
             let jwt = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "jwt-bearer",
-                "signingKey": "@config.k", "issuer": "sa@x", "audience": "https://o/t", "ttlSeconds": 3600, "scopes": ["a", "b"] });
+                "signingKey": "@config.k", "audience": "https://o/t", "ttlSeconds": 3600, "scopes": ["a", "b"] });
             let parsed = request(jwt.clone()).unwrap();
             assert_eq!(parsed.assertion.as_ref().map(|a| (a.ttl_seconds, a.subject.clone())), Some((3600, None)));
             assert_eq!(parsed.scopes, vec!["a".to_string(), "b".to_string()]);
-            for (key, value) in [("clientId", json!("c")), ("code", json!("x")), ("clientAuth", json!("body"))] {
+            for (key, value) in [("clientId", json!("c")), ("code", json!("x")), ("clientAuth", json!("body")), ("issuer", json!("sa@x"))] {
                 let mut bad = jwt.clone();
                 bad[key] = value;
                 assert_eq!(request(bad).unwrap_err().kind, ConnectFailureKind::Refused, "{key}");

@@ -13,6 +13,10 @@ fn render(label: &str) -> Json {
 }
 
 fn schema(broken: Vec<Json>) -> OrbitalSchema {
+    schema_with_fields(vec![json!({ "name": "id", "type": "string" })], broken)
+}
+
+fn schema_with_fields(fields: Vec<Json>, broken: Vec<Json>) -> OrbitalSchema {
     let trait_with = |name: &str, to: &str, effects: Vec<Json>| {
         json!({
             "name": name, "linkedEntity": "Item",
@@ -26,7 +30,7 @@ fn schema(broken: Vec<Json>) -> OrbitalSchema {
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",
-            "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "entity": { "name": "Item", "persistence": "runtime", "fields": fields },
             "traits": [trait_with("Header", "shown", vec![render("header")]), trait_with("Broken", "ready", broken)]
         }]
     }))
@@ -230,4 +234,52 @@ fn control_a_let_whose_bindings_evaluate_runs_its_body() {
         .flatten()
         .all(|r| r.code != TransitionRejectionCode::EffectFailed));
     assert_eq!(painted(&response, "Broken").len(), 1);
+}
+
+// G-ORBITAL-CORE-093: a `set` of null into a field that declares no null fails the effect (EXEC-STEP-3, EXEC-STEP-7).
+// Validate refuses the unguarded sets that can write one, so a validated program never reaches this.
+fn null_fields() -> Vec<Json> {
+    vec![
+        json!({ "name": "id", "type": "string" }),
+        json!({ "name": "name", "type": "string" }),
+        json!({ "name": "nick", "type": "string", "nullable": true }),
+    ]
+}
+
+fn broken_state(response: &EventResponse) -> Option<&str> {
+    response.states.get("Broken").map(String::as_str)
+}
+
+fn effect_failed_rejection(response: &EventResponse) -> Option<&orbital_core_runtime::effects::response::TransitionRejection> {
+    response.rejections.iter().flatten().find(|r| r.code == TransitionRejectionCode::EffectFailed)
+}
+
+#[test]
+fn a_null_set_into_a_non_nullable_field_fails_the_effect_and_stops_the_transition() {
+    for value in [json!(null), json!("@entity.never")] {
+        let response = run(schema_with_fields(null_fields(), vec![
+            json!(["set", "@entity.nick", "kept"]),
+            json!(["set", "@entity.name", value]),
+            render("after"),
+        ]));
+        let rejection = effect_failed_rejection(&response).unwrap_or_else(|| panic!("an effect-failed rejection for {value}"));
+        assert_eq!(rejection.trait_name.as_deref(), Some("Broken"));
+        let error = rejection.error.as_deref().unwrap_or_default();
+        assert!(error.contains("name") && error.contains("null"), "the error names the field and the null: {error}");
+        assert_eq!(broken_state(&response), Some("ready"), "the new state stands");
+        assert_eq!(painted(&response, "Broken"), Vec::<String>::new(), "nothing after the failure is reported");
+    }
+}
+
+#[test]
+fn control_a_null_into_a_nullable_field_and_a_value_into_a_non_nullable_one_run() {
+    for effects in [
+        vec![json!(["set", "@entity.nick", null]), render("after")],
+        vec![json!(["set", "@entity.nick", "@entity.never"]), render("after")],
+        vec![json!(["set", "@entity.name", "text"]), render("after")],
+    ] {
+        let response = run(schema_with_fields(null_fields(), effects.clone()));
+        assert!(effect_failed_rejection(&response).is_none(), "{effects:?}");
+        assert_eq!(painted(&response, "Broken").len(), 1, "{effects:?}");
+    }
 }

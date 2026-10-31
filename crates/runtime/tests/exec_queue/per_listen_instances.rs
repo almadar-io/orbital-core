@@ -533,6 +533,265 @@ mod keyed_completion {
         );
     }
 
+    fn ticking_program() -> Json {
+        let mut p = schema(per_payload_key(), true);
+        let slot = &mut p["orbitals"][1]["traits"][0];
+        slot["ticks"] = json!([{ "name": "beat", "interval": 10, "runsInBackground": true,
+            "effects": [["emit", "TICKED", { "key": "@entity.id" }]] }]);
+        p
+    }
+
+    fn tick_request() -> orbital_core_runtime::effects::response::EventRequest {
+        orbital_core_runtime::effects::response::EventRequest {
+            event: orbital_core_base::bus_event::tick_event_key("beat"),
+            run_tick: Some(orbital_core_runtime::effects::RunTick {
+                trait_name: "PerKey".to_string(),
+                tick: "beat".to_string(),
+            }),
+            target_trait: Some("PerKey".to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn ticked_rows(server: &EmbeddedServer, now_ms: u64) -> Vec<String> {
+        server.tick_pass(now_ms);
+        let fired = server.tick_pass(now_ms + 10);
+        let mut keys = Vec::new();
+        for _ in fired.values().flatten() {
+            keys.extend(
+                done(server.start("SlotOrbital", tick_request()).unwrap())
+                    .emitted_events
+                    .iter()
+                    .filter(|e| e.event == "TICKED")
+                    .filter_map(|e| {
+                        e.payload
+                            .as_ref()
+                            .and_then(|p| p.get_path("key"))
+                            .and_then(|k| k.as_str().map(str::to_string))
+                    }),
+            );
+        }
+        keys.sort();
+        keys
+    }
+
+    fn tick_emissions(server: &EmbeddedServer, now_ms: u64) -> Vec<Json> {
+        server.tick_pass(now_ms);
+        let fired = server.tick_pass(now_ms + 10);
+        let mut emitted = Vec::new();
+        for _ in fired.values().flatten() {
+            emitted.extend(
+                done(server.start("SlotOrbital", tick_request()).unwrap())
+                    .emitted_events
+                    .iter()
+                    .filter(|e| e.event == "TICKED")
+                    .map(|e| serde_json::to_value(&e.payload).unwrap()),
+            );
+        }
+        emitted
+    }
+
+    fn gated_ticking_program(applies_to: Json) -> Json {
+        let mut p = ticking_program();
+        let call = json!(["call-service", "svc", "work", {}, { "key": "@payload.key", "emit": { "success": "DONE", "failure": "FAILED" } }]);
+        let trait_def = &mut p["orbitals"][1]["traits"][0];
+        trait_def["ticks"] = json!([{ "name": "beat", "interval": 10, "runsInBackground": true,
+            "appliesTo": applies_to,
+            "effects": [["emit", "TICKED", { "key": "@entity.id", "val": "@entity.val" }]] }]);
+        trait_def["stateMachine"]["transitions"] = json!([
+            { "from": "idle", "to": "busy", "event": "SEND", "effects": [["set", "@entity.val", "@payload.n"], call] },
+            { "from": "busy", "to": "idle", "event": "REPLY", "effects": [] }
+        ]);
+        p
+    }
+
+    fn one_busy_one_idle(applies_to: Json) -> EmbeddedServer {
+        let server = EmbeddedServer::new(support_schema(gated_ticking_program(applies_to))).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 7 }));
+        run_deferring(&server, "BACK", json!({ "key": "A" }));
+        run_deferring(&server, "GO", json!({ "key": "B", "n": 9 }));
+        assert_eq!(held(&server, "A").as_deref(), Some("idle"));
+        assert_eq!(held(&server, "B").as_deref(), Some("busy"));
+        server
+    }
+
+    #[test]
+    fn a_keyed_tick_judges_applies_to_on_each_row_s_own_state_and_reads_that_row() {
+        let server = one_busy_one_idle(json!(["busy"]));
+        let emitted = tick_emissions(&server, 0);
+        assert_eq!(emitted.len(), 1, "only the busy row ticks: {emitted:?}");
+        assert_eq!(emitted[0]["key"], json!("B"), "{emitted:?}");
+        assert_eq!(emitted[0]["val"].as_f64(), Some(9.0), "reads B's own entity: {emitted:?}");
+    }
+
+    #[test]
+    fn control_a_keyed_tick_applies_to_idle_fires_for_the_idle_row_only() {
+        let server = one_busy_one_idle(json!(["idle"]));
+        let emitted = tick_emissions(&server, 0);
+        assert_eq!(emitted.len(), 1, "{emitted:?}");
+        assert_eq!(emitted[0]["key"], json!("A"), "{emitted:?}");
+        assert_eq!(emitted[0]["val"].as_f64(), Some(7.0), "{emitted:?}");
+    }
+
+    #[test]
+    fn a_keyed_tick_with_no_rows_does_not_fire_on_the_singleton() {
+        let server = EmbeddedServer::new(support_schema(ticking_program())).unwrap();
+        assert!(slot_rows(&server).is_empty());
+        let emitted = tick_emissions(&server, 0);
+        assert!(emitted.is_empty(), "no rows, no tick: {emitted:?}");
+    }
+
+    #[test]
+    fn control_a_non_keyed_runtime_entity_with_no_rows_ticks_once_on_the_singleton() {
+        let mut p = schema(None, false);
+        p["orbitals"][1]["traits"][0]["ticks"] = json!([{ "name": "beat", "interval": 10, "runsInBackground": true,
+            "effects": [["emit", "TICKED", { "key": "@entity.id" }]] }]);
+        let server = EmbeddedServer::new(support_schema(p)).unwrap();
+        let emitted = tick_emissions(&server, 0);
+        assert_eq!(emitted.len(), 1, "EXEC-TICK-5 singleton tick: {emitted:?}");
+    }
+
+    fn slot_rows(server: &EmbeddedServer) -> Vec<String> {
+        rows_of(server.kernel().entity_source().as_ref())
+    }
+
+    fn rows_of(source: &dyn EntitySource) -> Vec<String> {
+        let mut ids: Vec<String> = source
+            .list("Slot")
+            .unwrap()
+            .iter()
+            .filter_map(|r| {
+                r.get_path("id")
+                    .and_then(|v| v.as_str().map(str::to_string))
+            })
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_ticking_keyed_row_whose_run_ended_is_dropped_and_its_tick_never_fires_again() {
+        let server = EmbeddedServer::new(support_schema(ticking_program())).unwrap();
+        let keys = ["k0", "k1", "k2", "k3", "k4"];
+        for key in keys {
+            done(
+                server
+                    .start(
+                        "CallerOrbital",
+                        caller_request("GO", json!({ "key": key, "n": 1 })),
+                    )
+                    .unwrap(),
+            );
+        }
+        assert_eq!(slot_rows(&server), keys, "every busy row is held");
+        assert_eq!(ticked_rows(&server, 0), keys, "each busy row ticks once");
+        for key in keys {
+            done(
+                server
+                    .start(
+                        "CallerOrbital",
+                        caller_request("BACK", json!({ "key": key })),
+                    )
+                    .unwrap(),
+            );
+        }
+        assert!(
+            slot_rows(&server).is_empty(),
+            "every ended run released its row"
+        );
+        for key in keys {
+            assert_eq!(held(&server, key), None, "{key}");
+        }
+        assert!(
+            ticked_rows(&server, 1000).is_empty(),
+            "no tick fires for a dropped row"
+        );
+        assert!(ticked_rows(&server, 2000).is_empty(), "nor on a later pass");
+    }
+
+    #[test]
+    fn control_a_ticking_row_with_a_pending_ask_keeps_its_row_and_its_tick() {
+        let mut p = ticking_program();
+        let call = json!(["call-service", "svc", "work", {}, { "key": "@payload.key", "emit": { "success": "DONE", "failure": "FAILED" } }]);
+        p["orbitals"][1]["traits"][0]["stateMachine"]["transitions"] = json!([
+            { "from": "idle", "to": "idle", "event": "SEND", "effects": [call] },
+            { "from": "idle", "to": "idle", "event": "DONE", "effects": [["emit", "DONE_SEEN", { "key": "@entity.id" }]] }
+        ]);
+        let server = EmbeddedServer::new(support_schema(p)).unwrap();
+        run_deferring(&server, "GO", json!({ "key": "A", "n": 1 }));
+        assert_eq!(
+            held(&server, "A").as_deref(),
+            Some("idle"),
+            "the pending ask keeps the row"
+        );
+        assert_eq!(slot_rows(&server), ["A"]);
+        assert_eq!(ticked_rows(&server, 0), ["A"], "its tick still fires");
+        let done_request = orbital_core_runtime::effects::response::EventRequest {
+            event: "DONE".to_string(),
+            target_trait: Some("PerKey".to_string()),
+            entity_id: Some("A".to_string()),
+            payload: Some(val(json!({ "key": "A" }))),
+            ..Default::default()
+        };
+        done(server.start("SlotOrbital", done_request).unwrap());
+        assert_eq!(
+            held(&server, "A"),
+            None,
+            "the completion ended the ask and the run: the row drops"
+        );
+        assert!(slot_rows(&server).is_empty());
+        assert!(
+            !ticked_rows(&server, 1000).contains(&"A".to_string()),
+            "the dropped row's tick is gone"
+        );
+    }
+
+    #[test]
+    fn a_key_reused_after_its_ticking_row_dropped_starts_fresh_with_init_once_and_one_new_tick() {
+        let server = EmbeddedServer::new(support_schema(ticking_program())).unwrap();
+        let inited = |response: &orbital_core_runtime::effects::response::EventResponse| {
+            response
+                .emitted_events
+                .iter()
+                .filter(|e| e.event == "INITED")
+                .count()
+        };
+        let first = done(
+            server
+                .start(
+                    "CallerOrbital",
+                    caller_request("GO", json!({ "key": "A", "n": 1 })),
+                )
+                .unwrap(),
+        );
+        assert_eq!(inited(&first), 1);
+        assert_eq!(ticked_rows(&server, 0), ["A"]);
+        done(
+            server
+                .start(
+                    "CallerOrbital",
+                    caller_request("BACK", json!({ "key": "A" })),
+                )
+                .unwrap(),
+        );
+        assert!(slot_rows(&server).is_empty());
+        let again = done(
+            server
+                .start(
+                    "CallerOrbital",
+                    caller_request("GO", json!({ "key": "A", "n": 2 })),
+                )
+                .unwrap(),
+        );
+        assert_eq!(inited(&again), 1, "INIT runs once for the fresh row");
+        assert_eq!(slot_rows(&server), ["A"]);
+        assert_eq!(
+            ticked_rows(&server, 1000),
+            ["A"],
+            "exactly one tick for the reborn row"
+        );
+    }
+
     fn cancelling_program() -> Json {
         let mut p = program();
         let call = json!(["call-service", "svc", "work", {}, { "key": "@payload.key", "emit": { "success": "DONE", "failure": "FAILED" } }]);

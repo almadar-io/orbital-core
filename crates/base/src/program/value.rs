@@ -243,6 +243,26 @@ pub enum Value {
     Object(Shared<ValueMap>),
     /// Lambda function (params, body)
     Lambda(Arc<Lambda>),
+    /// A record only the kernel can make: readable like an object, never built from a literal, a parse, a cast or a
+    /// wire payload (EXEC-IDENTITY-2).
+    Sealed(Arc<Sealed>),
+}
+
+/// The record of a [`Value::Sealed`] and the name of the sealed type it is (`Verified`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Sealed {
+    kind: &'static str,
+    fields: ValueMap,
+}
+
+impl Sealed {
+    pub fn kind(&self) -> &'static str {
+        self.kind
+    }
+
+    pub fn fields(&self) -> &ValueMap {
+        &self.fields
+    }
 }
 
 /// The parameters and body of a lambda, shared behind one pointer so `Value` stays 16 bytes.
@@ -265,6 +285,7 @@ impl Serialize for Value {
             Value::String(s) => serializer.serialize_str(s),
             Value::Array(arr) => arr.serialize(serializer),
             Value::Object(obj) => obj.serialize(serializer),
+            Value::Sealed(sealed) => sealed.fields.serialize(serializer),
             Value::Lambda(_) => {
                 // Serialize lambda as ["fn", params, body]
                 let sexpr: SExpression = self.clone().into();
@@ -410,6 +431,16 @@ impl Value {
         Value::String(text.into())
     }
 
+    /// A sealed record of the type `kind`. Only a kernel operator calls this; no wire form, parse or cast reaches it.
+    pub fn sealed(kind: &'static str, fields: ValueMap) -> Value {
+        Value::Sealed(Arc::new(Sealed { kind, fields }))
+    }
+
+    /// Whether this is a sealed record of the type `kind`.
+    pub fn is_sealed_as(&self, kind: &str) -> bool {
+        matches!(self, Value::Sealed(sealed) if sealed.kind == kind)
+    }
+
     /// Check if value is null
     pub fn is_null(&self) -> bool {
         matches!(self, Value::Null)
@@ -446,7 +477,7 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => crate::str_utils::js_number_string(*n),
             Value::String(s) => s.clone().into_inner(),
-            Value::Array(_) | Value::Object(_) => crate::json_value::js_json_string(self),
+            Value::Array(_) | Value::Object(_) | Value::Sealed(_) => crate::json_value::js_json_string(self),
             Value::Lambda(l) => format!("<fn({})>", l.params.join(", ")),
         }
     }
@@ -471,6 +502,7 @@ impl Value {
     pub fn as_object(&self) -> Option<&ValueMap> {
         match self {
             Value::Object(o) => Some(o),
+            Value::Sealed(sealed) => Some(&sealed.fields),
             _ => None,
         }
     }
@@ -519,6 +551,9 @@ impl Value {
                 Value::Object(obj) => {
                     current = obj.get(part.as_ref())?;
                 }
+                Value::Sealed(sealed) => {
+                    current = sealed.fields.get(part.as_ref())?;
+                }
                 Value::Array(arr) => {
                     let index: usize = part.parse().ok()?;
                     current = arr.get(index)?;
@@ -547,6 +582,9 @@ impl Value {
             match current {
                 Value::Object(obj) => {
                     current = obj.get(seg)?;
+                }
+                Value::Sealed(sealed) => {
+                    current = sealed.fields.get(seg)?;
                 }
                 Value::Array(arr) => {
                     if seg == "length" || seg == "count" {
@@ -634,6 +672,7 @@ impl Value {
             Value::Array(_) => "array",
             Value::Object(_) => "object",
             Value::Lambda(_) => "function",
+            Value::Sealed(sealed) => sealed.kind,
         }
     }
 
@@ -723,6 +762,7 @@ impl fmt::Display for Value {
             Value::Lambda(l) => {
                 write!(f, "<fn({})>", l.params.join(", "))
             }
+            Value::Sealed(sealed) => write!(f, "<{}>", sealed.kind),
         }
     }
 }
@@ -759,6 +799,7 @@ impl From<Value> for SExpression {
                     .map(|(k, v)| (k.into(), SExpression::from(v)))
                     .collect(),
             ),
+            Value::Sealed(sealed) => SExpression::from(Value::object(Arc::unwrap_or_clone(sealed).fields)),
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
             Value::Lambda(l) => {
                 let Lambda { params, body } = Arc::unwrap_or_clone(l);
@@ -1169,6 +1210,26 @@ mod tests {
         assert!(value.set_path("x.z", Value::Number(1.0)));
         assert_eq!(value.get_path("x.z"), Some(&Value::Number(1.0)));
         assert_eq!(value.get_path("y.z"), Some(&Value::Null), "the sibling still reads the shared original");
+    }
+
+    #[test]
+    fn a_sealed_value_reads_like_an_object_and_never_comes_back_from_the_wire() {
+        let fields: ValueMap = [("subject".into(), Value::string("u1")), ("n".into(), Value::Number(2.0))].into_iter().collect();
+        let sealed = Value::sealed("Verified", fields.clone());
+        assert!(sealed.is_sealed_as("Verified"));
+        assert!(!sealed.is_sealed_as("Viewer"));
+        assert_eq!(sealed.get_path("subject"), Some(&Value::string("u1")));
+        assert_eq!(sealed.get_path_owned("n"), Some(Value::Number(2.0)));
+        assert_eq!(sealed.get("subject"), Some(&Value::string("u1")));
+        assert_eq!(sealed.type_name(), "Verified");
+        let wire = serde_json::to_value(&sealed).unwrap();
+        assert_eq!(wire, serde_json::json!({"subject": "u1", "n": 2.0}));
+        let back: Value = serde_json::from_value(wire).unwrap();
+        assert!(!back.is_sealed_as("Verified"));
+        assert_ne!(back, sealed, "control: the plain object with the same fields is a different value");
+        let mut copy = sealed.clone();
+        assert!(!copy.set_path("subject", Value::string("root")), "a sealed record is not written through a path");
+        assert_eq!(copy.get_path("subject"), Some(&Value::string("u1")));
     }
 
     #[test]

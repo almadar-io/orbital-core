@@ -2227,6 +2227,38 @@ fn control_known_families_and_fields_still_parse() {
     );
 }
 
+#[test]
+fn a_host_pattern_grant_matches_exactly_one_leading_label_at_its_port() {
+    let grants = |target: &str| -> OsGrants {
+        serde_json::from_value(json!({ "net": [{ "target": target, "kinds": ["tcp"] }] })).unwrap()
+    };
+    let pattern = grants("*.notify.windows.com:443");
+    for host in ["db5.notify.windows.com", "DB5.Notify.Windows.COM", "a-b_1.notify.windows.com"] {
+        assert!(pattern.net_allows(host, 443, NetKind::Tcp), "{host}");
+    }
+    for host in [
+        "notify.windows.com",
+        "evil.com",
+        "a.b.notify.windows.com",
+        "evilnotify.windows.com",
+        "x.notify.windows.com.evil.com",
+        "a.notify.windows.com.",
+        ".notify.windows.com",
+        "*.notify.windows.com",
+        "a b.notify.windows.com",
+        "a:1.notify.windows.com",
+    ] {
+        assert!(!pattern.net_allows(host, 443, NetKind::Tcp), "{host}");
+    }
+    assert!(!pattern.net_allows("db5.notify.windows.com", 80, NetKind::Tcp), "port");
+    assert!(!pattern.net_allows("db5.notify.windows.com", 443, NetKind::Udp), "kind");
+    assert!(pattern.net_names_host("db5.notify.windows.com", NetKind::Tcp));
+    assert!(!pattern.net_names_host("evil.com", NetKind::Tcp));
+    let exact = grants("db.internal:443");
+    assert!(exact.net_allows("DB.internal", 443, NetKind::Tcp), "control: exact grants unchanged");
+    assert!(!exact.net_allows("x.db.internal", 443, NetKind::Tcp), "control: exact is not a suffix");
+}
+
 mod static_check {
     use super::*;
     use crate::schema::OrbitalSchema;
@@ -2274,6 +2306,22 @@ mod static_check {
             ),
             OsGrantPass::Written,
         )
+    }
+
+    fn final_of(
+        grants: serde_json::Value,
+        guard: Option<serde_json::Value>,
+        effects: serde_json::Value,
+        config: serde_json::Value,
+    ) -> Vec<OsGrantFinding> {
+        os_grant_findings(
+            &program(json!(null), vec![orbital("Orders", grants, guard, effects, config)]),
+            OsGrantPass::Final,
+        )
+    }
+
+    fn unused_final(grants: serde_json::Value, effects: serde_json::Value) -> bool {
+        has(&final_of(grants, None, effects, json!({})), OsGrantFindingCode::Unused)
     }
 
     fn has(found: &[OsGrantFinding], code: OsGrantFindingCode) -> bool {
@@ -2348,10 +2396,106 @@ mod static_check {
             ),
             "control: undecided guard"
         );
+        assert!(
+            !has(
+                &run(json!(["!=", "", ""]), json!([["os/read-file", "/data/a"]])),
+                OsGrantFindingCode::Unused
+            ),
+            "the written pass never reports unused"
+        );
         assert!(has(
-            &run(json!(["!=", "", ""]), json!([["os/read-file", "/data/a"]])),
+            &final_of(read_data(), Some(json!(["!=", "", ""])), json!([["os/read-file", "/data/a"]]), json!({})),
             OsGrantFindingCode::Unused
         ));
+    }
+
+    // G-ORBITAL-CORE-101: a knob-gated read is dead only until the composing app sets the knob.
+    fn net_pattern(target: &str) -> serde_json::Value {
+        json!({ "net": [{ "target": target, "kinds": ["tcp"] }] })
+    }
+
+    // G-ORBITAL-CORE-096: a host chosen per call is covered by a declared host-pattern grant at its port.
+    #[test]
+    fn a_dynamic_host_is_covered_only_by_a_host_pattern_grant_at_its_port() {
+        let connect = json!([["os/tcp-connect", "@payload.host", 443]]);
+        let pattern = net_pattern("*.notify.windows.com:443");
+        assert!(one(pattern.clone(), connect.clone()).is_empty(), "covered");
+        assert!(!unused_final(pattern.clone(), connect.clone()), "the pattern entry is used");
+        let wrong_port = one(net_pattern("*.notify.windows.com:80"), connect.clone());
+        assert!(has(&wrong_port, OsGrantFindingCode::Missing), "control: other port");
+        let exact = one(net_pattern("db.internal:443"), connect.clone());
+        assert!(has(&exact, OsGrantFindingCode::Missing), "control: an exact grant does not cover a chosen host");
+        assert!(has(&one(json!(null), connect.clone()), OsGrantFindingCode::Missing), "control: no grant");
+        let missing = one(json!(null), connect.clone());
+        let f = missing.iter().find(|f| f.code == OsGrantFindingCode::Missing).unwrap();
+        assert_eq!(f.grant.as_deref(), Some("net: { \"*.<domain>:443\": [tcp] }"));
+        assert!(
+            unused_final(pattern.clone(), json!([["os/tcp-connect", "db.internal", 443]])),
+            "control: a literal host does not use the pattern"
+        );
+        let exact_ok = one(net_pattern("db.internal:443"), json!([["os/tcp-connect", "db.internal", 443]]));
+        assert!(exact_ok.is_empty(), "control: exact grants unchanged");
+        let dynamic_port = one(pattern, json!([["os/tcp-connect", "@payload.host", "@payload.port"]]));
+        assert!(has(&dynamic_port, OsGrantFindingCode::TargetNotStatic), "control: a dynamic port stays not static");
+    }
+
+    #[test]
+    fn a_malformed_host_pattern_grant_is_an_invalid_entry() {
+        for target in [
+            "*.com:443",
+            "*:443",
+            "a.*.example.com:443",
+            "*.*.example.com:443",
+            "*x.example.com:443",
+            "www.*.com:443",
+            "*.example.*:443",
+            "*..example.com:443",
+            "*.1.2:443",
+            "*.example.com",
+            "*.example.com:99999",
+        ] {
+            assert!(has(&one(net_pattern(target), json!([])), OsGrantFindingCode::EntryInvalid), "{target}");
+        }
+        for target in ["*.notify.windows.com:443", "*.example.co.uk:8443", "*.a-b.example.com:443"] {
+            assert!(!has(&one(net_pattern(target), json!([])), OsGrantFindingCode::EntryInvalid), "control {target}");
+        }
+    }
+
+    #[test]
+    fn a_grant_behind_a_knob_gated_call_is_unused_only_in_the_final_pass_and_only_when_the_knob_leaves_it_dead() {
+        let read = json!([["os/read-file", "/data/a"]]);
+        let defaults = json!(["and", ["!=", "@config.pack", ""], ["=", "@config.transport", "file"]]);
+        let knobs = json!({
+            "pack": { "type": "string", "default": "" },
+            "transport": { "type": "string", "default": "http" }
+        });
+        let written = os_grant_findings(
+            &program(
+                json!(null),
+                vec![orbital("Orders", read_data(), Some(defaults), read.clone(), knobs.clone())],
+            ),
+            OsGrantPass::Written,
+        );
+        assert!(written.is_empty(), "atom alone, guard live at the defaults' read: {written:?}");
+        let enabled = json!(["and", ["!=", "pack", ""], ["=", "file", "file"]]);
+        let used = final_of(read_data(), Some(enabled), read.clone(), json!({}));
+        assert!(used.is_empty(), "composed with the knobs on: {used:?}");
+        let dead = json!(["and", ["!=", "", ""], ["=", "file", "file"]]);
+        let idle = final_of(read_data(), Some(dead), read.clone(), json!({}));
+        assert!(has(&idle, OsGrantFindingCode::Unused), "composed with the knobs off: {idle:?}");
+        let missing = os_grant_findings(
+            &program(
+                json!(null),
+                vec![orbital("Orders", read_data(), Some(json!(["=", "@config.transport", "file"])), json!([["os/read-file", "/etc/passwd"]]), knobs)],
+            ),
+            OsGrantPass::Written,
+        );
+        assert!(has(&missing, OsGrantFindingCode::Missing), "control: missing is still reported in the written pass");
+        let app_idle = os_grant_findings(
+            &program(read_data(), vec![orbital("Orders", json!(null), None, json!([]), json!({}))]),
+            OsGrantPass::Final,
+        );
+        assert!(has(&app_idle, OsGrantFindingCode::Unused), "control: an app entry nothing uses");
     }
 
     #[test]
@@ -2464,7 +2608,7 @@ mod static_check {
     fn an_entry_no_call_uses_is_unused_and_an_entry_that_matches_nothing_is_invalid() {
         let grants =
             json!({ "fs": [{ "glob": "/data/**", "modes": ["read", "write"] }], "exec": ["git"] });
-        let found = one(grants, json!([["os/read-file", "/data/a"]]));
+        let found = final_of(grants, None, json!([["os/read-file", "/data/a"]]), json!({}));
         let labels: Vec<&str> = found
             .iter()
             .filter(|f| f.code == OsGrantFindingCode::Unused)
@@ -2475,10 +2619,7 @@ mod static_check {
             labels.iter().any(|m| m.contains("write")) && labels.iter().any(|m| m.contains("exec"))
         );
         assert!(
-            !has(
-                &one(read_data(), json!([["os/read-file", "/data/a"]])),
-                OsGrantFindingCode::Unused
-            ),
+            !unused_final(read_data(), json!([["os/read-file", "/data/a"]])),
             "control"
         );
         for grants in [
@@ -2523,7 +2664,7 @@ mod static_check {
                     orbital("Billing", json!(null), None, json!([]), json!({})),
                 ],
             ),
-            OsGrantPass::Written,
+            OsGrantPass::Final,
         );
         assert!(used.is_empty(), "{used:?}");
         let idle = os_grant_findings(
@@ -2531,7 +2672,7 @@ mod static_check {
                 read_data(),
                 vec![orbital("Orders", json!(null), None, json!([]), json!({}))],
             ),
-            OsGrantPass::Written,
+            OsGrantPass::Final,
         );
         let f = idle
             .iter()
@@ -2548,9 +2689,11 @@ mod static_check {
             &one(json!({ "exec": ["git"] }), spawn),
             OsGrantFindingCode::Missing
         ));
-        let literal = one(
+        let literal = final_of(
             json!({ "exec": ["git"], "env": ["PATH"] }),
+            None,
             json!([["os/spawn", "git", [], { "env": { "PATH": "/bin" } }]]),
+            json!({}),
         );
         assert!(
             has(&literal, OsGrantFindingCode::Unused),
@@ -2571,7 +2714,8 @@ mod static_check {
         .is_empty());
         let outside = one(grant.clone(), read(json!("src/a.rs")));
         assert!(
-            has(&outside, OsGrantFindingCode::Missing) && has(&outside, OsGrantFindingCode::Unused),
+            has(&outside, OsGrantFindingCode::Missing)
+                && unused_final(grant.clone(), read(json!("src/a.rs"))),
             "control"
         );
         assert!(
@@ -2649,8 +2793,14 @@ mod static_check {
             assert!(run(path.clone()).is_empty(), "control {path}");
         }
         let outside = run(json!(["str/concat", "src/", "@config.a"]));
+        let outside_final = final_of(
+            grant.clone(),
+            None,
+            json!([["os/read-file", {"anchor": "cwd", "path": ["str/concat", "src/", "@config.a"]}]]),
+            knobs.clone(),
+        );
         assert!(
-            has(&outside, OsGrantFindingCode::Missing) && has(&outside, OsGrantFindingCode::Unused),
+            has(&outside, OsGrantFindingCode::Missing) && has(&outside_final, OsGrantFindingCode::Unused),
             "control: a literal prefix outside the grant is missing"
         );
         let computed = run(json!(["str/concat", "@payload.a", "@payload.b"]));
@@ -2691,17 +2841,18 @@ mod static_check {
             "{outside:?}"
         );
         let elsewhere = json!([["os/read-file", {"anchor": "cwd", "path": ["str/concat", "src/", "@config.dir"]}]]);
-        let unreachable = run(".orb/rows/", OsGrantPass::Written, elsewhere);
+        let unreachable = run(".orb/rows/", OsGrantPass::Written, elsewhere.clone());
+        let unreachable_final = run(".orb/rows/", OsGrantPass::Final, elsewhere);
         assert!(
-            has(&unreachable, OsGrantFindingCode::Unused) && has(&unreachable, OsGrantFindingCode::Missing),
+            has(&unreachable_final, OsGrantFindingCode::Unused) && has(&unreachable, OsGrantFindingCode::Missing),
             "control: a deferred call whose literal prefix is outside the grant cannot reach it"
         );
         let wrong_mode = json!([["os/remove", {"anchor": "cwd", "path": "@config.dir"}]]);
         assert!(
-            has(&run(".orb/rows/", OsGrantPass::Written, wrong_mode), OsGrantFindingCode::Unused),
+            has(&run(".orb/rows/", OsGrantPass::Final, wrong_mode), OsGrantFindingCode::Unused),
             "control: a deferred call needing a mode the grant lacks cannot reach it"
         );
-        let idle = run(".orb/rows/", OsGrantPass::Written, json!([]));
+        let idle = run(".orb/rows/", OsGrantPass::Final, json!([]));
         assert!(has(&idle, OsGrantFindingCode::Unused), "control: no call at all");
     }
 

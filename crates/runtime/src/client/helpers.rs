@@ -792,6 +792,7 @@ pub fn format_value(value: &Value) -> String {
         Value::Array(arr) => format!("[{} items]", arr.len()),
         Value::Object(obj) => format!("{{{} fields}}", obj.len()),
         Value::Lambda(l) => format!("[lambda({} params)]", l.params.len()),
+        Value::Sealed(sealed) => format!("{{{} fields}}", sealed.fields().len()),
     }
 }
 
@@ -856,6 +857,9 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
         Value::Object(obj) => {
             serde_json::Value::Object(obj.iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
+        }
+        Value::Sealed(sealed) => {
+            serde_json::Value::Object(sealed.fields().iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
         }
         Value::Lambda(l) => {
             // Lambdas can't be serialized to JSON, represent as a string

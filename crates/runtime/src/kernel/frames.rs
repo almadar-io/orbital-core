@@ -43,6 +43,32 @@ impl RuntimeKernel {
         (key, self.session_eid(entity_id))
     }
 
+    /// The `@intrinsic` field names of `entity_type` when it is `[shared]` and declares any: those fields are each
+    /// trait's own frame (G-ORB-540), never the one `$shared::<Entity>` frame.
+    pub(super) fn shared_intrinsic_fields(&self, entity_type: &str) -> Option<Vec<String>> {
+        let defs = self.registry.entity_definitions.read();
+        let def = defs.get(entity_type).filter(|d| d.shared)?;
+        let names = crate::entity_access::intrinsic_field_names(def);
+        (!names.is_empty()).then_some(names)
+    }
+
+    /// The slot holding `trait_name`'s own `@intrinsic` fields of a `[shared]` entity: the trait's own frame key.
+    pub(super) fn own_frame_slot(&self, trait_name: &str, entity_id: &str) -> (String, String) {
+        (trait_name.to_string(), self.session_eid(entity_id))
+    }
+
+    /// `fields` split into what the `[shared]` frame holds and what `trait_name`'s own frame holds.
+    pub(super) fn split_intrinsic(&self, entity_type: &str, fields: &SharedEntity) -> Option<(SharedEntity, SharedEntity)> {
+        let intrinsic = self.shared_intrinsic_fields(entity_type)?;
+        let all = fields.fields()?;
+        let (mut shared, mut own) = (SharedEntity::empty_object(), SharedEntity::empty_object());
+        for (name, value) in all.iter() {
+            let side = if intrinsic.iter().any(|n| n == name.as_str()) { &mut own } else { &mut shared };
+            side.set_field(name.clone(), (**value).clone());
+        }
+        Some((shared, own))
+    }
+
     /// The key a trait instance's state is held under: its frame's session-folded entity id (the one fold, so state and
     /// frames cannot drift apart). `None` stays `None` in the program session.
     pub(super) fn state_key<'a>(&self, entity_id: Option<&'a str>) -> Option<std::borrow::Cow<'a, str>> {
@@ -93,7 +119,17 @@ impl RuntimeKernel {
             .map(|row| SharedEntity::from_value_ref(&row))
             .unwrap_or_default();
         let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
-        defaults.merged(&row).merged(&frame)
+        let entity = defaults.merged(&row).merged(&frame);
+        if self.shared_intrinsic_fields(entity_type).is_some() {
+            let own = self
+                .frames
+                .read()
+                .get(&self.own_frame_slot(trait_name, entity_id))
+                .cloned()
+                .unwrap_or_default();
+            return entity.merged(&own);
+        }
+        entity
     }
 
     /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.
@@ -120,14 +156,32 @@ impl RuntimeKernel {
         entity_id: &str,
         writes: &SharedEntity,
     ) {
+        let split = self.split_intrinsic(entity_type, writes);
+        let own_slot = split.is_some().then(|| self.own_frame_slot(trait_name, entity_id));
+        let (shared_writes, own_writes) = match &split {
+            Some((shared, own)) => (shared, Some(own)),
+            None => (writes, None),
+        };
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
         let mut frames = self.frames.write();
-        let merged = frames
-            .get(&slot)
-            .cloned()
-            .unwrap_or_default()
-            .merged(writes);
-        frames.insert(slot, merged);
+        if shared_writes.fields().is_some_and(|f| !f.is_empty()) || own_writes.is_none() {
+            let merged = frames
+                .get(&slot)
+                .cloned()
+                .unwrap_or_default()
+                .merged(shared_writes);
+            frames.insert(slot, merged);
+        }
+        if let (Some(own_slot), Some(own_writes)) = (own_slot, own_writes) {
+            if own_writes.fields().is_some_and(|f| !f.is_empty()) {
+                let merged = frames
+                    .get(&own_slot)
+                    .cloned()
+                    .unwrap_or_default()
+                    .merged(own_writes);
+                frames.insert(own_slot, merged);
+            }
+        }
     }
 
     /// Capture a trait instance's current state + entity frame, for
@@ -160,12 +214,17 @@ impl RuntimeKernel {
             .and_then(|d| d.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
         let slot = self.frame_slot(trait_name, &entity_type, eid);
-        let entity = self
-            .frames
-            .read()
-            .get(&slot)
-            .map(SharedEntity::to_value)
-            .unwrap_or(Value::Null);
+        let frames = self.frames.read();
+        let shared = frames.get(&slot);
+        let own = self
+            .shared_intrinsic_fields(&entity_type)
+            .and_then(|_| frames.get(&self.own_frame_slot(trait_name, eid)));
+        let entity = match (shared, own) {
+            (None, None) => Value::Null,
+            (Some(shared), None) => shared.to_value(),
+            (None, Some(own)) => own.to_value(),
+            (Some(shared), Some(own)) => shared.merged(own).to_value(),
+        };
         TraitSnapshot { state, entity }
     }
 
@@ -208,11 +267,25 @@ impl RuntimeKernel {
         // REPLACE the frame, never merge: the optimistic commit may have added
         // fields a merge would keep. A `Null` snapshot means there was no frame.
         let slot = self.frame_slot(trait_name, &entity_type, eid);
+        let restored = SharedEntity::from_value(snapshot.entity);
+        let split = self.split_intrinsic(&entity_type, &restored).or_else(|| {
+            (restored.is_null() && self.shared_intrinsic_fields(&entity_type).is_some())
+                .then(|| (SharedEntity::empty_object(), SharedEntity::empty_object()))
+        });
         let mut frames = self.frames.write();
-        if snapshot.entity.is_null() {
+        if let Some((shared, own)) = split {
+            let own_slot = self.own_frame_slot(trait_name, eid);
+            for (slot, part) in [(slot, shared), (own_slot, own)] {
+                if part.fields().is_some_and(|f| !f.is_empty()) {
+                    frames.insert(slot, part);
+                } else {
+                    frames.remove(&slot);
+                }
+            }
+        } else if restored.is_null() {
             frames.remove(&slot);
         } else {
-            frames.insert(slot, SharedEntity::from_value(snapshot.entity));
+            frames.insert(slot, restored);
         }
     }
 

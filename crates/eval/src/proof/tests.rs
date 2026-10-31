@@ -6,11 +6,15 @@ use serde_json::{json, Value as J};
 /// One orbital: entity `Order`, trait `Checkout -> Order` with the given transitions/ticks, and the given strict
 /// spec expectations already merged onto it.
 fn program(transitions: J, ticks: J, expects: J) -> OrbitalSchema {
+    program_with("persistent", transitions, ticks, expects)
+}
+
+fn program_with(persistence: &str, transitions: J, ticks: J, expects: J) -> OrbitalSchema {
     serde_json::from_value(json!({
         "name": "App",
         "orbitals": [{
             "name": "Shop",
-            "entity": { "name": "Order", "collection": "orders", "persistence": "persistent", "fields": [
+            "entity": { "name": "Order", "collection": "orders", "persistence": persistence, "fields": [
                 { "name": "id", "type": "string", "required": true },
                 { "name": "total", "type": "number", "required": true },
                 { "name": "paid", "type": "number" },
@@ -1527,4 +1531,57 @@ fn control_a_write_whose_target_is_not_statically_known_is_relevant() {
     assert_eq!(effect_path_limit_findings(&with_heavy_trait(state, json!("@payload.e"))), 1);
     let row = program(J::Array(vec![]), J::Null, row_invariant(json!([">=", "@entity.total", 0])));
     assert_eq!(effect_path_limit_findings(&with_heavy_trait(row, json!("@payload.e"))), 1);
+}
+
+// EXEC-INVARIANT-1: a kernel-owned `[runtime]` entity's `@invariant` is proved over its own traits' writes only.
+#[test]
+fn a_persist_into_a_runtime_entity_owes_its_invariant_nothing() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let dynamic = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch", "@payload.ops"]] }]);
+    let mapped = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch",
+        ["array/map", "@entity.items", ["fn", "i", ["update", "Order", "@i.id", { "total": "@i.total" }]]]]] }]);
+    let stat = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "create", "Order", { "total": -3 }]] }]);
+    let literal_batch = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [["persist", "batch", [["create", "Order", { "total": -3 }]]]] }]);
+    for (name, t) in [("dynamic", dynamic), ("mapped", mapped), ("static", stat), ("literal batch", literal_batch)] {
+        assert!(
+            prove(&program_with("runtime", t.clone(), J::Null, inv.clone())).is_empty(),
+            "runtime: {name}"
+        );
+        assert!(
+            !prove(&program_with("persistent", t, J::Null, inv.clone())).is_empty(),
+            "control, persistent: {name}"
+        );
+    }
+}
+
+#[test]
+fn a_runtime_entitys_own_trait_set_owes_its_row_invariant() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let set = |guard: Option<J>, value: J| {
+        let mut t = json!({ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.total", value]] });
+        if let Some(g) = guard {
+            t["guard"] = g;
+        }
+        json!([t])
+    };
+    assert!(matches!(
+        only(&program_with("runtime", set(None, json!(-1)), J::Null, inv.clone())),
+        Verdict::Violated { .. }
+    ));
+    assert_eq!(
+        only(&program_with(
+            "runtime",
+            set(Some(json!([">=", "@payload.amount", 0])), json!("@payload.amount")),
+            J::Null,
+            inv.clone()
+        )),
+        Verdict::Proved
+    );
+    assert!(
+        matches!(
+            only(&program_with("runtime", set(None, json!("@payload.amount")), J::Null, inv)),
+            Verdict::Violated { .. }
+        ),
+        "control: unguarded payload"
+    );
 }

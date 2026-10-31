@@ -258,6 +258,7 @@ pub fn payload_type_shape(field_type: &str) -> Result<OirType, ShapeError> {
         "file" => return Ok(OirType::File),
         "bytes" => return Ok(OirType::Bytes),
         "CallKey" => return Ok(OirType::CallKey),
+        sealed if crate::sealed::is_sealed_type(sealed) => return Ok(crate::sealed::sealed_type_ref(sealed)),
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return Ok(OirType::String),
         "array" | "list" => return Err(ShapeError::at(ShapeGap::BareArrayText)),

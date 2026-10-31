@@ -22,7 +22,7 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> O
         let mut here = language_value(unwrap_optional(&current)).clone();
         let mut hops = 0;
         while let OirType::TypeRef { name } | OirType::Reference { entity: name } = &here {
-            let Some(next) = resolve(name) else { break };
+            let Some(next) = resolve(name).or_else(|| crate::sealed::sealed_record(name)) else { break };
             hops += 1;
             if hops > 16 {
                 break;

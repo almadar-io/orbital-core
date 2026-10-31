@@ -146,6 +146,7 @@ fn client_kind_matches_kinds() {
             deliver: FetchDeliver::Rows,
             total: None,
             nearest: None,
+            key: None,
             emit: None,
         }
         .client_kind(),
@@ -242,4 +243,21 @@ fn credential_connect_parses_its_request_and_emit() {
         other => panic!("expected CredentialConnect, got {other:?}"),
     }
     assert!(parse_effect(&serde_json::from_str(r#"["credential-connect"]"#).unwrap()).is_none(), "control: the request is required");
+}
+
+#[test]
+fn parse_fetch_reads_the_key_option() {
+    let keyed: SExpression =
+        serde_json::from_str(r#"["fetch", "Task", {"key": "@payload.kind", "emit": {"success": "S"}}]"#).unwrap();
+    match parse_effect(&keyed).unwrap() {
+        Effect::Fetch { key, .. } => assert_eq!(key.as_ref().and_then(Value::as_str), Some("@payload.kind")),
+        other => panic!("expected Fetch, got {other:?}"),
+    }
+    for unkeyed in [r#"["fetch", "Task"]"#, r#"["fetch", "Task", {"key": null}]"#] {
+        let expr: SExpression = serde_json::from_str(unkeyed).unwrap();
+        match parse_effect(&expr).unwrap() {
+            Effect::Fetch { key, .. } => assert_eq!(key, None, "{unkeyed}"),
+            other => panic!("expected Fetch, got {other:?}"),
+        }
+    }
 }

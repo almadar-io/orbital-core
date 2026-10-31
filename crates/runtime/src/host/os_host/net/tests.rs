@@ -485,6 +485,38 @@ fn connect_is_denied_without_a_matching_grant() {
 }
 
 #[test]
+fn a_host_pattern_grant_is_checked_against_the_concrete_host_on_every_call() {
+    let pattern = || grants(&[("*.example.invalid:443".to_string(), &[NetKind::Tcp])]);
+    for host_name in [
+        "evil.com",
+        "a.b.example.invalid",
+        "example.invalid",
+        "*.example.invalid",
+        "127.0.0.1",
+    ] {
+        with_host(pattern(), |host| {
+            assert_eq!(
+                kind_of(ask(host, OsOp::TcpConnect, &[s(host_name), n(443)])),
+                OsErrorKind::Denied,
+                "{host_name}"
+            );
+        });
+    }
+    with_host(pattern(), |host| {
+        assert_eq!(
+            kind_of(ask(host, OsOp::TcpConnect, &[s("a.example.invalid"), n(80)])),
+            OsErrorKind::Denied,
+            "port"
+        );
+        assert_ne!(
+            kind_of(ask(host, OsOp::TcpConnect, &[s("a.example.invalid"), n(443)])),
+            OsErrorKind::Denied,
+            "control: a matching host passes the grant and fails only to resolve"
+        );
+    });
+}
+
+#[test]
 fn a_granted_port_on_another_host_is_denied() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("addr").port();

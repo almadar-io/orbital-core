@@ -65,6 +65,8 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("credential-test", RunsOn::Server),
     ("fetch", RunsOn::Server),
     ("fetch-stream", RunsOn::Server),
+    ("identity/sign-in", RunsOn::Server),
+    ("identity/sign-out", RunsOn::Server),
     ("navigate", RunsOn::Client),
     ("navigate-back", RunsOn::Client),
     ("os/watch-cron", RunsOn::Server),

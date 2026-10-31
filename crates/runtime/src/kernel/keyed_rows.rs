@@ -131,7 +131,8 @@ impl RuntimeKernel {
     }
 
     /// Whether the row of `trait_name` named `row` is quiet (EXEC-STEP-1b): its trait is in `initial`, its fields
-    /// are the declared defaults, and it has no held delivery, no deferred ask and no tick of its own.
+    /// are the declared defaults, and it has no held delivery and no deferred ask. A tick never keeps a row: ticks run over the rows that exist
+    /// (EXEC-TICK-5), so dropping the row ends its ticks.
     pub(super) fn keyed_row_is_quiet(&self, trait_name: &str, row: &str) -> bool {
         let Some(def) = self
             .registry
@@ -142,9 +143,6 @@ impl RuntimeKernel {
         else {
             return false;
         };
-        if def.ticks.as_ref().is_some_and(|ticks| !ticks.is_empty()) {
-            return false;
-        }
         let initial =
             orbital_core_eval::state_machine::core::StateMachineCore::get_trait_initial_state(&def);
         if initial != Some(self.current_state_name(trait_name, Some(row)).as_str()) {
@@ -249,6 +247,9 @@ impl RuntimeKernel {
             .remove_trait_instance(trait_name, state_key.as_deref());
         let slot = self.frame_slot(trait_name, &entity_type, row);
         self.frames.write().remove(&slot);
+        if self.shared_intrinsic_fields(&entity_type).is_some() {
+            self.frames.write().remove(&self.own_frame_slot(trait_name, row));
+        }
         self.carried_rows.write().remove(&slot);
         deleted.map_err(KernelError::Internal)?;
         Ok(())
@@ -262,6 +263,25 @@ impl RuntimeKernel {
         } else {
             frame
         }
+    }
+
+    /// The frame a step of `trait_name` on `row` writes its `@intrinsic` fields of a `[shared]` entity to: the trait's own.
+    pub(super) fn own_row_frame_key(&self, trait_name: &str, row: &str) -> String {
+        if self.is_keyed_row(trait_name, row) {
+            format!("{trait_name}{ROW_FRAME_SEPARATOR}{row}")
+        } else {
+            trait_name.to_string()
+        }
+    }
+
+    /// The `@intrinsic` field names of the `[shared]` entity `trait_name` is bound to, when it has any.
+    pub(super) fn trait_shared_intrinsic(&self, trait_name: &str) -> Option<Vec<String>> {
+        let defs = self.registry.trait_definitions.read();
+        let entity_type = defs
+            .get(trait_name)
+            .and_then(|d| d.linked_entity.as_deref())
+            .unwrap_or(trait_name);
+        self.shared_intrinsic_fields(entity_type)
     }
 
     /// The keyed rows the current session dropped since its client was last told, as frames to remove (EXEC-DIST-7).

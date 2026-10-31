@@ -219,7 +219,7 @@ fn digest_float(h: &mut Xxh3, f: f64) {
 
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
-        EvalValue::Lambda(_) => {
+        EvalValue::Lambda(_) | EvalValue::Sealed(_) => {
             digest_json(h, &serde_json::to_value(value).unwrap_or(Value::Null))
         }
         EvalValue::Null => h.update(b"n"),

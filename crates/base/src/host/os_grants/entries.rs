@@ -164,8 +164,13 @@ impl OsGrants {
             }
         }
         for (i, g) in self.net.iter().enumerate() {
-            if split_target(&g.target).is_none() {
-                problem(format!("net[{i}]"), format!("{:?} is not `host:port`", g.target));
+            match split_target(&g.target) {
+                None => problem(format!("net[{i}]"), format!("{:?} is not `host:port`", g.target)),
+                Some((host, _)) if host.contains('*') && host_pattern_suffix(host).is_none() => problem(
+                    format!("net[{i}]"),
+                    format!("{:?} is not a host pattern: only a leading `*.` followed by at least two literal labels (`*.example.com:443`)", g.target),
+                ),
+                Some(_) => {}
             }
             if g.kinds.is_empty() {
                 problem(format!("net[{i}]"), format!("{:?} grants no kind", g.target));

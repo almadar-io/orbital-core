@@ -47,6 +47,7 @@ impl EffectExecutor {
                 deliver,
                 total,
                 nearest,
+                key: _,
                 emit: _,
             } => self.do_fetch(
                 entity_type,

@@ -153,6 +153,10 @@ impl<'a> Program<'a> {
         let Some(def) = self.entity(entity) else {
             return;
         };
+        if def.persistence == Some(Persistence::Runtime) {
+            self.runtime_own_obligations(prop, def, inv, invariants, out);
+            return;
+        }
         let intrinsic: BTreeSet<&str> = def
             .fields
             .iter()
@@ -162,7 +166,7 @@ impl<'a> Program<'a> {
         for td in &self.traits {
             let set_fields = fields_set_anywhere(td);
             for step in steps(td) {
-                if !WriteReach::of(step.effects, td).may_write(entity) {
+                if !WriteReach::of(step.effects, td).may_write(def) {
                     continue;
                 }
                 let paths = match run(step.effects, td, step.event, self) {
@@ -339,6 +343,60 @@ impl<'a> Program<'a> {
                             ));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// A `[runtime]` entity's row invariant is owed by the `set`s its own traits make on their frame, from a start
+    /// where every invariant of the entity holds (EXEC-INVARIANT-1).
+    fn runtime_own_obligations(
+        &self,
+        prop: &Proposition,
+        def: &EntityDefinition,
+        inv: &SExpression,
+        invariants: &[SExpression],
+        out: &mut Vec<Obligation>,
+    ) {
+        for td in self
+            .traits
+            .iter()
+            .filter(|t| t.linked_entity.as_deref() == Some(def.name.as_str()))
+        {
+            for step in steps(td) {
+                let paths = match run(step.effects, td, step.event, self) {
+                    Ok(paths) => paths,
+                    Err(reason) => {
+                        out.push(unbuildable(prop, &step.site, reason));
+                        continue;
+                    }
+                };
+                for (pi, path) in paths.iter().enumerate() {
+                    if path.frame.is_empty() {
+                        continue;
+                    }
+                    let mut vars = self.base_vars(td, step.event);
+                    add_entity_vars(&mut vars, FETCHED, def, true);
+                    let assumptions: Vec<SExpression> = step
+                        .guard
+                        .into_iter()
+                        .cloned()
+                        .chain(path.conds.iter().cloned())
+                        .chain(invariants.iter().cloned())
+                        .collect();
+                    out.push(configured(
+                        td,
+                        Obligation {
+                            proposition: prop.clone(),
+                            site: format!("{}{} (set on its own row)", step.site, path_label(&paths, pi)),
+                            assumptions,
+                            goal: subst_fields(inv, "@entity", &|f| path.frame.get(f).cloned()),
+                            vars,
+                            inexact: join(&path.notes),
+                            unbuildable: None,
+                            evaluated: path.evaluated.iter().map(|v| config_read(td, v)).collect(),
+                        },
+                    ));
                 }
             }
         }
@@ -591,7 +649,8 @@ impl<'a> Program<'a> {
                 def.shared && other.linked_entity.as_deref() == Some(def.name.as_str());
             for step in steps(other) {
                 let reach = WriteReach::of(step.effects, other);
-                if !reach.may_write(&def.name) && !(shares_frame && reach.may_change_frame()) {
+                let persists = reach.may_write(def);
+                if !persists && !(shares_frame && reach.may_change_frame()) {
                     continue;
                 }
                 let Ok(paths) = run(step.effects, other, step.event, self) else {
@@ -610,7 +669,7 @@ impl<'a> Program<'a> {
                         )
                     };
                     let mut changed: BTreeMap<String, SExpression> = BTreeMap::new();
-                    if path.writes.iter().any(|w| w.entity == UNKNOWN_TARGET) {
+                    if persists && path.writes.iter().any(|w| w.entity == UNKNOWN_TARGET) {
                         for f in def.fields.iter().filter_map(|f| f.name.as_deref()) {
                             if !set_fields.contains(f) {
                                 changed.insert(
@@ -621,7 +680,7 @@ impl<'a> Program<'a> {
                         }
                     }
                     for w in path.writes.iter().filter(|w| {
-                        w.entity == def.name && matches!(w.op, WriteOp::Update | WriteOp::Upsert)
+                        persists && w.entity == def.name && matches!(w.op, WriteOp::Update | WriteOp::Upsert)
                     }) {
                         match &w.data {
                             Data::Fields(m) => {

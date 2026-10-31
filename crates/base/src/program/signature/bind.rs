@@ -548,7 +548,8 @@ pub(super) fn bind_unknown(
     }
 }
 
-/// A nominal std type a strict call checks (`bytes`, the vector, cell and geometry structs); any other name is open.
+/// A nominal std type a strict call checks (`bytes`, the vector, cell and geometry structs) and a sealed type, which
+/// only a value of the same sealed type fits (EXEC-IDENTITY-3); any other name is open.
 pub(super) fn bind_nominal(
     name: &str,
     formal: &OperatorTypeRef,
@@ -556,7 +557,8 @@ pub(super) fn bind_nominal(
     actual: &Actual<'_>,
     b: &CallBindings,
 ) -> Result<(), Mismatch> {
-    if !matches!(name, "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment") {
+    let sealed = crate::sealed::is_sealed_type(name);
+    if !sealed && !matches!(name, "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment") {
         return Ok(());
     }
     let Known::Type(ty) = known else {
@@ -565,7 +567,9 @@ pub(super) fn bind_nominal(
     if is_uninformative(ty) {
         return Err(loose(ty, formal));
     }
-    let fits_name = if name == "bytes" {
+    let fits_name = if sealed {
+        fits(ty, &crate::sealed::sealed_type_ref(name), b, Mode::Proof)
+    } else if name == "bytes" {
         fits(ty, &OirType::Bytes, b, Mode::Proof)
     } else {
         record_of(ty, b).is_some()

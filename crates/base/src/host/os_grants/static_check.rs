@@ -244,6 +244,10 @@ fn describe(need: &OsRequirement) -> String {
             let kinds: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
             format!("net \"{host}:{port}\" {}", kinds.join(" or "))
         }
+        OsRequirement::NetPattern { port, kinds } => {
+            let kinds: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
+            format!("net a host chosen per call at port {port} {}", kinds.join(" or "))
+        }
         OsRequirement::NetAnchored { host, port, kinds } => {
             let kinds: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
             format!(
@@ -295,6 +299,13 @@ fn grant_entry(need: &OsRequirement) -> (String, bool) {
                 "net: {{ {}, {}: [{}] }}",
                 host.label(),
                 port.label(),
+                kinds.first().map_or("tcp", |k| k.name())
+            ),
+            false,
+        ),
+        OsRequirement::NetPattern { port, kinds } => (
+            format!(
+                "net: {{ \"*.<domain>:{port}\": [{}] }}",
                 kinds.first().map_or("tcp", |k| k.name())
             ),
             false,
@@ -433,8 +444,6 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
     if let Some(app) = &schema.os_grants {
         check_entries(app, "osGrants", None, &mut out);
     }
-    let mut needs_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
-    let mut reach_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
         let at = format!("orbitals[{i} ({})]", orbital.name);
         if let Some(own) = &orbital.os_grants {
@@ -446,8 +455,6 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             );
         }
         let grants = schema.orbital_os_grants(orbital);
-        let mut needs: Vec<OsRequirement> = Vec::new();
-        let mut reach: Vec<OsRequirement> = Vec::new();
         for (j, trait_ref) in orbital.traits.iter().enumerate() {
             let TraitReference::Inline(trait_def) = trait_ref else {
                 continue;
@@ -456,7 +463,6 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
                     let (positional, _) = split_envelope(op, args);
-                    reach.extend(deferred_reach(op, positional));
                     match os_requirements_deferring(op, positional, &config_rooted) {
                         Err(arg) => out.push(not_static(&orbital.name, op, arg + 1, &site, None)),
                         Ok(found) => {
@@ -464,33 +470,10 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                                 if !grants.allows(&need) {
                                     out.push(missing(&orbital.name, op, &need, &site, None));
                                 }
-                                needs.push(need);
                             }
                         }
                     }
                 });
-            }
-        }
-        if let Some(own) = &orbital.os_grants {
-            for atom in own.atoms() {
-                if !used_by_any(&atom.grants, &needs) && !used_by_any(&atom.grants, &reach) {
-                    out.push(unused(
-                        format!("{at}.osGrants.{}", atom.path),
-                        &atom.label,
-                        Some(&orbital.name),
-                    ));
-                }
-            }
-        }
-        needs_by_orbital.push(needs);
-        reach_by_orbital.push(reach);
-    }
-    if let Some(app) = &schema.os_grants {
-        let all: Vec<OsRequirement> = needs_by_orbital.into_iter().flatten().collect();
-        let all_reach: Vec<OsRequirement> = reach_by_orbital.into_iter().flatten().collect();
-        for atom in app.atoms() {
-            if !used_by_any(&atom.grants, &all) && !used_by_any(&atom.grants, &all_reach) {
-                out.push(unused(format!("osGrants.{}", atom.path), &atom.label, None));
             }
         }
     }
@@ -591,8 +574,10 @@ fn concat_roots(
 /// is not static.
 fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
     let mut out = Vec::new();
+    let mut needs_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
         let grants = schema.orbital_os_grants(orbital);
+        let mut needs: Vec<OsRequirement> = Vec::new();
         for (j, trait_ref) in orbital.traits.iter().enumerate() {
             let TraitReference::Inline(trait_def) = trait_ref else {
                 continue;
@@ -604,6 +589,8 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                     let (positional, _) = split_envelope(op, args);
                     let as_written = os_requirements_deferring(op, positional, &config_rooted)
                         .unwrap_or_default();
+                    needs.extend(as_written.iter().cloned());
+                    needs.extend(deferred_reach(op, positional));
                     for (at, arg) in positional.iter().enumerate() {
                         let Some(path) = deferred_anchored_path(arg) else {
                             continue;
@@ -631,6 +618,7 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                             else {
                                 continue;
                             };
+                            needs.extend(found.iter().cloned());
                             for need in found.into_iter().filter(|need| !as_written.contains(need))
                             {
                                 if !grants.allows(&need) {
@@ -684,6 +672,7 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                                         break;
                                     }
                                 };
+                            needs.extend(found.iter().cloned());
                             for need in found.into_iter().filter(|need| !as_written.contains(need))
                             {
                                 if !grants.allows(&need) {
@@ -699,6 +688,28 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                         }
                     }
                 });
+            }
+        }
+        needs_by_orbital.push(needs);
+    }
+    for (i, orbital) in schema.orbitals.iter().enumerate() {
+        if let Some(own) = &orbital.os_grants {
+            for atom in own.atoms() {
+                if !used_by_any(&atom.grants, &needs_by_orbital[i]) {
+                    out.push(unused(
+                        format!("orbitals[{i} ({})].osGrants.{}", orbital.name, atom.path),
+                        &atom.label,
+                        Some(&orbital.name),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(app) = &schema.os_grants {
+        let all: Vec<OsRequirement> = needs_by_orbital.into_iter().flatten().collect();
+        for atom in app.atoms() {
+            if !used_by_any(&atom.grants, &all) {
+                out.push(unused(format!("osGrants.{}", atom.path), &atom.label, None));
             }
         }
     }

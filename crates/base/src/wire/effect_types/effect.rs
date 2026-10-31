@@ -181,6 +181,10 @@ pub enum Effect {
         /// similarity among those `filter` admits (EXEC-FETCH-2).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nearest: Option<Value>,
+        /// The `key:` expression, resolved to a non-empty string; echoed as `key` in the success and failure
+        /// payloads (EXEC-FETCH-3). Absent: the payloads carry no `key`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<Value>,
         /// Completion events fired after the fetch resolves (`success` carries the rows
         /// as `{ data: [...] }`; `failure` fires on error). Drives `loading` → `loaded`.
         #[serde(default, skip_serializing_if = "Option::is_none")]

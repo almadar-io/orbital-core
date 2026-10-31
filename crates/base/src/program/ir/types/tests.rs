@@ -941,3 +941,10 @@ fn effective_type_unwraps_exactly_one_optional_layer() {
     let required = OirField::new("x", OirType::String);
     assert_eq!(required.effective_type(), (&OirType::String, false));
 }
+
+#[test]
+fn a_sealed_type_name_in_a_payload_is_that_nominal_type_never_an_entity_reference() {
+    assert_eq!(payload_type_shape("Verified").unwrap(), OirType::TypeRef { name: "Verified".to_string() });
+    assert_eq!(payload_type_shape("[Verified]").unwrap(), OirType::array(OirType::TypeRef { name: "Verified".to_string() }));
+    assert_eq!(payload_type_shape("Note").unwrap(), OirType::Reference { entity: "Note".to_string() }, "control: another name is an entity");
+}

@@ -143,6 +143,37 @@ pub(super) fn relative_glob_reaches_under(glob: &str, root: &[String]) -> bool {
     !pattern.is_empty()
 }
 
+/// The literal suffix of a host-pattern grant host (`*.notify.windows.com` gives `notify.windows.com`): a leading
+/// `*.` and at least two more labels of letters, digits, `-` or `_`, the last not all digits. `None` for anything else,
+/// including a `*` anywhere but the first label.
+pub(super) fn host_pattern_suffix(host: &str) -> Option<&str> {
+    let suffix = host.strip_prefix("*.")?;
+    let labels: Vec<&str> = suffix.split('.').collect();
+    let label = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    (labels.len() >= 2
+        && labels.iter().all(|l| label(l))
+        && !labels[labels.len() - 1].chars().all(|c| c.is_ascii_digit()))
+    .then_some(suffix)
+}
+
+/// Whether a grant host covers `host`: an exact name (case-insensitive), or a pattern `*.<suffix>` that `host`
+/// matches with exactly one non-empty label before `<suffix>` (the TLS wildcard rule: `*.x.y` covers `a.x.y`, not
+/// `a.b.x.y` and not `x.y`). A pattern is never an exact name.
+pub(super) fn grant_host_covers(grant_host: &str, host: &str) -> bool {
+    if grant_host.contains('*') {
+        return host_pattern_suffix(grant_host).is_some_and(|suffix| {
+            let host = host.to_ascii_lowercase();
+            host.strip_suffix(&suffix.to_ascii_lowercase())
+                .and_then(|rest| rest.strip_suffix('.'))
+                .is_some_and(|label| {
+                    !label.is_empty()
+                        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                })
+        });
+    }
+    grant_host.eq_ignore_ascii_case(host)
+}
+
 pub(super) fn split_target(target: &str) -> Option<(&str, u16)> {
     let (host, port) = target.rsplit_once(':')?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -272,7 +303,7 @@ impl OsGrants {
         self.net.iter().any(|g| {
             g.kinds.contains(&kind)
                 && split_target(&g.target)
-                    .is_some_and(|(h, p)| p == port && h.eq_ignore_ascii_case(host))
+                    .is_some_and(|(h, p)| p == port && grant_host_covers(h, host))
         })
     }
 
@@ -280,7 +311,16 @@ impl OsGrants {
     pub fn net_names_host(&self, host: &str, kind: NetKind) -> bool {
         let host = host.trim_start_matches('[').trim_end_matches(']');
         self.net.iter().any(|g| {
-            g.kinds.contains(&kind) && split_target(&g.target).is_some_and(|(h, _)| h.eq_ignore_ascii_case(host))
+            g.kinds.contains(&kind) && split_target(&g.target).is_some_and(|(h, _)| grant_host_covers(h, host))
+        })
+    }
+
+    /// Whether a grant of one of `kinds` is a host pattern at `port`: what covers a call whose host is chosen per
+    /// call. The host itself is checked by [`Self::net_allows`] when the call runs.
+    pub fn net_pattern_allows(&self, port: u16, kinds: &[NetKind]) -> bool {
+        self.net.iter().any(|g| {
+            kinds.iter().any(|k| g.kinds.contains(k))
+                && split_target(&g.target).is_some_and(|(h, p)| p == port && host_pattern_suffix(h).is_some())
         })
     }
 

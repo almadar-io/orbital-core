@@ -107,6 +107,8 @@ pub mod entity_vocabulary;
 pub mod identity;
 #[path = "contract/viewer.rs"]
 pub mod viewer;
+#[path = "contract/sealed.rs"]
+pub mod sealed;
 #[path = "contract/validation_report.rs"]
 pub mod validation_report;
 #[path = "contract/dispatch_mode.rs"]

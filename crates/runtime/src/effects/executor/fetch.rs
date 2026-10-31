@@ -46,6 +46,7 @@ impl EffectExecutor {
             deliver,
             total: (total_mode == RowTotalMode::None).then_some(RowTotalMode::None),
             nearest: nearest.cloned(),
+            key: None,
             emit: None,
         };
         let counted = |total: usize| (total_mode == RowTotalMode::Exact).then_some(total);

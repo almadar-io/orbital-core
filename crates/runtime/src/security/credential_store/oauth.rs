@@ -76,6 +76,7 @@ enum Exchange {
         client_secret_ref: Option<String>,
         client_auth: ClientAuth,
         label: Option<String>,
+        source: Option<String>,
     },
     Assertion {
         name: String,
@@ -146,6 +147,8 @@ pub(super) struct OauthRecord {
     scopes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     json_token: Option<JsonTokenSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_source: Option<String>,
 }
 
 impl OauthRecord {
@@ -330,9 +333,9 @@ impl EncryptedCredentialStore {
         spec: &AssertionSpec,
         scopes: &[String],
     ) -> Result<PendingExchange, ConnectFailure> {
-        let mut pem = self.held_text(&spec.signing_key, "the signing key")?;
-        let signed = assertion_jwt(spec, scopes, &pem, (self.clock)(), self.blinding_seed());
-        zeroize::Zeroize::zeroize(&mut pem);
+        let mut account = self.held_text(&spec.signing_key, "the service-account key")?;
+        let signed = assertion_jwt(spec, scopes, &account, (self.clock)(), self.blinding_seed());
+        zeroize::Zeroize::zeroize(&mut account);
         let assertion = signed.map_err(from_grant_error)?;
         let request = jwt_bearer_request(assertion.expose());
         Ok(PendingExchange {
@@ -457,6 +460,7 @@ impl EncryptedCredentialStore {
                     assertion: None,
                     scopes: Vec::new(),
                     json_token: None,
+                    refresh_source: None,
                 };
                 self.persist_record(name, principal.as_deref(), token.label.as_deref(), record)?;
                 Ok(CredentialStanding {
@@ -473,6 +477,7 @@ impl EncryptedCredentialStore {
                 client_secret_ref,
                 client_auth,
                 label,
+                source,
             } => {
                 let token = match parse_token_response(status, body, (self.clock)()) {
                     Ok(token) => token,
@@ -501,7 +506,13 @@ impl EncryptedCredentialStore {
                     assertion: None,
                     scopes: Vec::new(),
                     json_token: None,
+                    refresh_source: source.clone(),
                 };
+                if let (Some(source), Some(rotated)) = (source, &token.refresh) {
+                    if rotated.expose() != refresh {
+                        self.write_back_refresh(source, rotated.expose())?;
+                    }
+                }
                 self.persist_record(name, principal.as_deref(), label.as_deref(), record)?;
                 Ok(CredentialStanding {
                     connected: true,
@@ -528,6 +539,7 @@ impl EncryptedCredentialStore {
                     assertion: Some(spec.clone()),
                     scopes: scopes.clone(),
                     json_token: None,
+                    refresh_source: None,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -553,6 +565,7 @@ impl EncryptedCredentialStore {
                     assertion: None,
                     scopes: Vec::new(),
                     json_token: Some(spec.clone()),
+                    refresh_source: None,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -592,11 +605,30 @@ impl EncryptedCredentialStore {
                     assertion: None,
                     scopes: Vec::new(),
                     json_token: Some(spec.clone()),
+                    refresh_source: None,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
             }
         }
+    }
+
+    fn write_back_refresh(&self, source: &str, rotated: &str) -> Result<(), ConnectFailure> {
+        let service = self
+            .state
+            .lock()
+            .by_identity
+            .get(&storage_key(source, None))
+            .map(|stored| stored.entry.service.clone())
+            .ok_or_else(|| {
+                failure(
+                    ConnectFailureKind::Refused,
+                    format!("credential `{source}` (the refresh token) is no longer stored"),
+                )
+            })?;
+        self.set(&service, source, rotated, None)
+            .map(|_| ())
+            .map_err(|error| failure(ConnectFailureKind::Refused, error))
     }
 
     fn resolve_client(
@@ -755,7 +787,7 @@ impl EncryptedCredentialStore {
             client_secret: record.client_secret_ref.as_deref(),
             client_auth: record.client_auth,
         };
-        self.refresh_pending(name, principal, &record.token_endpoint, refresh, refs, label)
+        self.refresh_pending(name, principal, &record.token_endpoint, refresh, refs, label, record.refresh_source.clone())
             .map(RefreshStart::Exchange)
     }
 
@@ -788,6 +820,7 @@ impl EncryptedCredentialStore {
                 refresh,
                 refs,
                 None,
+                Some(source.to_string()),
             );
         }
         let held = self.held_record(&grant.name, grant.principal.as_deref());
@@ -827,6 +860,7 @@ impl EncryptedCredentialStore {
             refresh,
             refs,
             label,
+            record.refresh_source.clone(),
         )
     }
 
@@ -838,6 +872,7 @@ impl EncryptedCredentialStore {
         refresh: String,
         refs: ClientRefs<'_>,
         label: Option<String>,
+        source: Option<String>,
     ) -> Result<PendingExchange, ConnectFailure> {
         let (client_id, client_secret) = self.resolve_client(refs.client_id, refs.client_secret, refs.client_auth)?;
         let request = refresh_token_request(&RefreshExchange {
@@ -861,6 +896,7 @@ impl EncryptedCredentialStore {
                     client_secret_ref: refs.client_secret.map(str::to_string),
                     client_auth: refs.client_auth,
                     label,
+                    source,
                 },
             },
         })

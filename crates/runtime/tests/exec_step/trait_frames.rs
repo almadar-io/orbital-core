@@ -176,3 +176,74 @@ fn control_a_trait_bound_to_the_primary_entity_reads_its_default() {
         .expect("SEEN");
     assert_eq!(payload["v"], json!("start"));
 }
+
+fn intrinsic_kernel() -> RuntimeKernel {
+    let paged = |name: &str| {
+        listener(name, "Page", json!([]), json!([
+            arm("NEXT", json!([["set", "@entity.browsePage", ["+", "@entity.browsePage", 1]], ["set", "@entity.tag", name]])),
+            arm("READ", json!([["emit", "SEEN", { "page": "@entity.browsePage", "tag": "@entity.tag" }]]))
+        ]))
+    };
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "frames", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Page", "shared": true, "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "browsePage", "type": "number", "default": 1, "intrinsic": true },
+                { "name": "tag", "type": "string", "default": "none" }
+            ] },
+            "traits": [paged("A"), paged("B")]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    k.register_schema(schema).unwrap();
+    k
+}
+
+fn seen_by(k: &RuntimeKernel, trait_name: &str) -> Json {
+    k.dispatch(trait_name, None, "READ", Value::Null)
+        .unwrap()
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .find_map(|er| match &er.effect {
+            Effect::Emit { event, payload } if event == "SEEN" => Some(serde_json::to_value(payload).unwrap()),
+            _ => None,
+        })
+        .unwrap()
+}
+
+#[test]
+fn an_intrinsic_field_of_a_shared_entity_is_each_traits_own_frame() {
+    let k = intrinsic_kernel();
+    k.dispatch("A", None, "NEXT", Value::Null).unwrap();
+    k.dispatch("A", None, "NEXT", Value::Null).unwrap();
+    assert_eq!(seen_by(&k, "A")["page"], json!(3.0));
+    assert_eq!(seen_by(&k, "B")["page"], json!(1.0), "paging A leaves B's page at its default");
+    k.dispatch("B", None, "NEXT", Value::Null).unwrap();
+    assert_eq!(seen_by(&k, "B")["page"], json!(2.0));
+    assert_eq!(seen_by(&k, "A")["page"], json!(3.0));
+}
+
+#[test]
+fn a_non_intrinsic_field_of_a_shared_entity_stays_shared() {
+    let k = intrinsic_kernel();
+    k.dispatch("A", None, "NEXT", Value::Null).unwrap();
+    assert_eq!(seen_by(&k, "B")["tag"], json!("A"));
+}
+
+#[test]
+fn snapshot_and_restore_round_trip_both_halves_of_a_shared_trait_frame() {
+    let k = intrinsic_kernel();
+    let before = k.snapshot_trait("A", None);
+    k.dispatch("A", None, "NEXT", Value::Null).unwrap();
+    assert_eq!(seen_by(&k, "A")["page"], json!(2.0));
+    k.restore_trait("A", None, before);
+    let after = seen_by(&k, "A");
+    assert_eq!(after["page"], json!(1.0));
+    assert_eq!(after["tag"], json!("none"));
+}

@@ -318,6 +318,13 @@ impl RuntimeKernel {
                     return;
                 };
                 let field_name = path.strip_prefix("@entity.").unwrap_or(path);
+                if evaluated_value.is_null() {
+                    if let Some(refusal) = self.null_refused_by(field_name) {
+                        tracing::error!(site = %self.effect_site(), path = %path, error = %refusal, "kernel: set refused");
+                        effect_results.push(EffectResult::failed(effect.clone(), &refusal));
+                        return;
+                    }
+                }
                 drop(mirrored);
                 entity_data.insert(orbital_core_base::value::Shared::new(field_name.to_string()), evaluated_value.clone());
                 effect_results.push(EffectResult::executed(Effect::Set {
@@ -326,13 +333,21 @@ impl RuntimeKernel {
                 }));
             }
             Effect::Fetch {
-                emit: Some(routes), ..
+                emit: Some(routes), key, ..
             } if !routes.is_empty() => {
+                let key = match key.as_ref().map(|k| resolve_call_key(k, ctx)).transpose() {
+                    Ok(key) => key,
+                    Err(fault) => {
+                        tracing::error!(site = %self.effect_site(), effect = "fetch", error = %fault, "kernel: effect arguments failed to evaluate");
+                        effect_results.push(EffectResult::failed(effect.clone(), &OrbitalError::Eval(fault).to_string()));
+                        return;
+                    }
+                };
                 let result = self
                     .effect_executor
                     .execute(&effect, ctx)
                     .with_declared_routes(routes);
-                let completion = fetch_completion_emit(routes, &result);
+                let completion = fetch_completion_emit(routes, &result, key.as_ref().and_then(Value::as_str));
                 push_with_completion(effect_results, result, completion);
             }
             Effect::Persist {
@@ -392,6 +407,9 @@ impl RuntimeKernel {
                 CallShape::PAGE_FACTS,
                 |e, _| self.run_page_facts(e),
             ),
+            Effect::Custom { name, .. } if orbital_core_base::viewer::is_identity_effect(name) => {
+                self.exec_identity(&effect, ctx, effect_results)
+            }
             Effect::Custom { name, emit, .. }
                 if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
             {
@@ -720,6 +738,20 @@ impl std::fmt::Display for EffectSite {
 }
 
 impl RuntimeKernel {
+    /// The refusal of a null written to `field` of the step's own entity when that field declares no null (`T?`),
+    /// EXEC-STEP-3: validate refuses every unguarded write that can carry one, so a validated program never reaches it.
+    fn null_refused_by(&self, field: &str) -> Option<String> {
+        let (trait_name, _) = self.step.step_site.read().clone()?;
+        let entity = self.linked_entity_of(&trait_name).unwrap_or(trait_name);
+        let definitions = self.registry.entity_definitions.read();
+        let declared = definitions
+            .get(&entity)?
+            .fields
+            .iter()
+            .find(|f| f.name.as_deref() == Some(field))?;
+        (declared.nullable != Some(true)).then(|| format!("set @entity.{field}: null written into `{field}` of {entity}, which declares no null (`T?`)"))
+    }
+
     pub(super) fn effect_site(&self) -> EffectSite {
         let trait_name = self.step.step_site.read().clone().map(|(t, _)| t);
         let orbital = trait_name.as_deref().and_then(|t| self.emit_source(t).orbital);
@@ -781,7 +813,7 @@ fn set_value(
     }
 }
 
-fn push_with_completion(
+pub(super) fn push_with_completion(
     effect_results: &mut Vec<EffectResult>,
     result: EffectResult,
     completion: Option<EffectResult>,

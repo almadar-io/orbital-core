@@ -246,11 +246,12 @@ fn hash_value(node: &Value, state: &mut impl Hasher) {
         Value::Array(items) => (4u8, &**items as *const Vec<Value> as usize).hash(state),
         Value::Object(fields) => (5u8, &**fields as *const ValueMap as usize).hash(state),
         Value::Lambda(l) => (6u8, std::sync::Arc::as_ptr(&l.body) as usize).hash(state),
+        Value::Sealed(sealed) => (7u8, std::sync::Arc::as_ptr(sealed) as usize).hash(state),
     }
 }
 
 fn mergeable(node: &Value) -> bool {
-    !matches!(node, Value::Lambda(_))
+    !matches!(node, Value::Lambda(_) | Value::Sealed(_))
 }
 
 /// The list `items` as the one shared value node the active scope holds for that content, else a new node (held by

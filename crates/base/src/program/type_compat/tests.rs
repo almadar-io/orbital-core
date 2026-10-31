@@ -871,3 +871,47 @@ fn a_type_qualified_by_a_lowercase_behavior_name_is_a_named_type_like_its_short_
     );
     assert!(matches!(parse_compat_type("rowWriteOutcome"), CompatType::Unknown(_)), "control: a lowercase short name stays unknown");
 }
+
+mod sealed_types {
+    use super::super::{checked_sub_with_named, sub};
+    use crate::ir::types::{OirField, OirType};
+    use crate::sealed::{sealed_record, sealed_type_ref};
+
+    fn verified() -> OirType {
+        sealed_type_ref("Verified")
+    }
+
+    #[test]
+    fn a_sealed_type_accepts_only_itself() {
+        let named = |_: &str| None;
+        assert!(checked_sub_with_named(&verified(), &verified(), &named).is_some());
+        assert!(sub(&verified(), &verified()).is_some());
+        let record = sealed_record("Verified").expect("record");
+        assert!(checked_sub_with_named(&record, &verified(), &named).is_none(), "a literal of its own shape never fits");
+        assert!(sub(&record, &verified()).is_none(), "nor in the unchecked relation");
+        let literal = OirType::Struct {
+            fields: vec![OirField::new("subject", OirType::String)].into(),
+            additional: None,
+        };
+        assert!(checked_sub_with_named(&literal, &verified(), &named).is_none());
+        assert!(checked_sub_with_named(&OirType::String, &verified(), &named).is_none());
+        assert!(checked_sub_with_named(&OirType::erased(), &verified(), &named).is_none(), "a json-typed value never fits");
+        assert!(checked_sub_with_named(&OirType::optional(verified()), &verified(), &named).is_none(), "control: nullable is not present");
+    }
+
+    #[test]
+    fn a_resolver_that_names_the_record_cannot_open_the_seal() {
+        let record = sealed_record("Verified").expect("record");
+        let resolve = |name: &str| (name == "Verified").then(|| record.clone());
+        assert!(checked_sub_with_named(&record, &verified(), &resolve).is_none());
+    }
+
+    #[test]
+    fn a_verified_reads_through_its_record_and_control_a_viewer_does_not_gain_the_seal() {
+        let segment = |name: &str| vec![name.to_string()];
+        assert_eq!(crate::signature::type_at_path(&verified(), &segment("subject")), Some(OirType::String));
+        assert_eq!(crate::signature::type_at_path(&verified(), &segment("expiresAt")), Some(OirType::Instant));
+        assert!(crate::signature::type_at_path(&verified(), &segment("password")).is_none());
+        assert!(sub(&verified(), &sealed_record("Verified").expect("record")).is_some(), "a verified reads as its record");
+    }
+}

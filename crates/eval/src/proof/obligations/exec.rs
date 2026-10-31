@@ -337,8 +337,11 @@ impl WriteReach {
         reach
     }
 
-    pub(super) fn may_write(&self, entity: &str) -> bool {
-        self.unknown || self.entities.contains(entity)
+    /// Whether a `persist` can write a row of `def`. A kernel-owned `[runtime]` entity is never reached: its
+    /// invariant is proved over its own traits' writes only (EXEC-INVARIANT-1).
+    pub(super) fn may_write(&self, def: &EntityDefinition) -> bool {
+        def.persistence != Some(Persistence::Runtime)
+            && (self.unknown || self.entities.contains(def.name.as_str()))
     }
 
     pub(super) fn may_change_frame(&self) -> bool {
@@ -358,7 +361,7 @@ impl WriteReach {
     }
 
     fn persist(&mut self, args: &[SExpression], td: &TraitDefinition) {
-        let mut name = |this: &mut Self, e: Option<&SExpression>| match e.and_then(|e| target_entity(td, e)) {
+        let name = |this: &mut Self, e: Option<&SExpression>| match e.and_then(|e| target_entity(td, e)) {
             Some(entity) => {
                 this.entities.insert(entity);
             }

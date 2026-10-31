@@ -94,6 +94,7 @@ pub(super) fn non_data_kind(value: &Value) -> Option<&'static str> {
         Value::Object(map) => map.values().find_map(non_data_kind),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
         Value::Lambda(_) => Some("function"),
+        Value::Sealed(_) => Some("sealed"),
     }
 }
 

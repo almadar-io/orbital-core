@@ -259,7 +259,7 @@ fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
                 json_fits(item, list_null, map_null)
             }
         }),
-        Value::Lambda(_) => false,
+        Value::Lambda(_) | Value::Sealed(_) => false,
     }
 }
 
@@ -295,6 +295,9 @@ fn first_misfit(
 ) -> Option<Misfit> {
     if value.is_null() && matches!(ty, OirType::Optional { .. }) {
         return None;
+    }
+    if let Some(sealed) = orbital_core_base::sealed::sealed_name(ty) {
+        return (!value.is_sealed_as(sealed)).then(|| Misfit::here(value, ty));
     }
     // A reference is the related row's id, or the row itself, which is checked as one.
     if let (OirType::Reference { .. }, Value::String(_)) = (ty, value) {

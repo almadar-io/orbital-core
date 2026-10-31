@@ -2478,3 +2478,25 @@ fn the_after_view_reads_the_row_a_step_persisted() {
     let outcomes = drive_blocking(&kernel, start_step(&kernel, &setup.steps[0]), &host_answers(&setup, &store)).unwrap();
     assert_eq!(entity_views(&outcomes, "hits"), vec![("Notes".to_string(), Some(4.0), Some(Some(5.0)))]);
 }
+
+// EXEC-STEP-1b: a keyed row whose run ended drops even when its trait ticks, and its drop replays like any other.
+
+fn ticking_keyed_drop_program(keys: &[&str]) -> Setup {
+    let mut setup = keyed_drop_program(vec![], keys, false);
+    setup.schema["orbitals"][0]["traits"][1]["ticks"] =
+        json!([{ "name": "beat", "interval": 10, "effects": [["emit", "BEAT", {}]] }]);
+    setup
+}
+
+#[test]
+fn a_ticking_keyed_row_drop_replays_its_asks_before_the_next_delivery_as_a_tickless_one_does() {
+    let ticking = fly_ordered(&ticking_keyed_drop_program(&["k1", "k2"]), &[]);
+    let plain = fly_ordered(&keyed_drop_program(vec![], &["k1", "k2"], false), &[]);
+    assert_eq!(deletes(&ticking), ["k1", "k2"], "{:?}", ticking.batches);
+    assert_eq!(ticking.batches, plain.batches);
+    assert_eq!(ticking.trace, plain.trace);
+    assert_eq!(ticking.world, plain.world);
+    let (expected, expected_world) = blocking_run(&ticking_keyed_drop_program(&["k1", "k2"]));
+    assert_eq!(ticking.trace, expected[0]);
+    assert_eq!(ticking.world, expected_world);
+}

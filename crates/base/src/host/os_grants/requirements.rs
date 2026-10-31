@@ -24,6 +24,9 @@ pub enum OsRequirement {
     /// A command written against an anchor: covered only by the same anchored `exec` entry.
     ExecAnchored { anchor: GrantAnchor, path: Option<String> },
     Net { host: String, port: u16, kinds: Vec<NetKind> },
+    /// A host chosen per call at a literal `port`: covered only by a host-pattern `net` grant (`*.example.com:443`) at
+    /// that port; the host that arrives is checked against the pattern by the host when the call runs.
+    NetPattern { port: u16, kinds: Vec<NetKind> },
     Env { name: String },
     Stdio { kind: StdioKind },
     Sys { kind: SysKind },
@@ -72,6 +75,7 @@ impl OsGrants {
             OsRequirement::Net { host, port, kinds } => {
                 kinds.iter().any(|kind| self.net_allows(host, *port, *kind))
             }
+            OsRequirement::NetPattern { port, kinds } => self.net_pattern_allows(*port, kinds),
             OsRequirement::Env { name } => self.env_allows(name),
             OsRequirement::Stdio { kind } => self.stdio_allows(*kind),
             OsRequirement::Sys { kind } => self.sys_allows(*kind),
@@ -263,7 +267,16 @@ pub(super) fn net_need(
     };
     let (host_anchor, port_anchor) = (anchored_part(host)?, anchored_part(port)?);
     if host_anchor.is_none() && port_anchor.is_none() {
-        let (Some(name), Some(port)) = (literal(args, host, deferred)?, literal_port(args, port, deferred)?) else {
+        let name = match literal(args, host, deferred) {
+            Ok(name) => name,
+            Err(at) => {
+                return match literal_port(args, port, deferred) {
+                    Ok(Some(port)) => Ok(vec![OsRequirement::NetPattern { port, kinds: kinds.to_vec() }]),
+                    _ => Err(at),
+                };
+            }
+        };
+        let (Some(name), Some(port)) = (name, literal_port(args, port, deferred)?) else {
             return Ok(Vec::new());
         };
         return Ok(vec![OsRequirement::Net { host: name.to_string(), port, kinds: kinds.to_vec() }]);

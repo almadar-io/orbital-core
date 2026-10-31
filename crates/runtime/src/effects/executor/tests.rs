@@ -620,6 +620,7 @@ fn test_fetch_effect_server() {
         deliver: FetchDeliver::Rows,
         total: None,
         nearest: None,
+        key: None,
         emit: None,
     };
 
@@ -666,6 +667,7 @@ fn test_fetch_effect_by_id() {
         deliver: FetchDeliver::Rows,
         total: None,
         nearest: None,
+        key: None,
         emit: None,
     };
 
@@ -695,6 +697,7 @@ fn test_fetch_effect_client_noop() {
         deliver: FetchDeliver::Rows,
         total: None,
         nearest: None,
+        key: None,
         emit: None,
     };
 
@@ -782,6 +785,7 @@ fn test_fetch_filter_resolves_frame_ref_against_issuing_context() {
         deliver: FetchDeliver::Rows,
         total: None,
         nearest: None,
+        key: None,
         emit: None,
     };
 
@@ -869,6 +873,7 @@ fn test_fetch_policy_predicate_stays_row_scoped() {
         deliver: FetchDeliver::Rows,
         total: None,
         nearest: None,
+        key: None,
         emit: None,
     };
 
@@ -1263,6 +1268,7 @@ mod in_memory_read_access {
             deliver: FetchDeliver::Rows,
             total: None,
             nearest: None,
+            key: None,
             emit: None,
         };
         executor.execute(&effect, ctx)

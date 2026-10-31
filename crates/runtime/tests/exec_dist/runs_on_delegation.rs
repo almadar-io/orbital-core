@@ -57,6 +57,7 @@ fn server_ops() -> Vec<Effect> {
             deliver: orbital_core_base::effect_types::FetchDeliver::Rows,
             total: None,
             nearest: None,
+            key: None,
             emit: None,
         },
         Effect::CallService {

@@ -516,3 +516,31 @@ fn control_a_mount_batch_where_no_sibling_writes_keeps_the_default() {
     let rows = rows(&start(&server, mount_both()));
     assert_eq!(rows["$shared::Doc3"]["v"], json!(""), "{rows}");
 }
+
+#[test]
+fn an_intrinsic_field_of_a_shared_entity_reaches_the_client_in_its_traits_own_frame() {
+    let trait_of = |name: &str| {
+        json!({ "name": name, "linkedEntity": "Pg",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                { "from": "idle", "to": "idle", "event": "NEXT", "effects": [["set", "@entity.page", 2], ["set", "@entity.tag", name]] }
+            ] } })
+    };
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Pg", "shared": true, "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "page", "type": "number", "intrinsic": true },
+                { "name": "tag", "type": "string" }
+            ] },
+            "traits": [trait_of("A"), trait_of("B")]
+        }]
+    }))
+    .unwrap();
+    let server = EmbeddedServer::new(schema).unwrap();
+    let rows = rows(&run(&server, "NEXT", "A"));
+    assert_eq!(rows["A"]["page"], json!(2.0), "{rows}");
+    assert!(rows["$shared::Pg"].get("page").is_none(), "{rows}");
+    assert_eq!(rows["$shared::Pg"]["tag"], json!("A"), "{rows}");
+    assert!(rows.get("B").is_none(), "{rows}");
+}

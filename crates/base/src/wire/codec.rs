@@ -105,6 +105,14 @@ pub fn base64url_encode(bytes: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Unpadded URL-safe base64 (RFC 4648 section 5), the form every JWS segment and JWK member is written in; padding or a
+/// character outside the alphabet is refused.
+pub fn base64url_decode(text: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|e| e.to_string())
+}
+
 pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(text)

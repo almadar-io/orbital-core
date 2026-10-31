@@ -195,6 +195,9 @@ pub const ACCESS_CHECK_SHAPE: &[ShapeField] = &[field("allowed", "boolean")];
 /// A credential store failure: the host's message.
 pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
+/// What `identity/sign-in` and `identity/sign-out` emit on success: the subject now bound (or signed out).
+pub const IDENTITY_SHAPE: &[ShapeField] = &[field("subject", "string")];
+
 /// A host effect's failure: the message.
 pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
@@ -208,6 +211,10 @@ pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), fie
 /// A `fetch` failure: the message and the code (`not-found` for a by-id miss; absent for any other cause, until
 /// the read contract gains a typed refusal, `G-ORB-334`).
 pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+
+/// A keyed `fetch` failure: the unkeyed failure with the call's `key` beside it (EXEC-FETCH-3).
+pub const KEYED_FETCH_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("code", "string"), field("key", "string")];
 
 /// An agent-port or program-host failure: the message, and a program's validator issues when it has any.
 pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("errors", "array")];
@@ -360,6 +367,7 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "browser/embed" => ProducedPayload::Shape(EMBED_SHAPE),
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
         "access-check" => ProducedPayload::Shape(ACCESS_CHECK_SHAPE),
+        "identity/sign-in" | "identity/sign-out" => ProducedPayload::Shape(IDENTITY_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
         _ => ProducedPayload::Opaque,
     }
@@ -381,13 +389,14 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
             ProducedPayload::Shape(HOST_FAILURE_SHAPE)
         }
-        "credential-connect" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
+        "credential-connect" | "identity/sign-in" | "identity/sign-out" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
         "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
         | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "persist" => match variant {
             CallVariant::PersistAction("batch") => ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE),
             _ => ProducedPayload::Shape(PERSIST_FAILURE_SHAPE),
         },
+        "fetch" if keyed => ProducedPayload::Shape(KEYED_FETCH_FAILURE_SHAPE),
         "fetch" => ProducedPayload::Shape(FETCH_FAILURE_SHAPE),
         _ if crate::agent_ports::is_agent_port_operator(operator)
             || crate::language::registry::is_program_host_effect(operator) =>
@@ -541,6 +550,15 @@ mod tests {
         assert_eq!(pairs(success_payload("os/current-exe", CallVariant::Plain)), pairs(success_payload("os/cwd", CallVariant::Plain)));
         assert_eq!(undeclared_reads(&["path"], &success_payload("os/current-exe", CallVariant::Plain), &[]), Vec::<&str>::new());
         assert_eq!(undeclared_reads(&["exe"], &success_payload("os/current-exe", CallVariant::Plain), &[]), vec!["exe"]);
+    }
+
+    #[test]
+    fn identity_effects_emit_the_subject_and_fail_with_a_kind() {
+        for op in ["identity/sign-in", "identity/sign-out"] {
+            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(IDENTITY_SHAPE), "{op}");
+            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
+        }
+        assert_eq!(success_payload("identity/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not an identity effect");
     }
 
     #[test]
@@ -737,7 +755,8 @@ mod tests {
         );
         assert_eq!(failure_payload("call-service", CallVariant::Plain, false), ProducedPayload::Opaque);
         assert_eq!(message_payload("call-service"), ProducedPayload::Opaque);
-        assert_eq!(failure_payload("fetch", CallVariant::Plain, true), ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
+        assert_eq!(failure_payload("fetch", CallVariant::Plain, true), ProducedPayload::Shape(KEYED_FETCH_FAILURE_SHAPE));
+        assert_eq!(failure_payload("fetch", CallVariant::Plain, false), ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
     }
 
     #[test]

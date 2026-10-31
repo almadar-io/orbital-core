@@ -150,7 +150,7 @@ pub const NO_CONNECT: &str = "this host holds no credential store that can conne
 
 const AUTH_CODE_KEYS: &[&str] = &["code", "redirectUri", "verifier"];
 const CLIENT_KEYS: &[&str] = &["clientId", "clientSecret", "clientAuth"];
-const ASSERTION_KEYS: &[&str] = &["signingKey", "issuer", "subject", "audience", "ttlSeconds"];
+const ASSERTION_KEYS: &[&str] = &["signingKey", "subject", "audience", "ttlSeconds"];
 const JSON_TOKEN_KEYS: &[&str] = &[
     "clientIdField", "clientSecretField", "accessField", "refreshField", "expiresInField", "refreshEndpoint",
     "refreshBodyField",
@@ -170,7 +170,7 @@ impl CredentialGrant {
             fields,
             &[
                 "credential", "scope", "tokenEndpoint", "grant", "code", "redirectUri", "verifier", "clientId",
-                "clientSecret", "clientAuth", "scopes", "refreshCredential", "signingKey", "issuer", "subject", "audience",
+                "clientSecret", "clientAuth", "scopes", "refreshCredential", "signingKey", "subject", "audience",
                 "ttlSeconds", "clientIdField", "clientSecretField", "accessField", "refreshField", "expiresInField",
                 "refreshEndpoint", "refreshBodyField",
             ],
@@ -237,7 +237,6 @@ impl CredentialGrant {
             };
             Some(AssertionSpec {
                 signing_key: text("signingKey")?,
-                issuer: optional("issuer")?,
                 subject: optional("subject")?,
                 audience: text("audience")?,
                 ttl_seconds: ttl,

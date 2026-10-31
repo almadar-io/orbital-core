@@ -17,6 +17,7 @@ mod runs_on_delegation;
 mod server_emit_stamp;
 mod server_frame_echo;
 mod server_held_states;
+mod server_identity;
 mod server_lazy_orbital;
 mod server_leg_retarget;
 mod server_leg_seed;

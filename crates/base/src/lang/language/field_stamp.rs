@@ -18,6 +18,8 @@ pub enum FieldStampError {
     NotAName { field: String, what: &'static str },
     #[error("a render-ui tree held a lambda where the IR carries plain values")]
     LambdaInTree,
+    #[error("a render-ui tree held a sealed value where the IR carries plain values")]
+    SealedInTree,
 }
 
 /// Call `visit` with the declared `@fieldsContract` and the map of every node of a `render-ui` tree whose
@@ -315,6 +317,7 @@ fn oir_of(value: &Value) -> Result<OirValue, FieldStampError> {
             OirValue::Object(out)
         }
         Value::Lambda(_) => return Err(FieldStampError::LambdaInTree),
+        Value::Sealed(_) => return Err(FieldStampError::SealedInTree),
     })
 }
 

@@ -43,6 +43,12 @@ impl Relation<'_> {
         if let OirType::Optional { inner } = src {
             return self.sub(inner, dst, progress).map(|c| Coercion::Unwrap { inner: Box::new(c) });
         }
+        if let Some(sealed) = crate::sealed::sealed_name(dst) {
+            return (crate::sealed::sealed_name(src) == Some(sealed)).then_some(Coercion::Identity);
+        }
+        if let Some(record) = crate::sealed::sealed_name(src).and_then(crate::sealed::sealed_record) {
+            return self.sub(&record, dst, progress);
+        }
         if src == dst
             && (!self.checked
                 || !matches!(

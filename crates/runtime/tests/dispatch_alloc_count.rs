@@ -1053,6 +1053,7 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
     let cache = Arc::new(InMemoryEntityCache::new());
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::clone(&cache) as Arc<dyn EntitySource>, Default::default());
     k.register_schema(serde_json::from_value(fixture["schema"].clone()).unwrap()).unwrap();
+    let _viewer = k.enter_viewer(serde_json::from_value(json!({ "id": "u-1" })).unwrap());
     let init = retained_per_dispatch(&k, "ContactForm", "INIT", 500);
     let rows_before = cache.list("AuditEntry").unwrap().len();
     let save = retained_per_dispatch(&k, "ContactForm", "SAVE", 500);

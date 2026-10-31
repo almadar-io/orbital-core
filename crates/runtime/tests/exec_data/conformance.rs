@@ -59,7 +59,7 @@ fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
             "entity": { "name": "Note", "persistence": "persistent", "shared": shared,
                 "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" },
                     { "name": "fromA", "type": "string" }, { "name": "fromB", "type": "string" },
-                    { "name": "seenA", "type": "string" }, { "name": "seenB", "type": "string" }] },
+                    { "name": "seenA", "type": "string", "nullable": true }, { "name": "seenB", "type": "string", "nullable": true }] },
             "traits": [{ "name": "Reader", "linkedEntity": "Note",
                 "stateMachine": { "states": [{ "name": "on", "isInitial": true }],
                     "transitions": [{ "from": "on", "to": "on", "event": "READ", "effects": [

@@ -108,15 +108,14 @@ pub fn refresh_token_request(exchange: &RefreshExchange<'_>) -> Result<FormReque
     )
 }
 
-/// The declared claims of an RFC 7523 assertion: `iss` and `sub` only when named, `scope` the space-joined scopes when any,
-/// `aud` always, `iat` the clock and `exp` that plus `ttl_seconds`. `signing_key` names the stored PKCS#8 RSA private key.
+/// The declared claims of an RFC 7523 assertion: `iss` the service account's `client_email` and `sub` the declared `subject`
+/// (domain-wide delegation) or else that email, `scope` the space-joined scopes when any, `aud` always, `iat` the clock and
+/// `exp` that plus `ttl_seconds`. `signing_key` names the stored Google service-account JSON document.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssertionSpec {
     pub signing_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub issuer: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
     pub audience: String,
@@ -149,42 +148,81 @@ fn json_text(text: &str) -> String {
     serde_json::to_string(text).unwrap_or_default()
 }
 
-/// The signed RS256 assertion for `spec` at `now_ms` (epoch milliseconds, read as whole seconds). Claims are written in the
-/// fixed order iss, sub, scope, aud, iat, exp. `seed` blinds the private operation; PKCS#1 v1.5 signatures do not depend on it.
+const SERVICE_ACCOUNT_TYPE: &str = "service_account";
+
+#[derive(Deserialize)]
+struct ServiceAccountDocument {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    private_key_id: Option<String>,
+    private_key: Option<String>,
+    client_email: Option<String>,
+}
+
+/// The fields of a Google service-account JSON key the assertion is made from.
+struct ServiceAccount {
+    private_key_id: String,
+    private_key: String,
+    client_email: String,
+}
+
+fn refused(message: &str) -> GrantError {
+    GrantError::new(GrantErrorKind::Refused, message)
+}
+
+fn parse_service_account(text: &str) -> Result<ServiceAccount, GrantError> {
+    let document: ServiceAccountDocument = serde_json::from_str(text)
+        .map_err(|_| refused("the signing credential is not a service-account JSON document"))?;
+    match document.kind.as_deref() {
+        Some(SERVICE_ACCOUNT_TYPE) => {}
+        Some(_) => return Err(refused("the signing credential is a JSON document whose type is not `service_account`")),
+        None => return Err(refused("the signing credential has no `type` field, a service-account document carries `service_account`")),
+    }
+    let field = |value: Option<String>, name: &str| {
+        value
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| GrantError::new(GrantErrorKind::Refused, format!("the service-account document has no `{name}`")))
+    };
+    Ok(ServiceAccount {
+        private_key_id: field(document.private_key_id, "private_key_id")?,
+        private_key: field(document.private_key, "private_key")?,
+        client_email: field(document.client_email, "client_email")?,
+    })
+}
+
+/// The signed RS256 assertion for `spec` at `now_ms` (epoch milliseconds, read as whole seconds), made from the
+/// service-account JSON `service_account_json`: signed with its `private_key`, `iss` its `client_email`, header `kid` its
+/// `private_key_id`. Claims are written in the fixed order iss, sub, scope, aud, iat, exp. `seed` blinds the private
+/// operation; PKCS#1 v1.5 signatures do not depend on it.
 pub fn assertion_jwt(
     spec: &AssertionSpec,
     scopes: &[String],
-    signing_pem: &str,
+    service_account_json: &str,
     now_ms: i64,
     seed: [u8; 32],
 ) -> Result<Secret<String>, GrantError> {
+    let account = parse_service_account(service_account_json)?;
     let iat = now_ms.div_euclid(1_000);
     let exp = iat.saturating_add(i64::from(spec.ttl_seconds));
-    let mut claims = Vec::new();
-    if let Some(issuer) = &spec.issuer {
-        claims.push(format!("\"iss\":{}", json_text(issuer)));
-    }
-    if let Some(subject) = &spec.subject {
-        claims.push(format!("\"sub\":{}", json_text(subject)));
-    }
+    let subject = spec.subject.as_deref().unwrap_or(&account.client_email);
+    let mut claims = vec![
+        format!("\"iss\":{}", json_text(&account.client_email)),
+        format!("\"sub\":{}", json_text(subject)),
+    ];
     if !scopes.is_empty() {
         claims.push(format!("\"scope\":{}", json_text(&scopes.join(" "))));
     }
     claims.push(format!("\"aud\":{}", json_text(&spec.audience)));
     claims.push(format!("\"iat\":{iat}"));
     claims.push(format!("\"exp\":{exp}"));
+    let header = format!(r#"{{"alg":"RS256","typ":"JWT","kid":{}}}"#, json_text(&account.private_key_id));
     let signing_input = format!(
         "{}.{}",
-        base64url_encode(br#"{"alg":"RS256","typ":"JWT"}"#),
+        base64url_encode(header.as_bytes()),
         base64url_encode(format!("{{{}}}", claims.join(",")).as_bytes())
     );
-    let signature = crate::codec::rsa_pkcs1_sha256_sign(signing_pem, signing_input.as_bytes(), seed)
-        .map_err(|_| {
-            GrantError::new(
-                GrantErrorKind::Refused,
-                "the signing credential is not a PKCS#8 RSA private key of at least 2048 bits",
-            )
-        })?;
+    let signature = crate::codec::rsa_pkcs1_sha256_sign(&account.private_key, signing_input.as_bytes(), seed)
+        .map_err(|_| refused("the service-account `private_key` is not a PKCS#8 RSA private key of at least 2048 bits"))?;
     Ok(Secret::new(format!(
         "{signing_input}.{}",
         base64url_encode(&signature)
@@ -661,32 +699,86 @@ mod tests {
     fn spec() -> AssertionSpec {
         AssertionSpec {
             signing_key: "SA_KEY".into(),
-            issuer: Some("sa@proj.iam".into()),
             subject: Some("user@example.com".into()),
             audience: "https://oauth2.example/token".into(),
             ttl_seconds: 3600,
         }
     }
 
+    fn account_text() -> String {
+        jwt_fixture()["serviceAccount"].to_string()
+    }
+
+    fn account_with(field: &str, value: serde_json::Value) -> String {
+        let mut account = jwt_fixture()["serviceAccount"].clone();
+        account[field] = value;
+        account.to_string()
+    }
+
+    fn account_without(field: &str) -> String {
+        let mut account = jwt_fixture()["serviceAccount"].clone();
+        account.as_object_mut().unwrap().remove(field);
+        account.to_string()
+    }
+
+    fn decoded_part(jwt: &str, index: usize) -> serde_json::Value {
+        let part = jwt.split('.').nth(index).unwrap();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
     #[test]
     fn the_assertion_matches_the_openssl_signed_known_answer_with_every_claim_declared() {
         let fx = jwt_fixture();
         let scopes = vec!["https://a/x".to_string(), "https://a/y".to_string()];
-        let jwt = assertion_jwt(&spec(), &scopes, fx["privateKeyPem"].as_str().unwrap(), 1_700_000_000_999, [7; 32]).unwrap();
+        let jwt = assertion_jwt(&spec(), &scopes, &account_text(), 1_700_000_000_999, [7; 32]).unwrap();
         assert_eq!(jwt.expose(), fx["full"].as_str().unwrap());
-        let other_seed = assertion_jwt(&spec(), &scopes, fx["privateKeyPem"].as_str().unwrap(), 1_700_000_000_000, [9; 32]).unwrap();
+        let other_seed = assertion_jwt(&spec(), &scopes, &account_text(), 1_700_000_000_000, [9; 32]).unwrap();
         assert_eq!(other_seed.expose(), jwt.expose(), "the blinding seed and sub-second clock change nothing");
+        assert_eq!(decoded_part(jwt.expose(), 0)["kid"], "test-key-id-0001");
+        assert_eq!(decoded_part(jwt.expose(), 1)["iss"], "sa@proj.iam");
+        assert_eq!(decoded_part(jwt.expose(), 1)["sub"], "user@example.com");
     }
 
     #[test]
-    fn undeclared_claims_are_omitted_and_a_bad_key_is_refused_without_the_key_text() {
+    fn without_a_declared_subject_sub_is_the_client_email_and_no_scope_claim_rides() {
         let fx = jwt_fixture();
-        let bare = AssertionSpec { issuer: None, subject: None, ..spec() };
-        let jwt = assertion_jwt(&bare, &[], fx["privateKeyPem"].as_str().unwrap(), 1_700_000_000_000, [1; 32]).unwrap();
+        let bare = AssertionSpec { subject: None, ..spec() };
+        let jwt = assertion_jwt(&bare, &[], &account_text(), 1_700_000_000_000, [1; 32]).unwrap();
         assert_eq!(jwt.expose(), fx["minimal"].as_str().unwrap());
-        let error = assertion_jwt(&spec(), &[], "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----", 0, [0; 32]).unwrap_err();
-        assert_eq!(error.kind, GrantErrorKind::Refused);
-        assert!(!error.message.contains("SECRET-PEM"));
+        let claims = decoded_part(jwt.expose(), 1);
+        assert_eq!((claims["iss"].as_str(), claims["sub"].as_str()), (Some("sa@proj.iam"), Some("sa@proj.iam")));
+        assert!(claims.get("scope").is_none());
+    }
+
+    #[test]
+    fn a_pem_a_malformed_or_wrong_type_document_and_a_missing_field_are_refused_without_the_key_text() {
+        let pem = "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----";
+        let cases = [
+            pem.to_string(),
+            "{\"type\":\"service_account\",".to_string(),
+            "[1,2]".to_string(),
+            account_with("type", serde_json::json!("authorized_user")),
+            account_with("type", serde_json::json!(7)),
+            account_without("type"),
+            account_without("private_key"),
+            account_without("client_email"),
+            account_without("private_key_id"),
+            account_with("client_email", serde_json::json!("")),
+            account_with("private_key", serde_json::json!("-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----")),
+            account_with("private_key", serde_json::json!(12345)),
+        ];
+        for case in cases {
+            let error = assertion_jwt(&spec(), &[], &case, 0, [0; 32]).unwrap_err();
+            assert_eq!(error.kind, GrantErrorKind::Refused, "{case}");
+            assert!(!error.message.contains("SECRET-PEM") && !error.message.contains("12345"), "{}", error.message);
+        }
+    }
+
+    #[test]
+    fn extra_service_account_fields_are_ignored() {
+        let with_extra = account_with("quota_project_id", serde_json::json!("p"));
+        assert!(assertion_jwt(&spec(), &[], &with_extra, 0, [0; 32]).is_ok());
     }
 
     #[test]
