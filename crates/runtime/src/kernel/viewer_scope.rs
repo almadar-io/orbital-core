@@ -55,7 +55,7 @@ impl RuntimeKernel {
 
     /// Whether `session` was freed and not revived since.
     pub fn session_ended(&self, session: &str) -> bool {
-        self.sessions.ended_sessions.read().contains(session)
+        self.sessions.ended_sessions.read().contains_key(session)
     }
 
     /// Open an ended `session` again: a mount that carries the client's own copy rebuilds it.

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The files read by one recording, by path, with the stamp each had when first read (`None`: the path did not exist).
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReadSet(BTreeMap<PathBuf, Option<String>>);
 
 thread_local! {

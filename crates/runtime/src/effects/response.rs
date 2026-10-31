@@ -449,6 +449,9 @@ pub enum TransitionRejectionCode {
     LocaleNotDeclared,
     /// A server-role request carried circuit state (`traits` / `entityByTrait`) without being a delegated leg.
     ClientCircuitStateRefused,
+    /// A slot's repaint for an entity change failed to resolve (a call in its props threw); the slot keeps its last
+    /// paint.
+    RepaintFailed,
 }
 
 /// Mirrors `@almadar/core` `TransitionRejection`: why a trait (or the whole request)
@@ -474,6 +477,9 @@ pub struct TransitionRejection {
     /// `effect-failed`: the failure's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// `repaint-failed`: the slot whose repaint failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot: Option<String>,
 }
 
 /// How one authored effect of a hop ran.
@@ -621,6 +627,7 @@ impl EventResponse {
                     transition: None,
                     guard: None,
                     error: None,
+                    slot: None,
                 }]),
                 ..Default::default()
             },
@@ -664,6 +671,7 @@ impl EventResponse {
                 transition: None,
                 guard: None,
                 error: None,
+                slot: None,
             }]),
             ..Default::default()
         }
@@ -683,6 +691,7 @@ impl EventResponse {
                 transition: None,
                 guard: None,
                 error: None,
+                slot: None,
             }]),
             ..Default::default()
         }
@@ -717,6 +726,19 @@ impl EventResponse {
     /// ([`crate::runtime::Rerender`]), after everything the dispatch itself rendered.
     pub fn fold_rerenders(&mut self, rerenders: &[crate::kernel::Rerender]) {
         for rerender in rerenders {
+            for fault in &rerender.faults {
+                self.rejections.get_or_insert_with(Vec::new).push(TransitionRejection {
+                    code: TransitionRejectionCode::RepaintFailed,
+                    trait_name: Some(rerender.trait_name.clone()),
+                    from: None,
+                    event: None,
+                    states_declaring_event: None,
+                    transition: None,
+                    guard: None,
+                    error: Some(fault.error.clone()),
+                    slot: Some(fault.slot.clone()),
+                });
+            }
             for effect in &rerender.effects {
                 let Some(client_effect) = ClientEffect::from_effect(effect) else {
                     continue;
@@ -814,6 +836,7 @@ impl EventResponse {
                     transition: None,
                     guard: None,
                     error: Some(error.clone()),
+                    slot: None,
                 });
             }
             for dropped in &result.cascade_dropped {

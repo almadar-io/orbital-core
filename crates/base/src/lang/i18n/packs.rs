@@ -263,12 +263,7 @@ pub fn vocabulary_packs() -> Result<&'static [VocabularyPack], LanguageDataError
     }
     #[cfg(feature = "std")]
     {
-        let cwd = std::env::current_dir().map_err(|e| {
-            invalid(
-                PathBuf::new(),
-                format!("cannot read the working directory: {e}"),
-            )
-        })?;
+        let cwd = crate::language_data::working_dir(crate::language_data::CORE_PACKAGE)?;
         let packs = discover_vocabulary_packs(&cwd, &user_store_dir().unwrap_or_default())?;
         Ok(INSTALLED.get_or_init(|| packs))
     }

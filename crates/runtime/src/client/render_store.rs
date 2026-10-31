@@ -11,6 +11,7 @@
 use std::prelude::v1::*;
 
 use super::row_query::row_sets_in;
+use orbital_core_base::error::EvalError;
 use orbital_core_base::row_set::RowSetRef;
 use orbital_core_base::shared_entity::SharedEntity;
 use orbital_core_base::value::Value;
@@ -48,6 +49,16 @@ pub(crate) struct Repaint {
     pub rows_changed: bool,
 }
 
+/// A slot whose repaint failed to resolve: it keeps its last paint (G-ORBITAL-CORE-090).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepaintFault {
+    pub slot: String,
+    pub error: String,
+}
+
+/// An instance's repaints and the slots whose repaint failed.
+pub(crate) type Stale = (String, String, Vec<Repaint>, Vec<RepaintFault>);
+
 /// The mounted traits' last renders, in `(trait, entity id)` order.
 #[derive(Debug, Default)]
 pub(crate) struct RenderStore {
@@ -62,7 +73,7 @@ impl RenderStore {
         &mut self,
         trait_name: &str,
         entity_id: &str,
-        renders: Vec<(String, Value, Value)>,
+        renders: Vec<(String, Value, Value, Option<orbital_core_eval::evaluator::context::LocalScope>)>,
         flushed: &BindingContext,
     ) {
         if renders.is_empty() {
@@ -73,7 +84,7 @@ impl RenderStore {
             .instances
             .entry((trait_name.to_string(), entity_id.to_string()))
             .or_default();
-        for (slot, source, resolved) in renders {
+        for (slot, source, resolved, scope) in renders {
             slots.retain(|s| s.slot != slot);
             if source.is_null() {
                 continue;
@@ -81,7 +92,10 @@ impl RenderStore {
             slots.push(RenderedSlot {
                 slot,
                 source,
-                flushed: flushed.clone(),
+                flushed: match &scope {
+                    Some(scope) => Arc::new(flushed.with_local_scope(scope)),
+                    None => flushed.clone(),
+                },
                 entity: flushed.entity.clone(),
                 row_sets: row_sets_in(&resolved),
                 resolved,
@@ -148,7 +162,7 @@ impl RenderStore {
         &mut self,
         reads_live: impl Fn(&str) -> bool,
         entity_now: impl Fn(&str, &str) -> Value,
-    ) -> Vec<(String, String, Vec<Repaint>)> {
+    ) -> Vec<Stale> {
         let mut out = Vec::new();
         for ((trait_name, entity_id), slots) in &mut self.instances {
             if !reads_live(trait_name) {
@@ -156,6 +170,7 @@ impl RenderStore {
             }
             let now = Arc::new(entity_now(trait_name, entity_id));
             let mut repaints = Vec::new();
+            let mut faults = Vec::new();
             for slot in slots
                 .iter_mut()
                 .filter(|s| s.rows_dirty || s.entity.as_value() != &*now)
@@ -164,7 +179,15 @@ impl RenderStore {
                 let resolved = if slot.entity.as_value() != &*now {
                     let mut live = (*slot.flushed).clone();
                     live.entity = SharedEntity::from_arc(Arc::clone(&now));
-                    resolve_deferred(&slot.source, &slot.flushed, &live, 0)
+                    match resolve_deferred(&slot.source, &slot.flushed, &live, 0) {
+                        Ok(resolved) => resolved,
+                        Err(fault) => {
+                            slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                            slot.rows_dirty = rows_changed;
+                            faults.push(RepaintFault { slot: slot.slot.clone(), error: fault.to_string() });
+                            continue;
+                        }
+                    }
                 } else {
                     slot.resolved.clone()
                 };
@@ -179,8 +202,8 @@ impl RenderStore {
                     });
                 }
             }
-            if !repaints.is_empty() {
-                out.push((trait_name.clone(), entity_id.clone(), repaints));
+            if !repaints.is_empty() || !faults.is_empty() {
+                out.push((trait_name.clone(), entity_id.clone(), repaints, faults));
             }
         }
         out
@@ -219,11 +242,11 @@ pub(crate) fn resolve_deferred(
     flushed: &BindingContext,
     live: &BindingContext,
     hops: u8,
-) -> Value {
-    match source {
+) -> Result<Value, EvalError> {
+    Ok(match source {
         Value::String(s) => {
             if is_marker(source) {
-                return live.resolve_value(source).into_owned();
+                return Ok(live.resolve_value_checked(source)?.into_owned());
             }
             if let Some(key) = s.strip_prefix("@config.") {
                 if !s.contains(' ') && hops < CONFIG_HOPS {
@@ -233,7 +256,7 @@ pub(crate) fn resolve_deferred(
                     }
                 }
             }
-            flushed.resolve_value(source).into_owned()
+            flushed.resolve_value_checked(source)?.into_owned()
         }
         Value::Array(items) => {
             let operator = items.first().and_then(|head| match head {
@@ -241,33 +264,33 @@ pub(crate) fn resolve_deferred(
                 _ => None,
             });
             match operator {
-                Some("fn") => flushed.resolve_value(source).into_owned(),
+                Some("fn") => flushed.resolve_value_checked(source)?.into_owned(),
                 Some(op) if get_operator(op).is_some() => {
                     let ctx = if is_marker(source) { live } else { flushed };
-                    ctx.resolve_value(source).into_owned()
+                    ctx.resolve_value_checked(source)?.into_owned()
                 }
                 _ => Value::Array(
                     items
                         .iter()
                         .map(|item| {
                             if flushed.is_unset_config_binding(item) {
-                                Value::Null
+                                Ok(Value::Null)
                             } else {
                                 resolve_deferred(item, flushed, live, hops)
                             }
                         })
-                        .collect(),
+                        .collect::<Result<_, _>>()?,
                 ),
             }
         }
         Value::Object(map) => Value::Object(
             map.iter()
                 .filter(|(_, v)| !flushed.is_unset_config_binding(v))
-                .map(|(k, v)| (k.clone(), resolve_deferred(v, flushed, live, hops)))
-                .collect(),
+                .map(|(k, v)| Ok((k.clone(), resolve_deferred(v, flushed, live, hops)?)))
+                .collect::<Result<_, EvalError>>()?,
         ),
         other => other.clone(),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -305,7 +328,7 @@ mod tests {
             "e": 5
         }));
         assert_eq!(
-            resolve_deferred(&source, &c, &c, 0),
+            resolve_deferred(&source, &c, &c, 0).unwrap(),
             c.resolve_value(&source).into_owned()
         );
     }
@@ -319,7 +342,7 @@ mod tests {
         );
         let plain = c.resolve_value(&source).into_owned();
         assert_eq!(plain, val(json!({ "title": "T", "rows": [null, 1] })));
-        assert_eq!(resolve_deferred(&source, &c, &c, 0), plain);
+        assert_eq!(resolve_deferred(&source, &c, &c, 0).unwrap(), plain);
     }
 
     #[test]
@@ -328,7 +351,7 @@ mod tests {
         c.set_config(val(json!({ "asset": { "src": "a.png" } })));
         let source = val(json!({ "asset": "@config.asset" }));
         assert_eq!(
-            resolve_deferred(&source, &c, &c, 0),
+            resolve_deferred(&source, &c, &c, 0).unwrap(),
             val(json!({ "asset": { "src": "a.png" } }))
         );
     }
@@ -341,7 +364,7 @@ mod tests {
             json!({ "pure": "@entity.n", "embedded": "n=@entity.n", "call": ["+", "@entity.n", 10] }),
         );
         assert_eq!(
-            resolve_deferred(&source, &flushed, &live, 0),
+            resolve_deferred(&source, &flushed, &live, 0).unwrap(),
             val(json!({ "pure": 2, "embedded": "n=2", "call": 12 }))
         );
     }
@@ -353,7 +376,7 @@ mod tests {
         let source = val(
             json!({ "mixed": "n=@entity.n @payload.tag", "call": ["str/concat", "@entity.n", "@payload.tag"] }),
         );
-        let resolved = resolve_deferred(&source, &flushed, &live, 0);
+        let resolved = resolve_deferred(&source, &flushed, &live, 0).unwrap();
         assert_eq!(
             resolved.as_object().unwrap().get("mixed"),
             Some(&val(json!("n=1 t")))
@@ -367,7 +390,7 @@ mod tests {
         let mut live = flushed.clone();
         live.set_entity(val(json!({ "n": 9 })));
         assert_eq!(
-            resolve_deferred(&val(json!("@config.body")), &flushed, &live, 0),
+            resolve_deferred(&val(json!("@config.body")), &flushed, &live, 0).unwrap(),
             val(json!(9))
         );
     }
@@ -377,7 +400,7 @@ mod tests {
         let mut flushed = ctx(json!({}), json!({}));
         flushed.set_config(val(json!({ "loop": "@config.loop" })));
         let out = resolve_deferred(&val(json!("@config.loop")), &flushed, &flushed.clone(), 0);
-        assert_eq!(out, val(json!("@config.loop")));
+        assert_eq!(out.unwrap(), val(json!("@config.loop")));
     }
 
     #[test]
@@ -387,7 +410,7 @@ mod tests {
         let source =
             val(json!(["fn", "row", { "type": "typography", "content": "@entity.n @row.name" }]));
         assert_eq!(
-            resolve_deferred(&source, &flushed, &live, 0),
+            resolve_deferred(&source, &flushed, &live, 0).unwrap(),
             flushed.resolve_value(&source).into_owned()
         );
     }
@@ -404,11 +427,13 @@ mod tests {
                     "hud".into(),
                     val(json!({ "content": "@entity.n" })),
                     val(json!({ "content": 1 })),
+                    None,
                 ),
                 (
                     "fixed".into(),
                     val(json!({ "content": "static" })),
                     val(json!({ "content": "static" })),
+                    None,
                 ),
             ],
             &flushed,
@@ -434,7 +459,7 @@ mod tests {
         store.record(
             "Hud",
             "e",
-            vec![("hud".into(), val(json!("@entity.n")), val(json!(1)))],
+            vec![("hud".into(), val(json!("@entity.n")), val(json!(1)), None)],
             &flushed,
         );
         assert!(store
@@ -449,13 +474,13 @@ mod tests {
         store.record(
             "Hud",
             "e",
-            vec![("hud".into(), val(json!("@entity.n")), val(json!(1)))],
+            vec![("hud".into(), val(json!("@entity.n")), val(json!(1)), None)],
             &flushed,
         );
         store.record(
             "Hud",
             "e",
-            vec![("hud".into(), Value::Null, Value::Null)],
+            vec![("hud".into(), Value::Null, Value::Null, None)],
             &flushed,
         );
         assert!(store
@@ -471,14 +496,14 @@ mod tests {
             store.record(
                 t,
                 "e",
-                vec![("s".into(), val(json!("@entity.n")), val(json!(1)))],
+                vec![("s".into(), val(json!("@entity.n")), val(json!(1)), None)],
                 &flushed,
             );
         }
         store.forget_traits(["A"]);
         let out = store.stale(|_| true, |_, _| val(json!({ "n": 2 })));
         assert_eq!(
-            out.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>(),
+            out.iter().map(|(t, _, _, _)| t.as_str()).collect::<Vec<_>>(),
             vec!["B"]
         );
     }

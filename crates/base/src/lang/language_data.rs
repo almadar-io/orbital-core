@@ -515,6 +515,19 @@ pub fn read_language_block(
     })
 }
 
+/// Where the installed packages are looked up; a platform with no working directory (a browser) has nothing installed
+/// until its host installs a bundle.
+#[cfg(feature = "std")]
+pub(crate) fn working_dir(package: &'static str) -> Result<PathBuf, LanguageDataError> {
+    std::env::current_dir().map_err(|e| match e.kind() {
+        std::io::ErrorKind::Unsupported => LanguageDataError::NotInstalled { package },
+        _ => LanguageDataError::Invalid {
+            path: PathBuf::new(),
+            reason: format!("cannot read the working directory: {e}"),
+        },
+    })
+}
+
 pub static LANGUAGE_DATA: OnceLock<LanguageData> = OnceLock::new();
 
 /// Installs the language data process-wide, for hosts that cannot walk
@@ -539,10 +552,7 @@ pub fn language_data() -> Result<&'static LanguageData, LanguageDataError> {
     }
     #[cfg(feature = "std")]
     {
-        let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
-            path: PathBuf::new(),
-            reason: format!("cannot read the working directory: {e}"),
-        })?;
+        let cwd = working_dir(CORE_PACKAGE)?;
         let data = load_language_data(&cwd, &user_store_dir().unwrap_or_default())?;
         Ok(LANGUAGE_DATA.get_or_init(|| data))
     }
@@ -811,10 +821,7 @@ pub fn operator_data() -> Result<&'static OperatorData, LanguageDataError> {
     }
     #[cfg(feature = "std")]
     {
-        let cwd = std::env::current_dir().map_err(|e| LanguageDataError::Invalid {
-            path: PathBuf::new(),
-            reason: format!("cannot read the working directory: {e}"),
-        })?;
+        let cwd = working_dir(STD_PACKAGE)?;
         let data = load_operator_data(&cwd, &user_store_dir().unwrap_or_default())?;
         Ok(OPERATOR_DATA.get_or_init(|| data))
     }

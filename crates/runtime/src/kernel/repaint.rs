@@ -31,7 +31,7 @@ impl RuntimeKernel {
         &self,
         trait_name: &str,
         entity_id: &str,
-        sources: Vec<(String, Value)>,
+        sources: Vec<RenderSource>,
         resolved: &[EffectResult],
         ctx: &BindingContext,
     ) {
@@ -46,7 +46,7 @@ impl RuntimeKernel {
         let renders = sources
             .into_iter()
             .zip(resolved)
-            .map(|((_, source), (slot, content))| (slot, source, content))
+            .map(|((_, source, scope), (slot, content))| (slot, source, content, scope))
             .collect();
         self.renders
             .write()
@@ -82,7 +82,7 @@ impl RuntimeKernel {
         );
         stale
             .into_iter()
-            .map(|(trait_name, entity_id, repaints)| Rerender {
+            .map(|(trait_name, entity_id, repaints, faults)| Rerender {
                 state: self.current_state_name(&trait_name, Some(&entity_id)),
                 entity: self.step_entity_view(&trait_name, &entity_id),
                 rows_changed: repaints
@@ -97,6 +97,7 @@ impl RuntimeKernel {
                         content: r.content,
                     })
                     .collect(),
+                faults,
                 trait_name,
             })
             .collect()

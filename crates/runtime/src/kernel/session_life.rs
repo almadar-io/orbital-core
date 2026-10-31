@@ -10,6 +10,10 @@ pub trait SessionPending: Send + Sync {
     fn pending(&self, session: &str) -> bool;
 }
 
+/// What an ended session leaves behind: the traits whose state it held, the only ones a reviving mount's carried copy
+/// restores (EXEC-DIST-9).
+pub(super) type EndedSession = Box<[Box<str>]>;
+
 #[derive(Default)]
 struct Life {
     streams: usize,
@@ -26,7 +30,7 @@ pub(super) struct SessionLives {
     frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
     state_manager: Arc<RwLock<StateMachineManager>>,
-    ended: Arc<RwLock<HashSet<String>>>,
+    ended: Arc<RwLock<HashMap<String, EndedSession>>>,
 }
 
 impl SessionLives {
@@ -36,17 +40,17 @@ impl SessionLives {
         frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
         carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
         state_manager: Arc<RwLock<StateMachineManager>>,
-        ended: Arc<RwLock<HashSet<String>>>,
+        ended: Arc<RwLock<HashMap<String, EndedSession>>>,
     ) -> Self {
         Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
     pub(super) fn free(&self, session: &str) {
-        dispatch_scope::drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
+        let held = dispatch_scope::drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
         self.views.drop_session(session);
         self.mounts.write().release(session);
-        self.ended.write().insert(session.to_string());
+        self.ended.write().insert(session.to_string(), held.into_iter().map(String::into_boxed_str).collect());
     }
 
     /// Free every session whose streams have all dropped and that is quiet. The freeing happens under the lives lock,
@@ -66,20 +70,19 @@ impl SessionLives {
     }
 
     /// Admit one request into `client`'s session, atomically with freeing: `Err` for an ended session unless the
-    /// request is a mount, which revives it (`Ok(true)`).
-    fn admit(&self, client: &str, mounting: bool) -> Result<bool, SessionEnded> {
+    /// request is a mount, which revives it and answers the traits whose state the session held when it ended.
+    fn admit(&self, client: &str, mounting: bool) -> Result<std::collections::BTreeSet<String>, SessionEnded> {
         let mut lives = self.lives.lock();
-        let revived = if self.ended.read().contains(client) {
+        let restored = if self.ended.read().contains_key(client) {
             if !mounting {
                 return Err(SessionEnded(client.to_string()));
             }
-            self.ended.write().remove(client);
-            true
+            self.ended.write().remove(client).map(|held| held.iter().map(|name| name.to_string()).collect()).unwrap_or_default()
         } else {
-            false
+            Default::default()
         };
         lives.entry(client.to_string()).or_default().active += 1;
-        Ok(revived)
+        Ok(restored)
     }
 }
 
@@ -127,8 +130,9 @@ pub enum RequestSession {
     Program,
     /// A scratch session of its own, dropped when the guard drops (a client request naming no client).
     Scratch(SessionGuard),
-    /// The client's session, held active while the request runs.
-    Client { active: SessionActive, revived: bool },
+    /// The client's session, held active while the request runs. `restored`: when the request is a mount reviving an
+    /// ended session, the traits whose state that session held; the mount's carried copy restores only those.
+    Client { active: SessionActive, restored: std::collections::BTreeSet<String> },
 }
 
 impl RuntimeKernel {
@@ -153,10 +157,10 @@ impl RuntimeKernel {
         let Some(client) = client else {
             return Ok(if wire { RequestSession::Scratch(self.enter_scratch_session()) } else { RequestSession::Program });
         };
-        let revived = self.session_lives.admit(client, mounting)?;
+        let restored = self.session_lives.admit(client, mounting)?;
         Ok(RequestSession::Client {
             active: SessionActive { lives: Arc::clone(&self.session_lives), session: client.to_string() },
-            revived,
+            restored,
         })
     }
 

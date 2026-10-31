@@ -150,6 +150,7 @@ impl EmbeddedKernel {
         if schema.orbitals.is_empty() {
             return Err(EntryError::NoOrbitals);
         }
+        orbital_core_eval::language_loader::preflight().map_err(EntryError::Language)?;
         let ticks = TickClock::from_schema(&schema);
         let entities = Arc::new(InMemoryEntityCache::new());
         let collector = Arc::new(ServerLegCollector::new());

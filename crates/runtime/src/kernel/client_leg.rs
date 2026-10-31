@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// What a mount runs ([`RuntimeKernel::prepare_mount`]): the seeds whose lifecycle event runs here, and the carried rows
+/// of the restored traits, which the mount's frames carry back as they were.
+#[derive(Debug, Clone, Default)]
+pub struct MountPlan {
+    pub unseeded: Vec<crate::effects::MountSeed>,
+    pub restored_rows: ValueMap,
+}
+
 impl RuntimeKernel {
     /// Dispatch through the SEED trait's declared [`DispatchMode`], collecting
     /// whatever server-only effects (`persist`/`fetch`/`call-service`) the
@@ -690,19 +698,43 @@ impl RuntimeKernel {
         Ok(outcomes)
     }
 
-    /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
-    /// `from` state, and each carried row is folded into its trait's frame (`@entity`), so the leg replays
-    /// The traits a mount reviving an ended session carries its own copy of (EXEC-DIST-9): their states and rows come from
-    /// the client, so their lifecycle event does not run.
-    pub fn carried_traits(traits: Option<&[TraitFrom]>, entity_by_trait: Option<&ValueMap>) -> HashSet<String> {
-        traits
+    /// A mount's plan (EXEC-DIST-9), the one decision every host runs a mount through: of the traits the request
+    /// carries a copy of, only those whose state the ended session held (`restored`) are restored — seeded at their
+    /// carried `from` state and row, their lifecycle event not run. Every other seed runs its lifecycle event from the
+    /// trait's own state; a carried copy of it is the client's own step and is ignored.
+    pub fn prepare_mount(
+        &self,
+        restored: &std::collections::BTreeSet<String>,
+        seeds: &[crate::effects::MountSeed],
+        traits: Option<&[TraitFrom]>,
+        entity_by_trait: Option<&ValueMap>,
+        entity_id: Option<&str>,
+    ) -> MountPlan {
+        let carried: HashSet<String> = traits
             .into_iter()
             .flatten()
             .map(|t| t.r#trait.clone())
             .chain(entity_by_trait.into_iter().flat_map(|rows| rows.keys().map(|k| k.to_string())))
-            .collect()
+            .filter(|name| restored.contains(name) && seeds.iter().any(|seed| &seed.r#trait == name))
+            .collect();
+        let restored_rows: ValueMap = entity_by_trait
+            .iter()
+            .flat_map(|rows| rows.iter())
+            .filter(|(name, _)| carried.contains(name.as_str()))
+            .map(|(name, row)| (name.clone(), row.clone()))
+            .collect();
+        if !carried.is_empty() {
+            let restored_traits: Vec<TraitFrom> = traits.into_iter().flatten().filter(|t| carried.contains(&t.r#trait)).cloned().collect();
+            self.seed_leg(&restored_traits, Some(&restored_rows), entity_id);
+        }
+        MountPlan {
+            unseeded: seeds.iter().filter(|seed| !carried.contains(&seed.r#trait)).cloned().collect(),
+            restored_rows,
+        }
     }
 
+    /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its
+    /// `from` state, and each carried row is folded into its trait's frame (`@entity`), so the leg replays
     /// from where the client was. JS twin: `evaluateOrbitalEvent`'s `manager.seedState` + frame fold.
     pub fn seed_leg(
         &self,

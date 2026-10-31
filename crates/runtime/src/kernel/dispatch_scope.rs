@@ -86,13 +86,19 @@ pub(super) fn drop_session_instances(
     carried: &RwLock<HashMap<(String, String), String>>,
     states: &RwLock<StateMachineManager>,
     session: &str,
-) {
+) -> std::collections::BTreeSet<String> {
     let suffix = session_suffix(session);
     frames.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
     carried.write().retain(|(_, eid), _| !eid.ends_with(&suffix));
-    states
-        .write()
-        .retain_instances(|state| !state.entity_id.as_deref().is_some_and(|eid| eid.ends_with(&suffix)));
+    let mut held = std::collections::BTreeSet::new();
+    states.write().retain_instances(|state| {
+        let mine = state.entity_id.as_deref().is_some_and(|eid| eid.ends_with(&suffix));
+        if mine {
+            held.insert(state.trait_name.clone());
+        }
+        !mine
+    });
+    held
 }
 
 pub(super) const SESSION_SEPARATOR: char = '\u{1f}';

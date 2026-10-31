@@ -71,6 +71,9 @@ const RANDOM_BYTES_MAX: f64 = 1024.0;
 pub enum EntryError {
     #[error("resolved schema declares no orbitals")]
     NoOrbitals,
+    /// The kernel evaluates through the installed language; a host with no packages must install its bundle first.
+    #[error("{}: {}", .0.code(), .0)]
+    Language(#[source] orbital_core_base::language_data::LanguageDataError),
     #[error("register_schema: {0}")]
     Register(#[source] KernelError),
     #[error("fork_session: {0}")]
@@ -188,7 +191,7 @@ struct Sessions {
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
     /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
-    ended_sessions: Arc<RwLock<HashSet<String>>>,
+    ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>>,
 }
 
 /// A trait never receives a routed event before its own lifecycle event
@@ -310,6 +313,8 @@ struct StepScope {
     step_site: Arc<RwLock<Option<(String, bool)>>>,
     /// The frame the step in `step_site` runs on, for the call sites it creates.
     step_frame: Arc<RwLock<Option<String>>>,
+    /// The `let` scope each `render-ui` of the running step ran under, by its position in the step's results.
+    render_scopes: Arc<RwLock<Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -538,6 +543,8 @@ pub struct Rerender {
     /// The slots of `effects` repainted because the rows a reference in them points at changed
     /// (EXEC-RENDER-3); their content may be unchanged.
     pub rows_changed: Vec<String>,
+    /// The slots whose repaint failed to resolve; each keeps its last paint.
+    pub faults: Vec<crate::render_store::RepaintFault>,
 }
 
 /// One scheduled tick's outcome for a client-role kernel ([`RuntimeKernel::dispatch_tick`]):
@@ -674,7 +681,7 @@ impl RuntimeKernel {
 
         let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
-        let ended_sessions: Arc<RwLock<HashSet<String>>> = Arc::default();
+        let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
@@ -731,6 +738,7 @@ impl RuntimeKernel {
                 dispatch_locale: Arc::new(RwLock::new(None)),
                 step_site: Arc::new(RwLock::new(None)),
                 step_frame: Arc::new(RwLock::new(None)),
+                render_scopes: Arc::new(RwLock::new(Vec::new())),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
@@ -858,15 +866,32 @@ impl RuntimeKernel {
 /// renders); on failure, fire `emit.failure`. This is what advances a data-loading
 /// trait from its `loading` state to its `loaded` state. Returns `None` when the fetch
 /// was delegated/no-op (the real fetch — and its emit — happens in the other environment).
-/// The `render-ui` effects among `results`, as `(slot, unresolved content)` in run order.
-fn render_sources(results: &[EffectResult]) -> Vec<(String, Value)> {
+/// The `render-ui` effects among `results`, as `(slot, unresolved content, let scope)` in run order.
+fn render_sources(results: &[EffectResult], scopes: &[(usize, orbital_core_eval::evaluator::context::LocalScope)]) -> Vec<RenderSource> {
     results
         .iter()
-        .filter_map(|er| match &er.effect {
-            Effect::RenderUi { slot, content } => Some((slot.clone(), content.clone())),
+        .enumerate()
+        .filter_map(|(index, er)| match &er.effect {
+            Effect::RenderUi { slot, content } => Some((slot.clone(), content.clone(), scope_at(scopes, index).cloned())),
             _ => None,
         })
         .collect()
+}
+
+/// The `let` scope the result at `index` ran under, when it ran inside one.
+fn scope_at(scopes: &[(usize, orbital_core_eval::evaluator::context::LocalScope)], index: usize) -> Option<&orbital_core_eval::evaluator::context::LocalScope> {
+    scopes.iter().find(|(at, _)| *at == index).map(|(_, scope)| scope)
+}
+
+/// A `render-ui` as it ran: its slot, its unresolved content and the `let` scope it ran under.
+type RenderSource = (String, Value, Option<orbital_core_eval::evaluator::context::LocalScope>);
+
+/// `ctx` with `scope`'s `let` bindings in scope, for resolving an effect that ran under them.
+fn scoped<'c>(ctx: &'c BindingContext, scope: Option<&orbital_core_eval::evaluator::context::LocalScope>) -> std::borrow::Cow<'c, BindingContext> {
+    match scope {
+        Some(scope) => std::borrow::Cow::Owned(ctx.with_local_scope(scope)),
+        None => std::borrow::Cow::Borrowed(ctx),
+    }
 }
 
 /// The unresolved `render-ui` effects of the transition that enters `state_name`.
@@ -1054,6 +1079,7 @@ mod session_life;
 mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
+pub use client_leg::MountPlan;
 pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
 pub mod page_circuit;

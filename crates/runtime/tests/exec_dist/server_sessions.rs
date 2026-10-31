@@ -144,6 +144,17 @@ fn exec_dist_9_control_a_mount_reviving_with_no_carried_copy_runs_the_lifecycle_
     assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("fresh"));
 }
 
+/// G-CROSS-357: a page's first stream opened and dropped before its first mount, so the session ended holding nothing; the
+/// mount's carried copy is the client's own optimistic step, not a state this host held, so the lifecycle runs here.
+#[test]
+fn exec_dist_9_a_mount_reviving_a_session_that_held_no_state_runs_the_lifecycle_for_its_carried_traits() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let stream = server.open_session_stream("tab-a");
+    server.close_session_stream(stream);
+    done(server.start("Main", mount("tab-a", Some("client-made"))).unwrap());
+    assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("fresh"));
+}
+
 #[test]
 fn exec_dist_9_a_request_waiting_for_the_lane_keeps_its_session() {
     let server = EmbeddedServer::new(schema()).unwrap();
@@ -186,4 +197,32 @@ fn exec_tick_4_control_another_clients_mount_outlives_a_freed_session() {
     done(server.start("Main", mount("tab-b", None)).unwrap());
     server.close_session_stream(stream);
     assert!(server.kernel().trait_mounted("Editor"), "tab-b still holds it");
+}
+
+/// G-ORB-605: a fresh mount carrying the client's state for a trait it does not restore runs that trait's lifecycle
+/// from the trait's own state; the carried state is the client's step and never seeds the server (the native shell's
+/// twin: `a_reconnect_mount_into_a_session_that_held_no_state_runs_init_over_the_carried_frame`).
+#[test]
+fn exec_dist_9_a_fresh_mount_never_seeds_the_carried_state_of_a_trait_it_does_not_restore() {
+    use orbital_core_runtime::effects::response::TraitFrom;
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }, { "name": "seen", "type": "string" }] },
+            "traits": [{ "name": "Editor", "linkedEntity": "Draft",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.name", "fresh"]] },
+                        { "from": "busy", "to": "busy", "event": "INIT", "effects": [["set", "@entity.name", "seeded"]] },
+                        { "from": "idle", "to": "idle", "event": "LOOK", "effects": [["set", "@entity.seen", "@entity.name"]] },
+                        { "from": "busy", "to": "busy", "event": "LOOK", "effects": [["set", "@entity.seen", "@entity.name"]] }
+                    ] } }]
+        }]
+    }))
+    .unwrap();
+    let server = EmbeddedServer::new(schema).unwrap();
+    let mut carried = mount("tab-a", Some("client-made"));
+    carried.traits = Some(vec![TraitFrom { r#trait: "Editor".to_string(), from: "busy".to_string(), event: Some("INIT".to_string()) }]);
+    done(server.start("Main", carried).unwrap());
+    assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("fresh"));
 }

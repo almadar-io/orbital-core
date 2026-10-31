@@ -2,15 +2,19 @@
 
 use super::*;
 
+/// A step's effects as they ran: the results, the `set` fields, how each authored effect ran, the thrown failure and the
+/// `let` scope of each `render-ui` result by its position.
+pub(super) type StepRun = (Vec<EffectResult>, Value, Vec<EffectRun>, Option<String>, Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>);
+
 impl RuntimeKernel {
     /// Execute effects and capture Set-effect data.
     pub(super) fn execute_effects_with_entity(
         &self,
         effects: &[SExpression],
         ctx: &BindingContext,
-    ) -> (Vec<EffectResult>, Value) {
-        let (effect_results, entity_data, _, _) = self.execute_effects_traced(effects, ctx);
-        (effect_results, entity_data)
+    ) -> (Vec<EffectResult>, Value, Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>) {
+        let (effect_results, entity_data, _, _, scopes) = self.execute_effects_traced(effects, ctx);
+        (effect_results, entity_data, scopes)
     }
 
     /// `execute_effects_with_entity`, also reporting how each authored effect ran.
@@ -18,7 +22,8 @@ impl RuntimeKernel {
         &self,
         effects: &[SExpression],
         ctx: &BindingContext,
-    ) -> (Vec<EffectResult>, Value, Vec<EffectRun>, Option<String>) {
+    ) -> StepRun {
+        let outer_scopes = std::mem::take(&mut *self.step.render_scopes.write());
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
         let mut entity_data = PendingSets::new(ctx);
@@ -97,8 +102,10 @@ impl RuntimeKernel {
             }
         }
 
+        let mut scopes = std::mem::replace(&mut *self.step.render_scopes.write(), outer_scopes);
         if failure.is_some() {
             effect_results.retain(is_thrown_failure);
+            scopes.clear();
         }
 
         (
@@ -106,6 +113,7 @@ impl RuntimeKernel {
             Value::object(entity_data.sets),
             runs,
             failure,
+            scopes,
         )
     }
 
@@ -146,10 +154,17 @@ impl RuntimeKernel {
                                         if let (Some(SExpression::String(name)), Some(value_expr)) =
                                             (pair.first(), pair.get(1))
                                         {
-                                            if let Ok(value) =
-                                                evaluator.evaluate(value_expr, &child_ctx)
-                                            {
-                                                child_ctx.set_local(name, value);
+                                            match evaluator.evaluate(value_expr, &child_ctx) {
+                                                Ok(value) => {
+                                                    child_ctx.set_local(name, value);
+                                                }
+                                                Err(err) => {
+                                                    tracing::error!(site = %self.effect_site(), binding = %name, error = %err, "kernel: let binding failed to evaluate");
+                                                    if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) {
+                                                        effect_results.push(EffectResult::failed(effect, &err.to_string()));
+                                                    }
+                                                    return;
+                                                }
                                             }
                                         }
                                     }
@@ -417,6 +432,12 @@ impl RuntimeKernel {
                     }
                     effect_results.push(result);
                 }
+            }
+            Effect::RenderUi { .. } => {
+                if let Some(scope) = ctx.local_scope() {
+                    self.step.render_scopes.write().push((effect_results.len(), scope));
+                }
+                effect_results.push(self.effect_executor.execute(&effect, ctx));
             }
             _ => effect_results.push(self.effect_executor.execute(&effect, ctx)),
         }

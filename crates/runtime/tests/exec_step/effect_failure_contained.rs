@@ -205,3 +205,29 @@ fn exec_eval_4_control_well_typed_navigate_params_do_not_fail() {
     let response = run(schema(vec![json!(["navigate", "/items", { "tags": ["str/join", ["array/filter", ["a", "b"], ["fn", "x", true]], ", "] }])]));
     assert_eq!(effect_failed(&response), None);
 }
+
+// G-ORBITAL-CORE-089: a `let` whose binding value throws fails as the `let` (EXEC-EVAL-4); its body never runs with
+// the name unbound.
+#[test]
+fn a_let_whose_binding_throws_is_an_effect_failed_rejection_and_its_body_never_runs() {
+    let response = run(schema(vec![json!(["let", [["x", ["behavior/ref", "Indigo Pioneer"]]], render("after")])]));
+    let rejection = response
+        .rejections
+        .iter()
+        .flatten()
+        .find(|r| r.code == TransitionRejectionCode::EffectFailed)
+        .expect("the let's binding failure is an effect-failed rejection");
+    assert_eq!(rejection.trait_name.as_deref(), Some("Broken"));
+    assert!(painted(&response, "Broken").is_empty(), "the body ran with the name unbound");
+}
+
+#[test]
+fn control_a_let_whose_bindings_evaluate_runs_its_body() {
+    let response = run(schema(vec![json!(["let", [["x", "fine"]], render("@x")])]));
+    assert!(response
+        .rejections
+        .iter()
+        .flatten()
+        .all(|r| r.code != TransitionRejectionCode::EffectFailed));
+    assert_eq!(painted(&response, "Broken").len(), 1);
+}

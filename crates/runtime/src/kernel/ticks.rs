@@ -185,7 +185,7 @@ impl RuntimeKernel {
         }
 
         *self.step.step_site.write() = Some((trait_name.to_string(), false));
-        let (effect_results, captured_entity_data) =
+        let (effect_results, captured_entity_data, scopes) =
             self.execute_effects_with_entity(&tick.effects, &ctx);
         *self.step.step_site.write() = None;
 
@@ -198,10 +198,11 @@ impl RuntimeKernel {
         let effective_entity = entity_data.merged(&captured_entity_data);
 
         ctx.set_entity_shared(effective_entity.clone());
-        let sources = render_sources(&effect_results);
+        let sources = render_sources(&effect_results, &scopes);
         let mut effect_results = effect_results
             .into_iter()
-            .map(|er| resolve_effect_result(er, &ctx))
+            .enumerate()
+            .map(|(index, er)| resolve_effect_result(er, &scoped(&ctx, scope_at(&scopes, index))))
             .collect::<Vec<_>>();
         self.inject_relation_options(trait_name, &mut effect_results);
         let failure = self.deliver_remote_emits(trait_name, false, &mut effect_results);

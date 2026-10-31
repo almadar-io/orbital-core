@@ -161,7 +161,7 @@ impl RuntimeKernel {
             ctx.to_state = Some(std::sync::Arc::from(new_state.as_str()));
             *self.step.step_site.write() = Some((trait_name.to_string(), follow_on));
             *self.step.step_frame.write() = Some(entity_id.to_string());
-            let (effect_results, captured_entity_data, effect_runs, failure) =
+            let (effect_results, captured_entity_data, effect_runs, failure, scopes) =
                 match self.server_leg_collector() {
                     Some(collector) => collector.attribute(trait_name, || {
                         self.execute_effects_traced(result.effects(), &ctx)
@@ -187,10 +187,11 @@ impl RuntimeKernel {
             // canonical resolver — `@payload` is a typed payload so `X` is arbitrary; no
             // per-field special-cases. The entity is the post-Set effective entity.
             ctx.set_entity_shared(effective_entity.clone());
-            let sources = render_sources(&effect_results);
+            let sources = render_sources(&effect_results, &scopes);
             let mut effect_results = effect_results
                 .into_iter()
-                .map(|er| resolve_effect_result(er, &ctx))
+                .enumerate()
+                .map(|(index, er)| resolve_effect_result(er, &scoped(&ctx, scope_at(&scopes, index))))
                 .collect::<Vec<_>>();
             let mut failure = failure;
             if failure.is_none() {
@@ -292,7 +293,10 @@ impl RuntimeKernel {
             // EXEC-STEP-5: a step that does not fire repaints the slots the state renders into; each shows what it
             // holds now (EXEC-RENDER-4), and a trait that has painted nothing shows the entering transition's render.
             let held = self.renders.read().held(trait_name, entity_id);
-            let sources = state_render_sources(&trait_def, &current_state.current_state);
+            let sources = state_render_sources(&trait_def, &current_state.current_state)
+                .into_iter()
+                .map(|(slot, content)| (slot, content, None))
+                .collect();
             let mut state_effects = self.get_state_render_effects(
                 &trait_def,
                 &current_state.current_state,

@@ -1083,7 +1083,7 @@ fn session_schema() -> OrbitalSchema {
 }
 
 // What one ended session keeps (P-017 K4): its `SESSION_ENDED` tombstone only; its states and frames are freed.
-const PINNED_RETAINED_PER_SESSION: isize = 64; // 57 measured 2026-10-27
+const PINNED_RETAINED_PER_SESSION: isize = 120; // 109 measured 2026-10-31: the tombstone also names the traits whose state the session held (G-CROSS-357)
 
 #[test]
 fn an_ended_session_retains_only_its_tombstone() {

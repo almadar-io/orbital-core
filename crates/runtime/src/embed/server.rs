@@ -110,8 +110,8 @@ struct Flight {
 
 type Discovery = (Vec<String>, HashMap<String, String>);
 
-/// A request's session as admitted when it arrived: the client's hold, and whether the request revived it.
-type Admitted = (Option<SessionActive>, bool);
+/// A request's session as admitted when it arrived: the client's hold, and the traits a reviving mount restores.
+type Admitted = (Option<SessionActive>, std::collections::BTreeSet<String>);
 
 /// Work that arrived while a dispatch held the lane, waiting its turn: a new request, or the answers of a dispatch
 /// parked without the lane (a keyed ask), whose resumption enters the lane like any other dispatch.
@@ -191,6 +191,7 @@ impl EmbeddedServer {
         if schema.orbitals.is_empty() {
             return Err(EntryError::NoOrbitals);
         }
+        orbital_core_eval::language_loader::preflight().map_err(EntryError::Language)?;
         let orbital_traits = schema
             .orbitals
             .iter()
@@ -607,8 +608,8 @@ impl EmbeddedServer {
             .admit_request(request.client_id.as_deref(), mounting, false)
             .map_err(|ended| format!("SESSION_ENDED: {ended}"))?
         {
-            RequestSession::Client { active, revived } => Ok((Some(active), revived)),
-            RequestSession::Program | RequestSession::Scratch(_) => Ok((None, false)),
+            RequestSession::Client { active, restored } => Ok((Some(active), restored)),
+            RequestSession::Program | RequestSession::Scratch(_) => Ok((None, Default::default())),
         }
     }
 
@@ -656,7 +657,7 @@ impl EmbeddedServer {
         id
     }
 
-    fn start_now(&self, orbital: &str, request: EventRequest, (session, revived): Admitted) -> Result<ServerProgress, String> {
+    fn start_now(&self, orbital: &str, request: EventRequest, (session, restored): Admitted) -> Result<ServerProgress, String> {
         self.dispatch_stream.lock().clear();
         let lazy_traits;
         let traits = match self.orbital_traits.get(orbital) {
@@ -701,8 +702,9 @@ impl EmbeddedServer {
         let entity_id = request.entity_id.clone().or(carried_id);
         let entity_id = entity_id.as_deref();
         self.kernel.set_current_user(user.clone());
+        let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
         let carries_state = request.traits.is_some() || request.entity_by_trait.is_some();
-        if carries_state {
+        if carries_state && !mounting {
             self.kernel.seed_leg(
                 request.traits.as_deref().unwrap_or_default(),
                 request.entity_by_trait.as_ref(),
@@ -723,26 +725,13 @@ impl EmbeddedServer {
             if let Some(rejected) = self.payload_rejection(&targets, &payload) {
                 return Ok(ServerProgress::Done(rejected));
             }
-            let carried = if revived {
-                RuntimeKernel::carried_traits(request.traits.as_deref(), request.entity_by_trait.as_ref())
-            } else {
-                Default::default()
-            };
-            let carried_rows = revived.then(|| {
-                request
-                    .entity_by_trait
-                    .iter()
-                    .flatten()
-                    .filter(|(name, _)| seeds.iter().any(|seed| &seed.r#trait == *name))
-                    .map(|(name, row)| (name.clone(), row.clone()))
-                    .collect::<ValueMap>()
-            });
-            let unseeded: Vec<_> = seeds.iter().filter(|seed| !carried.contains(&seed.r#trait)).cloned().collect();
-            let progress = if unseeded.is_empty() {
+            let plan = self.kernel.prepare_mount(&restored, seeds, request.traits.as_deref(), request.entity_by_trait.as_ref(), entity_id);
+            let carried_rows = (!plan.restored_rows.is_empty()).then_some(plan.restored_rows);
+            let progress = if plan.unseeded.is_empty() {
                 Progress::Done(Vec::new())
             } else {
                 self.kernel
-                    .start_dispatch_mount(&unseeded, entity_id, payload)
+                    .start_dispatch_mount(&plan.unseeded, entity_id, payload)
                     .map_err(dispatch_error)?
             };
             let seed = Seed {

@@ -267,6 +267,10 @@ impl LocalFrame {
     }
 }
 
+/// The `let` bindings in scope at one point of a step, for a resolution that runs after the step to see them again.
+#[derive(Debug, Clone)]
+pub struct LocalScope(Arc<LocalFrame>);
+
 /// The credential values of one evaluation. `Debug` shows only the names.
 #[derive(Clone, Default, Debug)]
 pub struct SecretValues(HashMap<String, orbital_core_base::secret::Secret<String>>);
@@ -453,6 +457,25 @@ impl BindingContext {
     /// Get entities of a specific type
     pub fn get_entities(&self, entity_type: &str) -> Option<&Vec<Value>> {
         self.entity_stores.get(entity_type)
+    }
+
+    /// The `let` bindings in scope here; `None` outside every `let`.
+    pub fn local_scope(&self) -> Option<LocalScope> {
+        let mut frame = Some(&*self.locals);
+        while let Some(f) = frame {
+            if !f.vars.is_empty() {
+                return Some(LocalScope(Arc::clone(&self.locals)));
+            }
+            frame = f.parent.as_deref();
+        }
+        None
+    }
+
+    /// This context with `scope`'s `let` bindings in scope instead of its own.
+    pub fn with_local_scope(&self, scope: &LocalScope) -> Self {
+        let mut ctx = self.child();
+        ctx.locals = Arc::clone(&scope.0);
+        ctx
     }
 
     /// Create a child context with additional local bindings
