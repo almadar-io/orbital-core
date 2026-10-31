@@ -15,6 +15,16 @@ pub(super) struct DeferredAsk {
     pub(super) seq: u64,
 }
 
+/// A drop a delivery owes after its step: `row` of `trait_name`, checked for quiet when it runs. `settled` marks a row
+/// whose pending ask the step ended, dropped only while its instance is still held.
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::kernel) struct RowDrop {
+    pub(super) default_row: String,
+    pub(super) trait_name: String,
+    pub(super) row: String,
+    pub(super) settled: bool,
+}
+
 pub(super) const ROW_FRAME_SEPARATOR: char = '\u{1e}';
 
 /// The key a dispatch's path memory (`@prevEvents`, `@prevStates`) is kept under: the trait, or for a keyed row the
@@ -207,35 +217,39 @@ impl RuntimeKernel {
     /// session still holds an instance of it.
     pub(super) fn drop_keyed_row(&self, trait_name: &str, row: &str) -> Result<(), Fault> {
         let entity_type = self.entity_type_of(trait_name);
-        let frame = self.row_frame_key(trait_name, row);
-        self.removed_rows
-            .write()
-            .push((self.thread_session().map(|s| s.to_string()), frame));
         let state_key = self.state_key(Some(row));
-        self.state_manager
-            .write()
-            .remove_trait_instance(trait_name, state_key.as_deref());
-        let slot = self.frame_slot(trait_name, &entity_type, row);
-        self.frames.write().remove(&slot);
-        self.carried_rows.write().remove(&slot);
         let held_elsewhere = self
             .state_manager
             .read()
             .get_instances_for_trait(trait_name)
             .iter()
             .any(|state| {
-                state
-                    .entity_id
-                    .as_deref()
-                    .is_some_and(|eid| eid.split(SESSION_SEPARATOR).next() == Some(row))
+                state.entity_id.as_deref() != state_key.as_deref()
+                    && state
+                        .entity_id
+                        .as_deref()
+                        .is_some_and(|eid| eid.split(SESSION_SEPARATOR).next() == Some(row))
             });
-        if held_elsewhere {
-            return Ok(());
-        }
-        let deleted = self.entity_source.delete(&entity_type, row);
+        // The host ask comes before any change to the kernel's own state: a drop that parks on it replays from the
+        // state it started in and asks what it asked (EXEC-STEP-7).
+        let deleted = if held_elsewhere {
+            Ok(())
+        } else {
+            self.entity_source.delete(&entity_type, row)
+        };
         if self.io.suspended() {
             return Err(Fault::Suspended);
         }
+        let frame = self.row_frame_key(trait_name, row);
+        self.removed_rows
+            .write()
+            .push((self.thread_session().map(|s| s.to_string()), frame));
+        self.state_manager
+            .write()
+            .remove_trait_instance(trait_name, state_key.as_deref());
+        let slot = self.frame_slot(trait_name, &entity_type, row);
+        self.frames.write().remove(&slot);
+        self.carried_rows.write().remove(&slot);
         deleted.map_err(KernelError::Internal)?;
         Ok(())
     }
@@ -396,15 +410,36 @@ impl RuntimeKernel {
         queue: &VecDeque<CascadeItem>,
         default_row: &str,
     ) -> Result<(), Fault> {
-        let checks = std::mem::take(&mut *self.settled_rows.write());
-        for (trait_name, row) in checks {
-            if self.is_keyed_row(&trait_name, &row)
-                && !self.keyed_instance_missing(&trait_name, &row)
-            {
-                self.drop_quiet_row(queued_in, queue, default_row, &trait_name, &row)?;
-            }
+        for drop in self.row_drops_after(None, default_row) {
+            self.run_row_drop(queued_in, queue, &drop)?;
         }
         Ok(())
+    }
+
+    /// The drops a delivery owes once its step is over, in the order they run: the quiet check of the row it stepped
+    /// (`quiet`), then each row whose pending ask the step ended. Each is its own unit of the dispatch, so one that
+    /// parks on the host replays alone (EXEC-STEP-7).
+    pub(super) fn row_drops_after(&self, quiet: Option<(&str, &str)>, default_row: &str) -> VecDeque<RowDrop> {
+        let settled = std::mem::take(&mut *self.settled_rows.write());
+        quiet
+            .map(|(trait_name, row)| (trait_name.to_string(), row.to_string(), false))
+            .into_iter()
+            .chain(settled.into_iter().map(|(trait_name, row)| (trait_name, row, true)))
+            .map(|(trait_name, row, settled)| RowDrop { default_row: default_row.to_string(), trait_name, row, settled })
+            .collect()
+    }
+
+    /// Run one owed drop: the row goes when nothing more is queued for it and it is quiet.
+    pub(super) fn run_row_drop(
+        &self,
+        queued_in: &[&[CascadeItem]],
+        queue: &VecDeque<CascadeItem>,
+        drop: &RowDrop,
+    ) -> Result<(), Fault> {
+        if drop.settled && (!self.is_keyed_row(&drop.trait_name, &drop.row) || self.keyed_instance_missing(&drop.trait_name, &drop.row)) {
+            return Ok(());
+        }
+        self.drop_quiet_row(queued_in, queue, &drop.default_row, &drop.trait_name, &drop.row)
     }
 
     /// An event of `trait_name` on `row` ends the deferred asks it answers.

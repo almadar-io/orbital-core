@@ -7,8 +7,8 @@ pub(super) fn agrees(a: &OirType, b: &OirType) -> bool {
 }
 
 pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings, mode: Mode) -> bool {
-    // A strict call refuses an optional value where a present one is declared.
-    if mode == Mode::Proof
+    // An optional value is refused where a present one is declared: only `as` or a presence proof unwraps it.
+    if mode != Mode::Runtime
         && matches!(actual, OirType::Optional { .. })
         && !matches!(expected, OirType::Optional { .. })
     {
@@ -39,7 +39,17 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
         || crate::type_compat::sub_with_named(actual, expected, &|name| {
             bindings.named_types.get(name).cloned()
         })
-        .is_some()
+        .is_some_and(|coercion| !unwraps(&coercion))
+}
+
+/// Whether `coercion` drops an absence anywhere in it (`T?` into `T`, `[T?]` into `[T]`): only `as` or a presence
+/// proof does that. Other explicit conversions (a literal into a branded string) are what the checker accepts.
+fn unwraps(coercion: &crate::type_compat::Coercion) -> bool {
+    match coercion {
+        crate::type_compat::Coercion::Unwrap { .. } => true,
+        crate::type_compat::Coercion::Wrap(inner) | crate::type_compat::Coercion::Element(inner) => unwraps(inner),
+        _ => false,
+    }
 }
 
 /// Whether `actual` is a record (a struct, a map, a row).

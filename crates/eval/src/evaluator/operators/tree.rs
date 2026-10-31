@@ -359,9 +359,10 @@ impl Operator for TreeFoldOp {
         };
         let def = definition_of(text)?;
         let value = eval_expr(&args[0], ctx)?;
-        let Value::Lambda { params, body } = eval_expr(&args[1], ctx)? else {
+        let Value::Lambda(lambda) = eval_expr(&args[1], ctx)? else {
             return Err(bad("the step is a (fn (node childResults) …)"));
         };
+        let (params, body) = (&lambda.params, &lambda.body);
         if params.len() != 2 {
             return Err(bad("the step takes exactly (node childResults)"));
         }

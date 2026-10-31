@@ -7,7 +7,7 @@ use std::prelude::v1::*;
 
 use crate::config::DispatchClock;
 use crate::kernel::{RuntimeKernel, TraitSnapshot};
-use crate::process_result::ProcessEventResult;
+use crate::process_result::{EffectRunStatus, ProcessEventResult};
 use crate::program_machine::{
     played_effect, played_ensures, GuardVerdict, PlayRequest, PlayedEffect, PlayedEmit,
     PlayedEnsures, PlayedGuard, PlayedOutcome, PlayedResult, PlayedState, PlayedStep,
@@ -455,6 +455,54 @@ pub fn replay_dispatch(
             })
         })
         .map_err(|e| e.to_string())
+}
+
+/// One deferred ask's completion as a live host delivered it (EXEC-QUEUE-10): the route event it fired, its payload (the
+/// ask's `key` among it), whether the ask failed (the `emit.failure` route), and the outcomes of the dispatch that ran it.
+#[derive(Debug, Clone)]
+pub struct StepCompletion {
+    pub event: String,
+    pub payload: Value,
+    pub failed: bool,
+    pub outcomes: Result<DispatchOutcomes, String>,
+}
+
+/// The step's dispatched outcomes followed by each delivered completion's hop, in delivery order. An effect whose keyed
+/// ask failed and was delivered to its declared failure route reads `failed` and `routed`, as one answered in the
+/// dispatch itself does (EXEC-STEP-7: a routed failure is a handled outcome).
+pub fn with_completions(
+    mut dispatched: DispatchOutcomes,
+    completions: Vec<StepCompletion>,
+) -> Result<DispatchOutcomes, String> {
+    for completion in completions {
+        let hops = completion
+            .outcomes
+            .map_err(|e| format!("the completion {} failed: {e}", completion.event))?;
+        if completion.failed {
+            let payload = serde_json::to_value(&completion.payload).unwrap_or(serde_json::Value::Null);
+            let key = payload.get("key").cloned();
+            let error = payload.get("error").and_then(|e| e.as_str().map(str::to_string));
+            for run in dispatched
+                .iter_mut()
+                .flat_map(|(_, r)| r.effect_runs.iter_mut())
+                .filter(|run| run.status == EffectRunStatus::Executed && asks_with_key(&run.effect, key.as_ref()))
+            {
+                run.status = EffectRunStatus::Failed;
+                run.error = error.clone();
+                run.routed = true;
+            }
+        }
+        dispatched.extend(hops);
+    }
+    Ok(dispatched)
+}
+
+fn asks_with_key(effect: &orbital_core_base::schema::sexpr::SExpression, key: Option<&serde_json::Value>) -> bool {
+    let Some(key) = key else { return false };
+    serde_json::to_value(effect)
+        .ok()
+        .and_then(|e| e.as_array().cloned())
+        .is_some_and(|parts| parts.iter().any(|part| part.get("key") == Some(key)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1090,5 +1138,40 @@ mod tests {
         );
         let typed: StepReport = serde_json::from_value(report.clone()).unwrap();
         assert_eq!(serde_json::to_value(&typed).unwrap(), report);
+    }
+
+    fn batching(persistence: &str, ops: serde_json::Value) -> String {
+        serde_json::json!({"name":"BatchApp","typeContractVersion":1,"orbitals":[{"name":"Batches","entity":{"name":"Row","persistence":persistence,"fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Stager","linkedEntity":"Row","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[
+            {"from":"idle","to":"idle","event":"GO","effects":[["persist","batch",ops,{"emit":{"success":"STAGED","failure":"STAGE_FAILED"}}]]},
+            {"from":"idle","to":"idle","event":"STAGED","effects":[["set","@entity.id","ok"]]},
+            {"from":"idle","to":"idle","event":"STAGE_FAILED","effects":[["set","@entity.id","failed"]]}
+        ]}}]}]}).to_string()
+    }
+
+    fn staged(persistence: &str, ops: serde_json::Value) -> serde_json::Value {
+        play_on(&batching(persistence, ops), serde_json::json!([{ "trait": "Stager", "event": "GO" }])).unwrap()
+    }
+
+    fn two_creates() -> serde_json::Value {
+        serde_json::json!([["create", "Row", { "id": "a" }], ["create", "Row", { "id": "b" }]])
+    }
+
+    #[test]
+    fn control_a_one_op_batch_replayed_answers_its_success_route() {
+        let report = staged("persistent", serde_json::json!([["create", "Row", { "id": "a" }]]));
+        assert_eq!(report["steps"][0]["entityAfter"]["id"], "ok", "{report}");
+    }
+
+    #[test]
+    fn a_two_create_batch_replayed_answers_its_success_route_when_every_op_lands() {
+        let report = staged("persistent", two_creates());
+        assert_eq!(report["steps"][0]["entityAfter"]["id"], "ok", "{report}");
+    }
+
+    #[test]
+    fn a_compensated_batch_replayed_answers_its_failure_route_never_its_success() {
+        let ops = serde_json::json!([["create", "Row", { "id": "a" }], ["create", "Row", { "id": "a" }]]);
+        let report = staged("persistent", ops);
+        assert_eq!(report["steps"][0]["entityAfter"]["id"], "failed", "{report}");
     }
 }

@@ -178,6 +178,12 @@ pub struct CredentialGrantWire {
     pub client_auth: ClientAuth,
     #[serde(default)]
     pub scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_credential: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertion: Option<AssertionSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub json_token: Option<JsonTokenSpec>,
 }
 
 impl From<&CredentialGrant> for CredentialGrantWire {
@@ -194,6 +200,9 @@ impl From<&CredentialGrant> for CredentialGrantWire {
             client_secret: grant.client_secret.clone(),
             client_auth: grant.client_auth,
             scopes: grant.scopes.clone(),
+            refresh_credential: grant.refresh_credential.clone(),
+            assertion: grant.assertion.clone(),
+            json_token: grant.json_token.clone(),
         }
     }
 }
@@ -212,6 +221,9 @@ impl From<CredentialGrantWire> for CredentialGrant {
             client_secret: wire.client_secret,
             client_auth: wire.client_auth,
             scopes: wire.scopes,
+            refresh_credential: wire.refresh_credential,
+            assertion: wire.assertion,
+            json_token: wire.json_token,
         }
     }
 }

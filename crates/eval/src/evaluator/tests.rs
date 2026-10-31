@@ -1207,8 +1207,8 @@ fn test_lambda_creation() {
 fn test_lambda_multi_param() {
     let result = eval(r#"["fn", ["a", "b"], ["+", "@a", "@b"]]"#);
     assert!(result.is_lambda());
-    if let Value::Lambda { params, .. } = result {
-        assert_eq!(params, vec!["a", "b"]);
+    if let Value::Lambda(l) = result {
+        assert_eq!(l.params, vec!["a", "b"]);
     }
 }
 
@@ -3990,4 +3990,22 @@ fn a_lambda_body_shared_by_two_calls_traces_under_each_calls_own_path() {
     let first = enters.iter().filter(|p| format!("{p:?}").starts_with("[Index(1), Index(2)")).count();
     let second = enters.iter().filter(|p| format!("{p:?}").starts_with("[Index(2), Index(2)")).count();
     assert!(first > 0 && first == second);
+}
+
+#[test]
+fn as_instant_datetime_date_validate_the_iso_forms_exactly() {
+    for (text, target, fits) in [
+        ("2026-01-02T03:04:05Z", "instant", true),
+        ("2026-01-02T03:04:05Z", "datetime", true),
+        ("2026-01-02", "instant", false),
+        ("2026-01-02", "datetime", false),
+        ("2026-01-02", "date", true),
+        ("2026-01-02T03:04:05Z", "date", false),
+        ("soon", "instant", false),
+    ] {
+        let narrowed = eval(&format!(r#"["as", "{text}", "{target}"]"#));
+        let expected = if fits { Value::string(text) } else { Value::Null };
+        assert_eq!(narrowed, expected, "{text} as {target}");
+    }
+    assert_eq!(eval(r#"["as", 5, "instant"]"#), Value::Null);
 }

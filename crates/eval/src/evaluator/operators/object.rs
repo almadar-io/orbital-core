@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::util::deep_equals;
 use super::*;
-use orbital_core_base::value::ValueMap;
+use orbital_core_base::value::{value_map_with_capacity, ValueMap};
 
 /// path - Build a dot-separated path string from segments
 /// Used with set effect for dynamic field paths
@@ -134,7 +134,7 @@ impl Operator for ObjectFromEntriesOp {
             }
         };
 
-        let mut result = ValueMap::default();
+        let mut result = value_map_with_capacity(array.len());
         for entry in array {
             let pair = entry.as_array().ok_or_else(|| entry.kind_error("array"))?;
             let [key, value] = pair.as_slice() else {
@@ -297,7 +297,7 @@ impl Operator for ObjectMapValuesOp {
         // Handle lambda mapper
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = ValueMap::default();
+        let mut result = value_map_with_capacity(source.len());
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -371,7 +371,7 @@ impl Operator for ObjectMapKeysOp {
 
         let (params, body) = require_lambda!(mapper);
 
-        let mut result = ValueMap::default();
+        let mut result = value_map_with_capacity(source.len());
         for (key, value) in source {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
@@ -439,10 +439,7 @@ impl Operator for ObjectDeepCloneOp {
                 Value::Object(o) => {
                     Value::Object(o.iter().map(|(k, v)| (k.clone(), deep_clone(v))).collect())
                 }
-                Value::Lambda { params, body } => Value::Lambda {
-                    params: params.clone(),
-                    body: body.clone(),
-                },
+                Value::Lambda(l) => Value::Lambda(l.clone()),
             }
         }
 

@@ -48,11 +48,12 @@ struct Cascade {
     queue: VecDeque<CascadeItem>,
     steps: usize,
     wide: bool,
+    drops: VecDeque<keyed_rows::RowDrop>,
 }
 
 impl Cascade {
     fn new(queue: VecDeque<CascadeItem>) -> Self {
-        Self { queue, steps: 0, wide: false }
+        Self { queue, steps: 0, wide: false, drops: VecDeque::new() }
     }
 
     /// Called right after a delivery is taken off the worklist: the worklist draining to empty ends a settle pass that
@@ -73,6 +74,7 @@ enum Stage {
         idx: usize,
         own: Vec<CascadeItem>,
         fanned: Vec<CascadeItem>,
+        drops: VecDeque<keyed_rows::RowDrop>,
     },
     Main(Cascade),
 }

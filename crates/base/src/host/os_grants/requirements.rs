@@ -175,17 +175,39 @@ pub(super) enum FsTarget {
 }
 
 /// The target of an anchored path argument: its literal `path` exactly, a `str/concat` `path` as the tree under its
-/// literal directory prefix, or any other computed `path` as the anchor's whole tree.
-pub(super) fn anchored_target(anchor: GrantAnchor, path: Option<&SExpression>, deferred: Deferred) -> FsTarget {
+/// literal directory prefix, or any other computed `path` as the anchor's whole tree. A `path` that depends on a
+/// deferred piece reaches only the tree under its leading literal directory; with none it is not known before the
+/// finished program, so it has no target (`None`).
+pub(super) fn anchored_target(anchor: GrantAnchor, path: Option<&SExpression>, deferred: Deferred) -> Option<FsTarget> {
     match path {
-        None => FsTarget::AnchoredExact(anchor, String::new()),
-        Some(SExpression::String(p)) if !p.starts_with('@') => FsTarget::AnchoredExact(anchor, p.clone().into_inner()),
+        None => Some(FsTarget::AnchoredExact(anchor, String::new())),
+        Some(SExpression::String(p)) if !p.starts_with('@') => Some(FsTarget::AnchoredExact(anchor, p.clone().into_inner())),
         Some(expr) => {
-            let root: String = concat_static_prefix(expr, deferred)
-                .filter(|prefix| !prefix.iter().any(deferred))
-                .map(|prefix| prefix.iter().filter_map(SExpression::as_str).collect())
-                .unwrap_or_default();
-            FsTarget::AnchoredTree(anchor, root)
+            let depends_on_deferred = deferred(expr)
+                || matches!(expr, SExpression::Array(arr)
+                    if arr.first().and_then(SExpression::as_str) == Some("str/concat") && arr[1..].iter().any(deferred));
+            let root: String = if depends_on_deferred {
+                let SExpression::Array(arr) = expr else {
+                    return None;
+                };
+                let leading: String = arr[1..]
+                    .iter()
+                    .map_while(|piece| match piece {
+                        SExpression::String(s) if !s.starts_with('@') => Some(s.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let root = leading.rfind('/').map(|at| leading[..=at].to_string()).unwrap_or_default();
+                if root.is_empty() {
+                    return None;
+                }
+                root
+            } else {
+                concat_static_prefix(expr, deferred)
+                    .map(|prefix| prefix.iter().filter_map(SExpression::as_str).collect())
+                    .unwrap_or_default()
+            };
+            Some(FsTarget::AnchoredTree(anchor, root))
         }
     }
 }
@@ -193,7 +215,7 @@ pub(super) fn anchored_target(anchor: GrantAnchor, path: Option<&SExpression>, d
 pub(super) fn fs_target(args: &[SExpression], index: usize, deferred: Deferred) -> Result<Option<FsTarget>, usize> {
     if let Some(arg) = args.get(index) {
         if let Some((anchor, path)) = anchored_sexpr(arg).map_err(|()| index)? {
-            return Ok(Some(anchored_target(anchor, path, deferred)));
+            return Ok(anchored_target(anchor, path, deferred));
         }
         if matches!(arg, SExpression::Array(a) if a.first().and_then(SExpression::as_str) == Some("str/concat")) {
             let prefix = concat_static_prefix(arg, deferred).ok_or(index)?;
@@ -272,10 +294,10 @@ pub(super) fn glob_prefix(glob: &str) -> String {
 
 /// An anchored glob reads the tree its literal directory prefix reaches (the segments before the first wildcard,
 /// never the last one): a narrow anchored grant that can match under it covers it, and the host checks every match.
-pub(super) fn anchored_glob_need(anchor: GrantAnchor, pattern: Option<&SExpression>, deferred: Deferred) -> OsRequirement {
+pub(super) fn anchored_glob_need(anchor: GrantAnchor, pattern: Option<&SExpression>, deferred: Deferred) -> Option<OsRequirement> {
     let written = match pattern {
         Some(SExpression::String(p)) if !p.starts_with('@') => p.clone(),
-        Some(expr) => (match anchored_target(anchor.clone(), Some(expr), deferred) {
+        Some(expr) => (match anchored_target(anchor.clone(), Some(expr), deferred)? {
             FsTarget::AnchoredTree(_, root) => format!("{root}*"),
             _ => String::new(),
         }).into(),
@@ -288,7 +310,7 @@ pub(super) fn anchored_glob_need(anchor: GrantAnchor, pattern: Option<&SExpressi
         .take_while(|s| !s.contains(['*', '?']))
         .map(|s| format!("{s}/"))
         .collect();
-    OsRequirement::FsAnchoredTree { anchor, root, mode: FsMode::Read }
+    Some(OsRequirement::FsAnchoredTree { anchor, root, mode: FsMode::Read })
 }
 
 pub(super) fn open_modes(flags: &str) -> Vec<FsMode> {
@@ -329,7 +351,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
                 }
                 ("cwd", SExpression::Object(_)) => match anchored_sexpr(value) {
                     Ok(Some((anchor, path))) => {
-                        needs.push(fs_requirement(anchored_target(anchor, path, deferred), FsMode::Read))
+                        needs.extend(anchored_target(anchor, path, deferred).map(|target| fs_requirement(target, FsMode::Read)))
                     }
                     _ => return Err(options),
                 },
@@ -554,7 +576,7 @@ pub(super) fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferr
     match need {
         OsGrantNeed::Fs { access, path } => fs_need(args, *path, *access, deferred),
         OsGrantNeed::FsGlob { glob } => match args.get(*glob).map(anchored_sexpr).transpose().map_err(|()| *glob)?.flatten() {
-            Some((anchor, pattern)) => Ok(vec![anchored_glob_need(anchor, pattern, deferred)]),
+            Some((anchor, pattern)) => Ok(anchored_glob_need(anchor, pattern, deferred).into_iter().collect()),
             None if matches!(args.get(*glob), Some(SExpression::Array(a)) if a.first().and_then(SExpression::as_str) == Some("str/concat")) => {
                 fs_need(args, *glob, FsMode::Read, deferred)
             }

@@ -1993,6 +1993,112 @@ fn control_a_read_after_a_keyed_call_is_withheld_until_the_call_is_answered() {
     );
 }
 
+// EXEC-STEP-7: the asks of one delivery replay in the order the live run issued them. A keyed row's drop after its
+// step is part of that delivery: it parks on its own ask, and the replay re-issues it, never the next delivery's.
+
+fn keyed_listen(event: &str, from: &str) -> Json {
+    json!({ "event": event, "triggers": event, "key": "@payload.key",
+        "source": { "kind": "orbital", "orbital": "Main", "trait": from } })
+}
+
+fn keyed_drop_program(row_effects: Vec<Json>, keys: &[&str], with_watcher: bool) -> Setup {
+    let emits: Vec<Json> = keys.iter().map(|k| json!(["emit", "STOP", { "key": k }])).collect();
+    let mut row_effects = row_effects;
+    if with_watcher {
+        row_effects.push(json!(["emit", "STOPPED", {}]));
+    }
+    let mut traits = vec![
+        json!({
+            "name": "Caller", "linkedEntity": "Run",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": emits }] }
+        }),
+        json!({
+            "name": "Keyed", "linkedEntity": "Run",
+            "listens": [keyed_listen("STOP", "Caller")],
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "STOP", "effects": row_effects }] }
+        }),
+    ];
+    if with_watcher {
+        traits.push(json!({
+            "name": "Watcher", "linkedEntity": "Run",
+            "listens": [{ "event": "STOPPED", "triggers": "STOPPED", "source": { "kind": "orbital", "orbital": "Main", "trait": "Keyed" } }],
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "STOPPED", "effects": [["fetch", "Run"]] }] }
+        }));
+    }
+    let schema = json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": traits
+        }]
+    });
+    let mut setup = Setup::new(schema, &["Run"], vec![dispatch("Caller", "GO")]);
+    setup.service = Some(Arc::new(EchoArgs));
+    setup
+}
+
+fn asked(flown: &Flown) -> Vec<&IoRequest> {
+    flown.batches.iter().flatten().collect()
+}
+
+fn deletes(flown: &Flown) -> Vec<String> {
+    asked(flown)
+        .into_iter()
+        .filter_map(|r| match r {
+            IoRequest::DeleteRow { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn cancels(flown: &Flown) -> Vec<String> {
+    asked(flown)
+        .into_iter()
+        .filter_map(|r| match r {
+            IoRequest::CancelCall { key } => Some(key.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_step_that_cancels_a_call_and_drops_its_own_keyed_row_replays_its_asks_in_the_order_it_issued_them() {
+    let setup = keyed_drop_program(vec![json!(["cancel-call", "@payload.key"])], &["k1", "k2"], false);
+    let flown = fly_ordered(&setup, &[]);
+    assert_eq!(cancels(&flown), ["k1", "k2"], "{:?}", flown.batches);
+    assert_eq!(deletes(&flown), ["k1", "k2"], "{:?}", flown.batches);
+}
+
+#[test]
+fn a_step_that_drops_its_own_keyed_row_without_a_cancel_replays_its_asks_before_the_next_delivery() {
+    let setup = keyed_drop_program(vec![], &["k1", "k2"], false);
+    let flown = fly_ordered(&setup, &[]);
+    assert!(cancels(&flown).is_empty(), "{:?}", flown.batches);
+    assert_eq!(deletes(&flown), ["k1", "k2"], "{:?}", flown.batches);
+}
+
+#[test]
+fn control_a_keyed_drop_that_ends_the_dispatch_replays_in_order_with_or_without_a_cancel() {
+    let cancelling = fly_ordered(&keyed_drop_program(vec![json!(["cancel-call", "@payload.key"])], &["k1"], false), &[]);
+    assert_eq!(cancels(&cancelling), ["k1"], "{:?}", cancelling.batches);
+    assert_eq!(deletes(&cancelling), ["k1"], "{:?}", cancelling.batches);
+    let plain = fly_ordered(&keyed_drop_program(vec![], &["k1"], false), &[]);
+    assert!(cancels(&plain).is_empty(), "{:?}", plain.batches);
+    assert_eq!(deletes(&plain), ["k1"], "{:?}", plain.batches);
+}
+
+#[test]
+fn a_step_that_cancels_drops_its_row_and_emits_an_event_another_trait_reads_on_replays_in_order() {
+    let setup = keyed_drop_program(vec![json!(["cancel-call", "@payload.key"])], &["k1"], true);
+    let flown = fly_ordered(&setup, &[]);
+    assert_eq!(cancels(&flown), ["k1"], "{:?}", flown.batches);
+    assert_eq!(deletes(&flown), ["k1"], "{:?}", flown.batches);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Cross-unit delivery: an emit whose declared listener is placed in another unit is an ask (EXEC-QUEUE-9)
 // ---------------------------------------------------------------------------------------------

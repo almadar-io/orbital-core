@@ -69,7 +69,7 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
                 .map(|(key, item)| Ok((key.to_string(), json_of(item, &format!("{at}.{key}"))?)))
                 .collect::<Result<_, String>>()?,
         ),
-        Value::Lambda { .. } => return Err(format!("viewer claim {at}: a function is not a claim")),
+        Value::Lambda(_) => return Err(format!("viewer claim {at}: a function is not a claim")),
     })
 }
 

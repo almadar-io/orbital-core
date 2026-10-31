@@ -62,11 +62,8 @@ pub enum Coercion {
     Widen(WidenKind),
     /// T → Optional<T> (Phase 4.3), wrapping the inner witness.
     Wrap(Box<Coercion>),
-    /// Optional<T> → T (Phase 4.3), unwrapping the inner witness.
-    Unwrap {
-        checked: bool,
-        inner: Box<Coercion>,
-    },
+    /// Optional<T> → T, unwrapping the inner witness: legal only through the run-time-checked `as` cast.
+    Unwrap { inner: Box<Coercion> },
     /// Lift through Array value (structural since Phase 4.2 — the inner
     /// coercion is the element witness).
     Element(Box<Coercion>),
@@ -91,7 +88,7 @@ impl Coercion {
     pub fn is_explicit(&self) -> bool {
         match self {
             Coercion::Explicit => true,
-            Coercion::Wrap(inner) | Coercion::Element(inner) | Coercion::Unwrap { inner, .. } => inner.is_explicit(),
+            Coercion::Wrap(inner) | Coercion::Element(inner) | Coercion::Unwrap { inner } => inner.is_explicit(),
             _ => false,
         }
     }
@@ -105,12 +102,12 @@ impl Coercion {
         }
     }
 
-    /// True when plain assignment refuses the conversion: one legal only through `as`, or an unchecked unwrap.
+    /// True when plain assignment refuses the conversion: one legal only through `as`, or an unwrap.
     pub fn requires_cast(&self) -> bool {
         match self {
             Coercion::Explicit => true,
             Coercion::Wrap(inner) | Coercion::Element(inner) => inner.requires_cast(),
-            Coercion::Unwrap { inner, checked } => !checked || inner.requires_cast(),
+            Coercion::Unwrap { .. } => true,
             _ => false,
         }
     }

@@ -37,7 +37,7 @@ impl Operator for FnOp {
         let body = std::sync::Arc::new(args[1].clone());
         crate::evaluator::trace::adopt(&body, &args[1]);
 
-        Ok(Value::Lambda { params, body })
+        Ok(Value::lambda(params, body))
     }
 }
 
@@ -93,7 +93,7 @@ pub(super) fn non_data_kind(value: &Value) -> Option<&'static str> {
         Value::Array(items) => items.iter().find_map(non_data_kind),
         Value::Object(map) => map.values().find_map(non_data_kind),
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
-        Value::Lambda { .. } => Some("function"),
+        Value::Lambda(_) => Some("function"),
     }
 }
 

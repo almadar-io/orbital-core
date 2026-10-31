@@ -669,6 +669,9 @@ mod oauth_connect {
             client_secret: Some("CLIENT_SECRET".to_string()),
             client_auth: auth,
             scopes: vec![],
+            refresh_credential: None,
+            assertion: None,
+            json_token: None,
         }
     }
 
@@ -1009,6 +1012,366 @@ mod oauth_connect {
                 .unwrap()
                 .with_grant_transport(Arc::new(Scripted::new(vec![Scripted::ok(ROTATED)])));
             assert_eq!(host.secret_of("DRIVE", Some("u1")), Ok(Some("ACCESS-2".to_string())));
+        }
+        struct Recording {
+            replies: StdMutex<Vec<(u16, String)>>,
+            seen: StdMutex<Vec<(String, Vec<(String, String)>, String)>>,
+        }
+
+        impl Recording {
+            fn new(replies: Vec<(u16, &str)>) -> Self {
+                let replies = replies.into_iter().map(|(status, body)| (status, body.to_string())).collect();
+                Self { replies: StdMutex::new(replies), seen: StdMutex::default() }
+            }
+            fn bodies(&self) -> Vec<String> {
+                self.seen.lock().unwrap().iter().map(|(_, _, body)| body.clone()).collect()
+            }
+        }
+
+        impl CredentialTransport for Recording {
+            fn post_form(&self, endpoint: &str, headers: &[(String, String)], body: &str) -> Result<(u16, String), TransportError> {
+                self.seen.lock().unwrap().push((endpoint.to_string(), headers.to_vec(), body.to_string()));
+                let mut replies = self.replies.lock().unwrap();
+                assert!(!replies.is_empty(), "an unexpected extra post");
+                Ok(replies.remove(0))
+            }
+        }
+
+        fn jwt_fixture() -> Value {
+            let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/security/jwt-bearer.json");
+            serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+        }
+
+        const SA_NOW_MS: i64 = 1_700_000_000_000;
+        const SA_TOKEN: &str = r#"{"access_token":"SA-ACCESS-1","token_type":"Bearer","expires_in":3600}"#;
+        const SA_TOKEN_2: &str = r#"{"access_token":"SA-ACCESS-2","token_type":"Bearer","expires_in":3600}"#;
+
+        fn sa_store() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
+            let (now, rows, store) = clocked();
+            now.store(SA_NOW_MS, Ordering::SeqCst);
+            store.set("google", "SA_KEY", jwt_fixture()["privateKeyPem"].as_str().unwrap(), None).unwrap();
+            (now, rows, store)
+        }
+
+        fn jwt_grant(principal: Option<&str>) -> CredentialGrant {
+            CredentialGrant {
+                name: "SA_TOKEN".to_string(),
+                principal: principal.map(str::to_string),
+                token_endpoint: "https://oauth2.example/token".to_string(),
+                grant: "jwt-bearer".to_string(),
+                code: "".into(),
+                redirect_uri: String::new(),
+                verifier: None,
+                client_id: String::new(),
+                client_secret: None,
+                client_auth: ClientAuth::None,
+                scopes: vec!["https://a/x".to_string(), "https://a/y".to_string()],
+                refresh_credential: None,
+                assertion: Some(orbital_core_base::credential_grant::AssertionSpec {
+                    signing_key: "SA_KEY".to_string(),
+                    issuer: Some("sa@proj.iam".to_string()),
+                    subject: Some("user@example.com".to_string()),
+                    audience: "https://oauth2.example/token".to_string(),
+                    ttl_seconds: 3600,
+                }),
+                json_token: None,
+            }
+        }
+
+        #[test]
+        fn jwt_bearer_posts_the_signed_assertion_and_keeps_an_access_row_with_no_key_in_the_answer() {
+            let (_, rows, store) = sa_store();
+            let post = Recording::new(vec![(200, SA_TOKEN)]);
+            let standing = store.connect(&jwt_grant(None), &post).unwrap();
+            assert_eq!(standing, CredentialStanding { connected: true, label: None });
+            let expected = orbital_core_base::credential_grant::jwt_bearer_request(jwt_fixture()["full"].as_str().unwrap());
+            let seen = post.seen.lock().unwrap();
+            assert_eq!((seen[0].0.as_str(), seen[0].2.as_str()), ("https://oauth2.example/token", expected.body.as_str()));
+            assert_eq!(seen[0].1, expected.headers);
+            assert_eq!(store.resolve("SA_TOKEN", None).as_deref(), Some("SA-ACCESS-1"));
+            assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("BEGIN") || row.to_string().contains("SA-ACCESS")), "rows hold ciphertext only");
+        }
+
+        #[test]
+        fn a_jwt_bearer_row_is_resigned_on_expiry_and_a_live_one_posts_nothing() {
+            let (now, rows, store) = sa_store();
+            store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap();
+            let idle = Recording::new(vec![]);
+            assert_eq!(store.resolve_fresh("SA_TOKEN", None, Some(&idle)).unwrap().as_deref(), Some("SA-ACCESS-1"));
+            assert!(idle.bodies().is_empty());
+            expire(&now);
+            let renewal = Recording::new(vec![(200, SA_TOKEN_2)]);
+            assert_eq!(store.resolve_fresh("SA_TOKEN", None, Some(&renewal)).unwrap().as_deref(), Some("SA-ACCESS-2"));
+            let claims = renewal.bodies()[0].split("assertion=").nth(1).unwrap().split('.').nth(1).unwrap().to_string();
+            let decoded = String::from_utf8(base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &claims).unwrap()).unwrap();
+            assert!(decoded.contains("\"iat\":1700003600") && decoded.contains("\"exp\":1700007200"), "{decoded}");
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("SA_TOKEN", None).as_deref(), Some("SA-ACCESS-2"));
+        }
+
+        #[test]
+        fn jwt_bearer_failures_post_nothing_for_a_missing_or_bad_key_and_name_no_key_text() {
+            let (_, _, store) = sa_store();
+            let mut missing = jwt_grant(None);
+            missing.assertion.as_mut().unwrap().signing_key = "NO_SUCH_KEY".to_string();
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            store.set("google", "BAD_KEY", "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----", None).unwrap();
+            let mut bad = jwt_grant(None);
+            bad.assertion.as_mut().unwrap().signing_key = "BAD_KEY".to_string();
+            let failure = store.connect(&bad, &silent).unwrap_err();
+            assert_eq!(failure.kind, ConnectFailureKind::Refused);
+            assert!(!failure.message.contains("SECRET-PEM"));
+            assert!(silent.bodies().is_empty());
+            let refused = Recording::new(vec![(400, r#"{"error":"invalid_grant"}"#)]);
+            assert_eq!(store.connect(&jwt_grant(None), &refused).unwrap_err().kind, ConnectFailureKind::InvalidGrant);
+            assert_eq!(store.resolve("SA_TOKEN", None), None);
+        }
+
+        #[test]
+        fn the_explicit_refresh_grant_refuses_a_jwt_bearer_row() {
+            let (_, _, store) = sa_store();
+            store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap();
+            let mut ask = jwt_grant(None);
+            ask.grant = "refresh_token".to_string();
+            ask.assertion = None;
+            ask.client_id = "CLIENT_ID".to_string();
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&ask, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
+        }
+
+        #[test]
+        fn jwt_bearer_begin_then_finish_equals_connect() {
+            let (_, via_connect, one) = sa_store();
+            let post = Recording::new(vec![(200, SA_TOKEN)]);
+            let standing = one.connect(&jwt_grant(None), &post).unwrap();
+            let (_, _, split) = sa_store();
+            let pending = split.connect_begin(&jwt_grant(None)).unwrap();
+            assert_eq!(pending.body, post.bodies()[0]);
+            assert_eq!(split.resolve("SA_TOKEN", None), None, "begin persists nothing");
+            assert_eq!(split.connect_finish(pending.ticket, 200, SA_TOKEN).unwrap(), standing);
+            assert_eq!(split.resolve("SA_TOKEN", None), one.resolve("SA_TOKEN", None));
+            drop(via_connect);
+        }
+
+        fn bank_grant() -> CredentialGrant {
+            CredentialGrant {
+                name: "BANK_ACCESS".to_string(),
+                principal: None,
+                token_endpoint: "https://bank.example/token/new/".to_string(),
+                grant: "json-token".to_string(),
+                code: "".into(),
+                redirect_uri: String::new(),
+                verifier: None,
+                client_id: "BANK_ID".to_string(),
+                client_secret: Some("BANK_KEY".to_string()),
+                client_auth: ClientAuth::None,
+                scopes: vec![],
+                refresh_credential: None,
+                assertion: None,
+                json_token: Some(orbital_core_base::credential_grant::JsonTokenSpec {
+                    client_id_field: "secret_id".to_string(),
+                    client_secret_field: "secret_key".to_string(),
+                    access_field: "access".to_string(),
+                    refresh_field: Some("refresh".to_string()),
+                    expires_in_field: Some("access_expires".to_string()),
+                    refresh_endpoint: Some("https://bank.example/token/refresh/".to_string()),
+                    refresh_body_field: Some("refresh".to_string()),
+                }),
+            }
+        }
+
+        const BANK_TOKEN: &str = r#"{"access":"BANK-ACCESS-1","access_expires":86400,"refresh":"BANK-REFRESH-1","refresh_expires":2592000}"#;
+
+        fn bank_store() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
+            let (now, rows, store) = clocked();
+            store.set("bank", "BANK_ID", "id-123456", None).unwrap();
+            store.set("bank", "BANK_KEY", "key-abcdef", None).unwrap();
+            (now, rows, store)
+        }
+
+        #[test]
+        fn json_token_posts_the_declared_body_and_renews_through_the_declared_refresh_endpoint() {
+            let (now, rows, store) = bank_store();
+            let post = Recording::new(vec![(200, BANK_TOKEN)]);
+            store.connect(&bank_grant(), &post).unwrap();
+            let seen = post.seen.lock().unwrap();
+            assert_eq!(seen[0].0, "https://bank.example/token/new/");
+            assert_eq!(seen[0].2, r#"{"secret_id":"id-123456","secret_key":"key-abcdef"}"#);
+            assert!(seen[0].1.contains(&("Content-Type".to_string(), "application/json".to_string())));
+            drop(seen);
+            assert_eq!(store.resolve("BANK_ACCESS", None).as_deref(), Some("BANK-ACCESS-1"));
+            now.fetch_add(86_400_000, Ordering::SeqCst);
+            let renewal = Recording::new(vec![(200, r#"{"access":"BANK-ACCESS-2","access_expires":86400}"#)]);
+            assert_eq!(store.resolve_fresh("BANK_ACCESS", None, Some(&renewal)).unwrap().as_deref(), Some("BANK-ACCESS-2"));
+            let seen = renewal.seen.lock().unwrap();
+            assert_eq!((seen[0].0.as_str(), seen[0].2.as_str()), ("https://bank.example/token/refresh/", r#"{"refresh":"BANK-REFRESH-1"}"#));
+            drop(seen);
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("BANK_ACCESS", None).as_deref(), Some("BANK-ACCESS-2"));
+        }
+
+        #[test]
+        fn a_refused_json_token_refresh_drops_the_row_and_a_form_with_no_refresh_endpoint_never_renews() {
+            let (now, _, store) = bank_store();
+            store.connect(&bank_grant(), &Recording::new(vec![(200, BANK_TOKEN)])).unwrap();
+            now.fetch_add(86_400_000, Ordering::SeqCst);
+            let refused = Recording::new(vec![(401, r#"{"detail":"Invalid refresh token"}"#)]);
+            assert_eq!(store.resolve_fresh("BANK_ACCESS", None, Some(&refused)).unwrap(), None);
+            assert_eq!(store.resolve("BANK_ACCESS", None), None);
+            let mut plain = bank_grant();
+            plain.json_token.as_mut().unwrap().refresh_endpoint = None;
+            plain.json_token.as_mut().unwrap().refresh_body_field = None;
+            store.connect(&plain, &Recording::new(vec![(200, BANK_TOKEN)])).unwrap();
+            now.fetch_add(86_400_000, Ordering::SeqCst);
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.resolve_fresh("BANK_ACCESS", None, Some(&silent)).unwrap(), None);
+            assert!(silent.bodies().is_empty());
+        }
+
+        #[test]
+        fn json_token_failures_are_typed_and_a_missing_client_posts_nothing() {
+            let (_, _, store) = bank_store();
+            let denied = Recording::new(vec![(401, r#"{"detail":"nope"}"#)]);
+            assert_eq!(store.connect(&bank_grant(), &denied).unwrap_err().kind, ConnectFailureKind::InvalidClient);
+            let mut missing = bank_grant();
+            missing.client_secret = Some("NOPE".to_string());
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
+            assert_eq!(store.resolve("BANK_ACCESS", None), None);
+        }
+
+        fn stored_refresh_grant() -> CredentialGrant {
+            let mut ask = grant(None, ClientAuth::Body);
+            ask.name = "DRIVE_USER".to_string();
+            ask.grant = "refresh_token".to_string();
+            ask.code = "".into();
+            ask.redirect_uri = String::new();
+            ask.verifier = None;
+            ask.refresh_credential = Some("DRIVE_REFRESH".to_string());
+            ask
+        }
+
+        #[test]
+        fn a_stored_refresh_token_credential_is_exchanged_into_an_access_row_that_then_renews_itself() {
+            let (now, _, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let post = Recording::new(vec![(200, ROTATED)]);
+            let standing = store.connect(&stored_refresh_grant(), &post).unwrap();
+            assert_eq!(standing, CredentialStanding { connected: true, label: None });
+            assert!(post.bodies()[0].starts_with("grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1&client_secret=client-secret-2"), "{}", post.bodies()[0]);
+            assert_eq!(store.resolve("DRIVE_USER", None).as_deref(), Some("ACCESS-2"));
+            assert_eq!(store.resolve("DRIVE_REFRESH", None).as_deref(), Some("stored-refresh-0001"), "the stored credential is untouched");
+            expire(&now);
+            let next = Recording::new(vec![(200, KEPT)]);
+            assert_eq!(store.resolve_fresh("DRIVE_USER", None, Some(&next)).unwrap().as_deref(), Some("ACCESS-3"));
+            assert!(next.bodies()[0].contains("refresh_token=REFRESH-2"), "the row renews with the token it holds");
+        }
+
+        #[test]
+        fn a_refresh_with_client_auth_none_and_no_client_id_posts_only_the_grant_and_the_token() {
+            let (_, _, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let omitted = request(json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "refresh_token",
+                "code": "", "redirectUri": "", "verifier": "", "clientAuth": "none", "refreshCredential": "DRIVE_REFRESH" }))
+                .unwrap();
+            assert_eq!(omitted.client_id, "");
+            let mut no_id = stored_refresh_grant();
+            no_id.client_id = String::new();
+            no_id.client_secret = None;
+            no_id.client_auth = ClientAuth::None;
+            let post = Recording::new(vec![(200, ROTATED)]);
+            store.connect(&no_id, &post).unwrap();
+            assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001");
+            let mut public = no_id.clone();
+            public.client_id = "CLIENT_ID".to_string();
+            let post = Recording::new(vec![(200, ROTATED)]);
+            store.connect(&public, &post).unwrap();
+            assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1");
+            let mut body = stored_refresh_grant();
+            body.client_secret = Some("CLIENT_SECRET".to_string());
+            let post = Recording::new(vec![(200, ROTATED)]);
+            store.connect(&body, &post).unwrap();
+            assert_eq!(post.bodies()[0], "grant_type=refresh_token&refresh_token=stored-refresh-0001&client_id=client-id-1&client_secret=client-secret-2");
+        }
+
+        #[test]
+        fn a_missing_refresh_credential_or_one_naming_itself_posts_nothing_and_a_refused_one_persists_nothing() {
+            let (_, rows, store) = clocked();
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&stored_refresh_grant(), &silent).unwrap_err().kind, ConnectFailureKind::InvalidGrant);
+            let mut itself = stored_refresh_grant();
+            itself.refresh_credential = Some("DRIVE_USER".to_string());
+            assert_eq!(store.connect(&itself, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let before = rows.list().unwrap().len();
+            let revoked = Recording::new(vec![(400, r#"{"error":"invalid_grant"}"#)]);
+            assert_eq!(store.connect(&stored_refresh_grant(), &revoked).unwrap_err().kind, ConnectFailureKind::InvalidGrant);
+            assert_eq!(rows.list().unwrap().len(), before);
+            assert_eq!(store.resolve("DRIVE_USER", None), None);
+        }
+
+        fn request(json: Value) -> Result<CredentialGrant, crate::credential_admin::ConnectFailure> {
+            CredentialGrant::from_request(&serde_json::from_value(json).unwrap(), Some("viewer-1"))
+        }
+
+        #[test]
+        fn requests_name_the_keys_of_their_grant_and_refuse_the_keys_of_another() {
+            let jwt = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "jwt-bearer",
+                "signingKey": "@config.k", "issuer": "sa@x", "audience": "https://o/t", "ttlSeconds": 3600, "scopes": ["a", "b"] });
+            let parsed = request(jwt.clone()).unwrap();
+            assert_eq!(parsed.assertion.as_ref().map(|a| (a.ttl_seconds, a.subject.clone())), Some((3600, None)));
+            assert_eq!(parsed.scopes, vec!["a".to_string(), "b".to_string()]);
+            for (key, value) in [("clientId", json!("c")), ("code", json!("x")), ("clientAuth", json!("body"))] {
+                let mut bad = jwt.clone();
+                bad[key] = value;
+                assert_eq!(request(bad).unwrap_err().kind, ConnectFailureKind::Refused, "{key}");
+            }
+            for ttl in [json!(0), json!(1.5), json!("3600")] {
+                let mut bad = jwt.clone();
+                bad["ttlSeconds"] = ttl;
+                assert_eq!(request(bad).unwrap_err().kind, ConnectFailureKind::Refused);
+            }
+            let mut no_audience = jwt.clone();
+            no_audience.as_object_mut().unwrap().remove("audience");
+            assert_eq!(request(no_audience).unwrap_err().kind, ConnectFailureKind::Refused);
+            let json_token = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "json-token",
+                "clientId": "@config.i", "clientSecret": "@config.s", "clientIdField": "secret_id", "clientSecretField": "secret_key",
+                "accessField": "access", "refreshField": "refresh", "expiresInField": "access_expires",
+                "refreshEndpoint": "https://o/r", "refreshBodyField": "refresh" });
+            assert!(request(json_token.clone()).unwrap().json_token.is_some());
+            let mut half = json_token.clone();
+            half.as_object_mut().unwrap().remove("refreshBodyField");
+            assert_eq!(request(half).unwrap_err().kind, ConnectFailureKind::Refused);
+            let mut no_secret = json_token.clone();
+            no_secret.as_object_mut().unwrap().remove("clientSecret");
+            assert_eq!(request(no_secret).unwrap_err().kind, ConnectFailureKind::Refused);
+            let mut stray = json_token;
+            stray["signingKey"] = json!("k");
+            assert_eq!(request(stray).unwrap_err().kind, ConnectFailureKind::Refused);
+            let legacy_refresh = json!({ "credential": "@config.t", "scope": "user", "tokenEndpoint": "https://o/t", "grant": "refresh_token",
+                "code": "", "redirectUri": "", "verifier": "", "clientId": "@config.i", "clientAuth": "none" });
+            assert_eq!(request(legacy_refresh.clone()).unwrap().principal.as_deref(), Some("viewer-1"));
+            let mut stored = legacy_refresh;
+            stored["refreshCredential"] = json!("@config.r");
+            assert_eq!(request(stored).unwrap().refresh_credential.as_deref(), Some("@config.r"));
+            let unknown = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "password" });
+            assert_eq!(request(unknown).unwrap_err().kind, ConnectFailureKind::Refused);
+        }
+
+        #[test]
+        fn the_new_grants_survive_the_wire_round_trip_the_node_and_wasm_hosts_use() {
+            use crate::embed::wire::CredentialGrantWire;
+            for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant()] {
+                let wire = serde_json::to_string(&CredentialGrantWire::from(&ask)).unwrap();
+                let back: CredentialGrant = serde_json::from_str::<CredentialGrantWire>(&wire).unwrap().into();
+                assert_eq!(back, ask);
+            }
         }
     }
 }

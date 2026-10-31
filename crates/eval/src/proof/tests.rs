@@ -1407,6 +1407,41 @@ fn a_verdict_is_a_pure_function_of_the_program() {
 }
 
 #[test]
+fn the_ticketer_expiry_ensures_gets_one_verdict_whatever_surrounds_it() {
+    let stamp = json!(["time/add", "@now", 60000, "ms"]);
+    let ticket = pay(
+        json!([["set", "@entity.paid", stamp.clone()]]),
+        json!([["=", "@entity.paid", stamp.clone()]]),
+        None,
+    );
+    let decoys = [
+        pay(json!([["set", "@entity.total", 1]]), json!([[">=", "@entity.total", 0]]), None),
+        json!({ "from": "open", "to": "open", "event": "ADD", "effects": [["set", "@entity.paid", ["time/add", "@now", 1, "ms"]]] }),
+    ];
+    let site_of_ticket = |ts: Vec<J>| -> Vec<Verdict> {
+        let all = verdicts(&program(J::Array(ts), J::Null, J::Null));
+        all.into_iter().filter(|(_, v)| *v == Verdict::Proved).map(|(_, v)| v).collect()
+    };
+    let alone = site_of_ticket(vec![ticket.clone()]);
+    assert_eq!(alone, vec![Verdict::Proved], "the ticketer shape alone");
+    for _ in 0..3 {
+        assert_eq!(site_of_ticket(vec![ticket.clone()]), alone, "repeated");
+    }
+    let mut first = vec![ticket.clone()];
+    first.extend(decoys.iter().cloned());
+    let mut last: Vec<J> = decoys.to_vec();
+    last.push(ticket.clone());
+    assert!(site_of_ticket(first).contains(&Verdict::Proved), "ticket first among decoys");
+    assert!(site_of_ticket(last).contains(&Verdict::Proved), "ticket last among decoys");
+    let other = pay(
+        json!([["set", "@entity.paid", stamp]]),
+        json!([["=", "@entity.paid", ["time/add", "@now", 1, "ms"]]]),
+        None,
+    );
+    assert!(site_of_ticket(vec![other]).is_empty(), "control: a different stamp stays unproved");
+}
+
+#[test]
 fn the_prove_report_prints_a_violated_row_proposition_with_its_counterexample_and_omits_the_proved() {
     let inv = row_invariant(json!([">=", "@entity.total", 0]));
     let bare = json!([{ "from": "open", "to": "open", "event": "ADD",

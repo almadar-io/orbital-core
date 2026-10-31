@@ -618,7 +618,7 @@ fn eval_node(expr: &SExpression, ctx: &BindingContext) -> EvalResult {
 
         // Object - evaluate all values
         SExpression::Object(obj) => {
-            let mut result = ValueMap::default();
+            let mut result = orbital_core_base::value::value_map_with_capacity(obj.len());
             for (k, v) in obj.iter() {
                 result.insert(k.clone(), eval_expr(v, ctx)?);
             }

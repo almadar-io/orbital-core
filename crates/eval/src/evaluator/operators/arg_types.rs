@@ -259,7 +259,7 @@ fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
                 json_fits(item, list_null, map_null)
             }
         }),
-        Value::Lambda { .. } => false,
+        Value::Lambda(_) => false,
     }
 }
 
@@ -591,10 +591,7 @@ mod tests {
     }
 
     fn lambda() -> Value {
-        Value::Lambda {
-            params: Vec::new(),
-            body: std::sync::Arc::new(SExpression::Null),
-        }
+        Value::lambda(Vec::new(), std::sync::Arc::new(SExpression::Null))
     }
 
     #[test]

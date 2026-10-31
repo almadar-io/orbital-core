@@ -554,9 +554,12 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // queued seed asks (P-017 K3). 816: plus the dispatch's delivery count (`DispatchMemory.delivered`, one `usize`,
     // 00d3e70): the settle-pass cap counts the deliveries of the dispatch, so the counter lives with the dispatch's
     // memory in the run that `Progress::Await` carries; boxing 8 bytes would add a pointer and an allocation per parked dispatch.
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 816, "Progress");
+    // 848: plus the keyed-row drops a step owes (one `VecDeque`, 32 bytes, empty without allocating; G-ORBITAL-CORE-100):
+    // each drop runs as its own unit, so a drop parked on the host replays alone under its own journal.
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 848, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
-    assert_eq!(size_of::<ResolveProgress>(), 416, "ResolveProgress");
+    // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
+    assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");
     // 568: plus the entity's `@invariant` propositions (`Option<Vec<SExpression>>`, 24 bytes, G-ORB-384).
     // 592: plus the entity's `store` driver binding (`Option<String>`, 24 bytes, EXEC-STORE-4). 768: `SExpression` is
     // 72 bytes because its object variant holds an `IndexMap` inline (entries 24 + index table 32 + hasher 16); every

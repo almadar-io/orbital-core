@@ -75,9 +75,7 @@ macro_rules! require_number {
 macro_rules! require_lambda {
     ($val:expr) => {
         match &$val {
-            ::orbital_core_base::value::Value::Lambda { params, body } => {
-                (params.clone(), body.clone())
-            }
+            ::orbital_core_base::value::Value::Lambda(l) => (l.params.clone(), l.body.clone()),
             other => {
                 return Err(::orbital_core_base::error::OrbitalError::Eval(
                     ::orbital_core_base::error::EvalError::TypeMismatch {

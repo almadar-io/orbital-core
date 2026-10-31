@@ -453,7 +453,7 @@ impl EffectExecutor {
             );
             if !result.is_executed() {
                 let detail = result.error.clone().unwrap_or_else(|| "not executed".to_string());
-                if !applied.is_empty() {
+                if !applied.is_empty() && !persistence.suspended() {
                     warn!(
                         applied = applied.len(),
                         "kernel.write.batch-compensated: restoring the pre-images of the ops applied before the failure"

@@ -150,6 +150,8 @@ pub struct EffectRun {
     pub effect: SExpression,
     pub status: EffectRunStatus,
     pub error: Option<String>,
+    /// The failure was delivered to the declared `emit.failure` route of the op that failed, which may sit inside a compound effect.
+    pub routed: bool,
 }
 
 /// The state a transition ran against: the trait's `@entity` frame before its effects, and the dispatch's `@event` / `@prevEvents` / `@prevStates` view.

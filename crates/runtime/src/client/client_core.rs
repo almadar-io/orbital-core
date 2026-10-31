@@ -65,6 +65,8 @@ pub struct ClientCore {
     pub current_state: String,
     /// UI slots populated from render-ui effects.
     pub ui_slots: HashMap<String, Vec<SlotContent>>,
+    /// Slots whose last repaint failed to resolve, with the rejection's error; a slot leaves it when painted again.
+    pub slot_faults: HashMap<String, String>,
     /// Per-trait `main` render-ui content, keyed by trait name — resolves `@trait.X`.
     pub trait_content: ValueMap,
     /// Form field values for the active form.
@@ -133,6 +135,7 @@ impl ClientCore {
             current_trait_name,
             current_state: "browsing".to_string(),
             ui_slots: HashMap::new(),
+            slot_faults: HashMap::new(),
             trait_content: ValueMap::default(),
             form_data: HashMap::new(),
             entities: HashMap::new(),
@@ -876,6 +879,21 @@ impl ClientCore {
             .collect();
         for slot in &to_clear {
             self.ui_slots.remove(slot);
+        }
+        for (_, effect) in &paired {
+            if let ClientEffect::RenderUi { slot, .. } = effect {
+                self.slot_faults.remove(slot);
+            }
+        }
+        for rejection in response.rejections.iter().flatten() {
+            if let (crate::effects::response::TransitionRejectionCode::RepaintFailed, Some(slot)) =
+                (rejection.code, &rejection.slot)
+            {
+                self.slot_faults.insert(
+                    slot.clone(),
+                    rejection.error.clone().unwrap_or_default(),
+                );
+            }
         }
 
         for (src, effect) in paired {

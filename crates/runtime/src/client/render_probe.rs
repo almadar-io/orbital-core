@@ -23,7 +23,7 @@ use crate::client::bridge::{KernelBridge, ServerBridge};
 use crate::client::client_core::ClientCore;
 use crate::client::recurse::trait_ref_name;
 use crate::program_machine::{
-    EntityBinding, EntityBindingKind, RenderedNode, RenderedSlot, TraitRef,
+    EntityBinding, EntityBindingKind, RenderedNode, RenderedSlot, SlotFault, TraitRef,
 };
 use crate::render_report::{RenderReport, RenderVerdict};
 use orbital_core_base::drawable::{is_draw_host, is_drawable};
@@ -439,6 +439,7 @@ pub fn played_render_facts<F>(
     event: &str,
     payload: Value,
     target: &dyn RenderTarget,
+    with_props: bool,
     make_bridge: F,
 ) -> Result<Vec<RenderedSlot>, String>
 where
@@ -493,6 +494,15 @@ where
                 .cloned()
                 .unwrap_or_default(),
             nodes: facts.slot_nodes(&cx, slot, &app.entities, true, &mut canvas),
+            props: with_props.then(|| orbital_core_base::json_value::value_to_json(&slot.props)),
+            fault: with_props
+                .then(|| {
+                    app.slot_faults.get(name).map(|error| SlotFault {
+                        code: crate::effects::response::TransitionRejectionCode::RepaintFailed,
+                        error: error.clone(),
+                    })
+                })
+                .flatten(),
         })
         .collect();
     slots.sort_by(|a, b| a.slot.cmp(&b.slot));
@@ -1090,6 +1100,7 @@ mod tests {
             "INIT",
             Value::Null,
             &target,
+            false,
             |s, _| {
                 let bridge = KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
                 let note: Value = serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
@@ -1128,12 +1139,117 @@ mod tests {
             "INIT",
             Value::Null,
             &target,
+            false,
             |s, _| probe_kernel(s),
         );
         assert!(
             other.unwrap_err().contains("no trait \"Elsewhere\""),
             "control: an unknown trait is refused"
         );
+    }
+
+    fn effects_program(effects: serde_json::Value) -> OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "t",
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Notes",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "title", "type": "string" }
+                ] },
+                "traits": [{
+                    "name": "NotesView", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }]
+                    }
+                }],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
+            }]
+        }))
+        .unwrap()
+    }
+
+    fn facts(schema: &OrbitalSchema, with_props: bool) -> Vec<RenderedSlot> {
+        let target = Target { supported: &["stack"], stubs: &[] };
+        played_render_facts(schema, "NotesView", "INIT", Value::Null, &target, with_props, |s, _| probe_kernel(s)).unwrap()
+    }
+
+    #[test]
+    fn render_props_show_a_prop_reading_the_entity_as_resolved_after_the_set() {
+        let schema = effects_program(serde_json::json!([
+            ["set", "@entity.title", "todo"],
+            ["render-ui", "main", { "type": "stack", "initialData": "@entity" }]
+        ]));
+        let slots = facts(&schema, true);
+        let props = slots[0].props.as_ref().expect("props asked");
+        assert_eq!(props["type"], "stack");
+        assert_eq!(props["initialData"]["title"], "todo", "{props}");
+        assert!(slots[0].fault.is_none());
+    }
+
+    #[test]
+    fn render_props_show_a_prop_computed_in_a_let_binding() {
+        let schema = effects_program(serde_json::json!([
+            ["let", [["n", ["+", 1, 2]]], ["render-ui", "main", { "type": "stack", "total": "@n" }]]
+        ]));
+        let props = facts(&schema, true)[0].props.clone().expect("props asked");
+        assert_eq!(props["total"], 3, "{props}");
+    }
+
+    #[test]
+    fn render_props_show_a_filtered_list_as_its_filtered_items() {
+        let schema = effects_program(serde_json::json!([
+            ["render-ui", "main", { "type": "stack", "items": ["array/filter", [1, 2, 3], ["fn", "x", [">", "@x", 1]]] }]
+        ]));
+        let props = facts(&schema, true)[0].props.clone().expect("props asked");
+        assert_eq!(props["items"], serde_json::json!([2, 3]), "{props}");
+    }
+
+    #[test]
+    fn control_without_render_props_the_slot_carries_neither_props_nor_fault() {
+        let schema = effects_program(serde_json::json!([
+            ["render-ui", "main", { "type": "stack", "initialData": "@entity" }]
+        ]));
+        let slots = facts(&schema, false);
+        assert!(slots[0].props.is_none() && slots[0].fault.is_none());
+        let wire = serde_json::to_value(&slots).unwrap();
+        assert_eq!(
+            wire[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            ["slot", "sourceTrait", "ownerEntity", "nodes"],
+            "the wire carries only the node facts, as before"
+        );
+    }
+
+    #[test]
+    fn a_failed_repaint_response_shows_the_typed_fault_on_its_slot() {
+        let schema = effects_program(serde_json::json!([
+            ["render-ui", "main", { "type": "stack" }]
+        ]));
+        let mut app = ClientCore::new(schema, None);
+        let response: crate::effects::response::EventResponse = serde_json::from_value(serde_json::json!({
+            "success": true,
+            "rejections": [{ "code": "repaint-failed", "trait": "NotesView", "slot": "main", "error": "boom" }]
+        }))
+        .unwrap();
+        app.process_response("TICK", Some("NotesView".into()), response);
+        assert_eq!(app.slot_faults.get("main").map(String::as_str), Some("boom"));
+        let painted: crate::effects::response::EventResponse = serde_json::from_value(serde_json::json!({
+            "success": true,
+            "clientEffectsByTrait": [{ "traitName": "NotesView", "effect": ["render-ui", "main", { "type": "stack" }] }]
+        }))
+        .unwrap();
+        app.process_response("TICK", Some("NotesView".into()), painted);
+        assert!(app.slot_faults.is_empty(), "control: a later paint of the slot clears its fault");
+    }
+
+    #[test]
+    fn a_render_ui_whose_props_fail_paints_no_slot_and_never_raw_data() {
+        let schema = effects_program(serde_json::json!([
+            ["render-ui", "main", { "type": "stack", "x": ["/", 1, "not-a-number"] }]
+        ]));
+        let slots = facts(&schema, true);
+        assert!(slots.is_empty(), "EXEC-STEP-7: no client effect of a failed transition: {slots:?}");
     }
 
     #[test]

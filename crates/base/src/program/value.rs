@@ -14,6 +14,11 @@ use std::sync::Arc;
 /// them in the order the fields were written, as the JS evaluator does.
 pub type ValueMap = crate::collections::IndexMap<Shared<String>, Value>;
 
+/// An empty object map holding exactly `fields` entries, so a record of known width keeps no spare entry capacity.
+pub fn value_map_with_capacity(fields: usize) -> ValueMap {
+    ValueMap::with_capacity_and_hasher(fields, Default::default())
+}
+
 /// The one shared `Shared<String>` for a literal key: built on first use, then a reference-count bump per call.
 #[macro_export]
 macro_rules! static_key {
@@ -237,10 +242,14 @@ pub enum Value {
     /// Object/map of values
     Object(Shared<ValueMap>),
     /// Lambda function (params, body)
-    Lambda {
-        params: Vec<String>,
-        body: Arc<SExpression>,
-    },
+    Lambda(Arc<Lambda>),
+}
+
+/// The parameters and body of a lambda, shared behind one pointer so `Value` stays 16 bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lambda {
+    pub params: Vec<String>,
+    pub body: Arc<SExpression>,
 }
 
 // Custom Serialize implementation that handles Lambda by converting to SExpression
@@ -256,7 +265,7 @@ impl Serialize for Value {
             Value::String(s) => serializer.serialize_str(s),
             Value::Array(arr) => arr.serialize(serializer),
             Value::Object(obj) => obj.serialize(serializer),
-            Value::Lambda { .. } => {
+            Value::Lambda(_) => {
                 // Serialize lambda as ["fn", params, body]
                 let sexpr: SExpression = self.clone().into();
                 sexpr.serialize(serializer)
@@ -438,7 +447,7 @@ impl Value {
             Value::Number(n) => crate::str_utils::js_number_string(*n),
             Value::String(s) => s.clone().into_inner(),
             Value::Array(_) | Value::Object(_) => crate::json_value::js_json_string(self),
-            Value::Lambda { params, .. } => format!("<fn({})>", params.join(", ")),
+            Value::Lambda(l) => format!("<fn({})>", l.params.join(", ")),
         }
     }
 
@@ -624,19 +633,23 @@ impl Value {
             Value::String(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) => "object",
-            Value::Lambda { .. } => "function",
+            Value::Lambda(_) => "function",
         }
+    }
+
+    pub fn lambda(params: Vec<String>, body: Arc<SExpression>) -> Self {
+        Value::Lambda(Arc::new(Lambda { params, body }))
     }
 
     /// Check if value is a lambda
     pub fn is_lambda(&self) -> bool {
-        matches!(self, Value::Lambda { .. })
+        matches!(self, Value::Lambda(_))
     }
 
     /// Try to get lambda params and body
     pub fn as_lambda(&self) -> Option<(&[String], &SExpression)> {
         match self {
-            Value::Lambda { params, body } => Some((params.as_slice(), body.as_ref())),
+            Value::Lambda(l) => Some((l.params.as_slice(), l.body.as_ref())),
             _ => None,
         }
     }
@@ -707,8 +720,8 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Lambda { params, .. } => {
-                write!(f, "<fn({})>", params.join(", "))
+            Value::Lambda(l) => {
+                write!(f, "<fn({})>", l.params.join(", "))
             }
         }
     }
@@ -747,7 +760,8 @@ impl From<Value> for SExpression {
                     .collect(),
             ),
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
-            Value::Lambda { params, body } => {
+            Value::Lambda(l) => {
+                let Lambda { params, body } = Arc::unwrap_or_clone(l);
                 let mut arr = vec![SExpression::string("fn")];
                 if params.len() == 1 {
                     arr.push(SExpression::string(params[0].clone()));
@@ -858,6 +872,22 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn value_is_sixteen_bytes() {
+        assert_eq!(std::mem::size_of::<Value>(), 16);
+    }
+
+    #[test]
+    fn lambda_round_trips_to_fn_form_and_compares_by_content() {
+        let body = Arc::new(SExpression::Number(1.0));
+        let a = Value::lambda(vec!["x".into()], body.clone());
+        let b = Value::lambda(vec!["x".into()], body.clone());
+        assert_eq!(a, b);
+        assert_ne!(a, Value::lambda(vec!["y".into()], body.clone()), "control: params differ");
+        let SExpression::Array(arr) = SExpression::from(a) else { panic!("fn form is an array") };
+        assert_eq!(arr.len(), 3);
+    }
+
     #[test]
     fn index_reads_a_missing_or_non_object_field_as_null_and_writes_through_null() {
         let mut v = Value::Null;

@@ -454,7 +454,7 @@ fn json_kind(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
-        Value::Lambda { .. } => "function",
+        Value::Lambda(_) => "function",
     }
 }
 

@@ -463,42 +463,71 @@ fn credential_value<'a>(arg: &SExpression, ctx: &'a BindingContext) -> Result<Op
     Ok(ctx.secret(&name))
 }
 
-/// hmac/sha256 (credential, message, encoding) - the key is a credential slot: a secret-typed @config knob naming the
-/// credential whose value the kernel resolves into the evaluation. Null when the credential is not held.
+/// The operand count of a call form that takes `max` operands at most, the operator name excluded; more is a typed arity error.
+fn require_at_most(args: &[SExpression], op: &str, max: usize) -> Result<(), OrbitalError> {
+    if args.len() > max {
+        return Err(OrbitalError::Eval(EvalError::ArityMismatch {
+            operator: op.to_string(),
+            expected: max,
+            actual: args.len(),
+        }));
+    }
+    Ok(())
+}
+
+/// hmac/sha256 (credential, message, encoding, prefix?) - the key is a credential slot: a secret-typed @config knob naming the
+/// credential whose value the kernel resolves into the evaluation. The optional literal `prefix` is put in front of the
+/// credential value to form the key (SigV4 `"AWS4" + secret`); the value never leaves the evaluation. Null when the
+/// credential is not held.
 pub struct HmacSha256Op;
 impl Operator for HmacSha256Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "hmac/sha256", == 3);
+        const OP: &str = "hmac/sha256";
+        require_arity!(args, OP, >= 3);
+        require_at_most(args, OP, 4)?;
         let message = string_arg(&args[1], ctx)?;
         let encoding = string_arg(&args[2], ctx)?;
+        let prefix = match args.get(3) {
+            Some(arg) => string_arg(arg, ctx)?,
+            None => String::new(),
+        };
         let Some(key) = credential_value(&args[0], ctx)? else {
             return Ok(Value::Null);
         };
-        digest_text(
-            &codec::hmac_sha256(key.as_bytes(), message.as_bytes()),
-            &encoding,
-            "hmac/sha256",
-        )
+        let mut keyed = prefix.into_bytes();
+        keyed.extend_from_slice(key.as_bytes());
+        digest_text(&codec::hmac_sha256(&keyed, message.as_bytes()), &encoding, OP)
     }
 }
 
-/// hmac/sha256-bytes (key, message, encoding) - HMAC-SHA256 under a bytes key that is a program value (a derived key such
-/// as a SigV4 chain step); a non-canonical base64 key answers null
+/// hmac/sha256-bytes (key, message, encoding, input?) - HMAC-SHA256 under a bytes key that is a program value (a derived key
+/// such as a SigV4 chain step). `input` "text" (default) signs the UTF-8 of the message, "bytes" decodes the message as
+/// standard padded base64 first (the hash/sha256 reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
 pub struct HmacSha256BytesOp;
 impl Operator for HmacSha256BytesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "hmac/sha256-bytes", == 3);
+        const OP: &str = "hmac/sha256-bytes";
+        require_arity!(args, OP, >= 3);
+        require_at_most(args, OP, 4)?;
         let key = bytes_in(&args[0], ctx)?;
         let message = string_arg(&args[1], ctx)?;
         let encoding = string_arg(&args[2], ctx)?;
+        let input = match args.get(3) {
+            Some(arg) => string_arg(arg, ctx)?,
+            None => "text".to_string(),
+        };
         let Some(key) = key else {
             return Ok(Value::Null);
         };
-        digest_text(
-            &codec::hmac_sha256(&key, message.as_bytes()),
-            &encoding,
-            "hmac/sha256-bytes",
-        )
+        let data = match input.as_str() {
+            "text" => message.into_bytes(),
+            "bytes" => match codec::base64_decode(&message) {
+                Ok(data) => data,
+                Err(_) => return Ok(Value::Null),
+            },
+            _ => return Ok(Value::Null),
+        };
+        digest_text(&codec::hmac_sha256(&key, &data), &encoding, OP)
     }
 }
 
@@ -1111,6 +1140,48 @@ mod tests {
         assert_eq!(text(eval(form)), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
         assert_eq!(eval(serde_json::json!(["hmac/sha256-bytes", "%not base64", "m", "hex"])).unwrap(), Value::Null);
         assert!(eval(serde_json::json!(["hmac/sha256-bytes", serde_json::Value::Null, "m", "hex"])).is_err());
+    }
+
+    #[test]
+    fn hmac_sha256_prefix_joins_the_credential_value_into_the_key_and_the_value_stays_out_of_the_result() {
+        const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+        let ctx = held("SIGNING", SECRET);
+        let k_date = |ctx: &BindingContext| eval_in(ctx, serde_json::json!(["hmac/sha256", "SIGNING", "20150830", "hex", "AWS4"]));
+        assert_eq!(text(k_date(&ctx)), "0138c7a6cbd60aa727b2f653a522567439dfb9f3e72b21f9b25941a42f04a7cd");
+        let chain = serde_json::json!(["hmac/sha256-bytes",
+            ["hmac/sha256-bytes",
+                ["hmac/sha256-bytes",
+                    ["hmac/sha256", "SIGNING", "20150830", "base64", "AWS4"], "us-east-1", "base64"],
+                "iam", "base64"],
+            "aws4_request", "hex"]);
+        assert_eq!(text(eval_in(&ctx, chain)), "c4afb1cc5771d871763a393e44b703571b55cc28424d1a5e86da6ed3c154a4b9");
+        let plain = serde_json::json!(["hmac/sha256", "SIGNING", "20150830", "hex"]);
+        assert_ne!(text(eval_in(&ctx, plain)), text(k_date(&ctx)), "control: no prefix signs under the bare value");
+        let empty = serde_json::json!(["hmac/sha256", "SIGNING", "20150830", "hex", ""]);
+        assert_eq!(text(eval_in(&ctx, empty)), text(eval_in(&ctx, serde_json::json!(["hmac/sha256", "SIGNING", "20150830", "hex"]))));
+        assert_eq!(k_date(&BindingContext::default()).unwrap(), Value::Null, "a credential that is not held never signs under the prefix alone");
+        assert!(eval_in(&ctx, serde_json::json!(["hmac/sha256", "SIGNING", "m", "hex", "AWS4", "extra"])).is_err());
+        assert!(eval_in(&ctx, serde_json::json!(["hmac/sha256", "SIGNING", "m", "base32", "AWS4"])).is_err());
+    }
+
+    #[test]
+    fn hmac_sha256_bytes_input_bytes_decodes_the_message_and_matches_rfc_4231() {
+        for (key, message, want) in [
+            ("CwsLCwsLCwsLCwsLCwsLCwsLCws=", "SGkgVGhlcmU=", "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"),
+            ("SmVmZQ==", "d2hhdCBkbyB5YSB3YW50IGZvciBub3RoaW5nPw==", "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"),
+            ("qqqqqqqqqqqqqqqqqqqqqqqqqqo=", "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d0=", "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"),
+            ("AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==", "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b"),
+        ] {
+            let form = serde_json::json!(["hmac/sha256-bytes", key, message, "hex", "bytes"]);
+            assert_eq!(text(eval(form)), want, "{key}");
+        }
+        let as_text = serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "what do ya want for nothing?", "hex", "text"]);
+        assert_eq!(text(eval(as_text)), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", "control: text is the default reading");
+        let base64_text = serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "d2hhdCBkbyB5YSB3YW50IGZvciBub3RoaW5nPw==", "hex"]);
+        assert_ne!(text(eval(base64_text)), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", "control: without input the message is text");
+        assert_eq!(eval(serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "%not base64", "hex", "bytes"])).unwrap(), Value::Null);
+        assert_eq!(eval(serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "m", "hex", "octets"])).unwrap(), Value::Null);
+        assert!(eval(serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "m", "hex", "bytes", "extra"])).is_err());
     }
 
     #[test]

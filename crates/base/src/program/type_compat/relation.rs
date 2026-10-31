@@ -18,7 +18,7 @@ impl Relation<'_> {
                 witness,
                 Coercion::Explicit
                     | Coercion::Refine(_)
-                    | Coercion::Unwrap { checked: false, .. }
+                    | Coercion::Unwrap { .. }
                     | Coercion::Widen(
                         WidenKind::StringToDate
                             | WidenKind::StringToDateTime
@@ -41,10 +41,7 @@ impl Relation<'_> {
                 .map(|c| Coercion::Wrap(Box::new(c)));
         }
         if let OirType::Optional { inner } = src {
-            return self.sub(inner, dst, progress).map(|c| Coercion::Unwrap {
-                checked: false,
-                inner: Box::new(c),
-            });
+            return self.sub(inner, dst, progress).map(|c| Coercion::Unwrap { inner: Box::new(c) });
         }
         if src == dst
             && (!self.checked

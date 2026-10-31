@@ -615,6 +615,72 @@ fn the_result_of_a_polymorphic_call_is_the_concrete_type() {
     );
 }
 
+fn reduce_op() -> EmbeddedOperator {
+    op(
+        json!([
+            p("items", list(var("T"))),
+            p("seed", var("A")),
+            p("step", json!({"kind":"fn", "params":[var("A"), var("T")], "returns":var("A")}))
+        ]),
+        var("A"),
+        Some(3),
+    )
+}
+
+fn reduce_answer(seed: OirType, step_result: OirType) -> Result<Option<OirType>, Mismatch> {
+    let step = move |_: &[Option<OirType>]| Some(step_result.clone());
+    let callback = Actual { known: None, text: None, texts: None, lambda: Some(&step) };
+    call(&reduce_op(), &[ty(s_arr(OirType::Number)), ty(seed), callback], Mode::Proof)
+}
+
+#[test]
+fn a_reduce_with_a_present_start_answers_the_start_type_when_the_step_answers_it() {
+    assert_eq!(reduce_answer(OirType::Number, OirType::Number), Ok(Some(OirType::Number)));
+    let record = struct_of(&[("n", OirType::Number)]);
+    assert_eq!(reduce_answer(record.clone(), record.clone()), Ok(Some(record)));
+}
+
+#[test]
+fn a_reduce_whose_step_answers_an_optional_answers_an_optional() {
+    let optional = OirType::optional(OirType::Number);
+    assert_eq!(reduce_answer(OirType::Number, optional.clone()), Ok(Some(optional.clone())), "number start, number? step");
+    assert_eq!(
+        reduce_answer(optional.clone(), OirType::Number),
+        Ok(Some(optional.clone())),
+        "control: an optional start stays optional"
+    );
+    assert_eq!(reduce_answer(optional.clone(), optional.clone()), Ok(Some(optional)), "control: number? both");
+}
+
+#[test]
+fn an_unproved_optional_is_refused_at_a_present_position_in_every_static_mode() {
+    let plain = op(json!([p("n", json!("number"))]), json!("number"), Some(1));
+    let maybe = OirType::optional(OirType::Number);
+    for mode in [Mode::Static, Mode::Proof] {
+        assert!(call(&plain, &[ty(maybe.clone())], mode).is_err(), "{mode:?}: number? at number");
+        assert_eq!(call(&plain, &[ty(OirType::Number)], mode), Ok(Some(OirType::Number)), "{mode:?}: control");
+    }
+    let date = op(json!([p("s", json!("string"))]), json!("string"), Some(1));
+    for mode in [Mode::Static, Mode::Proof] {
+        assert!(call(&date, &[ty(OirType::optional(OirType::Date))], mode).is_err(), "{mode:?}: date? at string");
+        assert!(call(&date, &[ty(OirType::Date)], mode).is_ok(), "{mode:?}: control, a date at rest is a string");
+    }
+}
+
+#[test]
+fn a_string_still_fits_a_callkey_position_and_a_list_of_optionals_does_not_fit_a_list_of_presents() {
+    let keyed = op(json!([p("k", json!("callkey"))]), json!("callkey"), Some(1));
+    let items = op(json!([p("xs", list(json!("number")))]), json!("number"), Some(1));
+    for mode in [Mode::Static, Mode::Proof] {
+        assert!(call(&keyed, &[ty(OirType::String)], mode).is_ok(), "{mode:?}: a string at a callkey position");
+        assert!(
+            call(&items, &[ty(OirType::array(OirType::optional(OirType::Number)))], mode).is_err(),
+            "{mode:?}: [number?] at [number]"
+        );
+        assert!(call(&items, &[ty(OirType::array(OirType::Number))], mode).is_ok(), "{mode:?}: control");
+    }
+}
+
 #[test]
 fn accumulator_record_empty_list_fields_take_the_callbacks_element_type() {
     let reduce = op(
@@ -3446,4 +3512,24 @@ fn a_list_of_x_y_shape_return_types_as_a_list_of_cell_records() {
         call(&reachable, &[ty(OirType::Number)], Mode::Static),
         Ok(Some(s_arr(struct_of(&[("x", OirType::Number), ("y", OirType::Number)]))))
     );
+}
+
+#[test]
+fn a_declared_union_result_is_a_determined_union_of_its_members_and_nullable_keeps_the_optional() {
+    let members = json!({ "kind": "union", "of": [{ "kind": "union", "of": ["date", "datetime"] }, { "kind": "literal", "value": null }] });
+    let sig_op = op(json!([p("s", json!("string"))]), members, Some(1));
+    let sig = Signature::of(&sig_op);
+    let mut b = CallBindings::new();
+    sig.bind(&mut b, 0, &ty(OirType::String), Mode::Static).unwrap();
+    assert_eq!(sig.result(&b), Some(OirType::optional(union_of_named(&[("date", OirType::Date), ("datetime", OirType::DateTime)]))));
+    let plain = json!({ "kind": "union", "of": ["date", "datetime"] });
+    let plain_op = op(json!([p("s", json!("string"))]), plain, Some(1));
+    assert_eq!(Signature::of(&plain_op).result(&b), Some(union_of_named(&[("date", OirType::Date), ("datetime", OirType::DateTime)])));
+    let unresolved = json!({ "kind": "union", "of": ["date", { "kind": "var", "name": "T" }] });
+    let unresolved_op = op(json!([p("s", json!("string"))]), unresolved, Some(1));
+    assert_eq!(Signature::of(&unresolved_op).result(&CallBindings::new()), None, "control: a member nothing binds stays undetermined");
+}
+
+fn union_of_named(members: &[(&str, OirType)]) -> OirType {
+    OirType::Union { variants: members.iter().map(|(n, t)| crate::ir::types::OirField::new(*n, t.clone())).collect() }
 }

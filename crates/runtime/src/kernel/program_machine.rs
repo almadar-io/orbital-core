@@ -199,7 +199,7 @@ pub struct PlayedOutcome {
 }
 
 /// One non-`system` slot a played trait's `render-ui` filled, as the client circuit rendered it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedSlot {
@@ -210,6 +210,24 @@ pub struct RenderedSlot {
     pub owner_entity: String,
     /// The rendered tree in pre-order, each `@trait` embed's content visited once where it is embedded.
     pub nodes: Vec<RenderedNode>,
+    /// The slot's content exactly as the kernel resolved it for a host to paint (EXEC-STEP-4); present only when
+    /// `options.renderProps` asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub props: Option<serde_json::Value>,
+    /// The slot's repaint failed to resolve and it keeps its last paint (G-ORBITAL-CORE-090); present only when
+    /// `options.renderProps` asked and the failure happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<SlotFault>,
+}
+
+/// A slot's typed repaint failure, as the `repaint-failed` rejection carried it.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotFault {
+    pub code: crate::effects::response::TransitionRejectionCode,
+    pub error: String,
 }
 
 /// One node of a rendered tree.
@@ -424,11 +442,7 @@ pub fn played_effect(run: &EffectRun) -> PlayedEffect {
         EffectRunStatus::Failed => PlayedEffectStatus::Failed,
         EffectRunStatus::Skipped => PlayedEffectStatus::Skipped,
     };
-    let routed = status == PlayedEffectStatus::Failed
-        && orbital_core_base::effect_types::parse_effect(&run.effect)
-            .as_ref()
-            .and_then(orbital_core_base::effect_types::Effect::emit_routes)
-            .is_some_and(|routes| routes.failure.is_some());
+    let routed = status == PlayedEffectStatus::Failed && run.routed;
     PlayedEffect {
         effect_type,
         args,
@@ -572,10 +586,15 @@ mod tests {
             {}
         ]));
         let run = |effect: &SExpression, status| {
+            let routed = orbital_core_base::effect_types::parse_effect(effect)
+                .as_ref()
+                .and_then(orbital_core_base::effect_types::Effect::emit_routes)
+                .is_some_and(|routes| routes.failure.is_some());
             played_effect(&EffectRun {
                 effect: effect.clone(),
                 status,
                 error: None,
+                routed,
             })
         };
         let routed = run(&routes, EffectRunStatus::Failed);

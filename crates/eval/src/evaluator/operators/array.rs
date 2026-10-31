@@ -73,7 +73,7 @@ impl<'a> Callback<'a> {
             }
         }
         match eval_expr(callable, ctx)? {
-            Value::Lambda { params, body } => Ok(Callback::Lambda { params, body }),
+            Value::Lambda(l) => Ok(Callback::Lambda { params: l.params.clone(), body: l.body.clone() }),
             other => Err(other.kind_error("function").into()),
         }
     }

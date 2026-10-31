@@ -696,5 +696,29 @@
     ],
     "error": true,
     "source": "null input is a type error"
+  },
+  {
+    "op": "hmac/sha256-bytes",
+    "args": ["CwsLCwsLCwsLCwsLCwsLCwsLCws=", "SGkgVGhlcmU=", "hex", "bytes"],
+    "expect": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
+    "source": "RFC 4231 test case 1, message as bytes"
+  },
+  {
+    "op": "hmac/sha256-bytes",
+    "args": ["qqqqqqqqqqqqqqqqqqqqqqqqqqo=", "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d0=", "hex", "bytes"],
+    "expect": "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
+    "source": "RFC 4231 test case 3 (key 0xaa x20, data 0xdd x50)"
+  },
+  {
+    "op": "hmac/sha256-bytes",
+    "args": ["AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==", "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "hex", "bytes"],
+    "expect": "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
+    "source": "RFC 4231 test case 4 (key 0x01..0x19, data 0xcd x50)"
+  },
+  {
+    "op": "hmac/sha256-bytes",
+    "args": ["SmVmZQ==", "%not base64", "hex", "bytes"],
+    "null": true,
+    "source": "a message that is not canonical base64 answers null"
   }
 ]

@@ -155,3 +155,173 @@ fn a_diverged_replay_still_logs_error_never_a_suspend() {
     assert_eq!(errors(&lines).len(), 1, "{lines:?}");
     assert!(!lines.iter().any(|l| l.contains("suspended")), "{lines:?}");
 }
+
+fn batch_of(ids: &[&str]) -> Effect {
+    let ops: Vec<serde_json::Value> = ids
+        .iter()
+        .map(|id| serde_json::json!(["create", "Note", { "id": id }]))
+        .collect();
+    Effect::PersistBatch {
+        ops: serde_json::from_value(serde_json::Value::Array(ops)).unwrap(),
+        emit: None,
+    }
+}
+
+fn replayed_to_the_end(
+    port: &Arc<IoPort>,
+    effect: &Effect,
+) -> (orbital_core_base::effect_types::EffectResult, Vec<IoRequest>) {
+    let executor = bound_executor(port);
+    let mut journal: Vec<Exchange> = Vec::new();
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let (result, end) = port.run_step(journal.clone(), || {
+            executor.execute(
+                effect,
+                &orbital_core_eval::evaluator::context::BindingContext::new(),
+            )
+        });
+        if end.pending.is_empty() {
+            return (result, seen);
+        }
+        for request in end.pending {
+            let answer = match &request {
+                IoRequest::CreateRow { data, .. } => IoAnswer::Row(Ok(data.clone())),
+                IoRequest::ReadRow { .. } => IoAnswer::Row(Ok(Value::Null)),
+                IoRequest::WriteRows { batch } => IoAnswer::Wrote(Ok(batch
+                    .ops
+                    .iter()
+                    .map(|op| match op {
+                        RowWriteOp::Create { data, .. } => RowWriteOutcome::Created { row: data.clone() },
+                        _ => RowWriteOutcome::NotFound,
+                    })
+                    .collect())),
+                other => panic!("unexpected ask {other:?}"),
+            };
+            seen.push(request.clone());
+            journal.push(Exchange::new(request, answer));
+        }
+    }
+    panic!("the replay never settled: {seen:?}");
+}
+
+#[test]
+fn control_a_one_op_batch_replayed_with_each_answer_succeeds() {
+    let port = Arc::new(IoPort::new(Arc::new(crate::resumable::HostAnswered), None, None));
+    let (result, seen) = replayed_to_the_end(&port, &batch_of(&["a"]));
+    assert!(result.is_executed(), "{result:?} after {seen:?}");
+}
+
+#[test]
+fn a_two_op_batch_replayed_with_each_answer_succeeds() {
+    let port = Arc::new(IoPort::new(Arc::new(crate::resumable::HostAnswered), None, None));
+    let (result, seen) = replayed_to_the_end(&port, &batch_of(&["a", "b"]));
+    assert!(result.is_executed(), "{result:?} after {seen:?}");
+}
+
+fn bound_batch_of(ids: &[&str]) -> Effect {
+    let ops: Vec<serde_json::Value> = ids
+        .iter()
+        .map(|id| serde_json::json!(["create", "Ticket", { "id": id }]))
+        .collect();
+    Effect::PersistBatch {
+        ops: serde_json::from_value(serde_json::Value::Array(ops)).unwrap(),
+        emit: None,
+    }
+}
+
+fn replayed_store_to_the_end(
+    port: &Arc<IoPort>,
+    effect: &Effect,
+) -> (orbital_core_base::effect_types::EffectResult, Vec<IoRequest>) {
+    let executor = bound_executor(port);
+    let mut journal: Vec<Exchange> = Vec::new();
+    let mut seen = Vec::new();
+    for _ in 0..8 {
+        let (result, end) = port.run_step(journal.clone(), || {
+            executor.execute(
+                effect,
+                &orbital_core_eval::evaluator::context::BindingContext::new(),
+            )
+        });
+        let asks: Vec<IoRequest> = end
+            .pending
+            .iter()
+            .cloned()
+            .chain(end.store_asks.iter().map(|a| a.request.clone()))
+            .collect();
+        if asks.is_empty() {
+            return (result, seen);
+        }
+        for request in asks {
+            let answer = match &request {
+                IoRequest::ReadRow { .. } => IoAnswer::Row(Ok(Value::Null)),
+                IoRequest::WriteRows { batch } => IoAnswer::Wrote(Ok(batch
+                    .ops
+                    .iter()
+                    .map(|op| match op {
+                        RowWriteOp::Create { data, .. } => RowWriteOutcome::Created { row: data.clone() },
+                        _ => RowWriteOutcome::NotFound,
+                    })
+                    .collect())),
+                other => panic!("unexpected ask {other:?}"),
+            };
+            seen.push(request.clone());
+            journal.push(Exchange::new(request, answer));
+        }
+    }
+    panic!("the replay never settled: {seen:?}");
+}
+
+#[test]
+fn control_a_one_op_batch_on_a_store_bound_entity_replays_to_success() {
+    let port = Arc::new(bound_port());
+    let (result, seen) = replayed_store_to_the_end(&port, &bound_batch_of(&["a"]));
+    assert!(result.is_executed(), "{result:?} after {seen:?}");
+}
+
+#[test]
+fn a_two_op_batch_on_a_store_bound_entity_replays_to_success() {
+    let port = Arc::new(bound_port());
+    let (result, seen) = replayed_store_to_the_end(&port, &bound_batch_of(&["a", "b"]));
+    assert!(result.is_executed(), "{result:?} after {seen:?}");
+}
+
+#[test]
+fn a_two_op_batch_on_a_store_bound_entity_with_full_capabilities_replays_to_success() {
+    let port = Arc::new(bound_port());
+    port.set_write_capabilities("Ticket", crate::row_query::WriteCapabilities::full());
+    let (result, seen) = replayed_store_to_the_end(&port, &bound_batch_of(&["a", "b"]));
+    assert!(result.is_executed(), "{result:?} after {seen:?}");
+}
+
+#[test]
+fn a_batch_op_that_only_awaits_host_io_is_never_compensated_or_logged_as_an_error() {
+    let port = Arc::new(IoPort::new(Arc::new(crate::resumable::HostAnswered), None, None));
+    let mut outcome = None;
+    let lines = super::set_eval_failure_tests::capture_lines(|| {
+        outcome = Some(replayed_to_the_end(&port, &batch_of(&["a", "b"])));
+    });
+    let (result, _) = outcome.unwrap();
+    assert!(result.is_executed(), "{result:?}");
+    assert!(errors(&lines).is_empty(), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("batch-compensated")), "{lines:?}");
+}
+
+#[test]
+fn control_a_batch_op_the_host_really_refuses_is_compensated_and_answers_its_failure() {
+    let port = Arc::new(IoPort::new(Arc::new(crate::resumable::HostAnswered), None, None));
+    let executor = bound_executor(&port);
+    let effect = batch_of(&["a", "b"]);
+    let read = |id: &str| Exchange::new(IoRequest::ReadRow { entity_type: "Note".into(), id: id.into() }, IoAnswer::Row(Ok(Value::Null)));
+    let create = |id: &str, answer: Result<Value, String>| {
+        let data: Value = serde_json::from_value(serde_json::json!({ "id": id })).unwrap();
+        Exchange::new(IoRequest::CreateRow { entity_type: "Note".into(), data: data.clone() }, IoAnswer::Row(answer.map(|_| data)))
+    };
+    let journal = vec![read("a"), create("a", Ok(Value::Null)), read("b"), create("b", Err("disk full".into()))];
+    let (result, _) = port.run_step(journal, || {
+        executor.execute(&effect, &orbital_core_eval::evaluator::context::BindingContext::new())
+    });
+    assert!(result.is_failed(), "{result:?}");
+    assert!(result.error.unwrap().contains("disk full"));
+}

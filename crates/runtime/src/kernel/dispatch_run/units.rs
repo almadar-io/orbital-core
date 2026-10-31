@@ -212,6 +212,7 @@ impl RuntimeKernel {
                 idx: 0,
                 own: Vec::new(),
                 fanned: Vec::new(),
+                drops: VecDeque::new(),
             }
         } else {
             Stage::Released(Cascade::new(released.into()))
@@ -261,11 +262,17 @@ impl RuntimeKernel {
                         idx: 0,
                         own: Vec::new(),
                         fanned: Vec::new(),
+                        drops: VecDeque::new(),
                     };
                 }
                 Ok(Flow::More)
             }
-            Stage::Scopes { idx, own, fanned } => {
+            Stage::Scopes { idx, own, fanned, drops } => {
+                if let Some(drop) = drops.front() {
+                    self.run_row_drop(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), drop)?;
+                    drops.pop_front();
+                    return Ok(Flow::More);
+                }
                 let Some(scope) = seed_scopes.get(*idx) else {
                     let queue: VecDeque<CascadeItem> = std::mem::take(own)
                         .into_iter()
@@ -335,10 +342,8 @@ impl RuntimeKernel {
                 if let Some(result) = result {
                     outcomes.push((scope.clone(), result.released()));
                 }
-                if tick.is_none() && self.is_keyed_row(scope, eid) {
-                    self.drop_quiet_row(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), eid, scope, eid)?;
-                }
-                self.drop_settled_rows(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), eid)?;
+                let quiet = (tick.is_none() && self.is_keyed_row(scope, eid)).then_some((scope.as_str(), eid.as_str()));
+                *drops = self.row_drops_after(quiet, eid);
                 *idx += 1;
                 Ok(Flow::More)
             }
@@ -487,6 +492,11 @@ impl RuntimeKernel {
         memory: &mut DispatchMemory,
         outcomes: &mut Vec<(String, ProcessEventResult)>,
     ) -> Result<bool, Fault> {
+        if let Some(drop) = cascade.drops.front() {
+            self.run_row_drop(&[], &cascade.queue, drop)?;
+            cascade.drops.pop_front();
+            return Ok(true);
+        }
         let Some(mut item) = cascade.queue.pop_front() else {
             return Ok(false);
         };
@@ -569,9 +579,8 @@ impl RuntimeKernel {
                 &view,
             ) {
                 debug!(trait_name = %item.trait_name, event = %item.event, "fanout:listen-guard-blocked");
-                if keyed {
-                    self.drop_quiet_row(&[], &cascade.queue, outer_eid, &item.trait_name, eid)?;
-                }
+                let quiet = keyed.then_some((item.trait_name.as_str(), eid));
+                cascade.drops = self.row_drops_after(quiet, outer_eid);
                 return Ok(true);
             }
         }
@@ -675,10 +684,7 @@ impl RuntimeKernel {
             cascade.queue.push_front(item);
         }
         cascade.queue.extend(fanned);
-        if keyed {
-            self.drop_quiet_row(&[], &cascade.queue, outer_eid, &t, eid)?;
-        }
-        self.drop_settled_rows(&[], &cascade.queue, outer_eid)?;
+        cascade.drops = self.row_drops_after(keyed.then_some((t.as_str(), eid)), outer_eid);
         Ok(true)
     }
 }

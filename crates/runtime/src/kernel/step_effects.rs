@@ -38,6 +38,7 @@ impl RuntimeKernel {
                     effect: effect_expr.clone(),
                     status: EffectRunStatus::Skipped,
                     error: None,
+                    routed: false,
                 });
                 continue;
             }
@@ -93,6 +94,7 @@ impl RuntimeKernel {
                 effect: effect_expr.clone(),
                 status,
                 error: failed.and_then(|r| r.error.clone()),
+                routed: failed.is_some_and(|r| r.has_routed_failure()),
             });
             if failure.is_none() {
                 failure = ran

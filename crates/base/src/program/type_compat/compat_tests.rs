@@ -320,10 +320,7 @@ fn sub_optional_wrap_unwrap_witnesses() {
             },
             &String
         ),
-        Some(C::Unwrap {
-            checked: false,
-            inner: Box::new(C::Identity)
-        })
+        Some(C::Unwrap { inner: Box::new(C::Identity) })
     );
     assert_eq!(
         sub(
@@ -332,10 +329,7 @@ fn sub_optional_wrap_unwrap_witnesses() {
             },
             &Number
         ),
-        Some(C::Unwrap {
-            checked: false,
-            inner: Box::new(C::Widen(WidenKind::IntegerNumber))
-        })
+        Some(C::Unwrap { inner: Box::new(C::Widen(WidenKind::IntegerNumber)) })
     );
     assert_eq!(
         sub(

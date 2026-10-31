@@ -188,7 +188,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum {
             name: t.to_string(),
         }),
-        _ if t.chars().next().is_some_and(char::is_uppercase) => {
+        _ if super::short_type_name(t).chars().next().is_some_and(char::is_uppercase) => {
             match crate::language::program_types::program_type(t) {
                 Some(shape) => CompatType::Ty(shape.clone()),
                 None => CompatType::Named(t.to_string()),
@@ -214,10 +214,7 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         return sub_compat(src, &Ty((**inner).clone())).map(|c| Coercion::Wrap(Box::new(c)));
     }
     if let Ty(OirType::Optional { inner }) = src {
-        return sub_compat(&Ty((**inner).clone()), dst).map(|c| Coercion::Unwrap {
-            checked: false,
-            inner: Box::new(c),
-        });
+        return sub_compat(&Ty((**inner).clone()), dst).map(|c| Coercion::Unwrap { inner: Box::new(c) });
     }
     match (src, dst) {
         (Ty(s), Ty(d)) => sub(s, d),

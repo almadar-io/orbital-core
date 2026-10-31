@@ -88,10 +88,7 @@ mod tests {
     #[test]
     fn recording_a_delivery_never_deep_copies_the_log_a_view_shares() {
         let body = Arc::new(SExpression::string("x"));
-        let held = Arc::new(Value::Lambda {
-            params: vec!["x".to_string()],
-            body: Arc::clone(&body),
-        });
+        let held = Arc::new(Value::lambda(vec!["x".to_string()], Arc::clone(&body)));
         let null = Arc::new(Value::Null);
         let mut memory = DispatchMemory::default();
         let first = memory.view("T", &held);
@@ -109,10 +106,7 @@ mod tests {
     #[test]
     fn a_view_kept_past_the_record_keeps_its_prefix_without_a_copy() {
         let body = Arc::new(SExpression::string("x"));
-        let held = Arc::new(Value::Lambda {
-            params: vec!["x".to_string()],
-            body: Arc::clone(&body),
-        });
+        let held = Arc::new(Value::lambda(vec!["x".to_string()], Arc::clone(&body)));
         let null = Arc::new(Value::Null);
         let mut memory = DispatchMemory::default();
         let first = memory.view("T", &held);

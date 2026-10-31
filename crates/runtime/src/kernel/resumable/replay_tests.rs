@@ -110,6 +110,9 @@ fn a_connect_ask_in_the_journal_shows_neither_the_code_nor_the_verifier() {
         client_secret: Some("CLIENT_SECRET".to_string()),
         client_auth: ClientAuth::Basic,
         scopes: vec!["openid".to_string()],
+        refresh_credential: None,
+        assertion: None,
+        json_token: None,
     };
     let ask = IoRequest::CredentialConnect { grant: Box::new(grant) };
     let answer = answer_ports(None, &ask);

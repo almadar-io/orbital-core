@@ -237,6 +237,11 @@ impl EffectResult {
         }
     }
 
+    /// Whether this failed effect declares the failure event it was delivered to, without building its name.
+    pub fn has_routed_failure(&self) -> bool {
+        matches!(self.outcome, EffectOutcome::Failed) && self.effect.emit_routes().is_some_and(|routes| routes.failure.is_some())
+    }
+
     /// This failed `persist batch`, with the operation that failed.
     pub fn with_batch_failure(mut self, index: usize, completed_count: usize) -> Self {
         self.batch_failure = Some(BatchFailure { index, completed_count });

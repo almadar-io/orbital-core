@@ -779,3 +779,95 @@ fn the_erased_slot_is_one_shared_name_not_one_per_use() {
     let OirType::Var { name: own_name } = own else { unreachable!() };
     assert!(!crate::value::Shared::ptr_eq(&a, &own_name));
 }
+
+mod same_shape_named_types {
+    use crate::ir::types::{OirField, OirType};
+    use std::collections::BTreeMap;
+
+    fn tag(kind: &str) -> OirType {
+        OirType::Struct {
+            additional: None,
+            fields: vec![OirField::new("kind", OirType::Enum { name: format!("\"{kind}\"") })].into(),
+        }
+    }
+
+    fn record(fields: Vec<OirField>) -> OirType {
+        OirType::Struct { additional: None, fields: fields.into() }
+    }
+
+    fn union_of(members: Vec<OirType>) -> OirType {
+        OirType::Union {
+            variants: members.into_iter().enumerate().map(|(i, t)| OirField::new(i.to_string(), t)).collect(),
+        }
+    }
+
+    fn named(name: &str) -> OirType {
+        OirType::TypeRef { name: name.into() }
+    }
+
+    fn table(behavior: &str, failed_message: OirType, tail: Option<OirType>) -> BTreeMap<String, OirType> {
+        let q = |n: &str| format!("{behavior}::{n}");
+        let mut failed = OirField::new("message", failed_message);
+        failed.required = true;
+        let mut members = vec![named(&q("Created")), named(&q("Failed"))];
+        let mut types = BTreeMap::new();
+        types.insert(q("Created"), record(vec![OirField::new("kind", OirType::String), OirField::new("row", OirType::String)]));
+        types.insert(q("Failed"), record(vec![OirField::new("kind", OirType::String), failed]));
+        if let Some(tail) = tail {
+            types.insert(q("Tail"), tail);
+            members.push(named(&q("Tail")));
+        }
+        types.insert(q("Outcome"), union_of(members));
+        types
+    }
+
+    fn both(a: BTreeMap<String, OirType>, b: BTreeMap<String, OirType>) -> BTreeMap<String, OirType> {
+        a.into_iter().chain(b).collect()
+    }
+
+    fn agrees(types: &BTreeMap<String, OirType>, src: &OirType, dst: &OirType) -> bool {
+        let resolve = |name: &str| types.get(name).cloned();
+        super::super::sub_with_named(src, dst, &resolve).is_some()
+    }
+
+    #[test]
+    fn identical_shapes_declared_by_two_behaviors_are_assignable_both_ways() {
+        let types = both(table("A", OirType::String, None), table("B", OirType::String, None));
+        let (a, b) = (named("A::Outcome"), named("B::Outcome"));
+        assert!(agrees(&types, &a, &b) && agrees(&types, &b, &a));
+        assert!(agrees(&types, &OirType::array(a), &OirType::array(b)));
+    }
+
+    #[test]
+    fn control_a_member_of_a_different_type_is_refused() {
+        let types = both(table("A", OirType::String, None), table("B", OirType::Number, None));
+        assert!(!agrees(&types, &named("A::Outcome"), &named("B::Outcome")));
+        assert!(!agrees(&types, &named("B::Outcome"), &named("A::Outcome")));
+    }
+
+    #[test]
+    fn control_a_union_member_that_differs_is_refused_in_the_direction_it_widens_the_value() {
+        let types = both(table("A", OirType::String, None), table("B", OirType::String, Some(tag("lost"))));
+        assert!(!agrees(&types, &named("B::Outcome"), &named("A::Outcome")));
+    }
+}
+
+#[test]
+fn a_type_qualified_by_a_lowercase_behavior_name_is_a_named_type_like_its_short_name() {
+    use super::{parse_compat_type, qualified_type_name, set_value_type_compatible, CompatType};
+    let qualified = qualified_type_name("std-row-store-postgres", "RowWriteOutcome");
+    assert!(matches!(parse_compat_type(&qualified), CompatType::Named(_)));
+    assert!(set_value_type_compatible(&qualified, "object"), "an object literal fits a declared record type");
+    assert!(set_value_type_compatible(&format!("[{qualified}]"), "array"));
+    assert_eq!(
+        set_value_type_compatible("RowWriteOutcome", "object"),
+        set_value_type_compatible(&qualified, "object"),
+        "the qualified name reads as its short name does"
+    );
+    assert_eq!(
+        set_value_type_compatible("RowWriteOutcome", "string"),
+        set_value_type_compatible(&qualified, "string"),
+        "control: a scalar fits the qualified name exactly as it fits the short one"
+    );
+    assert!(matches!(parse_compat_type("rowWriteOutcome"), CompatType::Unknown(_)), "control: a lowercase short name stays unknown");
+}

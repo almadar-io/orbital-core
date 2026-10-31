@@ -4,7 +4,7 @@
 //! walks the program and answers typed findings, and the std lint words them.
 
 use super::{
-    concat_static_prefix, os_requirements_deferring, DevResource, OsGrants, OsRequirement,
+    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, OsGrants, OsRequirement,
 };
 use crate::collections::IndexMap;
 use crate::os::{split_envelope, OsOp};
@@ -104,6 +104,82 @@ fn config_rooted(expr: &SExpression) -> bool {
             .binding_path()
             .is_some_and(|path| path.split('.').next() == Some("config")),
     }
+}
+
+/// The `path` of an anchored argument when it depends on the composing call site's config.
+fn deferred_anchored_path(arg: &SExpression) -> Option<&SExpression> {
+    let (_, path) = anchored_sexpr(arg).ok().flatten()?;
+    let path = path?;
+    let concat_has_config = matches!(path, SExpression::Array(pieces)
+        if pieces.first().and_then(SExpression::as_str) == Some("str/concat") && pieces[1..].iter().any(config_rooted));
+    (config_rooted(path) || concat_has_config).then_some(path)
+}
+
+/// What the calls of `op` could still require once their deferred anchored paths are known: each such path read
+/// as far as its leading literal directory, so a grant a deferred call can reach is not unused.
+fn deferred_reach(op: OsOp, positional: &[SExpression]) -> Vec<OsRequirement> {
+    let mut pieces: Vec<&SExpression> = Vec::new();
+    for arg in positional {
+        let candidates: Vec<&SExpression> = match arg {
+            SExpression::Object(fields) if anchored_sexpr(arg).ok().flatten().is_none() => {
+                fields.values().collect()
+            }
+            _ => vec![arg],
+        };
+        for candidate in candidates {
+            if let Some(path) = deferred_anchored_path(candidate) {
+                pieces.push(path);
+                if let SExpression::Array(parts) = path {
+                    pieces.extend(parts[1..].iter());
+                }
+            }
+        }
+    }
+    if pieces.is_empty() {
+        return Vec::new();
+    }
+    os_requirements_deferring(op, positional, &|expr| {
+        config_rooted(expr) && !pieces.iter().any(|piece| std::ptr::eq(*piece, expr))
+    })
+    .unwrap_or_default()
+}
+
+/// Every path an anchored `path` can take in the finished program: each config piece replaced by each value its
+/// knob can hold. `None` when a piece cannot be read as text.
+fn anchored_path_values(
+    path: &SExpression,
+    config: &IndexMap<String, ConfigField>,
+) -> Option<Vec<SExpression>> {
+    let readable = |value: &SExpression| matches!(value, SExpression::String(s) if !s.starts_with('@'));
+    let SExpression::Array(arr) = path else {
+        let values = config_values(path, config)?;
+        return values.iter().all(readable).then_some(values);
+    };
+    if arr.first().and_then(SExpression::as_str) != Some("str/concat") {
+        let values = config_values(path, config)?;
+        return values.iter().all(readable).then_some(values);
+    }
+    let mut built: Vec<Vec<SExpression>> = vec![vec![SExpression::string("str/concat")]];
+    for piece in &arr[1..] {
+        let options = if config_rooted(piece) {
+            config_values(piece, config)?
+        } else {
+            vec![piece.clone()]
+        };
+        if !options.iter().all(|o| readable(o) || !config_rooted(piece)) {
+            return None;
+        }
+        let mut next = Vec::new();
+        for head in &built {
+            for option in &options {
+                let mut grown = head.clone();
+                grown.push(option.clone());
+                next.push(grown);
+            }
+        }
+        built = next;
+    }
+    Some(built.into_iter().map(SExpression::array).collect())
 }
 
 fn effect_sites<'a>(trait_def: &'a TraitDefinition, path: &str) -> Vec<(&'a SExpression, String)> {
@@ -358,6 +434,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
         check_entries(app, "osGrants", None, &mut out);
     }
     let mut needs_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
+    let mut reach_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
         let at = format!("orbitals[{i} ({})]", orbital.name);
         if let Some(own) = &orbital.os_grants {
@@ -370,6 +447,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
         }
         let grants = schema.orbital_os_grants(orbital);
         let mut needs: Vec<OsRequirement> = Vec::new();
+        let mut reach: Vec<OsRequirement> = Vec::new();
         for (j, trait_ref) in orbital.traits.iter().enumerate() {
             let TraitReference::Inline(trait_def) = trait_ref else {
                 continue;
@@ -378,6 +456,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
                     let (positional, _) = split_envelope(op, args);
+                    reach.extend(deferred_reach(op, positional));
                     match os_requirements_deferring(op, positional, &config_rooted) {
                         Err(arg) => out.push(not_static(&orbital.name, op, arg + 1, &site, None)),
                         Ok(found) => {
@@ -394,7 +473,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
         }
         if let Some(own) = &orbital.os_grants {
             for atom in own.atoms() {
-                if !used_by_any(&atom.grants, &needs) {
+                if !used_by_any(&atom.grants, &needs) && !used_by_any(&atom.grants, &reach) {
                     out.push(unused(
                         format!("{at}.osGrants.{}", atom.path),
                         &atom.label,
@@ -404,11 +483,13 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             }
         }
         needs_by_orbital.push(needs);
+        reach_by_orbital.push(reach);
     }
     if let Some(app) = &schema.os_grants {
         let all: Vec<OsRequirement> = needs_by_orbital.into_iter().flatten().collect();
+        let all_reach: Vec<OsRequirement> = reach_by_orbital.into_iter().flatten().collect();
         for atom in app.atoms() {
-            if !used_by_any(&atom.grants, &all) {
+            if !used_by_any(&atom.grants, &all) && !used_by_any(&atom.grants, &all_reach) {
                 out.push(unused(format!("osGrants.{}", atom.path), &atom.label, None));
             }
         }
@@ -523,6 +604,47 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                     let (positional, _) = split_envelope(op, args);
                     let as_written = os_requirements_deferring(op, positional, &config_rooted)
                         .unwrap_or_default();
+                    for (at, arg) in positional.iter().enumerate() {
+                        let Some(path) = deferred_anchored_path(arg) else {
+                            continue;
+                        };
+                        let SExpression::Object(fields) = arg else {
+                            continue;
+                        };
+                        let Some(values) = anchored_path_values(path, &config) else {
+                            out.push(not_static(
+                                &orbital.name,
+                                op,
+                                at + 1,
+                                &site,
+                                Some(OsGrantVia::ConfigUnresolvable),
+                            ));
+                            continue;
+                        };
+                        for value in values {
+                            let mut fields = fields.clone();
+                            fields.insert("path".to_string().into(), value);
+                            let mut substituted = positional.to_vec();
+                            substituted[at] = SExpression::Object(fields);
+                            let Ok(found) =
+                                os_requirements_deferring(op, &substituted, &config_rooted)
+                            else {
+                                continue;
+                            };
+                            for need in found.into_iter().filter(|need| !as_written.contains(need))
+                            {
+                                if !grants.allows(&need) {
+                                    out.push(missing(
+                                        &orbital.name,
+                                        op,
+                                        &need,
+                                        &site,
+                                        Some(OsGrantVia::Config),
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     for (at, arg) in positional.iter().enumerate().filter(|(_, a)| {
                         config_rooted(a)
                             || concat_static_prefix(a, &config_rooted)

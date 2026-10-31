@@ -219,7 +219,7 @@ fn digest_float(h: &mut Xxh3, f: f64) {
 
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
-        EvalValue::Lambda { .. } => {
+        EvalValue::Lambda(_) => {
             digest_json(h, &serde_json::to_value(value).unwrap_or(Value::Null))
         }
         EvalValue::Null => h.update(b"n"),
@@ -397,10 +397,7 @@ mod tests {
     }
 
     fn lambda(param: &str) -> EValue {
-        EValue::Lambda {
-            params: vec![param.to_string()],
-            body: Arc::new(SExpression::string(param.to_string())),
-        }
+        EValue::lambda(vec![param.to_string()], Arc::new(SExpression::string(param.to_string())))
     }
 
     fn corpus() -> Vec<EValue> {
@@ -503,10 +500,7 @@ mod tests {
     #[test]
     fn visits_hold_no_copy_of_a_payload_or_frame() {
         let body = Arc::new(SExpression::string("x"));
-        let held = || EValue::Lambda {
-            params: vec!["x".to_string()],
-            body: Arc::clone(&body),
-        };
+        let held = || EValue::lambda(vec!["x".to_string()], Arc::clone(&body));
         let mut visits = DispatchVisits::default();
         assert!(visits.insert("T", "E", "s", &held(), &frame(&EValue::Array(vec![held(), held()].into()))));
         assert_eq!(Arc::strong_count(&body), 1);

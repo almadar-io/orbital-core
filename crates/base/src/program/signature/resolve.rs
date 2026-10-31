@@ -14,10 +14,18 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 });
                 let nullable = members.clone().count() < of.len();
                 let only = members.next()?;
-                if members.next().is_some() {
-                    return None;
-                }
-                let inner = resolve(only, b)?;
+                let inner = if members.clone().next().is_some() {
+                    let variants = std::iter::once(only)
+                        .chain(members)
+                        .map(|member| {
+                            let ty = resolve(member, b)?;
+                            Some(OirField::new(oir_type_kind(&ty), ty))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    OirType::Union { variants: variants.into() }
+                } else {
+                    resolve(only, b)?
+                };
                 Some(if nullable {
                     OirType::optional(inner)
                 } else {
@@ -317,7 +325,11 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
             K::Shape => b
                 .shape
                 .clone()
-                .map(|name| nominal_type(&name).unwrap_or(OirType::TypeRef { name })),
+                .map(|name| {
+                    nominal_type(&name)
+                        .or_else(|| super::records::checkable(&name))
+                        .unwrap_or(OirType::TypeRef { name })
+                }),
             K::ChildrenOf { of, result } => {
                 children_of(b.bound(of)?, b.shape.as_deref()?, b.last(result)?, b)
             }

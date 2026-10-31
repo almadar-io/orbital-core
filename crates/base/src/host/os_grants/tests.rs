@@ -2608,6 +2608,131 @@ mod static_check {
     }
 
     #[test]
+    fn a_deferred_anchored_path_uses_a_grant_only_through_its_leading_literal_prefix() {
+        let grant =
+            json!({"anchored": {"fs": [{"anchor": "cwd", "glob": "docs/**", "modes": ["read"]}]}});
+        let knobs = json!({
+            "a": { "type": "string", "default": "x" },
+            "b": { "type": "string", "default": "y" }
+        });
+        let run = |path: serde_json::Value| {
+            os_grant_findings(
+                &program(
+                    json!(null),
+                    vec![orbital(
+                        "Orders",
+                        grant.clone(),
+                        None,
+                        json!([["os/read-file", {"anchor": "cwd", "path": path}]]),
+                        knobs.clone(),
+                    )],
+                ),
+                OsGrantPass::Written,
+            )
+        };
+        for path in [
+            json!(["str/concat", "@config.a", "@config.b"]),
+            json!(["str/concat", "@config.a", "/", "@config.b"]),
+            json!("@config.a"),
+        ] {
+            let found = run(path.clone());
+            assert!(
+                found.is_empty(),
+                "{path}: no resolved prefix is neither a use nor a miss, and the grant stays reachable: {found:?}"
+            );
+        }
+        for path in [
+            json!("docs/a.md"),
+            json!(["str/concat", "docs/", "@config.a"]),
+            json!(["str/concat", "docs/", "@config.a", "/x/", "@config.b"]),
+        ] {
+            assert!(run(path.clone()).is_empty(), "control {path}");
+        }
+        let outside = run(json!(["str/concat", "src/", "@config.a"]));
+        assert!(
+            has(&outside, OsGrantFindingCode::Missing) && has(&outside, OsGrantFindingCode::Unused),
+            "control: a literal prefix outside the grant is missing"
+        );
+        let computed = run(json!(["str/concat", "@payload.a", "@payload.b"]));
+        assert!(computed.is_empty(), "control: a non-config computed path stays the anchor tree");
+    }
+
+    #[test]
+    fn a_config_fed_anchored_dir_is_deferred_in_the_written_pass_and_decided_in_the_final_pass() {
+        let grant = json!({"anchored": {"fs": [{"anchor": "cwd", "glob": ".orb/rows/**", "modes": ["read", "write"]}]}});
+        let effects = json!([
+            ["os/read-file", {"anchor": "cwd", "path": ["str/concat", "@config.dir", "@entity.fileName", ".json"]}],
+            ["os/write-file", {"anchor": "cwd", "path": "@config.dir"}, "x"]
+        ]);
+        let run = |dir: &str, pass: OsGrantPass, effects: serde_json::Value| {
+            os_grant_findings(
+                &program(
+                    json!(null),
+                    vec![orbital(
+                        "Orders",
+                        grant.clone(),
+                        None,
+                        effects,
+                        json!({ "dir": { "type": "string", "default": dir } }),
+                    )],
+                ),
+                pass,
+            )
+        };
+        let written = run(".orb/rows/", OsGrantPass::Written, effects.clone());
+        assert!(written.is_empty(), "deferred calls can reach the grant: {written:?}");
+        let covered = run(".orb/rows/", OsGrantPass::Final, effects.clone());
+        assert!(covered.is_empty(), "{covered:?}");
+        let outside = run("src/", OsGrantPass::Final, effects.clone());
+        assert!(
+            outside
+                .iter()
+                .any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "{outside:?}"
+        );
+        let elsewhere = json!([["os/read-file", {"anchor": "cwd", "path": ["str/concat", "src/", "@config.dir"]}]]);
+        let unreachable = run(".orb/rows/", OsGrantPass::Written, elsewhere);
+        assert!(
+            has(&unreachable, OsGrantFindingCode::Unused) && has(&unreachable, OsGrantFindingCode::Missing),
+            "control: a deferred call whose literal prefix is outside the grant cannot reach it"
+        );
+        let wrong_mode = json!([["os/remove", {"anchor": "cwd", "path": "@config.dir"}]]);
+        assert!(
+            has(&run(".orb/rows/", OsGrantPass::Written, wrong_mode), OsGrantFindingCode::Unused),
+            "control: a deferred call needing a mode the grant lacks cannot reach it"
+        );
+        let idle = run(".orb/rows/", OsGrantPass::Written, json!([]));
+        assert!(has(&idle, OsGrantFindingCode::Unused), "control: no call at all");
+    }
+
+    #[test]
+    fn the_finished_pass_decides_a_config_prefix_by_its_value() {
+        let run = |root: &str| {
+            os_grant_findings(
+                &program(
+                    json!(null),
+                    vec![orbital(
+                        "Orders",
+                        read_data(),
+                        None,
+                        json!([["os/read-file", ["str/concat", "@config.root", "/", "@entity.id"]]]),
+                        json!({ "root": { "type": "string", "default": root } }),
+                    )],
+                ),
+                OsGrantPass::Final,
+            )
+        };
+        assert!(run("/data").is_empty(), "under the grant is covered");
+        let outside = run("/etc");
+        assert!(
+            outside
+                .iter()
+                .any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "{outside:?}"
+        );
+    }
+
+    #[test]
     fn the_finished_pass_checks_every_value_a_config_target_can_take() {
         let knob = json!({ "cmd": { "type": "string", "default": "git" } });
         let run = |grants: serde_json::Value, config: serde_json::Value| {

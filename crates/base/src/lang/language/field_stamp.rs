@@ -314,7 +314,7 @@ fn oir_of(value: &Value) -> Result<OirValue, FieldStampError> {
             }
             OirValue::Object(out)
         }
-        Value::Lambda { .. } => return Err(FieldStampError::LambdaInTree),
+        Value::Lambda(_) => return Err(FieldStampError::LambdaInTree),
     })
 }
 
