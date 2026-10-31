@@ -321,13 +321,67 @@ pub(super) fn data_of(path: &mut Path, data: &SExpression, linked: Option<&Entit
     }
 }
 
-/// Whether an effect (or one nested in its control flow) is a `persist`.
-pub(super) fn has_persist(effect: &SExpression) -> bool {
-    let SExpression::Array(items) = effect else {
-        return false;
-    };
-    matches!(items.first(), Some(SExpression::String(h)) if h == "persist")
-        || items.iter().any(has_persist)
+/// What an effect list can write, read without enumerating its paths: the entities its `persist`s name, whether
+/// one names a target that is not statically known, and whether it can change the trait's own frame.
+#[derive(Default)]
+pub(super) struct WriteReach {
+    entities: BTreeSet<String>,
+    unknown: bool,
+    frame: bool,
+}
+
+impl WriteReach {
+    pub(super) fn of(effects: &[SExpression], td: &TraitDefinition) -> Self {
+        let mut reach = Self::default();
+        effects.iter().for_each(|e| reach.walk(e, td));
+        reach
+    }
+
+    pub(super) fn may_write(&self, entity: &str) -> bool {
+        self.unknown || self.entities.contains(entity)
+    }
+
+    pub(super) fn may_change_frame(&self) -> bool {
+        self.frame
+    }
+
+    fn walk(&mut self, effect: &SExpression, td: &TraitDefinition) {
+        let SExpression::Array(items) = effect else {
+            return;
+        };
+        match items.first().and_then(|h| h.as_str()) {
+            Some("set" | "fetch") => self.frame = true,
+            Some("persist") => self.persist(strip_trailing_emit_options(&items[1..]), td),
+            _ => {}
+        }
+        items.iter().for_each(|i| self.walk(i, td));
+    }
+
+    fn persist(&mut self, args: &[SExpression], td: &TraitDefinition) {
+        let mut name = |this: &mut Self, e: Option<&SExpression>| match e.and_then(|e| target_entity(td, e)) {
+            Some(entity) => {
+                this.entities.insert(entity);
+            }
+            None => this.unknown = true,
+        };
+        match args.first().and_then(|a| a.as_str()) {
+            Some("batch") => match args.get(1).and_then(batch_tuples) {
+                Some(tuples) => {
+                    for t in tuples {
+                        if matches!(t.first().and_then(|a| a.as_str()), Some("create" | "update" | "upsert")) {
+                            name(self, t.get(1));
+                        }
+                    }
+                }
+                None => match args.get(1).and_then(batch_written_entities) {
+                    Some(entities) => self.entities.extend(entities.into_iter().map(str::to_string)),
+                    None => self.unknown = true,
+                },
+            },
+            Some("create" | "update" | "upsert") => name(self, args.get(1)),
+            _ => {}
+        }
+    }
 }
 
 /// The entity a write names: a literal, or `@config.<knob>` read through the trait's resolved config (call-site

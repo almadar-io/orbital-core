@@ -162,7 +162,7 @@ impl<'a> Program<'a> {
         for td in &self.traits {
             let set_fields = fields_set_anywhere(td);
             for step in steps(td) {
-                if !step.effects.iter().any(has_persist) {
+                if !WriteReach::of(step.effects, td).may_write(entity) {
                     continue;
                 }
                 let paths = match run(step.effects, td, step.event, self) {
@@ -590,6 +590,10 @@ impl<'a> Program<'a> {
             let shares_frame =
                 def.shared && other.linked_entity.as_deref() == Some(def.name.as_str());
             for step in steps(other) {
+                let reach = WriteReach::of(step.effects, other);
+                if !reach.may_write(&def.name) && !(shares_frame && reach.may_change_frame()) {
+                    continue;
+                }
                 let Ok(paths) = run(step.effects, other, step.event, self) else {
                     out.push(unbuildable(
                         prop,

@@ -1441,3 +1441,55 @@ fn the_prove_report_names_the_trait_of_a_state_proposition_and_an_unproved_one_h
     assert_eq!(finding["proposition"]["state"], "open", "{report}");
     assert!(finding.get("counterexample").is_none(), "control: an absent counterexample is an absent key: {report}");
 }
+
+fn with_heavy_trait(mut schema: OrbitalSchema, target: J) -> OrbitalSchema {
+    let ifs: Vec<J> = (0..7)
+        .map(|i| json!(["if", [">", "@payload.n", i], ["persist", "update", target, "@payload.id", { "n": i }]]))
+        .collect();
+    let heavy: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+        "name": "Heavy",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "events": [{ "key": "GO", "name": "Go", "payloadSchema": [
+                { "name": "n", "type": "number", "required": true },
+                { "name": "id", "type": "string", "required": true },
+                { "name": "e", "type": "string" }
+            ] }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": ifs }] }
+    }))
+    .unwrap();
+    schema.orbitals[0]
+        .traits
+        .push(TraitReference::Inline(Arc::new(heavy)));
+    schema
+}
+
+fn effect_path_limit_findings(schema: &OrbitalSchema) -> usize {
+    prove(schema)
+        .iter()
+        .filter(|f| matches!(&f.verdict, Verdict::Unproved { reason, .. } if reason.contains("effect paths")))
+        .count()
+}
+
+#[test]
+fn a_transition_that_cannot_write_the_entity_never_makes_its_invariant_unprovable() {
+    let state = program(J::Array(vec![]), J::Null, state_holds("paid", json!([">=", "@entity.total", 0])));
+    assert!(prove(&with_heavy_trait(state, json!("Ledger"))).is_empty());
+    let row = program(J::Array(vec![]), J::Null, row_invariant(json!([">=", "@entity.total", 0])));
+    assert!(prove(&with_heavy_trait(row, json!("Ledger"))).is_empty());
+}
+
+#[test]
+fn control_a_many_path_transition_that_writes_the_entity_stays_unproved() {
+    let state = program(J::Array(vec![]), J::Null, state_holds("paid", json!([">=", "@entity.total", 0])));
+    assert_eq!(effect_path_limit_findings(&with_heavy_trait(state, json!("Order"))), 1);
+    let row = program(J::Array(vec![]), J::Null, row_invariant(json!([">=", "@entity.total", 0])));
+    assert_eq!(effect_path_limit_findings(&with_heavy_trait(row, json!("Order"))), 1);
+}
+
+#[test]
+fn control_a_write_whose_target_is_not_statically_known_is_relevant() {
+    let state = program(J::Array(vec![]), J::Null, state_holds("paid", json!([">=", "@entity.total", 0])));
+    assert_eq!(effect_path_limit_findings(&with_heavy_trait(state, json!("@payload.e"))), 1);
+    let row = program(J::Array(vec![]), J::Null, row_invariant(json!([">=", "@entity.total", 0])));
+    assert_eq!(effect_path_limit_findings(&with_heavy_trait(row, json!("@payload.e"))), 1);
+}

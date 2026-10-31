@@ -28,6 +28,7 @@ pub mod schema;
 pub mod slots;
 #[path = "program/stamp.rs"]
 pub mod stamp;
+pub mod read_set;
 #[path = "program/signature/mod.rs"]
 pub mod signature;
 

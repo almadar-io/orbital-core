@@ -34,6 +34,7 @@ pub(super) fn expected_name(formal: &OperatorTypeRef) -> String {
 
 pub(super) fn kind_of(known: &Option<Known>) -> String {
     match known {
+        Some(Known::Type(OirType::Optional { inner })) => format!("{}?", oir_type_kind(inner)),
         Some(Known::Type(ty)) => oir_type_kind(ty),
         Some(Known::EmptyList) => "array".to_string(),
         Some(Known::Absent) => "null".to_string(),

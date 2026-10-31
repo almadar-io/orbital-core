@@ -4,6 +4,7 @@
 pub use orbital_core_base::behavior_index;
 pub use orbital_core_base::behavior_packages;
 pub use orbital_core_base::collections;
+pub use orbital_core_base::read_set;
 pub use orbital_core_runtime::sidecar_store;
 pub use orbital_core_runtime::vector_store;
 pub mod codec {
@@ -88,6 +89,8 @@ pub mod runtime {
     pub use orbital_core_runtime::memory_release;
     #[cfg(not(target_arch = "wasm32"))]
     pub use orbital_core_runtime::credentials;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use orbital_core_runtime::credential_transport;
     pub use orbital_core_runtime::credential_store;
     pub mod listener {
         pub use orbital_core_base::listen_match::matches_listen_source;
@@ -194,7 +197,7 @@ pub use orbital_core_base::secret;
 pub use orbital_core_base::secrets;
 pub mod credential_admin {
     pub use orbital_core_base::credential_admin::*;
-    pub use orbital_core_runtime::credential_admin::{CredentialStanding, RotateCounts, StoreListing, StoredName};
+    pub use orbital_core_runtime::credential_admin::{ConnectFailure, ConnectFailureKind, CredentialGrant, CredentialStanding, RotateCounts, StoreListing, StoredName};
 }
 pub use orbital_core_base::sandbox_manifest;
 pub use orbital_core_base::shell;

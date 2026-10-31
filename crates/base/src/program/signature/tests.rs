@@ -985,6 +985,34 @@ fn children_reference_identity_requires_a_declared_alias() {
 }
 
 #[test]
+fn children_declared_optional_come_back_optional_in_a_list_or_map() {
+    let bindings = CallBindings::new();
+    let own = || OirType::TypeRef { name: "Tree".into() };
+    let maybe = || OirType::optional(own());
+    let kids = struct_of(&[
+        ("kids", s_arr(maybe())),
+        ("named", OirType::map(OirType::String, maybe())),
+        ("plain", s_arr(own())),
+    ]);
+    let Some(OirType::Struct { fields, .. }) = children_of(&kids, "Tree", &OirType::String, &bindings) else {
+        panic!("child fields")
+    };
+    let of = |name: &str| fields.iter().find(|f| f.name == name).map(|f| f.field_type.clone());
+    assert_eq!(of("kids"), Some(s_arr(OirType::optional(OirType::String))), "a null element folds to null");
+    assert_eq!(
+        of("named"),
+        Some(OirType::map(OirType::String, OirType::optional(OirType::String))),
+        "a null map value folds to null"
+    );
+    assert_eq!(of("plain"), Some(s_arr(OirType::String)), "control: non-optional children fold to the result alone");
+    assert_eq!(
+        children_of(&s_arr(maybe()), "Tree", &OirType::String, &bindings),
+        Some(s_arr(OirType::optional(OirType::String))),
+        "a list node of optional elements"
+    );
+}
+
+#[test]
 fn a_fold_step_reads_its_children_typed_by_its_own_result() {
     let seen = std::cell::RefCell::new(Vec::new());
     let step = |params: &[Option<OirType>]| {
@@ -1741,6 +1769,39 @@ fn a_map_position_takes_a_mixed_closed_record_and_hands_back_optional_fields() {
     assert!(
         matches!(call(&filter, &[ty(OirType::Row { entity: "E".into() })], Mode::Static), Err(Mismatch::Undetermined { .. })),
         "control: a record whose fields the call cannot see stays undetermined"
+    );
+}
+
+#[test]
+fn a_map_position_takes_a_union_of_a_map_and_empty_records_as_the_map() {
+    let filter = op(
+        json!([p("obj", json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }))]),
+        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }), Some(1),
+    );
+    let empty = || OirType::Struct { fields: Default::default(), additional: None };
+    let map = OirType::map(OirType::String, OirType::optional(OirType::Number));
+    let union = OirType::Union {
+        variants: vec![OirField::new("number", empty()), OirField::new("boolean", empty()), OirField::new("map", map.clone())].into(),
+    };
+    assert_eq!(call(&filter, &[ty(union)], Mode::Static), Ok(Some(map)), "empty records hold no values");
+    let only_empty = OirType::Union { variants: vec![OirField::new("number", empty()), OirField::new("boolean", empty())].into() };
+    assert!(
+        matches!(call(&filter, &[ty(only_empty)], Mode::Static), Err(Mismatch::Undetermined { .. })),
+        "control: a union of only empty records stays undetermined"
+    );
+}
+
+#[test]
+fn a_type_mismatch_names_an_optional_actual_with_its_question_mark() {
+    let cond = op(json!([p("cond", json!("boolean"))]), json!("boolean"), Some(1));
+    assert_eq!(
+        call(&cond, &[ty(OirType::optional(OirType::Boolean))], Mode::Proof),
+        Err(Mismatch::Type { expected: "boolean".into(), actual: "boolean?".into() })
+    );
+    assert_eq!(
+        call(&cond, &[ty(OirType::String)], Mode::Proof),
+        Err(Mismatch::Type { expected: "boolean".into(), actual: "string".into() }),
+        "control: a present type prints bare"
     );
 }
 
@@ -3341,4 +3402,48 @@ fn a_null_value_in_a_record_literal_fits_a_map_whose_value_type_admits_null() {
     );
     let wrong = with_nulls(&[("PATH", OirType::Number)], &["HOME"]);
     assert!(call(&nullable, &[wrong], Mode::Proof).is_err(), "control: a present value of the wrong type is still refused");
+}
+
+fn branch_pick() -> EmbeddedOperator {
+    let mut pick = op(json!([p("condition", json!("boolean")), p("yes", var("T")), p("no", var("T"))]), var("T"), Some(3));
+    pick.return_semantics = Some("branch-union".into());
+    pick
+}
+
+#[test]
+fn a_branch_of_a_record_and_null_is_the_optional_record_either_way_round() {
+    let record = struct_of(&[("hp", OirType::Number)]);
+    let pick = branch_pick();
+    for mode in [Mode::Static, Mode::Proof] {
+        assert_eq!(
+            call(&pick, &[boolean(), ty(record.clone()), absent()], mode),
+            Ok(Some(OirType::optional(record.clone())))
+        );
+        assert_eq!(
+            call(&pick, &[boolean(), absent(), ty(record.clone())], mode),
+            Ok(Some(OirType::optional(record.clone())))
+        );
+        let maybe = OirType::optional(record.clone());
+        assert_eq!(call(&pick, &[boolean(), ty(maybe.clone()), ty(record.clone())], mode), Ok(Some(maybe.clone())), "a nested branch");
+        assert_eq!(call(&pick, &[boolean(), ty(record.clone()), ty(maybe.clone())], mode), Ok(Some(maybe)), "a nested branch, other side");
+    }
+}
+
+#[test]
+fn control_branches_of_two_records_stay_non_null_and_two_nulls_are_null() {
+    let record = struct_of(&[("hp", OirType::Number)]);
+    let other = struct_of(&[("hp", OirType::Number)]);
+    let pick = branch_pick();
+    assert_eq!(call(&pick, &[boolean(), ty(record.clone()), ty(other)], Mode::Static), Ok(Some(record.clone())));
+    assert_eq!(call(&pick, &[boolean(), ty(record), ty(OirType::Number)], Mode::Static).is_err(), true);
+    assert_eq!(call(&pick, &[boolean(), absent(), absent()], Mode::Static), Ok(None));
+}
+
+#[test]
+fn a_list_of_x_y_shape_return_types_as_a_list_of_cell_records() {
+    let reachable = op(json!([p("steps", json!("number"))]), list(json!({ "kind": "object", "fields": { "x": "number", "y": "number" } })), Some(1));
+    assert_eq!(
+        call(&reachable, &[ty(OirType::Number)], Mode::Static),
+        Ok(Some(s_arr(struct_of(&[("x", OirType::Number), ("y", OirType::Number)]))))
+    );
 }

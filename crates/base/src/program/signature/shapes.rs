@@ -332,8 +332,8 @@ pub(super) fn join_struct_member_types(types: Vec<OirType>) -> Option<OirType> {
     }))
 }
 
-/// One struct carrying the fields of every struct in `all`, a field missing from some optional; `None` unless
-/// every member is a struct.
+/// One struct carrying the fields of every struct in `all`, a field missing from some optional, the whole optional
+/// when a member is; `None` unless every member is a struct.
 pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     let mut merged: Vec<OirField> = Vec::new();
     for ty in all {
@@ -384,5 +384,6 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     } else {
         None
     };
-    Some(OirType::Struct { fields: merged.into(), additional })
+    let joined = OirType::Struct { fields: merged.into(), additional };
+    Some(if all.iter().any(OirType::is_optional) { OirType::optional(joined) } else { joined })
 }

@@ -241,9 +241,27 @@ pub(super) fn bind_type(
                         }
                         Ok(())
                     }
-                    Some(Record::Opaque) => Err(undetermined(
-                        "it is a record whose fields the call cannot see",
-                    )),
+                    Some(Record::Opaque) => {
+                        let holders: Vec<&OirField> = match unwrap_optional(ty) {
+                            OirType::Union { variants } => variants
+                                .iter()
+                                .filter(|v| {
+                                    !matches!(
+                                        unwrap_optional(&v.field_type),
+                                        OirType::Struct { fields, additional: None } if fields.is_empty()
+                                    )
+                                })
+                                .collect(),
+                            _ => Vec::new(),
+                        };
+                        if holders.is_empty() {
+                            return Err(undetermined("it is a record whose fields the call cannot see"));
+                        }
+                        for variant in holders {
+                            bind_type(formal, &element(&variant.field_type), b, mode)?;
+                        }
+                        Ok(())
+                    }
                     None if is_uninformative(ty) => Err(undetermined(why_uninformative(ty))),
                     None => Err(type_mismatch(formal, actual)),
                 },

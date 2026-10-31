@@ -33,8 +33,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const IO_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const MAX_RECV: usize = 64 * 1024 * 1024;
 const MAX_DATAGRAM: usize = 65_535;
 /// How long an accept loop sleeps when no connection is waiting before it looks again for a cancel or a close.
@@ -230,7 +230,7 @@ fn resolve(op: OsOp, name: &str, port: u16) -> Result<Vec<SocketAddr>, OsError> 
 
 /// The addresses an outbound destination may be reached at: an IP literal as written, a name only when every
 /// address it resolves to is public.
-fn outbound(op: OsOp, name: &str, port: u16) -> Result<Vec<SocketAddr>, OsError> {
+pub(crate) fn outbound(op: OsOp, name: &str, port: u16) -> Result<Vec<SocketAddr>, OsError> {
     if let Ok(ip) = name.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }

@@ -118,6 +118,9 @@ pub mod native_host;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/memory_release.rs"]
 pub mod memory_release;
+#[cfg(all(feature = "wire-drivers", not(target_arch = "wasm32")))]
+#[path = "host/credential_transport.rs"]
+pub mod credential_transport;
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 #[path = "host/os_host/mod.rs"]
 pub mod os_host;

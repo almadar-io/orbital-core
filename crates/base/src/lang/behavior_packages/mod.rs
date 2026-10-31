@@ -232,6 +232,7 @@ pub fn index_registry_source(
         if !visited.insert(canonical) {
             continue;
         }
+        crate::read_set::note(&dir);
         let mut entries = fs::read_dir(&dir)
             .map_err(io)?
             .collect::<Result<Vec<_>, _>>()

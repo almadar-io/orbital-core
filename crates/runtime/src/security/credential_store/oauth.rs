@@ -35,6 +35,69 @@ pub trait CredentialTransport: Send + Sync {
     ) -> Result<(u16, String), TransportError>;
 }
 
+/// What a host sends for one token exchange, and the ticket that [`EncryptedCredentialStore::connect_finish`] needs to
+/// persist its outcome. The ticket never leaves the process; a wasm host holds it behind an opaque handle.
+pub struct PendingExchange {
+    pub endpoint: String,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+    pub ticket: ExchangeTicket,
+}
+
+impl std::fmt::Debug for PendingExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingExchange").field("endpoint", &self.endpoint).finish_non_exhaustive()
+    }
+}
+
+/// What the store needs to finish one exchange: the row's identity, where it was granted, which client credentials it
+/// names, and (for a refresh) the refresh token being rotated.
+pub struct ExchangeTicket {
+    exchange: Exchange,
+}
+
+enum Exchange {
+    Code {
+        name: String,
+        principal: Option<String>,
+        token_endpoint: String,
+        client_id_ref: String,
+        client_secret_ref: Option<String>,
+        client_auth: ClientAuth,
+    },
+    Refresh {
+        name: String,
+        principal: Option<String>,
+        token_endpoint: String,
+        refresh: String,
+        client_id_ref: String,
+        client_secret_ref: Option<String>,
+        client_auth: ClientAuth,
+        label: Option<String>,
+    },
+}
+
+impl Drop for ExchangeTicket {
+    fn drop(&mut self) {
+        if let Exchange::Refresh { refresh, .. } = &mut self.exchange {
+            zeroize::Zeroize::zeroize(refresh);
+        }
+    }
+}
+
+impl std::fmt::Debug for ExchangeTicket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExchangeTicket").finish_non_exhaustive()
+    }
+}
+
+/// How a resolve of a possibly-expired credential continues: with its answer, or with a refresh the host must send.
+#[derive(Debug)]
+pub enum RefreshStart {
+    Resolved(Option<String>),
+    Exchange(PendingExchange),
+}
+
 /// The sealed content of an `oauth` row.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -98,8 +161,16 @@ impl EncryptedCredentialStore {
         grant: &CredentialGrant,
         transport: &dyn CredentialTransport,
     ) -> Result<CredentialStanding, ConnectFailure> {
+        let flight = self.flight(&grant.name, grant.principal.as_deref());
+        let _turn = (grant.grant == "refresh_token").then(|| flight.lock());
+        let pending = self.connect_begin(grant)?;
+        self.send_exchange(pending, transport)
+    }
+
+    /// The request a host sends for `grant`, and the ticket to finish it with. Touches no network and persists nothing.
+    pub fn connect_begin(&self, grant: &CredentialGrant) -> Result<PendingExchange, ConnectFailure> {
         if grant.grant == "refresh_token" {
-            return self.refresh_grant(grant, transport);
+            return self.refresh_grant_begin(grant);
         }
         if grant.grant != "authorization_code" {
             return Err(failure(
@@ -138,34 +209,110 @@ impl EncryptedCredentialStore {
             client_auth: grant.client_auth,
         })
         .map_err(from_grant_error)?;
-        let (status, body) = transport
-            .post_form(&grant.token_endpoint, &request.headers, &request.body)
-            .map_err(|error| failure(ConnectFailureKind::Transport, error.0))?;
-        let token =
-            parse_token_response(status, &body, (self.clock)()).map_err(from_grant_error)?;
-        let record = OauthRecord {
-            v: RECORD_VERSION,
-            access: token.access.expose().clone(),
-            refresh: token
-                .refresh
-                .as_ref()
-                .map(|refresh| refresh.expose().clone()),
-            expires_at: token.expires_at,
-            token_endpoint: grant.token_endpoint.clone(),
-            client_id_ref: grant.client_id.clone(),
-            client_secret_ref: grant.client_secret.clone(),
-            client_auth: grant.client_auth,
-        };
-        self.persist_record(
-            &grant.name,
-            grant.principal.as_deref(),
-            token.label.as_deref(),
-            record,
-        )?;
-        Ok(CredentialStanding {
-            connected: true,
-            label: token.label,
+        Ok(PendingExchange {
+            endpoint: grant.token_endpoint.clone(),
+            headers: request.headers,
+            body: request.body,
+            ticket: ExchangeTicket {
+                exchange: Exchange::Code {
+                    name: grant.name.clone(),
+                    principal: grant.principal.clone(),
+                    token_endpoint: grant.token_endpoint.clone(),
+                    client_id_ref: grant.client_id.clone(),
+                    client_secret_ref: grant.client_secret.clone(),
+                    client_auth: grant.client_auth,
+                },
+            },
         })
+    }
+
+    fn send_exchange(
+        &self,
+        pending: PendingExchange,
+        transport: &dyn CredentialTransport,
+    ) -> Result<CredentialStanding, ConnectFailure> {
+        let (status, body) = transport
+            .post_form(&pending.endpoint, &pending.headers, &pending.body)
+            .map_err(|error| failure(ConnectFailureKind::Transport, error.0))?;
+        self.connect_finish(pending.ticket, status, &body)
+    }
+
+    /// Settle an exchange with the token endpoint's `status` and `body`: parse the tokens and keep them as the row, or
+    /// fail (an `invalid_grant` on a refresh drops the row). The ticket is consumed.
+    pub fn connect_finish(
+        &self,
+        ticket: ExchangeTicket,
+        status: u16,
+        body: &str,
+    ) -> Result<CredentialStanding, ConnectFailure> {
+        match &ticket.exchange {
+            Exchange::Code {
+                name,
+                principal,
+                token_endpoint,
+                client_id_ref,
+                client_secret_ref,
+                client_auth,
+            } => {
+                let token = parse_token_response(status, body, (self.clock)()).map_err(from_grant_error)?;
+                let record = OauthRecord {
+                    v: RECORD_VERSION,
+                    access: token.access.expose().clone(),
+                    refresh: token.refresh.as_ref().map(|refresh| refresh.expose().clone()),
+                    expires_at: token.expires_at,
+                    token_endpoint: token_endpoint.clone(),
+                    client_id_ref: client_id_ref.clone(),
+                    client_secret_ref: client_secret_ref.clone(),
+                    client_auth: *client_auth,
+                };
+                self.persist_record(name, principal.as_deref(), token.label.as_deref(), record)?;
+                Ok(CredentialStanding {
+                    connected: true,
+                    label: token.label,
+                })
+            }
+            Exchange::Refresh {
+                name,
+                principal,
+                token_endpoint,
+                refresh,
+                client_id_ref,
+                client_secret_ref,
+                client_auth,
+                label,
+            } => {
+                let token = match parse_token_response(status, body, (self.clock)()) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        if error.kind == GrantErrorKind::InvalidGrant {
+                            self.remove(name, principal.as_deref())
+                                .map_err(|dropped| failure(ConnectFailureKind::Refused, dropped))?;
+                        }
+                        return Err(from_grant_error(error));
+                    }
+                };
+                let label = token.label.or_else(|| label.clone());
+                let record = OauthRecord {
+                    v: RECORD_VERSION,
+                    access: token.access.expose().clone(),
+                    refresh: token
+                        .refresh
+                        .as_ref()
+                        .map(|rotated| rotated.expose().clone())
+                        .or_else(|| Some(refresh.clone())),
+                    expires_at: token.expires_at,
+                    token_endpoint: token_endpoint.clone(),
+                    client_id_ref: client_id_ref.clone(),
+                    client_secret_ref: client_secret_ref.clone(),
+                    client_auth: *client_auth,
+                };
+                self.persist_record(name, principal.as_deref(), label.as_deref(), record)?;
+                Ok(CredentialStanding {
+                    connected: true,
+                    label,
+                })
+            }
+        }
     }
 
     fn resolve_client(
@@ -260,14 +407,9 @@ impl EncryptedCredentialStore {
         }
         let flight = self.flight(name, principal);
         let _turn = flight.lock();
-        if !self.is_due(name, principal) {
-            return Ok(self.resolve(name, principal));
-        }
-        let Some((record, label)) = self.held_record(name, principal) else {
-            return Ok(None);
-        };
-        let Some(refresh) = record.refresh.clone() else {
-            return Ok(None);
+        let pending = match self.refresh_begin(name, principal)? {
+            RefreshStart::Resolved(value) => return Ok(value),
+            RefreshStart::Exchange(pending) => pending,
         };
         let transport = transport.ok_or_else(|| {
             failure(
@@ -275,31 +417,37 @@ impl EncryptedCredentialStore {
                 "credential-connect: this host has no transport to refresh the credential",
             )
         })?;
-        let refs = ClientRefs {
-            client_id: &record.client_id_ref,
-            client_secret: record.client_secret_ref.as_deref(),
-            client_auth: record.client_auth,
-        };
-        match self.exchange_refresh(
-            name,
-            principal,
-            &record.token_endpoint,
-            &refresh,
-            refs,
-            label,
-            transport,
-        ) {
+        match self.send_exchange(pending, transport) {
             Ok(_) => Ok(self.resolve(name, principal)),
             Err(error) if error.kind == ConnectFailureKind::InvalidGrant => Ok(None),
             Err(error) => Err(error),
         }
     }
 
-    fn refresh_grant(
-        &self,
-        grant: &CredentialGrant,
-        transport: &dyn CredentialTransport,
-    ) -> Result<CredentialStanding, ConnectFailure> {
+    /// The first half of [`Self::resolve_fresh`]: the credential's answer when nothing needs refreshing (or nothing can
+    /// be), else the refresh request to send. The caller serializes concurrent begins of one credential.
+    pub fn refresh_begin(&self, name: &str, principal: Option<&str>) -> Result<RefreshStart, ConnectFailure> {
+        self.ensure_warm()
+            .map_err(|error| failure(ConnectFailureKind::Unavailable, error))?;
+        if !self.is_due(name, principal) {
+            return Ok(RefreshStart::Resolved(self.resolve(name, principal)));
+        }
+        let Some((record, label)) = self.held_record(name, principal) else {
+            return Ok(RefreshStart::Resolved(None));
+        };
+        let Some(refresh) = record.refresh.clone() else {
+            return Ok(RefreshStart::Resolved(None));
+        };
+        let refs = ClientRefs {
+            client_id: &record.client_id_ref,
+            client_secret: record.client_secret_ref.as_deref(),
+            client_auth: record.client_auth,
+        };
+        self.refresh_pending(name, principal, &record.token_endpoint, refresh, refs, label)
+            .map(RefreshStart::Exchange)
+    }
+
+    fn refresh_grant_begin(&self, grant: &CredentialGrant) -> Result<PendingExchange, ConnectFailure> {
         if grant.principal.as_deref().is_some_and(str::is_empty) {
             return Err(failure(
                 ConnectFailureKind::Unsigned,
@@ -314,8 +462,6 @@ impl EncryptedCredentialStore {
         }
         self.ensure_warm()
             .map_err(|error| failure(ConnectFailureKind::Unavailable, error))?;
-        let flight = self.flight(&grant.name, grant.principal.as_deref());
-        let _turn = flight.lock();
         let held = self.held_record(&grant.name, grant.principal.as_deref());
         let Some((record, label)) = held else {
             return Err(failure(
@@ -340,70 +486,50 @@ impl EncryptedCredentialStore {
             client_secret: grant.client_secret.as_deref(),
             client_auth: grant.client_auth,
         };
-        let label = self.exchange_refresh(
+        self.refresh_pending(
             &grant.name,
             grant.principal.as_deref(),
             &record.token_endpoint,
-            &refresh,
+            refresh,
             refs,
             label,
-            transport,
-        )?;
-        Ok(CredentialStanding {
-            connected: true,
-            label,
-        })
+        )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn exchange_refresh(
+    fn refresh_pending(
         &self,
         name: &str,
         principal: Option<&str>,
         token_endpoint: &str,
-        refresh: &str,
+        refresh: String,
         refs: ClientRefs<'_>,
         label: Option<String>,
-        transport: &dyn CredentialTransport,
-    ) -> Result<Option<String>, ConnectFailure> {
+    ) -> Result<PendingExchange, ConnectFailure> {
         let (client_id, client_secret) = self.resolve_client(refs.client_id, refs.client_secret)?;
         let request = refresh_token_request(&RefreshExchange {
-            refresh_token: refresh,
+            refresh_token: &refresh,
             client_id: &client_id,
             client_secret: client_secret.as_deref(),
             client_auth: refs.client_auth,
         })
         .map_err(from_grant_error)?;
-        let (status, body) = transport
-            .post_form(token_endpoint, &request.headers, &request.body)
-            .map_err(|error| failure(ConnectFailureKind::Transport, error.0))?;
-        let token = match parse_token_response(status, &body, (self.clock)()) {
-            Ok(token) => token,
-            Err(error) => {
-                if error.kind == GrantErrorKind::InvalidGrant {
-                    self.remove(name, principal)
-                        .map_err(|dropped| failure(ConnectFailureKind::Refused, dropped))?;
-                }
-                return Err(from_grant_error(error));
-            }
-        };
-        let label = token.label.or(label);
-        let record = OauthRecord {
-            v: RECORD_VERSION,
-            access: token.access.expose().clone(),
-            refresh: token
-                .refresh
-                .as_ref()
-                .map(|rotated| rotated.expose().clone())
-                .or_else(|| Some(refresh.to_string())),
-            expires_at: token.expires_at,
-            token_endpoint: token_endpoint.to_string(),
-            client_id_ref: refs.client_id.to_string(),
-            client_secret_ref: refs.client_secret.map(str::to_string),
-            client_auth: refs.client_auth,
-        };
-        self.persist_record(name, principal, label.as_deref(), record)?;
-        Ok(label)
+        Ok(PendingExchange {
+            endpoint: token_endpoint.to_string(),
+            headers: request.headers,
+            body: request.body,
+            ticket: ExchangeTicket {
+                exchange: Exchange::Refresh {
+                    name: name.to_string(),
+                    principal: principal.map(str::to_string),
+                    token_endpoint: token_endpoint.to_string(),
+                    refresh,
+                    client_id_ref: refs.client_id.to_string(),
+                    client_secret_ref: refs.client_secret.map(str::to_string),
+                    client_auth: refs.client_auth,
+                    label,
+                },
+            },
+        })
     }
 }
 

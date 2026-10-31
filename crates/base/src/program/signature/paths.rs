@@ -167,11 +167,27 @@ pub(super) fn children_of(
         }
         _ => false,
     };
+    let nullable_child = |t: &OirType| {
+        t.is_optional()
+            || match t {
+                OirType::TypeRef { name } | OirType::Reference { entity: name } => {
+                    identity(name).is_some_and(|(_, nullable)| nullable)
+                }
+                _ => false,
+            }
+    };
+    let element = |t: &OirType| {
+        if nullable_child(t) {
+            OirType::optional(result.clone())
+        } else {
+            result.clone()
+        }
+    };
     let slot = |t: &OirType| match unwrap_optional(t) {
         own if is_shape(own) => Some(result.clone()),
-        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(result.clone())),
+        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(element(inner))),
         OirType::Map { key, value } if is_shape(value) => {
-            Some(OirType::map((**key).clone(), result.clone()))
+            Some(OirType::map((**key).clone(), element(value)))
         }
         _ => None,
     };
@@ -205,9 +221,9 @@ pub(super) fn children_of(
                 })
                 .collect::<Option<Vec<_>>>()?.into(),
         }),
-        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(result.clone())),
+        OirType::Array { inner } if is_shape(inner) => Some(OirType::array(element(inner))),
         OirType::Map { key, value } if is_shape(value) => {
-            Some(OirType::map((**key).clone(), result.clone()))
+            Some(OirType::map((**key).clone(), element(value)))
         }
         _ => Some(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
     }

@@ -96,6 +96,15 @@ impl Coercion {
         }
     }
 
+    /// True when the value already has the target type: no unwrap, refinement, row load or cast is needed at run time.
+    pub fn is_static(&self) -> bool {
+        match self {
+            Coercion::Identity | Coercion::Widen(_) | Coercion::Erase { .. } => true,
+            Coercion::Wrap(inner) | Coercion::Element(inner) => inner.is_static(),
+            Coercion::Unwrap { .. } | Coercion::Row { .. } | Coercion::Refine(_) | Coercion::Explicit => false,
+        }
+    }
+
     /// True when plain assignment refuses the conversion: one legal only through `as`, or an unchecked unwrap.
     pub fn requires_cast(&self) -> bool {
         match self {

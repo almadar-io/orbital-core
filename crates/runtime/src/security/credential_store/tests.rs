@@ -777,6 +777,36 @@ mod oauth_connect {
         assert_eq!(host.secret_of("DRIVE", Some("u1")), Ok(Some("ACCESS-TOKEN-7777".to_string())));
     }
 
+    #[test]
+    fn begin_then_finish_persists_the_same_row_connect_does_and_sends_the_same_request() {
+        let (_, via_connect) = store();
+        let fake = Fake::answering(200, GOOD);
+        let standing = via_connect.connect(&grant(Some("u1"), ClientAuth::Body), &fake).unwrap();
+        let (_, split) = store();
+        let pending = split.connect_begin(&grant(Some("u1"), ClientAuth::Body)).unwrap();
+        let seen = fake.seen.lock().unwrap()[0].clone();
+        assert_eq!((pending.endpoint.clone(), pending.headers.clone(), pending.body.clone()), seen);
+        assert_eq!(split.resolve("DRIVE", Some("u1")), None, "begin persists nothing");
+        let finished = split.connect_finish(pending.ticket, 200, GOOD).unwrap();
+        assert_eq!(finished, standing);
+        assert_eq!(split.resolve("DRIVE", Some("u1")), via_connect.resolve("DRIVE", Some("u1")));
+        assert_eq!(split.label("DRIVE", Some("u1")), via_connect.label("DRIVE", Some("u1")));
+    }
+
+    #[test]
+    fn a_failed_finish_persists_nothing_and_a_refresh_begin_of_a_fresh_row_answers_without_an_exchange() {
+        let (_, split) = store();
+        let pending = split.connect_begin(&grant(Some("u1"), ClientAuth::Body)).unwrap();
+        assert_eq!(split.connect_finish(pending.ticket, 400, r#"{"error":"invalid_grant"}"#).unwrap_err().kind, ConnectFailureKind::InvalidGrant);
+        assert_eq!(split.resolve("DRIVE", Some("u1")), None);
+        let pending = split.connect_begin(&grant(Some("u1"), ClientAuth::Body)).unwrap();
+        split.connect_finish(pending.ticket, 200, GOOD).unwrap();
+        match split.refresh_begin("DRIVE", Some("u1")).unwrap() {
+            super::oauth::RefreshStart::Resolved(value) => assert_eq!(value.as_deref(), Some("ACCESS-TOKEN-7777")),
+            other => panic!("a fresh row needs no exchange, got {other:?}"),
+        }
+    }
+
     mod refresh {
         use super::*;
         use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};

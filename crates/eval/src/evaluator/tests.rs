@@ -2019,6 +2019,18 @@ fn test_array_zip() {
 }
 
 #[test]
+fn test_array_zip_unequal_lengths_pairs_to_the_shorter() {
+    assert_eq!(
+        eval(r#"["array/zip", [1, 2, 3], ["a", "b"]]"#),
+        Value::array(vec![
+            Value::array(vec![Value::Number(1.0), Value::string("a")]),
+            Value::array(vec![Value::Number(2.0), Value::string("b")]),
+        ])
+    );
+    assert_eq!(eval(r#"["array/zip", [1], []]"#), Value::array(vec![]));
+}
+
+#[test]
 fn test_array_find_index() {
     assert_eq!(
         eval(r#"["array/findIndex", [1, 2, 3, 4], ["fn", ["x"], [">", "@x", 2]]]"#),

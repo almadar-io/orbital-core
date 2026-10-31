@@ -970,7 +970,7 @@ impl EncryptedCredentialStore {
 }
 
 mod oauth;
-pub use oauth::{CredentialTransport, TransportError};
+pub use oauth::{CredentialTransport, ExchangeTicket, PendingExchange, RefreshStart, TransportError};
 
 #[cfg(test)]
 mod tests;

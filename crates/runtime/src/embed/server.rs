@@ -1034,6 +1034,12 @@ impl EmbeddedServer {
         serde_json::to_string(&resolved).map_err(|e| format!("serialize: {e}"))
     }
 
+    /// Whether `url`'s origin is one the registered programs declare in `egress`: the kernel's rule for a host that sends
+    /// a request the program did not itself write (a token exchange).
+    pub fn egress_allows(&self, url: &str) -> bool {
+        orbital_core_base::http_wire::origin_allowed(url, &self.kernel.egress())
+    }
+
     /// Whether the program's grants cover `requirement_json` (an `OsRequirement`).
     pub fn os_allows_json(&self, requirement_json: &str) -> Result<bool, String> {
         let need: OsRequirement = serde_json::from_str(requirement_json)
