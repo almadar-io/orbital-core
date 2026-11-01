@@ -452,34 +452,67 @@ fn credential_slot_values(items: &[Value]) -> Vec<(String, &Value)> {
     out
 }
 
-/// Every credential slot value of every `http` call in `expr`, as written, with its slot name, in walk order.
-/// Read the credential name out of one with [`slot_credential`].
-pub fn http_credential_slots(expr: &Value) -> Vec<(String, &Value)> {
+/// The credential slot of every `credential-status` and `credential-forget`, the credential operand of every operator in
+/// [`CREDENTIAL_OPERATORS`], every `os/send` credential segment, `credential-connect` and `oauth-authorize` in `expr`,
+/// as written, named by slot. Nothing here reads an `http` call.
+fn effect_credential_slots(expr: &Value) -> Vec<(String, &Value)> {
     let mut out = Vec::new();
-    each_http_call(expr, &mut |items| out.extend(credential_slot_values(items)));
-    out
-}
-
-/// The credential slot of every `credential-status` and `credential-forget`, and the credential operand of every
-/// operator in [`CREDENTIAL_OPERATORS`], in `expr`, as written.
-fn effect_credential_slots(expr: &Value) -> Vec<&Value> {
-    let mut out = Vec::new();
-    each_credential_effect(expr, &mut |_, items| out.extend(items.get(1)));
-    each_operator_credential(expr, &mut |_, operand| out.push(operand));
-    each_os_send_segment(expr, &mut |operand| out.push(operand));
+    each_credential_effect(expr, &mut |head, items| out.extend(items.get(1).map(|slot| (head.to_string(), slot))));
+    each_operator_credential(expr, &mut |slot, operand| out.push((slot.to_string(), operand)));
+    each_os_send_segment(expr, &mut |operand| out.push((OS_SEND_SEGMENT_SLOT.to_string(), operand)));
     each_call(expr, "credential-connect", &mut |items| {
         if let Some(Value::Object(request)) = items.get(1) {
-            out.extend(CREDENTIAL_CONNECT_SLOTS.iter().filter_map(|slot| request.get(*slot)));
+            out.extend(
+                CREDENTIAL_CONNECT_SLOTS
+                    .iter()
+                    .filter_map(|slot| request.get(*slot).map(|value| (format!("credential-connect.{slot}"), value))),
+            );
         }
     });
     each_call(expr, "oauth-authorize", &mut |items| {
-        let mut slots = Vec::new();
         if let Some(client) = authorize_client(items) {
-            push_client_slots("oauth-authorize", client, &mut slots);
+            push_client_slots("oauth-authorize", client, &mut out);
         }
-        out.extend(slots.into_iter().map(|(_, value)| value));
     });
     out
+}
+
+/// Every credential slot `expr` names, as written and named by slot: the `os/send` credential segments, the credential
+/// operands of [`CREDENTIAL_OPERATORS`], `credential-status`, `credential-forget`, `credential-connect` and
+/// `oauth-authorize`. The sandbox manifest and the credential declarations derive from this one walk; an `http` call
+/// is not a credential source.
+pub fn credential_slots_in(expr: &Value) -> Vec<(String, &Value)> {
+    effect_credential_slots(expr)
+}
+
+/// What a credential slot names inside its trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotCredential<'a> {
+    /// The slot names no credential: the empty name, or a secret knob whose default is empty (bytes alone).
+    None,
+    /// A literal credential name, or the string default of the `secret` knob a bare `@config.<knob>` read names.
+    Named(&'a str),
+    /// Anything else (a payload read, a non-secret knob, a malformed slot): the name is not known before run time.
+    Computed,
+}
+
+pub fn slot_credential_in<'a>(slot: &'a Value, trait_def: &'a Value) -> SlotCredential<'a> {
+    let Some(name) = slot_credential(slot) else { return SlotCredential::Computed };
+    if name.is_empty() {
+        return SlotCredential::None;
+    }
+    let Some(knob) = config_knob(name) else {
+        return if name.starts_with('@') { SlotCredential::Computed } else { SlotCredential::Named(name) };
+    };
+    let field = trait_def.get("config").and_then(|config| config.get(knob));
+    let Some(field) = field.filter(|f| f.get("type").and_then(Value::as_str) == Some("secret")) else {
+        return SlotCredential::Computed;
+    };
+    match field.get("default").and_then(Value::as_str) {
+        Some("") => SlotCredential::None,
+        Some(default) => SlotCredential::Named(default),
+        None => SlotCredential::Computed,
+    }
 }
 
 /// An operator operand that names a credential the kernel resolves itself: the evaluation holds the value, the program
@@ -797,8 +830,7 @@ pub fn program_credentials(program: &Value) -> Vec<ProgramCredential> {
         for trait_def in orbital.get("traits").and_then(Value::as_array).into_iter().flatten() {
             let Some(config) = trait_def.get("config").and_then(Value::as_object) else { continue };
             let is_secret = |field: &Value| field.get("type").and_then(Value::as_str) == Some("secret");
-            let read_slots = effect_credential_slots(trait_def);
-            for slot in http_credential_slots(trait_def).into_iter().map(|(_, slot)| slot).chain(read_slots) {
+            for (_, slot) in credential_slots_in(trait_def) {
                 let Some(credential) = slot_credential(slot) else { continue };
                 let Some(field) = config_knob(credential).and_then(|knob| config.get(knob)).filter(|f| is_secret(f)) else {
                     continue;
@@ -1243,20 +1275,19 @@ mod tests {
     }
 
     #[test]
-    fn http_credential_slots_lists_the_slots_of_every_http_call_and_only_those() {
+    fn credential_slots_in_reads_os_send_segments_and_no_longer_reads_http_calls() {
         let effects = json!([
             ["http", "GET", "https://a.example", "/s", { "auth": { "scheme": "bearer", "credential": "STRIPE" } }, { "emit": { "success": "OK" } }],
-            ["if", true, ["http", "GET", "https://a.example", "/t", { "auth": { "scheme": "basic", "user": "u", "credential": { "credential": "DB", "scope": "user" } } }, { "emit": { "success": "OK" } }]],
-            ["http", "GET", "https://a.example", "/open", {}, { "emit": { "success": "OK" } }]
+            ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "AUTH "], "credential": "DB" }], { "key": "s" }]
         ]);
-        let slots = http_credential_slots(&effects);
+        let slots = credential_slots_in(&effects);
         let named: Vec<(&str, Option<&str>)> = slots.iter().map(|(slot, value)| (slot.as_str(), slot_credential(value))).collect();
-        assert_eq!(named, vec![("credential", Some("STRIPE")), ("user", Some("u")), ("credential", Some("DB"))]);
-        assert!(http_credential_slots(&json!([["set", "@entity.x", 1]])).is_empty());
+        assert_eq!(named, vec![(OS_SEND_SEGMENT_SLOT, Some("DB"))]);
+        assert!(credential_slots_in(&json!([["set", "@entity.x", 1]])).is_empty());
     }
 
     #[test]
-    fn program_credentials_lists_the_secret_knobs_the_http_auth_slots_read() {
+    fn program_credentials_lists_the_secret_knobs_the_os_send_segments_read() {
         let gh = json!({ "name": "GithubOrbital", "traits": [{
             "config": {
                 "token": { "type": "secret", "default": "GITHUB_TOKEN", "description": "The token." },
@@ -1264,15 +1295,15 @@ mod tests {
                 "plain": { "type": "string", "default": "PLAIN" }
             },
             "stateMachine": { "transitions": [{ "effects": [
-                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }],
-                ["http", "GET", "https://a.example", "/b", { "auth": { "scheme": "bearer", "credential": "@config.token" } }, { "emit": { "success": "OK" } }],
-                ["http", "GET", "https://a.example", "/c", { "auth": { "scheme": "bearer", "credential": "@config.plain" } }, { "emit": { "success": "OK" } }]
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "a "], "credential": "@config.token" }], { "key": "s" }],
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "b "], "credential": "@config.token" }], { "key": "s" }],
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "c "], "credential": "@config.plain" }], { "key": "s" }]
             ] }] }
         }] });
         let other = json!({ "name": "Other", "traits": [{
             "config": { "key": { "type": "secret", "default": "GITHUB_TOKEN" } },
             "stateMachine": { "transitions": [{ "effects": [
-                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "api-key", "credential": "@config.key" } }, { "emit": { "success": "OK" } }]
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "a "], "credential": "@config.key" }], { "key": "s" }]
             ] }] }
         }] });
         let found = program_credentials(&json!({ "orbitals": [gh, other] }));
@@ -1289,8 +1320,8 @@ mod tests {
                 "other": { "type": "string", "default": "LITERAL_ONLY" }
             },
             "stateMachine": { "transitions": [{ "effects": [
-                ["http", "GET", "https://a.example", "/a", { "auth": { "scheme": "bearer", "credential": "MY_GH_TOKEN" } }, { "emit": { "success": "OK" } }],
-                ["http", "GET", "https://a.example", "/b", { "auth": { "scheme": "bearer", "credential": "LITERAL_ONLY" } }, { "emit": { "success": "OK" } }]
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "a "], "credential": "MY_GH_TOKEN" }], { "key": "s" }],
+                ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "b "], "credential": "LITERAL_ONLY" }], { "key": "s" }]
             ] }] }
         }] }] });
         assert!(program_credentials(&inlined).is_empty());

@@ -573,7 +573,8 @@ fn test_custom_effect() {
     };
 
     let result = executor.execute(&effect, &BindingContext::new());
-    assert!(result.is_noop()); // Custom effects are not handled
+    assert!(result.is_failed());
+    assert_eq!(result.error.as_deref(), Some("no executor for effect `my-custom-effect` on this host"));
 }
 
 #[test]

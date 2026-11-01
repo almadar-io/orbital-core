@@ -585,9 +585,24 @@ fn a_keyed_asks_completion_runs_as_its_own_dispatch_after_the_asking_dispatch_co
     // A completion exists only once its key is deferred: the host registers the key before it answers (DispatchScope),
     // so it arrives with the keyed ask outstanding, never while the asker is still on an earlier row ask.
     let asking = parked_on_keyed_call(&kernel, &store);
+    // The host completes the key it was handed: the kernel's host key for the program's "k1" (EXEC-QUEUE-10).
+    let host_key = asking
+        .1
+        .iter()
+        .find_map(|p| match &p.request {
+            orbital_core_runtime::resumable::IoRequest::CallService { key: Some(key), .. } => {
+                Some(key.clone())
+            }
+            _ => None,
+        })
+        .expect("the keyed call");
+    assert_eq!(
+        orbital_core_runtime::resumable::program_call_key(&host_key),
+        "k1"
+    );
     let completion = std::thread::spawn({
         let sink = sink.clone();
-        move || sink.complete(&counter_site(), "k1", Ok(Value::Null))
+        move || sink.complete(&counter_site(), &host_key, Ok(Value::Null))
     });
     std::thread::sleep(NOT_YET);
     assert!(seen.lock().unwrap().is_empty(), "the completion ran while its asking dispatch was parked");

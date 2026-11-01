@@ -218,6 +218,11 @@ fn failure(kind: ModelFailureKind, message: &str) -> ModelFailure {
     ModelFailure::new(kind, message)
 }
 
+/// The host key the `Probe` trait's keyed ask carries from the singleton frame of the program session.
+fn host_key(key: &str) -> String {
+    orbital_core_runtime::resumable::host_call_key(None, "Probe", "", key)
+}
+
 // EXEC-HTTP-3
 #[test]
 fn a_prompt_asks_the_host_once_with_the_text_and_schema_and_emits_the_reply_with_a_null_key() {
@@ -229,7 +234,7 @@ fn a_prompt_asks_the_host_once_with_the_text_and_schema_and_emits_the_reply_with
 #[test]
 fn a_keyed_prompt_carries_its_key_to_the_host_and_echoes_it() {
     let (response, seen) = run(prompt(Some("batch-1")), |_| IoAnswer::Prompt(Ok("{}".to_string())));
-    assert_eq!(seen, vec![IoRequest::Prompt { text: "hello".into(), schema: SCHEMA.into(), key: Some("batch-1".into()) }]);
+    assert_eq!(seen, vec![IoRequest::Prompt { text: "hello".into(), schema: SCHEMA.into(), key: Some(host_key("batch-1")) }]);
     assert_eq!(payload_of(&response, "OK"), json!({ "reply": "{}", "key": "batch-1" }));
 }
 
@@ -321,16 +326,21 @@ fn control_an_unkeyed_cancelled_answer_fires_nothing() {
 fn cancel_call_reaches_the_host_with_the_key_of_the_prompt_and_an_unknown_key_is_the_hosts_no_op() {
     let cancel = EventRequest { event: "CANCEL".to_string(), target_trait: Some("Probe".to_string()), ..Default::default() };
     let (_, seen) = run_with(prompt(Some("job")), cancel, |request| match request {
-        IoRequest::CancelCall { key } if key == "job" => IoAnswer::Cancelled(Ok(())),
+        IoRequest::CancelCall { key } if *key == host_key("job") => IoAnswer::Cancelled(Ok(())),
         other => panic!("the fixture asks for {other:?}"),
     });
-    assert_eq!(seen, vec![IoRequest::CancelCall { key: "job".into() }]);
+    assert_eq!(
+        seen,
+        vec![IoRequest::CancelCall {
+            key: host_key("job")
+        }]
+    );
 }
 
 #[test]
 fn embed_asks_the_host_once_with_the_texts_and_emits_one_vector_per_text_with_the_key() {
     let (response, seen) = run(embed(json!(["a", "b"]), Some("k")), |_| IoAnswer::Embed(Ok(vec![vec![0.0, 0.5], vec![1.0, 1.5]])));
-    assert_eq!(seen, vec![IoRequest::Embed { texts: vec!["a".into(), "b".into()], key: Some("k".into()) }]);
+    assert_eq!(seen, vec![IoRequest::Embed { texts: vec!["a".into(), "b".into()], key: Some(host_key("k")) }]);
     assert_eq!(payload_of(&response, "OK"), json!({ "embeddings": [[0.0, 0.5], [1.0, 1.5]], "key": "k" }));
 }
 

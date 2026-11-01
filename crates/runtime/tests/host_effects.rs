@@ -937,6 +937,35 @@ mod os_effects {
         }
     }
 
+    #[test]
+    fn an_effect_with_no_executor_fails_and_routes_its_declared_failure_naming_the_operator() {
+        let (response, seen) = run(
+            json!(["http", "GET", "https://example.com", "/", {}, routes()]),
+            go(None),
+            |request| panic!("a retired operator must not reach the host, asked {request:?}"),
+        );
+        assert!(seen.is_empty());
+        let error = payload_of(&response, "BAD")["error"].as_str().unwrap().to_string();
+        assert!(error.contains("no executor for effect `http`"), "{error}");
+        assert!(emitted(&response).iter().all(|(event, _)| *event != "OK"));
+    }
+
+    #[test]
+    fn an_effect_with_no_executor_and_no_route_still_fails_visibly_in_its_results() {
+        let (response, _) = run(json!(["http", "GET", "https://example.com", "/", {}]), go(None), |_| data("x"));
+        let rejection = response.rejections.iter().flatten().next().expect("an effect-failed rejection");
+        assert_eq!(rejection.code, orbital_core_runtime::effects::response::TransitionRejectionCode::EffectFailed);
+        let error = rejection.error.as_deref().unwrap_or_default();
+        assert!(error.contains("no executor for effect `http`"), "{error}");
+    }
+
+    #[test]
+    fn control_a_declared_no_op_log_still_passes_and_routes_nothing() {
+        let (response, _) = run(json!(["log", "info", "hello"]), go(None), |_| data("x"));
+        assert!(emitted(&response).is_empty());
+        assert!(response.rejections.iter().flatten().next().is_none());
+    }
+
     fn streamed_fetch(url: &str) -> Json {
         json!(["os/fetch", "GET", url, { "stream": true }, routes()])
     }
@@ -1025,7 +1054,7 @@ mod os_effects {
         );
         let IoRequest::Os { op, key, site, .. } = &seen[0] else { panic!("an os ask") };
         assert_eq!(*op, OsOp::StdinRead);
-        assert_eq!(key.as_deref(), Some("in"));
+        assert_eq!(key.as_deref().map(program_call_key), Some("in"));
         let site = site.as_ref().expect("a stream carries its call site");
         assert_eq!(site.trait_name, "Host");
         assert_eq!(site.emit.on_message.as_deref(), Some("BAD"));
@@ -1683,7 +1712,11 @@ mod os_completion {
         let wired = wired("sleep 30");
         go_sup(&wired);
         assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");
-        assert!(wired.handles.cancel_completion("child"));
+        assert!(wired
+            .handles
+            .cancel_completion(&orbital_core_runtime::resumable::host_call_key(
+                None, "Sup", "", "child"
+            )));
         wired.handles.close_all();
         assert!(wired.done.recv_timeout(Duration::from_millis(500)).is_err(), "a cancelled key completed");
         assert_eq!(wired.kernel.snapshot_trait("Sup", None).state, "waiting");

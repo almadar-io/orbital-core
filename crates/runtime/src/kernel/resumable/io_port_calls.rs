@@ -267,7 +267,7 @@ impl IoPort {
         match self.ask(|| IoRequest::Prompt {
             text: text.to_string(),
             schema: schema.to_string(),
-            key: key.map(str::to_string),
+            key: key.map(|key| self.host_key(key)),
         }) {
             Asked::Direct => Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_PROMPT_HOST)),
             Asked::Answer(IoAnswer::Prompt(out)) => out,
@@ -281,7 +281,7 @@ impl IoPort {
 
     /// One `browser/embed` ask, as [`Self::prompt`].
     pub(crate) fn embed(&self, texts: &[String], key: Option<&str>) -> Result<Vec<Vec<f64>>, ModelFailure> {
-        match self.ask(|| IoRequest::Embed { texts: texts.to_vec(), key: key.map(str::to_string) }) {
+        match self.ask(|| IoRequest::Embed { texts: texts.to_vec(), key: key.map(|key| self.host_key(key)) }) {
             Asked::Direct => Err(ModelFailure::new(ModelFailureKind::Unconfigured, NO_EMBED_HOST)),
             Asked::Answer(IoAnswer::Embed(out)) => out,
             Asked::Answer(IoAnswer::ServiceCancelled) => {
@@ -294,7 +294,7 @@ impl IoPort {
 
     /// One raw `browser/tab-*` ask. A host that answers it cancelled records the verdict for the kernel's route.
     pub(crate) fn tab(&self, ask: &TabAsk, key: Option<&str>) -> Result<Value, TabFailure> {
-        match self.ask(|| IoRequest::Tab { ask: ask.clone(), key: key.map(str::to_string) }) {
+        match self.ask(|| IoRequest::Tab { ask: ask.clone(), key: key.map(|key| self.host_key(key)) }) {
             Asked::Direct => Err(TabFailure::new(TabFailureKind::Unavailable, NO_TAB_HOST)),
             Asked::Answer(IoAnswer::Tab(out)) => out,
             Asked::Answer(IoAnswer::ServiceCancelled) => {

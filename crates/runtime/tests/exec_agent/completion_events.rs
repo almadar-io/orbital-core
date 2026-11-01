@@ -470,7 +470,7 @@ mod agent_ports {
     #[test]
     fn a_keyed_ask_the_host_defers_commits_without_its_completion() {
         let (key, routed, state, got) = keyed_dispatch_answered(orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
-        assert_eq!(key.as_deref(), Some("k1"), "the ask carries its key");
+        assert_eq!(key.as_deref().map(orbital_core_runtime::resumable::program_call_key), Some("k1"), "the ask carries its key");
         assert!(routed, "the ask carries the call site its completion dispatches to");
         assert_eq!(state, "idle", "the completion arrives as a dispatch of its own, not in this one");
         assert_eq!(got, Json::Null);
@@ -491,7 +491,7 @@ mod agent_ports {
     fn a_keyed_substrate_op_the_host_defers_commits_without_its_completion() {
         let effect = json!(["program/eval", { "name": "App", "typeContractVersion": 1, "orbitals": [] }, keyed(json!("k1"))]);
         let (key, routed, state, got) = keyed_op_answered(effect, orbital_core_runtime::resumable::IoAnswer::ServiceDeferred);
-        assert_eq!(key.as_deref(), Some("k1"), "the substrate ask carries its key");
+        assert_eq!(key.as_deref().map(orbital_core_runtime::resumable::program_call_key), Some("k1"), "the substrate ask carries its key");
         assert!(routed, "and the call site its completion dispatches to");
         assert_eq!(state, "idle", "the answer arrives later as a dispatch of its own");
         assert_eq!(got, Json::Null);

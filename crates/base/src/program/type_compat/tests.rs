@@ -915,3 +915,38 @@ mod sealed_types {
         assert!(sub(&verified(), &sealed_record("Verified").expect("record")).is_some(), "a verified reads as its record");
     }
 }
+
+#[test]
+fn semantic_string_refinements_enter_a_union_that_has_string() {
+    let accepts = union(&[OirType::String, OirType::Number, OirType::Boolean, OirType::Date, OirType::DateTime]);
+    for src in [OirType::Email, OirType::Url, OirType::Phone] {
+        assert!(sub(&src, &accepts).is_some_and(|c| !c.requires_cast()), "{src:?}");
+        assert!(super::assignable(&src, &union(&[OirType::String, OirType::Number])), "{src:?}");
+        assert!(!super::assignable(&src, &union(&[OirType::Number, OirType::Boolean])), "{src:?}");
+    }
+    assert!(super::assignable(&OirType::String, &accepts));
+}
+
+#[test]
+fn semantic_string_record_fields_enter_a_map_of_a_union_with_string() {
+    let value = union(&[OirType::String, OirType::Number, OirType::Boolean, OirType::Date, OirType::DateTime]);
+    let map = OirType::Map { key: Box::new(OirType::String), value: Box::new(value) };
+    let none = |_: &str| None;
+    for src in [OirType::Email, OirType::Url, OirType::Phone] {
+        let record = OirType::Struct {
+            additional: None,
+            fields: vec![crate::ir::types::OirField::new("email", src.clone())].into(),
+        };
+        assert!(super::sub(&record, &map).is_some_and(|c| !c.requires_cast()), "{src:?}");
+        assert!(super::checked_sub_with_named(&record, &map, &none).is_some_and(|c| !c.requires_cast()), "{src:?} checked");
+    }
+    let numeric = OirType::Map {
+        key: Box::new(OirType::String),
+        value: Box::new(union(&[OirType::Number, OirType::Boolean])),
+    };
+    let record = OirType::Struct {
+        additional: None,
+        fields: vec![crate::ir::types::OirField::new("email", OirType::Email)].into(),
+    };
+    assert!(super::sub(&record, &numeric).is_none());
+}

@@ -412,7 +412,8 @@ impl EffectExecutor {
             return EffectResult::noop(effect, "substrate operators run on the server leg");
         }
 
-        debug!(name = name, args = ?args, "Custom effect (not handled)");
-        EffectResult::noop(effect, "custom effects require specific handlers")
+        let reason = format!("no executor for effect `{name}` on this host");
+        tracing::error!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, op = name, "{reason}");
+        EffectResult::failed(effect, &reason)
     }
 }

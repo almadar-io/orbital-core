@@ -1,5 +1,5 @@
 //! The per-unit sandbox manifest (`docs/Almadar_Sandbox.md` Contracts §2): the grants a deployment unit's orbitals hold,
-//! the egress it may reach and the credentials its `http` effects name, with the canonical bytes an Ed25519 signature
+//! the egress it may reach and the credentials its `os/send` segments, credential operators and secret knobs name, with the canonical bytes an Ed25519 signature
 //! covers.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
@@ -7,7 +7,7 @@ use std::prelude::v1::*;
 use crate::codec::{ed25519_sign, hex};
 use crate::os_grants::OsGrants;
 use crate::schema::{Orbital, OrbitalSchema, TraitReference};
-use crate::secrets::{http_credential_slots, slot_credential};
+use crate::secrets::{credential_slots_in, slot_credential_in, SlotCredential};
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json::Value as Json;
@@ -207,8 +207,8 @@ struct OrbitalScan {
     credentials: BTreeSet<String>,
 }
 
-/// What one orbital's traits declare: whether any has `ticks {}`, and the credential names its `http` effects
-/// reference. A credential slot that is not a literal name is an error; nothing is guessed.
+/// What one orbital's traits declare: whether any has `ticks {}`, and the credential names its credential slots
+/// reference (`credential_slots_in`). A credential slot that is not a literal name is an error; nothing is guessed.
 fn scan_orbital(orbital: &Orbital) -> Result<OrbitalScan, ManifestBuildError> {
     let mut scan = OrbitalScan {
         ticks: false,
@@ -227,12 +227,13 @@ fn scan_orbital(orbital: &Orbital) -> Result<OrbitalScan, ManifestBuildError> {
                 orbital: orbital.name.clone(),
                 message: e.to_string(),
             })?;
-        for (slot, slot_value) in http_credential_slots(&value) {
-            match slot_credential(slot_value) {
-                Some(name) if !name.is_empty() && !name.starts_with('@') => {
+        for (slot, slot_value) in credential_slots_in(&value) {
+            match slot_credential_in(slot_value, &value) {
+                SlotCredential::Named(name) => {
                     scan.credentials.insert(name.to_string());
                 }
-                _ => {
+                SlotCredential::None => {}
+                SlotCredential::Computed => {
                     return Err(ManifestBuildError::ComputedCredential {
                         orbital: orbital.name.clone(),
                         slot,
@@ -329,5 +330,80 @@ mod tests {
         assert_eq!(manifest.program, format!("sha256:{digest}"));
         assert!(matches!(Manifest::build(&schema, "main", "xyz"), Err(ManifestBuildError::BadArtifactHash(_))));
         assert!(matches!(Manifest::build(&schema, "other", &digest), Err(ManifestBuildError::UnknownUnit { .. })));
+    }
+
+    fn manifest_credentials(config: Json, effects: Json) -> Result<BTreeMap<String, Vec<String>>, ManifestBuildError> {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Api",
+                "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Flow",
+                    "config": config,
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": effects }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        Manifest::build(&schema, "main", &sha256_hex(b"x")).map(|m| m.credentials)
+    }
+
+    fn secret_config() -> Json {
+        serde_json::json!({
+            "credential": { "type": "secret", "default": "FOO" },
+            "key": { "type": "secret", "default": "SIGN_KEY" },
+            "idle": { "type": "secret", "default": "" },
+            "plain": { "type": "string", "default": "x" }
+        })
+    }
+
+    fn expect(names: &[&str]) -> BTreeMap<String, Vec<String>> {
+        BTreeMap::from([("Api".to_string(), names.iter().map(|n| n.to_string()).collect())])
+    }
+
+    #[test]
+    fn an_os_send_credential_segment_lists_the_secret_knobs_credential_in_the_manifest() {
+        let send = |credential: Json| {
+            serde_json::json!([["os/send", "@payload.sock", [
+                { "bytes": ["bytes/from-string", "authorization: "], "credential": credential },
+                { "bytes": ["bytes/from-string", "\r\n"], "credential": "" }
+            ], { "key": "s" }]])
+        };
+        assert_eq!(manifest_credentials(secret_config(), send("@config.credential".into())).unwrap(), expect(&["FOO"]));
+        assert_eq!(manifest_credentials(secret_config(), send("LITERAL".into())).unwrap(), expect(&["LITERAL"]));
+        assert!(manifest_credentials(secret_config(), send("@config.idle".into())).unwrap().is_empty(), "an empty knob is bytes alone");
+        assert!(manifest_credentials(secret_config(), send("".into())).unwrap().is_empty(), "the empty name is bytes alone");
+        for computed in ["@payload.name", "@config.plain", "@config.missing"] {
+            let err = manifest_credentials(secret_config(), send(computed.into())).unwrap_err();
+            assert!(matches!(err, ManifestBuildError::ComputedCredential { ref slot, .. } if slot == "os/send.segment"), "{computed}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_credential_operator_lists_its_secret_knob_and_a_program_without_credentials_lists_none() {
+        let hmac = serde_json::json!([["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]]]);
+        assert_eq!(manifest_credentials(secret_config(), hmac).unwrap(), expect(&["SIGN_KEY"]));
+        let both = serde_json::json!([
+            ["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]],
+            ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "@config.credential" }], { "key": "s" }]
+        ]);
+        assert_eq!(manifest_credentials(secret_config(), both).unwrap(), expect(&["FOO", "SIGN_KEY"]));
+        let plain = serde_json::json!([
+            ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "" }], { "key": "s" }],
+            ["set", "@entity.id", "@payload.id"]
+        ]);
+        assert!(manifest_credentials(secret_config(), plain).unwrap().is_empty());
+        assert!(manifest_credentials(secret_config(), serde_json::json!([])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_http_auth_slot_is_not_a_credential_source() {
+        let http = serde_json::json!([["http", "GET", "https://a.example", "/v1",
+            { "auth": { "scheme": "bearer", "credential": "stripe" } }, { "emit": { "success": "OK" } }]]);
+        assert!(manifest_credentials(secret_config(), http).unwrap().is_empty());
     }
 }
