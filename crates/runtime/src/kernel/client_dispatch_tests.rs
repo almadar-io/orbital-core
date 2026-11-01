@@ -1557,3 +1557,118 @@ fn control_a_server_trait_with_no_held_delivery_posts_only_its_own_replay() {
     let events: Vec<&str> = asker.server_legs.iter().map(|l| l.event.as_str()).collect();
     assert_eq!(events, vec!["INIT"]);
 }
+/// `Asker` (`[client]`) asks `Mid` (server, pure), which hands on to `Deep` (server, persists): the browser runs the
+/// whole cascade, and the host must run it from `Mid`, the first server trait the client-only emitter reached.
+fn client_chain_schema(mid_persists: bool, deep_persists: bool) -> OrbitalSchema {
+    let mid_effects = if mid_persists {
+        serde_json::json!([["persist", "create", "Note", {}], ["emit", "NEXT", {}]])
+    } else {
+        serde_json::json!([["emit", "NEXT", {}]])
+    };
+    let deep_effects = if deep_persists {
+        serde_json::json!([["persist", "create", "Note", {}]])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                {
+                    "name": "Asker",
+                    "dispatch": "client",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "CLICK", "effects": [["emit", "GO", {}]] }
+                        ]
+                    }
+                },
+                {
+                    "name": "Mid",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "GO", "triggers": "GOT", "source": { "kind": "trait", "trait": "Asker" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "asked" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "asked", "event": "GOT", "effects": mid_effects }
+                        ]
+                    }
+                },
+                {
+                    "name": "Deep",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "NEXT", "triggers": "RUN", "source": { "kind": "trait", "trait": "Mid" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "RUN", "effects": deep_effects }
+                        ]
+                    }
+                }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn leg_shapes(legs: &[EventRequest]) -> Vec<(String, Option<String>, Option<String>)> {
+    legs.iter()
+        .map(|l| {
+            (
+                l.event.clone(),
+                l.target_trait.clone(),
+                l.source_trait.clone(),
+            )
+        })
+        .collect()
+}
+
+/// EXEC-DIST-10: a server trait a client-only emitter reached is posted as a leg, so the host runs the cascade from it;
+/// a deeper trait's server work is that cascade, never a leg of its own (or the host's copy of `Mid` never moves).
+#[test]
+fn a_client_only_emit_posts_its_first_server_listener_even_when_only_a_deeper_trait_needs_the_server(
+) {
+    let (kernel, _collector) = client_kernel_with(client_chain_schema(false, true));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "CLICK", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert_eq!(
+        leg_shapes(&dispatch.server_legs),
+        vec![(
+            "GOT".to_string(),
+            Some("Mid".to_string()),
+            Some("Asker".to_string())
+        )]
+    );
+}
+
+#[test]
+fn control_a_listener_that_needs_the_server_itself_keeps_its_one_leg() {
+    let (kernel, _collector) = client_kernel_with(client_chain_schema(true, false));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "CLICK", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert_eq!(
+        leg_shapes(&dispatch.server_legs),
+        vec![(
+            "GOT".to_string(),
+            Some("Mid".to_string()),
+            Some("Asker".to_string())
+        )]
+    );
+}
+
+#[test]
+fn control_a_client_chain_with_no_server_work_posts_nothing() {
+    let (kernel, _collector) = client_kernel_with(client_chain_schema(false, false));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "CLICK", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert!(dispatch.server_legs.is_empty());
+}

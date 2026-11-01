@@ -526,6 +526,11 @@ impl KernelCompletionSink {
 
 impl OsCompletionSink for KernelCompletionSink {
     fn complete(&self, site: &CallSite, key: &str, outcome: Result<Value, OsError>) {
+        // The deferring dispatch parks a TLS operation only after the host deferred its raw ask, and a read whose bytes
+        // were already waiting completes at once: the park is read once that dispatch has ended.
+        if let Some(kernel) = self.kernel.upgrade() {
+            self.wait_for_owner(&kernel, key);
+        }
         let outcome = self.finish_tls(key, outcome);
         if let Some((event, payload)) = completion_event(site, key, outcome) {
             self.dispatch_completion(site, key, event, payload);
@@ -960,6 +965,59 @@ mod tests {
         assert_eq!(event, "MSG");
         assert_eq!(payload.get_path("key"), Some(&Value::string("s")));
         assert!(got[1].is_none(), "control: a stream with no onMessage route fires nothing");
+    }
+
+    fn complete_routed_on_a_thread(
+        sink: &Arc<KernelCompletionSink>,
+        key: &'static str,
+    ) -> std::thread::JoinHandle<()> {
+        let sink = sink.clone();
+        let mut at = site(Some("RAW"), Some("TLS"));
+        at.trait_name = "Nowhere".to_string();
+        std::thread::spawn(move || sink.complete(&at, key, Ok(exited(0.0))))
+    }
+
+    /// A deferred raw read can complete before `tls_traffic` parks its TLS operation (the bytes were already waiting):
+    /// the completion must read the park its dispatch registers, or the program is handed raw ciphertext.
+    #[cfg(feature = "wire-drivers")]
+    #[test]
+    fn a_completion_reads_the_tls_park_its_dispatch_registers_after_the_host_deferred() {
+        let (sink, kernel, ran) = lone_sink();
+        let open = sink.begin_dispatch();
+        assert!(matches!(
+            open.answer(&deferred, &defers("r1")),
+            IoAnswer::ServiceDeferred
+        ));
+        let worker = complete_routed_on_a_thread(&sink, "r1");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        kernel.tls_park_for_test("r1");
+        drop(open);
+        assert_eq!(
+            ran.recv_timeout(std::time::Duration::from_secs(5))
+                .as_deref(),
+            Ok("TLS"),
+            "the parked TLS operation answers, never the raw read"
+        );
+        worker.join().expect("r1");
+    }
+
+    #[cfg(feature = "wire-drivers")]
+    #[test]
+    fn control_a_completion_with_no_tls_park_answers_its_raw_outcome() {
+        let (sink, _kernel, ran) = lone_sink();
+        let open = sink.begin_dispatch();
+        assert!(matches!(
+            open.answer(&deferred, &defers("r2")),
+            IoAnswer::ServiceDeferred
+        ));
+        let worker = complete_routed_on_a_thread(&sink, "r2");
+        drop(open);
+        assert_eq!(
+            ran.recv_timeout(std::time::Duration::from_secs(5))
+                .as_deref(),
+            Ok("RAW")
+        );
+        worker.join().expect("r2");
     }
 
     #[test]

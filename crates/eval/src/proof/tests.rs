@@ -1657,3 +1657,42 @@ fn a_proposition_with_a_non_config_free_read_keeps_the_solver_path() {
     let v = only(&tool_loop(json!([]), mixed));
     assert!(matches!(v, Verdict::Unproved { .. } | Verdict::Violated { .. }), "{v:?}");
 }
+
+fn with_foreign_writer(mut schema: OrbitalSchema, effects: J) -> OrbitalSchema {
+    let writer: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+        "name": "Seeder",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "events": [{ "key": "GO", "name": "Go", "payloadSchema": [{ "name": "ops", "type": "string" }] }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": effects }] }
+    }))
+    .unwrap();
+    schema.orbitals[0].traits.push(TraitReference::Inline(Arc::new(writer)));
+    schema
+}
+
+// EXEC-INVARIANT-1: a persist from a trait that is not linked to a `[runtime]` entity owes that entity nothing.
+#[test]
+fn a_foreign_traits_persist_into_a_runtime_entity_owes_its_invariant_nothing() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let benign = json!([{ "from": "open", "to": "open", "event": "ADD", "effects": [] }]);
+    let writes = [
+        ("dynamic batch", json!([["persist", "batch", "@payload.ops"]])),
+        ("literal create", json!([["persist", "create", "Order", { "total": -3 }]])),
+        ("literal batch", json!([["persist", "batch", [["create", "Order", { "total": -3 }]]]])),
+        ("unknown target", json!([["persist", "create", "@payload.ops", { "total": -3 }]])),
+    ];
+    for (name, effects) in writes {
+        let runtime = with_foreign_writer(program_with("runtime", benign.clone(), J::Null, inv.clone()), effects.clone());
+        assert!(prove(&runtime).is_empty(), "runtime: {name}: {:#?}", verdicts(&runtime));
+        let persistent = with_foreign_writer(program_with("persistent", benign.clone(), J::Null, inv.clone()), effects);
+        assert!(!prove(&persistent).is_empty(), "control, persistent: {name}");
+    }
+}
+
+#[test]
+fn a_runtime_entitys_own_violating_set_is_reported_beside_a_foreign_persist() {
+    let inv = row_invariant(json!([">=", "@entity.total", 0]));
+    let own = json!([{ "from": "open", "to": "paid", "event": "PAY", "effects": [["set", "@entity.total", -1]] }]);
+    let schema = with_foreign_writer(program_with("runtime", own, J::Null, inv), json!([["persist", "batch", "@payload.ops"]]));
+    assert!(matches!(only(&schema), Verdict::Violated { .. }));
+}

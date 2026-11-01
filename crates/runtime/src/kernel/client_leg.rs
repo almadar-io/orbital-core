@@ -200,6 +200,15 @@ impl RuntimeKernel {
                         ..Default::default()
                     })
                 };
+                let client_only = |name: &str| {
+                    self.registry
+                        .trait_definitions
+                        .read()
+                        .get(name)
+                        .is_some_and(|def| {
+                            matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
+                        })
+                };
                 if delegating_traits.contains(trait_name) {
                     // The seed's own arm needs the server: it replays from its
                     // pre-dispatch row and the server cascades the rest itself.
@@ -232,15 +241,6 @@ impl RuntimeKernel {
                     }];
                     // A delivery held for the seed's INIT (EXEC-SEED-2) from a client-only trait is no part of the
                     // host's cascade from this replay: the host never runs that emitter (EXEC-DIST-10).
-                    let client_only = |name: &str| {
-                        self.registry
-                            .trait_definitions
-                            .read()
-                            .get(name)
-                            .is_some_and(|def| {
-                                matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
-                            })
-                    };
                     legs.extend(
                         outcomes
                             .iter()
@@ -265,19 +265,39 @@ impl RuntimeKernel {
                     // The seed has nothing to do on the server (the generated handler
                     // would refuse an event it has no arm for): address each
                     // listener whose delivery does.
+                    // A server trait the client ran is posted when it, or a trait its own emits reach later in the
+                    // cascade, needs the server: the host then runs the cascade from it (EXEC-DIST-10).
+                    let steps: Vec<(&String, &ProcessEventResult, Option<String>)> = outcomes
+                        .iter()
+                        .filter(|(_, r)| r.executed && r.entry.is_some())
+                        .map(|(t, r)| {
+                            let emitter = r
+                                .entry
+                                .as_ref()
+                                .and_then(|entry| DeliveryRecord::from_value(&entry.view.event))
+                                .and_then(|d| d.source.r#trait);
+                            (t, r, emitter)
+                        })
+                        .collect();
+                    let reaches_server = |from: usize| {
+                        let mut reached: HashSet<&str> = HashSet::from([steps[from].0.as_str()]);
+                        steps[from..].iter().any(|(t, _, emitter)| {
+                            let joined = reached.contains(t.as_str())
+                                || emitter.as_deref().is_some_and(|e| reached.contains(e));
+                            if joined {
+                                reached.insert(t.as_str());
+                            }
+                            joined && delegating_traits.contains(t.as_str())
+                        })
+                    };
                     let mut covered: HashSet<&str> = HashSet::new();
                     let mut legs = Vec::new();
-                    for (t, r) in outcomes {
-                        let Some(entry) = r.entry.as_ref().filter(|_| r.executed) else {
-                            continue;
-                        };
-                        let delivery = DeliveryRecord::from_value(&entry.view.event);
-                        let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.as_deref());
-                        if emitter.is_some_and(|e| covered.contains(e)) {
+                    for (i, (t, r, emitter)) in steps.iter().enumerate() {
+                        if emitter.as_deref().is_some_and(|e| covered.contains(e)) {
                             covered.insert(t.as_str());
                             continue;
                         }
-                        if !delegating_traits.contains(t) {
+                        if emitter.is_none() || client_only(t) || !reaches_server(i) {
                             continue;
                         }
                         covered.insert(t.as_str());

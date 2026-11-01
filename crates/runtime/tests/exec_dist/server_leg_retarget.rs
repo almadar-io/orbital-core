@@ -243,8 +243,10 @@ fn a_listener_reached_through_another_legs_server_cascade_rides_that_leg() {
     );
 }
 
+/// EXEC-DIST-10: `Hop` is a server trait whose emitter ran in the client and posted none, so it is the leg; `Sink`, whose
+/// emitter's leg posts, is the host's cascade from it (a stateful host never sees a carried state, so it must run `Hop`).
 #[test]
-fn control_a_downstream_server_trait_behind_a_client_only_hop_still_gets_its_own_leg() {
+fn a_server_hop_that_needs_no_server_itself_is_the_leg_and_its_downstream_rides_it() {
     let hop = json!({
         "name": "Hop", "linkedEntity": "Note",
         "listens": [{ "event": "EDIT", "triggers": "HOP", "source": { "kind": "trait", "trait": "Browse" } }],
@@ -268,8 +270,8 @@ fn control_a_downstream_server_trait_behind_a_client_only_hop_still_gets_its_own
         "EDIT_ROW",
     );
     assert_eq!(d.server_legs.len(), 1);
-    assert_eq!(d.server_legs[0].target_trait.as_deref(), Some("Sink"));
-    assert_eq!(d.server_legs[0].event, "SINK");
+    assert_eq!(d.server_legs[0].target_trait.as_deref(), Some("Hop"));
+    assert_eq!(d.server_legs[0].event, "HOP");
 }
 
 #[test]

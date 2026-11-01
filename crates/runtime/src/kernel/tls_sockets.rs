@@ -897,6 +897,20 @@ impl RuntimeKernel {
         self.tls.pending.lock().contains_key(key)
     }
 
+    /// Park `key` as `tls_traffic` does once the host deferred its raw read, on a socket that is not open.
+    #[cfg(test)]
+    pub(crate) fn tls_park_for_test(&self, key: &str) {
+        self.tls.pending.lock().insert(
+            key.to_string(),
+            PendingTls {
+                sock: -1,
+                op: TrafficOp::Recv { count: 16 },
+                plain: Vec::new(),
+                resumed: None,
+            },
+        );
+    }
+
     /// Feed the host's raw outcome of the ask that parked `key` into its TLS operation. `None` when `key` parks no
     /// TLS operation (the outcome is the program's as it stands); otherwise the next raw ask the host must answer
     /// (pass its outcome to this method again) or the program's outcome. The session is rebuilt from the transcript as
