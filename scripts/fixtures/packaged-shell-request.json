@@ -1,0 +1,13 @@
+{
+  "irVersion": 1,
+  "module": {
+    "name": "PackagedShellSmoke",
+    "version": "1.0.0",
+    "entities": [],
+    "traits": [],
+    "pages": [],
+    "metadata": {}
+  },
+  "write": { "copyTemplate": true, "clean": false, "mode": "client" },
+  "options": {}
+}

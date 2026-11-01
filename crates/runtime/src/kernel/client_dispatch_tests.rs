@@ -1452,3 +1452,108 @@ fn an_in_process_seed_whose_row_contradicts_its_entity_is_refused() {
     bridge.seed("Note", rows(serde_json::json!([{ "id": "n-1", "count": 1 }]))).unwrap();
     bridge.seed("Note", rows(serde_json::json!([{ "count": 2 }]))).unwrap();
 }
+/// `Picker` (`[client]`) asks from its INIT; `Asker` (server) answers with a persist. Mounted in that order, the ask
+/// is held for Asker's INIT (EXEC-SEED-2) and runs inside Asker's own seed dispatch.
+fn held_client_ask_schema(asker_init_persists: bool) -> OrbitalSchema {
+    let asker_init = if asker_init_persists {
+        serde_json::json!({ "from": "idle", "to": "idle", "event": "INIT", "effects": [["persist", "create", "Note", {}]] })
+    } else {
+        serde_json::json!({ "from": "idle", "to": "idle", "event": "INIT" })
+    };
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                {
+                    "name": "Picker",
+                    "dispatch": "client",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "asking" }],
+                        "transitions": [{ "from": "idle", "to": "asking", "event": "INIT", "effects": [["emit", "ASK", {}]] }]
+                    }
+                },
+                {
+                    "name": "Asker",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "ASK", "triggers": "ASKED", "source": { "kind": "trait", "trait": "Picker" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            asker_init,
+                            { "from": "idle", "to": "idle", "event": "ASKED", "effects": [["persist", "create", "Note", {}]] }
+                        ]
+                    }
+                }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+/// EXEC-DIST-2 + EXEC-DIST-10: the host never runs a `[client]` emitter, so its held delivery's server work leaves as
+/// its own leg after the seed's, not folded into the seed's INIT replay.
+#[test]
+fn a_held_delivery_from_a_client_only_trait_leaves_as_its_own_leg() {
+    let (kernel, _collector) = client_kernel_with(held_client_ask_schema(false));
+    kernel.mount_traits(["Picker", "Asker"]);
+    let picker = kernel
+        .dispatch_with_server_leg("App", "Picker", None, "INIT", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert!(
+        picker.server_legs.is_empty(),
+        "the client-only seed posts nothing itself"
+    );
+    let asker = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "INIT", Value::Null, Some("tab-1"))
+        .unwrap();
+    let legs: Vec<(String, Option<String>, Option<String>)> = asker
+        .server_legs
+        .iter()
+        .map(|l| {
+            (
+                l.event.clone(),
+                l.target_trait.clone(),
+                l.source_trait.clone(),
+            )
+        })
+        .collect();
+    assert!(
+        legs.contains(&(
+            "ASKED".to_string(),
+            Some("Asker".to_string()),
+            Some("Picker".to_string())
+        )),
+        "the held ask must reach the host: {legs:?}"
+    );
+}
+
+#[test]
+fn control_a_held_delivery_whose_seed_delegates_still_posts_the_seed_replay_first() {
+    let (kernel, _collector) = client_kernel_with(held_client_ask_schema(true));
+    kernel.mount_traits(["Picker", "Asker"]);
+    kernel
+        .dispatch_with_server_leg("App", "Picker", None, "INIT", Value::Null, Some("tab-1"))
+        .unwrap();
+    let asker = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "INIT", Value::Null, Some("tab-1"))
+        .unwrap();
+    let events: Vec<&str> = asker.server_legs.iter().map(|l| l.event.as_str()).collect();
+    assert_eq!(
+        events,
+        vec!["INIT", "ASKED"],
+        "the seed's own replay, then the held ask once"
+    );
+}
+
+#[test]
+fn control_a_server_trait_with_no_held_delivery_posts_only_its_own_replay() {
+    let (kernel, _collector) = client_kernel_with(held_client_ask_schema(true));
+    kernel.mount_traits(["Asker"]);
+    let asker = kernel
+        .dispatch_with_server_leg("App", "Asker", None, "INIT", Value::Null, Some("tab-1"))
+        .unwrap();
+    let events: Vec<&str> = asker.server_legs.iter().map(|l| l.event.as_str()).collect();
+    assert_eq!(events, vec!["INIT"]);
+}

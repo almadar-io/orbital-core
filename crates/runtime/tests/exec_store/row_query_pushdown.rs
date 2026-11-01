@@ -264,6 +264,47 @@ fn compiled_and_interpreted_select_the_same_rows_over_missing_and_null_fields() 
     assert!(refused_for_null >= 4, "{refused_for_null}");
 }
 
+/// G-CROSS-365: an `or` read policy whose one branch reads a field some rows lack must admit the rows another
+/// branch admits, on the interpreter and on the compiled store path alike.
+#[test]
+fn an_or_policy_over_a_field_some_rows_lack_admits_what_another_branch_admits() {
+    let rows = arcs(&json!([
+        { "id": "lesson", "kind": "lesson" },
+        { "id": "mine", "kind": "memory", "ownerId": "u1" },
+        { "id": "theirs", "kind": "memory", "ownerId": "u2" },
+        { "id": "orphan", "kind": "memory" },
+        { "id": "nokind" }
+    ]));
+    let f = |name: &str| json!(["object/get", "@entity", name]);
+    let policies = [
+        json!(["or", ["!=", f("kind"), "memory"], ["=", f("ownerId"), "@user.id"]]),
+        json!(["or", ["=", f("ownerId"), "@user.id"], ["!=", f("kind"), "memory"]]),
+    ];
+    for user in [json!({ "id": "u1" }), json!({ "id": "anonymous", "role": "anonymous" })] {
+        let anonymous = user["id"] == "anonymous";
+        let ctx = ctx_of(&json!({ "user": user }));
+        for policy in &policies {
+            let value = v(policy);
+            let mut interpreted: Vec<Value> = rows.iter().map(|r| (**r).clone()).collect();
+            apply_read_access(&mut interpreted, Some(&value), None, &ctx, "Row");
+            let mut want = vec!["lesson", "nokind"];
+            if !anonymous {
+                want.push("mine");
+            }
+            want.sort();
+            let mut got = ids_of(&interpreted);
+            got.sort();
+            assert_eq!(got, want, "interpreter, anonymous={anonymous}, {policy}");
+            if let Ok(predicate) = compile_predicate(&value, &ctx, PredicateRole::Policy, &|_| false) {
+                let query = RowQuery { policy: Some(predicate), ..RowQuery::default() };
+                let mut compiled = ids_of(&run_query(&rows, &query).unwrap().rows);
+                compiled.sort();
+                assert_eq!(compiled, want, "compiled, anonymous={anonymous}, {policy}");
+            }
+        }
+    }
+}
+
 /// Control: where the field is required (never missing) an ordering comparison compiles and agrees.
 #[test]
 fn ordering_on_a_required_field_agrees_with_the_interpreter() {

@@ -26,6 +26,10 @@ pub enum ProblemKind {
     /// Two English words in one section share this language's spelling, so a
     /// program using it would be ambiguous.
     Collision,
+    /// One English word carries two different spellings across this
+    /// language's sections (`effects.http` and `keywords.http`), so the same
+    /// concept would be spelled two ways.
+    Inconsistent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +38,7 @@ pub struct CoverageProblem {
     pub section: String,
     pub kind: ProblemKind,
     pub key: String,
+    pub detail: String,
 }
 
 const SECTIONS: [&str; 14] = [
@@ -95,12 +100,14 @@ pub fn check_translation_coverage(defs: &BTreeMap<String, I18nDefinition>) -> Ve
                         section: section.to_string(),
                         kind: ProblemKind::Missing,
                         key: key.clone(),
+                        detail: String::new(),
                     }),
                     Some(v) if v.is_empty() => problems.push(CoverageProblem {
                         lang: code.clone(),
                         section: section.to_string(),
                         kind: ProblemKind::Empty,
                         key: key.clone(),
+                        detail: String::new(),
                     }),
                     Some(_) => {}
                 }
@@ -112,6 +119,7 @@ pub fn check_translation_coverage(defs: &BTreeMap<String, I18nDefinition>) -> Ve
                         section: section.to_string(),
                         kind: ProblemKind::Orphan,
                         key: key.clone(),
+                        detail: String::new(),
                     });
                 }
             }
@@ -130,7 +138,35 @@ pub fn check_translation_coverage(defs: &BTreeMap<String, I18nDefinition>) -> Ve
                         section: section.to_string(),
                         kind: ProblemKind::Collision,
                         key: key.clone(),
+                        detail: String::new(),
                     });
+                }
+            }
+        }
+    }
+    for (code, def) in defs {
+        if code == "en" {
+            continue;
+        }
+        let mut first: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+        for section in SECTIONS {
+            for (key, value) in section_map(def, section) {
+                match first.get(key.as_str()) {
+                    None => {
+                        first.insert(key.as_str(), (section, value.as_str()));
+                    }
+                    Some((base_section, base_value)) if *base_value != value.as_str() => {
+                        problems.push(CoverageProblem {
+                            lang: code.clone(),
+                            section: section.to_string(),
+                            kind: ProblemKind::Inconsistent,
+                            key: key.clone(),
+                            detail: format!(
+                                "\"{key}\" is \"{base_value}\" in {base_section} but \"{value}\" in {section}"
+                            ),
+                        });
+                    }
+                    Some(_) => {}
                 }
             }
         }
@@ -166,6 +202,7 @@ pub fn check_translation_coverage(defs: &BTreeMap<String, I18nDefinition>) -> Ve
                 section: section.to_string(),
                 kind: ProblemKind::SelectorNotUnique,
                 key: key.to_string(),
+                detail: String::new(),
             });
         }
     }

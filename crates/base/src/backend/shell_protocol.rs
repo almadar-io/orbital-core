@@ -77,6 +77,10 @@ pub struct ShellDescription {
     /// writes beside it (`orb serve`); `None` when the shell ships none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_client: Option<PathBuf>,
+    /// Why the installed core/std cannot load for this shell (for example a std newer than the shell), so `orb list` and
+    /// `orb update` see the mismatch before a generate fails; `None` when they load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language_problem: Option<ShellFailure>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -152,6 +156,7 @@ pub fn description(name: &str, version: &str, needs_resolved: bool, options: Vec
         needs_resolved,
         needs_served: false,
         web_client: None,
+        language_problem: None,
     }
 }
 
@@ -179,6 +184,10 @@ pub enum EmitReply {
 /// A shell executable's behavior; [`run`] wires it to argv/stdin/stdout.
 pub trait ShellProgram {
     fn describe(&self) -> ShellDescription;
+    /// Why the installed language data does not load for this shell; `None` for a shell that reads none.
+    fn language_problem(&self) -> Option<ShellFailure> {
+        None
+    }
     fn generate(&self, request: &GenerateRequest, output: &Path) -> Result<GenerateResponse, ShellFailure>;
     /// The backend's files for `request.module`, written nowhere.
     fn emit(&self, _request: &GenerateRequest) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
@@ -237,10 +246,14 @@ pub fn reply_exit<T: Serialize>(reply: &T, ok: bool) -> ExitCode {
 pub fn run(program: &dyn ShellProgram) -> ExitCode {
     // stdout carries the protocol; logs go to stderr under the config `orb` exported.
     crate::logging::init();
+    let release: &'static str = Box::leak(program.describe().version.into_boxed_str());
+    let _ = crate::language_data::register_host_release(release);
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [cmd] if cmd == "describe" => {
-            println!("{}", serde_json::to_string(&program.describe()).expect("a description serializes"));
+            let mut description = program.describe();
+            description.language_problem = program.language_problem();
+            println!("{}", serde_json::to_string(&description).expect("a description serializes"));
             ExitCode::SUCCESS
         }
         [cmd, flag, out] if cmd == "generate" && flag == "--out" => {
@@ -442,6 +455,7 @@ mod tests {
                 needs_resolved: false,
                 needs_served: false,
                 web_client: None,
+                language_problem: None,
             }
         }
         fn generate(&self, request: &GenerateRequest, _output: &Path) -> Result<GenerateResponse, ShellFailure> {
@@ -476,6 +490,20 @@ mod tests {
                 warnings: vec![],
             })
         }
+    }
+
+    #[test]
+    fn a_language_problem_rides_the_description_and_a_loading_install_omits_it() {
+        let mut broken = Fake.describe();
+        broken.language_problem = Some(ShellFailure::new("ORB_LANGUAGE_DATA_INCOMPATIBLE", "@almadar/std@16.256.0 names csv/parse"));
+        let json = serde_json::to_value(&broken).unwrap();
+        assert_eq!(json["languageProblem"]["code"], "ORB_LANGUAGE_DATA_INCOMPATIBLE");
+        assert_eq!(serde_json::from_value::<ShellDescription>(json).unwrap(), broken);
+
+        let json = serde_json::to_value(Fake.describe()).unwrap();
+        assert!(json.get("languageProblem").is_none(), "control: nothing wrong reports nothing");
+        let older = serde_json::json!({"name": "old", "version": "1.0.0", "irVersions": {"min": 1, "max": 1}});
+        assert_eq!(serde_json::from_value::<ShellDescription>(older).unwrap().language_problem, None);
     }
 
     #[test]

@@ -193,8 +193,21 @@ pub fn not_installed_message(package: &str) -> String {
     )
 }
 
+static HOST_RELEASE: OnceLock<&'static str> = OnceLock::new();
+
+/// A host names its own release version once, at start-up, before any discovery: package ranges (`orb.compiler`,
+/// `orbLanguage.compiler`) name the orb release, and orbital-core is embedded by hosts that each release on their own
+/// version (G-ORB-563). The first registration wins; a later one is refused with the version already registered.
+pub fn register_host_release(version: &'static str) -> Result<(), &'static str> {
+    match HOST_RELEASE.set(version) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(HOST_RELEASE.get().copied().unwrap_or(version)),
+    }
+}
+
+/// The release the running host registered, else this crate's own version (a host that registers nothing).
 pub fn running_version() -> &'static str {
-    env!("CARGO_PKG_VERSION")
+    HOST_RELEASE.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(feature = "std")]

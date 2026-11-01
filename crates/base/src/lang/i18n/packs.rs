@@ -185,7 +185,8 @@ fn read_pack(
 }
 
 /// Refuses packs that make a program ambiguous: English replaced, one code
-/// claimed twice, two English words on one spelling within a section, an empty
+/// claimed twice, two English words on one spelling within a section, one English word spelled
+/// two ways across sections, an empty
 /// spelling, or a language selector another installed language uses. A
 /// missing word is not refused — English spellings stay legal there.
 pub fn validate_packs(packs: &[VocabularyPack]) -> Result<(), LanguageDataError> {
@@ -219,13 +220,21 @@ pub fn validate_packs(packs: &[VocabularyPack]) -> Result<(), LanguageDataError>
         .filter(|p| {
             matches!(
                 p.kind,
-                ProblemKind::Empty | ProblemKind::SelectorNotUnique | ProblemKind::Collision
+                ProblemKind::Empty
+                    | ProblemKind::SelectorNotUnique
+                    | ProblemKind::Collision
+                    | ProblemKind::Inconsistent
             ) && p.lang != "en"
         })
         .map(|p| {
             let package = owner.get(&p.lang).copied().unwrap_or_default();
+            let detail = if p.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", p.detail)
+            };
             format!(
-                "{package} ({}): {:?} {}.{}",
+                "{package} ({}): {:?} {}.{}{detail}",
                 p.lang, p.kind, p.section, p.key
             )
         })
@@ -390,6 +399,53 @@ mod tests {
             err.contains("lolo-qg") && err.contains("Collision"),
             "{err}"
         );
+    }
+
+    fn write_pack_with(root: &Path, name: &str, code: &str, vocab: serde_json::Value) {
+        write_pack(root, name, code, &format!("{code}-orbital"), ">=17.0.0");
+        fs::write(
+            root.join("node_modules").join(name).join("vocabulary.json"),
+            vocab.to_string(),
+        )
+        .unwrap();
+    }
+
+    fn http_pack(keyword: &str, effect: &str) -> serde_json::Value {
+        json!({"meta": {"code": "qi", "name": "qi", "rtl": false},
+               "keywords": {"orbital": "qi-orbital", "http": keyword},
+               "effects": {"http": effect},
+               "orb": {"orbitals": "qi-orbitals"}})
+    }
+
+    #[test]
+    fn one_english_word_spelled_two_ways_across_sections_is_refused_naming_pack_section_word() {
+        let root = tmp("inconsistent");
+        write_pack_with(&root, "lolo-qi", "qi", http_pack("qi-http-a", "qi-http-b"));
+        let err = discover(&root).unwrap_err().to_string();
+        assert!(
+            err.contains("lolo-qi")
+                && err.contains("Inconsistent")
+                && err.contains("effects.http")
+                && err.contains("qi-http-a")
+                && err.contains("qi-http-b"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn control_one_english_word_spelled_the_same_in_two_sections_loads() {
+        let root = tmp("consistent");
+        write_pack_with(&root, "lolo-qi", "qi", http_pack("qi-http", "qi-http"));
+        assert_eq!(discover(&root).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn edge_a_word_in_only_one_section_loads() {
+        let root = tmp("onesection");
+        let mut vocab = http_pack("qi-http", "qi-http");
+        vocab["effects"] = json!({});
+        write_pack_with(&root, "lolo-qi", "qi", vocab);
+        assert_eq!(discover(&root).unwrap().len(), 1);
     }
 
     #[test]

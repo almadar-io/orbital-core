@@ -898,6 +898,34 @@ fn discovery_loads_a_package_whose_compiler_range_includes_the_running_orb() {
 }
 
 #[test]
+fn discovery_judges_a_range_against_the_release_the_host_names_not_the_core_crate() {
+    let tmp = TestTempDir::new("compiler-range-host-release");
+    let node_modules = tmp.path().join("node_modules");
+    let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
+    set_compiler_range(&pkg, ">=18.0.5");
+    let cache = tmp.path().join("cache");
+    let store = tmp.path().join("unused-user-store");
+
+    let packages = discover_uncached(tmp.path(), &store, &cache, "18.0.5").unwrap();
+    assert_eq!(packages.len(), 1, "the release the range names satisfies it");
+
+    match discover_uncached(tmp.path(), &store, &cache, "18.0.0").unwrap_err() {
+        DiscoverError::IncompatibleCompiler { running, .. } => assert_eq!(running, "18.0.0"),
+        other => panic!("expected IncompatibleCompiler, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_host_registers_its_release_once_and_discovery_reads_it() {
+    let first = crate::language_data::register_host_release("18.0.5");
+    let again = crate::language_data::register_host_release("99.0.0");
+    assert_eq!(again, Err(crate::language_data::running_version()), "the first registration wins");
+    if first.is_ok() {
+        assert_eq!(crate::language_data::running_version(), "18.0.5");
+    }
+}
+
+#[test]
 fn discovery_refuses_a_compiler_range_that_is_not_semver() {
     let tmp = TestTempDir::new("compiler-range-invalid");
     let node_modules = tmp.path().join("node_modules");

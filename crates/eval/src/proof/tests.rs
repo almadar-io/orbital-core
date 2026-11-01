@@ -1608,3 +1608,52 @@ fn a_runtime_entitys_own_trait_set_owes_its_row_invariant() {
         "control: unguarded payload"
     );
 }
+
+fn tool_names_valid_expr() -> J {
+    json!(["array/every", "@config.tools", ["fn", "t",
+        ["if", ["object/has", "@t", "read"],
+            ["validate/pattern", ["str/concat", "read__", ["object/get", "@t", "read"]], "^[a-zA-Z0-9_-]{1,64}$"],
+            ["if", ["object/has", "@t", "event"],
+                ["validate/pattern", ["str/replaceAll", ["object/get", "@t", "event"], ".", "__"], "^[a-zA-Z0-9_-]{1,64}$"],
+                true]]]])
+}
+
+fn tool_loop(tools: J, holds: J) -> OrbitalSchema {
+    use orbital_core_base::schema::types::ConfigField;
+    let t = json!([{ "from": "open", "to": "paid", "event": "PAY" }]);
+    let mut schema = program(t, J::Null, state_holds("paid", holds));
+    let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] else {
+        panic!()
+    };
+    let td = std::sync::Arc::make_mut(td);
+    let knobs: orbital_core_base::collections::IndexMap<String, ConfigField> =
+        serde_json::from_value(json!({ "tools": { "type": "array", "default": tools } })).unwrap();
+    td.config = Some(knobs);
+    schema
+}
+
+#[test]
+fn a_config_only_proposition_is_decided_by_the_evaluator_over_the_folded_config() {
+    let holds = tool_names_valid_expr();
+    assert_eq!(only(&tool_loop(json!([]), holds.clone())), Verdict::Proved, "empty array is vacuously true");
+    assert_eq!(
+        only(&tool_loop(json!([{ "event": "Short.Pinger.PING", "roles": ["member"] }]), holds.clone())),
+        Verdict::Proved
+    );
+    assert_eq!(only(&tool_loop(json!([{ "read": "a_b" }]), holds.clone())), Verdict::Proved);
+    let long = format!("{}.{}.{}", "A".repeat(30), "B".repeat(30), "C".repeat(30));
+    let Verdict::Violated { reason, .. } = only(&tool_loop(json!([{ "event": long }]), holds.clone())) else {
+        panic!("a 97-char address is violated")
+    };
+    assert!(reason.starts_with("`(array/every @config.tools"), "{reason}");
+    let Verdict::Violated { .. } = only(&tool_loop(json!([{ "read": "x".repeat(60) }]), holds)) else {
+        panic!("read__ + 60 chars is 66, violated")
+    };
+}
+
+#[test]
+fn a_proposition_with_a_non_config_free_read_keeps_the_solver_path() {
+    let mixed = json!(["and", tool_names_valid_expr(), [">=", "@entity.total", 0]]);
+    let v = only(&tool_loop(json!([]), mixed));
+    assert!(matches!(v, Verdict::Unproved { .. } | Verdict::Violated { .. }), "{v:?}");
+}

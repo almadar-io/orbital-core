@@ -356,10 +356,26 @@ impl EmbeddedKernel {
         entity_id: Option<&str>,
         stateful: bool,
     ) -> Vec<MountLegWire> {
+        // A client-only seed whose held emit a later seed delivered to a server trait (EXEC-SEED-2) is replayed with
+        // the mount: the host runs no other copy of it, so the delivery is no part of its cascade (EXEC-DIST-10).
+        let held_emitters: std::collections::BTreeSet<&str> = dispatched
+            .iter()
+            .flat_map(|(_, wire)| wire.server_legs.iter())
+            .filter_map(|routed| {
+                routed
+                    .leg
+                    .source_trait
+                    .as_deref()
+                    .filter(|source| Some(*source) != routed.leg.target_trait.as_deref())
+            })
+            .collect();
         let mut groups: Vec<(&str, Vec<&(&MountSeed, DispatchWire)>)> = Vec::new();
         for item in dispatched {
             let wire = &item.1;
-            let posts = !wire.server_legs.is_empty() || (stateful && wire.stateful_leg.is_some());
+            let posts = !wire.server_legs.is_empty()
+                || (stateful && wire.stateful_leg.is_some())
+                || (matches!(wire.mode, DispatchMode::HybridClientOnly)
+                    && held_emitters.contains(wire.seed.trait_name.as_str()));
             if !posts {
                 continue;
             }

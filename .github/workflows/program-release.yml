@@ -77,6 +77,13 @@ jobs:
             --binary "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" \
             --platform ${{ matrix.name }} --version "${GITHUB_REF_NAME#v}" --repo . --out dist/npm \
             ${{ inputs.shell != '' && format('--shell {0}', inputs.shell) || '' }}
+      - if: inputs.kind == 'shell'
+        name: Generate from the packaged layout (G-ORB-240)
+        shell: bash
+        run: |
+          node .orbital-core/scripts/check-packaged-shell.mjs --package "dist/npm/${{ matrix.name }}" \
+            --binary "${{ inputs.name }}${{ matrix.ext }}" --repo . \
+            --request .orbital-core/scripts/fixtures/packaged-shell-request.json
       - uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.name }}

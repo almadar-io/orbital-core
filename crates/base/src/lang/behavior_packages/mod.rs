@@ -331,7 +331,7 @@ pub fn discover_with_cache(
             return Ok(packages);
         }
     }
-    let packages = discover_uncached(start_dir, user_store, cache_dir)?;
+    let packages = discover_uncached(start_dir, user_store, cache_dir, crate::language_data::running_version())?;
     let stamp = DiscoveryStamp::of(start_dir, user_store, &packages);
     if let Ok(mut m) = memo.lock() {
         m.insert(key, (stamp, packages.clone()));
@@ -382,12 +382,13 @@ fn discover_uncached(
     start_dir: &Path,
     user_store: &Path,
     cache_dir: &Path,
+    running: &str,
 ) -> Result<Vec<BehaviorPackage>, DiscoverError> {
     let mut found: Vec<BehaviorPackage> = Vec::new();
     let mut names_seen: HashSet<String> = HashSet::new();
 
     for node_modules in node_modules_dirs(start_dir, user_store) {
-        scan_node_modules(&node_modules, cache_dir, &mut found, &mut names_seen)?;
+        scan_node_modules(&node_modules, cache_dir, running, &mut found, &mut names_seen)?;
     }
 
     check_prefix_conflicts(&found)?;
@@ -499,6 +500,7 @@ pub use crate::language_data::{compiler_satisfies, core_satisfies, std_peer_sati
 fn scan_node_modules(
     node_modules: &Path,
     cache_dir: &Path,
+    running: &str,
     found: &mut Vec<BehaviorPackage>,
     names_seen: &mut HashSet<String>,
 ) -> Result<(), DiscoverError> {
@@ -592,7 +594,7 @@ fn scan_node_modules(
             continue;
         }
 
-        let package = build_package(&name, obj, orb, &dir_path, &package_json_path, cache_dir)?;
+        let package = build_package(&name, obj, orb, &dir_path, &package_json_path, cache_dir, running)?;
         names_seen.insert(name);
         found.push(package);
     }
@@ -618,13 +620,13 @@ fn build_package(
     dir_path: &Path,
     package_json_path: &Path,
     cache_dir: &Path,
+    running: &str,
 ) -> Result<BehaviorPackage, DiscoverError> {
     let version = require_str(top, "version", package_json_path)?;
     let prefix = require_str(orb, "prefix", package_json_path)?;
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
     let compiler_range = require_str(orb, "compiler", package_json_path)?;
-    let running = crate::language_data::running_version();
     match compiler_satisfies(&compiler_range, running) {
         Ok(true) => {}
         Ok(false) => {

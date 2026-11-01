@@ -543,3 +543,73 @@ fn control_a_reseed_leg_leaves_out_a_trait_the_client_holds_no_frame_for() {
     let leg = k.reseed_leg(&[seed("Thread")], None);
     assert!(leg.entity_by_trait.as_ref().is_none_or(|rows| !rows.contains_key("Thread")), "{:?}", leg.entity_by_trait);
 }
+/// `Picker` (`[client]`) asks from its INIT; `Asker` (server) answers with a fetch. Mounted together, the ask is held for
+/// Asker's INIT (EXEC-SEED-2), so it runs in Asker's seed dispatch, not Picker's.
+fn held_ask_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "picker",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "People",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Picker", "dispatch": "client",
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "asking" }],
+                    "transitions": [{ "from": "idle", "to": "asking", "event": "INIT", "effects": [["emit", "ASK", {}]] }] } },
+                { "name": "Asker", "linkedEntity": "Person",
+                  "listens": [{ "event": "ASK", "triggers": "ASKED", "source": { "kind": "trait", "trait": "Picker" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "ASKED", "effects": [["fetch", "Person", {}]] }] } },
+                { "name": "Quiet", "dispatch": "client",
+                  "stateMachine": {
+                    "states": [{ "name": "off", "isInitial": true }, { "name": "on" }],
+                    "transitions": [{ "from": "off", "to": "on", "event": "INIT" }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn mounted_seeds(stateful: bool) -> Vec<String> {
+    let k = EmbeddedKernel::new(held_ask_schema(), "c1").unwrap();
+    k.mount(vec![
+        "Picker".to_string(),
+        "Asker".to_string(),
+        "Quiet".to_string(),
+    ]);
+    let mount = k
+        .dispatch_mount(
+            &[seed("Picker"), seed("Asker"), seed("Quiet")],
+            None,
+            Value::Null,
+        )
+        .unwrap();
+    let legs = if stateful {
+        &mount.stateful_legs
+    } else {
+        &mount.legs
+    };
+    assert_eq!(legs.len(), 1, "one leg for the orbital");
+    legs[0].seeds.iter().map(|s| s.trait_name.clone()).collect()
+}
+
+/// EXEC-SEED-2 + EXEC-DIST-10: the host runs no copy of a `[client]` trait, so a client-only seed whose held emit a
+/// later seed delivered to a server trait is replayed with the mount, ahead of that seed, or the ask never reaches it.
+#[test]
+fn a_mount_replays_the_client_only_seed_whose_held_emit_reached_a_server_trait() {
+    assert_eq!(mounted_seeds(true), vec!["Picker", "Asker"]);
+}
+
+#[test]
+fn control_a_host_that_carries_the_circuit_state_is_posted_the_same_seeds() {
+    assert_eq!(mounted_seeds(false), vec!["Picker", "Asker"]);
+}
+
+#[test]
+fn control_a_client_only_seed_that_reaches_no_server_trait_still_posts_nothing() {
+    assert!(!mounted_seeds(true).contains(&"Quiet".to_string()));
+}

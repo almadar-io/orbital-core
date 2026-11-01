@@ -323,3 +323,55 @@ fn edge_a_key_that_is_not_a_non_empty_string_fails_the_fetch_with_no_completion_
         assert!(emitted.is_empty(), "{emitted:?}");
     }
 }
+
+/// EXEC-SEED-5 and G-CROSS-365: a session that bound no identity reads as the anonymous viewer, so a policy naming
+/// `@user.id` resolves in a dispatch fetch and in a row-set resolve; an `or` policy over a field some rows lack
+/// admits what its other branch admits. The `anonymous` row is readable only when `@user.id` is `"anonymous"`.
+#[test]
+fn an_unsigned_session_fetches_and_resolves_as_the_anonymous_viewer() {
+    let f = |name: &str| json!(["object/get", "@entity", name]);
+    let policy = json!(["or", ["!=", f("kind"), "memory"], ["=", f("ownerId"), "@user.id"]]);
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "g365", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
+            "entity": { "name": "Chunk", "persistence": "persistent", "read_policy": policy,
+                "fields": [{ "name": "id", "type": "string" }, { "name": "kind", "type": "string" }, { "name": "ownerId", "type": "string" }] },
+            "traits": [{ "name": "T", "linkedEntity": "Chunk", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "LIST",
+                    "effects": [["fetch", "Chunk", { "emit": { "success": "L" } }]] }] } }] }]
+    }))
+    .unwrap();
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(schema).unwrap();
+    for row in [
+        json!({ "id": "lesson", "kind": "lesson" }),
+        json!({ "id": "anon", "kind": "memory", "ownerId": "anonymous" }),
+        json!({ "id": "theirs", "kind": "memory", "ownerId": "u2" }),
+        json!({ "id": "orphan", "kind": "memory" }),
+    ] {
+        let id = row["id"].as_str().unwrap().to_string();
+        cache.write("Chunk", &id, &serde_json::from_value::<Value>(row).unwrap()).unwrap();
+    }
+    let out = k.dispatch("T", None, "LIST", Value::Null).unwrap();
+    let ids = |out: &[(String, orbital_core_runtime::process_result::ProcessEventResult)]| {
+        let mut ids: Vec<String> = out
+            .iter()
+            .flat_map(|(_, r)| r.effect_results.iter())
+            .filter_map(|er| er.return_value.as_ref()?.as_array().cloned())
+            .flatten()
+            .map(|row| row.get_path("id").and_then(|v| v.as_str().map(str::to_string)).unwrap())
+            .collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(ids(&out), vec!["anon", "lesson"], "dispatch fetch");
+    let reference: orbital_core_base::row_set::RowSetRef = serde_json::from_value(
+        json!({ "entityType": "Chunk", "ids": ["lesson", "anon", "theirs", "orphan"], "total": 4, "query": {} }),
+    )
+    .unwrap();
+    let page = k.resolve_rows(&reference).unwrap();
+    let mut resolved: Vec<String> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();
+    resolved.sort();
+    assert_eq!(resolved, vec!["anon", "lesson"], "row-set resolve");
+}

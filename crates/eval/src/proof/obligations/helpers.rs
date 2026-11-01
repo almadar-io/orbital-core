@@ -37,9 +37,64 @@ fn closed(expr: &SExpression) -> bool {
 }
 
 pub(super) fn configured(td: &TraitDefinition, mut o: Obligation) -> Obligation {
-    o.assumptions = o.assumptions.iter().map(|a| config_read(td, a)).collect();
-    o.goal = config_read(td, &o.goal);
+    o.assumptions = o.assumptions.iter().map(|a| config_decided(td, a).unwrap_or_else(|| config_read(td, a))).collect();
+    o.goal = config_decided(td, &o.goal).unwrap_or_else(|| config_read(td, &o.goal));
     o
+}
+
+/// The free `@config.<knob>` reads of `expr`, or `None` when it also reads another binding. A `fn` parameter's reads
+/// inside its body are bound, not free.
+fn config_reads(expr: &SExpression, bound: &mut Vec<String>, out: &mut BTreeSet<String>) -> Option<()> {
+    match expr {
+        SExpression::String(s) if s.starts_with('@') => {
+            if bound.iter().any(|b| s == b || s.strip_prefix(b.as_str()).is_some_and(|r| r.starts_with('.'))) {
+                return Some(());
+            }
+            let knob = s.strip_prefix("@config.")?;
+            out.insert(knob.split('.').next().unwrap_or(knob).to_string());
+            Some(())
+        }
+        SExpression::Array(items) => {
+            if let [SExpression::String(op), SExpression::String(param), body] = &items[..] {
+                if op == "fn" {
+                    bound.push(format!("@{param}"));
+                    let r = config_reads(body, bound, out);
+                    bound.pop();
+                    return r;
+                }
+            }
+            items.iter().try_for_each(|i| config_reads(i, bound, out))
+        }
+        SExpression::Object(map) => map.values().try_for_each(|v| config_reads(v, bound, out)),
+        _ => Some(()),
+    }
+}
+
+/// A goal whose only free reads are `@config` is closed once the config is folded: the kernel's own evaluator decides
+/// it over the resolved defaults, and the verdict is a constant goal. `None` leaves the goal to the usual path (it
+/// reads something else, a knob is undeclared or bound at run time, or the evaluator raises).
+fn config_decided(td: &TraitDefinition, goal: &SExpression) -> Option<SExpression> {
+    let config = td.config.as_ref()?;
+    let mut knobs = BTreeSet::new();
+    config_reads(goal, &mut Vec::new(), &mut knobs)?;
+    if knobs.is_empty() {
+        return None;
+    }
+    let evaluator = crate::evaluator::Evaluator::new();
+    let empty = crate::evaluator::context::BindingContextBuilder::new().build();
+    let mut folded = orbital_core_base::value::ValueMap::default();
+    for knob in &knobs {
+        let default = match &config.get(knob)?.default {
+            None => SExpression::Null,
+            Some(d) if closed(d) => d.clone(),
+            Some(_) => return None,
+        };
+        folded.insert(knob.clone().into(), evaluator.evaluate(&default, &empty).ok()?);
+    }
+    let ctx = crate::evaluator::context::BindingContextBuilder::new()
+        .config(orbital_core_base::value::Value::object(folded))
+        .build();
+    Some(SExpression::Bool(evaluator.evaluate_guard(goal, &ctx).ok()?))
 }
 
 pub(super) fn bind(root: &str, field: &str) -> SExpression {
