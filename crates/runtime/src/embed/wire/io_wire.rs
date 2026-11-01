@@ -121,6 +121,8 @@ pub enum IoRequestWire {
         site: Option<CallSiteWire>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        orbital: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     CredentialStatus {

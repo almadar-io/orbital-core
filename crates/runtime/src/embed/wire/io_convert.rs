@@ -120,12 +120,13 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::Random { bytes } => Self::Random { bytes },
             IoRequestWire::Clock => Self::Clock,
             IoRequestWire::Sealed { op, args } => Self::Sealed { op, args },
-            IoRequestWire::Os { op, args, key, site, principal } => Self::Os {
+            IoRequestWire::Os { op, args, key, site, principal, orbital } => Self::Os {
                 op,
                 args,
                 key,
                 site: site.map(CallSite::from),
                 principal,
+                orbital,
             },
             IoRequestWire::CredentialStatus { name, principal } => {
                 Self::CredentialStatus { name, principal }
@@ -254,12 +255,13 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::Random { bytes } => Self::Random { bytes: *bytes },
             IoRequest::Clock => Self::Clock,
             IoRequest::Sealed { op, args } => Self::Sealed { op: op.clone(), args: args.clone() },
-            IoRequest::Os { op, args, key, site, principal } => Self::Os {
+            IoRequest::Os { op, args, key, site, principal, orbital } => Self::Os {
                 op: *op,
                 args: args.clone(),
                 key: key.clone(),
                 site: site.as_ref().map(CallSiteWire::from),
                 principal: principal.clone(),
+                orbital: orbital.clone(),
             },
             IoRequest::CredentialStatus { name, principal } => Self::CredentialStatus {
                 name: name.clone(),

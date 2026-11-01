@@ -239,15 +239,18 @@ pub fn dev_target(target: &str) -> Option<DevTarget> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum GrantAnchor {
+    /// The running executable itself: a command, never a directory.
+    Exe,
     ExeDir,
     Cwd,
     Env(String),
 }
 
 impl GrantAnchor {
-    /// The `.lolo` spelling: `exe-dir` or `env NAME`.
+    /// The `.lolo` spelling: `exe`, `exe-dir`, `cwd` or `env NAME`.
     pub fn label(&self) -> String {
         match self {
+            GrantAnchor::Exe => "exe".to_string(),
             GrantAnchor::ExeDir => "exe-dir".to_string(),
             GrantAnchor::Cwd => "cwd".to_string(),
             GrantAnchor::Env(name) => format!("env {name}"),
@@ -373,10 +376,14 @@ mod anchors;
 mod entries;
 mod requirements;
 mod static_check;
+mod table;
+pub use table::OsGrantTable;
 pub use static_check::{os_grant_findings, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
 use matching::*;
 use anchors::*;
 pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};
+#[cfg(feature = "std")]
+pub use anchors::ToolPaths;
 pub use requirements::{
     anchored_arg_positions, anchored_net_args, concat_static_prefix, os_requirements,
     os_requirements_deferring, resolve_anchored_args, OsRequirement,

@@ -194,8 +194,18 @@ impl RuntimeKernel {
         self.grants.egress.read().clone()
     }
 
-    /// The `os/` grants every registered program declares, unioned: what a host builds its `OsHost` from.
+    /// Every `os/` grant any registered program or orbital declares, unioned: for reports, never to answer an ask.
     pub fn os_grants(&self) -> OsGrants {
+        self.grants.os_grants.read().declared()
+    }
+
+    /// The grants that answer an ask from `orbital`: its own effective set, or the app level when none is named.
+    pub(super) fn os_grants_of(&self, orbital: Option<&str>) -> OsGrants {
+        self.grants.os_grants.read().for_orbital(orbital).clone()
+    }
+
+    /// The `os/` grants held per orbital: what a host builds its `OsHost` from, answering each ask with its orbital's set.
+    pub fn os_grant_table(&self) -> OsGrantTable {
         self.grants.os_grants.read().clone()
     }
 
@@ -220,7 +230,7 @@ impl RuntimeKernel {
                 }
             }
         }
-        self.grants.os_grants.write().union(&schema.program_os_grants());
+        self.grants.os_grants.write().register(&schema);
         self.register_placement(&schema);
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");

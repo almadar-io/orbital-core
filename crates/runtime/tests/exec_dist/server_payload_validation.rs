@@ -418,3 +418,67 @@ mod native_record_event_admission {
         dispatch(&kernel, json!({"data": {"value": "root-only"}}), false);
     }
 }
+
+mod declared_input_admission {
+    use super::*;
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_base::value::Value;
+    use orbital_core_runtime::entity_source::InMemoryEntityCache;
+    use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
+    use std::sync::Arc;
+
+    fn kernel(environment: RuntimeEnvironment) -> RuntimeKernel {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "GoOrbital",
+                "entity": { "name": "Row", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Go", "linkedEntity": "Row",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{
+                            "key": "GO", "name": "Go", "input": true,
+                            "payloadSchema": [
+                                { "name": "project", "type": "string", "nullable": false, "required": true },
+                                { "name": "note", "type": "string", "nullable": true }
+                            ]
+                        }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO" }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        let kernel = RuntimeKernel::new(environment, Arc::new(InMemoryEntityCache::new()), Default::default());
+        kernel.register_schema(schema).unwrap();
+        kernel
+    }
+
+    fn payload(value: Json) -> Value {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn a_declared_input_omitting_a_required_field_or_sending_null_is_refused_on_both_kernels() {
+        for environment in [RuntimeEnvironment::Server, RuntimeEnvironment::Client] {
+            let missing = kernel(environment).dispatch("Go", None, "GO", payload(json!({})));
+            assert!(
+                matches!(&missing, Err(KernelError::PayloadInvalid(m)) if m == "Payload validation failed for event 'GO': project (missing, expected string)"),
+                "{missing:?}"
+            );
+            let null = kernel(environment).dispatch("Go", None, "GO", payload(json!({ "project": null })));
+            assert!(matches!(&null, Err(KernelError::PayloadInvalid(m)) if m.contains("project (null")), "{null:?}");
+        }
+    }
+
+    #[test]
+    fn control_a_supplied_field_passes_and_an_optional_one_may_be_omitted_or_null() {
+        for environment in [RuntimeEnvironment::Server, RuntimeEnvironment::Client] {
+            assert!(kernel(environment).dispatch("Go", None, "GO", payload(json!({ "project": "p" }))).is_ok());
+            assert!(kernel(environment).dispatch("Go", None, "GO", payload(json!({ "project": "p", "note": null }))).is_ok());
+            assert!(kernel(environment).dispatch("Go", None, "GO", payload(json!({ "project": "p", "note": "n" }))).is_ok());
+        }
+    }
+}

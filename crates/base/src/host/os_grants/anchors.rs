@@ -66,7 +66,63 @@ pub struct OsAnchors {
     pub home: Option<PathBuf>,
     pub start: Option<PathBuf>,
     pub exe_dir: Option<PathBuf>,
+    /// The running executable (`current_exe`): what the `exe` anchor names.
+    pub exe: Option<PathBuf>,
     pub env: EnvSnapshot,
+    /// Each declared bare command name resolved once through the boot `PATH`; a later `PATH` change moves nothing.
+    pub tools: ToolPaths,
+}
+
+/// The boot `PATH` resolution of bare command names, memoized: a name resolves the first time it is asked for and
+/// keeps that answer, found or not, for the life of the host.
+#[cfg(feature = "std")]
+#[derive(Clone, Default)]
+pub struct ToolPaths(std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Result<PathBuf, String>>>>);
+
+#[cfg(feature = "std")]
+impl std::fmt::Debug for ToolPaths {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        f.debug_map().entries(held.iter()).finish()
+    }
+}
+
+#[cfg(feature = "std")]
+impl PartialEq for ToolPaths {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.0, &other.0)
+            || *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *other.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+#[cfg(feature = "std")]
+impl Eq for ToolPaths {}
+
+#[cfg(feature = "std")]
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else { return false };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// The home directory a host may anchor `~/` to: an absolute UTF-8 path with no glob character, as the `env` anchor
+/// demands. Anything else leaves `~` unavailable.
+#[cfg(feature = "std")]
+pub(super) fn usable_home(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    let text = path.to_str()?;
+    (path.is_absolute() && !text.contains(['*', '?'])).then_some(path)
 }
 
 #[cfg(feature = "std")]
@@ -74,12 +130,14 @@ impl OsAnchors {
     /// The process's own: `HOME` (`USERPROFILE` on Windows), its working directory, the directory of its executable
     /// and its environment, read once.
     pub fn of_process() -> Self {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(PathBuf::from);
+        let home = usable_home(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")));
         Self {
             home,
             start: std::env::current_dir().ok(),
             exe_dir: std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            exe: std::env::current_exe().ok(),
             env: EnvSnapshot::of_process(),
+            tools: ToolPaths::default(),
         }
     }
 
@@ -88,6 +146,7 @@ impl OsAnchors {
     /// character (`*`, `?`), which would widen the grant.
     pub fn anchor_segments(&self, anchor: &GrantAnchor) -> Result<Vec<String>, String> {
         let dir = match anchor {
+            GrantAnchor::Exe => return Err("exe names the executable file, not a directory".to_string()),
             GrantAnchor::ExeDir => self
                 .exe_dir
                 .clone()
@@ -110,6 +169,36 @@ impl OsAnchors {
             return Err(format!("{} ({}) holds a glob character", anchor.label(), dir.display()));
         }
         Ok(segments)
+    }
+
+    /// The absolute path of the bare command `name` through the `PATH` of the boot environment, resolved the first time
+    /// it is asked and kept: the first absolute `PATH` directory holding an executable file of that name. A name that
+    /// finds none stays unavailable.
+    pub fn resolve_tool(&self, name: &str) -> Result<PathBuf, String> {
+        let mut held = self.tools.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.entry(name.to_string())
+            .or_insert_with(|| {
+                let path = self.env.get("PATH").filter(|p| !p.is_empty()).ok_or_else(|| format!("command {name:?} is unavailable: the boot environment has no PATH"))?;
+                std::env::split_paths(path)
+                    .filter(|dir| dir.is_absolute())
+                    .map(|dir| dir.join(name))
+                    .find(|candidate| is_executable_file(candidate))
+                    .ok_or_else(|| format!("command {name:?} is unavailable: no executable of that name on the PATH at boot"))
+            })
+            .clone()
+    }
+
+    /// What boot resolved for the bare command `name`, or `None` when no program declared it: a name nobody declared is
+    /// never looked up.
+    pub fn declared_tool(&self, name: &str) -> Option<Result<PathBuf, String>> {
+        self.tools.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(name).cloned()
+    }
+
+    /// The running executable, or why this host cannot name it.
+    pub fn exe_path(&self) -> Result<String, String> {
+        let exe = self.exe.as_ref().ok_or_else(|| "this host does not know its own executable".to_string())?;
+        let text = exe.to_str().filter(|t| exe.is_absolute() && !t.contains(['*', '?']));
+        text.map(str::to_string).ok_or_else(|| format!("exe ({}) is not an absolute UTF-8 path without glob characters", exe.display()))
     }
 
     /// The absolute path a `~/` or `./` form names; `None` for any other form (an absolute path, or a bare relative
@@ -138,6 +227,11 @@ impl OsAnchors {
         forms.extend(under(&self.start, "./"));
         forms
     }
+}
+
+/// An `exec` entry written as a path: absolute, with no `..` segment and no glob character.
+pub(super) fn valid_absolute_command(text: &str) -> bool {
+    text.starts_with('/') && !text.contains(['*', '?']) && !text.split('/').any(|s| s == "..")
 }
 
 pub(super) fn valid_name(name: &str) -> bool {
@@ -192,6 +286,13 @@ impl OsGrants {
                 problems.push(EntryProblem { path, message });
                 continue;
             }
+            if e.anchor == GrantAnchor::Exe {
+                match anchors.exe_path() {
+                    Ok(exe) => added.exec.push(exe),
+                    Err(why) => problems.push(EntryProblem { path, message: format!("exec exe grants nothing: {why}") }),
+                }
+                continue;
+            }
             match anchors.anchor_segments(&e.anchor) {
                 Ok(segments) => added.exec.push(rooted(&segments, e.path.as_deref())),
                 Err(why) => problems.push(EntryProblem { path, message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)) }),
@@ -217,6 +318,20 @@ impl OsGrants {
             }
         }
         let mut resolved = OsGrants { anchored: AnchoredGrants::default(), ..self.clone() };
+        resolved.exec.clear();
+        for (i, command) in self.exec.iter().enumerate() {
+            if valid_absolute_command(command) {
+                added.exec.push(command.clone());
+                continue;
+            }
+            match anchors.resolve_tool(command) {
+                Ok(path) => match path.to_str() {
+                    Some(text) => added.exec.push(text.to_string()),
+                    None => problems.push(EntryProblem { path: format!("exec[{i}]"), message: format!("command {command:?} resolves to a path that is not UTF-8") }),
+                },
+                Err(why) => problems.push(EntryProblem { path: format!("exec[{i}]"), message: why }),
+            }
+        }
         resolved.union(&added);
         resolved.add_canonical_twins(anchors);
         (resolved, problems)
@@ -299,6 +414,7 @@ pub(super) fn relative_segments(path: &str) -> Option<Vec<String>> {
 
 pub(super) fn anchor_from_value(value: &Value) -> Option<GrantAnchor> {
     match value {
+        Value::String(word) if word == "exe" => Some(GrantAnchor::Exe),
         Value::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
         Value::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
         Value::Object(map) if map.len() == 1 => match map.get("env") {
@@ -311,6 +427,7 @@ pub(super) fn anchor_from_value(value: &Value) -> Option<GrantAnchor> {
 
 pub(super) fn anchor_from_sexpr(expr: &SExpression) -> Option<GrantAnchor> {
     match expr {
+        SExpression::String(word) if word == "exe" => Some(GrantAnchor::Exe),
         SExpression::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
         SExpression::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
         SExpression::Object(map) if map.len() == 1 => match map.get("env") {
@@ -359,6 +476,12 @@ pub(super) fn anchored_sexpr(expr: &SExpression) -> Result<Option<(GrantAnchor, 
 impl OsAnchors {
     /// The absolute path an anchored path names on this host, or why it names none.
     pub fn resolve_path(&self, anchored: &AnchoredPath) -> Result<String, String> {
+        if anchored.anchor == GrantAnchor::Exe {
+            return match &anchored.path {
+                None => self.exe_path(),
+                Some(_) => Err("exe names the executable itself and takes no path".to_string()),
+            };
+        }
         let base = self.anchor_segments(&anchored.anchor)?;
         let rest = match &anchored.path {
             None => Vec::new(),
@@ -423,6 +546,8 @@ pub(super) fn anchored_exec_label(e: &AnchoredExec) -> String {
 
 pub(super) fn anchored_exec_problem(e: &AnchoredExec) -> Option<String> {
     match (&e.anchor, &e.path) {
+        (GrantAnchor::Exe, Some(_)) => Some("exec exe names the running executable itself: it takes no path".to_string()),
+        (GrantAnchor::Exe, None) => None,
         (GrantAnchor::ExeDir, None) => Some("exec exe-dir names a directory, not a command: give the command under it, e.g. exe-dir \"bun\"".to_string()),
         (_, Some(path)) if !valid_relative(path) || path.contains(['*', '?']) => {
             Some(format!("exec {} is not a relative command path without `..` or glob characters", anchored_exec_label(e)))

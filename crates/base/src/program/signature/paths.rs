@@ -10,11 +10,12 @@ pub(super) enum Path {
 
 /// The type at a dot path through `ty`.
 pub(super) fn walk_path(ty: &OirType, path: &str) -> Path {
-    walk_path_in(ty, path, &|_| None)
+    walk_path_in(ty, path, false, &|_| None)
 }
 
-/// [`walk_path`] where a segment's owner may be a declared name, read through `resolve`.
-pub(super) fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> Option<OirType>) -> Path {
+/// [`walk_path`] where a segment's owner may be a declared name, read through `resolve`. `maps_may_miss` reads a map's
+/// key as possibly absent, as an operator call (`object/get`) does; a binding path keeps the value type.
+pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolve: &dyn Fn(&str) -> Option<OirType>) -> Path {
     let mut current = ty.clone();
     let mut may_be_absent = false;
     let segments = crate::value::split_path(path);
@@ -44,7 +45,10 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, resolve: &dyn Fn(&str) -> O
                     None => return Path::Missing,
                 },
             },
-            OirType::Map { value, .. } => current = (**value).clone(),
+            OirType::Map { value, .. } => {
+                current = (**value).clone();
+                may_be_absent |= maps_may_miss;
+            }
             OirType::Array { inner } if segment.parse::<usize>().is_ok() => {
                 current = (**inner).clone();
             }

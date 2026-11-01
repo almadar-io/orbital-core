@@ -156,13 +156,11 @@ pub fn inbound_unanswered_after(trait_name: &str, event: &str, failures: &[Strin
     }
 }
 
-/// Equality in time that depends on the length of the longer value only, never on where they differ.
+/// Equality via `subtle::ConstantTimeEq`: content never decides the time. Unequal lengths answer false
+/// at once, so the length of a value is not treated as secret.
 pub fn constant_time_eq_bytes(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = a.len() ^ b.len();
-    for i in 0..a.len().max(b.len()) {
-        diff |= usize::from(a.get(i).copied().unwrap_or(0) ^ b.get(i).copied().unwrap_or(0));
-    }
-    diff == 0
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
 }
 
 /// [`constant_time_eq_bytes`] over the UTF-8 bytes of two strings.

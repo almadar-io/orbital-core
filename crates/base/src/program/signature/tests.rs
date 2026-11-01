@@ -1482,8 +1482,14 @@ fn a_dot_path_walks_nested_records_and_a_map_takes_any_key() {
     );
     let map = OirType::map(OirType::String, OirType::Number);
     assert_eq!(
-        call(&get(), &[ty(map), text("anything")], Mode::Static),
-        Ok(Some(OirType::Number))
+        call(&get(), &[ty(map.clone()), text("anything")], Mode::Static),
+        Ok(Some(OirType::optional(OirType::Number))),
+        "a map may not hold the key (G-ORB-619)"
+    );
+    assert_eq!(
+        call(&get(), &[ty(map), text("anything"), ty(OirType::Number)], Mode::Static),
+        Ok(Some(OirType::Number)),
+        "control: a default answers the miss"
     );
 }
 

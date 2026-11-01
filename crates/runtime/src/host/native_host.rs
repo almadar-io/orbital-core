@@ -8,7 +8,7 @@ use std::prelude::v1::*;
 use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler};
 use crate::entity_source::EntitySource;
 use crate::secret_source::SecretSource;
-use crate::os_host::{OsGrants, OsHandles, OsHost};
+use crate::os_host::{OsGrantTable, OsHandles, OsHost};
 use crate::resumable::{BlockingHost, CallSite, PortHost, IoAnswer, IoRequest};
 use orbital_core_base::value::Value;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ impl ServiceHandler for NoProviders {
 pub struct NativeHost {
     source: Arc<dyn EntitySource>,
     secrets: Arc<dyn SecretSource>,
-    grants: OsGrants,
+    grants: OsGrantTable,
     handles: Arc<OsHandles>,
     on_event: Arc<StreamEvents>,
     substrate: Option<Arc<dyn SubstrateHandler>>,
@@ -60,11 +60,11 @@ impl NativeHost {
     pub fn new(
         source: Arc<dyn EntitySource>,
         secrets: Arc<dyn SecretSource>,
-        grants: OsGrants,
+        grants: impl Into<OsGrantTable>,
         handles: Arc<OsHandles>,
         on_event: Arc<StreamEvents>,
     ) -> Self {
-        let (grants, problems) = grants.resolve_anchors(&handles.anchors);
+        let (grants, problems) = grants.into().resolve_anchors(&handles.anchors);
         for problem in problems {
             tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, at = %problem.path, message = %problem.message, "os grant anchor");
         }
@@ -126,8 +126,12 @@ impl NativeHost {
             return deferred;
         }
         let on_event = |site: Option<&CallSite>, event: Value| (self.on_event)(site, event);
+        let asking = match request {
+            IoRequest::Os { orbital, .. } => orbital.as_deref(),
+            _ => None,
+        };
         let os = OsHost {
-            grants: &self.grants,
+            grants: self.grants.for_orbital(asking),
             handles: &self.handles,
             on_event: &on_event,
             secrets: Some(self.secrets.as_ref()),
@@ -164,7 +168,7 @@ pub(crate) mod tests {
         NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
-            OsGrants::default(),
+            OsGrantTable::default(),
             Arc::new(OsHandles::default()),
             Arc::new(|_: Option<&CallSite>, _: Value| {}),
         )
@@ -222,7 +226,7 @@ pub(crate) mod tests {
         let host = NativeHost::new(
             Arc::new(InMemoryEntityCache::new()),
             Arc::new(crate::credentials::Credentials::from_env(Default::default())),
-            OsGrants::default(),
+            OsGrantTable::default(),
             handles,
             Arc::new(|_: Option<&CallSite>, _: Value| {}),
         )

@@ -165,7 +165,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                         _ => None,
                     };
                 };
-                match walk_path_in(record, key, &|name| b.named_types.get(name).cloned()) {
+                match walk_path_in(record, key, !b.defaulted.contains(of), &|name| b.named_types.get(name).cloned()) {
                     // A read through a record that may be missing may be missing too, unless a default answers it.
                     Path::Found(found)
                         if matches!(record, OirType::Optional { .. })

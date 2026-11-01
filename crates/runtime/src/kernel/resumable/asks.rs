@@ -142,6 +142,8 @@ pub enum IoRequest {
         site: Option<CallSite>,
         /// The signed-in viewer's id, set by the kernel from the dispatch's `@user`, for a `scope: "user"` credential segment.
         principal: Option<String>,
+        /// The orbital whose trait made the ask: the one whose `osGrants` (plus the app's) the answerer checks.
+        orbital: Option<String>,
     },
     /// Whether the host holds a value for the credential `name` (for `principal` when set).
     CredentialStatus {

@@ -566,7 +566,7 @@ impl KernelCompletionSink {
                 Some(TlsCompletion::Done(done)) => return done,
                 Some(TlsCompletion::Ask { op, args }) => {
                     parked = true;
-                    raw = match (self.answer)(&IoRequest::Os { op, args, key: None, site: None, principal: None }) {
+                    raw = match (self.answer)(&IoRequest::Os { op, args, key: None, site: None, principal: None, orbital: None }) {
                         IoAnswer::Os(answer) => answer.map(Secret::into_inner),
                         other => Err(OsError::new(orbital_core_base::os::OsErrorKind::Io, format!("unexpected host answer {other:?}"))),
                     };
@@ -874,7 +874,7 @@ mod tests {
             op: orbital_core_base::os::OsOp::Wait,
             args: Vec::new(),
             key: Some(key.to_string()),
-            site: Some(site(Some("OK"), None)), principal: None,
+            site: Some(site(Some("OK"), None)), principal: None, orbital: None
         }
     }
 
@@ -921,7 +921,7 @@ mod tests {
             op: orbital_core_base::os::OsOp::TcpListen,
             args: Vec::new(),
             key: Some(key.to_string()),
-            site: Some(site(Some("OK"), None)), principal: None,
+            site: Some(site(Some("OK"), None)), principal: None, orbital: None
         }
     }
 

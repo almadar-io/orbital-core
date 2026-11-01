@@ -10,8 +10,10 @@
 //! the grant names, so it is not re-checked. Binding is local and is not re-checked, and `dns-resolve` returns
 //! addresses without connecting, so it reports private ones too.
 //!
-//! Bounded I/O. Every socket carries a read and write timeout of [`IO_TIMEOUT`] (5 s); a read that waits longer
-//! answers `timeout`. `recv` returns at most `count` bytes (at most [`MAX_RECV`]) from one read.
+//! Bounded I/O. A stream socket's read waits until data arrives, the peer closes, or the program closes or shuts the
+//! socket down: the host picks no read deadline, so how long a read may wait is the program's declared deadline. Writes,
+//! and a datagram socket's reads, carry a timeout of [`IO_TIMEOUT`] (5 s) and answer `timeout` past it. `recv` returns at
+//! most `count` bytes (at most [`MAX_RECV`]) from one read.
 //!
 //! Ordered writes. Every `send` on a socket takes a turn in call order and writes only after the turn before it has
 //! ended, so a keyed `send` (written on a thread of its own) and an unkeyed one never interleave their bytes.
@@ -253,6 +255,15 @@ fn set_timeouts(
     write(Some(IO_TIMEOUT)).map_err(|e| io_error(op, &e))
 }
 
+fn set_stream_timeouts(op: OsOp, stream: &TcpStream) -> Result<(), OsError> {
+    stream
+        .set_read_timeout(None)
+        .map_err(|e| io_error(op, &e))?;
+    stream
+        .set_write_timeout(Some(IO_TIMEOUT))
+        .map_err(|e| io_error(op, &e))
+}
+
 fn stream_of(table: &HandleSlab<SockEntry>, id: i64, op: OsOp) -> Result<TcpStream, OsError> {
     match table.with(id, |entry| match entry {
         SockEntry::Stream(s) => s.try_clone().map_err(|e| io_error(op, &e)),
@@ -286,11 +297,7 @@ fn tcp_connect(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     for addr in outbound(op, &name, port)? {
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
             Ok(stream) => {
-                set_timeouts(
-                    op,
-                    |t| stream.set_read_timeout(t),
-                    |t| stream.set_write_timeout(t),
-                )?;
+                set_stream_timeouts(op, &stream)?;
                 let id = host.handles.net.socks.insert(SockEntry::Stream(stream));
                 return Ok(object([("sock", Value::Number(id as f64))]));
             }
@@ -551,9 +558,7 @@ fn accept_loop(
                 let ready = stream
                     .set_nonblocking(false)
                     .map_err(|e| io_error(op, &e))
-                    .and_then(|()| {
-                        set_timeouts(op, |t| stream.set_read_timeout(t), |t| stream.set_write_timeout(t))
-                    });
+                    .and_then(|()| set_stream_timeouts(op, &stream));
                 if let Err(error) = ready {
                     if completions.claim_current(key, lease) {
                         completions.deliver(key, site, Err(error));

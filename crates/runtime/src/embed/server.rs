@@ -158,6 +158,8 @@ struct OsAnchorsWire {
     #[serde(default)]
     exe_dir: Option<std::path::PathBuf>,
     #[serde(default)]
+    exe: Option<std::path::PathBuf>,
+    #[serde(default)]
     env: std::collections::BTreeMap<String, String>,
 }
 
@@ -984,7 +986,7 @@ impl EmbeddedServer {
     /// entries that grant nothing under them, as `[{ path, message }]`.
     pub fn set_os_anchors_json(&self, anchors_json: &str) -> Result<String, String> {
         let wire: OsAnchorsWire = serde_json::from_str(anchors_json).map_err(|e| format!("parse anchors_json: {e}"))?;
-        let anchors = OsAnchors { home: wire.home, start: wire.start, exe_dir: wire.exe_dir, env: EnvSnapshot::from_pairs(wire.env) };
+        let anchors = OsAnchors { home: wire.home, start: wire.start, exe_dir: wire.exe_dir, exe: wire.exe, env: EnvSnapshot::from_pairs(wire.env), tools: Default::default() };
         let (_, problems) = self.kernel.os_grants().resolve_anchors(&anchors);
         *self.os_anchors.lock() = anchors;
         let problems: Vec<serde_json::Value> =
@@ -1008,11 +1010,24 @@ impl EmbeddedServer {
         orbital_core_base::http_wire::origin_allowed(url, &self.kernel.egress())
     }
 
-    /// Whether the program's grants cover `requirement_json` (an `OsRequirement`).
-    pub fn os_allows_json(&self, requirement_json: &str) -> Result<bool, String> {
+    /// Whether the grants of `orbital` (its own plus the app level; the app level alone when none is named) cover
+    /// `requirement_json` (an `OsRequirement`): the one check every host makes.
+    pub fn os_allows_json(&self, requirement_json: &str, orbital: Option<&str>) -> Result<bool, String> {
         let need: OsRequirement = serde_json::from_str(requirement_json)
             .map_err(|e| format!("parse requirement_json: {e}"))?;
-        Ok(self.os_grants().allows(&need))
+        Ok(self.os_grants_for(orbital).allows(&need))
+    }
+
+    /// The grants that answer an ask from `orbital`, with every anchored entry resolved under the host's anchors.
+    #[cfg(feature = "std")]
+    pub fn os_grants_for(&self, orbital: Option<&str>) -> OsGrants {
+        self.kernel.os_grant_table().resolve_anchors(&self.os_anchors.lock()).0.for_orbital(orbital).clone()
+    }
+
+    /// The grants that answer an ask from `orbital`, as declared: a bare-metal host has no filesystem anchors to place.
+    #[cfg(not(feature = "std"))]
+    pub fn os_grants_for(&self, orbital: Option<&str>) -> OsGrants {
+        self.kernel.os_grant_table().for_orbital(orbital).clone()
     }
 
     /// Whether a live item reaches the client `client_id`: addressed to it, and its entity's `@read` admits the
@@ -1431,10 +1446,10 @@ mod os_anchor_tests {
             .set_os_anchors_json(&json!({ "start": "/srv/app", "env": { "PORT": "8080" } }).to_string())
             .unwrap();
         assert_eq!(problems, "[]");
-        assert!(server.os_allows_json(&listen_on(8080)).unwrap(), "the env PORT grant resolves");
-        assert!(server.os_allows_json(&read("/srv/app/dist/index.html")).unwrap(), "the cwd grant resolves under start");
-        assert!(server.os_allows_json(&listen_on(3000)).unwrap(), "control: the literal grant stays");
-        assert!(!server.os_allows_json(&listen_on(8081)).unwrap(), "control: another port");
+        assert!(server.os_allows_json(&listen_on(8080), None).unwrap(), "the env PORT grant resolves");
+        assert!(server.os_allows_json(&read("/srv/app/dist/index.html"), None).unwrap(), "the cwd grant resolves under start");
+        assert!(server.os_allows_json(&listen_on(3000), None).unwrap(), "control: the literal grant stays");
+        assert!(!server.os_allows_json(&listen_on(8081), None).unwrap(), "control: another port");
         let args = server
             .os_resolve_args_json("os/tcp-listen", &json!(["127.0.0.1", { "anchor": { "env": "PORT" } }]).to_string())
             .unwrap();
@@ -1444,8 +1459,8 @@ mod os_anchor_tests {
     #[test]
     fn control_without_anchors_an_anchored_grant_grants_nothing() {
         let server = listener();
-        assert!(!server.os_allows_json(&listen_on(8080)).unwrap());
-        assert!(server.os_allows_json(&listen_on(3000)).unwrap());
+        assert!(!server.os_allows_json(&listen_on(8080), None).unwrap());
+        assert!(server.os_allows_json(&listen_on(3000), None).unwrap());
     }
 
     #[test]

@@ -260,6 +260,18 @@ mod tests {
     }
 
     #[test]
+    fn rfc_4231_test_case_1_and_an_empty_key() {
+        assert_eq!(
+            hex(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex(&hmac_sha256(b"", b"")),
+            "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+        );
+    }
+
+    #[test]
     fn rfc_4231_test_case_2() {
         assert_eq!(
             hex(&hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
@@ -294,6 +306,21 @@ mod tests {
         ] {
             assert_eq!(hex(&pbkdf2_hmac_sha256(b"password", b"salt", iterations, 32)), want, "{iterations}");
         }
+    }
+
+    #[test]
+    fn pbkdf2_hmac_sha256_matches_the_long_input_vector_and_treats_zero_rounds_as_one() {
+        assert_eq!(
+            hex(&pbkdf2_hmac_sha256(
+                b"passwordPASSWORDpassword",
+                b"saltSALTsaltSALTsaltSALTsaltSALTsalt",
+                4096,
+                40
+            )),
+            "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1c635518c7dac47e9"
+        );
+        assert_eq!(pbkdf2_hmac_sha256(b"password", b"salt", 0, 32), pbkdf2_hmac_sha256(b"password", b"salt", 1, 32));
+        assert!(pbkdf2_hmac_sha256(b"password", b"salt", 1, 0).is_empty());
     }
 
     #[test]

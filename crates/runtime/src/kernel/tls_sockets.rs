@@ -590,11 +590,12 @@ impl RuntimeKernel {
         args: &[Value],
         key: Option<&str>,
         principal: Option<&str>,
+        orbital: Option<&str>,
     ) -> Option<Result<Value, OsError>> {
         match op {
             OsOp::Fetch => self.fetch_refusal(op, args).map(Err),
-            OsOp::TlsUpgrade => Some(self.tls_handshake(op, args)),
-            OsOp::TcpConnect if args.len() > 2 => Some(self.tls_handshake(op, args)),
+            OsOp::TlsUpgrade => Some(self.tls_handshake(op, args, orbital)),
+            OsOp::TcpConnect if args.len() > 2 => Some(self.tls_handshake(op, args, orbital)),
             OsOp::Send | OsOp::Recv | OsOp::Close => {
                 let sock = sock_id(args.first())?;
                 if !self.tls.contains(sock) {
@@ -618,7 +619,7 @@ impl RuntimeKernel {
         Some(fail(op, OsErrorKind::Denied, &format!("{url} is not an origin the program declares in egress")))
     }
 
-    fn tls_handshake(&self, op: OsOp, args: &[Value]) -> Result<Value, OsError> {
+    fn tls_handshake(&self, op: OsOp, args: &[Value], orbital: Option<&str>) -> Result<Value, OsError> {
         let (connect, sock, spec) = match op {
             OsOp::TlsUpgrade => {
                 let Some(sock) = sock_id(args.first()) else {
@@ -638,7 +639,7 @@ impl RuntimeKernel {
             }
             _ => (Some(args[..2].to_vec()), None, &args[2]),
         };
-        let spec = parse_spec(op, spec, &self.grants.os_grants.read())?;
+        let spec = parse_spec(op, spec, self.grants.os_grants.read().for_orbital(orbital))?;
         let mut run = HandshakeRun {
             op,
             connect,
@@ -647,7 +648,7 @@ impl RuntimeKernel {
             outcome: None,
         };
         let first = run.first(sock);
-        match drive(&self.io, &mut run, first, DriveContext::default()) {
+        match drive(&self.io, &mut run, first, DriveContext { orbital, ..DriveContext::default() }) {
             DriveEnd::Done(_) => {}
             DriveEnd::AwaitingHost => return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
         }
@@ -724,7 +725,7 @@ impl RuntimeKernel {
         {
             if matches!(raw_op, OsOp::Send | OsOp::Recv) && self.io.os_site(op, Some(key)).is_some()
             {
-                let answer = self.io.os(*raw_op, raw_args, Some(key), None);
+                let answer = self.io.os(*raw_op, raw_args, Some(key), None, None);
                 if self.io.peek_call_verdict() == Some(CallVerdict::Deferred) {
                     self.tls_park(sock, traffic, key);
                     self.tls.pending.lock().insert(
@@ -1433,7 +1434,7 @@ mod tests {
                                     op: OsOp::Recv,
                                     key: Some(key),
                                     site: Some(_),
-                                    args, principal: None,
+                                    args, principal: None, ..
                                 } => {
                                     deferred_ask = Some((key.clone(), args.clone()));
                                     IoAnswer::ServiceDeferred

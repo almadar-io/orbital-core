@@ -166,43 +166,17 @@ pub fn pbkdf2_hmac_sha256(
     iterations: u32,
     out_len: usize,
 ) -> Vec<u8> {
-    let mut out = Vec::with_capacity(out_len + 32);
-    let mut block = 1u32;
-    while out.len() < out_len {
-        let mut seed = salt.to_vec();
-        seed.extend_from_slice(&block.to_be_bytes());
-        let mut u = hmac_sha256(password, &seed);
-        let mut t = u;
-        for _ in 1..iterations.max(1) {
-            u = hmac_sha256(password, &u);
-            for (acc, byte) in t.iter_mut().zip(u) {
-                *acc ^= byte;
-            }
-        }
-        out.extend_from_slice(&t);
-        block += 1;
-    }
-    out.truncate(out_len);
+    let mut out = vec![0u8; out_len];
+    pbkdf2::pbkdf2_hmac::<Sha256>(password, salt, iterations.max(1), &mut out);
     out
 }
 
-pub const BLOCK: usize = 64;
-
 /// HMAC-SHA256 (RFC 2104).
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(block.map(|b| b ^ 0x36));
-    inner.update(data);
-    let mut outer = Sha256::new();
-    outer.update(block.map(|b| b ^ 0x5c));
-    outer.update(inner.finalize());
-    outer.finalize().into()
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts a key of any length");
+    mac.update(data);
+    mac.finalize().into_bytes().into()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

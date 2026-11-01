@@ -322,6 +322,8 @@ pub trait Driver {
 pub struct DriveContext<'a> {
     pub principal: Option<&'a str>,
     pub key: Option<&'a str>,
+    /// The orbital whose grants answer the call's `os/` asks.
+    pub orbital: Option<&'a str>,
 }
 
 /// How [`drive`] stopped.
@@ -369,7 +371,7 @@ pub(crate) fn drive<D: Driver>(
             ),
             DriverAsk::Random { bytes } => DriverAnswer::Random(io.random(bytes).map(Secret::new)),
             DriverAsk::Clock => DriverAnswer::Clock(io.clock()),
-            DriverAsk::Os { op, args, key } => DriverAnswer::Os(io.os(op, &args, key.as_deref(), None)),
+            DriverAsk::Os { op, args, key } => DriverAnswer::Os(io.os(op, &args, key.as_deref(), None, ctx.orbital)),
             DriverAsk::Tab { ask } => DriverAnswer::Tab(io.tab(&ask, ctx.key)),
         };
         if io.suspended() {
@@ -444,7 +446,7 @@ mod tests {
                 op,
                 args,
                 key: None,
-                site: None, principal: None,
+                site: None, principal: None, orbital: None
             },
             IoAnswer::Os(answer.map(Secret::new)),
         )

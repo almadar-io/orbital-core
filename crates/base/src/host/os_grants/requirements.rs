@@ -41,6 +41,12 @@ impl OsRequirement {
     pub fn inherited_env(name: &str) -> Self {
         OsRequirement::Env { name: name.to_string() }
     }
+
+    /// What a `spawn` `env` entry needs: the variable's grant when the child inherits it (`null`), and for `PATH` also
+    /// when the call sets it, since it steers every lookup the child makes.
+    pub fn spawn_env(name: &str, inherits: bool) -> Option<Self> {
+        (inherits || name == "PATH").then(|| Self::inherited_env(name))
+    }
 }
 
 impl OsGrants {
@@ -374,9 +380,7 @@ pub(super) fn spawn_needs(args: &[SExpression], command: usize, options: usize, 
                 ("cwd", _) => return Err(options),
                 ("env", SExpression::Object(vars)) => {
                     for (name, value) in vars.iter() {
-                        if matches!(value, SExpression::Null) {
-                            needs.push(OsRequirement::inherited_env(name));
-                        }
+                        needs.extend(OsRequirement::spawn_env(name, matches!(value, SExpression::Null)));
                     }
                 }
                 ("stdin" | "stdout" | "stderr", SExpression::String(mode)) if mode == "inherit" => {
@@ -536,6 +540,17 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
                 out[at] = resolved;
             }
         }
+    }
+    for need in needs {
+        let OsGrantNeed::Exec { command: at, .. } = need else { continue };
+        let Some(Value::String(name)) = out.get(*at) else { continue };
+        if name.contains('/') {
+            continue;
+        }
+        let Some(resolved) = anchors.declared_tool(name) else { continue };
+        let resolved = resolved.map_err(|why| OsError::new(OsErrorKind::NotFound, format!("{}: {why}", op.name())))?;
+        let text = resolved.to_str().ok_or_else(|| refuse(format!("command {:?} resolves to a path that is not UTF-8", name.as_str())))?;
+        out[*at] = Value::string(text.to_string());
     }
     for need in needs {
         let OsGrantNeed::Exec { options: at, .. } = need else { continue };

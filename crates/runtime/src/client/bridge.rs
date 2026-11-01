@@ -188,7 +188,7 @@ impl KernelBridge {
         let host = crate::native_host::NativeHost::new(
             std::sync::Arc::clone(&self.entities) as std::sync::Arc<dyn crate::entity_source::EntitySource>,
             secrets,
-            self.kernel.os_grants(),
+            self.kernel.os_grant_table(),
             handles,
             on_event,
         );

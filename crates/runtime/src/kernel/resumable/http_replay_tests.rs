@@ -182,7 +182,7 @@ fn a_random_ask_is_journaled_and_replayed_without_asking_again() {
 }
 
 fn os_ask(op: OsOp, path: &str) -> IoRequest {
-    IoRequest::Os { op, args: vec![Value::string(path.to_string())], key: None, site: None, principal: None }
+    IoRequest::Os { op, args: vec![Value::string(path.to_string())], key: None, site: None, principal: None, orbital: None }
 }
 
 fn os_ok() -> IoAnswer {
@@ -197,7 +197,7 @@ fn an_os_ask_is_journaled_and_replayed_without_asking_again() {
     let port = port();
     let args = [Value::string("/a")];
     let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
-    let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None, None));
+    let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None, None, None));
     assert_eq!(out.map(|v| v.get_path("data").map(Value::to_string_value)), Ok(Some("hi".to_string())));
     assert!(end.pending.is_empty() && end.diverged.is_none());
 }
@@ -207,10 +207,10 @@ fn a_changed_os_ask_is_diverged() {
     let port = port();
     let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
     let other_path = [Value::string("/b")];
-    let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &other_path, None, None));
+    let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &other_path, None, None, None));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
     let same_path = [Value::string("/a")];
-    let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::WriteFile, &same_path, None, None));
+    let (_, end) = port.run_step(recorded.clone(), || port.os(OsOp::WriteFile, &same_path, None, None, None));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
     let (_, end) = port.run_step(recorded, || port.os(OsOp::ReadFile, &same_path, Some("k"), None));
     assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
@@ -267,7 +267,7 @@ fn routed_site() -> CallSite {
 }
 
 fn wait_ask(key: Option<&str>, site: Option<CallSite>) -> IoRequest {
-    IoRequest::Os { op: OsOp::Wait, args: vec![Value::Number(7.0)], key: key.map(str::to_string), site, principal: None }
+    IoRequest::Os { op: OsOp::Wait, args: vec![Value::Number(7.0)], key: key.map(str::to_string), site, principal: None, orbital: None }
 }
 
 #[test]
@@ -295,11 +295,11 @@ fn keyed_wait_and_finite_fs_with_a_call_site_may_be_answered_deferred() {
     assert!(deferred.answers(&wait_ask(Some("k"), Some(routed_site()))));
     assert!(!deferred.answers(&wait_ask(None, Some(routed_site()))));
     assert!(!deferred.answers(&wait_ask(Some("k"), None)));
-    let stat = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: Some(routed_site()), principal: None };
+    let stat = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: Some(routed_site()), principal: None, orbital: None };
     assert!(deferred.answers(&stat));
-    let stat_without_site = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: None, principal: None };
+    let stat_without_site = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: Some("k".into()), site: None, principal: None, orbital: None };
     assert!(!deferred.answers(&stat_without_site));
-    let stat_without_key = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: None, site: Some(routed_site()), principal: None };
+    let stat_without_key = IoRequest::Os { op: OsOp::Stat, args: vec![Value::Null], key: None, site: Some(routed_site()), principal: None, orbital: None };
     assert!(!deferred.answers(&stat_without_key));
     assert!(os_ok().answers(&wait_ask(None, None)));
 }
@@ -633,7 +633,7 @@ fn a_keyed_os_or_http_ask_may_be_left_pending_and_an_unkeyed_one_may_not() {
         op: OsOp::Getenv,
         args: vec![Value::string("HOME")],
         key: key.map(str::to_string),
-        site: None, principal: None,
+        site: None, principal: None, orbital: None
     };
     let http = |key: Option<&str>| IoRequest::Http {
         request: get("https://a.example.com/x"),

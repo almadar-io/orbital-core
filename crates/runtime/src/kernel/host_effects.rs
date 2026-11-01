@@ -232,7 +232,7 @@ impl RuntimeKernel {
                     Err(error) => failure(error),
                 }
             }
-            Effect::CredentialAdmin { op, request, .. } => match (if self.os_grants().credentials_allow(orbital_core_base::os_grants::CredentialKind::Admin) {
+            Effect::CredentialAdmin { op, request, .. } => match (if self.os_grants_of(self.caller_position().0.as_deref()).credentials_allow(orbital_core_base::os_grants::CredentialKind::Admin) {
                 Ok(())
             } else {
                 Err(format!(
@@ -293,13 +293,14 @@ impl RuntimeKernel {
         };
         let caller = ServiceCaller::of_user(&ctx.user);
         let principal = caller.as_ref().map(|caller| caller.principal.as_str());
+        let (orbital, _) = self.caller_position();
         #[cfg(feature = "wire-drivers")]
-        let outcome = self.tls_os(*op, args, key, principal).unwrap_or_else(|| self.io.os(*op, args, key, principal));
+        let outcome = self.tls_os(*op, args, key, principal, orbital.as_deref()).unwrap_or_else(|| self.io.os(*op, args, key, principal, orbital.as_deref()));
         #[cfg(not(feature = "wire-drivers"))]
         let outcome = if op.is_kernel_owned() {
             Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
         } else {
-            self.io.os(*op, args, key, principal)
+            self.io.os(*op, args, key, principal, orbital.as_deref())
         };
         match outcome {
             Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),

@@ -1256,15 +1256,16 @@ fn an_unset_relative_or_widening_anchor_grants_nothing_and_is_reported() {
         problems[5].message
     );
     let plain = OsGrants {
-        exec: vec!["bun".into()],
+        exec: vec!["/opt/bin/bun".into(), "bun".into()],
         ..g.clone()
     };
-    let (kept, _) = plain.resolve_anchors(&host);
+    let (kept, found) = plain.resolve_anchors(&host);
     assert_eq!(
         kept.exec,
-        ["bun"],
-        "control: plain entries pass through unresolved anchors untouched"
+        ["/opt/bin/bun"],
+        "control: an absolute entry passes through unresolved anchors untouched, a bare name not found on the boot PATH grants nothing"
     );
+    assert!(found.iter().any(|p| p.path == "exec[1]" && p.message.contains("\"bun\"")), "{found:?}");
 }
 
 #[test]
@@ -2711,15 +2712,18 @@ mod static_check {
             OsGrantFindingCode::Missing
         ));
         let literal = final_of(
-            json!({ "exec": ["git"], "env": ["PATH"] }),
+            json!({ "exec": ["git"], "env": ["HOME"] }),
             None,
-            json!([["os/spawn", "git", [], { "env": { "PATH": "/bin" } }]]),
+            json!([["os/spawn", "git", [], { "env": { "HOME": "/bin" } }]]),
             json!({}),
         );
         assert!(
             has(&literal, OsGrantFindingCode::Unused),
             "control: a literal value uses no env grant"
         );
+        let path = one(json!({ "exec": ["git"] }), json!([["os/spawn", "git", [], { "env": { "PATH": "/bin" } }]]));
+        assert!(has(&path, OsGrantFindingCode::Missing), "a literal PATH needs its env grant");
+        assert!(one(json!({ "exec": ["git"], "env": ["PATH"] }), json!([["os/spawn", "git", [], { "env": { "PATH": "/bin" } }]])).is_empty());
     }
 
     #[test]
@@ -3022,4 +3026,77 @@ fn the_grants_report_prints_codes_and_via_in_kebab_case_and_reads_back() {
         serde_json::from_value::<OsGrantsReport>(bad).is_err(),
         "control: an unknown via is refused"
     );
+}
+
+#[test]
+fn a_grant_table_answers_each_orbital_with_its_own_set_plus_the_app_level() {
+    let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+        "name": "p", "version": "1.0.0",
+        "osGrants": {"stdio": ["out"]},
+        "orbitals": [
+            {"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": [], "osGrants": {"exec": ["git"]}},
+            {"name": "B", "entity": {"name": "F", "fields": []}, "traits": [], "pages": []}
+        ]
+    }))
+    .expect("schema");
+    let mut table = OsGrantTable::default();
+    table.register(&schema);
+    let git = OsRequirement::Exec { command: "git".to_string() };
+    let out = OsRequirement::Stdio { kind: StdioKind::Out };
+    assert!(table.allows(Some("A"), &git) && table.allows(Some("A"), &out));
+    assert!(!table.allows(Some("B"), &git) && table.allows(Some("B"), &out));
+    assert!(!table.allows(None, &git) && table.allows(None, &out), "no orbital named: the app level alone");
+    assert!(!table.allows(Some("Nobody"), &git), "an unregistered orbital holds the app level alone");
+    assert!(table.declared().exec_allows("git"), "the declared union is for reports");
+    assert!(OsGrantTable::default().is_empty() && !table.is_empty());
+}
+
+#[test]
+fn a_home_that_is_relative_empty_or_holds_a_glob_character_leaves_the_tilde_anchor_unavailable() {
+    use std::ffi::OsString;
+    let home = |text: &str| usable_home(Some(OsString::from(text)));
+    assert_eq!(home("/Users/a"), Some(PathBuf::from("/Users/a")), "control: an absolute plain home stands");
+    assert_eq!(usable_home(None), None);
+    for bad in ["", "relative/home", "/Users/*", "/Users/a?"] {
+        assert_eq!(home(bad), None, "{bad:?}");
+    }
+    let anchors = OsAnchors { home: home("/Users/*"), ..OsAnchors::default() };
+    let err = anchors.expand("~/notes").expect_err("no home to anchor to");
+    assert!(err.contains("no home directory"), "{err}");
+    let ok = OsAnchors { home: home("/Users/a"), ..OsAnchors::default() };
+    assert_eq!(ok.expand("~/notes"), Ok(Some(PathBuf::from("/Users/a/notes"))));
+}
+
+#[test]
+fn an_exec_entry_is_a_bare_name_or_an_absolute_path_and_exe_takes_no_path() {
+    let problems = |exec: &[&str]| OsGrants { exec: exec.iter().map(|c| c.to_string()).collect(), ..OsGrants::default() }.entry_problems();
+    assert!(problems(&["git", "/usr/bin/git"]).is_empty(), "control: a bare name and an absolute path stand");
+    for bad in ["bin/git", "./git", "../git", "/usr/*/git", "/usr/../bin/git"] {
+        let found = problems(&[bad]);
+        assert_eq!(found.len(), 1, "{bad:?}: {found:?}");
+        assert!(found[0].message.contains(bad), "the problem names the entry: {found:?}");
+    }
+    let exe = |path: Option<&str>| anchored(Vec::new(), vec![aexec(GrantAnchor::Exe, path)]).entry_problems();
+    assert!(exe(None).is_empty(), "control: exe alone names the running binary");
+    assert_eq!(exe(Some("orb")).len(), 1);
+    assert_eq!(anchored(vec![afs(GrantAnchor::Exe, "x")], Vec::new()).entry_problems().len(), 1, "exe is not a directory anchor");
+}
+
+#[test]
+fn a_spawn_that_sets_path_needs_the_path_env_grant_and_another_literal_variable_needs_none() {
+    let needs = |env: serde_json::Value| call(OsOp::Spawn, json!(["git", [], {"env": env}])).unwrap();
+    assert_eq!(needs(json!({"PATH": "/usr/bin"})), vec![OsRequirement::Exec { command: "git".into() }, OsRequirement::Env { name: "PATH".into() }]);
+    assert_eq!(needs(json!({"FOO": null})), vec![OsRequirement::Exec { command: "git".into() }, OsRequirement::Env { name: "FOO".into() }]);
+    assert_eq!(needs(json!({"FOO": "x"})), vec![OsRequirement::Exec { command: "git".into() }], "control");
+}
+
+#[test]
+fn exe_resolves_to_the_running_binary_only_for_a_command() {
+    let anchors = OsAnchors { exe: Some(PathBuf::from("/opt/orb/orb")), ..OsAnchors::default() };
+    assert_eq!(anchors.resolve_path(&AnchoredPath { anchor: GrantAnchor::Exe, path: None }), Ok("/opt/orb/orb".to_string()));
+    assert!(anchors.resolve_path(&AnchoredPath { anchor: GrantAnchor::Exe, path: Some("x".into()) }).is_err());
+    assert!(anchors.anchor_segments(&GrantAnchor::Exe).is_err(), "never a directory");
+    assert!(OsAnchors::default().resolve_path(&AnchoredPath { anchor: GrantAnchor::Exe, path: None }).is_err(), "a host that cannot name it resolves nothing");
+    let relative = OsAnchors { exe: Some(PathBuf::from("orb")), ..OsAnchors::default() };
+    assert!(relative.exe_path().is_err(), "a relative executable path is not guessed");
 }

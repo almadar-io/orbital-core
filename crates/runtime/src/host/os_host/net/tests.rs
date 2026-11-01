@@ -752,7 +752,7 @@ impl crate::secret_source::SecretSource for Held {
 }
 
 fn send_request(sock: &Value, segments: Vec<Value>) -> IoRequest {
-    IoRequest::Os { op: OsOp::Send, args: vec![sock.clone(), Value::array(segments)], key: None, site: None, principal: None }
+    IoRequest::Os { op: OsOp::Send, args: vec![sock.clone(), Value::array(segments)], key: None, site: None, principal: None, orbital: None }
 }
 
 fn answered(host: &OsHost<'_>, request: &IoRequest) -> Result<Value, OsError> {
@@ -839,7 +839,7 @@ fn the_viewer_of_an_os_send_ask_picks_the_value_of_a_user_segment() {
         Value::object(orbital_core_base::value::ValueMap::from_iter(fields))
     };
     let as_viewer = |viewer: Option<&str>, segments: Vec<Value>| match send_request(&sock, segments) {
-        IoRequest::Os { op, args, key, site, .. } => IoRequest::Os { op, args, key, site, principal: viewer.map(str::to_string) },
+        IoRequest::Os { op, args, key, site, .. } => IoRequest::Os { op, args, key, site, principal: viewer.map(str::to_string), orbital: None },
         other => other,
     };
     let user = segment(Some("user"), "");
@@ -851,5 +851,141 @@ fn the_viewer_of_an_os_send_ask_picks_the_value_of_a_user_segment() {
     assert_eq!(kind_of(answered(&host, &as_viewer(None, vec![user]))), OsErrorKind::Denied, "a user segment needs a viewer");
     let unknown = segment(Some("team"), "");
     assert_eq!(kind_of(answered(&host, &as_viewer(Some("alice"), vec![unknown]))), OsErrorKind::Invalid, "an unknown scope is refused");
+    handles.close_all();
+}
+fn stream_timeouts(handles: &OsHandles, sock: &Value) -> (Option<Duration>, Option<Duration>) {
+    handles
+        .net
+        .socks
+        .with(id_of(sock), |entry| match entry {
+            SockEntry::Stream(stream) => (
+                stream.read_timeout().expect("read timeout"),
+                stream.write_timeout().expect("write timeout"),
+            ),
+            _ => panic!("not a stream socket"),
+        })
+        .expect("an open socket")
+}
+
+/// A read waits until data, a close or a deadline the program declares; the host picks no read timeout.
+#[test]
+fn a_connected_stream_reads_with_no_host_chosen_timeout() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    with_host(tcp_grant(port), |host| {
+        let sock = field(
+            &ask(
+                host,
+                OsOp::TcpConnect,
+                &[s("127.0.0.1"), n(i64::from(port))],
+            )
+            .expect("connected"),
+            "sock",
+        );
+        let (read, write) = stream_timeouts(host.handles, &sock);
+        assert_eq!(
+            read, None,
+            "a connected stream carries no host read timeout"
+        );
+        assert_eq!(write, Some(IO_TIMEOUT), "control: writes keep their bound");
+    });
+}
+
+#[test]
+fn an_accepted_stream_reads_with_no_host_chosen_timeout() {
+    use crate::resumable::completion_event;
+    let handles = OsHandles::default();
+    let rx = collecting_sink(&handles);
+    let on_event = |_: Option<&CallSite>, _: Value| {};
+    let listen_grants = grants(&[("127.0.0.1:0".to_string(), &[NetKind::Listen])]);
+    let listening = OsHost {
+        grants: &listen_grants,
+        handles: &handles,
+        on_event: &on_event,
+        secrets: None,
+    };
+    let bound = answer(
+        OsOp::TcpListen,
+        &[s("127.0.0.1"), n(0)],
+        Some("l1"),
+        Some(&listen_site()),
+        &listening,
+    )
+    .expect("net answers tcp-listen")
+    .expect("listening");
+    let port = id_of(&field(&bound, "port"));
+    let connect_grants = tcp_grant(port as u16);
+    let client = OsHost {
+        grants: &connect_grants,
+        handles: &handles,
+        on_event: &on_event,
+        secrets: None,
+    };
+    ask(&client, OsOp::TcpConnect, &[s("127.0.0.1"), n(port)]).expect("connected");
+    let (at, key, outcome) = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("an accepted connection arrives");
+    let (_, payload) = completion_event(&at, &key, outcome).expect("routed");
+    let conn = payload
+        .get_path("sock")
+        .cloned()
+        .expect("the accepted socket");
+    let (read, write) = stream_timeouts(&handles, &conn);
+    assert_eq!(
+        read, None,
+        "an accepted stream carries no host read timeout"
+    );
+    assert_eq!(write, Some(IO_TIMEOUT), "control: writes keep their bound");
+    handles.close_all();
+}
+
+/// With no read timeout, closing the socket is what ends a pending keyed read (a declared deadline closes it).
+#[test]
+fn closing_a_stream_ends_its_pending_keyed_read_at_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let server = std::thread::spawn(move || listener.accept().expect("accept").0);
+    let handles = OsHandles::default();
+    let rx = collecting_sink(&handles);
+    let on_event = |_: Option<&CallSite>, _: Value| {};
+    let connect_grants = tcp_grant(port);
+    let host = OsHost {
+        grants: &connect_grants,
+        handles: &handles,
+        on_event: &on_event,
+        secrets: None,
+    };
+    let sock = field(
+        &ask(
+            &host,
+            OsOp::TcpConnect,
+            &[s("127.0.0.1"), n(i64::from(port))],
+        )
+        .expect("connected"),
+        "sock",
+    );
+    let _silent_peer = server.join().expect("server");
+    assert!(recv_later(&[sock.clone(), n(16)], "r1", &listen_site(), &host).is_ok());
+    assert!(
+        rx.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the silent peer leaves the read pending"
+    );
+    let closed_at = Instant::now();
+    answer(OsOp::Close, &[sock], None, None, &host)
+        .expect("a socket")
+        .expect("closed");
+    let (_, key, outcome) = rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the pending read ends when its socket closes");
+    assert_eq!(key, "r1");
+    assert!(closed_at.elapsed() < Duration::from_secs(2));
+    let ended = match outcome {
+        Err(_) => true,
+        Ok(value) => field(&value, "eof") == Value::Bool(true),
+    };
+    assert!(
+        ended,
+        "the read answers a failure or end of stream, never data"
+    );
     handles.close_all();
 }

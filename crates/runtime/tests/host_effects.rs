@@ -1039,7 +1039,7 @@ mod os_effects {
             op: OsOp::TcpConnect,
             args: vec![Value::string("db.internal"), Value::Number(5432.0)],
             key: Some("k".into()),
-            site: None, principal: None,
+            site: None, principal: None, orbital: None
         };
         let wire = serde_json::to_value(IoRequestWire::from(&request)).unwrap();
         assert_eq!(
@@ -1517,11 +1517,11 @@ mod os_completion {
                 serde_json::from_value(json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
             ],
             key: None,
-            site: None, principal: None,
+            site: None, principal: None, orbital: None
         };
         let IoAnswer::Os(Ok(spawned)) = answer_os(Some(&host), &spawn) else { panic!("spawn") };
         let fd = spawned.expose().get_path("stdout").cloned().expect("a stdout fd");
-        let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None, principal: None };
+        let read = IoRequest::Os { op: OsOp::Read, args: vec![fd, Value::Number(16.0)], key: None, site: None, principal: None, orbital: None };
         assert!(matches!(answer_os(Some(&host), &read), IoAnswer::Os(Ok(_))));
     }
 
@@ -2019,15 +2019,15 @@ mod os_twin {
         vars.insert("port".into(), json!(port));
         vars.insert("closedPort".into(), json!(closed));
 
-        let grants: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
-        let handles = Shared::new(OsHandles {
-            anchors: orbital_core_runtime::os_host::OsAnchors {
-                home: Some(anchors_root.join("home")),
-                start: Some(anchors_root.join("start")),
-                ..orbital_core_runtime::os_host::OsAnchors::default()
-            },
-            ..OsHandles::default()
-        });
+        let declared: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
+        let anchors = orbital_core_runtime::os_host::OsAnchors {
+            home: Some(anchors_root.join("home")),
+            start: Some(anchors_root.join("start")),
+            env: orbital_core_runtime::os_host::EnvSnapshot::from_pairs(std::env::var("PATH").map(|p| ("PATH".to_string(), p))),
+            ..orbital_core_runtime::os_host::OsAnchors::default()
+        };
+        let grants = declared.resolve_anchors(&anchors).0;
+        let handles = Shared::new(OsHandles { anchors, ..OsHandles::default() });
         let (told, rx) = channel();
         handles.completions.set_sink(Shared::new(Collect(StdMutex::new(told))));
         let mut arrived: HashMap<String, Json> = HashMap::new();
@@ -2058,7 +2058,7 @@ mod os_twin {
                 .collect();
             let key = step.get("key").and_then(Json::as_str).map(str::to_string);
             let site = key.as_ref().map(|_| routed_site());
-            let request = IoRequest::Os { op, args, key: key.clone(), site, principal: None };
+            let request = IoRequest::Os { op, args, key: key.clone(), site, principal: None, orbital: None };
             let answered = if through_native_host { native.answer(&request) } else { answer_os(Some(&host), &request) };
             if let Some(deferred) = step.get("deferred") {
                 assert!(matches!(answered, IoAnswer::ServiceDeferred), "{name}: {answered:?}");
@@ -2157,7 +2157,7 @@ mod kv_asks {
         let on_event = |_: Option<&CallSite>, _: Value| {};
         let host = OsHost { grants, handles, on_event: &on_event, secrets: None };
         let op = OsOp::from_name(op).unwrap_or_else(|| panic!("{op} is not an op"));
-        match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None, principal: None }) {
+        match answer_os(Some(&host), &IoRequest::Os { op, args, key: None, site: None, principal: None, orbital: None }) {
             IoAnswer::Os(answer) => answer.map(orbital_core_base::secret::Secret::into_inner),
             other => panic!("{other:?}"),
         }
@@ -2380,3 +2380,87 @@ mod access_check_effects {
     }
 }
 
+
+// EXEC-OS-GRANTS-ORBITAL: an `os/` ask is answered against its calling orbital's own grants plus the app level.
+mod os_grants_per_orbital {
+    use super::*;
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_runtime::config::KernelConfig;
+    use orbital_core_runtime::credentials::Credentials;
+    use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
+    use orbital_core_runtime::kernel::RuntimeKernel;
+    use orbital_core_runtime::native_host::NativeHost;
+    use orbital_core_runtime::os_host::completion::{CompletionAnswerer, CompletionDone, KernelCompletionSink};
+    use orbital_core_runtime::os_host::OsHandles;
+    use orbital_core_runtime::resumable::{CallSite, DispatchError, DispatchOutcomes};
+    use std::sync::Arc;
+
+    fn orbital(name: &str, trait_name: &str, grants: Option<Json>) -> Json {
+        let mut orbital = json!({
+            "name": name,
+            "entity": { "name": format!("{name}Row"), "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": trait_name, "linkedEntity": format!("{name}Row"), "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }, { "name": "ok" }, { "name": "bad" }],
+                "transitions": [
+                    { "from": "idle", "to": "idle", "event": "GO", "effects": [["os/getenv", "HOME", { "emit": { "success": "ENV_OK", "failure": "ENV_BAD" } }]] },
+                    { "from": "idle", "to": "ok", "event": "ENV_OK", "effects": [["set", "@entity.got", "@payload"]] },
+                    { "from": "idle", "to": "bad", "event": "ENV_BAD", "effects": [["set", "@entity.got", "@payload"]] }
+                ]
+            } }]
+        });
+        if let Some(grants) = grants {
+            orbital["osGrants"] = grants;
+        }
+        orbital
+    }
+
+    fn program(app: Option<Json>, a: Option<Json>, b: Option<Json>) -> OrbitalSchema {
+        let mut program = json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital("A", "TraitA", a), orbital("B", "TraitB", b)] });
+        if let Some(app) = app {
+            program["osGrants"] = app;
+        }
+        serde_json::from_value(program).unwrap()
+    }
+
+    fn state_of(schema: OrbitalSchema, trait_name: &str) -> String {
+        let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
+        let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), KernelConfig::default()));
+        kernel.register_schema(schema).unwrap();
+        let host = NativeHost::new(
+            store,
+            Arc::new(Credentials::from_env(Default::default())),
+            kernel.os_grant_table(),
+            Arc::new(OsHandles::default()),
+            Arc::new(|_: Option<&CallSite>, _: Value| {}),
+        );
+        let answer: Arc<CompletionAnswerer> = Arc::new(move |request: &IoRequest| host.answer(request));
+        let on_done: Arc<CompletionDone> =
+            Arc::new(|_: &CallSite, _: &str, _: &Value, _: Option<&str>, _: Result<DispatchOutcomes, DispatchError>| {});
+        let sink = KernelCompletionSink::new(kernel.clone(), answer, on_done);
+        let progress = kernel.start_dispatch(trait_name, None, "GO", Value::Null, None, None).unwrap();
+        sink.drive(progress).unwrap();
+        kernel.snapshot_trait(trait_name, None).state
+    }
+
+    fn home() -> Json {
+        json!({ "env": ["HOME"] })
+    }
+
+    #[test]
+    fn an_orbital_with_a_grant_is_answered_and_a_sibling_without_one_is_refused() {
+        assert_eq!(state_of(program(None, Some(home()), None), "TraitA"), "ok");
+        assert_eq!(state_of(program(None, Some(home()), None), "TraitB"), "bad");
+    }
+
+    #[test]
+    fn control_an_app_level_grant_answers_every_orbital() {
+        assert_eq!(state_of(program(Some(home()), None, None), "TraitA"), "ok");
+        assert_eq!(state_of(program(Some(home()), None, None), "TraitB"), "ok");
+    }
+
+    #[test]
+    fn control_no_grant_anywhere_refuses_every_orbital() {
+        assert_eq!(state_of(program(None, None, None), "TraitA"), "bad");
+        assert_eq!(state_of(program(None, None, None), "TraitB"), "bad");
+    }
+}

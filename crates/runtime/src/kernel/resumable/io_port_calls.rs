@@ -348,13 +348,14 @@ impl IoPort {
 
     /// One `os/<op>` ask, journaled. A streaming op, and a keyed op that defers its completion under a declared
     /// route, carries the call site its events dispatch to; the host may answer the latter `ServiceDeferred`.
-    pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>, principal: Option<&str>) -> Result<Value, OsError> {
+    pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>, principal: Option<&str>, orbital: Option<&str>) -> Result<Value, OsError> {
         match self.ask(|| IoRequest::Os {
             op,
             args: args.to_vec(),
             key: key.map(str::to_string),
             site: self.os_site(op, key),
             principal: principal.map(str::to_string),
+            orbital: orbital.map(str::to_string),
         }) {
             Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
             Asked::Answer(IoAnswer::Os(out)) => out.map(Secret::into_inner),

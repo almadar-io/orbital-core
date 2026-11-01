@@ -39,7 +39,7 @@ use orbital_core_base::effect_types::{
 use orbital_core_base::error::{EvalError, OrbitalError};
 use orbital_core_base::events::bus::{shared_bus, SharedEventBus};
 use orbital_core_base::os::{OsError, OsErrorKind};
-use orbital_core_base::os_grants::OsGrants;
+use orbital_core_base::os_grants::{OsGrantTable, OsGrants};
 use orbital_core_base::row_set::{
     nearest_rows, RowNearest, RowOrder, RowPredicate, RowQuery, RowSetRef, RowTotalMode,
 };
@@ -381,8 +381,8 @@ struct Registry {
 struct Grants {
     /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
     egress: Arc<RwLock<Vec<String>>>,
-    /// The `os/` grants the registered programs declare, unioned.
-    os_grants: Arc<RwLock<OsGrants>>,
+    /// The `os/` grants the registered programs declare, held per orbital.
+    os_grants: Arc<RwLock<OsGrantTable>>,
     /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
     managed_credentials: Arc<RwLock<Vec<orbital_core_base::secrets::ProgramCredential>>>,
 }
@@ -735,7 +735,7 @@ impl RuntimeKernel {
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
-                os_grants: Arc::new(RwLock::new(OsGrants::default())),
+                os_grants: Arc::new(RwLock::new(OsGrantTable::default())),
                 managed_credentials: Arc::new(RwLock::new(Vec::new())),
             },
             deliveries: Arc::default(),

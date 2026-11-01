@@ -161,6 +161,8 @@ impl OsGrants {
         for (i, command) in self.exec.iter().enumerate() {
             if !valid_name(command) {
                 problem(format!("exec[{i}]"), format!("{command:?} is not one command name"));
+            } else if command.contains('/') && !valid_absolute_command(command) {
+                problem(format!("exec[{i}]"), format!("{command:?} is neither a bare command name nor an absolute path without `..` or glob characters"));
             }
         }
         for (i, g) in self.net.iter().enumerate() {
@@ -199,6 +201,9 @@ impl OsGrants {
             let at = format!("anchored.fs[{i}]");
             if let Some(message) = anchor_problem(&g.anchor) {
                 problem(at.clone(), message);
+            }
+            if g.anchor == GrantAnchor::Exe {
+                problem(at.clone(), "fs exe: the executable is a command, not a directory".to_string());
             }
             if !valid_relative(&g.glob) {
                 problem(at.clone(), format!("{} {:?} is not a relative glob without `..`", g.anchor.label(), g.glob));

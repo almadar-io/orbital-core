@@ -215,6 +215,11 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
                 }
                 match value {
                     Value::String(v) if !v.contains('\0') => {
+                        if let Some(need) = orbital_core_base::os_grants::OsRequirement::spawn_env(name, false) {
+                            if !host.grants.allows(&need) {
+                                return Err(denied(op, &format!("environment {name} is not granted")));
+                            }
+                        }
                         vars.insert(name.to_string(), v.clone().into_inner());
                     }
                     Value::Null => {

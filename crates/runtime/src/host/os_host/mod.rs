@@ -195,6 +195,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
         key,
         site,
         principal,
+        ..
     } = request
     else {
         return IoAnswer::Service(Err("not an os request".to_string()));
@@ -233,7 +234,7 @@ mod tests {
             op,
             args: Vec::new(),
             key: None,
-            site: None, principal: None,
+            site: None, principal: None, orbital: None
         }
     }
 
@@ -255,7 +256,7 @@ mod tests {
 
     fn os_answer(op: OsOp, args: Vec<Value>, grants: &OsGrants, handles: &OsHandles) -> Result<Value, OsError> {
         let on_event = |_: Option<&CallSite>, _: Value| {};
-        let request = IoRequest::Os { op, args, key: None, site: None, principal: None };
+        let request = IoRequest::Os { op, args, key: None, site: None, principal: None, orbital: None };
         match answer_os(Some(&OsHost { grants, handles, on_event: &on_event, secrets: None }), &request) {
             IoAnswer::Os(answer) => answer.map(Secret::into_inner),
             other => panic!("{other:?}"),
@@ -672,6 +673,111 @@ mod tests {
         assert_eq!(args[0], Value::string("/opt/orb/bun"));
     }
 
+    fn tool_script(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    fn spawn_args(command: Value) -> Vec<Value> {
+        vec![command, Value::array(Vec::new()), serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null" })).unwrap()]
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_bare_command_runs_the_path_resolved_at_boot_even_after_the_path_or_the_file_changes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (dir.path().canonicalize().unwrap().join("a"), dir.path().canonicalize().unwrap().join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let first = tool_script(&a, "l113tool");
+        tool_script(&b, "l113tool");
+        let anchors = OsAnchors {
+            env: EnvSnapshot::from_pairs([("PATH".to_string(), format!("{}:{}", a.display(), b.display()))]),
+            ..OsAnchors::default()
+        };
+        let handles = OsHandles { anchors, ..OsHandles::default() };
+        let declared = OsGrants { exec: vec!["l113tool".to_string()], ..OsGrants::default() };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(grants.exec, [first.to_str().unwrap().to_string()], "the grant is the resolved absolute path, not the bare name");
+        assert!(os_answer(OsOp::Spawn, spawn_args(Value::string("l113tool")), &grants, &handles).is_ok(), "the bare name spawns the snapshot path, not this process's PATH");
+        std::fs::remove_file(&first).unwrap();
+        let after = os_answer(OsOp::Spawn, spawn_args(Value::string("l113tool")), &grants, &handles).expect_err("the removed file is not replaced by a later lookup");
+        assert_ne!(after.kind, OsErrorKind::Denied, "{}", after.message);
+        assert!(!after.message.contains(&b.display().to_string()), "{}", after.message);
+        let undeclared = os_answer(OsOp::Spawn, spawn_args(Value::string("sh")), &grants, &handles).expect_err("an undeclared name is not granted");
+        assert_eq!(undeclared.kind, OsErrorKind::Denied, "control: only declared names run");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_declared_bare_command_that_did_not_resolve_at_boot_is_refused_naming_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().unwrap();
+        let anchors = OsAnchors { env: EnvSnapshot::from_pairs([("PATH".to_string(), root.display().to_string())]), ..OsAnchors::default() };
+        let handles = OsHandles { anchors, ..OsHandles::default() };
+        let declared = OsGrants { exec: vec!["l113missing".to_string()], ..OsGrants::default() };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(grants.exec.is_empty());
+        assert!(problems.iter().any(|p| p.path == "exec[0]" && p.message.contains("l113missing")), "{problems:?}");
+        let refused = os_answer(OsOp::Spawn, spawn_args(Value::string("l113missing")), &grants, &handles).expect_err("unavailable");
+        assert_eq!(refused.kind, OsErrorKind::NotFound);
+        assert!(refused.message.contains("l113missing"), "{}", refused.message);
+        tool_script(&root, "l113missing");
+        let late = os_answer(OsOp::Spawn, spawn_args(Value::string("l113missing")), &grants, &handles).expect_err("a file that appears after boot changes nothing");
+        assert_eq!(late.kind, OsErrorKind::NotFound, "{}", late.message);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_exe_anchor_names_the_running_binary_and_spawns_it_only_under_an_exe_grant() {
+        let exe = std::env::current_exe().unwrap();
+        let handles = OsHandles { anchors: OsAnchors { exe: Some(exe.clone()), ..OsAnchors::default() }, ..OsHandles::default() };
+        let declared = OsGrants {
+            anchored: orbital_core_base::os_grants::AnchoredGrants {
+                exec: vec![orbital_core_base::os_grants::AnchoredExec { anchor: GrantAnchor::Exe, path: None }],
+                ..Default::default()
+            },
+            ..OsGrants::default()
+        };
+        let (grants, problems) = declared.resolve_anchors(&handles.anchors);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(grants.exec, [exe.to_str().unwrap().to_string()]);
+        let command = anchored_value(serde_json::json!({"anchor": "exe"}));
+        let resolved = resolve_anchored_args(OsOp::Spawn, &spawn_args(command.clone()), &handles.anchors).unwrap();
+        assert_eq!(resolved[0], Value::string(exe.to_str().unwrap()));
+        let mut args = spawn_args(command.clone());
+        args[1] = serde_json::from_value(serde_json::json!(["--list"])).unwrap();
+        assert!(os_answer(OsOp::Spawn, args, &grants, &handles).is_ok());
+        let ungranted = os_answer(OsOp::Spawn, spawn_args(command), &OsGrants::default(), &handles).expect_err("no exec grant");
+        assert_eq!(ungranted.kind, OsErrorKind::Denied, "control: the anchor alone grants nothing");
+        let unknown = resolve_anchored_args(OsOp::Spawn, &spawn_args(anchored_value(serde_json::json!({"anchor": "exe"}))), &OsAnchors::default());
+        assert!(unknown.is_err(), "a host that cannot name its executable resolves nothing");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_spawn_that_sets_path_needs_an_env_grant_for_it() {
+        let handles = OsHandles::default();
+        let with_env = |value: &str| {
+            let mut args = spawn_args(Value::string("/bin/sh"));
+            args[2] = serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "PATH": value } })).unwrap();
+            args
+        };
+        let bare = OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() };
+        let refused = os_answer(OsOp::Spawn, with_env("/usr/bin"), &bare, &handles).expect_err("PATH ungranted");
+        assert_eq!(refused.kind, OsErrorKind::Denied);
+        assert!(refused.message.contains("PATH"), "{}", refused.message);
+        let granted = OsGrants { env: vec!["PATH".to_string()], ..bare.clone() };
+        assert!(os_answer(OsOp::Spawn, with_env("/usr/bin"), &granted, &handles).is_ok());
+        let mut other = with_env("x");
+        other[2] = serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "L113_PLAIN": "x" } })).unwrap();
+        assert!(os_answer(OsOp::Spawn, other, &bare, &handles).is_ok(), "control: another literal variable needs no grant");
+    }
+
     #[test]
     fn an_env_anchored_port_is_the_boot_value_as_a_number() {
         let anchors = OsAnchors { env: EnvSnapshot::from_pairs([("PORT".to_string(), "8080".to_string()), ("BAD".to_string(), "x".to_string())]), ..OsAnchors::default() };
@@ -771,13 +877,13 @@ mod tests {
                 (OsOp::IrqWait, vec![Value::Number(33.0)]),
                 (OsOp::IrqAck, vec![Value::Number(33.0)]),
             ] {
-                let request = IoRequest::Os { op, args, key: Some("k".into()), site: None, principal: None };
+                let request = IoRequest::Os { op, args, key: Some("k".into()), site: None, principal: None, orbital: None };
                 let IoAnswer::Os(Err(error)) = answer_os(Some(host), &request) else { panic!("{} must fail", op.name()) };
                 assert_eq!(error.kind, OsErrorKind::Unsupported, "{}", op.name());
                 assert!(error.message.contains("no devices"), "{}", error.message);
             }
         });
-        let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None, principal: None };
+        let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None, principal: None, orbital: None };
         let IoAnswer::Os(Err(error)) = answer_os(None, &request) else { panic!("no host must deny") };
         assert_eq!(error.kind, OsErrorKind::Denied, "control: no host denies before any device question");
     }
@@ -789,7 +895,7 @@ mod tests {
                 op: OsOp::Close,
                 args: vec![Value::Number(99.0)],
                 key: None,
-                site: None, principal: None,
+                site: None, principal: None, orbital: None
             };
             match answer_os(Some(host), &request) {
                 IoAnswer::Os(Err(error)) => assert_eq!(error.kind, OsErrorKind::Closed),
