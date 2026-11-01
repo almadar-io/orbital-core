@@ -2950,6 +2950,110 @@ mod static_check {
     }
 
     #[test]
+    fn a_knob_fed_exec_target_is_deferred_to_the_composer_in_the_written_pass() {
+        let picked = |tail: serde_json::Value| {
+            json!([["os/spawn", ["array/nth", tail, "@entity.cmdCursor"], "@entity.argv", {}]])
+        };
+        let knob = json!(["let", [["knob_commands", ["list", "echo"], "<declared type>"]], "@knob_commands"]);
+        let deferred = one(json!(null), picked(knob.clone()));
+        assert!(deferred.is_empty(), "{deferred:?}");
+        let covered = one(json!(null), picked(json!("@config.commands")));
+        assert!(covered.is_empty(), "control: the bare knob read stays deferred: {covered:?}");
+        let literal = one(json!(null), json!([["os/spawn", "echo", []]]));
+        assert!(has(&literal, OsGrantFindingCode::Missing), "control: a literal target needs the atom's grant");
+        let literal_pick = one(
+            json!(null),
+            json!([["os/spawn", ["array/nth", ["list", "echo"], "@entity.cmdCursor"], []]]),
+        );
+        assert!(has(&literal_pick, OsGrantFindingCode::Missing), "control: a literal list in the atom needs the grant");
+    }
+
+    #[test]
+    fn the_finished_pass_checks_a_knob_fed_exec_target_against_the_composers_grant() {
+        let effects = json!([["os/spawn", ["array/nth", "@config.commands", "@entity.cmdCursor"], "@entity.argv", {}]]);
+        let knob = |default: serde_json::Value| json!({ "commands": { "type": "array", "default": default } });
+        let run = |grants: serde_json::Value, default: serde_json::Value| {
+            final_of(grants, None, effects.clone(), knob(default))
+        };
+        assert!(
+            !has(&run(json!({ "exec": ["gh"] }), json!(["gh"])), OsGrantFindingCode::Missing),
+            "the call-site value is granted by the composer"
+        );
+        let ungranted = run(json!(null), json!(["gh"]));
+        assert!(
+            ungranted
+                .iter()
+                .any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "{ungranted:?}"
+        );
+        let default_only = run(json!({ "exec": ["gh"] }), json!(["echo"]));
+        assert!(
+            default_only
+                .iter()
+                .any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "a left default must be granted too: {default_only:?}"
+        );
+        assert!(!has(&run(json!({ "exec": ["echo"] }), json!(["echo"])), OsGrantFindingCode::Missing));
+    }
+
+    fn knob_let(literal: serde_json::Value) -> serde_json::Value {
+        json!(["let", [["knob_k", literal, "<declared type>"]], "@knob_k"])
+    }
+
+    #[test]
+    fn a_let_wrapped_scalar_knob_host_is_deferred_when_written_and_checked_through_the_let_when_finished() {
+        let connect = |host: &str, port: u16| {
+            json!([["os/tcp-connect", knob_let(json!(host)), knob_let(json!(port)), {}]])
+        };
+        let net = |target: &str| json!({ "net": [{ "target": target, "kinds": ["tcp"] }] });
+        let written = one(json!(null), connect("api.example.test", 80));
+        assert!(written.is_empty(), "{written:?}");
+        let literal = one(json!(null), json!([["os/tcp-connect", "api.example.test", 80, {}]]));
+        assert!(has(&literal, OsGrantFindingCode::Missing), "control: a literal host needs the atom's grant");
+        let bare = || json!({ "commands": { "type": "string", "default": "x" } });
+        let ungranted = final_of(json!(null), None, connect("api.example.test", 80), bare());
+        assert!(
+            ungranted.iter().any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "{ungranted:?}"
+        );
+        let granted = final_of(net("api.example.test:80"), None, connect("api.example.test", 80), json!({}));
+        assert!(!has(&granted, OsGrantFindingCode::Missing), "{granted:?}");
+        let other_port = final_of(net("api.example.test:80"), None, connect("api.example.test", 8080), json!({}));
+        assert!(has(&other_port, OsGrantFindingCode::Missing), "control: the value decides, not the host name");
+    }
+
+    #[test]
+    fn a_dynamic_host_with_a_let_wrapped_knob_port_is_covered_by_the_pattern_grant_at_that_port() {
+        let connect = |port: u16| json!([["os/tcp-connect", "@payload.host", knob_let(json!(port)), {}]]);
+        let covered = one(net_pattern("*.example.com:443"), connect(443));
+        assert!(covered.is_empty(), "written: {covered:?}");
+        let finished = final_of(net_pattern("*.example.com:443"), None, connect(443), json!({}));
+        assert!(!has(&finished, OsGrantFindingCode::Missing), "final: {finished:?}");
+        assert!(!has(&finished, OsGrantFindingCode::TargetNotStatic), "final: {finished:?}");
+        let none = final_of(json!(null), None, connect(443), json!({}));
+        assert!(has(&none, OsGrantFindingCode::Missing), "control: no pattern grant: {none:?}");
+        let other = final_of(net_pattern("*.example.com:80"), None, connect(443), json!({}));
+        assert!(has(&other, OsGrantFindingCode::Missing), "control: pattern at another port: {other:?}");
+    }
+
+    #[test]
+    fn the_finished_pass_checks_every_element_of_a_let_wrapped_knob_list() {
+        let picked = |list: serde_json::Value| {
+            json!([["os/spawn", ["array/nth", knob_let(list), "@entity.cmdCursor"], "@entity.argv", {}]])
+        };
+        let run = |grants: serde_json::Value, list: serde_json::Value| {
+            final_of(grants, None, picked(list), json!({}))
+        };
+        assert!(!has(&run(json!({ "exec": ["gh", "git"] }), json!(["list", "gh", "git"])), OsGrantFindingCode::Missing));
+        let one_short = run(json!({ "exec": ["gh"] }), json!(["list", "gh", "git"]));
+        let missing: Vec<_> = one_short.iter().filter(|f| f.code == OsGrantFindingCode::Missing).collect();
+        assert_eq!(missing.len(), 1, "{one_short:?}");
+        assert_eq!(missing[0].entry.as_deref(), Some("exec \"git\""));
+        assert_eq!(missing[0].via, Some(OsGrantVia::Config));
+        assert!(has(&run(json!(null), json!(["list", "gh"])), OsGrantFindingCode::Missing), "control: no composer grant");
+    }
+
+    #[test]
     fn the_finished_pass_checks_every_value_a_config_target_can_take() {
         let knob = json!({ "cmd": { "type": "string", "default": "git" } });
         let run = |grants: serde_json::Value, config: serde_json::Value| {
@@ -3099,4 +3203,12 @@ fn exe_resolves_to_the_running_binary_only_for_a_command() {
     assert!(OsAnchors::default().resolve_path(&AnchoredPath { anchor: GrantAnchor::Exe, path: None }).is_err(), "a host that cannot name it resolves nothing");
     let relative = OsAnchors { exe: Some(PathBuf::from("orb")), ..OsAnchors::default() };
     assert!(relative.exe_path().is_err(), "a relative executable path is not guessed");
+}
+
+#[test]
+fn the_target_positions_are_the_ones_the_operator_table_grants_on() {
+    assert_eq!(requirement_target_positions(OsOp::TcpConnect), vec![0, 1]);
+    assert_eq!(requirement_target_positions(OsOp::Spawn), vec![0]);
+    assert_eq!(requirement_target_positions(OsOp::ReadFile), vec![0]);
+    assert!(requirement_target_positions(OsOp::Close).is_empty(), "control: a handle call names no target");
 }

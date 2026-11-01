@@ -277,8 +277,9 @@ pub(super) fn net_need(
         let name = match literal(args, host, deferred) {
             Ok(name) => name,
             Err(at) => {
-                return match literal_port(args, port, deferred) {
-                    Ok(Some(port)) => Ok(vec![OsRequirement::NetPattern { port, kinds: kinds.to_vec() }]),
+                return match (literal_port(args, port, deferred), args.get(port)) {
+                    (Ok(Some(port)), _) => Ok(vec![OsRequirement::NetPattern { port, kinds: kinds.to_vec() }]),
+                    (Ok(None), Some(_)) => Ok(Vec::new()),
                     _ => Err(at),
                 };
             }
@@ -418,7 +419,11 @@ pub fn os_requirements_deferring(
 ) -> Result<Vec<OsRequirement>, usize> {
     let mut expansions: Vec<Vec<SExpression>> = vec![Vec::new()];
     for arg in args {
-        let choices = literal_list_pick(arg).unwrap_or_else(|| vec![arg.clone()]);
+        let choices = if deferred(arg) {
+            vec![arg.clone()]
+        } else {
+            literal_list_pick(arg).unwrap_or_else(|| vec![arg.clone()])
+        };
         expansions = expansions
             .into_iter()
             .flat_map(|prefix| {
@@ -491,6 +496,35 @@ fn anchored_positions_of(needs: &[OsGrantNeed]) -> Vec<usize> {
             _ => None,
         })
         .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
+/// Every positional argument of `op` that names what its grant is checked against (a path, glob, command, variable,
+/// host, port, store, register window or interrupt line), read from the operator table's `grant`. Empty for a call on
+/// a handle and for an operator with no table entry.
+pub fn requirement_target_positions(op: OsOp) -> Vec<usize> {
+    let Ok(needs) = super::try_os_grant_needs(op) else {
+        return Vec::new();
+    };
+    let mut at: Vec<usize> = Vec::new();
+    for need in needs {
+        match need {
+            OsGrantNeed::Fs { path, .. } | OsGrantNeed::FsOpen { path, .. } => at.push(*path),
+            OsGrantNeed::FsGlob { glob } => at.push(*glob),
+            OsGrantNeed::Exec { command, .. } => at.push(*command),
+            OsGrantNeed::Env { name } => at.push(*name),
+            OsGrantNeed::Net { host, port, .. } => {
+                at.push(*host);
+                at.extend(*port);
+            }
+            OsGrantNeed::Kv { store, .. } => at.push(*store),
+            OsGrantNeed::Mmio { base, offset, width, .. } => at.extend([*base, *offset, *width]),
+            OsGrantNeed::Irq { line, .. } => at.push(*line),
+            OsGrantNeed::Stdio { .. } | OsGrantNeed::Sys { .. } | OsGrantNeed::Desktop { .. } => {}
+        }
+    }
     at.sort_unstable();
     at.dedup();
     at

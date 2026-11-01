@@ -613,3 +613,224 @@ fn control_a_host_that_carries_the_circuit_state_is_posted_the_same_seeds() {
 fn control_a_client_only_seed_that_reaches_no_server_trait_still_posts_nothing() {
     assert!(!mounted_seeds(true).contains(&"Quiet".to_string()));
 }
+
+/// `A` (`[client]`) emits X from INIT; `B` (`[client]`) hears X and emits Y; `C` hears Y. With `server_c` C fetches.
+fn client_cascade_schema(server_c: bool) -> OrbitalSchema {
+    let fetch: Vec<serde_json::Value> = if server_c { vec![json!(["fetch", "Person", {}])] } else { vec![] };
+    serde_json::from_value(json!({
+        "name": "cascade",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "People",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "A", "dispatch": "client",
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "X", {"v": 1}]] }] } },
+                { "name": "B", "dispatch": "client",
+                  "listens": [{ "event": "X", "triggers": "GOT_X", "source": { "kind": "trait", "trait": "A" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "GOT_X", "effects": [["emit", "Y", {"v": 2}]] }] } },
+                { "name": "C", "linkedEntity": "Person",
+                  "listens": [{ "event": "Y", "triggers": "GOT_Y", "source": { "kind": "trait", "trait": "B" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "GOT_Y", "effects": fetch }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn client_cascade_mount(server_c: bool, order: &[&str]) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(client_cascade_schema(server_c), "c1").unwrap();
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    k.dispatch_mount(&seeds, None, Value::Null).unwrap()
+}
+
+/// EXEC-DIST-2 + EXEC-DIST-10: a server trait a mount seed's client-only cascade reaches leaves as a leg.
+#[test]
+fn a_mount_seeds_client_only_cascade_that_reaches_a_server_trait_posts_its_leg() {
+    let orders: [&[&str]; 6] = [&["A", "B", "C"], &["C", "B", "A"], &["A", "C", "B"], &["A"], &["A", "B"], &["A", "C"]];
+    for order in orders {
+        let mount = client_cascade_mount(true, order);
+        let targets: Vec<Option<String>> = mount
+            .stateful_legs
+            .iter()
+            .chain(mount.legs.iter())
+            .flat_map(|leg| leg.seeds.iter().map(|s| Some(s.trait_name.clone())))
+            .collect();
+        assert!(!mount.legs.is_empty(), "{order:?}: no leg posted ({targets:?})");
+        let posted: Vec<&orbital_core_runtime::effects::response::EventRequest> = mount.legs.iter().map(|l| &l.leg).collect();
+        let reaches_c = mount
+            .seeds
+            .iter()
+            .flat_map(|s| s.server_legs.iter())
+            .any(|r| r.leg.target_trait.as_deref() == Some("C") && r.leg.payload.as_ref().and_then(|p| p.get_path("v")).is_some());
+        assert!(reaches_c, "{order:?}: no leg for C with its payload ({posted:?})");
+    }
+}
+
+#[test]
+fn control_a_mount_seeds_client_only_cascade_that_reaches_no_server_trait_posts_nothing() {
+    let orders: [&[&str]; 4] = [&["A", "B", "C"], &["C", "B", "A"], &["A"], &["A", "B"]];
+    for order in orders {
+        let mount = client_cascade_mount(false, order);
+        assert!(mount.legs.is_empty(), "{order:?}: {:?}", mount.legs);
+        assert!(mount.seeds.iter().all(|s| s.server_legs.is_empty()));
+    }
+}
+
+/// The launchpad ci-status shape: `Board` (`[client]`) INIT emits LOAD; `Status` (`[client]`) idle->loading emits
+/// START (and SHOWN back to Board); `Retry` (optimistic, no server effect) answers START with ATTEMPT; `Status`
+/// loading->loading on ATTEMPT emits ASK to `Gh` (server), which fetches.
+fn client_retry_schema(server: bool) -> OrbitalSchema {
+    let fetch: Vec<serde_json::Value> = if server { vec![json!(["fetch", "Person", {}])] } else { vec![] };
+    serde_json::from_value(json!({
+        "name": "retrying",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "People",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Board", "dispatch": "client",
+                  "listens": [{ "event": "SHOWN", "triggers": "BOARD_SHOWN", "source": { "kind": "trait", "trait": "Status" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "LOAD", {}]] },
+                        { "from": "idle", "to": "idle", "event": "BOARD_SHOWN" }] } },
+                { "name": "Status", "dispatch": "client",
+                  "listens": [
+                    { "event": "LOAD", "triggers": "STATUS_LOAD", "source": { "kind": "trait", "trait": "Board" } },
+                    { "event": "ATTEMPT", "triggers": "STATUS_ATTEMPT", "source": { "kind": "trait", "trait": "Retry" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "loading" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "loading", "event": "STATUS_LOAD", "effects": [["emit", "START", {}], ["emit", "SHOWN", {}]] },
+                        { "from": "loading", "to": "loading", "event": "STATUS_ATTEMPT", "effects": [["emit", "ASK", {"q": "x"}]] }] } },
+                { "name": "Retry",
+                  "listens": [{ "event": "START", "triggers": "RETRY_START", "source": { "kind": "trait", "trait": "Status" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "RETRY_START", "effects": [["emit", "ATTEMPT", {}]] }] } },
+                { "name": "Gh", "linkedEntity": "Person",
+                  "listens": [{ "event": "ASK", "triggers": "GH_ASK", "source": { "kind": "trait", "trait": "Status" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "GH_ASK", "effects": fetch }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn client_retry_mount(server: bool, order: &[&str]) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(client_retry_schema(server), "c1").unwrap();
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    k.dispatch_mount(&seeds, None, Value::Null).unwrap()
+}
+
+#[test]
+fn a_mount_cascade_through_a_client_trait_and_an_optimistic_retry_posts_the_server_leg() {
+    let orders: [&[&str]; 4] = [&["Board"], &["Board", "Status", "Retry", "Gh"], &["Gh", "Retry", "Status", "Board"], &["Board", "Gh"]];
+    for order in orders {
+        let mount = client_retry_mount(true, order);
+        let posted: Vec<String> = mount.legs.iter().flat_map(|l| l.seeds.iter().map(|s| s.trait_name.clone())).collect();
+        let to_gh = mount.seeds.iter().flat_map(|s| s.server_legs.iter()).any(|r| r.leg.target_trait.as_deref() == Some("Gh") && r.leg.payload.as_ref().and_then(|p| p.get_path("q")).is_some());
+        assert!(to_gh && !mount.legs.is_empty(), "{order:?}: leg to Gh {to_gh}, posted {posted:?}");
+    }
+}
+
+#[test]
+fn control_a_mount_cascade_through_a_client_trait_and_a_retry_with_no_server_trait_posts_nothing() {
+    for order in [&["Board"][..], &["Board", "Status", "Retry", "Gh"]] {
+        let mount = client_retry_mount(false, order);
+        assert!(mount.legs.is_empty(), "{order:?}: {:?}", mount.legs);
+    }
+}
+
+/// `client_retry_schema` with `Gh` an optimistic client of `Http` (the server trait that fetches), as `GithubClient` is of
+/// `GithubHttp`: the ask reaches the server one emit later.
+fn client_retry_two_hop_schema(server: bool) -> OrbitalSchema {
+    let mut schema = serde_json::to_value(client_retry_schema(false)).unwrap();
+    let fetch: Vec<serde_json::Value> = if server { vec![json!(["fetch", "Person", {}])] } else { vec![] };
+    let traits = schema["orbitals"][0]["traits"].as_array_mut().unwrap();
+    let gh = traits.iter_mut().find(|t| t["name"] == "Gh").unwrap();
+    gh["stateMachine"]["transitions"][1]["effects"] = json!([["emit", "SEND", {"q": "x"}]]);
+    traits.push(json!({ "name": "Http", "linkedEntity": "Person",
+        "listens": [{ "event": "SEND", "triggers": "HTTP_SEND", "source": { "kind": "trait", "trait": "Gh" } }],
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [
+                { "from": "idle", "to": "idle", "event": "INIT" },
+                { "from": "idle", "to": "idle", "event": "HTTP_SEND", "effects": fetch }] } }));
+    for t in schema["orbitals"][0]["traits"].as_array_mut().unwrap() {
+        if matches!(t["name"].as_str(), Some("Gh" | "Http" | "Retry")) {
+            t["dispatch"] = json!("optimistic");
+        }
+    }
+    serde_json::from_value(schema).unwrap()
+}
+
+fn permutations<'a>(items: &[&'a str]) -> Vec<Vec<&'a str>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    (0..items.len())
+        .flat_map(|i| {
+            let mut rest = items.to_vec();
+            let head = rest.remove(i);
+            permutations(&rest).into_iter().map(move |mut tail| {
+                tail.insert(0, head);
+                tail
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn a_mount_cascade_that_reaches_the_server_trait_through_an_optimistic_client_posts_the_leg() {
+    let mut orders = permutations(&["Board", "Status", "Retry", "Gh", "Http"]);
+    orders.push(vec!["Board"]);
+    let mut silent = Vec::new();
+    for order in &orders {
+        let k = EmbeddedKernel::new(client_retry_two_hop_schema(true), "c1").unwrap();
+        k.mount(order.iter().map(|t| t.to_string()).collect());
+        let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+        let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+        let reaches_server = mount
+            .seeds
+            .iter()
+            .flat_map(|s| s.server_legs.iter())
+            .any(|r| matches!(r.leg.target_trait.as_deref(), Some("Gh" | "Http")));
+        if !reaches_server || mount.legs.is_empty() || mount.stateful_legs.is_empty() {
+            silent.push(format!("{} (legs {}, stateful {})", order.join(","), mount.legs.len(), mount.stateful_legs.len()));
+        }
+    }
+    assert!(silent.is_empty(), "no leg to the server cascade for: {silent:?}");
+}
+
+#[test]
+fn control_a_mount_cascade_through_an_optimistic_client_with_no_server_trait_posts_nothing() {
+    for order in [&["Status", "Board", "Gh", "Http", "Retry"][..], &["Board"]] {
+        let k = EmbeddedKernel::new(client_retry_two_hop_schema(false), "c1").unwrap();
+        k.mount(order.iter().map(|t| t.to_string()).collect());
+        let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+        let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+        assert!(mount.legs.is_empty(), "{order:?}: {:?}", mount.legs);
+    }
+}

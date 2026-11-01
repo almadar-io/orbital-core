@@ -386,7 +386,7 @@ pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors}
 pub use anchors::ToolPaths;
 pub use requirements::{
     anchored_arg_positions, anchored_net_args, concat_static_prefix, os_requirements,
-    os_requirements_deferring, resolve_anchored_args, OsRequirement,
+    os_requirements_deferring, requirement_target_positions, resolve_anchored_args, OsRequirement,
 };
 
 #[cfg(test)]
