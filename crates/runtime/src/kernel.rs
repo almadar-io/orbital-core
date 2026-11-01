@@ -625,6 +625,9 @@ impl RuntimeKernel {
         let event_bus = shared_bus();
         let state_manager = Arc::new(RwLock::new(StateMachineManager::new()));
         let entity_policies: Arc<RwLock<EntityAccessTable>> = Arc::new(RwLock::new(HashMap::new()));
+        let session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>> = Arc::default();
+        let step_site: Arc<RwLock<Option<(String, bool)>>> = Arc::new(RwLock::new(None));
+        let step_frame: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
         let io = Arc::new(
             IoPort::new(
                 entity_source,
@@ -632,7 +635,12 @@ impl RuntimeKernel {
                 config.substrate_handler.clone(),
             )
             .with_clock(config.clock.clone())
-            .with_runtime_rows(config.runtime_rows_in_kernel),
+            .with_runtime_rows(config.runtime_rows_in_kernel)
+            .with_call_scope(crate::resumable::CallScope {
+                sessions: session_by_thread.clone(),
+                step_site: step_site.clone(),
+                step_frame: step_frame.clone(),
+            }),
         );
         let entity_source: Arc<dyn EntitySource> = io.clone();
         let prob_entropy = entropy_from(Arc::clone(&io));
@@ -707,7 +715,7 @@ impl RuntimeKernel {
             prob_entropy,
             sealed_outputs,
             sessions: Sessions {
-                session_by_thread: Arc::default(),
+                session_by_thread,
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
                 anonymous: identity_session::anonymous_user(),
                 identities,
@@ -728,8 +736,8 @@ impl RuntimeKernel {
             step: StepScope {
                 dispatch_now: Arc::new(RwLock::new(None)),
                 dispatch_locale: Arc::new(RwLock::new(None)),
-                step_site: Arc::new(RwLock::new(None)),
-                step_frame: Arc::new(RwLock::new(None)),
+                step_site,
+                step_frame,
                 render_scopes: Arc::new(RwLock::new(Vec::new())),
                 identity_change: RwLock::new(None),
             },

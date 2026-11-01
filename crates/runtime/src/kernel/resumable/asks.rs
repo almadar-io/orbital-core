@@ -221,6 +221,33 @@ pub struct CallSite {
     pub emit: CallRoutes,
 }
 
+/// The key a keyed host ask carries (EXEC-QUEUE-10): the asking session, the trait and row of its call site, then the
+/// program's key. A host keeps one pending completion per key, so two callers' same program key never collide. Each
+/// leading segment is length-prefixed, so no segment can be read as another.
+pub fn host_call_key(session: Option<&str>, trait_name: &str, row: &str, key: &str) -> String {
+    let mut scoped = String::new();
+    for part in [session.unwrap_or_default(), trait_name, row] {
+        scoped.push_str(&part.len().to_string());
+        scoped.push(':');
+        scoped.push_str(part);
+    }
+    scoped.push_str(key);
+    scoped
+}
+
+/// The program's key a [`host_call_key`] carries. A key the kernel did not scope (one a host made itself) is
+/// returned as it stands.
+pub fn program_call_key(host_key: &str) -> &str {
+    let mut rest = host_key;
+    for _ in 0..3 {
+        let Some((len, tail)) = rest.split_once(':') else { return host_key };
+        let Ok(len) = len.parse::<usize>() else { return host_key };
+        let Some(after) = tail.get(len..) else { return host_key };
+        rest = after;
+    }
+    rest
+}
+
 /// The event and payload `outcome` fires on `site`'s routes.
 pub fn substrate_completion_event(site: &CallSite, key: &str, outcome: Result<Value, Value>) -> Option<(String, Value)> {
     let (event, payload) = match outcome {
@@ -229,7 +256,7 @@ pub fn substrate_completion_event(site: &CallSite, key: &str, outcome: Result<Va
     };
     let payload = match payload {
         Value::Object(mut fields) => {
-            fields.insert("key".into(), Value::string(key.to_string()));
+            fields.insert("key".into(), Value::string(program_call_key(key).to_string()));
             Value::Object(fields)
         }
         other => other,
@@ -242,7 +269,7 @@ pub fn completion_event(
     key: &str,
     outcome: Result<Value, OsError>,
 ) -> Option<(String, Value)> {
-    let key = Value::string(key.to_string());
+    let key = Value::string(program_call_key(key).to_string());
     match outcome {
         Ok(result) => {
             let mut fields = match result {

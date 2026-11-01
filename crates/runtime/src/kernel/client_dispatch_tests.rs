@@ -1672,3 +1672,141 @@ fn control_a_client_chain_with_no_server_work_posts_nothing() {
         .unwrap();
     assert!(dispatch.server_legs.is_empty());
 }
+
+/// The launchpad's CI board: `Board` (`[client]`) asks `Retry` (server, pure), which answers `ATTEMPT` back to `Board`;
+/// `Board` then asks `Github` (server, persists). `retry_back` false: `Retry` answers nothing, so the chain stays one hop.
+fn client_server_client_server_schema(retry_back: bool, github_persists: bool) -> OrbitalSchema {
+    let retry_effects = if retry_back {
+        serde_json::json!([["emit", "ATTEMPT", {}]])
+    } else {
+        serde_json::json!([])
+    };
+    let github_effects = if github_persists {
+        serde_json::json!([["persist", "create", "Note", {}]])
+    } else {
+        serde_json::json!([])
+    };
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                {
+                    "name": "Board",
+                    "dispatch": "client",
+                    "listens": [{ "event": "ATTEMPT", "triggers": "TRY", "source": { "kind": "trait", "trait": "Retry" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["emit", "START", {}]] },
+                            { "from": "idle", "to": "idle", "event": "TRY", "effects": [["emit", "READ", {}]] }
+                        ]
+                    }
+                },
+                {
+                    "name": "Retry",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "START", "triggers": "RUN", "source": { "kind": "trait", "trait": "Board" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "RUN", "effects": retry_effects }
+                        ]
+                    }
+                },
+                {
+                    "name": "Github",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "READ", "triggers": "FETCH", "source": { "kind": "trait", "trait": "Board" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "idle", "event": "FETCH", "effects": github_effects }
+                        ]
+                    }
+                }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+/// EXEC-DIST-10 / EXEC-DIST-2: the host never runs a `[client]` trait, so its cascade from a server hop stops at the
+/// client trait; the server trait that client step reaches after the round trip is posted as a leg of its own.
+#[test]
+fn a_server_client_server_chain_posts_the_second_server_trait_as_its_own_leg() {
+    let (kernel, _collector) = client_kernel_with(client_server_client_server_schema(true, true));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Board", None, "LOAD", Value::Null, Some("tab-1"))
+        .unwrap();
+    let shapes = leg_shapes(&dispatch.server_legs);
+    assert!(shapes.contains(&("RUN".to_string(), Some("Retry".to_string()), Some("Board".to_string()))), "{shapes:?}");
+    assert!(shapes.contains(&("FETCH".to_string(), Some("Github".to_string()), Some("Board".to_string()))), "{shapes:?}");
+    assert_eq!(shapes.len(), 2, "{shapes:?}");
+}
+
+#[test]
+fn control_a_single_server_hop_posts_exactly_one_leg() {
+    let (kernel, _collector) = client_kernel_with(client_server_client_server_schema(false, true));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Board", None, "LOAD", Value::Null, Some("tab-1"))
+        .unwrap();
+    let shapes = leg_shapes(&dispatch.server_legs);
+    assert!(shapes.iter().all(|s| s.1.as_deref() != Some("Github")), "{shapes:?}");
+}
+
+fn loading_board_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                {
+                    "name": "Board",
+                    "dispatch": "client",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "loading" }],
+                        "transitions": [
+                            { "from": "idle", "to": "loading", "event": "LOAD", "effects": [["emit", "START", {}]] }
+                        ]
+                    }
+                },
+                {
+                    "name": "Retry",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "START", "triggers": "RUN", "source": { "kind": "trait", "trait": "Board" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "running" }],
+                        "transitions": [
+                            { "from": "idle", "to": "running", "event": "RUN", "effects": [["persist", "create", "Note", {}]] }
+                        ]
+                    }
+                }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+/// EXEC-DIST-4: a host's report of a `[client]` trait's state is ignored unless the response shows the host ran it;
+/// a server-resident trait's reported state is applied.
+#[test]
+fn a_server_answer_listing_a_client_trait_idle_leaves_it_loading() {
+    let (kernel, _collector) = client_kernel_with(loading_board_schema());
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Board", None, "LOAD", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert_eq!(dispatch.server_legs.len(), 1);
+    let mut states = HashMap::new();
+    states.insert("Board".to_string(), "idle".to_string());
+    states.insert("Retry".to_string(), "running".to_string());
+    let response = EventResponse { success: true, transitioned: true, states, ..Default::default() };
+    kernel.apply_server_response(&response, &HashSet::new()).unwrap();
+    assert_eq!(kernel.get_state("Board", None).unwrap().current_state, "loading");
+    assert_eq!(kernel.get_state("Retry", None).unwrap().current_state, "running");
+}

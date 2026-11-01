@@ -1016,6 +1016,11 @@ mod tests {
         )
     }
 
+    /// The host key the `Host` trait's keyed ask carries from the singleton frame of the program session.
+    fn host_key(key: &str) -> String {
+        crate::resumable::host_call_key(None, "Host", "", key)
+    }
+
     fn schema_chain(
         go: Vec<Json>,
         grants: Json,
@@ -1464,12 +1469,12 @@ mod tests {
         };
         let (key, _) =
             deferred_ask.expect("the host was asked to defer the raw recv under the program's key");
-        assert_eq!(key, "r1");
+        assert_eq!(key, host_key("r1"));
         assert!(
             payload(&response, "GOT").is_none(),
             "a deferring ask fires no route in its own dispatch"
         );
-        assert!(server.kernel().tls_pending("r1"));
+        assert!(server.kernel().tls_pending(&host_key("r1")));
         assert_eq!(
             server.kernel().tls_open_op_error(5, false),
             Some(OsErrorKind::Invalid),
@@ -1482,7 +1487,7 @@ mod tests {
         );
 
         let raw = wire.os(OsOp::Recv, &[Value::Number(5.0), Value::Number(16384.0)]);
-        let done = server.kernel().tls_complete("r1", raw).expect("parked");
+        let done = server.kernel().tls_complete(&host_key("r1"), raw).expect("parked");
         let TlsCompletion::Done(Ok(answer)) = done else {
             panic!("the raw bytes hold the whole reply: {done:?}")
         };
@@ -1490,11 +1495,11 @@ mod tests {
             answer.get_path("data"),
             Some(&Value::string(codec::base64_encode(b"pong")))
         );
-        assert!(!server.kernel().tls_pending("r1"));
+        assert!(!server.kernel().tls_pending(&host_key("r1")));
         assert!(
             server
                 .kernel()
-                .tls_complete("r1", Ok(Value::Null))
+                .tls_complete(&host_key("r1"), Ok(Value::Null))
                 .is_none(),
             "control: a key parks one operation"
         );
@@ -1561,16 +1566,16 @@ mod tests {
         };
         let first = server
             .kernel()
-            .tls_complete("r2", piece(head))
+            .tls_complete(&host_key("r2"), piece(head))
             .expect("parked");
         assert!(
             matches!(first, TlsCompletion::Ask { op: OsOp::Recv, .. }),
             "{first:?}: the record is incomplete, so the kernel asks for more"
         );
-        assert!(server.kernel().tls_pending("r2"));
+        assert!(server.kernel().tls_pending(&host_key("r2")));
         let second = server
             .kernel()
-            .tls_complete("r2", piece(tail))
+            .tls_complete(&host_key("r2"), piece(tail))
             .expect("parked");
         let TlsCompletion::Done(Ok(answer)) = second else {
             panic!("{second:?}")
@@ -1628,7 +1633,7 @@ mod tests {
             Some(json!({ "bytes": 4.0 })),
             "the send completed while the recv was parked"
         );
-        assert!(server.kernel().tls_pending("r1"));
+        assert!(server.kernel().tls_pending(&host_key("r1")));
         assert_eq!(
             server.kernel().tls_open_op_error(5, true),
             None,
@@ -1642,12 +1647,12 @@ mod tests {
         let (head, tail) = split_pong(&mut wire);
         let first = server
             .kernel()
-            .tls_complete("r1", piece(&head))
+            .tls_complete(&host_key("r1"), piece(&head))
             .expect("parked");
         assert!(matches!(first, TlsCompletion::Ask { op: OsOp::Recv, .. }));
         let TlsCompletion::Done(Ok(answer)) = server
             .kernel()
-            .tls_complete("r1", piece(&tail))
+            .tls_complete(&host_key("r1"), piece(&tail))
             .expect("parked")
         else {
             panic!("done")
@@ -1691,8 +1696,10 @@ mod tests {
         for _ in 0..3 {
             let response = run_event(&server, &mut wire, "MORE");
             assert_eq!(payload(&response, "SENT"), Some(json!({ "bytes": 4.0 })));
+            let parked = wire.deferred.first().expect("the long recv was deferred");
+            assert_eq!(crate::resumable::program_call_key(parked), "sse");
             assert!(
-                server.kernel().tls_pending("sse"),
+                server.kernel().tls_pending(parked),
                 "the long recv is still parked"
             );
         }
@@ -1708,14 +1715,15 @@ mod tests {
             "control: each record has its own sequence number, so none repeats"
         );
         let (head, tail) = split_pong(&mut wire);
+        let parked = wire.deferred.first().expect("the long recv was deferred").clone();
         let first = server
             .kernel()
-            .tls_complete("sse", piece(&head))
+            .tls_complete(&parked, piece(&head))
             .expect("parked");
         assert!(matches!(first, TlsCompletion::Ask { .. }));
         let TlsCompletion::Done(Ok(answer)) = server
             .kernel()
-            .tls_complete("sse", piece(&tail))
+            .tls_complete(&parked, piece(&tail))
             .expect("parked")
         else {
             panic!("done")

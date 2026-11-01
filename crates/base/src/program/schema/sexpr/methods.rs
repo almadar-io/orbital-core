@@ -573,6 +573,7 @@ impl SExpression {
                     // Disjunction: dead only when every operand is dead.
                     "or" => !args.is_empty() && args.iter().all(|a| a.is_statically_false()),
                     "not" => args.len() == 1 && args[0].is_statically_true(),
+                    "validate/required" => Self::required_literal(args) == Some(false),
                     // Two literals that differ can never be equal, and two that
                     // match can never be unequal.
                     "=" | "==" | "!=" => {
@@ -607,6 +608,7 @@ impl SExpression {
                     "and" => !args.is_empty() && args.iter().all(|a| a.is_statically_true()),
                     "or" => args.iter().any(|a| a.is_statically_true()),
                     "not" => args.len() == 1 && args[0].is_statically_false(),
+                    "validate/required" => Self::required_literal(args) == Some(true),
                     "=" | "==" | "!=" => {
                         if args.len() != 2 || !args.iter().all(|a| a.is_literal()) {
                             return false;
@@ -617,6 +619,19 @@ impl SExpression {
                 }
             }
             _ => false,
+        }
+    }
+
+    /// What `(validate/required <arg>)` answers when its one argument is a literal, as the evaluator's
+    /// `ValidateRequiredOp` does: null and the empty string are missing, any other literal is present. `None` for anything
+    /// else (a binding, a call, a container).
+    fn required_literal(args: &[SExpression]) -> Option<bool> {
+        match args {
+            [SExpression::Null] => Some(false),
+            [arg] if arg.is_literal() => {
+                Some(!matches!(arg, SExpression::String(s) if s.is_empty()))
+            }
+            _ => None,
         }
     }
 

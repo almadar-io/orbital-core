@@ -189,6 +189,75 @@ fn a_server_listener_a_client_step_reaches_in_the_fold_is_posted() {
     assert_eq!(serde_json::to_value(&legs[0].leg.payload).unwrap(), json!({ "page": 2.0 }));
 }
 
+/// The http client's shape: the host's `Client` hands bytes (`FRAME`) to the client-run `Framer`, whose `DRAINED`
+/// lands on an arm that only emits `AFTER` to itself; `AFTER` needs the server. `deep` false: `AFTER` does nothing.
+fn framed(deep: bool) -> EmbeddedKernel {
+    let after = if deep { json!([["fetch", "Invoice", {}]]) } else { json!([]) };
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "framing",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Wire",
+            "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Client", "linkedEntity": "Invoice",
+                  "emits": [{ "event": "FRAME", "scope": "external" }],
+                  "listens": [{ "event": "DRAINED", "source": { "kind": "trait", "trait": "Framer" }, "triggers": "DRAINED" }],
+                  "stateMachine": {
+                    "states": [{ "name": "reading", "isInitial": true }],
+                    "transitions": [
+                        { "from": "reading", "to": "reading", "event": "DRAINED", "effects": [["emit", "AFTER", {}]] },
+                        { "from": "reading", "to": "reading", "event": "AFTER", "effects": after }] } },
+                { "name": "Framer", "dispatch": "client",
+                  "emits": [{ "event": "DRAINED", "scope": "external" }],
+                  "listens": [{ "event": "FRAME", "source": { "kind": "trait", "trait": "Client" }, "triggers": "RUN" }],
+                  "stateMachine": {
+                    "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "RUN", "effects": [["emit", "DRAINED", {}]] }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    EmbeddedKernel::new(schema, "c1").unwrap()
+}
+
+fn host_framed() -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "FRAME".to_string(),
+            payload: None,
+            source: Some(BusEventSource {
+                orbital: Some("Wire".to_string()),
+                r#trait: Some("Client".to_string()),
+                dispatched: Some(true),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    }
+}
+
+/// EXEC-DIST-10: the server trait a client-run step reaches is the leg when a deeper step of its cascade needs the
+/// server; that deeper step is the host's cascade from it, never a leg of its own (the host's copy would never move).
+#[test]
+fn a_fold_posts_the_server_listener_a_client_step_reaches_when_only_its_own_later_step_needs_the_server() {
+    let applied = framed(true).apply_server_response(&host_framed(), &HashSet::new()).unwrap();
+    let legs: Vec<(String, Option<String>, Option<String>)> = applied
+        .server_legs
+        .iter()
+        .map(|r| (r.leg.event.clone(), r.leg.target_trait.clone(), r.leg.source_trait.clone()))
+        .collect();
+    assert_eq!(legs, vec![("DRAINED".to_string(), Some("Client".to_string()), Some("Framer".to_string()))]);
+}
+
+#[test]
+fn control_a_fold_whose_reached_server_chain_needs_no_server_posts_nothing() {
+    let applied = framed(false).apply_server_response(&host_framed(), &HashSet::new()).unwrap();
+    assert!(applied.server_legs.is_empty());
+}
+
 #[test]
 fn edge_the_second_ask_is_posted_though_the_dispatch_already_delivered_the_pair() {
     let already: HashSet<(String, String)> = std::iter::once(("Fetcher".to_string(), "LOAD".to_string())).collect();

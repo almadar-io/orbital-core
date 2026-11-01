@@ -294,13 +294,15 @@ impl RuntimeKernel {
         let caller = ServiceCaller::of_user(&ctx.user);
         let principal = caller.as_ref().map(|caller| caller.principal.as_str());
         let (orbital, _) = self.caller_position();
+        let host_key = key.map(|key| self.io.host_key(key));
+        let host_key = host_key.as_deref();
         #[cfg(feature = "wire-drivers")]
-        let outcome = self.tls_os(*op, args, key, principal, orbital.as_deref()).unwrap_or_else(|| self.io.os(*op, args, key, principal, orbital.as_deref()));
+        let outcome = self.tls_os(*op, args, host_key, principal, orbital.as_deref()).unwrap_or_else(|| self.io.os(*op, args, host_key, principal, orbital.as_deref()));
         #[cfg(not(feature = "wire-drivers"))]
         let outcome = if op.is_kernel_owned() {
             Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
         } else {
-            self.io.os(*op, args, key, principal, orbital.as_deref())
+            self.io.os(*op, args, host_key, principal, orbital.as_deref())
         };
         match outcome {
             Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),

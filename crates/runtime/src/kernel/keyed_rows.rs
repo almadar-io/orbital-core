@@ -380,7 +380,7 @@ impl RuntimeKernel {
             .lane
             .enter(None)
             .map_err(|e| KernelError::Internal(e.to_string()))?;
-        self.end_asks_of_row_key(trait_name, row, key);
+        self.end_asks_of_row_key(trait_name, row, super::resumable::program_call_key(key));
         self.drop_settled_rows(&[], &VecDeque::new(), RUNTIME_SINGLETON)
             .map_err(|fault| match fault {
                 Fault::Kernel(error) => error,

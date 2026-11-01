@@ -45,6 +45,16 @@ pub(crate) struct IoPort {
     pub(super) store_seq: std::sync::atomic::AtomicU64,
     /// Where a sealed operator's fresh entropy comes from; never journaled.
     pub(super) entropy: Arc<dyn Fn() -> Result<[u8; 32], String> + Send + Sync>,
+    /// Who the step in flight asks for, read when a keyed ask is handed to the host ([`Self::host_key`]).
+    pub(super) call_scope: Option<CallScope>,
+}
+
+/// The kernel's view of the step in flight a keyed ask belongs to: the session this thread entered and the trait and
+/// frame the step runs on (EXEC-QUEUE-10).
+pub(crate) struct CallScope {
+    pub(crate) sessions: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    pub(crate) step_site: Arc<RwLock<Option<(String, bool)>>>,
+    pub(crate) step_frame: Arc<RwLock<Option<String>>>,
 }
 
 pub(super) struct Installed<'a> {
@@ -86,7 +96,26 @@ impl IoPort {
             collections: RwLock::new(HashMap::new()),
             store_seq: std::sync::atomic::AtomicU64::new(0),
             entropy: Arc::new(fresh_entropy),
+            call_scope: None,
         }
+    }
+
+    /// Keyed asks name the kernel's step in flight to the host.
+    pub(crate) fn with_call_scope(mut self, scope: CallScope) -> Self {
+        self.call_scope = Some(scope);
+        self
+    }
+
+    /// The key a keyed ask of the step in flight carries to the host ([`host_call_key`]); a port outside a kernel hands
+    /// the host the program's key as it stands.
+    pub(crate) fn host_key(&self, key: &str) -> String {
+        let Some(scope) = &self.call_scope else { return key.to_string() };
+        let session = scope.sessions.read().get(&orbital_core_base::sync::current_thread()).cloned();
+        let trait_name = scope.step_site.read().as_ref().map(|(name, _)| name.clone()).unwrap_or_default();
+        // The singleton frame is the empty row: its reserved key holds a NUL a host thread name refuses, and a row id is
+        // never empty (EXEC-STEP-1a), so no row reads as it.
+        let row = scope.step_frame.read().clone().filter(|frame| frame != crate::process_result::RUNTIME_SINGLETON).unwrap_or_default();
+        host_call_key(session.as_deref(), &trait_name, &row, key)
     }
 
     /// This port draws a sealed operator's entropy from `entropy`.
@@ -406,7 +435,7 @@ impl IoPort {
             site.emit.success.is_some() || site.emit.failure.is_some() || site.emit.on_message.is_some()
         });
         match (key, site) {
-            (Some(key), Some(site)) => (Some(key), Some(site)),
+            (Some(key), Some(site)) => (Some(self.host_key(&key)), Some(site)),
             _ => (None, None),
         }
     }

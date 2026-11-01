@@ -279,23 +279,21 @@ impl RuntimeKernel {
                             (t, r, emitter)
                         })
                         .collect();
+                    let chain: Vec<(&str, Option<&str>)> = steps
+                        .iter()
+                        .map(|(t, _, emitter)| (t.as_str(), emitter.as_deref()))
+                        .collect();
                     let reaches_server = |from: usize| {
-                        let mut reached: HashSet<&str> = HashSet::from([steps[from].0.as_str()]);
-                        steps[from..].iter().any(|(t, _, emitter)| {
-                            let joined = reached.contains(t.as_str())
-                                || emitter.as_deref().is_some_and(|e| reached.contains(e));
-                            if joined {
-                                reached.insert(t.as_str());
-                            }
-                            joined && delegating_traits.contains(t.as_str())
-                        })
+                        chain_needs_server(&chain, from, |j| delegating_traits.contains(chain[j].0))
                     };
                     let mut covered: HashSet<&str> = HashSet::new();
                     let mut legs = Vec::new();
                     for (i, (t, r, emitter)) in steps.iter().enumerate() {
                         if emitter.as_deref().is_some_and(|e| covered.contains(e)) {
-                            covered.insert(t.as_str());
-                            continue;
+                            if !client_only(t) {
+                                covered.insert(t.as_str());
+                                continue;
+                            }
                         }
                         if emitter.is_none() || client_only(t) || !reaches_server(i) {
                             continue;
@@ -411,47 +409,96 @@ impl RuntimeKernel {
             .filter(|(_, result)| result.executed && !delegates(result))
             .map(|(trait_name, _)| trait_name.as_str())
             .collect();
-        Ok(outcomes
+        let steps: Vec<(
+            &String,
+            &ProcessEventResult,
+            &DeliveryEntry,
+            Option<DeliveryRecord>,
+        )> = outcomes
             .iter()
             .filter_map(|(trait_name, result)| {
                 let entry = result.entry.as_ref().filter(|_| result.executed)?;
-                let delegated: Vec<&Effect> = result
-                    .effect_results
-                    .iter()
-                    .filter(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
-                    .map(|r| &r.effect)
-                    .collect();
-                if delegated.is_empty() {
-                    return None;
-                }
-                let delivery = DeliveryRecord::from_value(&entry.view.event);
-                let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.as_deref());
-                let own = emitter == Some(trait_name.as_str());
-                let unposted_emitter = emitter.is_some_and(|e| ran_client_side.contains(e));
-                if !own && !unposted_emitter && !delegated.iter().all(|e| browser_data_effect(e, &residence)) {
-                    return None;
-                }
-                let event = result.event.clone()?;
-                Some(EventRequest {
-                    event: event.clone(),
-                    payload: (!result.payload.is_null()).then(|| Value::clone(&result.payload)),
-                    target_trait: Some(trait_name.clone()),
-                    source_trait: Some(emitter.unwrap_or(trait_name).to_string()),
-                    client_id: client_id.map(str::to_string),
-                    traits: Some(vec![TraitFrom {
-                        r#trait: trait_name.clone(),
-                        from: result.previous_state.clone(),
-                        event: Some(event),
-                    }]),
-                    entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                        ValueMap::from_iter([(trait_name.clone().into(), entry.entity_before.to_value())])
-                    }),
-                    delivery,
-                    dispatch_log: dispatch_log_of(entry),
-                    ..Default::default()
-                })
+                Some((
+                    trait_name,
+                    result,
+                    entry,
+                    DeliveryRecord::from_value(&entry.view.event),
+                ))
             })
-            .collect())
+            .collect();
+        let chain: Vec<(&str, Option<&str>)> = steps
+            .iter()
+            .map(|(t, _, _, delivery)| {
+                (
+                    t.as_str(),
+                    delivery.as_ref().and_then(|d| d.source.r#trait.as_deref()),
+                )
+            })
+            .collect();
+        let client_only = |name: &str| {
+            self.registry
+                .trait_definitions
+                .read()
+                .get(name)
+                .is_some_and(|def| {
+                    matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
+                })
+        };
+        // A server trait a client-run step reaches is the leg when it or a step its emits reach later needs the server;
+        // the steps of its cascade are the host's from it, never legs of their own (EXEC-DIST-10).
+        let mut covered: HashSet<&str> = HashSet::new();
+        let mut legs = Vec::new();
+        for (i, (trait_name, result, entry, delivery)) in steps.iter().enumerate() {
+            let delegated: Vec<&Effect> = result
+                .effect_results
+                .iter()
+                .filter(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
+                .map(|r| &r.effect)
+                .collect();
+            let emitter = chain[i].1;
+            let browser_data = !delegated.is_empty()
+                && delegated.iter().all(|e| browser_data_effect(e, &residence));
+            let posts = if browser_data {
+                true
+            } else if emitter.is_some_and(|e| covered.contains(e)) && !client_only(trait_name) {
+                covered.insert(trait_name.as_str());
+                false
+            } else if emitter == Some(trait_name.as_str()) {
+                !delegated.is_empty()
+            } else if emitter.is_some_and(|e| ran_client_side.contains(e)) {
+                !delegated.is_empty()
+                    || (!client_only(trait_name)
+                        && chain_needs_server(&chain, i, |j| delegates(steps[j].1)))
+            } else {
+                false
+            };
+            let Some(event) = result.event.clone().filter(|_| posts) else {
+                continue;
+            };
+            covered.insert(trait_name.as_str());
+            legs.push(EventRequest {
+                event: event.clone(),
+                payload: (!result.payload.is_null()).then(|| Value::clone(&result.payload)),
+                target_trait: Some(trait_name.to_string()),
+                source_trait: Some(emitter.unwrap_or(trait_name).to_string()),
+                client_id: client_id.map(str::to_string),
+                traits: Some(vec![TraitFrom {
+                    r#trait: trait_name.to_string(),
+                    from: result.previous_state.clone(),
+                    event: Some(event),
+                }]),
+                entity_by_trait: (!entry.entity_before.is_null()).then(|| {
+                    ValueMap::from_iter([(
+                        trait_name.to_string().into(),
+                        entry.entity_before.to_value(),
+                    )])
+                }),
+                delivery: delivery.clone(),
+                dispatch_log: dispatch_log_of(entry),
+                ..Default::default()
+            });
+        }
+        Ok(legs)
     }
 
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
@@ -954,6 +1001,24 @@ impl RuntimeKernel {
             payload.clone()
         }
     }
+}
+
+/// Whether the cascade from `chain[from]`, a `(trait, emitter)` step list in run order, reaches a step that `needs` the
+/// server: the step itself, or one its emits reach later (EXEC-DIST-10). A client dispatch and a fold both ask it.
+fn chain_needs_server(
+    chain: &[(&str, Option<&str>)],
+    from: usize,
+    needs: impl Fn(usize) -> bool,
+) -> bool {
+    let mut reached: HashSet<&str> = HashSet::from([chain[from].0]);
+    (from..chain.len()).any(|j| {
+        let (t, emitter) = chain[j];
+        let joined = reached.contains(t) || emitter.is_some_and(|e| reached.contains(e));
+        if joined {
+            reached.insert(t);
+        }
+        joined && needs(j)
+    })
 }
 
 /// A row the server sent as it is stored: the wire leaves the runtime singleton's id implicit, so an id-less row is

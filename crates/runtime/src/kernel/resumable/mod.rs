@@ -47,8 +47,8 @@ use answer::*;
 pub(crate) use answer::{accept_replies, os_completion_cancelled};
 pub use answer::{answer_batch, answer_ports, drive_blocking, drive_concurrent};
 pub use asks::{
-    completion_event, substrate_completion_event, CallRoutes, CallSite, CallVerdict, IoAnswer,
-    IoRequest, ModelFailure, ModelFailureKind, PageFacts, RequestId,
+    completion_event, host_call_key, program_call_key, substrate_completion_event, CallRoutes, CallSite,
+    CallVerdict, IoAnswer, IoRequest, ModelFailure, ModelFailureKind, PageFacts, RequestId,
 };
 pub(crate) use continuation::{accept_into, StoreLeg};
 pub use continuation::{
@@ -56,7 +56,7 @@ pub use continuation::{
     ResolveProgress, ResumeError,
 };
 pub use hosts::{BlockingHost, HostAnswered, PortHost};
-pub(crate) use io_port::{DeferredCall, IoPort};
+pub(crate) use io_port::{CallScope, DeferredCall, IoPort};
 pub(crate) use io_port_calls::DeliverAsk;
 pub(crate) use ledger::{
     number_requests, Asks, EnsureIndexes, Exchange, ReadCache, StepEnd, StoreAsk, AWAITING_HOST,

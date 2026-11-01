@@ -210,7 +210,7 @@ impl ServiceHandler for IoPort {
             service: service.to_string(),
             method: method.to_string(),
             args: args.clone(),
-            key: key.map(str::to_string),
+            key: key.map(|key| self.host_key(key)),
             caller: caller.cloned(),
             site: self.site.lock().clone(),
         }) {
@@ -236,11 +236,12 @@ impl ServiceHandler for IoPort {
     }
 
     fn cancel(&self, key: &str) -> Result<(), String> {
-        if self.withdraw_pending_call(key) {
+        let host_key = self.host_key(key);
+        if self.withdraw_pending_call(&host_key) {
             return Ok(());
         }
         match self.ask(|| IoRequest::CancelCall {
-            key: key.to_string(),
+            key: host_key.clone(),
         }) {
             Asked::Direct => match &self.service {
                 Some(handler) => handler.cancel(key),

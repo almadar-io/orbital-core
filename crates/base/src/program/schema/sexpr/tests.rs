@@ -576,6 +576,35 @@ fn is_statically_true_is_the_dual_of_is_statically_false() {
     assert!(!SExpression::string("@config.knob").is_statically_true());
 }
 
+/// `validate/required` over a literal is decided as the evaluator decides it (`ValidateRequiredOp`): null and the empty
+/// string are missing, every other literal is present; a binding stays undecidable.
+#[test]
+fn validate_required_over_a_literal_is_decided_as_the_evaluator_answers_it() {
+    let required =
+        |arg: SExpression| SExpression::Array(vec![lit("validate/required"), arg].into());
+    let not = |arg: SExpression| SExpression::Array(vec![lit("not"), arg].into());
+    assert!(required(SExpression::Null).is_statically_false());
+    assert!(
+        not(required(SExpression::Null)).is_statically_true(),
+        "the knob left unset: the guard's other branch is dead"
+    );
+    assert!(required(SExpression::string(String::new())).is_statically_false());
+    assert!(required(lit("relatedId")).is_statically_true());
+    assert!(
+        required(SExpression::Number(0.0)).is_statically_true(),
+        "zero is present to validate/required"
+    );
+    assert!(
+        required(SExpression::Bool(false)).is_statically_true(),
+        "false is present to validate/required"
+    );
+    let bound = required(lit("@entity.relatedId"));
+    assert!(
+        !bound.is_statically_true() && !bound.is_statically_false(),
+        "control: a binding is undecidable"
+    );
+}
+
 #[test]
 fn is_statically_false_true_for_bool_false() {
     assert!(SExpression::Bool(false).is_statically_false());

@@ -7,7 +7,7 @@ mod support;
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::credential_admin::CredentialStanding;
-use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
+use orbital_core_runtime::resumable::{completion_event, program_call_key, IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
@@ -1245,13 +1245,40 @@ mod os_deferred {
         let (response, seen) = run(keyed_wait(), go(None), |_| IoAnswer::ServiceDeferred);
         assert_eq!(seen.len(), 1);
         let IoRequest::Os { op, key, site, .. } = &seen[0] else { panic!("an os ask") };
-        assert_eq!((*op, key.as_deref()), (OsOp::Wait, Some("k")));
+        assert_eq!(*op, OsOp::Wait);
+        assert_eq!(key.as_deref().map(program_call_key), Some("k"), "the host's key carries the program's");
         let site = site.as_ref().expect("a deferrable wait carries its call site");
         assert_eq!(site.trait_name, "Host");
         assert_eq!(site.emit.success.as_deref(), Some("OK"));
         assert_eq!(site.emit.failure.as_deref(), Some("BAD"));
         assert!(response.success);
         assert!(emitted(&response).iter().all(|(event, _)| *event != "OK" && *event != "BAD"), "{:?}", emitted(&response));
+    }
+
+    fn host_key_of(seen: &[IoRequest]) -> String {
+        let IoRequest::Os { key: Some(key), .. } = &seen[0] else { panic!("a keyed os ask") };
+        key.clone()
+    }
+
+    /// EXEC-QUEUE-10: the host keeps one pending completion per key, so the key it is handed names who asked: the same
+    /// program key from two sessions (two viewers' std-http-client reads, both `key: "read"`) never collides.
+    #[test]
+    fn the_same_program_key_reaches_the_host_under_a_distinct_key_per_session() {
+        let (_, program) = run(keyed_wait(), go(None), |_| IoAnswer::ServiceDeferred);
+        let (_, viewer) = run(keyed_wait(), go(signed_in()), |_| IoAnswer::ServiceDeferred);
+        let (program, viewer) = (host_key_of(&program), host_key_of(&viewer));
+        assert_ne!(program, viewer);
+        assert_ne!(program, "k", "the bare program key would collide across callers");
+        assert_eq!((program_call_key(&program), program_call_key(&viewer)), ("k", "k"));
+    }
+
+    #[test]
+    fn a_completion_under_the_host_key_fires_with_the_program_key() {
+        let (_, seen) = run(keyed_wait(), go(None), |_| IoAnswer::ServiceDeferred);
+        let IoRequest::Os { key: Some(key), site: Some(site), .. } = &seen[0] else { panic!("a keyed, routed os ask") };
+        let (event, payload) = completion_event(site, key, Ok(serde_json::from_value(json!({ "code": 0 })).unwrap())).expect("a routed outcome");
+        assert_eq!(event, "OK");
+        assert_eq!(payload.get_path("key").and_then(|k| k.as_str().map(str::to_string)).as_deref(), Some("k"));
     }
 
     #[test]

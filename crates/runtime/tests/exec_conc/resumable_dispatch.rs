@@ -1605,8 +1605,8 @@ fn is_call(request: &IoRequest) -> bool {
 
 fn key_of(request: &IoRequest) -> Option<String> {
     match request {
-        IoRequest::CallService { key, .. } => key.clone(),
-        IoRequest::CancelCall { key } => Some(format!("cancel:{key}")),
+        IoRequest::CallService { key, .. } => key.as_deref().map(|key| orbital_core_runtime::resumable::program_call_key(key).to_string()),
+        IoRequest::CancelCall { key } => Some(format!("cancel:{}", orbital_core_runtime::resumable::program_call_key(key))),
         _ => None,
     }
 }
@@ -2061,7 +2061,7 @@ fn cancels(flown: &Flown) -> Vec<String> {
     asked(flown)
         .into_iter()
         .filter_map(|r| match r {
-            IoRequest::CancelCall { key } => Some(key.clone()),
+            IoRequest::CancelCall { key } => Some(orbital_core_runtime::resumable::program_call_key(key).to_string()),
             _ => None,
         })
         .collect()
