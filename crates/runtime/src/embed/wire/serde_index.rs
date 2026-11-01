@@ -314,6 +314,84 @@ pub fn index() -> BTreeMap<String, Vec<TypeInfo>> {
     out
 }
 
+/// A struct with `#[serde(flatten)]` fields: its own serde fields, and the `(field, type)` pairs it flattens in.
+#[derive(Clone)]
+pub struct Flat {
+    pub own: Vec<FieldInfo>,
+    pub flattened: Vec<(String, String)>,
+}
+
+fn collect_flat(items: &[Item], out: &mut BTreeMap<String, Flat>) {
+    for item in items {
+        match item {
+            Item::Struct(s) if derives_serde(&s.attrs) => {
+                let Fields::Named(named) = &s.fields else { continue };
+                let container = serde_attrs(&s.attrs);
+                let mut own = Vec::new();
+                let mut flattened = Vec::new();
+                for field in &named.named {
+                    let attrs = serde_attrs(&field.attrs);
+                    let ident = field.ident.as_ref().expect("named").to_string().trim_start_matches("r#").to_string();
+                    if attrs.flatten {
+                        let Type::Path(path) = &field.ty else { panic!("serde_index: the flattened field `{ident}` is not a named type") };
+                        let name = path.path.segments.last().expect("a path segment").ident.to_string();
+                        flattened.push((ident, name));
+                        continue;
+                    }
+                    if attrs.skip {
+                        continue;
+                    }
+                    let key = attrs
+                        .rename
+                        .or_else(|| container.rename_all.as_deref().map(|r| renamed(&ident, r, false)))
+                        .unwrap_or(ident);
+                    own.push(FieldInfo { key, ty: field.ty.clone(), default: DefaultKind::No, skippable: attrs.skippable });
+                }
+                if !flattened.is_empty() {
+                    out.insert(s.ident.to_string(), Flat { own, flattened });
+                }
+            }
+            Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    collect_flat(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn walk_flat(dir: &Path, out: &mut BTreeMap<String, Flat>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            walk_flat(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let source = std::fs::read_to_string(&path).expect("a readable source file");
+            let Ok(file) = syn::parse_file(&source) else { continue };
+            collect_flat(&file.items, out);
+        }
+    }
+}
+
+pub fn flat_index_of_source(source: &str) -> BTreeMap<String, Flat> {
+    let file = syn::parse_file(source).unwrap_or_else(|e| panic!("serde_index: the source does not parse: {e}"));
+    let mut out = BTreeMap::new();
+    collect_flat(&file.items, &mut out);
+    out
+}
+
+/// Every serde struct under the orbital-core crates' `src` that flattens another type into itself, by Rust name.
+pub fn flat_index() -> BTreeMap<String, Flat> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut out = BTreeMap::new();
+    for krate in std::fs::read_dir(&root).expect("the orbital-core crates directory").flatten() {
+        walk_flat(&krate.path().join("src"), &mut out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -268,6 +268,7 @@ fn fetch_completions(fetch_cfg: serde_json::Value, payload: serde_json::Value) -
         .collect()
 }
 
+// EXEC-FETCH-3: a keyed fetch echoes its key in both completions.
 #[test]
 fn a_keyed_fetch_echoes_its_key_in_the_success_payload() {
     let emitted = fetch_completions(

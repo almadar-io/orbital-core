@@ -353,7 +353,7 @@ mod tests {
 
     /// Run only as a child of `every_process_gets_its_own_seed`.
     #[test]
-    #[ignore]
+    #[ignore = "tool: child process of every_process_gets_its_own_seed; prints the process seed"]
     fn print_process_seed() {
         println!("{SEED_LINE}{}", process_seed());
     }

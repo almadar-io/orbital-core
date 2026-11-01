@@ -112,8 +112,6 @@ pub fn credential_slots(scheme: &str) -> &'static [&'static str] {
         "basic" => &["user", "credential"],
         "token-exchange" => &["clientId", "clientSecret"],
         "jwt-bearer" => &["key"],
-        "aws-sigv4" => &["accessKeyId", "secretAccessKey", "sessionToken"],
-        "vapid" => &["privateKey"],
         _ => &[],
     }
 }
@@ -851,9 +849,6 @@ mod tests {
             json!({ "scheme": "bearer", "credential": "LITERAL" }),
             json!({ "scheme": "bearer", "credential": "@config.missing" }),
             json!({ "scheme": "jwt-bearer", "key": "@config.plain" }),
-            json!({ "scheme": "vapid", "privateKey": "@config.plain" }),
-            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.plain", "secretAccessKey": "@config.apiKey" }),
-            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.apiKey", "secretAccessKey": "@config.apiKey", "sessionToken": "@config.plain" }),
             json!({ "scheme": "basic", "user": "alice", "credential": "@config.apiKey" }),
         ] {
             let found = codes(&program(config(), call(json!({ "auth": auth.clone() }))));
@@ -866,8 +861,6 @@ mod tests {
         for auth in [
             json!({ "scheme": "bearer", "credential": "@config.apiKey" }),
             json!({ "scheme": "jwt-bearer", "key": "@config.apiKey" }),
-            json!({ "scheme": "vapid", "privateKey": {"credential":"@config.apiKey","scope":"user"} }),
-            json!({ "scheme": "aws-sigv4", "accessKeyId": "@config.apiKey", "secretAccessKey": {"credential":"@config.apiKey","scope":"user"}, "sessionToken":"@config.apiKey" }),
             json!({ "scheme": "basic", "user": "@config.apiKey", "credential": "@config.apiKey" }),
             json!({ "scheme": "api-key", "credential": "@config.apiKey", "name": "k", "in": "header" }),
             json!({ "scheme": "hmac-sha256", "credential": "@config.apiKey", "name": "S", "signs": "@payload.m", "encoding": "hex" }),

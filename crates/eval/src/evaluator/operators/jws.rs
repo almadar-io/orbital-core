@@ -318,6 +318,25 @@ mod tests {
     }
 
     #[test]
+    fn a_key_of_the_wrong_type_curve_or_declared_alg_never_verifies() {
+        let at = |name: &str, keys: serde_json::Value| call_at(INSIDE_WINDOW_MS, &token(name), keys, opts()).expect("evaluates");
+        let keys = fixture()["keys"].clone();
+        let (rsa, ec) = (keys[0].clone(), keys[1].clone());
+        assert!(at("es256_valid", serde_json::json!([ec.clone()])).is_sealed_as("Verified"), "control");
+        assert_eq!(kind(&at("es256_valid", serde_json::json!([rsa.clone()]))), "key");
+        assert_eq!(kind(&at("rs256_valid", serde_json::json!([ec.clone()]))), "key");
+        let mut p384 = ec.clone();
+        p384["crv"] = serde_json::json!("P-384");
+        assert_eq!(kind(&at("es256_valid", serde_json::json!([p384]))), "signature");
+        let mut es_declared_rs = ec.clone();
+        es_declared_rs["alg"] = serde_json::json!("RS256");
+        assert_eq!(kind(&at("es256_valid", serde_json::json!([es_declared_rs]))), "key");
+        let mut rs_declared_es = rsa;
+        rs_declared_es["alg"] = serde_json::json!("ES256");
+        assert_eq!(kind(&at("rs256_valid", serde_json::json!([rs_declared_es]))), "key");
+    }
+
+    #[test]
     fn the_dispatch_clock_and_the_skew_decide_exp_and_nbf() {
         let expired = token("rs256_expired");
         let keys = fixture()["keys"].clone();

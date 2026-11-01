@@ -543,8 +543,9 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
 #[test]
 fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 408: `EventResponse.frames` (a delta, K5) replaces `entityByTrait`; the response is eight bytes smaller.
-    assert_eq!(size_of::<ServerProgress>(), 408, "ServerProgress");
-    assert_eq!(size_of::<ServerProgressWire>(), 408, "ServerProgressWire");
+    // 424: plus `FrameDelta.identity` (`Option<FrameIdentity>`, 16 bytes, the client identity mirror, EXEC-IDENTITY-4).
+    assert_eq!(size_of::<ServerProgress>(), 424, "ServerProgress");
+    assert_eq!(size_of::<ServerProgressWire>(), 424, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) (its viewer, one `Arc`, is gone: `@user` is the session's bound identity, EXEC-IDENTITY-1). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its

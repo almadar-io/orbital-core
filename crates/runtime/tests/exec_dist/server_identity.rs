@@ -322,6 +322,39 @@ fn exec_identity_2_a_verified_payload_field_reaches_a_host_as_a_sealed_stub_and_
     assert_eq!(emitted(&plain, "PLAIN_DONE"), json!({ "note": "plain" }), "control: an emit declaring no sealed field is untouched");
 }
 
+fn self_cascade_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Person", "identity": true, "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "email", "type": "string" },
+                    { "name": "role", "type": "string", "default": "member" }] },
+            "traits": [{ "name": "Gate", "linkedEntity": "Person",
+                "emits": [
+                    { "event": "TOKEN_VERIFIED", "payloadSchema": [{ "name": "verified", "type": "Verified", "required": true }] },
+                    { "event": "CHECKED", "payloadSchema": [{ "name": "subject", "type": "string", "required": true }] }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "CHECK", "effects": [
+                            ["let", [["v", ["jws/verify", "@payload.token", "@payload.keys", { "issuer": "https://issuer.test", "audience": "app-1" }]]],
+                                ["emit", "TOKEN_VERIFIED", { "verified": "@v" }]]] },
+                        { "from": "idle", "to": "idle", "event": "TOKEN_VERIFIED", "effects": [
+                            ["emit", "CHECKED", { "subject": "@payload.verified.subject" }]] }
+                    ] } }]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn exec_queue_2_a_trait_own_emit_carrying_a_verified_reaches_its_own_arm_with_the_sealed_value() {
+    let server = EmbeddedServer::new(self_cascade_schema()).unwrap();
+    let response = finish(&server, request("CHECK", "tab-a", credential("rs256_valid")), &[]);
+    assert_eq!(emitted(&response, "CHECKED"), json!({ "subject": "user-1" }), "the arm read the real subject, not a redacted stub");
+    assert_eq!(emitted(&response, "TOKEN_VERIFIED")["verified"], json!({ "sealed": "Verified" }), "control: a host still sees only the stub");
+}
+
 #[test]
 fn exec_identity_2_the_dispatch_stream_redacts_a_verified_field_too() {
     let rig = Rig::new("persistent", vec![person("user-1", "admin")]);

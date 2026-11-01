@@ -31,6 +31,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use ts_rs::{Config, TypeVisitor, TS};
 
+mod native_export;
+
 /// Declares a type whose TypeScript form is written here: `$name` is its exported name and
 /// `$decl` its right-hand side.
 macro_rules! declared_by_hand {

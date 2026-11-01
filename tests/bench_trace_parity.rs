@@ -68,13 +68,13 @@ fn r0_equals_b1(fixture_names: &[&str]) {
 }
 
 #[test]
-#[ignore = "needs ALMADAR_PARITY_FIXTURES and ALMADAR_PARITY_REFERENCE"]
+#[ignore = "tool: trace parity against the reference runtime; needs ALMADAR_PARITY_FIXTURES and ALMADAR_PARITY_REFERENCE"]
 fn r0_trace_equals_b1_on_audit_provenance_and_visit_key() {
     r0_equals_b1(&["audit-provenance", "visit-key"]);
 }
 
 #[test]
-#[ignore = "needs ALMADAR_PARITY_FIXTURES and ALMADAR_PARITY_REFERENCE"]
+#[ignore = "tool: trace parity against the reference runtime; needs ALMADAR_PARITY_FIXTURES and ALMADAR_PARITY_REFERENCE"]
 fn r0_trace_equals_b1_on_every_fixture() {
     let fixtures = load_fixtures(&env_path("ALMADAR_PARITY_FIXTURES")).unwrap();
     let names: Vec<String> = fixtures

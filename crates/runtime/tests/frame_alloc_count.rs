@@ -152,7 +152,7 @@ fn frame_allocation_count_is_pinned() {
 
 /// Profiling harness: `FRAME_PROFILE_SECS=10 cargo test -p orbital-core --test frame_alloc_count -- --ignored profile_loop`.
 #[test]
-#[ignore]
+#[ignore = "tool: profiles the steady-state frame loop for FRAME_PROFILE_SECS"]
 fn profile_loop() {
     let secs: u64 = std::env::var("FRAME_PROFILE_SECS")
         .ok()
@@ -179,7 +179,7 @@ fn profile_loop() {
 /// Frame-delta sizing: writes two consecutive steady-state frames of 100 ticking traits as JSON to `FRAME_DUMP_DIR`.
 /// `FRAME_DUMP_DIR=<dir> cargo test -p orbital-core-runtime --test frame_alloc_count -- --ignored frame_wire_dump`.
 #[test]
-#[ignore]
+#[ignore = "tool: writes two consecutive steady-state frames as JSON to FRAME_DUMP_DIR"]
 fn frame_wire_dump() {
     let dir = std::path::PathBuf::from(std::env::var("FRAME_DUMP_DIR").expect("FRAME_DUMP_DIR names the output folder"));
     let k = kernel(100);
@@ -228,7 +228,7 @@ fn frame_wire_bytes_are_pinned() {
 /// response carried for the same writes (`entityByTrait`, one row per bound trait). Ignored: it needs a lowered `.orb`.
 /// `BROWSE_ORB=<file> BROWSE_TRAIT=<trait> BROWSE_EVENTS=A,B cargo test -p orbital-core-runtime --test frame_alloc_count -- --ignored --nocapture browse_wire_sizes`.
 #[test]
-#[ignore]
+#[ignore = "tool: sizes the browse wire against the frame delta for BROWSE_ORB"]
 fn browse_wire_sizes() {
     use orbital_core_runtime::effects::response::{EventRequest, LifecycleEvent, MountSeed};
     use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
@@ -303,7 +303,7 @@ fn allocs_of<R>(f: impl FnOnce() -> R) -> (usize, R) {
 /// Stage breakdown of one steady-state tick of 100 ticking traits:
 /// `cargo test -p orbital-core-runtime --test frame_alloc_count -- --ignored --nocapture stage_breakdown`.
 #[test]
-#[ignore]
+#[ignore = "tool: breaks one steady-state tick into stages"]
 fn stage_breakdown() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let k = kernel(100);
@@ -331,7 +331,7 @@ fn stage_breakdown() {
 /// Where the allocations of one steady-state tick come from, by the nearest `orbital_core*` frames:
 /// `cargo test -p orbital-core-runtime --test frame_alloc_count -- --ignored --nocapture tick_alloc_sites`.
 #[test]
-#[ignore]
+#[ignore = "tool: lists where one tick allocates, by nearest orbital_core frame"]
 fn tick_alloc_sites() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let k = kernel(100);

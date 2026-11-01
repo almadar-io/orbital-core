@@ -836,7 +836,7 @@ fn a_program_read_keeps_one_allocation_per_distinct_string() {
 }
 
 #[test]
-#[ignore = "measurement: ORB_MEASURE_PROGRAM=<resolved .orb path> cargo test -p orbital-core-base --lib interning_hit_rate -- --ignored --nocapture"]
+#[ignore = "tool: measures the interning hit rate on a resolved program: ORB_MEASURE_PROGRAM=<resolved .orb path> cargo test -p orbital-core-base --lib interning_hit_rate -- --ignored --nocapture"]
 fn interning_hit_rate_on_a_resolved_program() {
     use crate::schema::OrbitalSchema;
     let path = std::env::var("ORB_MEASURE_PROGRAM").expect("ORB_MEASURE_PROGRAM names a resolved program");
