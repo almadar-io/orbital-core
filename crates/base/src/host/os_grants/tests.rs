@@ -3226,6 +3226,7 @@ fn a_drive_headed_anchor_renders_as_the_host_names_it_and_as_a_rooted_glob() {
     assert_eq!(host_rooted(&lower, None), "/c:/x", "only the normalized upper-case drive segment is a drive");
 }
 
+#[cfg(unix)]
 #[test]
 fn posix_paths_normalize_as_before_and_never_climb_above_the_root() {
     assert_eq!(normalized_segments(Path::new("/a/b/../c")), Some(vec!["a".to_string(), "c".to_string()]));
