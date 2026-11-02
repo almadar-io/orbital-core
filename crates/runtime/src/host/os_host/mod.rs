@@ -537,6 +537,7 @@ mod tests {
         assert_eq!(env_read.expect_err("unset").kind, OsErrorKind::NotFound, "edge: an unset env anchor names nothing");
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_grant_declared_through_a_symlinked_package_directory_covers_its_canonical_files() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -673,6 +674,7 @@ mod tests {
         assert_eq!(args[0], Value::string("/opt/orb/bun"));
     }
 
+    #[cfg(unix)]
     fn tool_script(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
