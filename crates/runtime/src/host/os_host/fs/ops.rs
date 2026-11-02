@@ -7,12 +7,16 @@ use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::os_grants::{AnchoredPath, FsMode, GrantAnchor, OsAnchors, OsGrants};
 use orbital_core_base::value::{Value, ValueMap};
 use std::collections::VecDeque;
-use std::ffi::{CString, OsString};
+#[cfg(unix)]
+use std::ffi::CString;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -65,24 +69,55 @@ fn text(path: &Path) -> Value {
     Value::string(path.to_string_lossy().into_owned())
 }
 
-fn lexical(path: &Path) -> Option<PathBuf> {
-    let mut out = PathBuf::from("/");
+/// The root `path` starts at: `/`, or a drive's root (`C:\`, Windows); `None` for any other platform prefix (UNC,
+/// device, drive-relative), which no grant names.
+fn root_of(path: &Path) -> Option<PathBuf> {
+    let mut drive: Option<PathBuf> = None;
     for component in path.components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::Prefix(prefix) => match prefix.kind() {
+                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                    drive = Some(PathBuf::from(format!("{}:\\", char::from(letter.to_ascii_uppercase()))));
+                }
+                _ => return None,
+            },
+            Component::RootDir => return Some(drive.unwrap_or_else(|| PathBuf::from("/"))),
+            _ => return drive.is_none().then(|| PathBuf::from("/")),
+        }
+    }
+    drive.is_none().then(|| PathBuf::from("/"))
+}
+
+fn lexical(path: &Path) -> Option<PathBuf> {
+    let root = root_of(path)?;
+    let mut out = root.clone();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
-                if !out.pop() {
+                if out == root || !out.pop() {
                     return None;
                 }
             }
             Component::Normal(part) => out.push(part),
-            Component::Prefix(_) => return None,
         }
     }
     Some(out)
 }
 
+#[cfg(unix)]
+fn too_many_links() -> io::Error {
+    io::Error::from_raw_os_error(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn too_many_links() -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, "too many levels of symbolic links")
+}
+
 fn resolve(path: &Path, follow_last: bool) -> io::Result<PathBuf> {
+    let unrooted = || io::Error::new(io::ErrorKind::InvalidInput, "not a drive or `/`-rooted path");
+    let mut root = root_of(path).ok_or_else(unrooted)?;
     let mut queue: VecDeque<OsString> = VecDeque::new();
     for component in path.components() {
         match component {
@@ -91,11 +126,13 @@ fn resolve(path: &Path, follow_last: bool) -> io::Result<PathBuf> {
             _ => {}
         }
     }
-    let mut cur = PathBuf::from("/");
+    let mut cur = root.clone();
     let mut links = 0u32;
     while let Some(part) = queue.pop_front() {
         if part == ".." {
-            cur.pop();
+            if cur != root {
+                cur.pop();
+            }
             continue;
         }
         let next = cur.join(&part);
@@ -103,11 +140,12 @@ fn resolve(path: &Path, follow_last: bool) -> io::Result<PathBuf> {
             Ok(md) if md.file_type().is_symlink() && (follow_last || !queue.is_empty()) => {
                 links += 1;
                 if links > MAX_LINKS {
-                    return Err(io::Error::from_raw_os_error(libc::ELOOP));
+                    return Err(too_many_links());
                 }
                 let target = fs::read_link(&next)?;
-                if target.is_absolute() {
-                    cur = PathBuf::from("/");
+                if target.has_root() {
+                    cur = root_of(&target).ok_or_else(unrooted)?;
+                    root.clone_from(&cur);
                 }
                 for component in target.components().rev() {
                     match component {
@@ -137,12 +175,14 @@ fn kind_of(file_type: fs::FileType) -> &'static str {
     }
 }
 
+#[cfg(unix)]
 fn millis(sec: i64, nsec: i64) -> Value {
     Value::Number(sec as f64 * 1000.0 + nsec as f64 / 1_000_000.0)
 }
 
-fn stat_value(md: &fs::Metadata) -> Value {
-    obj([
+#[cfg(unix)]
+fn stat_value(md: &fs::Metadata, _path: &Path, _follow: bool) -> io::Result<Value> {
+    Ok(obj([
         ("kind", Value::string(kind_of(md.file_type()).to_string())),
         ("size", num(md.len())),
         ("mode", num(u64::from(md.mode() & 0o7777))),
@@ -151,7 +191,35 @@ fn stat_value(md: &fs::Metadata) -> Value {
         ("atime", millis(md.atime(), md.atime_nsec())),
         ("mtime", millis(md.mtime(), md.mtime_nsec())),
         ("ctime", millis(md.ctime(), md.ctime_nsec())),
-    ])
+    ]))
+}
+
+/// Windows has no owner ids or permission bits: `uid`/`gid` are 0 and `mode` is the read-only attribute as
+/// `0o444`/`0o666` (`0o555`/`0o777` for a directory), as libuv reports them; `ctime` is the NTFS change time.
+#[cfg(windows)]
+fn stat_value(md: &fs::Metadata, path: &Path, follow: bool) -> io::Result<Value> {
+    use std::os::windows::fs::MetadataExt;
+    let mut mode: u64 = if md.permissions().readonly() { 0o444 } else { 0o666 };
+    if md.is_dir() {
+        mode |= 0o111;
+    }
+    Ok(obj([
+        ("kind", Value::string(kind_of(md.file_type()).to_string())),
+        ("size", num(md.len())),
+        ("mode", num(mode)),
+        ("uid", num(0)),
+        ("gid", num(0)),
+        ("atime", filetime_millis(md.last_access_time() as i64)),
+        ("mtime", filetime_millis(md.last_write_time() as i64)),
+        ("ctime", filetime_millis(windows::change_time(path, follow)?)),
+    ]))
+}
+
+/// A Windows `FILETIME` (100 ns ticks since 1601-01-01) as Unix milliseconds.
+#[cfg(windows)]
+fn filetime_millis(ticks: i64) -> Value {
+    const UNIX_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
+    Value::Number((ticks - UNIX_EPOCH_TICKS) as f64 / 10_000.0)
 }
 
 struct Located {
@@ -179,18 +247,21 @@ fn io_os_error(op: OsOp, path: &Path, e: &io::Error) -> OsError {
         | io::ErrorKind::IsADirectory
         | io::ErrorKind::NotADirectory
         | io::ErrorKind::InvalidFilename => OsErrorKind::Invalid,
-        _ => match e.raw_os_error() {
-            Some(code)
-                if code == libc::ELOOP
-                    || code == libc::EBADF
-                    || code == libc::ENAMETOOLONG =>
-            {
-                OsErrorKind::Invalid
-            }
-            _ => OsErrorKind::Io,
-        },
+        _ if invalid_os_code(e.raw_os_error()) => OsErrorKind::Invalid,
+        _ => OsErrorKind::Io,
     };
     OsError::new(kind, format!("{}: {}: {e}", op.name(), path.display()))
+}
+
+#[cfg(unix)]
+fn invalid_os_code(code: Option<i32>) -> bool {
+    matches!(code, Some(c) if c == libc::ELOOP || c == libc::EBADF || c == libc::ENAMETOOLONG)
+}
+
+/// `ERROR_INVALID_HANDLE` (6), `ERROR_FILENAME_EXCED_RANGE` (206), `ERROR_CANT_RESOLVE_FILENAME` (1921).
+#[cfg(windows)]
+fn invalid_os_code(code: Option<i32>) -> bool {
+    matches!(code, Some(6 | 206 | 1921))
 }
 
 /// The blocking half of `os/read`: the pipe read (a file's bytes are already in `buf`), shaped as the reply.
@@ -497,7 +568,7 @@ impl<'a> Cx<'a> {
                     fs::symlink_metadata(&path)
                 }
                 .map_err(|e| self.io(&path, &e))?;
-                Ok(stat_value(&md))
+                stat_value(&md, &path, follow).map_err(|e| self.io(&path, &e))
             }
             OsOp::Access => self.access(args),
             OsOp::Exists => {
@@ -509,14 +580,51 @@ impl<'a> Cx<'a> {
                 let mode = self
                     .mode_arg(args, 1)?
                     .ok_or_else(|| self.err(OsErrorKind::Invalid, "missing mode"))?;
-                fs::set_permissions(&path, fs::Permissions::from_mode(mode))
-                    .map_err(|e| self.io(&path, &e))?;
+                set_mode(&path, mode).map_err(|e| self.io(&path, &e))?;
                 Ok(obj([]))
             }
             OsOp::Chown => self.chown(args),
             OsOp::Utimes => self.utimes(args),
             _ => Err(self.err(OsErrorKind::Unsupported, "not a file operation")),
         }
+    }
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+/// Windows keeps one permission: the read-only attribute, set when `mode` grants no write bit.
+#[cfg(windows)]
+fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
+    let mut permissions = fs::metadata(path)?.permissions();
+    permissions.set_readonly(mode & 0o222 == 0);
+    fs::set_permissions(path, permissions)
+}
+
+/// A file or directory mode applies only when the call creates it: through the open on Unix, and on Windows as the
+/// read-only attribute once it exists ([`set_mode`]).
+#[cfg(unix)]
+fn open_mode(options: &mut fs::OpenOptions, mode: Option<u32>) {
+    if let Some(mode) = mode {
+        options.mode(mode);
+    }
+}
+
+#[cfg(windows)]
+fn open_mode(_options: &mut fs::OpenOptions, _mode: Option<u32>) {}
+
+#[cfg(unix)]
+fn created_mode(_path: &Path, _mode: Option<u32>, _created: bool) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(windows)]
+fn created_mode(path: &Path, mode: Option<u32>, created: bool) -> io::Result<()> {
+    match mode {
+        Some(mode) if created => set_mode(path, mode),
+        _ => Ok(()),
     }
 }
 
@@ -529,13 +637,16 @@ fn system_time(ms: i64) -> Option<SystemTime> {
     }
 }
 
+#[cfg(unix)]
 fn c_path(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains a NUL byte"))
 }
 
+#[cfg(unix)]
 const CLOSE_POLL_MS: libc::c_int = 50;
 
+#[cfg(unix)]
 fn pipe_read<T: Read>(pipe: &super::ReadPipe<T>, count: u64, out: &mut Vec<u8>) -> io::Result<()> {
     let mut buf = vec![0u8; count as usize];
     let mut guard = pipe.lock();
@@ -563,7 +674,39 @@ fn pipe_read<T: Read>(pipe: &super::ReadPipe<T>, count: u64, out: &mut Vec<u8>) 
     Ok(())
 }
 
+/// A pipe read on Windows waits in bounded peeks, as the Unix read waits in bounded polls, so `os/close` cancels it.
+#[cfg(windows)]
+fn pipe_read<T: Read + std::os::windows::io::AsRawHandle>(
+    pipe: &super::ReadPipe<T>,
+    count: u64,
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    let mut buf = vec![0u8; count as usize];
+    let mut guard = pipe.lock();
+    loop {
+        if pipe.is_cancelled() {
+            return Err(io::Error::from(io::ErrorKind::ConnectionAborted));
+        }
+        match windows::pipe_available(guard.as_raw_handle()) {
+            Ok(0) => std::thread::sleep(Duration::from_millis(50)),
+            Ok(_) => break,
+            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+            Err(e) => return Err(e),
+        }
+    }
+    let n = match guard.read(&mut buf) {
+        Ok(n) => n,
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => 0,
+        Err(e) => return Err(e),
+    };
+    buf.truncate(n);
+    *out = buf;
+    Ok(())
+}
+
 mod files;
 mod paths;
 mod dirs;
 mod metadata;
+#[cfg(windows)]
+mod windows;

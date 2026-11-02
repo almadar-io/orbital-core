@@ -26,6 +26,7 @@ impl<'a> Cx<'a> {
         let path = self.write_target(arg_str(args, 0, self.op)?)?;
         let data = arg_bytes(args, 1, self.op)?;
         let mode = self.mode_arg(args, 2)?;
+        let created = fs::symlink_metadata(&path).is_err();
         let mut options = fs::OpenOptions::new();
         options.write(true).create(true);
         if append {
@@ -33,11 +34,10 @@ impl<'a> Cx<'a> {
         } else {
             options.truncate(true);
         }
-        if let Some(mode) = mode {
-            options.mode(mode);
-        }
+        open_mode(&mut options, mode);
         let mut file = options.open(&path).map_err(|e| self.io(&path, &e))?;
         file.write_all(&data).map_err(|e| self.io(&path, &e))?;
+        created_mode(&path, mode, created).map_err(|e| self.io(&path, &e))?;
         Ok(obj([("bytes", num(data.len() as u64))]))
     }
 
@@ -88,7 +88,8 @@ impl<'a> Cx<'a> {
         if flags.read && flags.write {
             self.require(&at, FsMode::Read)?;
         }
-        if flags.create && (flags.exclusive || self.missing(&at)?) {
+        let created = flags.create && (flags.exclusive || self.missing(&at)?);
+        if created {
             self.require(&at, FsMode::Create)?;
         }
         let mut options = fs::OpenOptions::new();
@@ -102,10 +103,9 @@ impl<'a> Cx<'a> {
         } else {
             options.create(flags.create);
         }
-        if let Some(mode) = mode {
-            options.mode(mode);
-        }
+        open_mode(&mut options, mode);
         let file = options.open(&at.real).map_err(|e| self.io(&at.real, &e))?;
+        created_mode(&at.real, mode, created).map_err(|e| self.io(&at.real, &e))?;
         let fd = self.fs.fds.insert(FdEntry::File(file));
         Ok(OpenedFile { table: self.fs.fds.clone(), fd: Some(fd) })
     }

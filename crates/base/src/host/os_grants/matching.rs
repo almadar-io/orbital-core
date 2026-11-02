@@ -307,6 +307,13 @@ impl OsGrants {
         }
     }
 
+    #[cfg(feature = "std")]
+    /// [`Self::read_matcher`] for a pattern the host holds as an absolute path (`C:\x\*` on Windows); `None` for a
+    /// form [`normalized_segments`] refuses.
+    pub fn host_read_matcher(pattern: &Path) -> Option<OsGrants> {
+        normalized_segments(pattern).map(|segments| Self::read_matcher(&super::anchors::rooted(&segments, None)))
+    }
+
     pub fn exec_allows(&self, command: &str) -> bool {
         self.exec.iter().any(|c| c == command)
     }

@@ -27,3 +27,14 @@ jobs:
 
       - name: T4 gate (every crate's tests, ratcheted against scripts/gates/known-failures)
         run: ORB="npx orb" bash scripts/gates/t4.sh
+
+  windows-host:
+    # The Windows file host and drive-rooted grants compile and run only here.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Grant matching
+        run: cargo test -p orbital-core-base os_grants
+      - name: File host
+        run: cargo test -p orbital-core-runtime os_host::fs
