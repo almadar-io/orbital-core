@@ -45,6 +45,13 @@ impl<T: std::os::fd::AsRawFd> ReadPipe<T> {
     }
 }
 
+#[cfg(not(unix))]
+impl<T> ReadPipe<T> {
+    pub(super) fn new(pipe: T) -> Self {
+        Self { inner: Mutex::new(pipe), cancelled: std::sync::atomic::AtomicBool::new(false) }
+    }
+}
+
 impl<T> ReadPipe<T> {
     pub(super) fn lock(&self) -> orbital_core_base::sync::MutexGuard<'_, T> {
         self.inner.lock()
