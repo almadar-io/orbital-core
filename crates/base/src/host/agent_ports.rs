@@ -701,7 +701,8 @@ fn request_option_error(key: &str, value: &Value) -> Option<String> {
         "targetTrait" | "entityId" | "clientId" | "locale" => value.as_str().is_some(),
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
         "mount" => list_of_records(value, &["trait", "event"], &[]),
-        "delivery" | "dispatchLog" | "viewer" => matches!(value, Value::Object(_) | Value::Null),
+        "delivery" | "dispatchLog" | "viewer" | "entityByTrait" => matches!(value, Value::Object(_) | Value::Null),
+        "framesSince" => value.is_null() || matches!(value, Value::Number(n) if *n >= 0.0 && n.fract() == 0.0),
         _ => return Some(format!("program/dispatch: unsupported option \"{key}\"")),
     };
     (!ok).then(|| format!("program/dispatch: option \"{key}\" has the wrong shape"))
@@ -1130,6 +1131,8 @@ mod tests {
             ("delivery", serde_json::json!({ "event": "ADD_NOTE" })),
             ("dispatchLog", serde_json::json!({ "prevEvents": [], "prevStates": [] })),
             ("viewer", serde_json::json!({ "id": "u1" })),
+            ("framesSince", serde_json::json!(3)),
+            ("entityByTrait", serde_json::json!({ "Chat": { "id": "n1" } })),
         ] {
             let mut extra = serde_json::Map::new();
             extra.insert(key.to_string(), given.clone());
@@ -1160,6 +1163,9 @@ mod tests {
             (request(serde_json::json!({ "delivery": "x" })), "option \"delivery\" has the wrong shape"),
             (request(serde_json::json!({ "dispatchLog": 1 })), "option \"dispatchLog\" has the wrong shape"),
             (request(serde_json::json!({ "viewer": "u1" })), "option \"viewer\" has the wrong shape"),
+            (request(serde_json::json!({ "framesSince": "3" })), "option \"framesSince\" has the wrong shape"),
+            (request(serde_json::json!({ "framesSince": -1 })), "option \"framesSince\" has the wrong shape"),
+            (request(serde_json::json!({ "entityByTrait": [] })), "option \"entityByTrait\" has the wrong shape"),
             (serde_json::json!({ "wire": true, "event": "ADD_NOTE" }), "names its orbital and event"),
             (request(serde_json::json!({ "orbital": "" })), "option \"orbital\" has the wrong shape"),
             (request(serde_json::json!({ "targetTrait": "Other" })), "is not the request's 'Desk.Other.ADD_NOTE'"),

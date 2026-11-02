@@ -375,18 +375,25 @@ impl RuntimeKernel {
             let mut schemas = self.registry.schemas.write();
             schemas.insert(schema_name.clone(), Arc::new(schema));
             let mut homes = HashMap::new();
+            let mut endpoint_traits = HashSet::new();
             for (name, schema) in schemas.iter() {
                 for (index, orbital) in schema.orbitals.iter().enumerate() {
+                    let endpoint_only = serde_json::to_value(orbital)
+                        .is_ok_and(|value| orbital_core_base::runs_on::serves_only_protocol_pages(&value));
                     for trait_ref in &orbital.traits {
                         if let Some(trait_name) = trait_ref.trait_name() {
                             homes
                                 .entry(trait_name.to_string())
                                 .or_insert_with(|| (name.clone(), index));
+                            if endpoint_only {
+                                endpoint_traits.insert(trait_name.to_string());
+                            }
                         }
                     }
                 }
             }
             *self.registry.trait_homes.write() = homes;
+            *self.registry.endpoint_traits.write() = endpoint_traits;
         }
         {
             let mut nav = self.presentation.nav_pages.write();
@@ -607,6 +614,7 @@ impl RuntimeKernel {
         );
         *fork.registry.schemas.write() = self.registry.schemas.read().clone();
         *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
+        *fork.registry.endpoint_traits.write() = self.registry.endpoint_traits.read().clone();
         *fork.registry.trait_definitions.write() = self.registry.trait_definitions.read().clone();
         *fork.registry.sealed_emit_fields.write() = self.registry.sealed_emit_fields.read().clone();
         *fork.registry.entity_policies.write() = self.registry.entity_policies.read().clone();

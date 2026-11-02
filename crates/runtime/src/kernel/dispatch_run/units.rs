@@ -36,6 +36,7 @@ impl RuntimeKernel {
         let _deliver = in_flight.span.clone().entered();
         let stepped = self.step_seed(in_flight, outcomes);
         self.settle_identity(stepped.is_ok());
+        self.settle_theme(stepped.is_ok());
         self.release_origin(origin, committed_from, stepped.is_ok());
         match stepped? {
             Flow::More => Ok(Flow::More),

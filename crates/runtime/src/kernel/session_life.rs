@@ -32,6 +32,7 @@ pub(super) struct SessionLives {
     state_manager: Arc<RwLock<StateMachineManager>>,
     ended: Arc<RwLock<HashMap<String, EndedSession>>>,
     identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
+    themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
 }
 
 impl SessionLives {
@@ -43,8 +44,9 @@ impl SessionLives {
         state_manager: Arc<RwLock<StateMachineManager>>,
         ended: Arc<RwLock<HashMap<String, EndedSession>>>,
         identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
+        themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
     ) -> Self {
-        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended, identities }
+        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended, identities, themes }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
@@ -52,6 +54,7 @@ impl SessionLives {
         let held = dispatch_scope::drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
         self.views.drop_session(session);
         self.identities.write().remove(session);
+        self.themes.write().remove(session);
         self.mounts.write().release(session);
         self.ended.write().insert(session.to_string(), held.into_iter().map(String::into_boxed_str).collect());
     }

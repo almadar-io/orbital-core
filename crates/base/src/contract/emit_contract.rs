@@ -198,6 +198,9 @@ pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "stri
 /// What `identity/sign-in` and `identity/sign-out` emit on success: the subject now bound (or signed out).
 pub const IDENTITY_SHAPE: &[ShapeField] = &[field("subject", "string")];
 
+/// What `theme/set` and `theme/clear` emit on success: the theme key now in effect for the session.
+pub const THEME_SHAPE: &[ShapeField] = &[field("theme", "string")];
+
 /// A host effect's failure: the message.
 pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
@@ -368,6 +371,7 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
         "random-bytes" => ProducedPayload::Shape(RANDOM_BYTES_SHAPE),
         "access-check" => ProducedPayload::Shape(ACCESS_CHECK_SHAPE),
         "identity/sign-in" | "identity/sign-out" => ProducedPayload::Shape(IDENTITY_SHAPE),
+        "theme/set" | "theme/clear" => ProducedPayload::Shape(THEME_SHAPE),
         // `call-service` and `set` declare `any`; nothing to compare against.
         _ => ProducedPayload::Opaque,
     }
@@ -389,7 +393,9 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
             ProducedPayload::Shape(HOST_FAILURE_SHAPE)
         }
-        "credential-connect" | "identity/sign-in" | "identity/sign-out" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
+        "credential-connect" | "identity/sign-in" | "identity/sign-out" | "theme/set" | "theme/clear" => {
+            ProducedPayload::Shape(OS_FAILURE_SHAPE)
+        }
         "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
         | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "persist" => match variant {
@@ -559,6 +565,15 @@ mod tests {
             assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
         }
         assert_eq!(success_payload("identity/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not an identity effect");
+    }
+
+    #[test]
+    fn theme_effects_emit_the_theme_in_effect_and_fail_with_a_kind() {
+        for op in ["theme/set", "theme/clear"] {
+            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(THEME_SHAPE), "{op}");
+            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
+        }
+        assert_eq!(success_payload("theme/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not a theme effect");
     }
 
     #[test]

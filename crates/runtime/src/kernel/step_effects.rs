@@ -410,6 +410,9 @@ impl RuntimeKernel {
             Effect::Custom { name, .. } if orbital_core_base::viewer::is_identity_effect(name) => {
                 self.exec_identity(&effect, ctx, effect_results)
             }
+            Effect::Custom { name, .. } if orbital_core_base::viewer::is_theme_effect(name) => {
+                self.exec_theme(&effect, ctx, effect_results)
+            }
             Effect::Custom { name, emit, .. }
                 if orbital_core_base::agent_ports::is_agent_port_operator(name) =>
             {

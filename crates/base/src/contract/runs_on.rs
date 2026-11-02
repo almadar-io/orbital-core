@@ -317,6 +317,15 @@ pub fn operator_sites<'a>(operators: impl IntoIterator<Item = &'a str>) -> std::
         .collect()
 }
 
+/// Whether `orbital` is the server's (EXEC-ENDPOINT-5): every page it has is a protocol endpoint, so a client program
+/// leaves it out and a client session's view record never holds its traits' frames.
+pub fn serves_only_protocol_pages(orbital: &serde_json::Value) -> bool {
+    orbital
+        .get("pages")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|pages| !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some()))
+}
+
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
 /// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
 pub fn client_program_metadata(orbitals: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
@@ -522,6 +531,15 @@ mod tests {
         let single = SExpression::Array(vec![SExpression::String("math/abs".into())].into());
         assert_eq!(expr_leg_touches(&empty, &residence), none);
         assert_eq!(expr_leg_touches(&single, &residence), none);
+    }
+
+    #[test]
+    fn an_orbital_whose_every_page_is_a_protocol_endpoint_is_the_servers() {
+        use serde_json::json;
+        assert!(serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Boot", "protocol": "boot" }] })));
+        assert!(!serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })), "control: one route page keeps it the client's");
+        assert!(!serves_only_protocol_pages(&json!({ "pages": [] })), "control: no pages is not an endpoint orbital");
+        assert!(!serves_only_protocol_pages(&json!({ "name": "Rows" })), "control: an orbital with no pages field is not one either");
     }
 
     #[test]

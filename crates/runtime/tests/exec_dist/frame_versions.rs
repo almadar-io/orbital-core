@@ -198,6 +198,7 @@ fn versioned(from: u64, to: u64, ops: Vec<FrameOp>) -> FrameDelta {
         to,
         ops,
         identity: None,
+        theme: None,
     }
 }
 
@@ -456,4 +457,56 @@ fn another_sessions_identity_never_reaches_this_client() {
     let other = send(&server, request("SET_V", "tab-b", "v", "x"));
     let mirrored = delta(&other).identity.clone().expect("the first delta tells the identity");
     assert!(mirrored.user.is_none(), "tab-b never signed in: {mirrored:?}");
+}
+
+// EXEC-ENDPOINT-5 on the view record: an orbital whose every page is a protocol endpoint is the server's and is not in
+// the client's program, so its traits' frames never enter a client session's record, never advance its version, and
+// never reach a snapshot the client folds (G-CROSS-396).
+fn hosted_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [
+            { "name": "Main",
+              "entity": { "name": "Doc", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "v", "type": "string" }] },
+              "traits": [{ "name": "Writer", "linkedEntity": "Doc",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "SET_V", "effects": [["set", "@entity.v", "@payload.v"]] }] } }],
+              "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Writer" }] }] },
+            { "name": "Host",
+              "entity": { "name": "Binding", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "bound", "type": "string" }] },
+              "traits": [{ "name": "Binder", "linkedEntity": "Binding",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "BIND", "effects": [["set", "@entity.bound", "@payload.v"]] }] } }],
+              "pages": [{ "name": "Api", "path": "", "protocol": "http", "traits": [{ "ref": "Binder" }] }] }
+        ]
+    }))
+    .unwrap()
+}
+
+fn hosted_send(server: &EmbeddedServer, orbital: &str, target: &str, event: &str, value: &str) -> EventResponse {
+    let request = EventRequest {
+        event: event.to_string(),
+        target_trait: Some(target.to_string()),
+        client_id: Some("tab".to_string()),
+        payload: Some(serde_json::from_value(json!({ "v": value })).unwrap()),
+        ..Default::default()
+    };
+    done(server.start(orbital, request).unwrap())
+}
+
+#[test]
+fn a_host_endpoint_orbitals_write_never_enters_the_clients_view_record() {
+    let server = EmbeddedServer::new(hosted_schema()).unwrap();
+    let first = hosted_send(&server, "Main", "Writer", "SET_V", "one");
+    let first_to = delta(&first).to;
+    hosted_send(&server, "Host", "Binder", "BIND", "u1");
+    let next = hosted_send(&server, "Main", "Writer", "SET_V", "two");
+    assert_eq!(delta(&next).from, first_to, "the host's write left no gap in the client's versions: {:?}", next.frames);
+    let in_session = server.kernel().enter_session("tab");
+    let snapshot = server.kernel().frames_since(0).expect("a record");
+    drop(in_session);
+    let mut frames = BTreeMap::new();
+    snapshot.fold_into(&mut frames);
+    assert!(!frames.contains_key("Binder"), "the host's frame is not the client's: {frames:?}");
+    assert_eq!(held(&frames)["Writer"]["v"], json!("two"), "control: the client's own frame is in the snapshot");
 }

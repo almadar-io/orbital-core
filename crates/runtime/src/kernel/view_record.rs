@@ -4,7 +4,7 @@
 //! the version they start from and never merges rows by its own rules.
 
 use super::*;
-use crate::effects::frame_delta::{FrameDelta, FrameIdentity, FrameOp};
+use crate::effects::frame_delta::{FrameDelta, FrameIdentity, FrameOp, FrameTheme};
 use orbital_core_base::collections::IndexMap;
 use orbital_core_base::sync::Mutex;
 
@@ -27,6 +27,8 @@ struct ViewRecord {
     frames: IndexMap<String, SharedEntity>,
     /// The identity the last delta carried; `None` until one did.
     identity: Option<FrameIdentity>,
+    /// The theme the last delta carried; `None` until one did.
+    theme: Option<FrameTheme>,
 }
 
 impl ViewRecord {
@@ -93,6 +95,7 @@ impl ViewRecord {
             to: self.version,
             ops,
             identity: self.identity.clone(),
+            theme: self.theme.clone(),
         }
     }
 }
@@ -169,6 +172,7 @@ impl RuntimeKernel {
         }
         let writes = merged;
         let identity = self.mirrored_identity();
+        let theme = self.mirrored_theme();
         match self.view_cursor() {
             Cursor::None => {
                 let mut ops = Vec::new();
@@ -187,25 +191,38 @@ impl RuntimeKernel {
                     }
                 }
                 let identity = identity.filter(|identity| identity.user.is_some());
-                (!ops.is_empty() || identity.is_some()).then_some(FrameDelta {
+                let theme = theme.filter(|theme| theme.key.is_some());
+                (!ops.is_empty() || identity.is_some() || theme.is_some()).then_some(FrameDelta {
                     session: None,
                     from: 0,
                     to: 0,
                     ops,
                     identity,
+                    theme,
                 })
             }
             Cursor::Session(session) => {
+                // The server's own endpoint orbitals are not in the client's program (EXEC-ENDPOINT-5): their frames
+                // never enter the client's record, so they neither advance its versions nor reach its snapshots.
+                let writes: Vec<(String, FrameWrite)> = {
+                    let endpoint = self.registry.endpoint_traits.read();
+                    writes.into_iter().filter(|(frame, _)| !endpoint.contains(frame)).collect()
+                };
                 let mut records = self.view_records.records.lock();
                 let record = records.entry(session.clone()).or_default();
                 let mut ops = record.diff(writes);
                 let sent = record.identity.clone().or_else(|| ops.is_empty().then(FrameIdentity::default));
                 let changed = identity.filter(|current| sent.as_ref() != Some(current));
-                if ops.is_empty() && changed.is_none() {
+                let sent_theme = record.theme.clone().or_else(|| ops.is_empty().then(FrameTheme::default));
+                let theme_changed = theme.filter(|current| sent_theme.as_ref() != Some(current));
+                if ops.is_empty() && changed.is_none() && theme_changed.is_none() {
                     return None;
                 }
                 if changed.is_some() {
                     record.identity = changed.clone();
+                }
+                if theme_changed.is_some() {
+                    record.theme = theme_changed.clone();
                 }
                 if record.version == 0 {
                     ops.insert(0, FrameOp::Clear);
@@ -218,6 +235,7 @@ impl RuntimeKernel {
                     to: record.version,
                     ops,
                     identity: changed,
+                    theme: theme_changed,
                 })
             }
         }
@@ -238,6 +256,7 @@ impl RuntimeKernel {
                 to: since,
                 ops: Vec::new(),
                 identity: None,
+                theme: None,
             });
         }
         Some(record.snapshot(&session))
@@ -568,6 +587,9 @@ impl RuntimeKernel {
         }
         if let Some(identity) = &delta.identity {
             self.mirror_identity(identity);
+        }
+        if let Some(theme) = &delta.theme {
+            self.mirror_theme(theme);
         }
         let version = if delta.session.is_some() {
             delta.to

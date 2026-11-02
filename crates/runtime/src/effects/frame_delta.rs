@@ -41,6 +41,19 @@ pub struct FrameDelta {
     /// snapshot always carries it); absent leaves the client's mirror as it is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<FrameIdentity>,
+    /// The session's bound theme (G-CROSS-395), present when it changed since the last delta of this record (a snapshot
+    /// always carries it); absent leaves the client's mirror as it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<FrameTheme>,
+}
+
+/// The theme key a session is bound to by `theme/set`: absent when none is bound and the declared themes apply.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameTheme {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 /// The `[identity]` row a session is bound to: `user` is its `@user`, absent for the anonymous viewer.
@@ -68,6 +81,7 @@ impl FrameDelta {
             to: 0,
             ops,
             identity: None,
+            theme: None,
         }
     }
 

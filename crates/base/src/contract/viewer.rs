@@ -86,6 +86,15 @@ pub fn is_identity_effect(operator: &str) -> bool {
     operator == SIGN_IN || operator == SIGN_OUT
 }
 
+/// The viewer theme effects (G-CROSS-395): bind or clear the session's theme key, as the identity effects bind `@user`.
+pub const THEME_SET: &str = "theme/set";
+pub const THEME_CLEAR: &str = "theme/clear";
+
+/// Whether `operator` is a viewer theme effect, which only a server kernel runs.
+pub fn is_theme_effect(operator: &str) -> bool {
+    operator == THEME_SET || operator == THEME_CLEAR
+}
+
 const NAMED: [&str; 5] = ["id", "email", "name", "role", "permissions"];
 
 impl Viewer {
@@ -293,6 +302,8 @@ mod tests {
         );
         assert!(is_identity_effect("identity/sign-in") && is_identity_effect("identity/sign-out"));
         assert!(!is_identity_effect("identity/other"));
+        assert!(is_theme_effect("theme/set") && is_theme_effect("theme/clear"));
+        assert!(!is_theme_effect("theme/other") && !is_identity_effect("theme/set"));
     }
 
     #[test]

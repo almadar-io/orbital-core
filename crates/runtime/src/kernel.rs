@@ -191,6 +191,9 @@ struct Sessions {
     /// Each session that took part in the identity effects, and who it is now (EXEC-IDENTITY-1). The program session
     /// is the empty key. Freed with the session.
     identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
+    /// Each session's theme key bound by `theme/set` (G-CROSS-395); the program session is the empty key. Freed with
+    /// the session.
+    themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
     /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
     ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>>,
 }
@@ -319,6 +322,9 @@ struct StepScope {
     /// The identity change the running step made (session key, binding): applied when the step commits and dropped
     /// when it suspends or fails, so a replayed step starts from the identity the first attempt started from.
     identity_change: RwLock<Option<(String, identity_session::IdentityBinding)>>,
+    /// The theme change the running step made (session key, bound key or `None` for cleared), settled with the step
+    /// like `identity_change`.
+    theme_change: RwLock<Option<(String, Option<Arc<str>>)>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -348,6 +354,9 @@ struct Registry {
     schemas: Arc<RwLock<HashMap<String, Arc<OrbitalSchema>>>>,
     /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
     trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
+    /// The traits of orbitals whose every page is a protocol endpoint (EXEC-ENDPOINT-5): the server's, so a client
+    /// session's view record never holds their frames. Rebuilt with `trait_homes`.
+    endpoint_traits: Arc<RwLock<HashSet<String>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
     /// Every registered inline `EntityDefinition`, keyed by entity name —
     /// populated additively alongside `entity_policies` in `register_schema`
@@ -680,6 +689,7 @@ impl RuntimeKernel {
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
         let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
+        let themes: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
@@ -690,6 +700,7 @@ impl RuntimeKernel {
             Arc::clone(&state_manager),
             Arc::clone(&ended_sessions),
             Arc::clone(&identities),
+            Arc::clone(&themes),
         ));
         Self {
             config,
@@ -700,6 +711,7 @@ impl RuntimeKernel {
             registry: Registry {
                 schemas: Arc::new(RwLock::new(HashMap::new())),
                 trait_homes: Arc::new(RwLock::new(HashMap::new())),
+                endpoint_traits: Arc::new(RwLock::new(HashSet::new())),
                 trait_definitions: Arc::new(RwLock::new(HashMap::new())),
                 entity_definitions,
                 entity_defaults: Arc::new(RwLock::new(HashMap::new())),
@@ -719,6 +731,7 @@ impl RuntimeKernel {
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
                 anonymous: identity_session::anonymous_user(),
                 identities,
+                themes,
                 ended_sessions,
             },
             session_lives,
@@ -740,6 +753,7 @@ impl RuntimeKernel {
                 step_frame,
                 render_scopes: Arc::new(RwLock::new(Vec::new())),
                 identity_change: RwLock::new(None),
+                theme_change: RwLock::new(None),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
@@ -1079,6 +1093,7 @@ mod repaint;
 mod viewer_scope;
 mod session_life;
 mod identity_session;
+mod theme_session;
 mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};

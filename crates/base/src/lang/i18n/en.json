@@ -1053,6 +1053,8 @@
     "str/truncate": "str/truncate",
     "str/upper": "str/upper",
     "str/uri-component-valid": "str/uri-component-valid",
+    "theme/clear": "theme/clear",
+    "theme/set": "theme/set",
     "time/add": "time/add",
     "time/day": "time/day",
     "time/diff": "time/diff",

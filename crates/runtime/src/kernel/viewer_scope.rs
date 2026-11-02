@@ -189,6 +189,9 @@ impl RuntimeKernel {
     /// render-ui). Snapshot-facing: the FFI's `orbital_kernel_snapshot`
     /// surfaces this as `"theme"`.
     pub fn resolved_theme(&self) -> ResolvedTheme {
+        if let Some(bound) = self.session_resolved_theme() {
+            return bound;
+        }
         let mode = *self.presentation.theme_mode.read();
         match self.registry.schemas.read().values().next() {
             Some(schema) => resolve_theme(schema, None, &self.presentation.theme_presets.read(), mode),
@@ -197,9 +200,12 @@ impl RuntimeKernel {
     }
 
     /// Resolve `@currentTheme` for the orbital that owns `trait_name`,
-    /// applying orbital → app → default precedence (`resolve_theme`). Walks
+    /// applying session key → orbital → app → default precedence (`resolve_theme`; the session key from `theme/set`). Walks
     /// the trait→orbital index rebuilt by [`Self::register_schema`].
     pub(super) fn resolve_current_theme_for_trait(&self, trait_name: &str) -> ResolvedTheme {
+        if let Some(bound) = self.session_resolved_theme() {
+            return bound;
+        }
         let mode = *self.presentation.theme_mode.read();
         let homes = self.registry.trait_homes.read();
         if let Some((schema_name, index)) = homes.get(trait_name) {
