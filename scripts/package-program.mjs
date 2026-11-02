@@ -13,7 +13,7 @@
  * Usage:
  *   node package-program.mjs platform --name orb-shell-python --binary <path> --platform darwin-arm64 \
  *        --version 18.0.0 --repo <shell repo root> --out <dir> [--shell python]
- *   node package-program.mjs meta --name orb-shell-python --version 18.0.0 --out <dir> \
+ *   node package-program.mjs meta --name orb-shell-python --version 18.0.0 --repo <shell repo root> --out <dir> \
  *        --kind shell --shell python --platforms darwin-arm64,darwin-x64,linux-x64,linux-arm64,windows-x64
  */
 import fs from 'node:fs';
@@ -90,12 +90,21 @@ function platform(a) {
   console.log(`packaged ${dir}`);
 }
 
+/** The orb versions the program runs under: the first key of the crate's [package.metadata.orb]; `orb update` installs only a program that declares one. */
+function compilerRange(repo) {
+  const manifest = fs.readFileSync(path.join(repo, 'Cargo.toml'), 'utf8');
+  const found = /\[package\.metadata\.orb\]\ncompiler = "([^"]+)"/.exec(manifest);
+  if (!found) throw new Error(`${repo}/Cargo.toml has no [package.metadata.orb] compiler range`);
+  return found[1];
+}
+
 function meta(a) {
   const name = need(a, 'name');
   const version = need(a, 'version');
   const kind = need(a, 'kind');
   if (kind !== 'shell' && kind !== 'desktop') throw new Error(`--kind must be shell or desktop, got ${kind}`);
   const program = kind === 'shell' ? { kind, name: need(a, 'shell') } : { kind };
+  program.compiler = compilerRange(need(a, 'repo'));
   const platforms = need(a, 'platforms').split(',');
   const dir = path.join(need(a, 'out'), 'meta');
   write(path.join(dir, 'package.json'), {

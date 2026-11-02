@@ -59,8 +59,8 @@ fn every_shared_vector_matches() {
 
 #[test]
 fn an_unknown_digest_encoding_answers_null_for_hash_and_errors_for_hmac() {
-    assert!(eval("hash/sha256", &[json!("abc"), json!("hex")]).is_ok_and(|v| v.is_string()));
-    assert_eq!(eval("hash/sha256", &[json!("abc"), json!("octal")]), Ok(Json::Null));
+    assert!(eval("hash/sha", &[json!(256), json!("abc"), json!("hex")]).is_ok_and(|v| v.is_string()));
+    assert_eq!(eval("hash/sha", &[json!(256), json!("abc"), json!("octal")]), Ok(Json::Null));
     assert!(eval("hmac/sha256-bytes", &[json!("aw=="), json!("m"), json!("octal")]).is_err());
     let held = BindingContextBuilder::new().build().with_secret("K", "k".to_string());
     let expr = serde_json::from_value(json!(["hmac/sha256", "K", "m", "octal"])).unwrap();
@@ -85,7 +85,7 @@ fn hmac_reads_its_key_from_a_held_credential_and_a_key_that_is_a_value_is_not_a_
 #[test]
 fn missing_arguments_are_arity_errors() {
     assert!(eval("base64/encode", &[]).is_err());
-    assert!(eval("hash/sha256", &[json!("abc")]).is_err());
+    assert!(eval("hash/sha", &[json!(256), json!("abc")]).is_err());
     assert!(eval("hmac/sha256", &[json!("k"), json!("m")]).is_err());
     for op in ["hmac/sha256-bytes", "ecdsa/p256-sign", "rsa/sign", "ecdh/p256-ephemeral", "aes-gcm/seal", "aes-gcm/open"] {
         assert!(eval(op, &[]).is_err(), "{op}");
@@ -111,3 +111,58 @@ fn every_shared_regex_vector_matches() {
     }
 }
 
+
+fn tar_entry(name: &str, mode: u32, data: &[u8]) -> Vec<u8> {
+    let mut header = vec![0u8; 512];
+    header[..name.len()].copy_from_slice(name.as_bytes());
+    header[100..107].copy_from_slice(format!("{mode:07o}").as_bytes());
+    header[124..135].copy_from_slice(format!("{:011o}", data.len()).as_bytes());
+    header[156] = b'0';
+    header[148..156].copy_from_slice(b"        ");
+    let sum: usize = header.iter().map(|b| usize::from(*b)).sum();
+    header[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+    let mut out = header;
+    out.extend_from_slice(data);
+    out.resize(out.len().div_ceil(512) * 512, 0);
+    out
+}
+
+fn tar_b64(entries: &[Vec<u8>]) -> String {
+    let mut archive = entries.concat();
+    archive.extend_from_slice(&[0u8; 1024]);
+    orbital_core_base::codec::base64_encode(&archive)
+}
+
+#[test]
+fn tar_entries_lists_regular_files_with_bytes_data_and_the_executable_bit() {
+    let archive = tar_b64(&[tar_entry("package/package.json", 0o644, b"{}"), tar_entry("package/bin/orb", 0o755, b"#!")]);
+    assert_eq!(
+        eval("tar/entries", &[json!(archive), json!(10)]),
+        Ok(json!([
+            { "path": "package/package.json", "data": "e30=", "executable": false },
+            { "path": "package/bin/orb", "data": "IyE=", "executable": true }
+        ]))
+    );
+    assert_eq!(
+        eval("tar/entries", &[json!(archive), json!(10), json!({ "result": true })]).map(|v| v["ok"].clone()),
+        Ok(json!(true))
+    );
+}
+
+#[test]
+fn tar_entries_refusals_are_closed_codes_or_null() {
+    let escaping = tar_b64(&[tar_entry("../evil", 0o644, b"x")]);
+    assert_eq!(eval("tar/entries", &[json!(escaping), json!(10)]), Ok(Json::Null));
+    assert_eq!(
+        eval("tar/entries", &[json!(escaping), json!(10), json!({ "result": true })]),
+        Ok(json!({ "ok": false, "entries": null, "code": "path" }))
+    );
+    let two = tar_b64(&[tar_entry("a", 0o644, b""), tar_entry("b", 0o644, b"")]);
+    assert_eq!(
+        eval("tar/entries", &[json!(two), json!(1), json!({ "result": true })]).map(|v| v["code"].clone()),
+        Ok(json!("entry-limit"))
+    );
+    assert_eq!(eval("tar/entries", &[json!("not base64!"), json!(10)]), Ok(Json::Null));
+    assert_eq!(eval("tar/entries", &[json!(two), json!(1.5)]), Ok(Json::Null));
+    assert!(eval("tar/entries", &[json!(two)]).is_err());
+}

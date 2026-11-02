@@ -46,14 +46,14 @@ fn assert_extra_rejected(op: &str, args: Vec<Json>, expected: &str) {
     assert_arity(op, &extra, arity, &ctx);
 }
 
-/// Each codec's full call and its minimum arity (`hash/sha256` takes an optional third `input`, `hmac/sha256` an optional
+/// Each codec's full call and its minimum arity (`hash/sha` takes an optional fourth `input`, `hmac/sha256` an optional
 /// literal `prefix`).
 fn valid_calls() -> [(&'static str, Vec<Json>, usize); 5] {
     [
         ("str/encode-uri-component", vec![json!("a b&c")], 1),
         ("base64/encode", vec![json!("foobar")], 1),
         ("base64/decode", vec![json!("Zm9vYmFy")], 1),
-        ("hash/sha256", vec![json!("abc"), json!("hex"), json!("text")], 2),
+        ("hash/sha", vec![json!(256), json!("abc"), json!("hex"), json!("text")], 3),
         (
             "hmac/sha256",
             vec![json!("Jefe"), json!("what do ya want for nothing?"), json!("hex"), json!("")],
@@ -86,10 +86,10 @@ fn base64_decode_rejects_extra_arguments() {
 }
 
 #[test]
-fn hash_sha256_rejects_extra_arguments() {
+fn hash_sha_rejects_extra_arguments() {
     assert_extra_rejected(
-        "hash/sha256",
-        vec![json!("abc"), json!("hex"), json!("text")],
+        "hash/sha",
+        vec![json!(256), json!("abc"), json!("hex"), json!("text")],
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
 }

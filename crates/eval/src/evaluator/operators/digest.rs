@@ -99,23 +99,19 @@ impl Operator for Base64ValidOp {
     }
 }
 
-/// hash/sha256 (data, encoding, input?) - input "text" (default) hashes the UTF-8 of a string, "bytes" decodes
-/// standard padded base64 once and hashes the bytes (the hash/md5 reading)
-pub struct HashSha256Op;
-impl Operator for HashSha256Op {
+/// hash/sha (bits, data, encoding, input?) - SHA-2 at 256 or 512 bits (FIPS 180-4). Input "text" (default) hashes the
+/// UTF-8 of a string, "bytes" decodes standard padded base64 once and hashes the bytes (the hash/md5 reading). Another bit
+/// count, encoding or input kind, or invalid base64, answers null.
+pub struct HashShaOp;
+impl Operator for HashShaOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        const OP: &str = "hash/sha256";
-        require_arity!(args, OP, >= 2);
-        if args.len() > 3 {
-            return Err(OrbitalError::Eval(EvalError::ArityMismatch {
-                operator: OP.to_string(),
-                expected: 3,
-                actual: args.len(),
-            }));
-        }
-        let s = string_arg(&args[0], ctx)?;
-        let encoding = string_arg(&args[1], ctx)?;
-        let input = match args.get(2) {
+        const OP: &str = "hash/sha";
+        require_arity!(args, OP, >= 3);
+        require_at_most(args, OP, 4)?;
+        let bits = eval_expr(&args[0], ctx)?.number().map_err(OrbitalError::Eval)?;
+        let s = string_arg(&args[1], ctx)?;
+        let encoding = string_arg(&args[2], ctx)?;
+        let input = match args.get(3) {
             Some(arg) => string_arg(arg, ctx)?,
             None => "text".to_string(),
         };
@@ -127,7 +123,13 @@ impl Operator for HashSha256Op {
             },
             _ => return Ok(Value::Null),
         };
-        digest_or_null(&codec::sha256(&data), &encoding)
+        if bits == 256.0 {
+            digest_or_null(&codec::sha256(&data), &encoding)
+        } else if bits == 512.0 {
+            digest_or_null(&codec::sha512(&data), &encoding)
+        } else {
+            Ok(Value::Null)
+        }
     }
 }
 
@@ -444,6 +446,58 @@ impl Operator for GzipDecompressOp {
         decompress(args, ctx, "gzip/decompress")
     }
 }
+/// tar/entries (data, maxEntries, options?) - the regular files of a ustar archive as [{ path, data, executable }] in
+/// archive order (data is bytes). Refusals are the closed codes of `codec::TarFailure`; with options { result: true } the
+/// answer is { ok, entries, code }, otherwise a refusal, invalid base64 or a maxEntries that is not a whole number from 0
+/// answers null.
+pub struct TarEntriesOp;
+impl Operator for TarEntriesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        const OP: &str = "tar/entries";
+        require_arity!(args, OP, >= 2);
+        require_at_most(args, OP, 3)?;
+        let data = bytes_in(&args[0], ctx)?;
+        let n = eval_expr(&args[1], ctx)?.number().map_err(OrbitalError::Eval)?;
+        let max = (n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64).then_some(n as usize);
+        let options = codec_options(args, 2, ctx, OP, &["result"])?;
+        let (Some(data), Some(max), Some(options)) = (data, max, options) else {
+            return Ok(Value::Null);
+        };
+        let answer = codec::tar_files(&data, max).map(|files| {
+            Value::array(
+                files
+                    .into_iter()
+                    .map(|file| {
+                        Value::Object(
+                            [
+                                ("path", Value::string(file.path)),
+                                ("data", Value::string(codec::base64_encode(&file.data))),
+                                ("executable", Value::Bool(file.executable)),
+                            ]
+                            .into_iter()
+                            .map(|(key, value)| (key.into(), value))
+                            .collect(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        });
+        if options.as_object().and_then(|fields| fields.get("result")) != Some(&Value::Bool(true)) {
+            return Ok(answer.unwrap_or(Value::Null));
+        }
+        let (ok, entries, code) = match answer {
+            Ok(entries) => (true, entries, Value::Null),
+            Err(failure) => (false, Value::Null, Value::string(failure.code().to_string())),
+        };
+        Ok(Value::Object(
+            [("ok", Value::Bool(ok)), ("entries", entries), ("code", code)]
+                .into_iter()
+                .map(|(key, value)| (key.into(), value))
+                .collect(),
+        ))
+    }
+}
+
 pub struct BrotliCompressOp;
 impl Operator for BrotliCompressOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {

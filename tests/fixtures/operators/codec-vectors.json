@@ -224,8 +224,9 @@
     "source": "invalid: unpadded, bad char, whitespace, non-canonical trailing bits, url-safe alphabet, or bytes that are not UTF-8"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "",
       "hex"
     ],
@@ -233,8 +234,9 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "",
       "base64"
     ],
@@ -242,8 +244,9 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "abc",
       "hex"
     ],
@@ -251,8 +254,40 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      512,
+      "abc",
+      "hex"
+    ],
+    "expect": "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f",
+    "source": "FIPS 180-2 appendix C.1"
+  },
+  {
+    "op": "hash/sha",
+    "args": [
+      512,
+      "YWJj",
+      "base64",
+      "bytes"
+    ],
+    "expect": "3a81oZNherrMQXNJriBBMRLm+k6JqX6iCp7u5ktV05ohkpkqJ0/BqDa6PCOj/uu9RU1EI2Q86A4qmslPpUyknw==",
+    "source": "FIPS 180-2 appendix C.1 (npm sha512 integrity form)"
+  },
+  {
+    "op": "hash/sha",
+    "args": [
+      384,
+      "abc",
+      "hex"
+    ],
+    "null": true,
+    "source": "control: only 256 and 512 bits"
+  },
+  {
+    "op": "hash/sha",
+    "args": [
+      256,
       "abc",
       "base64"
     ],
@@ -260,8 +295,9 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
       "hex"
     ],
@@ -269,8 +305,9 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq",
       "base64"
     ],
@@ -278,8 +315,9 @@
     "source": "FIPS 180-2 appendix"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "hex"
     ],
@@ -287,8 +325,9 @@
     "source": "multi-block, node crypto reference"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "héllo wörld ✓ 😀",
       "hex"
     ],
@@ -296,8 +335,9 @@
     "source": "UTF-8 non-ASCII, node crypto reference"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "hex"
     ],
@@ -305,8 +345,9 @@
     "source": "padding boundary, node crypto reference"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "hex"
     ],
@@ -314,8 +355,9 @@
     "source": "padding boundary, node crypto reference"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "hex"
     ],
@@ -323,8 +365,9 @@
     "source": "padding boundary, node crypto reference"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "abc",
       "base32"
     ],
@@ -332,8 +375,9 @@
     "source": "unknown encoding"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       "abc",
       "HEX"
     ],
@@ -341,8 +385,9 @@
     "source": "encoding is case-sensitive"
   },
   {
-    "op": "hash/sha256",
+    "op": "hash/sha",
     "args": [
+      256,
       1,
       "hex"
     ],
@@ -699,25 +744,45 @@
   },
   {
     "op": "hmac/sha256-bytes",
-    "args": ["CwsLCwsLCwsLCwsLCwsLCwsLCws=", "SGkgVGhlcmU=", "hex", "bytes"],
+    "args": [
+      "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
+      "SGkgVGhlcmU=",
+      "hex",
+      "bytes"
+    ],
     "expect": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7",
     "source": "RFC 4231 test case 1, message as bytes"
   },
   {
     "op": "hmac/sha256-bytes",
-    "args": ["qqqqqqqqqqqqqqqqqqqqqqqqqqo=", "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d0=", "hex", "bytes"],
+    "args": [
+      "qqqqqqqqqqqqqqqqqqqqqqqqqqo=",
+      "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d0=",
+      "hex",
+      "bytes"
+    ],
     "expect": "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe",
     "source": "RFC 4231 test case 3 (key 0xaa x20, data 0xdd x50)"
   },
   {
     "op": "hmac/sha256-bytes",
-    "args": ["AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==", "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=", "hex", "bytes"],
+    "args": [
+      "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==",
+      "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=",
+      "hex",
+      "bytes"
+    ],
     "expect": "82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b",
     "source": "RFC 4231 test case 4 (key 0x01..0x19, data 0xcd x50)"
   },
   {
     "op": "hmac/sha256-bytes",
-    "args": ["SmVmZQ==", "%not base64", "hex", "bytes"],
+    "args": [
+      "SmVmZQ==",
+      "%not base64",
+      "hex",
+      "bytes"
+    ],
     "null": true,
     "source": "a message that is not canonical base64 answers null"
   }

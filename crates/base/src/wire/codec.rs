@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 
 use base64::Engine;
 use md5::Md5;
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 pub fn push_escaped(out: &mut String, byte: u8) {
     out.push('%');
@@ -121,6 +121,10 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, String> {
 
 pub fn sha256(data: &[u8]) -> [u8; 32] {
     Sha256::digest(data).into()
+}
+
+pub fn sha512(data: &[u8]) -> [u8; 64] {
+    Sha512::digest(data).into()
 }
 
 pub fn md5(data: &[u8]) -> [u8; 16] {
@@ -539,36 +543,123 @@ pub struct TarFile {
     pub executable: bool,
 }
 
-/// The regular files of a ustar archive, in archive order; directories, links and extended headers are skipped.
-pub fn tar_files(archive: &[u8]) -> Result<Vec<TarFile>, String> {
+/// Why a tar archive was refused; every refusal is one of these closed codes, never a partial read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TarFailure {
+    Truncated, HeaderChecksum, Number, Path, Duplicate, Type, Pax, EntryLimit,
+}
+
+impl TarFailure {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Truncated => "truncated", Self::HeaderChecksum => "header-checksum", Self::Number => "number",
+            Self::Path => "path", Self::Duplicate => "duplicate", Self::Type => "type", Self::Pax => "pax",
+            Self::EntryLimit => "entry-limit",
+        }
+    }
+}
+
+impl core::fmt::Display for TarFailure {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// A relative path of normal components only: no root, no `.` or `..`, no empty component, backslash or NUL.
+fn tar_path_safe(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains('\\')
+        && !path.contains('\0')
+        && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// The `path` record of a pax extended header (`<len> <key>=<value>\n` records); `None` when it sets no path.
+fn pax_path(data: &[u8]) -> Result<Option<String>, TarFailure> {
+    let mut path = None;
+    let mut rest = data;
+    while !rest.is_empty() {
+        let space = rest.iter().position(|b| *b == b' ').ok_or(TarFailure::Pax)?;
+        let len: usize = core::str::from_utf8(&rest[..space]).ok().and_then(|t| t.parse().ok()).ok_or(TarFailure::Pax)?;
+        if len <= space + 1 || len > rest.len() || rest[len - 1] != b'\n' {
+            return Err(TarFailure::Pax);
+        }
+        let record = core::str::from_utf8(&rest[space + 1..len - 1]).map_err(|_| TarFailure::Pax)?;
+        let (key, value) = record.split_once('=').ok_or(TarFailure::Pax)?;
+        if key == "path" {
+            path = Some(value.to_string());
+        }
+        rest = &rest[len..];
+    }
+    Ok(path)
+}
+
+/// The regular files of a ustar archive, in archive order, at most `max_entries` of them. Directories and pax global
+/// headers are skipped; a pax `path` record or a GNU long name names the next entry. Refused: a header whose checksum does
+/// not match, a header number that is not octal, an entry running past the archive, a path that is not relative and
+/// normal, a path seen twice, a link, device or fifo, a malformed pax record, and more than `max_entries` files.
+pub fn tar_files(archive: &[u8], max_entries: usize) -> Result<Vec<TarFile>, TarFailure> {
     fn field(block: &[u8]) -> &[u8] {
         let end = block.iter().position(|b| *b == 0).unwrap_or(block.len());
         &block[..end]
     }
-    fn octal(block: &[u8]) -> Result<usize, String> {
-        let text = core::str::from_utf8(field(block)).map_err(|_| "a tar header number is not text".to_string())?;
-        usize::from_str_radix(text.trim(), 8).map_err(|_| format!("a tar header number is not octal: {text:?}"))
+    fn octal(block: &[u8]) -> Result<usize, TarFailure> {
+        let text = core::str::from_utf8(field(block)).map_err(|_| TarFailure::Number)?;
+        usize::from_str_radix(text.trim_matches(|c| c == ' '), 8).map_err(|_| TarFailure::Number)
     }
-    let mut files = Vec::new();
+    fn text(block: &[u8]) -> Result<&str, TarFailure> {
+        core::str::from_utf8(field(block)).map_err(|_| TarFailure::Path)
+    }
+    let mut files: Vec<TarFile> = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut next_path: Option<String> = None;
     let mut offset = 0;
-    while offset + 512 <= archive.len() {
+    loop {
+        if offset + 512 > archive.len() {
+            return Err(TarFailure::Truncated);
+        }
         let header = &archive[offset..offset + 512];
         if header.iter().all(|b| *b == 0) {
-            break;
+            return Ok(files);
+        }
+        let stored = octal(&header[148..156])?;
+        let sum: usize = header.iter().enumerate().map(|(i, b)| if (148..156).contains(&i) { 32 } else { usize::from(*b) }).sum();
+        if stored != sum {
+            return Err(TarFailure::HeaderChecksum);
         }
         let size = octal(&header[124..136])?;
-        let mode = octal(&header[100..108])?;
-        let name = core::str::from_utf8(field(&header[0..100])).map_err(|_| "a tar path is not text".to_string())?;
-        let prefix = core::str::from_utf8(field(&header[345..500])).map_err(|_| "a tar path is not text".to_string())?;
-        let path = if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") };
         let start = offset + 512;
-        let end = start.checked_add(size).filter(|end| *end <= archive.len()).ok_or_else(|| "a tar entry runs past the archive".to_string())?;
-        if matches!(header[156], 0 | b'0') {
-            files.push(TarFile { path, data: archive[start..end].to_vec(), executable: mode & 0o111 != 0 });
-        }
+        let end = start.checked_add(size).filter(|end| *end <= archive.len()).ok_or(TarFailure::Truncated)?;
+        let data = &archive[start..end];
         offset = start + size.div_ceil(512) * 512;
+        match header[156] {
+            0 | b'0' | b'7' => {
+                let path = match next_path.take() {
+                    Some(path) => path,
+                    None => {
+                        let name = text(&header[0..100])?;
+                        let prefix = text(&header[345..500])?;
+                        if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") }
+                    }
+                };
+                if !tar_path_safe(&path) {
+                    return Err(TarFailure::Path);
+                }
+                if !seen.insert(path.clone()) {
+                    return Err(TarFailure::Duplicate);
+                }
+                if files.len() == max_entries {
+                    return Err(TarFailure::EntryLimit);
+                }
+                let mode = octal(&header[100..108])?;
+                files.push(TarFile { path, data: data.to_vec(), executable: mode & 0o111 != 0 });
+            }
+            b'5' => next_path = None,
+            b'g' => {}
+            b'x' => next_path = pax_path(data)?.or(next_path),
+            b'L' => next_path = Some(text(data)?.to_string()),
+            _ => return Err(TarFailure::Type),
+        }
     }
-    Ok(files)
 }
 
 /// Lower-case hex.
@@ -681,28 +772,90 @@ mod structured_codec_tests {
         assert!(!ed25519_verify(&ed25519_public_key(&other), b"", &signature));
     }
 
+    fn tar_entry(name: &str, mode: u32, kind: u8, data: &[u8]) -> Vec<u8> {
+        let mut header = vec![0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..107].copy_from_slice(format!("{mode:07o}").as_bytes());
+        header[124..135].copy_from_slice(format!("{:011o}", data.len()).as_bytes());
+        header[156] = kind;
+        header[148..156].copy_from_slice(b"        ");
+        let sum: usize = header.iter().map(|b| usize::from(*b)).sum();
+        header[148..155].copy_from_slice(format!("{sum:06o}\0").as_bytes());
+        let mut out = header;
+        out.extend_from_slice(data);
+        out.resize(out.len().div_ceil(512) * 512, 0);
+        out
+    }
+
+    fn tar_of(entries: &[Vec<u8>]) -> Vec<u8> {
+        let mut archive = entries.concat();
+        archive.extend_from_slice(&[0u8; 1024]);
+        archive
+    }
+
     #[test]
     fn tar_files_reads_regular_files_with_their_mode_and_refuses_a_truncated_entry() {
-        fn entry(name: &str, mode: u32, kind: u8, data: &[u8]) -> Vec<u8> {
-            let mut header = vec![0u8; 512];
-            header[..name.len()].copy_from_slice(name.as_bytes());
-            header[100..107].copy_from_slice(format!("{mode:07o}").as_bytes());
-            header[124..135].copy_from_slice(format!("{:011o}", data.len()).as_bytes());
-            header[156] = kind;
-            let mut out = header;
-            out.extend_from_slice(data);
-            out.resize(out.len().div_ceil(512) * 512, 0);
-            out
-        }
-        let mut archive = [entry("dir/", 0o755, b'5', b""), entry("dir/a.txt", 0o644, b'0', b"hello"), entry("dir/run", 0o755, b'0', b"#!")].concat();
-        archive.extend_from_slice(&[0u8; 1024]);
-        let files = tar_files(&archive).unwrap();
+        let archive = tar_of(&[tar_entry("dir/", 0o755, b'5', b""), tar_entry("dir/a.txt", 0o644, b'0', b"hello"), tar_entry("dir/run", 0o755, b'0', b"#!")]);
+        let files = tar_files(&archive, 10).unwrap();
         assert_eq!(files, vec![
             TarFile { path: "dir/a.txt".into(), data: b"hello".to_vec(), executable: false },
             TarFile { path: "dir/run".into(), data: b"#!".to_vec(), executable: true },
         ]);
-        assert!(tar_files(&archive[..1026]).is_err());
-        assert!(tar_files(&[]).unwrap().is_empty());
+        assert_eq!(tar_files(&archive[..1026], 10), Err(TarFailure::Truncated));
+        assert_eq!(tar_files(&archive[..1536], 10), Err(TarFailure::Truncated), "no end-of-archive block");
+        assert_eq!(tar_files(&[0u8; 1024], 10), Ok(vec![]));
+        assert_eq!(tar_files(&[], 10), Err(TarFailure::Truncated));
+    }
+
+    #[test]
+    fn tar_files_refuses_a_header_whose_checksum_does_not_match() {
+        let mut entry = tar_entry("a.txt", 0o644, b'0', b"x");
+        entry[0] = b'b';
+        assert_eq!(tar_files(&tar_of(&[entry]), 10), Err(TarFailure::HeaderChecksum));
+        assert_eq!(tar_files(&tar_of(&[tar_entry("b.txt", 0o644, b'0', b"x")]), 10).unwrap().len(), 1, "control: the same entry with its checksum");
+    }
+
+    #[test]
+    fn tar_files_refuses_paths_that_are_not_relative_and_normal() {
+        for bad in ["/etc/passwd", "../evil", "a/../../evil", "a//b", "./a", "a\\b", "a/."] {
+            assert_eq!(tar_files(&tar_of(&[tar_entry(bad, 0o644, b'0', b"x")]), 10), Err(TarFailure::Path), "{bad}");
+        }
+        assert!(tar_files(&tar_of(&[tar_entry("package/lib/a.js", 0o644, b'0', b"x")]), 10).is_ok(), "control: a nested relative path");
+    }
+
+    #[test]
+    fn tar_files_refuses_links_devices_duplicates_and_too_many_entries() {
+        for kind in [b'1', b'2', b'3', b'4', b'6'] {
+            assert_eq!(tar_files(&tar_of(&[tar_entry("l", 0o644, kind, b"")]), 10), Err(TarFailure::Type), "type {}", kind as char);
+        }
+        let twice = tar_of(&[tar_entry("a", 0o644, b'0', b"1"), tar_entry("a", 0o644, b'0', b"2")]);
+        assert_eq!(tar_files(&twice, 10), Err(TarFailure::Duplicate));
+        let three = tar_of(&[tar_entry("a", 0o644, b'0', b""), tar_entry("b", 0o644, b'0', b""), tar_entry("c", 0o644, b'0', b"")]);
+        assert_eq!(tar_files(&three, 2), Err(TarFailure::EntryLimit));
+        assert_eq!(tar_files(&three, 3).unwrap().len(), 3, "control: exactly the limit");
+    }
+
+    #[test]
+    fn tar_files_names_the_next_entry_from_a_pax_path_or_a_gnu_long_name() {
+        let long = format!("package/{}/x.js", "d".repeat(120));
+        let body = format!(" path={long}\n");
+        let digits = (1..).find(|d| (body.len() + d).to_string().len() == *d).unwrap();
+        let record = format!("{}{body}", body.len() + digits);
+        let pax = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', record.as_bytes()), tar_entry("short", 0o644, b'0', b"p")]);
+        assert_eq!(tar_files(&pax, 10).unwrap()[0].path, long);
+        let gnu = tar_of(&[tar_entry("././@LongLink", 0o644, b'L', format!("{long}\0").as_bytes()), tar_entry("short", 0o644, b'0', b"g")]);
+        assert_eq!(tar_files(&gnu, 10).unwrap()[0].path, long);
+        let global = tar_of(&[tar_entry("pax_global_header", 0o644, b'g', b"20 comment=anything\n"), tar_entry("short", 0o644, b'0', b"s")]);
+        assert_eq!(tar_files(&global, 10).unwrap()[0].path, "short", "control: a global header names nothing");
+        let broken = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', b"99 path=x\n"), tar_entry("short", 0o644, b'0', b"p")]);
+        assert_eq!(tar_files(&broken, 10), Err(TarFailure::Pax));
+        let escaping = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', b"16 path=../evil\n"), tar_entry("short", 0o644, b'0', b"p")]);
+        assert_eq!(tar_files(&escaping, 10), Err(TarFailure::Path), "a pax path is checked like a header path");
+    }
+
+    #[test]
+    fn sha512_matches_the_fips_vector() {
+        assert_eq!(hex(&sha512(b"abc")), "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f");
     }
 }
 

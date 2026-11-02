@@ -99,6 +99,7 @@ jobs:
     permissions: { contents: write }
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with: { repository: almadar-io/orbital-core, path: .orbital-core }
       - uses: actions/download-artifact@v5
         with: { path: artifacts }
@@ -113,12 +114,13 @@ jobs:
           for dir in artifacts/*/npm/*/; do
             platform=$(basename "$dir")
             PLATFORMS="${PLATFORMS:+$PLATFORMS,}$platform"
-            (cd "$dir" && npm publish --access public)
+            # Published under the next dist-tag; the orb release smoke (orbital-rust release-smoke.yml) promotes it to latest.
+            (cd "$dir" && npm publish --access public --tag next)
           done
           node .orbital-core/scripts/package-program.mjs meta --name ${{ inputs.name }} --version "$VERSION" \
-            --kind ${{ inputs.kind }} --platforms "$PLATFORMS" --out dist \
+            --kind ${{ inputs.kind }} --platforms "$PLATFORMS" --repo . --out dist \
             ${{ inputs.shell != '' && format('--shell {0}', inputs.shell) || '' }}
-          (cd dist/meta && npm publish --access public)
+          (cd dist/meta && npm publish --access public --tag next)
       - name: Symbol files to the release
         env:
           GH_TOKEN: ${{ github.token }}
