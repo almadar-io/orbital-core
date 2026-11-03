@@ -1005,7 +1005,7 @@ impl RuntimeKernel {
 
 /// Whether the cascade from `chain[from]`, a `(trait, emitter)` step list in run order, reaches a step that `needs` the
 /// server: the step itself, or one its emits reach later (EXEC-DIST-10). A client dispatch and a fold both ask it.
-fn chain_needs_server(
+pub(crate) fn chain_needs_server(
     chain: &[(&str, Option<&str>)],
     from: usize,
     needs: impl Fn(usize) -> bool,

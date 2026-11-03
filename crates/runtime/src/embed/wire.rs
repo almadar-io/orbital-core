@@ -62,6 +62,18 @@ pub struct DispatchWire {
     pub stateful_leg: Option<StatefulLegWire>,
     /// The traits whose pre-dispatch frame is the base a posted answer is folded against (`foldBase`).
     pub fold_seeded: Vec<String>,
+    /// The steps the dispatch ran, in order, for a mount batch to read as one cascade (EXEC-DIST-10).
+    #[serde(skip)]
+    #[cfg_attr(test, ts(skip))]
+    pub steps: Vec<BatchStep>,
+}
+
+/// One step a dispatch ran: the trait, the trait whose emit delivered it, and whether it delegated an effect.
+#[derive(Debug, Clone)]
+pub struct BatchStep {
+    pub trait_name: String,
+    pub emitter: Option<String>,
+    pub delegated: bool,
 }
 
 /// The leg of a server-backed dispatch that delegated nothing, and the traits awaiting its answer.

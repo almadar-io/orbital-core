@@ -265,3 +265,70 @@ fn edge_the_second_ask_is_posted_though_the_dispatch_already_delivered_the_pair(
     assert!(applied.server_legs.iter().any(|r| r.leg.target_trait.as_deref() == Some("Fetcher")));
 }
 
+
+/// The finder's second hop: `Find` (`[client]`) INIT emits MATCH; `Match` (server) answers RESOLVE; `Resolver`
+/// (`[client]`, with or without an INIT arm) hears RESOLVE and starts resolving.
+fn finder(resolver_init: bool) -> EmbeddedKernel {
+    let mut resolver = vec![json!({ "from": "idle", "to": "resolving", "event": "RESOLVE", "effects": [] })];
+    if resolver_init {
+        resolver.push(json!({ "from": "idle", "to": "idle", "event": "INIT" }));
+    }
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "finder",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Finder",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Find", "linkedEntity": "Run", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "INIT", "effects": [["emit", "MATCH", {}]] }] } },
+                { "name": "Match", "linkedEntity": "Run",
+                  "listens": [{ "event": "MATCH", "triggers": "MATCH", "source": { "kind": "trait", "trait": "Find" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "resolving" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "resolving", "event": "MATCH", "effects": [["emit", "VM_RESOLVE", {}]] }] } },
+                { "name": "Resolver", "linkedEntity": "Run", "dispatch": "client",
+                  "listens": [{ "event": "VM_RESOLVE", "triggers": "RESOLVE", "source": { "kind": "trait", "trait": "Match" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "resolving" }],
+                    "transitions": resolver } }
+            ]
+        }]
+    }))
+    .unwrap();
+    EmbeddedKernel::new(schema, "c1").unwrap()
+}
+
+/// The page mounts every trait and seeds those with a lifecycle arm, as a route's mount does (EXEC-ENDPOINT-3).
+fn host_answered_resolve(k: &EmbeddedKernel, seeded: &[&str]) -> String {
+    k.mount(["Find", "Match", "Resolver"].iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<orbital_core_runtime::effects::MountSeed> = seeded
+        .iter()
+        .map(|t| orbital_core_runtime::effects::MountSeed { r#trait: t.to_string(), event: orbital_core_runtime::effects::LifecycleEvent::Init })
+        .collect();
+    k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+    let answer = EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "VM_RESOLVE".to_string(),
+            payload: None,
+            source: Some(BusEventSource { r#trait: Some("Match".to_string()), ..Default::default() }),
+        }],
+        ..Default::default()
+    };
+    k.apply_server_response(&answer, &HashSet::new()).unwrap();
+    k.get_state("Resolver", None)
+}
+
+/// EXEC-DIST-4 + EXEC-SEED-2: a host answer's emit from a server trait reaches a mounted client-only listener, whether or
+/// not it declares an INIT arm.
+#[test]
+fn a_host_emit_reaches_a_client_only_listener_with_no_init_arm() {
+    assert_eq!(host_answered_resolve(&finder(false), &["Find", "Match"]), "resolving");
+}
+
+#[test]
+fn control_a_host_emit_reaches_a_client_only_listener_with_an_init_arm() {
+    assert_eq!(host_answered_resolve(&finder(true), &["Find", "Match", "Resolver"]), "resolving");
+}

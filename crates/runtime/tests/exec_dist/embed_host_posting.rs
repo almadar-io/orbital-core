@@ -834,3 +834,110 @@ fn control_a_mount_cascade_through_an_optimistic_client_with_no_server_trait_pos
         assert!(mount.legs.is_empty(), "{order:?}: {:?}", mount.legs);
     }
 }
+
+/// The launchpad finder shape: `Find` (`[client]`) INIT emits MATCH; `Match` (server, no server effect of its own)
+/// hears it and emits SOURCES; `Sources` (optimistic) answers SOURCES with an `os/getenv` ask (or, with `ask` off, a
+/// pure set).
+fn client_to_pure_server_hop_schema(ask: bool) -> OrbitalSchema {
+    let sources: Vec<serde_json::Value> = if ask {
+        vec![json!(["os/getenv", "HOME", { "key": "HOME", "emit": { "success": "SRC_ENV", "failure": "SRC_FAILED" } }])]
+    } else {
+        vec![json!(["set", "@entity.n", 1])]
+    };
+    serde_json::from_value(json!({
+        "name": "finder",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Finder",
+            "entity": { "name": "Run", "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+            "traits": [
+                { "name": "Find", "dispatch": "client",
+                  "stateMachine": {
+                    "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "INIT", "effects": [["emit", "MATCH", {"q": "ci"}]] }] } },
+                { "name": "Match", "linkedEntity": "Run",
+                  "listens": [{ "event": "MATCH", "triggers": "MATCH", "source": { "kind": "trait", "trait": "Find" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "sourcing" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "sourcing", "event": "MATCH", "effects": [["emit", "SOURCES", {}]] }] } },
+                { "name": "Sources", "linkedEntity": "Run", "dispatch": "optimistic",
+                  "listens": [{ "event": "SOURCES", "triggers": "SOURCES", "source": { "kind": "trait", "trait": "Match" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "envs" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "envs", "event": "SOURCES", "effects": sources },
+                        { "from": "envs", "to": "envs", "event": "SRC_ENV" },
+                        { "from": "envs", "to": "idle", "event": "SRC_FAILED" }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+/// EXEC-DIST-2 + EXEC-DIST-10: the host runs the cascade a client-only INIT starts through a server hop to an `os` ask:
+/// the hop is the leg with its payload, or, when the hop and the asker run in later seeds, the client-only seed is
+/// replayed with the mount.
+#[test]
+fn a_client_init_that_reaches_a_server_hop_before_an_os_ask_posts_the_hop_as_the_leg() {
+    let mut wrong = Vec::new();
+    for order in permutations(&["Find", "Match", "Sources"]) {
+        let k = EmbeddedKernel::new(client_to_pure_server_hop_schema(true), "c1").unwrap();
+        k.mount(order.iter().map(|t| t.to_string()).collect());
+        let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+        let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+        let targets: Vec<Option<String>> = mount.seeds.iter().flat_map(|s| s.server_legs.iter()).map(|r| r.leg.target_trait.clone()).collect();
+        let to_match = mount
+            .seeds
+            .iter()
+            .flat_map(|s| s.server_legs.iter())
+            .any(|r| r.leg.target_trait.as_deref() == Some("Match") && r.leg.payload.as_ref().and_then(|p| p.get_path("q")).is_some());
+        let seeds_of = |legs: &[orbital_core_runtime::embed::wire::MountLegWire]| -> Vec<String> {
+            legs.iter().flat_map(|l| l.seeds.iter().map(|s| s.trait_name.clone())).collect()
+        };
+        let (stateful, carried) = (seeds_of(&mount.stateful_legs), seeds_of(&mount.legs));
+        let replays_find = stateful.contains(&"Find".to_string()) && carried.contains(&"Find".to_string());
+        if !to_match && !replays_find {
+            wrong.push(format!("{}: legs {targets:?}, stateful seeds {stateful:?}, carried seeds {carried:?}", order.join(",")));
+        }
+    }
+    assert!(wrong.is_empty(), "the server hop is not the leg: {wrong:#?}");
+}
+
+#[test]
+fn control_a_client_init_whose_server_hop_chain_does_pure_work_posts_no_leg() {
+    for order in permutations(&["Find", "Match", "Sources"]) {
+        let k = EmbeddedKernel::new(client_to_pure_server_hop_schema(false), "c1").unwrap();
+        k.mount(order.iter().map(|t| t.to_string()).collect());
+        let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+        let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+        assert!(mount.seeds.iter().all(|s| s.server_legs.is_empty()), "{order:?}: {:?}", mount.legs);
+    }
+}
+
+
+/// EXEC-CONC-8: the mount's answer folds in flight order under its group's oldest flight, as the web host posts it; a
+/// seed the batch opened a flight for and posts in no group would hold that fold forever.
+#[test]
+fn a_mount_group_answer_folds_when_every_flight_the_batch_opened_is_in_a_group() {
+    let mut stuck = Vec::new();
+    for order in permutations(&["Find", "Match", "Sources"]) {
+        let k = EmbeddedKernel::new(client_to_pure_server_hop_schema(true), "c1").unwrap();
+        k.mount(order.iter().map(|t| t.to_string()).collect());
+        let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+        let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+        let grouped: HashSet<String> = mount.stateful_legs.iter().flat_map(|l| l.seeds.iter().map(|s| s.trait_name.clone())).collect();
+        let orphans: Vec<String> = mount
+            .seeds
+            .iter()
+            .filter(|w| w.flight.is_some() && !grouped.contains(&w.seed.trait_name))
+            .map(|w| format!("{} (flight {:?})", w.seed.trait_name, w.flight))
+            .collect();
+        if !orphans.is_empty() {
+            stuck.push(format!("{}: {orphans:?}", order.join(",")));
+        }
+    }
+    assert!(stuck.is_empty(), "flights no group ends: {stuck:#?}");
+}

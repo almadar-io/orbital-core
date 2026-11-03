@@ -1134,6 +1134,7 @@ mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use client_leg::MountPlan;
+pub(crate) use client_leg::chain_needs_server;
 pub use session_life::{RequestSession, SessionActive, SessionEnded, SessionPending, SessionStream};
 mod program_queries;
 pub mod page_circuit;

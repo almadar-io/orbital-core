@@ -43,7 +43,7 @@ use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use wire::{
-    AmbiguousTrait, AppliedWire, Entered, Left, DispatchWire, FiredTick, FrameDispatch, FrameWire, MountFailure,
+    AmbiguousTrait, AppliedWire, BatchStep, Entered, Left, DispatchWire, FiredTick, FrameDispatch, FrameWire, MountFailure,
     MountLegWire, MountWire, RoutedLeg, SeedWire, SnapshotWire, StatefulLegWire,
 };
 
@@ -243,6 +243,23 @@ impl EmbeddedKernel {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let steps = dispatch
+            .outcomes
+            .iter()
+            .filter(|(_, r)| r.executed)
+            .map(|(t, r)| BatchStep {
+                trait_name: t.clone(),
+                emitter: r
+                    .entry
+                    .as_ref()
+                    .and_then(|entry| crate::effects::response::DeliveryRecord::from_value(&entry.view.event))
+                    .and_then(|d| d.source.r#trait),
+                delegated: r
+                    .effect_results
+                    .iter()
+                    .any(|e| matches!(e.outcome, orbital_core_base::effect_types::EffectOutcome::Delegated(_))),
+            })
+            .collect();
         let flight = (!server_legs.is_empty() || stateful_leg.is_some()).then(|| self.fold_order.open());
         Ok(DispatchWire {
             orbital: orbital.to_string(),
@@ -259,6 +276,7 @@ impl EmbeddedKernel {
             awaiting: dispatch.awaiting,
             stateful_leg,
             fold_seeded,
+            steps,
         })
     }
 
@@ -369,6 +387,30 @@ impl EmbeddedKernel {
                     .filter(|source| Some(*source) != routed.leg.target_trait.as_deref())
             })
             .collect();
+        // Across seeds too: a client-only seed's held emit can reach a server trait that runs client-side and posts
+        // nothing, while the work that needs the host is a later seed's held step deeper in that cascade. The host
+        // only runs that cascade from the client-only seed, so it is replayed with the mount (EXEC-DIST-10).
+        let mut held_emitters = held_emitters;
+        let client_only_seeds: BTreeSet<&str> = dispatched
+            .iter()
+            .filter(|(_, wire)| matches!(wire.mode, DispatchMode::HybridClientOnly))
+            .map(|(_, wire)| wire.seed.trait_name.as_str())
+            .collect();
+        let steps: Vec<&BatchStep> = dispatched.iter().flat_map(|(_, wire)| wire.steps.iter()).collect();
+        let chain: Vec<(&str, Option<&str>)> = steps
+            .iter()
+            .map(|s| (s.trait_name.as_str(), s.emitter.as_deref()))
+            .collect();
+        for (i, step) in steps.iter().enumerate() {
+            let Some(emitter) = step.emitter.as_deref() else { continue };
+            if emitter != step.trait_name
+                && !client_only_seeds.contains(step.trait_name.as_str())
+                && client_only_seeds.contains(emitter)
+                && crate::kernel::chain_needs_server(&chain, i, |j| steps[j].delegated)
+            {
+                held_emitters.insert(emitter);
+            }
+        }
         let mut groups: Vec<(&str, Vec<&(&MountSeed, DispatchWire)>)> = Vec::new();
         for item in dispatched {
             let wire = &item.1;
