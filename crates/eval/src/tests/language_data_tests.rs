@@ -46,7 +46,7 @@ mod tests {
 
     const PROTOCOLS: &str = r#"[{"name":"route","address":null,"viewer":true,"grant":null,"side":"client"}]"#;
 
-    fn install_core(root: &Path, version: &str, compiler: &str) -> PathBuf {
+    fn install_core(root: &Path, version: &str, language: &str) -> PathBuf {
         let dir = root.join("node_modules/@almadar/core");
         fs::create_dir_all(dir.join("dist/patterns")).unwrap();
         fs::write(
@@ -55,7 +55,7 @@ mod tests {
                 "name": "@almadar/core",
                 "version": version,
                 "orbLanguage": {
-                    "compiler": compiler,
+                    "version": language,
                     "patterns": "dist/patterns/patterns-registry.json",
                     "componentMapping": "dist/patterns/component-mapping.json",
                     "eventContracts": "dist/patterns/event-contracts.json",
@@ -101,8 +101,8 @@ mod tests {
     #[test]
     fn installed_core_resolves_and_reads_all_four_files() {
         let tmp = Tmp::new("ok");
-        install_core(&tmp.0, "10.1.0", ">=17.0.0");
-        let data = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap();
+        install_core(&tmp.0, "10.1.0", "1.2.0");
+        let data = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap();
         assert_eq!(data.core_version, "10.1.0");
         assert!(data.patterns.contains("\"p\""));
         assert!(data.component_mapping.contains("mappings"));
@@ -118,30 +118,30 @@ mod tests {
     #[test]
     fn edge_a_core_without_program_types_or_with_a_malformed_table_is_invalid() {
         let tmp = Tmp::new("no-program-types");
-        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         fs::write(
             dir.join("dist/language/program-types.json"),
             r#"{"OrbitalValue":{"type":"nonsense"}}"#,
         )
         .unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
         assert!(err.to_string().contains("OrbitalValue"), "{err}");
         fs::remove_file(dir.join("dist/language/program-types.json")).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
     }
 
     #[test]
     fn edge_a_core_without_protocols_or_with_a_malformed_table_is_invalid() {
         let tmp = Tmp::new("no-protocols");
-        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         fs::write(dir.join("dist/language/protocols.json"), "[]").unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
         assert!(err.to_string().contains("no rows"), "{err}");
         fs::remove_file(dir.join("dist/language/protocols.json")).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
         assert!(err.to_string().contains("protocols"), "{err}");
 
@@ -149,25 +149,25 @@ mod tests {
         let mut declared: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
         declared["orbLanguage"].as_object_mut().unwrap().remove("protocols");
         fs::write(&manifest, declared.to_string()).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert!(err.to_string().contains("orbLanguage.protocols"), "{err}");
     }
 
     #[test]
     fn edge_a_core_without_binding_rules_is_invalid_naming_the_key() {
         let tmp = Tmp::new("no-binding-rules");
-        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         fs::remove_file(dir.join("dist/language/binding-rules.json")).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
     }
 
     #[test]
     fn edge_a_theme_directory_without_presets_is_invalid() {
         let tmp = Tmp::new("no-themes");
-        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         fs::remove_file(dir.join("themes/zz-theme.json")).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
         assert!(err.to_string().contains("no `.json` files"), "{err}");
     }
@@ -175,23 +175,23 @@ mod tests {
     #[test]
     fn resolves_from_a_nested_start_dir_by_walking_up() {
         let tmp = Tmp::new("walk");
-        install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        install_core(&tmp.0, "10.1.0", "1.2.0");
         let nested = tmp.0.join("a/b/c");
         fs::create_dir_all(&nested).unwrap();
-        assert!(load_language_data_for(&nested, &tmp.0.join("store"), "17.12.0").is_ok());
+        assert!(load_language_data(&nested, &tmp.0.join("store")).is_ok());
     }
 
     #[test]
     fn user_store_is_the_last_rung() {
         let tmp = Tmp::new("store");
         let store = tmp.0.join("store");
-        install_core(&store, "9.0.0", ">=17.0.0");
+        install_core(&store, "9.0.0", "1.2.0");
         let project = tmp.0.join("project");
         fs::create_dir_all(&project).unwrap();
-        let data = load_language_data_for(&project, &store, "17.12.0").unwrap();
+        let data = load_language_data(&project, &store).unwrap();
         assert_eq!(data.core_version, "9.0.0");
-        install_core(&project, "10.0.0", ">=17.0.0");
-        let data = load_language_data_for(&project, &store, "17.12.0").unwrap();
+        install_core(&project, "10.0.0", "1.2.0");
+        let data = load_language_data(&project, &store).unwrap();
         assert_eq!(
             data.core_version, "10.0.0",
             "project copy shadows the store"
@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn missing_core_is_not_installed_with_the_install_hint() {
         let tmp = Tmp::new("missing");
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(
             err,
             LanguageDataError::NotInstalled {
@@ -216,25 +216,49 @@ mod tests {
     }
 
     #[test]
-    fn compiler_range_mismatch_is_incompatible_naming_both_versions() {
+    fn a_core_language_this_kernel_does_not_read_is_incompatible_naming_both() {
         let tmp = Tmp::new("range");
-        install_core(&tmp.0, "10.1.0", ">=17.12.0");
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.11.2").unwrap_err();
+        install_core(&tmp.0, "10.1.0", "2.0.0");
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         assert!(!err.needs_install());
         let msg = err.to_string();
         assert!(
-            msg.contains("10.1.0") && msg.contains("17.11.2") && msg.contains(">=17.12.0"),
+            msg.contains("@almadar/core@10.1.0") && msg.contains("2.0.0") && msg.contains(LANGUAGE_READS),
             "{msg}"
         );
     }
 
     #[test]
+    fn control_the_core_language_never_depends_on_the_orb_release() {
+        let tmp = Tmp::new("release-free");
+        install_core(&tmp.0, "10.1.0", "1.0.0");
+        let data = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap();
+        assert_eq!(data.language, "1.0.0");
+        assert_eq!(data.core_version, "10.1.0");
+    }
+
+    #[test]
+    fn edge_a_core_that_still_declares_compiler_and_no_version_is_invalid_naming_the_version() {
+        let tmp = Tmp::new("old-core");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
+        let manifest = dir.join("package.json");
+        let mut declared: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        let block = declared["orbLanguage"].as_object_mut().unwrap();
+        block.remove("version");
+        block.insert("compiler".into(), json!(">=17.0.0"));
+        fs::write(&manifest, declared.to_string()).unwrap();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+        assert!(err.to_string().contains("language version"), "{err}");
+    }
+
+    #[test]
     fn edge_missing_language_block_and_missing_data_file_are_invalid_not_empty() {
         let tmp = Tmp::new("invalid");
-        let dir = install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         fs::remove_file(dir.join("dist/patterns/services-registry.json")).unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
 
         fs::write(
@@ -242,22 +266,22 @@ mod tests {
             r#"{"name":"@almadar/core","version":"1.0.0","orb":{"compiler":">=1.0.0","language":{}}}"#,
         )
         .unwrap();
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert!(err.to_string().contains("orbLanguage"), "{err}");
     }
 
     #[test]
-    fn edge_bad_compiler_range_is_invalid() {
+    fn edge_a_core_language_that_is_not_a_version_is_invalid() {
         let tmp = Tmp::new("badrange");
-        install_core(&tmp.0, "10.1.0", "not a range");
-        let err = load_language_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
+        install_core(&tmp.0, "10.1.0", "^1");
+        let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
     }
 
     #[test]
     fn core_language_block_is_not_mistaken_for_a_behavior_package() {
         let tmp = Tmp::new("not-behavior");
-        install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        install_core(&tmp.0, "10.1.0", "1.2.0");
         let found =
             discover(&tmp.0, &tmp.0.join("store")).expect("core must not make discovery fail");
         assert!(
@@ -279,7 +303,10 @@ mod tests {
         assert!(discover(&tmp.0, &tmp.0.join("store")).is_err());
     }
 
-    fn install_std(root: &Path, compiler: &str, table: &str) -> PathBuf {
+    fn install_std(root: &Path, language: &str, table: &str) -> PathBuf {
+        if !root.join("node_modules/@almadar/core").exists() {
+            install_core(root, "10.1.0", "1.2.0");
+        }
         let dir = root.join("node_modules/@almadar/std");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
@@ -287,7 +314,7 @@ mod tests {
             json!({
                 "name": "@almadar/std",
                 "version": "8.2.0",
-                "orbLanguage": { "compiler": compiler, "operators": "canonical-operators.json" }
+                "orbLanguage": { "language": language, "operators": "canonical-operators.json" }
             })
             .to_string(),
         )
@@ -312,14 +339,14 @@ mod tests {
             r#""minArity":0,"returnType":"number""#,
             r#""minArity":0,"returnType":{"kind":"zzNewerKind"}"#,
         );
-        install_std(&tmp.0, ">=17.0.0", &newer);
+        install_std(&tmp.0, "^1.2", &newer);
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         assert!(!err.needs_install());
         let msg = err.to_string();
         assert!(msg.contains("operator `-`") && msg.contains("@almadar/std@8.2.0"), "{msg}");
 
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["std"]["operators"]["categories"]["other"] = json!({"target": ["rust"], "zzNewerField": {}});
         v["std"]["operators"]["categories"]["other"].as_object_mut().unwrap().remove("description");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
@@ -341,12 +368,12 @@ mod tests {
     fn a_table_that_states_option_releases_loads_on_an_older_orb_and_records_the_running_release() {
         let tmp = Tmp::new("ops-since-ok");
         let table = table_with_option_since(json!({"options/key": "19.0.0", "options/emit/onMessage": "19.1.2"}));
-        install_std(&tmp.0, ">=17.0.0", &table.to_string());
+        install_std(&tmp.0, "^1.2", &table.to_string());
         let data = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "18.0.5").unwrap();
         assert_eq!(data.running, "18.0.5");
         assert!(data.operators.contains("\"optionSince\""));
 
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["std"]["operators"] = table;
         let (_, ops, _) = parse_language_bundle(&v.to_string(), "18.0.5").unwrap();
         assert_eq!(ops.running, "18.0.5");
@@ -363,7 +390,7 @@ mod tests {
             (json!({"nothere/key": "19.0.0"}), "not an option the operator declares"),
             (json!({"options/key/deeper": "19.0.0"}), "not an option the operator declares"),
         ] {
-            install_std(&tmp.0, "^19.0.0", &table_with_option_since(since.clone()).to_string());
+            install_std(&tmp.0, "^1.2", &table_with_option_since(since.clone()).to_string());
             let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "19.0.0").unwrap_err();
             assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE", "{since}");
             let msg = err.to_string();
@@ -377,7 +404,7 @@ mod tests {
             let tmp = Tmp::new(&format!("ops-no-{field}"));
             let mut v: Value = serde_json::from_str(&table("-", r#"["rust"]"#)).unwrap();
             v["operators"][op].as_object_mut().unwrap().remove(field);
-            install_std(&tmp.0, ">=17.0.0", &v.to_string());
+            install_std(&tmp.0, "^1.2", &v.to_string());
             let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
             assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE", "{op}");
             let msg = err.to_string();
@@ -385,7 +412,7 @@ mod tests {
 
             let tmp = Tmp::new(&format!("ops-no-{field}-entry"));
             v["operators"].as_object_mut().unwrap().remove(op);
-            install_std(&tmp.0, ">=17.0.0", &v.to_string());
+            install_std(&tmp.0, "^1.2", &v.to_string());
             let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
             assert!(err.to_string().contains(&format!("operator `{op}`")), "a table without `{op}` is refused: {err}");
         }
@@ -394,7 +421,7 @@ mod tests {
     #[test]
     fn installed_std_operator_table_resolves() {
         let tmp = Tmp::new("ops-ok");
-        install_std(&tmp.0, ">=17.0.0", &table("-", r#"["rust"]"#));
+        install_std(&tmp.0, "^1.2", &table("-", r#"["rust"]"#));
         let data = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap();
         assert_eq!(data.std_version, "8.2.0");
         assert!(data.operators.contains("arithmetic"));
@@ -403,7 +430,7 @@ mod tests {
     #[test]
     fn missing_std_is_not_installed_naming_std() {
         let tmp = Tmp::new("ops-missing");
-        install_core(&tmp.0, "10.1.0", ">=17.0.0");
+        install_core(&tmp.0, "10.1.0", "1.2.0");
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(
             err,
@@ -419,14 +446,14 @@ mod tests {
     }
 
     #[test]
-    fn std_range_mismatch_is_incompatible_naming_std() {
+    fn a_std_whose_language_range_the_installed_core_misses_is_incompatible_naming_both() {
         let tmp = Tmp::new("ops-range");
-        install_std(&tmp.0, ">=18.0.0", &table("-", r#"["rust"]"#));
+        install_std(&tmp.0, "^2", &table("-", r#"["rust"]"#));
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         let msg = err.to_string();
         assert!(
-            msg.contains("@almadar/std@8.2.0") && msg.contains(">=18.0.0"),
+            msg.contains("@almadar/std@8.2.0") && msg.contains("^2") && msg.contains("1.2.0"),
             "{msg}"
         );
     }
@@ -436,13 +463,18 @@ mod tests {
         let tmp = Tmp::new("ops-unimpl");
         install_std(
             &tmp.0,
-            ">=17.0.0",
+            "^1.2",
             &table("zz/not-implemented", r#"["rust"]"#),
         );
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         assert!(!err.needs_install());
         assert!(err.to_string().contains("zz/not-implemented"), "{err}");
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        v["core"]["language"] = json!("2.0.0");
+        let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
+        assert!(err.to_string().contains(LANGUAGE_READS), "{err}");
     }
 
     #[test]
@@ -450,7 +482,7 @@ mod tests {
         let tmp = Tmp::new("ops-ts-only");
         install_std(
             &tmp.0,
-            ">=17.0.0",
+            "^1.2",
             &table("zz/not-implemented", r#"["ts"]"#),
         );
         assert!(load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").is_ok());
@@ -459,24 +491,24 @@ mod tests {
     #[test]
     fn edge_malformed_table_and_missing_operators_field_are_invalid() {
         let tmp = Tmp::new("ops-invalid");
-        let dir = install_std(&tmp.0, ">=17.0.0", r#"{"operators":{}}"#);
+        let dir = install_std(&tmp.0, "^1.2", r#"{"operators":{}}"#);
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
         assert!(err.to_string().contains("categories"), "{err}");
 
         fs::write(
             dir.join("package.json"),
-            r#"{"name":"@almadar/std","version":"8.2.0","orbLanguage":{"compiler":">=17.0.0"}}"#,
+            r#"{"name":"@almadar/std","version":"8.2.0","orbLanguage":{"language":"^1.2"}}"#,
         )
         .unwrap();
         let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("orbLanguage.operators"), "{err}");
     }
 
-    fn bundle(compiler: &str, extra_op: &str) -> String {
+    fn bundle(language: &str, extra_op: &str) -> String {
         json!({
             "core": {
-                "version": "10.1.0", "compiler": compiler,
+                "version": "10.1.0", "language": "1.2.0",
                 "patterns": {"patterns": {"p": {}}}, "componentMapping": {"mappings": {}},
                 "eventContracts": {"contracts": {}}, "services": {"services": {}},
                 "bindingRules": {"guard": {"allowed": ["zz"]}},
@@ -485,11 +517,11 @@ mod tests {
                 "themes": [{"name": "zz", "tokens": {}}]
             },
             "std": {
-                "version": "8.2.0", "compiler": compiler,
+                "version": "8.2.0", "language": language,
                 "operators": serde_json::from_str::<Value>(&table(extra_op, r#"["rust"]"#)).unwrap()
             },
             "vocabularies": [{
-                "package": "lolo-zz", "version": "1.0.0", "compiler": compiler,
+                "package": "lolo-zz", "version": "1.0.0", "language": language,
                 "vocabulary": {"meta": {"code": "zz", "name": "Zz", "rtl": false},
                                "keywords": {"orbital": "zz-orbital"}}
             }]
@@ -500,7 +532,7 @@ mod tests {
     #[test]
     fn a_language_bundle_carries_what_the_native_loaders_read() {
         let (lang, ops, packs) =
-            parse_language_bundle(&bundle(">=17.0.0", "-"), "17.12.0").unwrap();
+            parse_language_bundle(&bundle("^1.2", "-"), "17.12.0").unwrap();
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].definition.keywords["orbital"], "zz-orbital");
         assert_eq!(lang.core_version, "10.1.0");
@@ -515,9 +547,9 @@ mod tests {
 
     #[test]
     fn a_language_bundle_gets_the_same_checks() {
-        let err = parse_language_bundle(&bundle(">=18.0.0", "-"), "17.12.0").unwrap_err();
+        let err = parse_language_bundle(&bundle("^2", "-"), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
-        let err = parse_language_bundle(&bundle(">=17.0.0", "zz/not-implemented"), "17.12.0")
+        let err = parse_language_bundle(&bundle("^1.2", "zz/not-implemented"), "17.12.0")
             .unwrap_err();
         assert!(err.to_string().contains("zz/not-implemented"), "{err}");
     }
@@ -526,35 +558,35 @@ mod tests {
     fn edge_a_bundle_missing_a_part_or_themes_is_invalid() {
         let err = parse_language_bundle(r#"{"core":{}}"#, "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["themes"] = json!([]);
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.themes"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v.as_object_mut().unwrap().remove("vocabularies");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("vocabularies"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
-        v["vocabularies"][0]["compiler"] = json!(">=18.0.0");
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        v["vocabularies"][0]["language"] = json!("^2");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("lolo-zz"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("bindingRules");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.bindingRules"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("programTypes");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.programTypes"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["programTypes"] = json!({"OrbitalValue": {"type": "nonsense"}});
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("OrbitalValue"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("protocols");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.protocols"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle(">=17.0.0", "-")).unwrap();
+        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["protocols"] = json!([]);
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("no rows"), "{err}");

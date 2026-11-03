@@ -29,7 +29,22 @@ impl Drop for TestTempDir {
     }
 }
 
+/// A core that provides language `language` and nothing else: discovery reads only its language version.
+fn fake_core(node_modules: &Path, language: &str) {
+    let dir = node_modules.join("@almadar/core");
+    fs::create_dir_all(&dir).unwrap();
+    let pkg_json = serde_json::json!({
+        "name": "@almadar/core",
+        "version": "10.1.0",
+        "orbLanguage": { "version": language }
+    });
+    fs::write(dir.join("package.json"), pkg_json.to_string()).unwrap();
+}
+
 fn fake_package(node_modules: &Path, name: &str, prefix: &str, version: &str) -> PathBuf {
+    if !node_modules.join("@almadar/core").exists() {
+        fake_core(node_modules, "1.2.0");
+    }
     let pkg_dir = node_modules.join(name);
     fs::create_dir_all(&pkg_dir).unwrap();
     let registry_dir = pkg_dir.join("behaviors/registry");
@@ -45,7 +60,7 @@ fn fake_package(node_modules: &Path, name: &str, prefix: &str, version: &str) ->
             "prefix": prefix,
             "registry": "behaviors/registry",
             "vectors": "dist/vectors.vec",
-            "compiler": ">=4.10.0"
+            "language": "^1.2"
         },
         "peerDependencies": { "@almadar/std": ">=1.0.0" }
     });
@@ -317,7 +332,7 @@ fn single_package_all_fields_populated() {
     assert_eq!(pkg.name, "@almadar-io/behaviors");
     assert_eq!(pkg.version, "0.16.171");
     assert_eq!(pkg.prefix, "almadar-behaviors");
-    assert_eq!(pkg.compiler_range, ">=4.10.0");
+    assert_eq!(pkg.language_range, "^1.2");
     assert_eq!(pkg.std_peer_range.as_deref(), Some(">=1.0.0"));
     assert_eq!(pkg.core_range, None);
     assert!(!pkg.is_link);
@@ -635,6 +650,7 @@ fn symlinked_entry_reports_is_link_and_realpath() {
 
     let node_modules = tmp.path().join("node_modules");
     fs::create_dir_all(&node_modules).unwrap();
+    fake_core(&node_modules, "1.2.0");
     symlink(&real_pkg_dir, node_modules.join("pkg-a")).unwrap();
 
     let packages = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap();
@@ -644,10 +660,10 @@ fn symlinked_entry_reports_is_link_and_realpath() {
 }
 
 #[test]
-fn compiler_and_peer_semver_checks() {
-    assert!(compiler_satisfies(">=4.10.0", "4.10.0").unwrap());
-    assert!(!compiler_satisfies(">=4.10.0", "4.9.9").unwrap());
-    assert!(!compiler_satisfies("^4.10", "5.0.0").unwrap());
+fn language_and_peer_semver_checks() {
+    assert!(language_satisfies(">=4.10.0", "4.10.0").unwrap());
+    assert!(!language_satisfies(">=4.10.0", "4.9.9").unwrap());
+    assert!(!language_satisfies("^4.10", "5.0.0").unwrap());
     assert!(std_peer_satisfies(">=16.0.0", "16.223.0").unwrap());
     assert!(core_satisfies("^10.99.0", "10.99.1").unwrap());
     assert!(!core_satisfies("^10.99.0", "11.0.0").unwrap());
@@ -859,64 +875,81 @@ fn find_npm_package_missing_or_unparseable_returns_none() {
     assert!(find_npm_package("bad-json-pkg", tmp.path(), &user_store).is_none());
 }
 
-fn set_compiler_range(pkg_dir: &Path, range: &str) {
+fn set_language_range(pkg_dir: &Path, range: &str) {
     let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
     let mut json: Value = serde_json::from_str(&raw).unwrap();
-    json["orb"]["compiler"] = Value::String(range.to_string());
+    json["orb"]["language"] = Value::String(range.to_string());
     fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 }
 
 #[test]
-fn discovery_refuses_a_package_whose_compiler_range_excludes_the_running_orb() {
-    let tmp = TestTempDir::new("compiler-range-excluded");
+fn discovery_refuses_a_package_whose_language_range_the_installed_core_misses() {
+    let tmp = TestTempDir::new("language-range-excluded");
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
-    set_compiler_range(&pkg, ">=99.0.0");
+    set_language_range(&pkg, "^2");
 
     let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
     match &err {
-        DiscoverError::IncompatibleCompiler { package, range, running } => {
+        DiscoverError::IncompatibleLanguage { package, range, language } => {
             assert_eq!(package, "pkg-a");
-            assert_eq!(range, ">=99.0.0");
-            assert_eq!(running, crate::language_data::running_version());
+            assert_eq!(range, "^2");
+            assert_eq!(language, "1.2.0");
         }
-        other => panic!("expected IncompatibleCompiler, got {other:?}"),
+        other => panic!("expected IncompatibleLanguage, got {other:?}"),
     }
+    assert_eq!(err.code(), crate::language_data::CODE_INCOMPATIBLE);
     let text = err.to_string();
-    assert!(text.contains("pkg-a") && text.contains(">=99.0.0") && text.contains(crate::language_data::running_version()), "{text}");
+    assert!(text.contains("pkg-a") && text.contains("^2") && text.contains("1.2.0"), "{text}");
 }
 
 #[test]
-fn discovery_loads_a_package_whose_compiler_range_includes_the_running_orb() {
-    let tmp = TestTempDir::new("compiler-range-included");
+fn control_a_package_loads_whatever_the_orb_release_when_its_language_range_holds() {
+    let tmp = TestTempDir::new("language-range-included");
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
-    set_compiler_range(&pkg, &format!(">={}", crate::language_data::running_version()));
+    set_language_range(&pkg, ">=1.0.0, <2.0.0");
 
     let packages = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap();
     assert_eq!(packages.len(), 1);
 }
 
 #[test]
-fn discovery_judges_a_range_against_the_release_the_host_names_not_the_core_crate() {
-    let tmp = TestTempDir::new("compiler-range-host-release");
+fn edge_a_package_still_declaring_compiler_and_no_language_is_invalid() {
+    let tmp = TestTempDir::new("language-range-missing");
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
-    set_compiler_range(&pkg, ">=18.0.5");
-    let cache = tmp.path().join("cache");
-    let store = tmp.path().join("unused-user-store");
+    let raw = fs::read_to_string(pkg.join("package.json")).unwrap();
+    let mut json: Value = serde_json::from_str(&raw).unwrap();
+    let orb = json["orb"].as_object_mut().unwrap();
+    orb.remove("language");
+    orb.insert("compiler".into(), Value::String(">=4.10.0".into()));
+    fs::write(pkg.join("package.json"), json.to_string()).unwrap();
 
-    let packages = discover_uncached(tmp.path(), &store, &cache, "18.0.5").unwrap();
-    assert_eq!(packages.len(), 1, "the release the range names satisfies it");
-
-    match discover_uncached(tmp.path(), &store, &cache, "18.0.0").unwrap_err() {
-        DiscoverError::IncompatibleCompiler { running, .. } => assert_eq!(running, "18.0.0"),
-        other => panic!("expected IncompatibleCompiler, got {other:?}"),
-    }
+    let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
+    assert!(err.to_string().contains("language"), "{err}");
 }
 
 #[test]
-fn a_host_registers_its_release_once_and_discovery_reads_it() {
+fn edge_a_package_with_no_core_installed_names_core_not_installed() {
+    let tmp = TestTempDir::new("language-no-core");
+    let node_modules = tmp.path().join("node_modules");
+    fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
+    fs::remove_dir_all(node_modules.join("@almadar/core")).unwrap();
+
+    let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
+    assert_eq!(err.code(), crate::language_data::CODE_NOT_INSTALLED, "{err}");
+}
+
+#[test]
+fn control_discovery_with_no_behavior_package_never_needs_core() {
+    let tmp = TestTempDir::new("language-nothing");
+    fs::create_dir_all(tmp.path().join("node_modules")).unwrap();
+    assert!(discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap().is_empty());
+}
+
+#[test]
+fn a_host_registers_its_release_once() {
     let first = crate::language_data::register_host_release("18.0.5");
     let again = crate::language_data::register_host_release("99.0.0");
     assert_eq!(again, Err(crate::language_data::running_version()), "the first registration wins");
@@ -926,11 +959,11 @@ fn a_host_registers_its_release_once_and_discovery_reads_it() {
 }
 
 #[test]
-fn discovery_refuses_a_compiler_range_that_is_not_semver() {
-    let tmp = TestTempDir::new("compiler-range-invalid");
+fn discovery_refuses_a_language_range_that_is_not_semver() {
+    let tmp = TestTempDir::new("language-range-invalid");
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
-    set_compiler_range(&pkg, "latest-ish");
+    set_language_range(&pkg, "latest-ish");
 
     let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
     assert!(matches!(err, DiscoverError::InvalidPackageJson { .. }), "{err:?}");

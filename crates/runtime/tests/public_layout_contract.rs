@@ -234,7 +234,7 @@ fn install_core(root: &Path, version: &str) {
             "name": "@almadar/core",
             "version": version,
             "orbLanguage": {
-                "compiler": ">=17.0.0",
+                "version": "1.0.0",
                 "patterns": "dist/patterns/patterns-registry.json",
                 "componentMapping": "dist/patterns/component-mapping.json",
                 "eventContracts": "dist/patterns/event-contracts.json",
