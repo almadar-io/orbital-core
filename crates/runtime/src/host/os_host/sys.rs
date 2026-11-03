@@ -119,6 +119,7 @@ fn sys_label(kind: SysKind) -> &'static str {
         SysKind::Network => "network",
         SysKind::PowerState => "power-state",
         SysKind::Identity => "identity",
+        SysKind::SelfSignal => "self-signal",
     }
 }
 

@@ -7,7 +7,7 @@ use super::fs::FdEntry;
 use super::OsHost;
 use crate::resumable::CallSite;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
-use orbital_core_base::os_grants::{FsMode, StdioKind};
+use orbital_core_base::os_grants::{FsMode, OsGrants, StdioKind};
 use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::sync::Mutex;
 use std::collections::{BTreeSet, HashMap};
@@ -432,20 +432,29 @@ fn signal_number(value: &Value, op: OsOp) -> Result<i32, OsError> {
     }
 }
 
+/// Whether a program may signal `pid`: a process it spawned, or its own process (`own`) under the explicit
+/// `sys: [self-signal]` grant (owner ruling 2026-11-03, EXEC-CONC-6).
+fn may_signal(pid: i64, own: i64, spawned: bool, grants: &OsGrants, op: OsOp) -> Result<(), OsError> {
+    if spawned {
+        return Ok(());
+    }
+    if pid == own {
+        if grants.sys_allows(orbital_core_base::os_grants::SysKind::SelfSignal) {
+            return Ok(());
+        }
+        return Err(denied(op, "signalling its own process needs the sys grant self-signal"));
+    }
+    Err(err(OsErrorKind::Closed, op, format!("pid {pid} is not a spawned process")))
+}
+
 fn kill(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let op = OsOp::Kill;
     let pid = arg_i64(args, 0, op)?;
     #[cfg(unix)]
     {
         let signal = signal_number(args.get(1).unwrap_or(&Value::Null), op)?;
-        let children = host.handles.process.children.lock();
-        if !children.contains_key(&pid) {
-            return Err(err(
-                OsErrorKind::Closed,
-                op,
-                format!("pid {pid} is not a spawned process"),
-            ));
-        }
+        let spawned = host.handles.process.children.lock().contains_key(&pid);
+        may_signal(pid, i64::from(std::process::id()), spawned, host.grants, op)?;
         let target = libc::pid_t::try_from(pid).map_err(|_| invalid(op, "pid out of range"))?;
         if unsafe { libc::kill(target, signal) } != 0 {
             return Err(io_error(op, &std::io::Error::last_os_error()));

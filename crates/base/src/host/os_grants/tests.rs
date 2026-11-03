@@ -1203,7 +1203,7 @@ fn every_kind_name_matches_its_serde_spelling() {
             SysKind::ALL.len(),
             DesktopKind::ALL.len()
         ),
-        (5, 3, 3, 6, 5)
+        (5, 3, 3, 7, 5)
     );
 }
 

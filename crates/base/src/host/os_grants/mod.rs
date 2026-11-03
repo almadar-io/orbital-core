@@ -61,6 +61,8 @@ pub enum SysKind {
     Network,
     PowerState,
     Identity,
+    /// `os/kill` of the host's own pid: a program ending or signalling its own process (P-022, a served program's restart).
+    SelfSignal,
 }
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -145,6 +147,7 @@ named_kinds!(SysKind {
     Network => "network",
     PowerState => "power-state",
     Identity => "identity",
+    SelfSignal => "self-signal",
 });
 named_kinds!(DesktopKind {
     Notify => "notify",
