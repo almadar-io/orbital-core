@@ -514,29 +514,31 @@ impl IoPort {
         matches!(self.substrate_site(), (Some(_), Some(_)))
     }
 
-    /// One guest kernel start, journaled. The host answers deferred and the guest's outcome arrives as a keyed event of
-    /// the call site's routes; a host that starts no guest answers a failure.
+    /// One guest session dispatch the host runs, journaled. Keyed (the call carries a key and a declared route), the
+    /// host answers deferred and the outcome arrives as a keyed event of the call site's routes, `Ok(None)`; unkeyed, the
+    /// host answers the outcome in place, `Ok(Some(answer))`. A host that runs no guest answers a failure.
     pub(crate) fn guest(
         &self,
-        program: Value,
-        address: String,
+        guest: String,
+        kernel: GuestKernel,
+        targets: Vec<String>,
+        event: String,
         payload: Value,
         grants: OsGrants,
-        arenas: GuestArenas,
         call: Vec<Value>,
-    ) -> Result<(), SubstrateFailure> {
-        let (Some(key), Some(site)) = self.substrate_site() else {
-            return Err(crate::agent_ports::guest_failure(
-                OsErrorKind::Invalid,
-                "program/dispatch: a guest dispatch needs a key and a declared route",
-            ));
+    ) -> Result<Option<Value>, SubstrateFailure> {
+        let (key, site) = match self.substrate_site() {
+            (Some(key), Some(site)) => (Some(key), Some(site)),
+            _ => (None, None),
         };
-        match self.ask(|| IoRequest::Guest { program, address, payload, grants, arenas, key, site }) {
-            Asked::Answer(IoAnswer::ServiceDeferred) => {
+        let keyed = key.is_some();
+        match self.ask(|| IoRequest::Guest { guest, kernel, targets, event, payload, grants, key, site }) {
+            Asked::Answer(IoAnswer::ServiceDeferred) if keyed => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
                 *self.deferred_call.lock() = Some(DeferredCall { operator: "program/dispatch".to_string(), args: call });
-                Ok(())
+                Ok(None)
             }
+            Asked::Answer(IoAnswer::Substrate(Ok(answer))) if !keyed => Ok(Some(answer)),
             Asked::Answer(IoAnswer::Substrate(Err(failure))) => Err(failure),
             Asked::Direct => Err(crate::agent_ports::guest_failure(OsErrorKind::Unsupported, NO_PORT_HOST)),
             Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {

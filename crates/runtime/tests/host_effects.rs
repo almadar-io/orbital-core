@@ -2863,6 +2863,8 @@ mod kernel_effects {
             ("BORROW_S", json!(["mem/borrow", "@payload.block", "shared"])),
             ("RELEASE_X", json!(["mem/release", "@payload.xborrow"])),
             ("WRITE", json!(["mem/write", "@payload.xborrow", 0, "@payload.data"])),
+            ("OPEN", json!(["program/open", "@payload.program", { "grants": "@payload.grants", "arenas": "@payload.arenas" }])),
+            ("OPEN_BARE", json!(["program/open", "@payload.program", {}])),
         ]
     }
 
@@ -2909,7 +2911,7 @@ mod kernel_effects {
         let spawn = |options: Json| {
             json!({ "from": "idle", "to": "idle", "event": "SPAWN", "effects": [[
                 "program/dispatch", "@payload.address", "@payload.data",
-                { "guest": "@payload.guest", "grants": "@payload.grants" }, options
+                { "guest": "@payload.guest" }, options
             ]] })
         };
         transitions.push(spawn(json!({ "key": "k1", "emit": { "success": "DONE", "failure": "FAILED" } })));
@@ -3172,16 +3174,29 @@ mod kernel_effects {
             serde_json::from_value(json).unwrap()
         }
 
-        /// `SPAWN` held for a guest at `G.Work.BUMP` given `grants` and `data`.
-        fn spawn(session: &Session, event: &str, grants: Json, data: ValueMap) -> EventRequest {
-            spawn_at(session, event, "G.Work.BUMP", grants, data)
+        /// A session holding a shared arena with one block, and the guest opened over it with `grants` and that arena.
+        fn opened(parent: Json, grants: Json) -> Session {
+            let mut session = Session::new(parent);
+            session.ok("NEW_SHARED");
+            session.ok("ALLOC");
+            open(&mut session, grants);
+            session
         }
 
-        fn spawn_at(session: &Session, event: &str, address: &str, grants: Json, data: ValueMap) -> EventRequest {
+        fn open(session: &mut Session, grants: Json) {
+            let arena = session.held.get("arena").cloned().expect("the session holds an arena");
+            session.held.insert("program".into(), value(guest_program()));
+            session.held.insert("grants".into(), value(grants));
+            session.held.insert("arenas".into(), Value::array(vec![arena]));
+            let opened = session.ok("OPEN");
+            let handle = opened.get("result").and_then(|result| result.get("guest")).cloned().expect("program/open answers the guest handle");
+            session.held.insert("guest".into(), handle);
+        }
+
+        /// `event` held for the open guest at `address` with `data`.
+        fn spawn_at(session: &Session, event: &str, address: &str, data: ValueMap) -> EventRequest {
             let mut held = session.held.clone();
             held.insert("address".into(), Value::string(address.to_string()));
-            held.insert("guest".into(), value(guest_program()));
-            held.insert("grants".into(), value(grants));
             held.insert("data".into(), Value::object(data));
             request(event, &held)
         }
@@ -3196,31 +3211,35 @@ mod kernel_effects {
             json!({ "mem": [{ "target": "shared:64", "kinds": ["atomic"] }] })
         }
 
-        fn failure_of(response: &EventResponse) -> Value {
-            response.emitted_events.iter().find(|e| e.event == "FAILED").and_then(|e| e.payload.clone()).expect("the dispatch failed")
+        fn emitted_payload(response: &EventResponse, event: &str) -> Value {
+            response.emitted_events.iter().find(|e| e.event == event).and_then(|e| e.payload.clone()).unwrap_or_else(|| panic!("{event} was not emitted: {:?}", response.emitted_events))
         }
 
-        fn refused(grants: Json, event: &str, guest_grants: Json, data: impl Fn(&Session) -> ValueMap) -> Value {
-            let mut session = Session::new(grants);
+        fn open_refusal(parent: Json, grants: Json) -> String {
+            let mut session = Session::new(parent);
             session.ok("NEW_SHARED");
             session.ok("ALLOC");
-            let (response, seen) = drive(&session.server, spawn(&session, event, guest_grants, data(&session)), |request| panic!("a refusal asks no host: {request:?}"));
+            let arena = session.held.get("arena").cloned().expect("an arena");
+            session.held.insert("program".into(), value(guest_program()));
+            session.held.insert("grants".into(), value(grants));
+            session.held.insert("arenas".into(), Value::array(vec![arena]));
+            let (response, seen) = drive(&session.server, request("OPEN", &session.held), |request| panic!("program/open asks no host: {request:?}"));
             assert!(seen.is_empty());
-            failure_of(&response)
+            let bad = emitted_payload(&response, "BAD");
+            format!("{} {}", bad.get("kind").and_then(Value::as_str).unwrap_or_default(), bad.get("error").and_then(Value::as_str).unwrap_or_default())
         }
 
+        /// EXEC-CONC-0a primitive 3: a keyed guest dispatch runs on the guest's own lane and answers as a completion.
         #[test]
-        fn a_guest_runs_on_another_thread_and_its_atomic_add_on_a_shared_block_is_seen_by_the_parent() {
-            let mut session = Session::new(parent_grants());
-            session.ok("NEW_SHARED");
-            session.ok("ALLOC");
+        fn a_keyed_dispatch_runs_the_guest_on_its_own_thread_and_its_atomic_add_on_a_shared_block_is_seen_by_the_parent() {
+            let mut session = opened(parent_grants(), atomic_grants());
             let (host, settled) = native();
-            let (response, seen) = drive(&session.server, spawn(&session, "SPAWN", atomic_grants(), arena_data(&session)), |request| match request {
+            let (response, seen) = drive(&session.server, spawn_at(&session, "SPAWN", "G.Work.BUMP", arena_data(&session)), |request| match request {
                 IoRequest::Guest { .. } => host.answer(request),
                 other => panic!("the fixture asks for {other:?}"),
             });
             assert!(response.success);
-            assert!(matches!(seen.as_slice(), [IoRequest::Guest { arenas, .. }] if arenas.0.len() == 1), "{seen:?}");
+            assert!(matches!(seen.as_slice(), [IoRequest::Guest { key: Some(_), .. }]), "{seen:?}");
             let pending = session.server.kernel().pending_asks();
             assert!(
                 matches!(pending.as_slice(), [ask] if ask.operator == "program/dispatch" && ask.key == "k1"),
@@ -3231,7 +3250,7 @@ mod kernel_effects {
             let (event, payload) = substrate_completion_event(&site, &key, outcome).expect("the call site routes the outcome");
             assert_eq!(event, "DONE");
             assert_eq!(payload.get("key"), Some(&Value::string("k1")));
-            assert_eq!(payload.get("result").and_then(|result| result.get("ok")), Some(&Value::Bool(true)));
+            assert!(payload.get("result").and_then(|result| result.get("outcomes")).is_some(), "{payload:?}");
             let mut completion = ValueMap::default();
             completion.insert("key".into(), Value::string("k1"));
             let (done, _) = drive(&session.server, request("DONE", &completion), |request| panic!("asked the host: {request:?}"));
@@ -3240,10 +3259,25 @@ mod kernel_effects {
             assert_eq!(value_of(&session.ok("LOAD")), 5, "the guest's add is the parent's add");
         }
 
+        #[test]
+        fn an_unkeyed_dispatch_into_a_granted_guest_runs_in_place_through_the_host() {
+            let mut session = opened(parent_grants(), atomic_grants());
+            let (host, settled) = native();
+            let (response, seen) = drive(&session.server, spawn_at(&session, "SPAWN_UNKEYED", "G.Work.BUMP", arena_data(&session)), |request| match request {
+                IoRequest::Guest { .. } => host.answer(request),
+                other => panic!("the fixture asks for {other:?}"),
+            });
+            assert!(matches!(seen.as_slice(), [IoRequest::Guest { key: None, .. }]), "{seen:?}");
+            let done = emitted_payload(&response, "DONE");
+            assert!(done.get("result").and_then(|result| result.get("outcomes")).is_some(), "answered in place: {done:?}");
+            assert!(settled.try_recv().is_err(), "control: nothing settles later");
+            assert_eq!(value_of(&session.ok("LOAD")), 5, "the add happened before the dispatch answered");
+        }
+
         /// The events the guest emitted at `address`, run to completion on its own thread.
         fn guest_emitted(session: &Session, address: &str) -> Vec<Value> {
             let (host, settled) = native();
-            drive(&session.server, spawn_at(session, "SPAWN", address, atomic_grants(), arena_data(session)), |request| match request {
+            drive(&session.server, spawn_at(session, "SPAWN", address, arena_data(session)), |request| match request {
                 IoRequest::Guest { .. } => host.answer(request),
                 other => panic!("the fixture asks for {other:?}"),
             });
@@ -3257,9 +3291,7 @@ mod kernel_effects {
 
         #[test]
         fn a_guest_borrows_a_frozen_shared_block_but_not_a_live_one() {
-            let mut live = Session::new(parent_grants());
-            live.ok("NEW_SHARED");
-            live.ok("ALLOC");
+            let live = opened(parent_grants(), atomic_grants());
             let emitted = guest_emitted(&live, "G.Work.BORROW");
             assert_eq!(emitted[0].get("event"), Some(&Value::string("BAD")), "{emitted:?}");
             assert_eq!(emitted[0].get("payload").and_then(|p| p.get("kind")), Some(&Value::string("invalid")));
@@ -3267,16 +3299,14 @@ mod kernel_effects {
             frozen.ok("NEW_SHARED");
             frozen.ok("ALLOC");
             frozen.ok("FREEZE");
+            open(&mut frozen, atomic_grants());
             let emitted = guest_emitted(&frozen, "G.Work.BORROW");
             assert_eq!(emitted[0].get("event"), Some(&Value::string("OK")), "{emitted:?}");
         }
 
         #[test]
         fn once_a_guest_holds_the_arena_the_owner_reaches_a_live_block_only_through_atomics() {
-            let mut session = Session::new(parent_grants());
-            session.ok("NEW_SHARED");
-            session.ok("ALLOC");
-            guest_emitted(&session, "G.Work.BORROW");
+            let mut session = opened(parent_grants(), atomic_grants());
             session.fails_with("BORROW_X", "invalid");
             session.fails_with("BORROW_S", "invalid");
             assert_eq!(value_of(&session.ok("ADD")), 5, "control: atomics still reach it");
@@ -3286,50 +3316,43 @@ mod kernel_effects {
         }
 
         #[test]
-        fn an_unkeyed_guest_dispatch_is_invalid() {
-            let failure = refused(parent_grants(), "SPAWN_UNKEYED", atomic_grants(), arena_data);
-            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "{failure:?}");
-        }
-
-        #[test]
-        fn without_the_kernel_guest_grant_a_guest_dispatch_is_denied() {
+        fn without_the_kernel_guest_grant_grants_or_arenas_at_open_and_a_keyed_dispatch_are_denied() {
             let grants = json!({ "mem": [{ "target": "shared:1024", "kinds": ["create", "atomic", "free"] }] });
-            let failure = refused(grants, "SPAWN", atomic_grants(), arena_data);
-            assert_eq!(failure.get("kind"), Some(&Value::string("denied")), "{failure:?}");
+            assert!(open_refusal(grants.clone(), atomic_grants()).starts_with("denied"), "a guest given grants needs the spawn grant");
+            let mut bare = Session::new(grants);
+            bare.held.insert("program".into(), value(guest_program()));
+            let opened = bare.ok("OPEN_BARE");
+            bare.held.insert("guest".into(), opened.get("result").and_then(|r| r.get("guest")).cloned().expect("a handle"));
+            let (response, _) = drive(&bare.server, spawn_at(&bare, "SPAWN", "G.Work.OK", ValueMap::default()), |request| panic!("a refusal asks no host: {request:?}"));
+            assert_eq!(emitted_payload(&response, "FAILED").get("kind"), Some(&Value::string("denied")), "a keyed dispatch gives the guest its own lane");
+            let (in_place, _) = drive(&bare.server, spawn_at(&bare, "SPAWN_UNKEYED", "G.Work.OK", ValueMap::default()), |request| panic!("a guest without grants runs in this kernel: {request:?}"));
+            assert!(in_place.emitted_events.iter().any(|e| e.event == "DONE"), "control: an unkeyed dispatch into a bare guest needs no grant");
         }
 
         #[test]
-        fn a_guest_given_grants_beyond_the_askers_fails_naming_them() {
+        fn a_guest_given_grants_beyond_the_openers_fails_naming_them() {
             let beyond = json!({ "mem": [{ "target": "shared:64", "kinds": ["atomic"] }], "sys": ["cpu"], "env": ["HOME"] });
-            let failure = refused(parent_grants(), "SPAWN", beyond, arena_data);
-            assert_eq!(failure.get("kind"), Some(&Value::string("denied")), "{failure:?}");
-            let message = failure.get("error").and_then(Value::as_str).expect("an error").to_string();
-            assert!(message.contains("sys [cpu]") && message.contains("env \"HOME\""), "{message}");
-            assert!(!message.contains("mem"), "the covered grant is not named: {message}");
+            let refusal = open_refusal(parent_grants(), beyond);
+            assert!(refusal.starts_with("denied"), "{refusal}");
+            assert!(refusal.contains("sys [cpu]") && refusal.contains("env \"HOME\""), "{refusal}");
+            assert!(!refusal.contains("mem \""), "the covered grant is not named: {refusal}");
         }
 
         #[test]
-        fn a_sealed_value_that_is_not_a_shared_arena_does_not_cross() {
-            let block = |session: &Session| {
-                let mut data = ValueMap::default();
-                data.insert("block".into(), session.held.get("block").cloned().expect("the session holds a block"));
-                data
-            };
-            let failure = refused(parent_grants(), "SPAWN", atomic_grants(), block);
-            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "{failure:?}");
-            let failure = {
-                let mut grants = parent_grants();
-                grants["mem"] = json!([
-                    { "target": "shared:1024", "kinds": ["create", "atomic", "free"] },
-                    { "target": "arena:1024", "kinds": ["create", "free"] }
-                ]);
-                let mut session = Session::new(grants);
-                session.ok("NEW_BUMP");
-                let (response, seen) = drive(&session.server, spawn(&session, "SPAWN", atomic_grants(), arena_data(&session)), |request| panic!("asked the host: {request:?}"));
-                assert!(seen.is_empty());
-                failure_of(&response)
-            };
-            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "control: an arena that is not shared does not cross either: {failure:?}");
+        fn only_an_arena_handed_over_at_open_crosses_and_grants_are_not_given_per_dispatch() {
+            let session = opened(parent_grants(), atomic_grants());
+            let mut block = ValueMap::default();
+            block.insert("block".into(), session.held.get("block").cloned().expect("the session holds a block"));
+            let (response, seen) = drive(&session.server, spawn_at(&session, "SPAWN", "G.Work.OK", block), |request| panic!("a refusal asks no host: {request:?}"));
+            assert!(seen.is_empty());
+            assert_eq!(emitted_payload(&response, "FAILED").get("kind"), Some(&Value::string("invalid")), "a block is not an arena");
+            let mut other = Session::new(parent_grants());
+            other.ok("NEW_SHARED");
+            other.ok("ALLOC");
+            open(&mut other, atomic_grants());
+            other.ok("NEW_SHARED");
+            let (response, _) = drive(&other.server, spawn_at(&other, "SPAWN", "G.Work.OK", arena_data(&other)), |request| panic!("a refusal asks no host: {request:?}"));
+            assert_eq!(emitted_payload(&response, "FAILED").get("kind"), Some(&Value::string("invalid")), "an arena not handed over at open does not cross");
         }
     }
 

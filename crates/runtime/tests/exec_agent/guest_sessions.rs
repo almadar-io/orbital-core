@@ -243,7 +243,7 @@ fn a_closed_guest_takes_no_more_dispatches() {
 }
 
 #[test]
-fn edge_a_guest_has_no_host_ports_yet_so_a_grants_option_is_refused_with_the_reason() {
+fn edge_a_guest_given_grants_needs_the_openers_kernel_spawn_grant() {
     let kernel = opener(json!([
         { "from": "idle", "to": "idle", "event": "GO", "effects": [
             ["program/open", "@payload.program", { "grants": { "net": {} } }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
@@ -253,7 +253,7 @@ fn edge_a_guest_has_no_host_ports_yet_so_a_grants_option_is_refused_with_the_rea
     assert!(
         after["refused"]["error"]
             .as_str()
-            .is_some_and(|e| e.contains("grants")),
+            .is_some_and(|e| e.contains("no kernel guest grant covers it")),
         "{after}"
     );
 }

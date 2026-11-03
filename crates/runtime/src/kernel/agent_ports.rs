@@ -24,11 +24,6 @@ use orbital_core_base::effect_types::{
     Effect, EffectOutcome, EffectResult, FetchDeliver, FetchEmit,
 };
 use orbital_core_base::error::OrbitalError;
-use orbital_core_base::os::OsErrorKind;
-use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
-use crate::resumable::GuestArenas;
-use super::SharedArena;
-use std::sync::Arc;
 use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_eval::evaluator::context::BindingContext;
 
@@ -332,90 +327,6 @@ impl RuntimeKernel {
         }
     }
 
-    /// A guest dispatch (EXEC-CONC-0a, EXEC-CONC-3): the kernel checks that the asking orbital may spawn guests, that it
-    /// holds every grant the guest is given, and that the payload crosses as a copy (a sealed value passes only as an
-    /// Arena of a shared arena of this kernel); the host then starts the guest kernel and the outcome comes back as the
-    /// keyed completion event.
-    fn run_guest(
-        &self,
-        effect: &Effect,
-        asker: Option<&str>,
-        address: String,
-        payload: Value,
-        program: Value,
-        grants: Value,
-        call: &[Value],
-    ) -> EffectResult {
-        let refuse = |kind: OsErrorKind, message: String| {
-            let failure = crate::agent_ports::guest_failure(kind, message);
-            failure_result(effect, AgentPortFailure { error: failure.message, errors: failure.errors })
-        };
-        if !self.io.keyed_call() {
-            return refuse(
-                OsErrorKind::Invalid,
-                "program/dispatch: a guest dispatch answers as a completion event, so it needs a key and a declared route".to_string(),
-            );
-        }
-        let held = self.grants.os_grants.read().for_orbital(asker).clone();
-        if !held.kernel_allows(KernelKind::Spawn, None) {
-            return refuse(OsErrorKind::Denied, "program/dispatch: no kernel guest grant covers it".to_string());
-        }
-        let guest: OsGrants = match serde_json::from_value(orbital_core_base::json_value::value_to_json(&grants)) {
-            Ok(guest) => guest,
-            Err(error) => return refuse(OsErrorKind::Invalid, format!("program/dispatch: the guest's grants are not os grants: {error}")),
-        };
-        if let Err(missing) = covers(&held, &guest) {
-            return refuse(
-                OsErrorKind::Denied,
-                format!("program/dispatch: the guest asks for grants the asking orbital does not hold: {}", missing.join(", ")),
-            );
-        }
-        let mut arenas = Vec::new();
-        let payload = match self.copy_across(&payload, &mut arenas) {
-            Ok(copy) => copy,
-            Err(message) => return refuse(OsErrorKind::Invalid, message),
-        };
-        match self.io.guest(program, address, payload, guest, GuestArenas(arenas), call.to_vec()) {
-            Ok(()) => EffectResult::executed_with_value(effect.clone(), Value::Null),
-            Err(failure) => failure_result(effect, AgentPortFailure { error: failure.message, errors: failure.errors }),
-        }
-    }
-
-    /// A copy of `value` for a guest kernel: data is rebuilt, an Arena of a shared arena of this kernel stays a handle
-    /// and its storage is collected into `arenas`, and any other sealed value (or a lambda) is refused.
-    fn copy_across(&self, value: &Value, arenas: &mut Vec<(i64, Arc<SharedArena>)>) -> Result<Value, String> {
-        match value {
-            Value::Sealed(_) if value.is_sealed_as("Arena") => {
-                let id = value.get("id").and_then(Value::as_int);
-                let shared = self.shared_arena_for(value);
-                match (id, shared) {
-                    (Some(id), Some(shared)) => {
-                        if !arenas.iter().any(|(held, _)| *held == id) {
-                            arenas.push((id, shared));
-                        }
-                        Ok(value.clone())
-                    }
-                    _ => Err("program/dispatch: only an Arena of a shared arena of this kernel crosses to a guest".to_string()),
-                }
-            }
-            Value::Sealed(_) | Value::Lambda(_) => Err(format!(
-                "program/dispatch: a {} cannot cross to a guest; only data and shared arenas can",
-                value.type_name()
-            )),
-            Value::Array(items) => items
-                .iter()
-                .map(|item| self.copy_across(item, arenas))
-                .collect::<Result<Vec<_>, _>>()
-                .map(Value::array),
-            Value::Object(fields) => fields
-                .iter()
-                .map(|(key, item)| Ok((key.clone(), self.copy_across(item, arenas)?)))
-                .collect::<Result<ValueMap, String>>()
-                .map(Value::object),
-            other => Ok(other.clone()),
-        }
-    }
-
     fn run_dispatch(&self, effect: &Effect, args: &[Value]) -> EffectResult {
         let (caller_orbital, caller_trait) = self.caller_position();
         let plan = plan_dispatch(
@@ -442,9 +353,6 @@ impl RuntimeKernel {
                     payload,
                     Value::object(options),
                 ]
-            }
-            DispatchPlan::Guest { address, payload, guest, grants } => {
-                return self.run_guest(effect, caller_orbital.as_deref(), address, payload, guest, grants, args)
             }
             DispatchPlan::Inbound { name, body, headers } => {
                 let mut ask = ValueMap::default();

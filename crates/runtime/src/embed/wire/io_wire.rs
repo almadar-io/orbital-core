@@ -105,16 +105,19 @@ pub enum IoRequestWire {
         key: Option<String>,
         site: CallSiteWire,
     },
-    /// A guest kernel start. The shared arenas the payload names are live storage in the asking process: a wire host never
-    /// receives them, so it can only refuse or run the guest without them.
+    /// A dispatch into the guest session `guest`. The session's kernel is live state in the asking process: a wire host
+    /// never receives it, so it can only refuse the ask.
     #[serde(rename_all = "camelCase")]
     Guest {
-        program: Value,
-        address: String,
+        guest: String,
+        targets: Vec<String>,
+        event: String,
         payload: Value,
         grants: orbital_core_base::os_grants::OsGrants,
-        key: String,
-        site: CallSiteWire,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<CallSiteWire>,
     },
     #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },

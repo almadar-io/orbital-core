@@ -434,7 +434,7 @@ impl DispatchScope {
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let (key, stream) = match request {
             IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
-            IoRequest::Substrate { key: Some(key), site: Some(_), .. } | IoRequest::Guest { key, .. } => (key, false),
+            IoRequest::Substrate { key: Some(key), site: Some(_), .. } | IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         self.owners.lock().insert(key.clone(), self.ended.clone());

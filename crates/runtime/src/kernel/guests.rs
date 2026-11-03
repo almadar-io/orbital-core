@@ -2,8 +2,10 @@
 //! rows; `program/dispatch { guest }` and `program/inputs { guest }` reach it by its handle; `program/close` ends it.
 //!
 //! A guest is a server-role kernel over an in-memory entity source: its fetches and persists answer from its own rows.
-//! It has no host ports yet, so its `os/*`, `http` and service asks fail, and a `grants` option is refused with that
-//! reason until guest grants are passed through the opener's port (G-CROSS-400).
+//! Opened with `grants` (and any shared `arenas`), which the opener's kernel `spawn` grant and its own grants must cover,
+//! its asks are answered by a host holding only those grants. The key decides the lane (EXEC-CONC-0a): an unkeyed dispatch
+//! runs in the asking dispatch and answers in place (in the kernel for a guest without grants, through the opener's host
+//! for one with them); a keyed dispatch runs on the guest's own lane, a host thread, and answers as a completion event.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -13,6 +15,7 @@ use crate::effects::response::EventResponse;
 use crate::entity_source::InMemoryEntityCache;
 use crate::process_result::ProcessEventResult;
 use orbital_core_base::agent_ports::AgentPortFailure;
+use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::json_value::value_to_json;
@@ -35,11 +38,53 @@ pub(super) fn guest_option<'a>(op: &str, args: &'a [Value]) -> Option<&'a Value>
     }
 }
 
+/// One open guest: its kernel and rows, the grants a host answers its asks under (`None`: no host ports), and each shared
+/// arena of the opener it was handed, as `(opener's arena id, the guest's handle)`.
+#[derive(Clone)]
+pub struct GuestSession {
+    pub(crate) kernel: Arc<RuntimeKernel>,
+    pub(crate) source: Arc<InMemoryEntityCache>,
+    pub(crate) grants: Option<OsGrants>,
+    arenas: Vec<(i64, Value)>,
+}
+
 fn failure(message: impl Into<String>) -> AgentPortFailure {
     AgentPortFailure {
         error: message.into(),
         errors: Vec::new(),
     }
+}
+
+/// A guest refusal carrying its error kind, as the os and guest asks report one.
+fn guest_refusal(kind: orbital_core_base::os::OsErrorKind, message: impl Into<String>) -> AgentPortFailure {
+    let refused = crate::agent_ports::guest_failure(kind, message);
+    AgentPortFailure {
+        error: refused.message,
+        errors: refused.errors,
+    }
+}
+
+/// Run `event` with `payload` to each of `targets` in the guest `session`, its asks answered by `answer`, and answer what
+/// it moved, painted and emitted: the host side of a guest dispatch.
+pub(crate) fn run_session(
+    session: &GuestSession,
+    targets: &[String],
+    event: &str,
+    payload: &Value,
+    answer: &(dyn Fn(&crate::resumable::IoRequest) -> crate::resumable::IoAnswer + Sync),
+) -> Result<Value, String> {
+    let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+    for trait_name in targets {
+        let progress = session
+            .kernel
+            .start_dispatch(trait_name, None, event, payload.clone(), None, None)
+            .map_err(|e| format!("program/dispatch: {e}"))?;
+        let ran = crate::resumable::drive_concurrent(&session.kernel, progress, answer)
+            .map_err(|e| format!("program/dispatch: {e}"))?;
+        outcomes.extend(ran);
+    }
+    let seed_trait = targets.first().cloned().unwrap_or_default();
+    Ok(guest_answer(None, &outcomes, &seed_trait, event))
 }
 
 fn json_value(json: serde_json::Value) -> Value {
@@ -101,7 +146,7 @@ fn guest_answer(
 
 impl RuntimeKernel {
     /// The guest `handle` names, or the failure naming it.
-    fn guest(&self, handle: &Value, op: &str) -> Result<Arc<RuntimeKernel>, AgentPortFailure> {
+    fn guest(&self, handle: &Value, op: &str) -> Result<GuestSession, AgentPortFailure> {
         let Value::String(name) = handle else {
             return Err(failure(format!(
                 "{op}: guest must be the handle program/open answered"
@@ -119,20 +164,102 @@ impl RuntimeKernel {
             })
     }
 
+    /// The grants the calling orbital holds, after checking they let it give a guest its own lane or host ports.
+    fn may_spawn_guest(&self, op: &str) -> Result<OsGrants, AgentPortFailure> {
+        let (asker, _) = self.caller_position();
+        let held = self.grants.os_grants.read().for_orbital(asker.as_deref()).clone();
+        if !held.kernel_allows(KernelKind::Spawn, None) {
+            return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Denied,
+                format!("{op}: no kernel guest grant covers it"),
+            ));
+        }
+        Ok(held)
+    }
+
+    /// A copy of `value` for the guest `session`: data is rebuilt, an Arena handed over at `program/open` becomes the
+    /// guest's handle for it, and any other sealed value (or a lambda) is refused.
+    fn copy_into(&self, session: &GuestSession, value: &Value) -> Result<Value, AgentPortFailure> {
+        match value {
+            Value::Sealed(_) if value.is_sealed_as("Arena") => value
+                .get("id")
+                .and_then(Value::as_int)
+                .and_then(|id| session.arenas.iter().find(|(held, _)| *held == id))
+                .map(|(_, handle)| handle.clone())
+                .ok_or_else(|| {
+                    guest_refusal(
+                        orbital_core_base::os::OsErrorKind::Invalid,
+                        "program/dispatch: an Arena crosses to a guest only when program/open handed it over in `arenas`",
+                    )
+                }),
+            Value::Sealed(_) | Value::Lambda(_) => Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                format!("program/dispatch: a {} cannot cross to a guest; only data and handed-over arenas can", value.type_name()),
+            )),
+            Value::Array(items) => items
+                .iter()
+                .map(|item| self.copy_into(session, item))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::array),
+            Value::Object(fields) => fields
+                .iter()
+                .map(|(key, item)| Ok((key.clone(), self.copy_into(session, item)?)))
+                .collect::<Result<ValueMap, AgentPortFailure>>()
+                .map(Value::object),
+            other => Ok(other.clone()),
+        }
+    }
+
     /// `program/open program options`: register the program in a guest kernel, mount its first route page and answer
     /// `{ guest, states, rendered, emitted, outcomes }`.
     pub(super) fn open_guest(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
         let program = args
             .first()
             .ok_or_else(|| failure("program/open: name the program to open"))?;
-        if let Some(Value::Object(options)) = args.get(1) {
-            if options.contains_key("grants") {
-                return Err(failure(
-                    "program/open: a guest has no host ports yet, so it takes no grants (G-CROSS-400); open it without `grants`",
-                ));
+        let options = match args.get(1) {
+            Some(Value::Object(options)) => Some(options.clone()),
+            _ => None,
+        };
+        let asked_grants = options.as_ref().and_then(|o| o.get("grants").cloned());
+        let asked_arenas = options.as_ref().and_then(|o| o.get("arenas").cloned());
+        let mut granted: Option<OsGrants> = None;
+        if asked_grants.is_some() || asked_arenas.is_some() {
+            let held = self.may_spawn_guest("program/open")?;
+            let guest: OsGrants = serde_json::from_value(value_to_json(asked_grants.as_ref().unwrap_or(&Value::object(ValueMap::default()))))
+                .map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: the guest's grants are not os grants: {e}")))?;
+            covers(&held, &guest).map_err(|missing| {
+                guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Denied,
+                    format!("program/open: the guest asks for grants the opening orbital does not hold: {}", missing.join(", ")),
+                )
+            })?;
+            granted = Some(guest);
+        }
+        let mut handed = Vec::new();
+        match &asked_arenas {
+            None => {}
+            Some(Value::Array(arenas)) => {
+                for arena in arenas.iter() {
+                    let id = arena.get("id").and_then(Value::as_int);
+                    match (arena.is_sealed_as("Arena"), id, self.shared_arena_for(arena)) {
+                        (true, Some(id), Some(shared)) => handed.push((id, shared)),
+                        _ => {
+                            return Err(guest_refusal(
+                                orbital_core_base::os::OsErrorKind::Invalid,
+                                "program/open: `arenas` holds only Arenas of shared arenas of the opener",
+                            ))
+                        }
+                    }
+                }
+            }
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `arenas` is a list of shared Arenas",
+                ))
             }
         }
-        let schema: OrbitalSchema =
+        let mut schema: OrbitalSchema =
             serde_json::from_value(value_to_json(program)).map_err(|e| {
                 failure(format!(
                     "program/open: the program is not a resolved program: {e}"
@@ -141,9 +268,14 @@ impl RuntimeKernel {
         if schema.orbitals.is_empty() {
             return Err(failure("program/open: the program has no orbitals"));
         }
+        if let Some(grants) = &granted {
+            schema.os_grants = Some(grants.clone());
+            schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+        }
+        let source = Arc::new(InMemoryEntityCache::new());
         let guest = RuntimeKernel::new(
             RuntimeEnvironment::Server,
-            Arc::new(InMemoryEntityCache::new()),
+            source.clone(),
             KernelConfig {
                 runtime_rows_in_kernel: true,
                 ..KernelConfig::default()
@@ -152,6 +284,13 @@ impl RuntimeKernel {
         guest
             .register_schema(schema)
             .map_err(|e| failure(format!("program/open: {e}")))?;
+        let mut arenas = Vec::with_capacity(handed.len());
+        for (id, shared) in handed {
+            let handle = guest
+                .adopt_shared_arena(shared)
+                .map_err(|e| guest_refusal(e.kind, e.message))?;
+            arenas.push((id, handle));
+        }
         let first_page: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
         let seeds = guest.mounts_of(|page| {
             if !page.is_route() {
@@ -171,7 +310,7 @@ impl RuntimeKernel {
             "guest-{}",
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
         );
-        self.guests.write().insert(handle.clone(), Arc::new(guest));
+        self.guests.write().insert(handle.clone(), GuestSession { kernel: Arc::new(guest), source, grants: granted, arenas });
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
         Ok(guest_answer(Some(&handle), &outcomes, &seed_trait, "INIT"))
     }
@@ -190,20 +329,30 @@ impl RuntimeKernel {
         Ok(Value::object(answer))
     }
 
-    /// `program/dispatch address payload { guest }`: dispatch the addressed event into the guest as its client would,
-    /// and answer what it moved, painted and emitted.
+    /// `program/dispatch address payload { guest }`: dispatch the addressed event into the guest as its client would. The
+    /// key decides the lane (EXEC-CONC-0a): unkeyed, it runs in the asking dispatch and answers what it moved, painted and
+    /// emitted (in this kernel for a guest without grants, through the host for one with them); keyed, the host runs it
+    /// on the guest's own lane and the answer arrives as the call site's completion event.
     pub(super) fn dispatch_guest(
         &self,
         args: &[Value],
         handle: &Value,
     ) -> Result<Value, AgentPortFailure> {
-        let guest = self.guest(handle, "program/dispatch")?;
+        let session = self.guest(handle, "program/dispatch")?;
+        if let Some(Value::Object(options)) = args.get(2) {
+            if options.contains_key("grants") {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/dispatch: a guest's grants are given once, at program/open",
+                ));
+            }
+        }
+        let guest = &session.kernel;
         let Some(Value::String(address)) = args.first() else {
             return Err(failure(
                 "program/dispatch: a guest address is `Orbital.Trait.EVENT` or `Trait.EVENT`",
             ));
         };
-        let payload = args.get(1).cloned().unwrap_or(Value::Null);
         let parts: Vec<&str> = address.as_str().split('.').collect();
         let (targets, event): (Vec<String>, &str) = match parts.as_slice() {
             [_, trait_name, event] | [trait_name, event] => (vec![trait_name.to_string()], *event),
@@ -216,6 +365,33 @@ impl RuntimeKernel {
                 )))
             }
         };
+        let payload = self.copy_into(&session, &args.get(1).cloned().unwrap_or(Value::Null))?;
+        let keyed = self.io.keyed_call();
+        if keyed || session.grants.is_some() {
+            if keyed {
+                self.may_spawn_guest("program/dispatch")?;
+            }
+            let Value::String(name) = handle else {
+                return Err(failure("program/dispatch: guest must be the handle program/open answered"));
+            };
+            let grants = session.grants.clone().unwrap_or_default();
+            return self
+                .io
+                .guest(
+                    name.to_string(),
+                    crate::resumable::GuestKernel(Some(session.clone())),
+                    targets,
+                    event.to_string(),
+                    payload,
+                    grants,
+                    args.to_vec(),
+                )
+                .map(|answer| answer.unwrap_or(Value::Null))
+                .map_err(|refused| AgentPortFailure {
+                    error: refused.message,
+                    errors: refused.errors,
+                });
+        }
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         for trait_name in &targets {
             let ran = guest
@@ -260,7 +436,7 @@ impl RuntimeKernel {
         args: &[Value],
         handle: &Value,
     ) -> Result<Value, AgentPortFailure> {
-        let guest = self.guest(handle, "program/inputs")?;
+        let guest = self.guest(handle, "program/inputs")?.kernel;
         let own: Vec<Value> = args
             .iter()
             .enumerate()
@@ -281,5 +457,13 @@ impl RuntimeKernel {
             "",
         )?;
         guest.with_runtime_reads(reflection, &own)
+    }
+}
+
+#[cfg(test)]
+impl GuestSession {
+    /// A session over `kernel` and its rows `source`, answered under `grants`, with no arenas handed over.
+    pub(crate) fn fresh(kernel: Arc<RuntimeKernel>, source: Arc<InMemoryEntityCache>, grants: Option<OsGrants>) -> Self {
+        Self { kernel, source, grants, arenas: Vec::new() }
     }
 }
