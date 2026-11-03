@@ -9,7 +9,7 @@
 
 </div>
 
-<p align="center"><sub>Part of <a href="https://github.com/almadar-io/orb"><b>Orb</b></a>: the language where the rule is the program. <a href="https://orb.almadar.io">orb.almadar.io</a></sub></p>
+<p align="center"><sub>Part of <a href="https://github.com/almadar-io/orb"><b>Orb</b></a>: a programming language of composable state machines. <a href="https://orb.almadar.io">orb.almadar.io</a></sub></p>
 
 `orbital-core` holds the meaning of the Almadar language: the IR/OIR types, the S-expression evaluator, the runtime kernel (dispatch, effects, journal), the schema types and the readers over the installed Almadar language data. Semantics live here once; the compiler, the shells and the embedded hosts carry them and do not re-implement them.
 
