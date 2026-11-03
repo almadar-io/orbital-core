@@ -65,6 +65,19 @@ pub(crate) struct RenderStore {
     instances: BTreeMap<Instance, Vec<RenderedSlot>>,
     /// What the host last painted on a `(trait, slot)` from a server leg, until the kernel paints that slot itself.
     host_paints: BTreeMap<(String, String), Value>,
+    /// The traits whose shown content holds a `guest-view` node, kept at paint time.
+    guest_view_traits: BTreeSet<String>,
+}
+
+fn holds_guest_view(value: &Value) -> bool {
+    match value {
+        Value::Object(node) => {
+            matches!(node.get("type"), Some(Value::String(t)) if t.as_str() == "guest-view")
+                || node.values().any(holds_guest_view)
+        }
+        Value::Array(items) => items.iter().any(holds_guest_view),
+        _ => false,
+    }
 }
 
 impl RenderStore {
@@ -115,6 +128,30 @@ impl RenderStore {
             self.instances
                 .remove(&(trait_name.to_string(), entity_id.to_string()));
         }
+        self.refresh_guest_views(trait_name);
+    }
+
+    /// Whether `trait_name` shows a `guest-view` on any slot, without allocating.
+    pub(crate) fn shows_guest_view(&self, trait_name: &str) -> bool {
+        self.guest_view_traits.contains(trait_name)
+    }
+
+    fn refresh_guest_views(&mut self, trait_name: &str) {
+        let shows = self
+            .instances
+            .iter()
+            .filter(|((t, _), _)| t == trait_name)
+            .flat_map(|(_, slots)| slots.iter())
+            .any(|s| holds_guest_view(&s.resolved))
+            || self
+                .host_paints
+                .iter()
+                .any(|((t, _), content)| t == trait_name && holds_guest_view(content));
+        if shows {
+            self.guest_view_traits.insert(trait_name.to_string());
+        } else {
+            self.guest_view_traits.remove(trait_name);
+        }
     }
 
     /// What `trait_name` last painted on each slot, as the content the host holds, in paint order.
@@ -154,6 +191,7 @@ impl RenderStore {
                 self.host_paints.remove(&key);
             }
         }
+        self.refresh_guest_views(trait_name);
     }
 
     fn forget_slot(&mut self, trait_name: &str, slot: &str) {
@@ -171,11 +209,14 @@ impl RenderStore {
             .retain(|(t, _), _| !gone.contains(&t.as_str()));
         self.host_paints
             .retain(|(t, _), _| !gone.contains(&t.as_str()));
+        self.guest_view_traits
+            .retain(|t| !gone.contains(&t.as_str()));
     }
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
         self.host_paints.clear();
+        self.guest_view_traits.clear();
     }
 
     /// A kernel write to each of `entity_types`: the slots holding a row-set reference to one of them repaint
