@@ -129,9 +129,7 @@ The language data is not baked into the crate: it is read from the installed pac
 
 ## Docs
 
-- [Orbital Core](https://github.com/itechdom/kflow.ai/blob/main/docs/Almadar_Orbital_Core.md)
-- [Execution Semantics](https://github.com/itechdom/kflow.ai/blob/main/docs/Almadar_Execution_Semantics.md): the `EXEC-*` rules every host must follow
-- [Almadar summary](https://github.com/itechdom/kflow.ai/blob/main/docs/Almadar_Summary.md)
+- [Orb documentation](https://orb.almadar.io/docs): the language, the `orb` CLI and how the pieces fit
 
 ## License
 
