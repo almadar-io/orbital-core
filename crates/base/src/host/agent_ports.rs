@@ -16,8 +16,8 @@ use crate::schema::types::{
 };
 use crate::value::{Value, ValueMap};
 
-pub const AGENT_PORT_OPERATORS: [&str; 4] =
-    ["program/inputs", "program/dispatch", "persist/read-named", "program/self"];
+pub const AGENT_PORT_OPERATORS: [&str; 6] =
+    ["program/inputs", "program/dispatch", "persist/read-named", "program/self", "program/open", "program/close"];
 
 /// The `errors[].code` of a `persist/read-named` for a name the program does not persist.
 pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";
@@ -25,7 +25,7 @@ pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";
 const REFUSED_ARGUMENTS: &str = "arguments must be a JSON object";
 const MISMATCHED_ARGUMENTS: &str = "the arguments do not match the tool";
 
-/// Whether `name` is one of the three agent-port operators.
+/// Whether `name` is one of the agent-port operators.
 pub fn is_agent_port_operator(name: &str) -> bool {
     AGENT_PORT_OPERATORS.contains(&name)
 }
@@ -1078,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_agent_port_operators_are_named() {
+    fn only_the_agent_port_operators_are_named() {
         assert!(AGENT_PORT_OPERATORS
             .iter()
             .all(|op| is_agent_port_operator(op)));

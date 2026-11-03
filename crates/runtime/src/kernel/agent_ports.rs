@@ -124,6 +124,30 @@ impl RuntimeKernel {
             );
         }
         match name.as_str() {
+            "program/open" => match self.open_guest(&resolved) {
+                Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                Err(failure) => failure_result(effect, failure),
+            },
+            "program/close" => match self.close_guest(&resolved) {
+                Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                Err(failure) => failure_result(effect, failure),
+            },
+            "program/dispatch" | "program/inputs"
+                if super::guests::guest_option(name.as_str(), &resolved).is_some() =>
+            {
+                let handle = super::guests::guest_option(name.as_str(), &resolved)
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let answered = if name.as_str() == "program/dispatch" {
+                    self.dispatch_guest(&resolved, &handle)
+                } else {
+                    self.inputs_of_guest(&resolved, &handle)
+                };
+                match answered {
+                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                    Err(failure) => failure_result(effect, failure),
+                }
+            }
             "program/inputs" => {
                 let (caller_orbital, caller_trait) = self.caller_position();
                 match plan_inputs(
@@ -156,7 +180,7 @@ impl RuntimeKernel {
     /// `reflection` with the runtime reads the options ask for: `state` (each running instance of the orbital's traits,
     /// its state and entity), `stats` (the kernel's counters) and `trace` (the host's last n dispatch steps, asked of
     /// the host, which keeps the trace).
-    fn with_runtime_reads(
+    pub(super) fn with_runtime_reads(
         &self,
         reflection: Value,
         args: &[Value],
@@ -187,7 +211,12 @@ impl RuntimeKernel {
                     .read()
                     .get_instances_for_trait(trait_name)
                     .into_iter()
-                    .filter_map(|s| Some((self.session_instance_id(s.entity_id.as_deref())?, s.current_state.clone())))
+                    .filter_map(|s| {
+                        Some((
+                            self.session_instance_id(s.entity_id.as_deref())?,
+                            s.current_state.clone(),
+                        ))
+                    })
                     .collect();
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
@@ -195,7 +224,10 @@ impl RuntimeKernel {
                     row.insert("trait".into(), Value::string(trait_name.clone()));
                     row.insert(
                         "entityId".into(),
-                        Value::string(entity_id.map_or_else(|| "singleton".to_string(), |id| crate::process_result::public_entity_id(&id).to_string())),
+                        Value::string(entity_id.map_or_else(
+                            || "singleton".to_string(),
+                            |id| crate::process_result::public_entity_id(&id).to_string(),
+                        )),
                     );
                     row.insert("state".into(), Value::string(state));
                     row.insert("entity".into(), snapshot.entity);
@@ -276,7 +308,10 @@ impl RuntimeKernel {
         let fetched = self.effect_executor.execute(&fetch, ctx);
         match (&fetched.outcome, fetched.return_value) {
             (EffectOutcome::Executed, Some(Value::Array(rows))) => {
-                EffectResult::executed_with_value(effect.clone(), read_named_result(&entity, rows.into_inner()))
+                EffectResult::executed_with_value(
+                    effect.clone(),
+                    read_named_result(&entity, rows.into_inner()),
+                )
             }
             (EffectOutcome::Executed, _) => EffectResult::failed(
                 effect.clone(),
@@ -395,11 +430,18 @@ impl RuntimeKernel {
                 return EffectResult::executed_with_value(effect.clone(), answer)
             }
             DispatchPlan::Dispatch { input, payload } => vec![
-                Value::string(format!("{}.{}.{}", input.orbital, input.trait_name, input.event)),
+                Value::string(format!(
+                    "{}.{}.{}",
+                    input.orbital, input.trait_name, input.event
+                )),
                 payload,
             ],
             DispatchPlan::Request { payload, options } => {
-                vec![args.first().cloned().unwrap_or(Value::Null), payload, Value::object(options)]
+                vec![
+                    args.first().cloned().unwrap_or(Value::Null),
+                    payload,
+                    Value::object(options),
+                ]
             }
             DispatchPlan::Guest { address, payload, guest, grants } => {
                 return self.run_guest(effect, caller_orbital.as_deref(), address, payload, guest, grants, args)
@@ -428,7 +470,6 @@ impl RuntimeKernel {
         }
     }
 }
-
 
 /// An agent-port effect's declared completion: `emit.success` carries `{ result, text }` (`text` is `result` as
 /// JSON text, the one writing both paths share), `emit.failure` `{ error, errors? }`.

@@ -279,14 +279,18 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> DispatchRun {
-        let lifecycle_targets = orbital_core_base::events::is_bus_excluded_event(event_name)
+        let (event_name, payload) = match self.guest_control_delivery(trait_name, entity_id, event_name, &payload) {
+            Some(delivered) => delivered,
+            None => (event_name.to_string(), payload),
+        };
+        let lifecycle_targets = orbital_core_base::events::is_bus_excluded_event(&event_name)
             .then(|| trait_name.to_string())
             .into_iter()
             .collect();
         self.run_of(vec![SeedPlan {
             trait_name: trait_name.to_string(),
             entity_id: entity_id.map(str::to_string),
-            event_name: event_name.to_string(),
+            event_name,
             payload,
             delivery: delivery.cloned(),
             log: log.cloned(),

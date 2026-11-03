@@ -4,3 +4,5 @@
 mod support;
 
 mod completion_events;
+
+mod guest_sessions;

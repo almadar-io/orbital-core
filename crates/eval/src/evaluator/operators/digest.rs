@@ -571,7 +571,7 @@ impl Operator for HmacSha256Op {
 
 /// hmac/sha256-bytes (key, message, encoding, input?) - HMAC-SHA256 under a bytes key that is a program value (a derived key
 /// such as a SigV4 chain step). `input` "text" (default) signs the UTF-8 of the message, "bytes" decodes the message as
-/// standard padded base64 first (the hash/sha256 reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
+/// standard padded base64 first (the hash/sha reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
 pub struct HmacSha256BytesOp;
 impl Operator for HmacSha256BytesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -760,24 +760,25 @@ mod tests {
     #[test]
     fn sha256_bytes_input_hashes_the_decoded_bytes() {
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "YWJj", "hex", "bytes"])),
+            sha256(serde_json::json!(["hash/sha", 256, "YWJj", "hex", "bytes"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "abc", "hex"])),
+            sha256(serde_json::json!(["hash/sha", 256, "abc", "hex"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "abc", "hex", "text"])),
+            sha256(serde_json::json!(["hash/sha", 256, "abc", "hex", "text"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "", "hex", "bytes"])),
+            sha256(serde_json::json!(["hash/sha", 256, "", "hex", "bytes"])),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(
             sha256(serde_json::json!([
-                "hash/sha256",
+                "hash/sha",
+                256,
                 "//4AgA==",
                 "hex",
                 "bytes"
@@ -786,7 +787,8 @@ mod tests {
         );
         assert_eq!(
             sha256(serde_json::json!([
-                "hash/sha256",
+                "hash/sha",
+                256,
                 "YWJj",
                 "base64",
                 "bytes"
@@ -798,21 +800,21 @@ mod tests {
     #[test]
     fn sha256_control_text_reading_and_refusals() {
         assert_ne!(
-            sha256(serde_json::json!(["hash/sha256", "YWJj", "hex"])),
+            sha256(serde_json::json!(["hash/sha", 256, "YWJj", "hex"])),
             ABC
         );
         for form in [
-            serde_json::json!(["hash/sha256", 42, "hex"]),
+            serde_json::json!(["hash/sha", 256, 42, "hex"]),
         ] {
             let err = eval(form).expect_err("refused");
             assert!(err.to_string().contains("expected string, got number"), "{err}");
         }
-        let err = eval(serde_json::json!(["hash/sha256", 42, "hex", "bytes"])).expect_err("refused");
+        let err = eval(serde_json::json!(["hash/sha", 256, 42, "hex", "bytes"])).expect_err("refused");
         assert!(err.to_string().contains("expected bytes, got number"), "{err}");
         for form in [
-            serde_json::json!(["hash/sha256", "abc", "hex", "utf16"]),
-            serde_json::json!(["hash/sha256", "%%not base64", "hex", "bytes"]),
-            serde_json::json!(["hash/sha256", "abc", "octal"]),
+            serde_json::json!(["hash/sha", 256, "abc", "hex", "utf16"]),
+            serde_json::json!(["hash/sha", 256, "%%not base64", "hex", "bytes"]),
+            serde_json::json!(["hash/sha", 256, "abc", "octal"]),
         ] {
             assert_eq!(eval(form).unwrap(), Value::Null);
         }
