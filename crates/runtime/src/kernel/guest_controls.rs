@@ -91,6 +91,9 @@ impl RuntimeKernel {
         event: &str,
         payload: &Value,
     ) -> Option<(String, Value)> {
+        if !self.renders.read().shows_guest_view(trait_name) {
+            return None;
+        }
         let definition = self
             .registry
             .trait_definitions

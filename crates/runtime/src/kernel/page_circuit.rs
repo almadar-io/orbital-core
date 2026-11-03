@@ -53,7 +53,7 @@ impl RuntimeKernel {
 
     /// Every trait reachable from `roots` through `@trait.X` (EXEC-EVAL-9), transitively, in first-met order;
     /// a root appears only when some trait in the walk references it.
-    fn trait_refs_from(&self, roots: &[String]) -> Vec<String> {
+    pub(super) fn trait_refs_from(&self, roots: &[String]) -> Vec<String> {
         let defs = self.registry.trait_definitions.read();
         let mut walked: Vec<String> = roots.to_vec();
         let mut referenced: Vec<String> = Vec::new();
