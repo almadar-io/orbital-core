@@ -61,6 +61,9 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
         Value::Number(number) => serde_json::Number::from_f64(*number)
             .map(serde_json::Value::Number)
             .ok_or_else(|| format!("viewer claim {at}: {number} is not a JSON number"))?,
+        Value::Int(i) if crate::value::exact_float(*i).is_some() => serde_json::Value::from(*i),
+        Value::Int(i) => return Err(format!("viewer claim {at}: the int {i} is beyond 2^53, which a JavaScript client cannot read exactly")),
+        Value::Bytes(_) => return Err(format!("viewer claim {at}: bytes are not a claim")),
         Value::Array(items) => serde_json::Value::Array(
             items.iter().map(|item| json_of(item, at)).collect::<Result<_, _>>()?,
         ),

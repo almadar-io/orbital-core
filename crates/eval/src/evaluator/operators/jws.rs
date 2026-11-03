@@ -47,7 +47,10 @@ fn options_of(value: &Value) -> Result<Options, OrbitalError> {
     };
     let skew_ms = match fields.get("clockSkewMs") {
         None => 0.0,
-        Some(Value::Number(n)) if n.is_finite() && *n >= 0.0 => *n,
+        Some(value @ (Value::Number(_) | Value::Int(_))) => match value.as_number() {
+            Some(n) if n.is_finite() && n >= 0.0 => n,
+            _ => return Err(invalid("option clockSkewMs must be a non-negative number".to_string())),
+        },
         Some(_) => return Err(invalid("option clockSkewMs must be a non-negative number".to_string())),
     };
     let allow_unsigned = match fields.get("allowUnsigned") {
@@ -207,7 +210,7 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
         ("issuer", Value::string(options.issuer.as_str())),
         ("audience", Value::string(options.audience.as_str())),
         ("claims", Value::array(list)),
-        ("expiresAt", Value::Number(expires_at)),
+        ("expiresAt", super::util::int_or_number(expires_at)),
     ]
     .into_iter()
     .map(|(key, value)| (key.into(), value))

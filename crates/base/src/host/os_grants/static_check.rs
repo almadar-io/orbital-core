@@ -4,7 +4,8 @@
 //! walks the program and answers typed findings, and the std lint words them.
 
 use super::{
-    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, OsGrants, OsRequirement,
+    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, KernelKind, MemKind, OsGrants,
+    OsRequirement,
 };
 use crate::collections::IndexMap;
 use crate::os::{split_envelope, OsOp};
@@ -293,6 +294,15 @@ fn describe(need: &OsRequirement) -> String {
         OsRequirement::Dev { resource, kind } => {
             format!("dev {} {}", dev_resource_label(resource), kind.name())
         }
+        OsRequirement::Mem { kind: MemKind::Atomic, .. } => "mem atomic cells of a shared arena".to_string(),
+        OsRequirement::Mem { kind, capacity: Some(n) } => format!("mem arena of {n} bytes {}", kind.name()),
+        OsRequirement::Mem { kind, capacity: None } => format!("mem arena {}", kind.name()),
+        OsRequirement::MemShared { capacity: Some(n) } => format!("mem shared arena of {n} bytes create"),
+        OsRequirement::MemShared { capacity: None } => "mem shared arena create".to_string(),
+        OsRequirement::Kernel { kind: KernelKind::Call, operator: Some(name) } => format!("kernel apply {name:?}"),
+        OsRequirement::Kernel { kind, operator: None } => format!("kernel {}", kind.name()),
+        OsRequirement::Kernel { kind, operator: Some(name) } => format!("kernel {} {name:?}", kind.name()),
+        OsRequirement::Ffi { library, symbol } => format!("ffi {library:?} {symbol}"),
     }
 }
 
@@ -355,6 +365,32 @@ fn grant_entry(need: &OsRequirement) -> (String, bool) {
                 dev_grant_target(resource),
                 kind.name()
             ),
+            true,
+        ),
+        OsRequirement::MemShared { capacity } => (
+            match capacity {
+                Some(n) => format!("mem: {{ \"shared:{n}\": [create] }}"),
+                None => "mem: { \"shared:<maxBytes>\": [create] }".to_string(),
+            },
+            true,
+        ),
+        OsRequirement::Kernel { kind, operator } => (
+            match (kind, operator) {
+                (KernelKind::Call, Some(name)) => format!("kernel: {{ \"apply:{name}\": [call] }}"),
+                (KernelKind::Call, None) => "kernel: { \"apply:<operator>\": [call] }".to_string(),
+                (KernelKind::Reorder, _) => "kernel: { \"queue\": [reorder] }".to_string(),
+                (KernelKind::Read, _) => "kernel: { \"introspect\": [read] }".to_string(),
+                (KernelKind::Spawn, _) => "kernel: { \"guest\": [spawn] }".to_string(),
+            },
+            true,
+        ),
+        OsRequirement::Ffi { library, symbol } => (format!("ffi: {{ {library:?}: {{ {symbol}: \"<signature>\" }} }}"), true),
+        OsRequirement::Mem { kind: MemKind::Atomic, .. } => ("mem: { \"shared:<maxBytes>\": [atomic] }".to_string(), true),
+        OsRequirement::Mem { kind, capacity } => (
+            match capacity {
+                Some(n) => format!("mem: {{ \"arena:{n}\": [{}] }}", kind.name()),
+                None => format!("mem: {{ \"arena:<maxBytes>\": [{}] }}", kind.name()),
+            },
             true,
         ),
         OsRequirement::Kv { store, mode } => {

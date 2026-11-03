@@ -176,6 +176,7 @@ pub fn declared_text(ty: &OirType) -> String {
         OirType::TypeRef { name } | OirType::Enum { name } => name.clone(),
         OirType::Var { name } => name.to_string(),
         OirType::Integer | OirType::Money => "number".to_string(),
+        OirType::Sized { width } => width.name().to_string(),
         other => serde_json::to_value(other)
             .ok()
             .and_then(|v| v.get("kind").and_then(|k| k.as_str()).map(str::to_string))
@@ -244,7 +245,7 @@ fn json_total(union: &OirType, named: &BTreeMap<String, OirType>) -> Option<(boo
 fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
     match value {
         Value::Null => false,
-        Value::Bool(_) | Value::Number(_) | Value::String(_) => true,
+        Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) | Value::Bytes(_) => true,
         Value::Array(items) => items.iter().all(|item| {
             if item.is_null() {
                 list_null
@@ -403,9 +404,9 @@ fn first_misfit(
         OirType::Reference { .. } => {
             (!matches!(value, Value::Object(_) | Value::String(_))).then(|| Misfit::here(value, ty))
         }
-        OirType::Number | OirType::Integer | OirType::Money => {
-            (!matches!(value, Value::Number(_))).then(|| Misfit::here(value, ty))
-        }
+        OirType::Number | OirType::Money => (!value.is_numeric()).then(|| Misfit::here(value, ty)),
+        OirType::Integer => value.as_int().is_none().then(|| Misfit::here(value, ty)),
+        OirType::Sized { width } => (!width.fits(value)).then(|| Misfit::here(value, ty)),
         OirType::Boolean => (!matches!(value, Value::Bool(_))).then(|| Misfit::here(value, ty)),
         OirType::Date | OirType::DateTime | OirType::Instant => {
             let wanted = if matches!(ty, OirType::Date) {
@@ -418,6 +419,7 @@ fn first_misfit(
             (!fits).then(|| Misfit::here(value, ty))
         }
         OirType::Bytes => match value {
+            Value::Bytes(_) => None,
             Value::String(text) if orbital_core_base::codec::base64_decode(text).is_ok() => None,
             _ => misfit(),
         },
@@ -758,6 +760,21 @@ mod tests {
                 &named
             ),
             Some(("[1]".to_string(), "string"))
+        );
+    }
+
+    #[test]
+    fn declared_int_number_and_bytes_admit_exactly_their_runtime_kinds() {
+        let named = BTreeMap::new();
+        assert!(value_of_declared(&Value::Int(5), &OirType::Number, &named).is_ok());
+        assert!(value_of_declared(&Value::Int(5), &OirType::Integer, &named).is_ok());
+        assert!(value_of_declared(&num(5.0), &OirType::Integer, &named).is_ok(), "a whole number is an int");
+        assert!(value_of_declared(&num(5.5), &OirType::Integer, &named).is_err(), "control: a fraction is not an int");
+        assert!(value_of_declared(&Value::bytes(vec![1, 2]), &OirType::Bytes, &named).is_ok());
+        assert!(value_of_declared(&Value::bytes(vec![1, 2]), &OirType::String, &named).is_err(), "control: bytes are not text");
+        assert_eq!(
+            misfit_of_declared(&Value::Int(1), &OirType::String, &named),
+            Some((String::new(), "int"))
         );
     }
 }

@@ -223,28 +223,28 @@ impl ser::Serializer for ValueSerializer {
         Ok(Value::Bool(v))
     }
     fn serialize_i8(self, v: i8) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_i16(self, v: i16) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_i32(self, v: i32) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_i64(self, v: i64) -> Result<Value, Self::Error> {
-        Ok(Value::Number(v as f64))
+        Ok(Value::Int(v))
     }
     fn serialize_u8(self, v: u8) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_u16(self, v: u16) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_u32(self, v: u32) -> Result<Value, Self::Error> {
-        Ok(Value::Number(f64::from(v)))
+        Ok(Value::Int(i64::from(v)))
     }
     fn serialize_u64(self, v: u64) -> Result<Value, Self::Error> {
-        Ok(Value::Number(v as f64))
+        Ok(i64::try_from(v).map_or(Value::Number(v as f64), Value::Int))
     }
     fn serialize_f32(self, v: f32) -> Result<Value, Self::Error> {
         self.serialize_f64(f64::from(v))
@@ -263,9 +263,7 @@ impl ser::Serializer for ValueSerializer {
         Ok(text(v))
     }
     fn serialize_bytes(self, v: &[u8]) -> Result<Value, Self::Error> {
-        Ok(Value::Array(Shared::new(
-            v.iter().map(|b| Value::Number(f64::from(*b))).collect(),
-        )))
+        Ok(Value::bytes(v.to_vec()))
     }
     fn serialize_none(self) -> Result<Value, Self::Error> {
         Ok(Value::Null)

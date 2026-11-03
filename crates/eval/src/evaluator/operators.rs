@@ -35,6 +35,8 @@ pub mod anim;
 pub mod array;
 pub mod bit;
 pub mod bytes;
+pub mod mem;
+pub mod kernel;
 pub mod cast;
 pub mod csv;
 pub mod digest;
@@ -65,6 +67,8 @@ pub use anim::*;
 pub use array::*;
 pub use bit::*;
 pub use bytes::*;
+pub use mem::*;
+pub use kernel::*;
 pub use cast::*;
 pub use csv::*;
 pub use digest::*;
@@ -151,6 +155,8 @@ operator_dispatch! {
         "array/nth" => K::NthOp,
         "array/includes" => K::IncludesOp,
         "array/map" => K::MapOp,
+        "array/pmap" => K::ArrayPmapOp,
+        "array/preduce" => K::ArrayPreduceOp,
         "array/filter" => K::FilterOp,
         "array/find" => K::FindOp,
 
@@ -372,7 +378,16 @@ operator_dispatch! {
         "bytes/index-of" => K::BytesIndexOfOp,
         "bytes/at" => K::BytesAtOp,
         "bytes/read-uint" => K::BytesReadUintOp,
+        "bytes/read-int" => K::BytesReadIntOp,
         "bytes/write-uint" => K::BytesWriteUintOp,
+        "mem/read" => K::MemReadOp,
+        "mem/read-uint" => K::MemReadUintOp,
+        "mem/read-int" => K::MemReadIntOp,
+        "mem/length" => K::MemLengthOp,
+        "kernel/worklist" => K::KernelWorklistOp,
+        "kernel/frame" => K::KernelFrameOp,
+        "kernel/stamp" => K::KernelStampOp,
+        "kernel/apply" => K::KernelApplyOp,
         "base64/encode" => K::Base64EncodeOp,
         "base64/decode" => K::Base64DecodeOp,
         "base64/valid" => K::Base64ValidOp,

@@ -403,11 +403,12 @@ impl BindingContext {
                         };
                     }
                     if super::operators::get_operator(op).is_some() {
-                        let sexpr: orbital_core_base::schema::sexpr::SExpression =
-                            value.clone().into();
                         // An operator-headed array is a call: its failure is a fault the checked
                         // resolution reports (G-ORBITAL-CORE-033); the unchecked one keeps the value.
-                        match super::operators::eval_expr(&sexpr, self) {
+                        let call = orbital_core_base::schema::sexpr::SExpression::try_from(value.clone())
+                            .map_err(OrbitalError::Eval)
+                            .and_then(|sexpr| super::operators::eval_expr(&sexpr, self));
+                        match call {
                             Ok(result) => return Cow::Owned(result),
                             Err(OrbitalError::Eval(fault)) => {
                                 walk.fault.get_or_insert(fault);

@@ -118,6 +118,6 @@ fn a_binding_path_reads_an_escaped_dot_as_one_literal_key() {
         serde_json::to_value(Evaluator::new().evaluate(&sexpr, &ctx).unwrap()).unwrap()
     };
     assert_eq!(read("@payload.http\\.method"), serde_json::json!("GET"));
-    assert_eq!(read("@payload.a.b\\.c"), serde_json::json!(7.0));
+    assert_eq!(read("@payload.a.b\\.c"), serde_json::json!(7));
     assert_eq!(read("@payload.http.method"), serde_json::json!("nested"), "control: plain a.b is a path");
 }

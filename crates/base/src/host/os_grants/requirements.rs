@@ -33,6 +33,13 @@ pub enum OsRequirement {
     Desktop { kind: DesktopKind },
     Kv { store: String, mode: KvMode },
     Dev { resource: DevResource, kind: DevKind },
+    Mem { kind: MemKind, capacity: Option<u64> },
+    /// A shared arena made: covered only by a `shared:` mem target at least `capacity` bytes that lists `create`.
+    MemShared { capacity: Option<u64> },
+    /// A kernel capability used; `operator` is the literal name `kernel/apply` is asked to run.
+    Kernel { kind: KernelKind, operator: Option<String> },
+    /// A foreign function called: the literal library and symbol `ffi/call` is asked to run.
+    Ffi { library: String, symbol: String },
 }
 
 impl OsRequirement {
@@ -89,6 +96,10 @@ impl OsGrants {
             OsRequirement::Desktop { kind } => self.desktop_allows(*kind),
             OsRequirement::Kv { store, mode } => self.kv_allows(store, *mode),
             OsRequirement::Dev { resource, kind } => self.dev_allows(resource, *kind),
+            OsRequirement::Mem { kind, capacity } => self.mem_allows(*kind, *capacity),
+            OsRequirement::MemShared { capacity } => self.mem_shared_allows(*capacity),
+            OsRequirement::Kernel { kind, operator } => self.kernel_allows(*kind, operator.as_deref()),
+            OsRequirement::Ffi { library, symbol } => self.ffi_allows(library, symbol),
         }
     }
 }
@@ -145,6 +156,59 @@ pub(super) fn irq_need(args: &[SExpression], line: usize, kind: DevKind, deferre
         .map(|line| OsRequirement::Dev { resource: DevResource::Irq { line }, kind })
         .into_iter()
         .collect())
+}
+
+pub(super) fn mem_need(
+    args: &[SExpression],
+    kind: MemKind,
+    (capacity, arena_kind): (Option<usize>, Option<usize>),
+    deferred: Deferred,
+) -> Result<Vec<OsRequirement>, usize> {
+    let shared = match arena_kind {
+        Some(at) => match literal(args, at, deferred)? {
+            Some(name) => name == "shared",
+            None if args.get(at).is_some_and(|arg| deferred(arg)) => return Ok(Vec::new()),
+            None => false,
+        },
+        None => false,
+    };
+    let capacity = match capacity {
+        Some(at) => match literal_int(args, at, deferred)? {
+            Some(n) => Some(n),
+            None if args.get(at).is_some_and(|arg| deferred(arg)) => return Ok(Vec::new()),
+            None => None,
+        },
+        None => None,
+    };
+    Ok(vec![if shared && kind == MemKind::Create {
+        OsRequirement::MemShared { capacity }
+    } else {
+        OsRequirement::Mem { kind, capacity }
+    }])
+}
+
+pub(super) fn kernel_need(
+    args: &[SExpression],
+    kind: KernelKind,
+    operator: Option<usize>,
+    deferred: Deferred,
+) -> Result<Vec<OsRequirement>, usize> {
+    let operator = match operator {
+        Some(at) => match literal(args, at, deferred)? {
+            Some(name) => Some(name.to_string()),
+            None if args.get(at).is_some_and(|arg| deferred(arg)) => return Ok(Vec::new()),
+            None => None,
+        },
+        None => None,
+    };
+    Ok(vec![OsRequirement::Kernel { kind, operator }])
+}
+
+pub(super) fn ffi_need(args: &[SExpression], library: usize, symbol: usize, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
+    Ok(match (literal(args, library, deferred)?, literal(args, symbol, deferred)?) {
+        (Some(library), Some(symbol)) => vec![OsRequirement::Ffi { library: library.to_string(), symbol: symbol.to_string() }],
+        _ => Vec::new(),
+    })
 }
 
 /// The leading pieces of a `str/concat` target that are known before the call runs, cut after the last
@@ -522,6 +586,9 @@ pub fn requirement_target_positions(op: OsOp) -> Vec<usize> {
             OsGrantNeed::Kv { store, .. } => at.push(*store),
             OsGrantNeed::Mmio { base, offset, width, .. } => at.extend([*base, *offset, *width]),
             OsGrantNeed::Irq { line, .. } => at.push(*line),
+            OsGrantNeed::Mem { capacity, arena_kind, .. } => at.extend(capacity.iter().chain(arena_kind)),
+            OsGrantNeed::Kernel { operator, .. } => at.extend(*operator),
+            OsGrantNeed::Ffi { library, symbol } => at.extend([*library, *symbol]),
             OsGrantNeed::Stdio { .. } | OsGrantNeed::Sys { .. } | OsGrantNeed::Desktop { .. } => {}
         }
     }
@@ -671,5 +738,8 @@ pub(super) fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferr
         OsGrantNeed::Kv { access, store } => kv_need(args, *store, *access, deferred),
         OsGrantNeed::Mmio { access, base, offset, width } => mmio_need(args, (*base, *offset, *width), *access, deferred),
         OsGrantNeed::Irq { access, line } => irq_need(args, *line, *access, deferred),
+        OsGrantNeed::Mem { access, capacity, arena_kind } => mem_need(args, *access, (*capacity, *arena_kind), deferred),
+        OsGrantNeed::Kernel { access, operator } => kernel_need(args, *access, *operator, deferred),
+        OsGrantNeed::Ffi { library, symbol } => ffi_need(args, *library, *symbol, deferred),
     }
 }

@@ -411,6 +411,7 @@ pub fn step_answer(
 ) -> IoAnswer {
     match request {
         IoRequest::Os { key: Some(_), .. }
+        | IoRequest::Guest { .. }
         | IoRequest::Substrate {
             key: Some(_),
             site: Some(_),
@@ -861,7 +862,7 @@ mod tests {
         let held = go(serde_json::json!({ "trait": "Host", "event": "GO", "credentials": { "PW_NAME": "hunter2" } })).unwrap();
         assert_eq!(
             held["steps"][0]["entityAfter"]["len"],
-            serde_json::json!(7.0),
+            serde_json::json!(7),
             "{held}"
         );
         assert!(
@@ -889,7 +890,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             two["steps"][0]["entityAfter"]["len"],
-            serde_json::json!(3.0),
+            serde_json::json!(3),
             "{two}"
         );
         assert_eq!(

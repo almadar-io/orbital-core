@@ -1,5 +1,7 @@
 use super::*;
+use super::requirements::{ffi_need, kernel_need, mem_need};
 use serde_json::json;
+use crate::num_width::NumWidth;
 
 fn fs_grants(glob: &str, modes: &[FsMode]) -> OsGrants {
     OsGrants {
@@ -348,6 +350,297 @@ fn a_dev_target_that_names_no_window_or_line_is_an_entry_problem() {
     };
     let paths: Vec<String> = g.entry_problems().into_iter().map(|p| p.path).collect();
     assert_eq!(paths, vec!["dev[0]", "dev[1]", "dev[2]", "dev[3]"]);
+}
+
+fn mem_grants(target: &str, kinds: Vec<MemKind>) -> OsGrants {
+    OsGrants { mem: vec![MemGrant { target: target.into(), kinds }], ..OsGrants::default() }
+}
+
+#[test]
+fn a_mem_grant_bounds_arena_capacity_and_free_needs_its_own_kind() {
+    let create = |n| OsRequirement::Mem { kind: MemKind::Create, capacity: Some(n) };
+    let free = OsRequirement::Mem { kind: MemKind::Free, capacity: None };
+    let g = mem_grants("arena:1024", vec![MemKind::Create]);
+    assert!(g.allows(&create(512)) && g.allows(&create(1024)));
+    assert!(!g.allows(&create(2048)), "control: past the granted maximum");
+    assert!(!g.allows(&free), "control: free is its own kind");
+    assert!(!g.allows(&OsRequirement::Mem { kind: MemKind::Create, capacity: None }));
+    assert!(mem_grants("arena:1024", vec![MemKind::Free]).allows(&free));
+    assert!(!OsGrants::default().allows(&create(1)), "control: closed by default");
+    assert!(g.entry_problems().is_empty());
+    let both: OsGrants = serde_json::from_value(json!({"mem": [{"target": "arena:64", "kinds": ["create", "free"]}]})).expect("mem");
+    assert!(both.allows(&create(64)) && both.allows(&free));
+}
+
+#[test]
+fn a_malformed_mem_target_is_an_entry_problem() {
+    for target in ["arena:0", "arena:", "arena:-4", "arena:0x10", "arena:99999999999999999999999", "heap:64", "arena:1k"] {
+        let paths: Vec<String> = mem_grants(target, vec![MemKind::Create]).entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, vec!["mem[0]"], "{target}");
+    }
+    let paths: Vec<String> = mem_grants("arena:8", vec![]).entry_problems().into_iter().map(|p| p.path).collect();
+    assert_eq!(paths, vec!["mem[0]"], "no kind");
+    assert!(mem_grants("arena:8", vec![MemKind::Free]).entry_problems().is_empty(), "control");
+}
+
+#[test]
+fn mem_calls_need_the_capacity_they_name() {
+    assert_eq!(
+        call(OsOp::ArenaNew, json!(["bump", 512])),
+        Ok(vec![OsRequirement::Mem { kind: MemKind::Create, capacity: Some(512) }])
+    );
+    assert_eq!(
+        call(OsOp::ArenaNew, json!(["bump", "@entity.size"])),
+        Err(1),
+        "control: a computed capacity is not literal"
+    );
+    assert_eq!(
+        call(OsOp::ArenaDrop, json!(["@entity.arena"])),
+        Ok(vec![OsRequirement::Mem { kind: MemKind::Free, capacity: None }])
+    );
+}
+
+fn exprs(args: serde_json::Value) -> Vec<SExpression> {
+    serde_json::from_value(args).expect("args")
+}
+
+#[test]
+fn a_shared_mem_grant_bounds_shared_arenas_and_admits_atomics() {
+    let shared = |n| OsRequirement::MemShared { capacity: Some(n) };
+    let create = |n| OsRequirement::Mem { kind: MemKind::Create, capacity: Some(n) };
+    let atomic = OsRequirement::Mem { kind: MemKind::Atomic, capacity: None };
+    let g = mem_grants("shared:1024", vec![MemKind::Create, MemKind::Atomic]);
+    assert!(g.allows(&shared(1024)) && g.allows(&shared(8)) && g.allows(&atomic));
+    assert!(!g.allows(&shared(2048)), "control: past the granted maximum");
+    assert!(!g.allows(&create(8)), "control: a shared target does not admit a plain arena");
+    let arena = mem_grants("arena:1024", vec![MemKind::Create, MemKind::Free]);
+    assert!(!arena.allows(&shared(8)), "control: an arena target does not admit a shared arena");
+    assert!(!arena.allows(&atomic), "control: atomics need a shared target");
+    assert!(!mem_grants("shared:1024", vec![MemKind::Create]).allows(&atomic), "control: atomic is its own kind");
+    assert!(!mem_grants("shared:1024", vec![MemKind::Atomic]).allows(&shared(8)), "control: create is its own kind");
+    assert!(mem_grants("shared:8", vec![MemKind::Free]).allows(&OsRequirement::Mem { kind: MemKind::Free, capacity: None }));
+    assert!(g.entry_problems().is_empty());
+    assert_eq!(mem_target("shared:64"), Some(MemTarget::Shared { max_bytes: 64 }));
+    for target in ["shared:0", "shared:", "shared:1k", "shared:-1"] {
+        let paths: Vec<String> = mem_grants(target, vec![MemKind::Create]).entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, vec!["mem[0]"], "{target}");
+    }
+    let paths: Vec<String> = mem_grants("arena:64", vec![MemKind::Atomic]).entry_problems().into_iter().map(|p| p.path).collect();
+    assert_eq!(paths, vec!["mem[0]"], "atomic on an arena target");
+}
+
+#[test]
+fn arena_new_of_kind_shared_needs_a_shared_target() {
+    let never = |_: &SExpression| false;
+    let need = |args: serde_json::Value| mem_need(&exprs(args), MemKind::Create, (Some(1), Some(0)), &never);
+    assert_eq!(need(json!(["shared", 256])), Ok(vec![OsRequirement::MemShared { capacity: Some(256) }]));
+    assert_eq!(need(json!(["bump", 256])), Ok(vec![OsRequirement::Mem { kind: MemKind::Create, capacity: Some(256) }]), "control");
+    assert_eq!(need(json!(["@entity.kind", 256])), Err(0), "a computed kind is not literal");
+    assert_eq!(need(json!(["shared", "@entity.size"])), Err(1), "a computed capacity is not literal");
+    let grant: OsGrantNeed = serde_json::from_value(json!({"kind": "mem", "access": "create", "capacity": 1, "arenaKind": 0})).expect("need");
+    assert_eq!(grant, OsGrantNeed::Mem { access: MemKind::Create, capacity: Some(1), arena_kind: Some(0) });
+    let atomic = mem_need(&exprs(json!(["@x", 0])), MemKind::Atomic, (None, None), &never);
+    assert_eq!(atomic, Ok(vec![OsRequirement::Mem { kind: MemKind::Atomic, capacity: None }]));
+}
+
+fn kernel_grants(entries: &[(&str, &[KernelKind])]) -> OsGrants {
+    OsGrants {
+        kernel: entries.iter().map(|(target, kinds)| KernelGrant { target: (*target).into(), kinds: kinds.to_vec() }).collect(),
+        ..OsGrants::default()
+    }
+}
+
+fn apply(name: &str) -> OsRequirement {
+    OsRequirement::Kernel { kind: KernelKind::Call, operator: Some(name.to_string()) }
+}
+
+#[test]
+fn an_apply_grant_covers_an_exact_name_or_a_namespace() {
+    let ns = kernel_grants(&[("apply:math/*", &[KernelKind::Call])]);
+    assert!(ns.allows(&apply("math/add")) && ns.allows(&apply("math/sqrt")));
+    assert!(!ns.allows(&apply("str/concat")), "control: another namespace");
+    assert!(!ns.allows(&apply("mathx/add")), "control: a longer namespace name");
+    assert!(!ns.allows(&apply("math/")), "control: no operator after the slash");
+    assert!(!ns.allows(&OsRequirement::Kernel { kind: KernelKind::Call, operator: None }), "control: no name");
+    let symbol = kernel_grants(&[("apply:+", &[KernelKind::Call])]);
+    assert!(symbol.kernel_allows(KernelKind::Call, Some("+")), "a bare symbol operator is an exact name");
+    assert!(!symbol.kernel_allows(KernelKind::Call, Some("-")), "control: only that operator");
+    let exact = kernel_grants(&[("apply:str/concat", &[KernelKind::Call])]);
+    assert!(exact.allows(&apply("str/concat")));
+    assert!(!exact.allows(&apply("str/concat-all")) && !exact.allows(&apply("str/split")), "control: exact only");
+    assert!(!OsGrants::default().allows(&apply("math/add")), "control: closed by default");
+    assert!(ns.entry_problems().is_empty() && exact.entry_problems().is_empty());
+}
+
+#[test]
+fn queue_introspect_and_guest_grants_each_admit_their_own_kind() {
+    let all = kernel_grants(&[
+        ("queue", &[KernelKind::Reorder]),
+        ("introspect", &[KernelKind::Read]),
+        ("guest", &[KernelKind::Spawn]),
+    ]);
+    for kind in [KernelKind::Reorder, KernelKind::Read, KernelKind::Spawn] {
+        assert!(all.allows(&OsRequirement::Kernel { kind, operator: None }), "{kind:?}");
+        let one = kernel_grants(&[(
+            match kind {
+                KernelKind::Reorder => "queue",
+                KernelKind::Read => "introspect",
+                _ => "guest",
+            },
+            &[kind],
+        )]);
+        for other in [KernelKind::Reorder, KernelKind::Read, KernelKind::Spawn] {
+            assert_eq!(one.allows(&OsRequirement::Kernel { kind: other, operator: None }), other == kind, "{kind:?} vs {other:?}");
+        }
+    }
+    assert!(!all.allows(&apply("math/add")), "control: no apply grant");
+    assert!(all.entry_problems().is_empty());
+    let g: OsGrants = serde_json::from_value(json!({"kernel": [{"target": "queue", "kinds": ["reorder"]}]})).expect("kernel");
+    assert!(g.allows(&OsRequirement::Kernel { kind: KernelKind::Reorder, operator: None }));
+}
+
+#[test]
+fn a_malformed_kernel_target_or_kind_is_an_entry_problem() {
+    for target in ["apply:", "apply:*", "apply:/*", "apply:math/**", "apply:ma*th/add", "apply: math/add", "apply:math/", "apply:/add", "queues", "guest:x", "apply"] {
+        let paths: Vec<String> = kernel_grants(&[(target, &[KernelKind::Call])]).entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, vec!["kernel[0]"], "{target}");
+    }
+    let wrong = kernel_grants(&[("queue", &[KernelKind::Call])]).entry_problems();
+    assert_eq!(wrong.len(), 1, "a kind the target does not grant");
+    assert_eq!(kernel_grants(&[("queue", &[])]).entry_problems().len(), 1, "no kind");
+    assert!(kernel_grants(&[("queue", &[KernelKind::Reorder])]).entry_problems().is_empty(), "control");
+}
+
+#[test]
+fn kernel_calls_need_the_operator_they_name() {
+    let never = |_: &SExpression| false;
+    let need = |args: serde_json::Value| kernel_need(&exprs(args), KernelKind::Call, Some(0), &never);
+    assert_eq!(need(json!(["math/add", []])), Ok(vec![apply("math/add")]));
+    assert_eq!(need(json!(["@entity.op", []])), Err(0), "control: a computed operator is not literal");
+    assert_eq!(
+        kernel_need(&exprs(json!(["ready"])), KernelKind::Reorder, None, &never),
+        Ok(vec![OsRequirement::Kernel { kind: KernelKind::Reorder, operator: None }])
+    );
+}
+
+#[test]
+fn kernel_atoms_and_union_merge_kinds_per_target() {
+    let a = kernel_grants(&[("queue", &[KernelKind::Reorder]), ("apply:math/*", &[KernelKind::Call])]);
+    let atoms = a.atoms();
+    assert_eq!(atoms.iter().filter(|x| x.path.starts_with("kernel[")).count(), 2);
+    let mut merged = kernel_grants(&[("queue", &[KernelKind::Reorder])]);
+    merged.union(&a);
+    assert_eq!(merged.kernel.len(), 2);
+    assert_eq!(merged.kernel[0].kinds, vec![KernelKind::Reorder], "control: no duplicate kind");
+    assert!(!merged.is_empty() && OsGrants::default().is_empty());
+}
+
+fn ffi_grants(entries: &[(&str, &str, &str)]) -> OsGrants {
+    OsGrants {
+        ffi: entries
+            .iter()
+            .map(|(library, symbol, signature)| FfiGrant { library: (*library).into(), symbol: (*symbol).into(), signature: (*signature).into() })
+            .collect(),
+        ..OsGrants::default()
+    }
+}
+
+#[test]
+fn the_ffi_signature_grammar_is_closed() {
+    assert_eq!(
+        parse_ffi_signature("(f64) -> f64"),
+        Ok(FfiSignature { params: vec![FfiType::Num(NumWidth::F64)], ret: FfiRet::Scalar(FfiType::Num(NumWidth::F64)) })
+    );
+    assert_eq!(
+        parse_ffi_signature("(mutptr, u64) -> void"),
+        Ok(FfiSignature { params: vec![FfiType::MutPtr, FfiType::Num(NumWidth::U64)], ret: FfiRet::Void })
+    );
+    assert_eq!(parse_ffi_signature("() -> i32"), Ok(FfiSignature { params: vec![], ret: FfiRet::Scalar(FfiType::Num(NumWidth::I32)) }));
+    assert_eq!(
+        parse_ffi_signature("  ( ptr ,i8,u16 )->u8 "),
+        Ok(FfiSignature { params: vec![FfiType::Ptr, FfiType::Num(NumWidth::I8), FfiType::Num(NumWidth::U16)], ret: FfiRet::Scalar(FfiType::Num(NumWidth::U8)) }),
+        "whitespace around commas and the arrow is tolerated"
+    );
+    let eight = parse_ffi_signature("(i8, i8, i8, i8, i8, i8, i8, i8) -> void").expect("eight is the limit");
+    assert_eq!(eight.params.len(), FFI_MAX_PARAMS);
+    for refused in [
+        "(f64) -> ptr",
+        "(f64) -> mutptr",
+        "(i8, i8, i8, i8, i8, i8, i8, i8, i8) -> void",
+        "(f65) -> void",
+        "(f64,) -> void",
+        "(, f64) -> void",
+        "(f64)",
+        "(f64) -> ",
+        "(f64) -> float",
+        "f64 -> f64",
+        "(f64 -> f64",
+    ] {
+        assert!(parse_ffi_signature(refused).is_err(), "{refused}");
+    }
+    assert!(parse_ffi_signature("(f65) -> void").expect_err("unknown").contains("f65"), "the error names the type");
+    assert!(parse_ffi_signature("(f64) -> ptr").expect_err("ptr").contains("ptr"));
+}
+
+#[test]
+fn ffi_allows_the_exact_library_and_symbol_and_returns_the_granted_signature() {
+    let g = ffi_grants(&[("/lib/libm.so", "cos", "(f64) -> f64"), ("/lib/libm.so", "bzero", "(mutptr, u64) -> void")]);
+    let need = |library: &str, symbol: &str| OsRequirement::Ffi { library: library.into(), symbol: symbol.into() };
+    assert!(g.allows(&need("/lib/libm.so", "cos")));
+    assert!(g.allows(&need("/lib/libm.so", "bzero")));
+    assert!(!g.allows(&need("/lib/libm.so", "sin")), "control: another symbol");
+    assert!(!g.allows(&need("/lib/libc.so", "cos")), "control: another library");
+    assert!(!g.allows(&need("/lib/libm.so.6", "cos")), "control: the library is not prefix-matched");
+    assert!(!OsGrants::default().allows(&need("/lib/libm.so", "cos")), "control: closed by default");
+    assert_eq!(
+        g.ffi_signature("/lib/libm.so", "bzero"),
+        Some(FfiSignature { params: vec![FfiType::MutPtr, FfiType::Num(NumWidth::U64)], ret: FfiRet::Void })
+    );
+    assert_eq!(g.ffi_signature("/lib/libm.so", "sin"), None, "control: not granted");
+    assert_eq!(ffi_grants(&[("l", "f", "nonsense")]).ffi_signature("l", "f"), None);
+}
+
+#[test]
+fn ffi_calls_need_the_library_and_symbol_they_name() {
+    let never = |_: &SExpression| false;
+    let need = |args: serde_json::Value| ffi_need(&exprs(args), 0, 1, &never);
+    assert_eq!(
+        need(json!(["/lib/libm.so", "cos", []])),
+        Ok(vec![OsRequirement::Ffi { library: "/lib/libm.so".into(), symbol: "cos".into() }])
+    );
+    assert_eq!(need(json!(["@entity.lib", "cos"])), Err(0), "a computed library is not static");
+    assert_eq!(need(json!(["/lib/libm.so", "@entity.sym"])), Err(1), "a computed symbol is not static");
+    let deferred = |expr: &SExpression| matches!(expr, SExpression::String(s) if s == "@config.lib");
+    assert_eq!(ffi_need(&exprs(json!(["@config.lib", "cos"])), 0, 1, &deferred), Ok(Vec::new()), "a deferred library contributes nothing");
+    assert_eq!(requirement_target_positions(OsOp::FfiCall), vec![0, 1]);
+}
+
+#[test]
+fn a_malformed_ffi_entry_is_an_entry_problem() {
+    let bad = ffi_grants(&[("/lib/libm.so", "cos", "(f64) -> ptr")]).entry_problems();
+    assert_eq!(bad.len(), 1);
+    assert_eq!(bad[0].path, "ffi[0]");
+    assert!(bad[0].message.contains("cos") && bad[0].message.contains("ptr"), "{}", bad[0].message);
+    let dup = ffi_grants(&[("l", "f", "(f64) -> f64"), ("l", "f", "(i32) -> i32")]).entry_problems();
+    assert_eq!(dup.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), vec!["ffi[1]"], "the second is the duplicate");
+    assert_eq!(ffi_grants(&[("", "f", "() -> void")]).entry_problems().len(), 1, "empty library");
+    assert!(ffi_grants(&[("l", "f", "() -> void"), ("m", "f", "() -> void")]).entry_problems().is_empty(), "control: one symbol in two libraries");
+    assert!(ffi_grants(&[("l", "f", "(f64) -> f64")]).entry_problems().is_empty(), "control");
+}
+
+#[test]
+fn ffi_atoms_union_and_covers() {
+    let a = ffi_grants(&[("l", "f", "(f64) -> f64"), ("l", "g", "() -> void")]);
+    assert_eq!(a.atoms().iter().filter(|x| x.path.starts_with("ffi[")).count(), 2);
+    let mut merged = ffi_grants(&[("l", "f", "(f64) -> f64")]);
+    merged.union(&a);
+    assert_eq!(merged.ffi.len(), 2, "control: no duplicate entry");
+    assert!(!merged.is_empty());
+    assert_eq!(covers(&a, &ffi_grants(&[("l", "g", "() -> void")])), Ok(()));
+    assert_eq!(covers(&a, &ffi_grants(&[("l", "h", "() -> void")])), Err(vec!["ffi \"l\" h".to_string()]));
+    assert!(covers(&a, &ffi_grants(&[("l", "f", "(i32) -> i32")])).is_err(), "a different signature is not the held grant");
+    let parsed: OsGrants = serde_json::from_value(json!({"ffi": [{"library": "l", "symbol": "f", "signature": "() -> void"}]})).expect("ffi");
+    assert_eq!(parsed.ffi.len(), 1);
 }
 
 #[test]
@@ -1818,6 +2111,9 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
                     ..
                 } => vec![*base, *offset, *width],
                 OsGrantNeed::Irq { line, .. } => vec![*line],
+                OsGrantNeed::Mem { capacity, arena_kind, .. } => capacity.iter().chain(arena_kind).copied().collect(),
+                OsGrantNeed::Kernel { operator, .. } => operator.iter().copied().collect(),
+                OsGrantNeed::Ffi { library, symbol } => vec![*library, *symbol],
                 OsGrantNeed::Stdio { .. }
                 | OsGrantNeed::Sys { .. }
                 | OsGrantNeed::Desktop { .. } => Vec::new(),
@@ -1859,6 +2155,12 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
         "os/clock-monotonic",
         "os/watch-cron",
         "os/fetch",
+        "mem/alloc",
+        "mem/free",
+        "mem/borrow",
+        "mem/release",
+        "mem/write",
+        "mem/freeze",
     ];
     expected.sort_unstable();
     assert_eq!(
@@ -2520,6 +2822,7 @@ mod static_check {
         assert!(has(&app_idle, OsGrantFindingCode::Unused), "control: an app entry nothing uses");
     }
 
+    /// EXEC-GRANTS-2: grants are never pooled across orbitals.
     #[test]
     fn grants_are_per_orbital_and_the_app_level_reaches_every_orbital() {
         let read = json!([["os/read-file", "/data/a"]]);
@@ -3211,4 +3514,64 @@ fn the_target_positions_are_the_ones_the_operator_table_grants_on() {
     assert_eq!(requirement_target_positions(OsOp::Spawn), vec![0]);
     assert_eq!(requirement_target_positions(OsOp::ReadFile), vec![0]);
     assert!(requirement_target_positions(OsOp::Close).is_empty(), "control: a handle call names no target");
+}
+
+fn grants_of(value: serde_json::Value) -> OsGrants {
+    serde_json::from_value(value).expect("grants")
+}
+
+#[test]
+fn a_guest_is_covered_only_by_grants_the_asker_holds() {
+    let asker = grants_of(json!({
+        "fs": [{ "glob": "/data/**", "modes": ["read", "write"] }],
+        "net": [{ "target": "example.com:443", "kinds": ["tcp"] }],
+        "env": ["HOME"],
+        "mem": [{ "target": "shared:4096", "kinds": ["create", "atomic"] }],
+        "kernel": [{ "target": "apply:math/*", "kinds": ["call"] }, { "target": "guest", "kinds": ["spawn"] }],
+        "kv": { "cache*": ["read"] }
+    }));
+    let within = grants_of(json!({
+        "fs": [{ "glob": "/data/logs/*.txt", "modes": ["read"] }],
+        "net": [{ "target": "example.com:443", "kinds": ["tcp"] }],
+        "env": ["HOME"],
+        "mem": [{ "target": "shared:1024", "kinds": ["atomic"] }],
+        "kernel": [{ "target": "apply:math/add", "kinds": ["call"] }],
+        "kv": { "cache1": ["read"] }
+    }));
+    assert_eq!(covers(&asker, &within), Ok(()));
+    assert_eq!(covers(&asker, &OsGrants::default()), Ok(()), "control: a guest with no grants is always covered");
+    let beyond = grants_of(json!({
+        "fs": [{ "glob": "/data/logs/*.txt", "modes": ["read", "remove"] }, { "glob": "/etc/**", "modes": ["read"] }],
+        "net": [{ "target": "example.com:80", "kinds": ["tcp"] }],
+        "env": ["PATH"],
+        "mem": [{ "target": "shared:8192", "kinds": ["atomic"] }],
+        "kernel": [{ "target": "apply:str/concat", "kinds": ["call"] }],
+        "kv": { "cache1": ["write"] },
+        "sys": ["cpu"]
+    }));
+    let missing = covers(&asker, &beyond).expect_err("the guest asks for more");
+    assert_eq!(
+        missing,
+        vec![
+            "fs \"/data/logs/*.txt\" [remove]".to_string(),
+            "fs \"/etc/**\" [read]".to_string(),
+            "net \"example.com:80\" [tcp]".to_string(),
+            "env \"PATH\"".to_string(),
+            "sys [cpu]".to_string(),
+            "mem \"shared:8192\" [atomic]".to_string(),
+            "kernel \"apply:str/concat\" [call]".to_string(),
+            "kv \"cache1\" [write]".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn a_glob_the_asker_cannot_be_shown_to_contain_is_not_covered() {
+    let asker = grants_of(json!({ "fs": [{ "glob": "/data/*.txt", "modes": ["read"] }] }));
+    let wider = grants_of(json!({ "fs": [{ "glob": "/data/**", "modes": ["read"] }] }));
+    assert!(covers(&asker, &wider).is_err(), "a recursive guest glob is wider than a one-segment asker glob");
+    let climbing = grants_of(json!({ "fs": [{ "glob": "/data/../etc/*.txt", "modes": ["read"] }] }));
+    assert!(covers(&asker, &climbing).is_err(), "a `..` segment is never shown contained");
+    let home = grants_of(json!({ "fs": [{ "glob": "~/data/a.txt", "modes": ["read"] }] }));
+    assert!(covers(&asker, &home).is_err(), "control: another anchor");
 }

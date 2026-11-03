@@ -20,6 +20,8 @@ pub enum FieldStampError {
     LambdaInTree,
     #[error("a render-ui tree held a sealed value where the IR carries plain values")]
     SealedInTree,
+    #[error("a render-ui tree held the int {0}, beyond 2^53, which the IR's number cannot carry exactly")]
+    IntBeyondExact(i64),
 }
 
 /// Call `visit` with the declared `@fieldsContract` and the map of every node of a `render-ui` tree whose
@@ -307,6 +309,8 @@ fn oir_of(value: &Value) -> Result<OirValue, FieldStampError> {
         Value::Null => OirValue::Null,
         Value::Bool(b) => OirValue::Bool(*b),
         Value::Number(n) => OirValue::Number(*n),
+        Value::Int(i) => OirValue::Number(crate::value::exact_float(*i).ok_or(FieldStampError::IntBeyondExact(*i))?),
+        Value::Bytes(b) => OirValue::String(crate::codec::base64_encode(b)),
         Value::String(s) => OirValue::String(s.to_string()),
         Value::Array(items) => OirValue::Array(items.iter().map(oir_of).collect::<Result<_, _>>()?),
         Value::Object(map) => {

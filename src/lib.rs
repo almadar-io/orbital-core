@@ -47,6 +47,7 @@ pub mod language_data {
 }
 pub use orbital_core_base::identity;
 pub use orbital_core_base::ir;
+pub use orbital_core_base::js_readable;
 pub use orbital_core_base::logging;
 pub use orbital_core_base::messages;
 pub use orbital_core_base::project;

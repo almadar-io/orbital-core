@@ -8,7 +8,7 @@ use super::*;
 pub(super) fn kind_rank(value: &Value) -> u8 {
     match value {
         Value::Bool(_) => 0,
-        Value::Number(_) => 1,
+        Value::Number(_) | Value::Int(_) => 1,
         Value::String(_) => 2,
         _ => 3,
     }
@@ -17,6 +17,10 @@ pub(super) fn kind_rank(value: &Value) -> u8 {
 pub(super) fn total_order_values(a: &Value, b: &Value) -> Ordering {
     match (a, b) {
         (Value::Number(x), Value::Number(y)) => x.total_cmp(y),
+        (Value::Int(x), Value::Int(y)) => x.cmp(y),
+        (Value::Int(_), Value::Number(y)) => a.compare(b).unwrap_or(if y.is_nan() { Ordering::Less } else { Ordering::Equal }),
+        (Value::Number(x), Value::Int(_)) => a.compare(b).unwrap_or(if x.is_nan() { Ordering::Greater } else { Ordering::Equal }),
+        (Value::Bytes(x), Value::Bytes(y)) => x.cmp(y),
         _ => order_values(a, b).unwrap_or_else(|| kind_rank(a).cmp(&kind_rank(b))),
     }
 }

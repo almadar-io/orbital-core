@@ -195,15 +195,19 @@ enum IndexKey {
     Text(String),
     Flag(bool),
     Number(u64),
+    Whole(i64),
 }
 
 fn index_key(value: &Value) -> Option<IndexKey> {
     match value {
         Value::String(s) => Some(IndexKey::Text(s.clone().into_inner())),
         Value::Bool(b) => Some(IndexKey::Flag(*b)),
+        Value::Int(i) => Some(IndexKey::Whole(*i)),
         Value::Number(n) if !n.is_nan() => {
-            let canonical = if *n == 0.0 { 0.0 } else { *n };
-            Some(IndexKey::Number(f64::to_bits(canonical)))
+            if n.fract() == 0.0 && *n >= -9_223_372_036_854_775_808.0 && *n < 9_223_372_036_854_775_808.0 {
+                return Some(IndexKey::Whole(*n as i64));
+            }
+            Some(IndexKey::Number(f64::to_bits(*n)))
         }
         _ => None,
     }

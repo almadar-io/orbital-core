@@ -8,8 +8,8 @@ use orbital_core_base::value::{Shared, ValueMap};
 use std::sync::Arc;
 
 /// The numbers `array/sum` / `max` / `min` / `avg` fold: each element (or its `args[1]` field), which must be a
-/// number; any other kind, or an object missing the field, is an error.
-fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<f64>, OrbitalError> {
+/// number or an int; any other kind, or an object missing the field, is an error.
+fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<Value>, OrbitalError> {
     let arr = eval_expr(&args[0], ctx)?;
     let array = require_array!(arr);
     let key = match args.get(1) {
@@ -29,9 +29,20 @@ fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<f64>, Or
             },
             None => item,
         };
-        numbers.push(value.number()?);
+        if !value.is_numeric() {
+            return Err(value.kind_error("number").into());
+        }
+        numbers.push(value.clone());
     }
     Ok(numbers)
+}
+
+fn all_ints(numbers: &[Value]) -> bool {
+    numbers.iter().all(|n| matches!(n, Value::Int(_)))
+}
+
+fn floats_of(numbers: &[Value]) -> Result<Vec<f64>, OrbitalError> {
+    numbers.iter().map(|n| n.number().map_err(OrbitalError::from)).collect()
 }
 
 /// A higher-order operator's callback, read once per call and applied per element: a `(fn …)` literal binds its
@@ -128,15 +139,18 @@ pub(super) fn whole_count(
     operator: &str,
     what: &str,
 ) -> Result<usize, OrbitalError> {
-    let n = value.number()?;
-    if n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
-        return Err(EvalError::InvalidArgument(format!(
-            "{operator}: {what} {n} is not a whole number from 0 to {}",
+    if !value.is_numeric() {
+        return Err(value.kind_error("number").into());
+    }
+    match value.as_int().filter(|n| (0..=i64::from(u32::MAX)).contains(n)) {
+        Some(n) => Ok(n as usize),
+        None => Err(EvalError::InvalidArgument(format!(
+            "{operator}: {what} {} is not a whole number from 0 to {}",
+            value.to_string_value(),
             u32::MAX
         ))
-        .into());
+        .into()),
     }
-    Ok(n as usize)
 }
 
 // ============================================================================
@@ -170,9 +184,9 @@ impl Operator for CountOp {
                                 count += 1;
                             }
                         }
-                        return Ok(Value::Number(count as f64));
+                        return Ok(super::util::int_of(count));
                     } else {
-                        return Ok(Value::Number(entities.len() as f64));
+                        return Ok(super::util::int_of(entities.len()));
                     }
                 }
             }
@@ -182,19 +196,19 @@ impl Operator for CountOp {
         super::with_operand(&args[0], ctx, |val| {
             let arr = val.as_array().ok_or_else(|| val.kind_error("array"))?;
             let Some(predicate) = args.get(1) else {
-                return Ok(Value::Number(arr.len() as f64));
+                return Ok(super::util::int_of(arr.len()));
             };
             let mut count = 0usize;
             let callback = Callback::of(predicate, ctx)?;
             for (i, item) in arr.iter().enumerate() {
                 if callback
-                    .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                    .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
                     .boolean()?
                 {
                     count += 1;
                 }
             }
-            Ok(Value::Number(count as f64))
+            Ok(super::util::int_of(count))
         })
     }
 }
@@ -204,7 +218,7 @@ impl Operator for ArrayLenOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/len", 1);
         super::with_operand(&args[0], ctx, |val| match val {
-            Value::Array(items) => Ok(Value::Number(items.len() as f64)),
+            Value::Array(items) => Ok(super::util::int_of(items.len())),
             other => Err(other.kind_error("array").into()),
         })
     }
@@ -279,7 +293,7 @@ impl Operator for MapOp {
         let results: Result<Vec<Value>, _> = array
             .into_iter()
             .enumerate()
-            .map(|(i, item)| callback.apply(vec![item, Value::Number(i as f64)], ctx))
+            .map(|(i, item)| callback.apply(vec![item, super::util::int_of(i)], ctx))
             .collect();
         Ok(Value::array(results?))
     }
@@ -296,7 +310,7 @@ impl Operator for FilterOp {
         let mut kept = Vec::new();
         for (i, item) in array.into_iter().enumerate() {
             if callback
-                .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
                 .boolean()?
             {
                 kept.push(item);
@@ -318,7 +332,7 @@ impl Operator for FindOp {
         let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if callback
-                .apply(vec![item.clone(), Value::Number(i as f64)], ctx)?
+                .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
                 .boolean()?
             {
                 return Ok(item);
@@ -390,7 +404,7 @@ fn sort_rank(v: &Value) -> u8 {
     match v {
         Value::Null => 0,
         Value::Bool(_) => 1,
-        Value::Number(_) => 2,
+        Value::Number(_) | Value::Int(_) => 2,
         Value::String(_) => 3,
         Value::Array(_) => 4,
         _ => 5,
@@ -413,6 +427,14 @@ fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
             (false, true) => Ordering::Less,
             _ => x.partial_cmp(y).unwrap_or(Ordering::Equal),
         },
+        (Value::Int(_), Value::Int(_) | Value::Number(_)) | (Value::Number(_), Value::Int(_)) => {
+            let nan = |v: &Value| matches!(v, Value::Number(n) if n.is_nan());
+            match (nan(a), nan(b)) {
+                (true, _) => Ordering::Greater,
+                (_, true) => Ordering::Less,
+                _ => a.compare(b).unwrap_or(Ordering::Equal),
+            }
+        }
         (Value::String(x), Value::String(y)) => x.cmp(y),
         _ => Ordering::Equal,
     }
@@ -473,7 +495,8 @@ impl Operator for ArraySortOp {
             match &anchor {
                 None => anchor = Some(sort_key),
                 Some(first)
-                    if std::mem::discriminant(first) != std::mem::discriminant(&sort_key) =>
+                    if !(first.is_numeric() && sort_key.is_numeric())
+                        && std::mem::discriminant(first) != std::mem::discriminant(&sort_key) =>
                 {
                     return Err(sort_key.kind_error(first.type_name()).into());
                 }
@@ -535,11 +558,11 @@ impl Operator for ArrayIndexOfOp {
 
         for (i, item) in array.iter().enumerate() {
             if *item == needle {
-                return Ok(Value::Number(i as f64));
+                return Ok(super::util::int_of(i));
             }
         }
 
-        Ok(Value::Number(-1.0))
+        Ok(Value::Int(-1))
     }
 }
 
@@ -556,7 +579,7 @@ impl Operator for ArrayEveryOp {
         let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if !callback
-                .apply(vec![item, Value::Number(i as f64)], ctx)?
+                .apply(vec![item, super::util::int_of(i)], ctx)?
                 .boolean()?
             {
                 return Ok(Value::Bool(false));
@@ -580,7 +603,7 @@ impl Operator for ArraySomeOp {
         let callback = Callback::of(predicate, ctx)?;
         for (i, item) in array.into_iter().enumerate() {
             if callback
-                .apply(vec![item, Value::Number(i as f64)], ctx)?
+                .apply(vec![item, super::util::int_of(i)], ctx)?
                 .boolean()?
             {
                 return Ok(Value::Bool(true));
@@ -596,9 +619,19 @@ pub struct ArraySumOp;
 impl Operator for ArraySumOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sum", 1);
-        let sum: f64 = numbers_of(args, ctx)?.into_iter().sum();
+        let numbers = numbers_of(args, ctx)?;
+        if all_ints(&numbers) {
+            let mut sum = 0i64;
+            for n in &numbers {
+                sum = n
+                    .as_int()
+                    .and_then(|n| sum.checked_add(n))
+                    .ok_or_else(|| EvalError::InvalidArgument("array/sum: int overflow".to_string()))?;
+            }
+            return Ok(Value::Int(sum));
+        }
 
-        Ok(Value::Number(sum))
+        Ok(Value::Number(floats_of(&numbers)?.into_iter().sum()))
     }
 }
 
@@ -757,15 +790,15 @@ impl Operator for ArrayFindIndexOp {
                 child_ctx.set_local(&params[0], item);
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::Number(i as f64));
+                child_ctx.set_local(&params[1], super::util::int_of(i));
             }
             let result = eval_expr(&body, &child_ctx)?;
             if result.boolean()? {
-                return Ok(Value::Number(i as f64));
+                return Ok(super::util::int_of(i));
             }
         }
 
-        Ok(Value::Number(-1.0))
+        Ok(Value::Int(-1))
     }
 }
 
@@ -774,7 +807,7 @@ pub struct ArrayAvgOp;
 impl Operator for ArrayAvgOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "avg", 1);
-        let nums = numbers_of(args, ctx)?;
+        let nums = floats_of(&numbers_of(args, ctx)?)?;
         if nums.is_empty() {
             return Ok(Value::Null);
         }
@@ -831,7 +864,7 @@ impl Operator for ArrayGroupByOp {
                 child_ctx.set_local(&params[0], item.clone());
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::Number(i as f64));
+                child_ctx.set_local(&params[1], super::util::int_of(i));
             }
             let key = eval_expr(&body, &child_ctx)?.text()?.to_string();
             groups.entry(key).or_default().push(item);
@@ -882,22 +915,40 @@ impl Operator for ArrayRangeOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "range", 1);
 
-        let first = require_number!(eval_expr(&args[0], ctx)?);
+        let first = eval_expr(&args[0], ctx)?;
         let end = match args.get(1) {
             Some(end) => match eval_expr(end, ctx)? {
                 Value::Null => None,
-                end => Some(end.number()?),
+                end => Some(end),
             },
             None => None,
         };
         let step = match args.get(2) {
-            Some(step) => require_number!(eval_expr(step, ctx)?),
-            None => 1.0,
+            Some(step) => eval_expr(step, ctx)?,
+            None => Value::Int(1),
         };
         let (start, end) = match end {
             Some(end) => (first, end),
-            None => (0.0, first),
+            None => (Value::Int(0), first),
         };
+
+        if let (Value::Int(start), Value::Int(end), Value::Int(step)) = (&start, &end, &step) {
+            if *step == 0 {
+                return Err(EvalError::InvalidArgument("range: step 0 must be a non-zero finite number".to_string()).into());
+            }
+            let mut result = Vec::new();
+            let mut current = *start;
+            while if *step > 0 { current < *end } else { current > *end } {
+                result.push(Value::Int(current));
+                match current.checked_add(*step) {
+                    Some(next) => current = next,
+                    None => break,
+                }
+            }
+            return Ok(Value::array(result));
+        }
+
+        let (start, end, step) = (require_number!(start), require_number!(end), require_number!(step));
 
         if step == 0.0 || !step.is_finite() {
             return Err(EvalError::InvalidArgument(format!(
@@ -973,7 +1024,7 @@ impl Operator for ArrayRejectOp {
                 child_ctx.set_local(&params[0], item.clone());
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::Number(i as f64));
+                child_ctx.set_local(&params[1], super::util::int_of(i));
             }
             let should_reject = eval_expr(&body, &child_ctx)?;
             if !should_reject.boolean()? {
@@ -1006,7 +1057,7 @@ impl Operator for ArrayPartitionOp {
                 child_ctx.set_local(&params[0], item.clone());
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::Number(i as f64));
+                child_ctx.set_local(&params[1], super::util::int_of(i));
             }
             let result = eval_expr(&body, &child_ctx)?;
             if result.boolean()? {
@@ -1135,6 +1186,84 @@ impl Operator for ReduceOp {
     }
 }
 
+/// Elements per `array/preduce` chunk; the grouping is part of the operator's meaning, so a result never depends on
+/// how many threads ran it.
+const PREDUCE_CHUNK: usize = 1024;
+
+/// `0..count` through `f`, in index order: on worker threads when the `parallel` feature is on, else on this one.
+/// The first error in index order is the one returned, whichever thread met an error first.
+fn indexed<T: Send>(count: usize, f: impl Fn(usize) -> Result<T, OrbitalError> + Sync + Send) -> Result<Vec<T>, OrbitalError> {
+    #[cfg(all(feature = "parallel", not(target_arch = "wasm32")))]
+    {
+        use rayon::prelude::*;
+        let results: Vec<Result<T, OrbitalError>> = (0..count).into_par_iter().map(f).collect();
+        results.into_iter().collect()
+    }
+    #[cfg(not(all(feature = "parallel", not(target_arch = "wasm32"))))]
+    {
+        (0..count).map(f).collect()
+    }
+}
+
+/// array/pmap (array, fn) - `array/map` with the elements evaluated in parallel; the result is in input order
+pub struct ArrayPmapOp;
+impl Operator for ArrayPmapOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "array/pmap", >= 2);
+        let arr = eval_expr(&args[0], ctx)?;
+        let items: Vec<Value> = require_array!(arr).into_iter().collect();
+        let callback = Callback::of(&args[1], ctx)?;
+        let results = indexed(items.len(), |i| callback.apply(vec![items[i].clone(), super::util::int_of(i)], ctx))?;
+        Ok(Value::array(results))
+    }
+}
+
+fn fold_step(params: &[String], body: &SExpression, linear: bool, acc: Value, item: Value, ctx: &BindingContext) -> EvalResult {
+    let mut child = ctx.child();
+    if let Some(name) = params.first() {
+        if linear {
+            child.set_linear_local(name, acc);
+        } else {
+            child.set_local(name, acc);
+        }
+    }
+    if let Some(name) = params.get(1) {
+        child.set_local(name, item);
+    }
+    eval_expr(body, &child)
+}
+
+/// array/preduce (array, init, fn) - `array/reduce` with a fixed grouping: the array splits into chunks of 1024, each
+/// chunk folds left to right from its first element (chunks in parallel), then the chunk results fold left to right
+/// from `init`. An empty array answers `init`.
+pub struct ArrayPreduceOp;
+impl Operator for ArrayPreduceOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "array/preduce", >= 3);
+        let arr = eval_expr(&args[0], ctx)?;
+        let initial = eval_expr(&args[1], ctx)?;
+        let items: Vec<Value> = require_array!(arr).into_iter().collect();
+        let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
+        let linear = params.first().is_some_and(|acc| read_once(&body, acc));
+
+        let chunks: Vec<&[Value]> = items.chunks(PREDUCE_CHUNK).collect();
+        let folded = indexed(chunks.len(), |c| {
+            let mut rest = chunks[c].iter().cloned();
+            let mut accumulator = rest.next().unwrap_or(Value::Null);
+            for item in rest {
+                accumulator = fold_step(&params, &body, linear, accumulator, item, ctx)?;
+            }
+            Ok(accumulator)
+        })?;
+
+        let mut accumulator = initial;
+        for chunk in folded {
+            accumulator = fold_step(&params, &body, linear, accumulator, chunk, ctx)?;
+        }
+        Ok(accumulator)
+    }
+}
+
 // ============================================================================
 // Phase 5: Parity Completion Operators
 // ============================================================================
@@ -1145,7 +1274,14 @@ impl Operator for ArrayMaxOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/max", 1);
         let numbers = numbers_of(args, ctx)?;
-        Ok(numbers
+        if all_ints(&numbers) {
+            return Ok(numbers
+                .iter()
+                .filter_map(Value::as_int)
+                .reduce(i64::max)
+                .map_or(Value::Null, Value::Int));
+        }
+        Ok(floats_of(&numbers)?
             .into_iter()
             .reduce(f64::max)
             .map_or(Value::Null, Value::Number))
@@ -1158,7 +1294,14 @@ impl Operator for ArrayMinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/min", 1);
         let numbers = numbers_of(args, ctx)?;
-        Ok(numbers
+        if all_ints(&numbers) {
+            return Ok(numbers
+                .iter()
+                .filter_map(Value::as_int)
+                .reduce(i64::min)
+                .map_or(Value::Null, Value::Int));
+        }
+        Ok(floats_of(&numbers)?
             .into_iter()
             .reduce(f64::min)
             .map_or(Value::Null, Value::Number))
@@ -1270,7 +1413,7 @@ impl Operator for ArrayNearestOp {
             best_score - second_best
         };
         let mut result = ValueMap::default();
-        result.insert("index".into(), Value::Number(best_idx as f64));
+        result.insert("index".into(), super::util::int_of(best_idx));
         result.insert("score".into(), Value::Number(best_score));
         result.insert("margin".into(), Value::Number(margin));
         Ok(Value::object(result))
@@ -1510,7 +1653,7 @@ mod strict_tests {
 
     #[test]
     fn count_takes_an_array_with_an_optional_predicate() {
-        assert_eq!(run(json!(["array/count", [1, 2, 3]])).unwrap(), json!(3.0));
+        assert_eq!(run(json!(["array/count", [1, 2, 3]])).unwrap(), json!(3));
         assert_eq!(
             run(json!([
                 "array/count",
@@ -1518,7 +1661,7 @@ mod strict_tests {
                 ["fn", "x", [">", "@x", 1]]
             ]))
             .unwrap(),
-            json!(2.0)
+            json!(2)
         );
         assert!(run(json!(["array/count", null])).is_err());
         assert!(run(json!(["array/count", "abc"])).is_err());

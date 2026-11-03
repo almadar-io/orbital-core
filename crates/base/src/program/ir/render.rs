@@ -84,6 +84,10 @@ pub trait TargetTypeRenderer {
     fn string(&self, enum_values: Option<&[String]>) -> Self::Out;
     fn number(&self) -> Self::Out;
     fn integer(&self) -> Self::Out;
+    /// A fixed width other than `int`/`number`; by default the target's own int or number type.
+    fn sized(&self, width: crate::num_width::NumWidth) -> Self::Out {
+        if width.is_float() { self.number() } else { self.integer() }
+    }
     fn boolean(&self) -> Self::Out;
     fn date(&self) -> Self::Out;
     /// Every backend treats `DateTime` like `Date` today; override if that ever
@@ -240,6 +244,9 @@ pub trait TargetTypeRenderer {
     fn classify_number(&self) -> TypeMappingClass;
     /// Class of [`TargetTypeRenderer::integer`].
     fn classify_integer(&self) -> TypeMappingClass;
+    fn classify_sized(&self, width: crate::num_width::NumWidth) -> TypeMappingClass {
+        if width.is_float() { self.classify_number() } else { self.classify_integer() }
+    }
     /// Class of [`TargetTypeRenderer::boolean`].
     fn classify_boolean(&self) -> TypeMappingClass;
     /// Class of [`TargetTypeRenderer::date`].
@@ -401,6 +408,7 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Number => r.number(),
         OirType::Instant => r.datetime(),
         OirType::Integer => r.integer(),
+        OirType::Sized { width } => r.sized(*width),
         OirType::Boolean => r.boolean(),
         OirType::Date => r.date(),
         OirType::DateTime => r.datetime(),
@@ -465,6 +473,7 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
         OirType::Number => r.classify_number(),
         OirType::Instant => r.classify_datetime(),
         OirType::Integer => r.classify_integer(),
+        OirType::Sized { width } => r.classify_sized(*width),
         OirType::Boolean => r.classify_boolean(),
         OirType::Date => r.classify_date(),
         OirType::DateTime => r.classify_datetime(),

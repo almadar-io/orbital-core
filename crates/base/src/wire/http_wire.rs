@@ -426,6 +426,7 @@ pub fn parse_credential_status_slot(selection: &Value) -> Result<CredentialSlot,
 pub fn whole_number(value: Option<&Value>, what: &str) -> Result<Option<u64>, HttpRefusal> {
     match value {
         None | Some(Value::Null) => Ok(None),
+        Some(Value::Int(n)) if *n >= 0 => Ok(Some(*n as u64)),
         Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= u64::MAX as f64 => Ok(Some(*n as u64)),
         Some(_) => invalid(format!("{what} must be a whole number")),
     }
@@ -473,6 +474,7 @@ pub fn parse_http_headers(value: Option<&Value>) -> Result<Vec<(String, String)>
 pub fn parse_timeout_ms(value: Option<&Value>) -> Result<Option<u64>, HttpRefusal> {
     match value {
         None | Some(Value::Null) => Ok(None),
+        Some(Value::Int(n)) if *n >= 0 => Ok(Some(*n as u64)),
         Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Ok(Some(*n as u64)),
         Some(_) => invalid("timeoutMs must be a whole number"),
     }
@@ -482,6 +484,7 @@ pub fn parse_timeout_ms(value: Option<&Value>) -> Result<Option<u64>, HttpRefusa
 pub fn parse_delay_ms(value: Option<&Value>) -> Result<Option<u64>, HttpRefusal> {
     match value {
         None | Some(Value::Null) => Ok(None),
+        Some(Value::Int(n)) if *n >= 0 => Ok(Some(*n as u64)),
         Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Ok(Some(*n as u64)),
         Some(_) => invalid("delayMs must be a whole number of milliseconds, zero or more"),
     }
@@ -560,6 +563,10 @@ impl RetryOperand {
     pub fn rule(&self) -> Result<Option<RetryOn>, HttpRefusal> {
         match self {
             Self::Literal(Value::String(tag)) => match RetryOn::from_tag(tag) {
+                Some(rule) => Ok(Some(rule)),
+                None => invalid(RetryOn::ENTRIES),
+            },
+            Self::Literal(Value::Int(n)) => match u64::try_from(*n).ok().and_then(RetryOn::status) {
                 Some(rule) => Ok(Some(rule)),
                 None => invalid(RetryOn::ENTRIES),
             },

@@ -340,7 +340,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
             K::Sexpr { .. } => Some(OirType::SExpr),
             K::Literal { value } => match value {
                 serde_json::Value::String(_) => Some(OirType::String),
-                serde_json::Value::Number(_) => Some(OirType::Number),
+                serde_json::Value::Number(n) => Some(match n.as_f64().and_then(crate::value::exact_int) {
+                    Some(_) => OirType::Integer,
+                    None => OirType::Number,
+                }),
                 serde_json::Value::Bool(_) => Some(OirType::Boolean),
                 _ => None,
             },

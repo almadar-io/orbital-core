@@ -42,7 +42,9 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-121** — A misconfigured host still no-ops some effects silently: `fetch`, `persist` and `persist batch` answer "no persistence handler configured" (effects/executor fetch.rs, persist.rs, persist_batch.rs), `call-service`/`cancel-call` answer "no service handler configured" (run.rs), plus missing event bus or render/navigation handlers, all as NoOp so no `emit.failure` fires (found by L119, 2026-11-01, which made an executor-less custom effect fail per EXEC-STEP-7). Each should fail with a typed reason and route its declared failure, as an executor-less effect now does; the change touches many kernel tests. orbital-core runtime [mechanical] — rung: (3) host conformance (a verifier that checks each table effect kind has an executor or host). Root cause: K6.
 
-Next code: `G-ORBITAL-CORE-122`
+- **G-ORBITAL-CORE-122** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11, P-021 on `metal`) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
+
+Next code: `G-ORBITAL-CORE-123`
 
 - **G-ORBITAL-CORE-066** — `type_compat` rejects a list literal whose elements mix `{ text : string? }` and `{ text : string }` against a declared `[{ text : string? }]`: a one-element list passes, two elements with the two shapes fail (the element types are not joined to the declared optional), so authors fake presence (the 2026-10-26 std-mock-seed generator now gives failed date cells `text: ""` + `kind: "clock"` instead of a null text) [mechanical]. Owner: orbital-core base type_compat (list element join). Repro: scratchpad probe `clifix2/tt.lolo` — `(emit E { cells: [{ text: (if c "a" null) }, { text: "b" }] })` with `E { cells : [Cell]! }`, `type Cell = { text : string? }`. Rung: (1) the type system. Root cause: A4.
 

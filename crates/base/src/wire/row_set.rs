@@ -185,8 +185,9 @@ pub fn is_missing(value: Option<&Value>) -> bool {
 /// Equality of two present values: scalars of one kind that are equal. An array or object is never equal.
 pub fn same_value(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Number(x), Value::Number(y)) => x == y,
+        (Value::Number(_) | Value::Int(_), Value::Number(_) | Value::Int(_)) => a == b,
         (Value::String(x), Value::String(y)) => x == y,
+        (Value::Bytes(x), Value::Bytes(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Null, Value::Null) => true,
         _ => false,
@@ -197,13 +198,7 @@ pub fn same_value(a: &Value, b: &Value) -> bool {
 pub fn order_values(a: &Value, b: &Value) -> Option<Ordering> {
     match (a, b) {
         (Value::String(x), Value::String(y)) => Some(x.as_str().cmp(y.as_str())),
-        (Value::Number(x), Value::Number(y)) => Some(if x == y {
-            Ordering::Equal
-        } else if x < y {
-            Ordering::Less
-        } else {
-            Ordering::Greater
-        }),
+        (Value::Number(_) | Value::Int(_), Value::Number(_) | Value::Int(_)) => a.compare(b).ok(),
         (Value::Bool(x), Value::Bool(y)) => Some(x.cmp(y)),
         _ => None,
     }
@@ -313,7 +308,7 @@ pub fn nearest_rows(
         }
         let (mut dot, mut sum_squares) = (0.0_f64, 0.0_f64);
         for (item, q) in stored.iter().zip(&nearest.vector) {
-            let Value::Number(x) = item else {
+            let Some(x) = item.as_number() else {
                 return Err(format!(
                     "nearest: field `{}` of row `{}` is not a [number]",
                     nearest.field,
@@ -344,6 +339,35 @@ pub fn nearest_rows(
 #[cfg(test)]
 mod nearest_tests {
     use super::*;
+
+    #[test]
+    fn an_int_equals_and_orders_with_the_number_of_the_same_value_and_bytes_match_only_bytes() {
+        assert!(same_value(&Value::Int(3), &Value::Number(3.0)));
+        assert!(same_value(&Value::Number(3.0), &Value::Int(3)));
+        assert!(!same_value(&Value::Int(3), &Value::Number(3.5)), "control: a different value");
+        assert!(!same_value(&Value::Int((1 << 60) + 1), &Value::Number((1u64 << 60) as f64)), "control: no rounding past 2^53");
+        assert_eq!(order_values(&Value::Int(2), &Value::Number(2.5)), Some(Ordering::Less));
+        assert_eq!(order_values(&Value::Number(1.5), &Value::Int(2)), Some(Ordering::Less));
+        assert_eq!(order_values(&Value::Int(2), &Value::string("2".to_string())), None, "control: another kind has no order");
+        assert!(same_value(&Value::bytes(vec![1, 2]), &Value::bytes(vec![1, 2])));
+        assert!(!same_value(&Value::bytes(vec![1, 2]), &Value::string("AQI=".to_string())), "control: bytes are not their text");
+    }
+
+    #[test]
+    fn a_stored_vector_of_ints_scores_like_the_same_numbers() {
+        let ints = Arc::new(Value::object({
+            let mut map = crate::value::ValueMap::default();
+            map.insert("id".into(), Value::string("a".to_string()));
+            map.insert("embedding".into(), Value::Array(vec![Value::Int(1), Value::Int(0)].into()));
+            map
+        }));
+        let query = RowNearest {
+            field: "embedding".to_string(),
+            vector: vec![1.0, 0.0],
+            k: std::num::NonZeroUsize::new(1).expect("a positive k"),
+        };
+        assert_eq!(nearest_rows(vec![ints], &query).expect("ints are numbers").len(), 1);
+    }
 
     fn row(id: &str, embedding: Option<Value>) -> Arc<Value> {
         let mut map = crate::value::ValueMap::default();

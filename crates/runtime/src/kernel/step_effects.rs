@@ -795,7 +795,7 @@ fn set_value(
     site: impl FnOnce() -> EffectSite,
 ) -> Option<Value> {
     if value.as_array().is_some() || value.as_object().is_some() {
-        match evaluator.evaluate(&value_to_sexpr(value), ctx) {
+        match value_to_sexpr(value).map_err(Into::into).and_then(|expr| evaluator.evaluate(&expr, ctx)) {
             Ok(v) => Some(v),
             Err(err) => {
                 tracing::error!(site = %site(), path = %path, error = %err, "kernel: set value failed to evaluate");

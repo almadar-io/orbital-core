@@ -32,10 +32,10 @@ fn row_shape() -> String {
 #[test]
 fn scalars_resolve_by_the_core_schema() {
     for (text, expect) in [
-        ("42", json!(42.0)),
-        ("-7", json!(-7.0)),
-        ("0o17", json!(15.0)),
-        ("0x1F", json!(31.0)),
+        ("42", json!(42)),
+        ("-7", json!(-7)),
+        ("0o17", json!(15)),
+        ("0x1F", json!(31)),
         ("1e3", json!(1000.0)),
         ("2.5", json!(2.5)),
         ("true", json!(true)),
@@ -55,13 +55,13 @@ fn scalars_resolve_by_the_core_schema() {
 fn the_yaml_1_1_spellings_are_strings() {
     for word in ["yes", "no", "on", "off", "y", "n", "0777"] {
         let expect = if word == "0777" {
-            json!(777.0)
+            json!(777)
         } else {
             json!(word)
         };
         assert_eq!(yaml(word, "Row"), expect, "{word}");
     }
-    assert_eq!(yaml("a: 1\n<<: 2", "Row"), json!({ "a": 1.0, "<<": 2.0 }));
+    assert_eq!(yaml("a: 1\n<<: 2", "Row"), json!({ "a": 1, "<<": 2 }));
 }
 
 #[test]
@@ -70,11 +70,11 @@ fn maps_lists_and_nesting_keep_document_values() {
         yaml("env:\n  - variable: A\n    value: x\n  - variable: B\n    secret: s\nrunConfig: { cpu: 1 }\n", "Row"),
         json!({
             "env": [{ "variable": "A", "value": "x" }, { "variable": "B", "secret": "s" }],
-            "runConfig": { "cpu": 1.0 }
+            "runConfig": { "cpu": 1 }
         })
     );
-    assert_eq!(yaml("[1, two, [3]]", "Row"), json!([1.0, "two", [3.0]]));
-    assert_eq!(yaml("---\na: 1\n", "Row"), json!({ "a": 1.0 }));
+    assert_eq!(yaml("[1, two, [3]]", "Row"), json!([1, "two", [3]]));
+    assert_eq!(yaml("---\na: 1\n", "Row"), json!({ "a": 1 }));
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn flow_yaml_agrees_with_json_parse_on_the_same_data() {
 fn anchors_and_aliases_resolve() {
     assert_eq!(
         yaml("base: &b { k: 1 }\ncopy: *b\nlist: [*b, *b]\n", "Row"),
-        json!({ "base": { "k": 1.0 }, "copy": { "k": 1.0 }, "list": [{ "k": 1.0 }, { "k": 1.0 }] })
+        json!({ "base": { "k": 1 }, "copy": { "k": 1 }, "list": [{ "k": 1 }, { "k": 1 }] })
     );
     assert_eq!(
         yaml("a: &s text\nb: *s", "Row"),
@@ -131,15 +131,15 @@ fn what_a_json_value_cannot_hold_is_null() {
 
 #[test]
 fn a_value_not_of_its_shape_is_null_and_one_of_it_is_returned() {
-    assert_eq!(yaml("42", "number"), json!(42.0));
+    assert_eq!(yaml("42", "number"), json!(42));
     assert_eq!(yaml("abc", "number"), Json::Null);
     assert_eq!(
         yaml("id: 1\ntags: [a]\n", &row_shape()),
-        json!({ "id": 1.0, "tags": ["a"] })
+        json!({ "id": 1, "tags": ["a"] })
     );
     assert_eq!(
         yaml("id: 1\ntags: [a]\nnote: n\n", &row_shape()),
-        json!({ "id": 1.0, "tags": ["a"], "note": "n" })
+        json!({ "id": 1, "tags": ["a"], "note": "n" })
     );
     assert_eq!(yaml("tags: [a]\n", &row_shape()), Json::Null);
     assert_eq!(yaml("id: 1\ntags: [a, 2]\n", &row_shape()), Json::Null);

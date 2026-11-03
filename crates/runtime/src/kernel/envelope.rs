@@ -119,6 +119,11 @@ impl RuntimeKernel {
         }
     }
 
+    /// The sequence number of the dispatch whose unit is running, `None` outside one.
+    pub(super) fn held_dispatch(&self) -> Option<u64> {
+        self.deliveries.read().held.as_ref().map(|origin| origin.seq)
+    }
+
     pub(super) fn hold_origin(&self, origin: &mut Origin) {
         self.deliveries.write().held = Some(std::mem::take(origin));
     }

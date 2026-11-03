@@ -37,6 +37,8 @@ pub enum SemanticStringKind {
 pub enum WidenKind {
     /// Integer ↔ Number (the legacy predicate erased both to `"number"`).
     IntegerNumber,
+    /// A fixed width into a wider one (`u8` → `i16` → `int` → `number`, `f32` → `number`).
+    Width,
     /// Number/Integer ↔ Money (Money is numeric at rest).
     MoneyNumber,
     /// A value of one of a primitive union's member kinds joins the union.
@@ -167,7 +169,28 @@ pub fn is_string_kind(t: &OirType) -> bool {
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
 pub fn is_number_kind(t: &OirType) -> bool {
-    matches!(t, OirType::Number | OirType::Integer | OirType::Money)
+    matches!(t, OirType::Number | OirType::Integer | OirType::Money | OirType::Sized { .. })
+}
+
+/// The width a numeric type declares: `int` is `i64`, `number` is `f64`.
+pub fn num_width(t: &OirType) -> Option<crate::num_width::NumWidth> {
+    use crate::num_width::NumWidth;
+    match t {
+        OirType::Integer => Some(NumWidth::I64),
+        OirType::Number => Some(NumWidth::F64),
+        OirType::Sized { width } => Some(*width),
+        _ => None,
+    }
+}
+
+/// Whether `src` widens into the numeric `dst` by width alone (an integer width reaches `number` through `int`).
+fn widens_by_width(src: &OirType, dst: &OirType) -> bool {
+    use crate::num_width::NumWidth;
+    match (num_width(src), num_width(dst)) {
+        (Some(from), Some(NumWidth::F64)) => from != NumWidth::F64,
+        (Some(from), Some(to)) => from != to && from.widens_to(to),
+        _ => false,
+    }
 }
 
 pub fn semantic_kind(t: &OirType) -> Option<SemanticStringKind> {

@@ -467,6 +467,15 @@ impl IoPort {
         })
     }
 
+    /// How many journal entries, in order from the first, the step in flight has claimed; 0 outside a step.
+    pub(crate) fn claimed_prefix(&self) -> usize {
+        self.ledger
+            .lock()
+            .as_ref()
+            .filter(|ledger| ledger.thread == orbital_core_base::sync::current_thread())
+            .map_or(0, |ledger| ledger.claimed.prefix)
+    }
+
     /// Whether the step in flight is waiting on host or store answers, and has not diverged from its record.
     pub(crate) fn awaiting_host(&self) -> bool {
         self.ledger.lock().as_ref().is_some_and(|l| {

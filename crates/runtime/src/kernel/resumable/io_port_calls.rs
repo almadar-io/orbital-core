@@ -1,6 +1,7 @@
 //! `IoPort`'s service, substrate and stream asks.
 
 use super::*;
+use orbital_core_base::os_grants::OsGrants;
 
 impl IoPort {
     /// `batch` when it touches kernel-owned `[runtime]` rows: all of them are written in the kernel's memory
@@ -359,7 +360,9 @@ impl IoPort {
             orbital: orbital.map(str::to_string),
         }) {
             Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
-            Asked::Answer(IoAnswer::Os(out)) => out.map(Secret::into_inner),
+            Asked::Answer(IoAnswer::Os(out)) => out
+                .map(Secret::into_inner)
+                .and_then(|answer| orbital_core_base::os::answer_with_declared_bytes(op, answer)),
             Asked::Answer(IoAnswer::ServiceDeferred) => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
                 *self.deferred_call.lock() = Some(DeferredCall { operator: op.name().to_string(), args: args.to_vec() });
@@ -503,6 +506,43 @@ impl IoPort {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialModeWrite(out)) => out,
             Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+        }
+    }
+
+    /// Whether the call being made carries a key and a declared route: the only calls a host can answer later.
+    pub(crate) fn keyed_call(&self) -> bool {
+        matches!(self.substrate_site(), (Some(_), Some(_)))
+    }
+
+    /// One guest kernel start, journaled. The host answers deferred and the guest's outcome arrives as a keyed event of
+    /// the call site's routes; a host that starts no guest answers a failure.
+    pub(crate) fn guest(
+        &self,
+        program: Value,
+        address: String,
+        payload: Value,
+        grants: OsGrants,
+        arenas: GuestArenas,
+        call: Vec<Value>,
+    ) -> Result<(), SubstrateFailure> {
+        let (Some(key), Some(site)) = self.substrate_site() else {
+            return Err(crate::agent_ports::guest_failure(
+                OsErrorKind::Invalid,
+                "program/dispatch: a guest dispatch needs a key and a declared route",
+            ));
+        };
+        match self.ask(|| IoRequest::Guest { program, address, payload, grants, arenas, key, site }) {
+            Asked::Answer(IoAnswer::ServiceDeferred) => {
+                *self.verdict.lock() = Some(CallVerdict::Deferred);
+                *self.deferred_call.lock() = Some(DeferredCall { operator: "program/dispatch".to_string(), args: call });
+                Ok(())
+            }
+            Asked::Answer(IoAnswer::Substrate(Err(failure))) => Err(failure),
+            Asked::Direct => Err(crate::agent_ports::guest_failure(OsErrorKind::Unsupported, NO_PORT_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {
+                message: AWAITING_HOST.to_string(),
+                errors: Vec::new(),
+            }),
         }
     }
 

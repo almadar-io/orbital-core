@@ -788,6 +788,8 @@ pub fn format_value(value: &Value) -> String {
                 format!("{:.2}", n)
             }
         }
+        Value::Int(i) => i.to_string(),
+        Value::Bytes(b) => format!("[{} bytes]", b.len()),
         Value::String(s) => s.clone().into_inner(),
         Value::Array(arr) => format!("[{} items]", arr.len()),
         Value::Object(obj) => format!("{{{} fields}}", obj.len()),
@@ -838,7 +840,10 @@ pub fn from_json(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
+        serde_json::Value::Number(n) => match n.as_i64() {
+            Some(whole) => Value::Int(whole),
+            None => Value::Number(n.as_f64().unwrap_or(0.0)),
+        },
         serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(from_json).collect()),
         serde_json::Value::Object(obj) => {
@@ -853,6 +858,8 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
         Value::Number(n) => serde_json::json!(*n),
+        Value::Int(i) => serde_json::json!(*i),
+        Value::Bytes(_) => orbital_core_base::json_value::value_to_json(value),
         Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
         Value::Object(obj) => {

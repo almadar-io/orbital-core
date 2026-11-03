@@ -115,7 +115,7 @@ fn substrate_completion_export_uses_the_native_result_and_failure_envelopes() {
     let response = json!({ "success": true, "transitioned": true, "states": {}, "emittedEvents": [{ "event": "SAID", "payload": { "n": 1 } }] });
     let request = json!(["O.Worker.GO", {}, { "orbital": "O", "event": "GO", "viewer": null }]).to_string();
     let success: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &request, &json!({ "ok": response }).to_string()).unwrap()).unwrap();
-    assert_eq!(success["payload"]["result"], json!({ "ok": true, "emitted": [{ "event": "SAID", "payload": { "n": 1.0 } }] }), "a deferred event request answers the dispatch outcome, as in place: {success}");
+    assert_eq!(success["payload"]["result"], json!({ "ok": true, "emitted": [{ "event": "SAID", "payload": { "n": 1 } }] }), "a deferred event request answers the dispatch outcome, as in place: {success}");
     let wire = json!(["O.Worker.GO", {}, { "orbital": "O", "event": "GO", "wire": true }]).to_string();
     let raw: serde_json::Value = serde_json::from_str(&substrate_completion_event_json(&site, "job", "program/dispatch", &wire, &json!({ "ok": response }).to_string()).unwrap()).unwrap();
     assert_eq!(raw["payload"]["result"]["transitioned"], json!(true), "control: a wire request answers the whole response: {raw}");
@@ -162,4 +162,19 @@ fn every_stream_item_emit_of_a_server_dispatch_carries_its_emitters_orbital() {
         assert_eq!(item["data"]["source"]["orbital"], "Main", "{item}");
         assert_eq!(item["data"]["source"]["trait"], "Emitter", "{item}");
     }
+}
+
+#[test]
+fn exec_eval_11_a_response_bound_for_javascript_refuses_an_int_beyond_2_53() {
+    let respond = |digits: &str| {
+        let mut schema = serde_json::to_value(schema()).unwrap();
+        schema["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"] =
+            json!([["emit", "PING", { "n": ["str/to-int", digits] }]]);
+        let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+        let request = json!({ "event": "GO", "targetTrait": "Emitter" }).to_string();
+        EmbeddedServer::new(schema).unwrap().start_json("Main", &request)
+    };
+    let refused = respond("9007199254740993").unwrap_err();
+    assert!(refused.contains("n is the int 9007199254740993, beyond 2^53"), "{refused}");
+    assert!(respond("9007199254740992").unwrap().contains("9007199254740992"), "control: 2^53 crosses");
 }

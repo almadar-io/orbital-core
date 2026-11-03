@@ -1,6 +1,20 @@
 //! What a dispatch asks the host and how the host answers: requests, routes, call sites and answers.
 
 use super::*;
+use crate::kernel::SharedArena;
+use orbital_core_base::os_grants::OsGrants;
+
+/// The shared arenas a guest ask hands across, each with the id its handle has in the asking kernel. They are live
+/// storage, so they ride beside the ask and are never serialized; they follow from the payload's handles, so two asks
+/// with equal payloads are equal.
+#[derive(Debug, Clone, Default)]
+pub struct GuestArenas(pub Vec<(i64, Arc<SharedArena>)>);
+
+impl PartialEq for GuestArenas {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
 
 /// Names one request of one dispatch; an answer carries the id of the request it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,6 +91,18 @@ pub enum IoRequest {
         args: Vec<Value>,
         key: Option<String>,
         site: Option<CallSite>,
+    },
+    /// A keyed `program/dispatch` with a `guest`: the host runs `address` of the `program` in a fresh kernel on a thread of
+    /// its own, holding only `grants`, with `payload` (a copy) and the shared `arenas` the payload names, and answers
+    /// [`IoAnswer::ServiceDeferred`]; the outcome comes back as the call site's keyed completion event (EXEC-CONC-3).
+    Guest {
+        program: Value,
+        address: String,
+        payload: Value,
+        grants: OsGrants,
+        arenas: GuestArenas,
+        key: String,
+        site: CallSite,
     },
     /// The page facts a `browser/page-facts` asks for, in read order.
     PageFacts {
@@ -403,6 +429,9 @@ impl IoAnswer {
         }
         if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && site.is_some();
+        }
+        if let (IoRequest::Guest { .. }, IoAnswer::ServiceDeferred | IoAnswer::Substrate(_)) = (request, self) {
+            return true;
         }
         matches!(
             (request, self),

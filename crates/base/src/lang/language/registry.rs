@@ -671,11 +671,12 @@ pub fn substrate_host_effects() -> impl Iterator<Item = &'static str> {
         .map(|(name, _)| name.as_str())
 }
 
-/// Every effect the installed operator table routes to the OS host (`host: "os"`).
+/// Every effect of the `os/*` floor the installed operator table declares: those the OS host answers (`host: "os"`)
+/// and those the kernel answers itself (`host: "kernel"`, EXEC-METAL-1); both take the same call envelope.
 pub fn os_host_effects() -> impl Iterator<Item = &'static str> {
     operators()
         .iter()
-        .filter(|(_, op)| op.host.as_deref() == Some("os"))
+        .filter(|(_, op)| matches!(op.host.as_deref(), Some("os" | "kernel")))
         .map(|(name, _)| name.as_str())
 }
 

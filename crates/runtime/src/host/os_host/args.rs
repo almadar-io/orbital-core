@@ -39,16 +39,9 @@ pub(super) fn arg_str(args: &[Value], i: usize, op: OsOp) -> Result<&str, OsErro
     }
 }
 
-/// An integral number that fits an `i64`.
+/// An exact integer: an int, or a number that is exactly one.
 pub(super) fn arg_i64(args: &[Value], i: usize, op: OsOp) -> Result<i64, OsError> {
-    match arg(args, i, op, "an integer")? {
-        Value::Number(n)
-            if n.is_finite() && n.fract() == 0.0 && n.abs() < 9.007_199_254_740_992e15 =>
-        {
-            Ok(*n as i64)
-        }
-        _ => Err(invalid(op, i, "an integer")),
-    }
+    arg(args, i, op, "an integer")?.as_int().ok_or_else(|| invalid(op, i, "an integer"))
 }
 
 pub(super) fn arg_bool(args: &[Value], i: usize, op: OsOp) -> Result<bool, OsError> {
@@ -58,24 +51,27 @@ pub(super) fn arg_bool(args: &[Value], i: usize, op: OsOp) -> Result<bool, OsErr
     }
 }
 
-/// A `bytes` argument: a standard padded base64 string.
+/// A `bytes` argument: a bytes value, or standard padded base64 text.
 pub(super) fn arg_bytes(args: &[Value], i: usize, op: OsOp) -> Result<Vec<u8>, OsError> {
-    let text = arg_str(args, i, op)?;
-    STANDARD.decode(text).map_err(|e| {
-        OsError::new(
-            OsErrorKind::Invalid,
-            format!(
-                "{}: argument {} is not standard base64: {e}",
-                op.name(),
-                i + 1
-            ),
-        )
-    })
+    match arg(args, i, op, "bytes")? {
+        Value::Bytes(data) => Ok(data.to_vec()),
+        Value::String(text) => STANDARD.decode(text.as_str()).map_err(|e| {
+            OsError::new(
+                OsErrorKind::Invalid,
+                format!(
+                    "{}: argument {} is not standard base64: {e}",
+                    op.name(),
+                    i + 1
+                ),
+            )
+        }),
+        _ => Err(invalid(op, i, "bytes")),
+    }
 }
 
-/// The run-time value of `bytes`: standard padded base64.
+/// The run-time value of `bytes`.
 pub(super) fn bytes_value(bytes: &[u8]) -> Value {
-    Value::string(STANDARD.encode(bytes))
+    Value::bytes(bytes.to_vec())
 }
 
 #[cfg(test)]
@@ -142,8 +138,8 @@ mod tests {
 
     #[test]
     fn bytes_round_trip_through_standard_padded_base64() {
-        assert_eq!(bytes_value(b"hi"), s("aGk="));
-        assert_eq!(bytes_value(b""), s(""));
+        assert_eq!(bytes_value(b"hi"), Value::bytes(b"hi".to_vec()));
+        assert_eq!(bytes_value(b""), Value::bytes(Vec::new()));
         assert_eq!(arg_bytes(&[s("aGk=")], 0, OP), Ok(b"hi".to_vec()));
         assert_eq!(arg_bytes(&[s("")], 0, OP), Ok(Vec::new()));
         let all: Vec<u8> = (0..=255).collect();
@@ -165,6 +161,22 @@ mod tests {
         }
         assert!(arg_bytes(&[Value::Number(1.0)], 0, OP).is_err());
         assert!(arg_bytes(&[], 0, OP).is_err());
+    }
+
+    #[test]
+    fn a_bytes_argument_accepts_bytes_and_base64_text_and_refuses_a_number() {
+        assert_eq!(arg_bytes(&[Value::bytes(b"hi".to_vec())], 0, OP), Ok(b"hi".to_vec()));
+        assert_eq!(arg_bytes(&[s("aGk=")], 0, OP), Ok(b"hi".to_vec()));
+        assert_eq!(arg_bytes(&[Value::Int(7)], 0, OP).expect_err("an int is not bytes").kind, OsErrorKind::Invalid);
+        assert_eq!(arg_bytes(&[Value::Number(7.0)], 0, OP).expect_err("a number is not bytes").kind, OsErrorKind::Invalid);
+        assert_eq!(arg_bytes(&[Value::Null], 0, OP).expect_err("null is not bytes").kind, OsErrorKind::Invalid);
+    }
+
+    #[test]
+    fn an_integer_argument_reads_an_int_beyond_two_to_the_53_and_refuses_a_number_there() {
+        assert_eq!(arg_i64(&[Value::Int(1 << 60)], 0, OP), Ok(1 << 60));
+        assert_eq!(arg_i64(&[Value::Int(-4)], 0, OP), Ok(-4));
+        assert!(arg_i64(&[Value::Number(9.3e15)], 0, OP).is_err());
     }
 
     #[test]

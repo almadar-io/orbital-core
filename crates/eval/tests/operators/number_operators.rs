@@ -230,7 +230,7 @@ fn division_and_range_failures_answer_null_with_a_good_control() {
     assert_eq!(eval_any(serde_json::json!(["bit/shl", 1, 3])), Value::Number(8.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/at", "aGk=", 1])), Value::Number(105.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/read-uint", "EjQ=", 0, 2, "be"])), Value::Number(4660.0));
-    assert_eq!(eval_any(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), Value::string("/w=="));
+    assert_eq!(eval_any(serde_json::json!(["bytes/write-uint", 255, 1, "be"])), Value::bytes(vec![255]));
     assert_eq!(eval_any(serde_json::json!(["format/number", 1234, {"decimals": 1}])), Value::string("1,234.0"));
     assert_eq!(eval_any(serde_json::json!(["format/percent", 0.5, 1])), Value::string("50.0%"));
     assert_eq!(eval_any(serde_json::json!(["format/currency", 1, "USD"])), Value::string("$1.00"));

@@ -231,6 +231,7 @@ impl RuntimeKernel {
             }
         }
         self.grants.os_grants.write().register(&schema);
+        self.note_kernel_grants(&schema);
         self.register_placement(&schema);
         let schema_name = schema.name.clone();
         info!(schema = %schema_name, "Registering schema");
@@ -623,6 +624,7 @@ impl RuntimeKernel {
         *fork.registry.entity_defaults.write() = self.registry.entity_defaults.read().clone();
         *fork.grants.egress.write() = self.grants.egress.read().clone();
         *fork.grants.os_grants.write() = self.grants.os_grants.read().clone();
+        fork.copy_kernel_grants(self);
         *fork.presentation.theme_presets.write() = self.presentation.theme_presets.read().clone();
         *fork.presentation.nav_pages.write() = self.presentation.nav_pages.read().clone();
         *fork.capture_children.write() = self.capture_children.read().clone();

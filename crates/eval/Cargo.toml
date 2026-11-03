@@ -26,8 +26,11 @@ icu_collator = { version = "2.3", default-features = false, features = ["unstabl
 ts-rs = { version = "12.0.1", optional = true }
 orbital-core-base = { path = "../base", default-features = false }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rayon = { version = "1.10", optional = true }
+
 [features]
-default = ["std"]
+default = ["std", "parallel"]
 std = [
     "orbital-core-base/std",
     "serde/std",
@@ -48,6 +51,7 @@ std = [
     "dep:saphyr-parser",
     "icu_collator/default",
 ]
+parallel = ["std", "dep:rayon"]
 ts-export = ["std", "dep:ts-rs"]
 async = ["std", "orbital-core-base/async"]
 

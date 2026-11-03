@@ -440,6 +440,7 @@ impl RuntimeKernel {
     }
 
     pub(super) fn observe_dispatch(&self, run: &DispatchRun, error: Option<String>) {
+        self.end_dispatch_mem(run.dispatch_id());
         let Some(observer) = self.dispatch_observer.read().clone() else {
             return;
         };

@@ -170,7 +170,7 @@ fn os_ask(op: OsOp, path: &str) -> IoRequest {
 fn os_ok() -> IoAnswer {
     IoAnswer::Os(Ok((Value::object(orbital_core_base::value::ValueMap::from_iter([(
         "data".into(),
-        Value::String(("hi".to_string()).into()),
+        Value::bytes(b"hi".to_vec()),
     )]))).into()))
 }
 
@@ -180,7 +180,7 @@ fn an_os_ask_is_journaled_and_replayed_without_asking_again() {
     let args = [Value::string("/a")];
     let recorded = vec![Exchange::new(os_ask(OsOp::ReadFile, "/a"), os_ok())];
     let (out, end) = port.run_step(recorded.clone(), || port.os(OsOp::ReadFile, &args, None, None, None));
-    assert_eq!(out.map(|v| v.get_path("data").map(Value::to_string_value)), Ok(Some("hi".to_string())));
+    assert_eq!(out.map(|v| v.get_path("data").cloned()), Ok(Some(Value::bytes(b"hi".to_vec()))));
     assert!(end.pending.is_empty() && end.diverged.is_none());
 }
 

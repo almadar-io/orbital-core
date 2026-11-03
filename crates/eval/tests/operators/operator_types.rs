@@ -162,7 +162,7 @@ fn a_list_of_unlike_entry_tuples_is_a_list_for_structural_array_operators() {
     let entries = serde_json::json!(["object/entries", "@entity"]);
     assert_eq!(
         on_mixed_map(serde_json::json!(["array/count", entries])).unwrap(),
-        serde_json::json!(3.0)
+        serde_json::json!(3)
     );
     assert_eq!(
         on_mixed_map(serde_json::json!(["array/nth", entries, 1])).unwrap(),
@@ -174,7 +174,7 @@ fn a_list_of_unlike_entry_tuples_is_a_list_for_structural_array_operators() {
             ["array/concat", entries, entries]
         ]))
         .unwrap(),
-        serde_json::json!(6.0)
+        serde_json::json!(6)
     );
 }
 

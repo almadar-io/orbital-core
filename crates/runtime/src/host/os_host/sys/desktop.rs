@@ -49,8 +49,8 @@ pub(super) fn osascript(script: &str) -> (&'static str, Vec<String>) {
 }
 
 pub(super) fn level_arg(args: &[Value], i: usize, op: OsOp) -> Result<f64, OsError> {
-    match args.get(i) {
-        Some(Value::Number(n)) if n.is_finite() && (0.0..=100.0).contains(n) => Ok(*n),
+    match args.get(i).and_then(Value::as_number) {
+        Some(n) if n.is_finite() && (0.0..=100.0).contains(&n) => Ok(n),
         _ => Err(err(
             op,
             OsErrorKind::Invalid,

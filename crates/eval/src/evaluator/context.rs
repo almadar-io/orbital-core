@@ -67,6 +67,30 @@ impl std::fmt::Debug for SealedOutputs {
     }
 }
 
+/// The kernel's memory as a pure `mem/*` read sees it (EXEC-METAL-4): the committed arenas plus this step's staged
+/// changes. Each read names the sealed handle it reads through and fails at the call when that handle is not live.
+pub trait KernelMem: Send + Sync + std::fmt::Debug {
+    /// `length` bytes at `offset` of the block a live borrow holds.
+    fn read(&self, borrow: &Value, offset: i64, length: i64) -> Result<Vec<u8>, EvalError>;
+    /// The length in bytes of a live block, or of the block a live borrow holds.
+    fn length(&self, handle: &Value) -> Result<i64, EvalError>;
+}
+
+/// The kernel state a pure `kernel/*` read sees (EXEC-METAL-5/6): snapshots taken when the step began, and the
+/// operators the asking orbital's grant lets `kernel/apply` call.
+pub trait KernelIntrospect: Send + Sync + std::fmt::Debug {
+    /// The pending worklist: `[{ event, trait, orbital }]`.
+    fn worklist(&self) -> Value;
+    /// The step's own position: `{ trait, state, event, entityId }`.
+    fn frame(&self) -> Value;
+    /// `{ now, dispatch, step, journal }`.
+    fn stamp(&self) -> Value;
+    /// Whether the grant covers `kernel/apply` of `operator`.
+    fn may_apply(&self, operator: &str) -> bool;
+    /// Whether the grant covers the `kernel/worklist`, `kernel/frame` and `kernel/stamp` reads.
+    fn may_read(&self) -> bool;
+}
+
 /// The `prob/*` stream of one evaluation: Mulberry32, the generator `@almadar/evaluator` ran, and the rejection flag
 /// `prob/condition` raises inside a `prob/posterior` / `prob/infer` sample. Shared by every child context, so a
 /// `prob/sample` loop and a lambda body advance one stream.
@@ -188,6 +212,10 @@ pub struct BindingContext {
     prob_entropy: Option<EntropySource>,
     /// The kernel's boundary for operators that draw entropy and must not journal it; `None` in a pure evaluation.
     sealed: Option<SealedOutputs>,
+    /// The kernel memory `mem/*` reads see; `None` outside a kernel step.
+    kernel_mem: Option<Arc<dyn KernelMem>>,
+    /// The kernel state `kernel/*` reads see; `None` outside a kernel step.
+    kernel_introspect: Option<Arc<dyn KernelIntrospect>>,
     /// A local the scope reads at most once (a reduce accumulator its body reads once): the read moves it out,
     /// so a write to it (`array/append @acc …`) is in place instead of a copy of the whole accumulator.
     linear: Option<Arc<LinearLocal>>,
@@ -303,6 +331,32 @@ impl BindingContext {
     pub fn set_sealed_outputs(&mut self, source: SealedOutputs) -> &mut Self {
         self.sealed = Some(source);
         self
+    }
+
+    /// Give this evaluation the kernel memory its `mem/*` reads see.
+    pub fn set_kernel_mem(&mut self, memory: Arc<dyn KernelMem>) -> &mut Self {
+        self.kernel_mem = Some(memory);
+        self
+    }
+
+    /// Give this evaluation the kernel state its `kernel/*` reads see.
+    pub fn set_kernel_introspect(&mut self, state: Arc<dyn KernelIntrospect>) -> &mut Self {
+        self.kernel_introspect = Some(state);
+        self
+    }
+
+    /// The kernel state, or the error a `kernel/*` read raises outside a kernel step.
+    pub fn kernel_introspect(&self, op: &str) -> Result<&dyn KernelIntrospect, OrbitalError> {
+        self.kernel_introspect.as_deref().ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: this evaluation runs outside a kernel step")))
+        })
+    }
+
+    /// The kernel memory, or the error a `mem/*` read raises outside a kernel step.
+    pub fn kernel_mem(&self, op: &str) -> Result<&dyn KernelMem, OrbitalError> {
+        self.kernel_mem.as_deref().ok_or_else(|| {
+            OrbitalError::Eval(EvalError::InvalidArgument(format!("{op}: this evaluation runs outside a kernel step and holds no memory")))
+        })
     }
 
     /// The `prob/*` stream and rejection flag of this evaluation.
@@ -506,6 +560,8 @@ impl BindingContext {
             prob: Arc::clone(&self.prob),
             prob_entropy: self.prob_entropy.clone(),
             sealed: self.sealed.clone(),
+            kernel_mem: self.kernel_mem.clone(),
+            kernel_introspect: self.kernel_introspect.clone(),
             linear: self.linear.clone(),
         }
     }
@@ -543,7 +599,7 @@ impl BindingContext {
     pub fn with_item_and_index(&self, item: Value, index: usize) -> Self {
         let mut child = self.child();
         child.set_local(crate::evaluator::LocalName::Fixed("item"), item);
-        child.set_local(crate::evaluator::LocalName::Fixed("index"), Value::Number(index as f64));
+        child.set_local(crate::evaluator::LocalName::Fixed("index"), operators::util::int_of(index));
         child
     }
 }

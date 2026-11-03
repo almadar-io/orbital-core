@@ -98,6 +98,7 @@ impl PrettyPrinter {
             OirType::String => "String".to_string(),
             OirType::Number => "Number".to_string(),
             OirType::Integer => "Integer".to_string(),
+            OirType::Sized { width } => width.name().to_string(),
             OirType::Boolean => "Boolean".to_string(),
             OirType::Date => "Date".to_string(),
             OirType::DateTime => "DateTime".to_string(),

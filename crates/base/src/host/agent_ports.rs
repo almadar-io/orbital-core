@@ -136,8 +136,10 @@ pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
     };
     let trace = match options.get("trace") {
         None => None,
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as usize),
-        Some(_) => return Err("program/inputs: trace must be a whole number of steps".to_string()),
+        Some(read) => match read.as_int().and_then(|n| usize::try_from(n).ok()) {
+            Some(steps) => Some(steps),
+            None => return Err("program/inputs: trace must be a whole number of steps".to_string()),
+        },
     };
     Ok(InputsReads { state: state.map(|v| v.into_inner()), stats, trace })
 }
@@ -430,8 +432,8 @@ fn element_issues(
         None => true,
         Some("object") => matches!(value, Value::Object(_)),
         Some("array") => matches!(value, Value::Array(_)),
-        Some("string") => matches!(value, Value::String(_)),
-        Some("number") => matches!(value, Value::Number(_)),
+        Some("string") => matches!(value, Value::String(_)) || (element == "bytes" && matches!(value, Value::Bytes(_))),
+        Some("number") => value.is_numeric(),
         Some("boolean") => matches!(value, Value::Bool(_)),
         Some(_) => false,
     };
@@ -450,8 +452,8 @@ fn json_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
+        Value::Number(_) | Value::Int(_) => "number",
+        Value::String(_) | Value::Bytes(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
         Value::Lambda(_) => "function",
@@ -597,6 +599,14 @@ pub enum DispatchPlan {
         payload: Value,
         options: ValueMap,
     },
+    /// Run the qualified `address` in a fresh guest kernel of the `guest` program with `grants` and a copy of `payload`;
+    /// the answer is a keyed completion event, never an in-place answer.
+    Guest {
+        address: String,
+        payload: Value,
+        guest: Value,
+        grants: Value,
+    },
     /// Deliver `body` and `headers` to the inbound handler `name` through the kernel's inbound route, credential
     /// and answer path (EXEC-INBOUND-1); the host answers the handler's `{ status, body }`.
     Inbound {
@@ -656,9 +666,9 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
 }
 
 /// The event-request options of a `program/dispatch` (owner, 2026-10-21): what the HTTP dispatch routes carry.
-pub const DISPATCH_REQUEST_OPTIONS: [&str; 14] = [
+pub const DISPATCH_REQUEST_OPTIONS: [&str; 16] = [
     "wire", "stream", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "clientId", "locale",
-    "delivery", "dispatchLog", "viewer",
+    "delivery", "dispatchLog", "viewer", "guest", "grants",
 ];
 
 /// The request options that name a dispatch's target (the operator table's `program/dispatch` `targetOptions`); a
@@ -702,10 +712,26 @@ fn request_option_error(key: &str, value: &Value) -> Option<String> {
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
         "mount" => list_of_records(value, &["trait", "event"], &[]),
         "delivery" | "dispatchLog" | "viewer" | "entityByTrait" => matches!(value, Value::Object(_) | Value::Null),
-        "framesSince" => value.is_null() || matches!(value, Value::Number(n) if *n >= 0.0 && n.fract() == 0.0),
+        "guest" | "grants" => matches!(value, Value::Object(_)),
+        "framesSince" => value.is_null() || value.as_int().is_some_and(|n| n >= 0),
         _ => return Some(format!("program/dispatch: unsupported option \"{key}\"")),
     };
     (!ok).then(|| format!("program/dispatch: option \"{key}\" has the wrong shape"))
+}
+
+const GUEST_SHAPE: &str =
+    "program/dispatch: a guest dispatch is { guest: program, grants?: os grants } at a qualified address `Orbital.Trait.EVENT`";
+
+fn guest_plan(address: &str, payload: Value, options: ValueMap) -> Result<DispatchPlan, String> {
+    let qualified = address.split('.').count() == 3 && address.split('.').all(|part| !part.is_empty());
+    if !qualified || options.keys().any(|key| !["guest", "grants"].contains(&key.as_str())) {
+        return Err(GUEST_SHAPE.to_string());
+    }
+    let Some(guest) = options.get("guest").cloned() else {
+        return Err(GUEST_SHAPE.to_string());
+    };
+    let grants = options.get("grants").cloned().unwrap_or_else(|| Value::object(ValueMap::default()));
+    Ok(DispatchPlan::Guest { address: address.to_string(), payload, guest, grants })
 }
 
 type DispatchOptions = (Option<Vec<PayloadField>>, ValueMap);
@@ -769,6 +795,15 @@ pub fn plan_dispatch(
         Ok(parsed) => parsed,
         Err(message) => return failed(message),
     };
+    if request.contains_key("guest") || request.contains_key("grants") {
+        let Arguments::Payload(payload) = parsed else {
+            return DispatchPlan::Refused(refusal(REFUSED_ARGUMENTS, None));
+        };
+        if let Some(issues) = contract.map(|c| payload_issues(&c, &payload)).filter(|i| !i.is_empty()) {
+            return DispatchPlan::Refused(refusal(MISMATCHED_ARGUMENTS, Some(issues_value(&issues, &payload))));
+        }
+        return guest_plan(address.as_str(), payload, request).unwrap_or_else(failed);
+    }
     if !request.is_empty() {
         let mut request = request;
         let mut address = address.clone();
@@ -1115,6 +1150,33 @@ mod tests {
         let f = fixture();
         let inputs = external_inputs_of(&schema_of(&f));
         plan_dispatch(&[text("Desk.Chat.ADD_NOTE"), value(serde_json::json!({ "title": "x" })), value(options)], &inputs, None, "Chat")
+    }
+
+    #[test]
+    fn a_guest_dispatch_plans_its_program_grants_and_payload_copy() {
+        let f = fixture();
+        let inputs = external_inputs_of(&schema_of(&f));
+        let plan = |address: &str, options: Json| {
+            plan_dispatch(&[text(address), value(serde_json::json!({ "n": 1 })), value(options)], &inputs, None, "Chat")
+        };
+        let planned = plan("Guest.Work.GO", serde_json::json!({ "guest": { "name": "G" }, "grants": { "sys": ["cpu"] } }));
+        let DispatchPlan::Guest { address, payload, guest, grants } = &planned else { panic!("{planned:?}") };
+        assert_eq!(address, "Guest.Work.GO");
+        assert_eq!(as_json(payload), serde_json::json!({ "n": 1 }));
+        assert_eq!(as_json(guest), serde_json::json!({ "name": "G" }));
+        assert_eq!(as_json(grants), serde_json::json!({ "sys": ["cpu"] }));
+        let bare = plan("Guest.Work.GO", serde_json::json!({ "guest": { "name": "G" } }));
+        assert!(matches!(&bare, DispatchPlan::Guest { grants, .. } if as_json(grants) == serde_json::json!({})), "no grants name none: {bare:?}");
+        for (address, options) in [
+            ("GO", serde_json::json!({ "guest": { "name": "G" } })),
+            ("Guest.Work.GO", serde_json::json!({ "grants": {} })),
+            ("Guest.Work.GO", serde_json::json!({ "guest": { "name": "G" }, "wire": true })),
+            ("Guest.Work.GO", serde_json::json!({ "guest": "G" })),
+            ("Guest.Work.GO", serde_json::json!({ "guest": { "name": "G" }, "grants": [] })),
+        ] {
+            let plan = plan(address, options.clone());
+            assert!(matches!(plan, DispatchPlan::Failed(_)), "{address} {options}: {plan:?}");
+        }
     }
 
     #[test]

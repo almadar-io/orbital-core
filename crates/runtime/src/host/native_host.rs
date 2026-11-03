@@ -9,8 +9,16 @@ use crate::effects::executor::{ServiceCaller, ServiceHandler, SubstrateFailure, 
 use crate::entity_source::EntitySource;
 use crate::secret_source::SecretSource;
 use crate::os_host::{OsGrantTable, OsHandles, OsHost};
-use crate::resumable::{BlockingHost, CallSite, PortHost, IoAnswer, IoRequest};
-use orbital_core_base::value::Value;
+use crate::resumable::{drive_concurrent, BlockingHost, CallSite, GuestArenas, PortHost, IoAnswer, IoRequest};
+use crate::agent_ports::{dispatch_outcome, guest_failure};
+use crate::effects::response::EventResponse;
+use crate::kernel::RuntimeKernel;
+use crate::entity_source::InMemoryEntityCache;
+use orbital_core_base::effect_types::RuntimeEnvironment;
+use orbital_core_base::os::OsErrorKind;
+use orbital_core_base::os_grants::OsGrants;
+use orbital_core_base::schema::types::OrbitalSchema;
+use orbital_core_base::value::{Value, ValueMap};
 use std::sync::Arc;
 
 /// Receives each event of a stream, with the call site whose `onMessage` route it belongs to.
@@ -42,6 +50,66 @@ impl ServiceHandler for NoProviders {
     fn cancel(&self, _: &str) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// The credentials a guest kernel holds: none.
+struct NoSecrets;
+
+impl SecretSource for NoSecrets {
+    fn secret(&self, _: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+}
+
+/// `payload` with each Arena handle of the asking kernel replaced by the handle its adopted storage has in `kernel`.
+fn rehandle(value: &Value, adopted: &[(i64, Value)]) -> Value {
+    match value {
+        Value::Sealed(_) if value.is_sealed_as("Arena") => value
+            .get("id")
+            .and_then(Value::as_int)
+            .and_then(|id| adopted.iter().find(|(held, _)| *held == id))
+            .map_or_else(|| value.clone(), |(_, handle)| handle.clone()),
+        Value::Array(items) => Value::array(items.iter().map(|item| rehandle(item, adopted)).collect::<Vec<_>>()),
+        Value::Object(fields) => Value::object(fields.iter().map(|(key, item)| (key.clone(), rehandle(item, adopted))).collect::<ValueMap>()),
+        other => other.clone(),
+    }
+}
+
+/// The whole life of one guest kernel (EXEC-CONC-0a): a fresh kernel for `program` holding exactly `grants`, its own
+/// rows, no credentials and no substrate host, the shared arenas of the asker adopted, `address` dispatched with the
+/// copied payload. The answer is the dispatch outcome an in-process `program/dispatch` gives.
+fn run_guest(program: Value, address: String, payload: Value, grants: OsGrants, arenas: GuestArenas) -> Result<Value, SubstrateFailure> {
+    let invalid = |message: String| guest_failure(OsErrorKind::Invalid, message);
+    let mut schema: OrbitalSchema = serde_json::from_value(orbital_core_base::json_value::value_to_json(&program))
+        .map_err(|e| invalid(format!("program/dispatch: the guest is not a program: {e}")))?;
+    schema.os_grants = Some(grants.clone());
+    schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+    let mut parts = address.split('.');
+    let (Some(orbital), Some(trait_name), Some(event), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return Err(invalid(format!("program/dispatch: '{address}' is not a qualified address")));
+    };
+    let source = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        source.clone(),
+        crate::config::KernelConfig { environment: RuntimeEnvironment::Server, runtime_rows_in_kernel: true, ..Default::default() },
+    );
+    kernel.register_schema(schema).map_err(|e| invalid(format!("program/dispatch: the guest does not start: {e}")))?;
+    if kernel.orbital_of_trait(trait_name).as_deref() != Some(orbital) {
+        return Err(invalid(format!("program/dispatch: the guest has no trait '{trait_name}' in orbital '{orbital}'")));
+    }
+    let mut adopted = Vec::with_capacity(arenas.0.len());
+    for (id, arena) in arenas.0 {
+        let handle = kernel.adopt_shared_arena(arena).map_err(|e| guest_failure(e.kind, e.message))?;
+        adopted.push((id, handle));
+    }
+    let payload = rehandle(&payload, &adopted);
+    let host = NativeHost::new(source, Arc::new(NoSecrets), grants, Arc::new(OsHandles::default()), Arc::new(|_: Option<&CallSite>, _: Value| {}));
+    let started = kernel.start_dispatch(trait_name, Some("default"), event, payload, None, None);
+    let outcomes = started
+        .and_then(|progress| drive_concurrent(&kernel, progress, &|request: &IoRequest| host.answer(request)))
+        .map_err(|e| guest_failure(OsErrorKind::Io, format!("program/dispatch: the guest dispatch failed: {e}")))?;
+    Ok(dispatch_outcome(&EventResponse::from_process_results(&outcomes, trait_name, event)))
 }
 
 #[derive(Clone)]
@@ -121,8 +189,22 @@ impl NativeHost {
         Some(crate::os_host::completion::Completions::defer_substrate(&self.handles.completions, key, site, op, args, work))
     }
 
+    /// A guest start, when a completion sink is installed: the guest runs on a thread of its own and its outcome settles
+    /// through the sink. Without a sink there is nothing to answer later, and the blocking answer refuses it.
+    fn defer_guest(&self, request: &IoRequest) -> Option<IoAnswer> {
+        let IoRequest::Guest { program, address, payload, grants, arenas, key, site } = request else {
+            return None;
+        };
+        self.handles.completions.sink()?;
+        let (program, address, payload, grants, arenas) =
+            (program.clone(), address.clone(), payload.clone(), grants.clone(), arenas.clone());
+        Some(crate::os_host::completion::Completions::defer_guest(&self.handles.completions, key, site, move || {
+            run_guest(program, address, payload, grants, arenas)
+        }))
+    }
+
     pub fn answer(&self, request: &IoRequest) -> IoAnswer {
-        if let Some(deferred) = self.defer_substrate(request) {
+        if let Some(deferred) = self.defer_substrate(request).or_else(|| self.defer_guest(request)) {
             return deferred;
         }
         let on_event = |site: Option<&CallSite>, event: Value| (self.on_event)(site, event);
@@ -340,5 +422,72 @@ pub(crate) mod tests {
         let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the deferred op settles");
         let answer = Value::string("program/dispatch/1");
         assert_eq!(outcome, Ok(object(&[("result", answer), ("text", Value::string("\"program/dispatch/1\""))])));
+    }
+
+    fn guest_ask(program: serde_json::Value, key: &str) -> IoRequest {
+        let IoRequest::Substrate { site: Some(site), .. } = keyed("program/dispatch", Some(key)) else { unreachable!() };
+        IoRequest::Guest {
+            program: serde_json::from_value(program).unwrap(),
+            address: "G.Work.GO".to_string(),
+            payload: object(&[("n", Value::Int(1))]),
+            grants: Default::default(),
+            arenas: Default::default(),
+            key: key.to_string(),
+            site,
+        }
+    }
+
+    fn guest_program() -> serde_json::Value {
+        serde_json::json!({
+            "name": "Guest", "typeContractVersion": 1, "orbitals": [{
+                "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Work", "linkedEntity": "Cell",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "GO" }]
+                    } }]
+            }]
+        })
+    }
+
+    #[test]
+    fn a_guest_ask_is_answered_later_with_the_dispatch_outcome_of_a_fresh_kernel() {
+        let (host, settled) = sinking_host(true);
+        assert!(matches!(host.answer(&guest_ask(guest_program(), "g1")), IoAnswer::ServiceDeferred));
+        let (key, outcome) = settled.recv_timeout(std::time::Duration::from_secs(10)).expect("the guest settles");
+        assert_eq!(key, "g1");
+        let outcome = outcome.expect("the guest dispatch succeeded");
+        let result = outcome.get("result").expect("a result");
+        assert_eq!(result.get("ok"), Some(&Value::Bool(true)));
+        assert!(matches!(outcome.get("text"), Some(Value::String(_))), "the result also arrives as JSON text");
+    }
+
+    #[test]
+    fn a_guest_that_is_no_program_or_has_no_such_trait_fails_invalid_with_its_kind() {
+        let (host, settled) = sinking_host(true);
+        let mut wrong_orbital = guest_ask(guest_program(), "g2");
+        if let IoRequest::Guest { address, .. } = &mut wrong_orbital {
+            *address = "Other.Work.GO".to_string();
+        }
+        for (ask, key) in [(guest_ask(serde_json::json!({ "name": 3 }), "g1"), "g1"), (wrong_orbital, "g2")] {
+            assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
+            let (settled_key, outcome) = settled.recv_timeout(std::time::Duration::from_secs(10)).expect("the failure settles");
+            assert_eq!(settled_key, key);
+            let failure = outcome.expect_err("the guest did not run");
+            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "{failure:?}");
+            assert!(failure.get("error").is_some());
+        }
+    }
+
+    #[test]
+    fn edge_a_host_with_no_sink_starts_no_guest_and_names_why() {
+        let (host, _settled) = sinking_host(false);
+        match host.answer(&guest_ask(guest_program(), "g1")) {
+            IoAnswer::Substrate(Err(failure)) => {
+                assert_eq!(crate::agent_ports::guest_failure_kind(&failure.errors), Some(Value::string("unsupported")));
+            }
+            other => panic!("expected the refusal, got {other:?}"),
+        }
     }
 }

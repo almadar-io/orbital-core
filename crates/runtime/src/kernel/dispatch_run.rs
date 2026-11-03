@@ -75,6 +75,8 @@ enum Stage {
         own: Vec<CascadeItem>,
         fanned: Vec<CascadeItem>,
         drops: VecDeque<keyed_rows::RowDrop>,
+        /// The `kernel/queue-*` directives the seed steps staged, applied when the queue is formed.
+        directives: Vec<(String, bool)>,
     },
     Main(Cascade),
 }

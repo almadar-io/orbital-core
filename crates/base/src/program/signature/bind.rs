@@ -129,7 +129,7 @@ pub(super) fn bind_type(
                     Err(type_mismatch(formal, actual))
                 }
                 (serde_json::Value::Number(_), Known::Type(ty))
-                    if !is_uninformative(ty) && !matches!(unwrap_optional(ty), OirType::Number) =>
+                    if !is_uninformative(ty) && !matches!(unwrap_optional(ty), OirType::Number | OirType::Integer) =>
                 {
                     Err(type_mismatch(formal, actual))
                 }
@@ -153,6 +153,14 @@ pub(super) fn bind_type(
                                 &**of,
                                 OperatorTypeRef::Tagged(K::Var { each: true, .. })
                             ) =>
+                    {
+                        for item in items {
+                            bind_type(of, &element(item), b, mode)?;
+                        }
+                        Ok(())
+                    }
+                    // A list position whose element binds no variable takes unlike items when each fits it.
+                    OirType::Tuple { items } if !items.is_empty() && !binds_variable(of) =>
                     {
                         for item in items {
                             bind_type(of, &element(item), b, mode)?;
@@ -358,7 +366,9 @@ pub(super) fn bind_type(
                         Ok(())
                     }
                     Some(prior) => {
-                        if let Some(filled) = fill_empty_list_slots(prior, ty) {
+                        if let Some(wider) = widened_number(prior, ty) {
+                            b.vars.insert(name.clone(), vec![wider]);
+                        } else if let Some(filled) = fill_empty_list_slots(prior, ty) {
                             b.vars.insert(name.clone(), vec![filled]);
                         }
                         Ok(())
@@ -823,4 +833,14 @@ pub(super) fn bind_key(
     }
     let _ = formal;
     Ok(())
+}
+
+/// An `int` binding a later `number` argument widens (EXEC-EVAL-11): the variable keeps its own optionality and becomes
+/// a `number`, so `(if c 0 x)` with `x : number` is a `number`, never an `int`.
+fn widened_number(prior: &OirType, ty: &OirType) -> Option<OirType> {
+    match (unwrap_optional(prior), unwrap_optional(ty)) {
+        (OirType::Integer, OirType::Number) if prior.is_optional() => Some(OirType::optional(OirType::Number)),
+        (OirType::Integer, OirType::Number) => Some(OirType::Number),
+        _ => None,
+    }
 }

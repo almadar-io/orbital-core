@@ -7,6 +7,9 @@ use super::*;
 // ============================================================================
 
 fn whole_i64(value: &Value) -> Result<i64, OrbitalError> {
+    if let Value::Int(i) = value {
+        return Ok(*i);
+    }
     let n = value.number()?;
     if n.fract() != 0.0 || n.abs() > 9_007_199_254_740_991.0 {
         return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(

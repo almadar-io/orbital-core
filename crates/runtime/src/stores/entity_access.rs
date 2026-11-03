@@ -279,11 +279,19 @@ pub fn apply_read_access(
     }
     let evaluator = Evaluator::new();
     let before = rows.len();
-    let predicates: Vec<SExpression> = [policy, filter]
+    let predicates: Result<Vec<SExpression>, _> = [policy, filter]
         .into_iter()
         .flatten()
-        .map(|predicate| predicate.clone().into())
+        .map(|predicate| SExpression::try_from(predicate.clone()))
         .collect();
+    let predicates = match predicates {
+        Ok(predicates) => predicates,
+        Err(err) => {
+            tracing::warn!(entity_type, error = %err, "read access predicate has no expression form; every row dropped");
+            rows.clear();
+            return;
+        }
+    };
     let mut row_ctx = ctx.clone();
     let candidates = std::mem::take(rows);
     for row in candidates {
@@ -379,7 +387,8 @@ pub fn check_mutation_access(
     let Some(policy) = policy else {
         return Ok(());
     };
-    let predicate: SExpression = policy.clone().into();
+    let predicate = SExpression::try_from(policy.clone())
+        .map_err(|err| AccessDenied(format!("{entity_type}: the access policy has no expression form: {err}")))?;
     let mut row_ctx = ctx.clone();
     row_ctx.set_entity(row.clone());
     let evaluator = Evaluator::new();

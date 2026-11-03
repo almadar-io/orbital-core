@@ -14,6 +14,7 @@ mod math_log_edges;
 mod no_generic_types;
 mod now_stamp_operators;
 mod number_operators;
+mod parallel_operators;
 mod object_get_default;
 mod operator_types;
 mod quasiquote;

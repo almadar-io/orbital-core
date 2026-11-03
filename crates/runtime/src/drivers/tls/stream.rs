@@ -8,7 +8,6 @@ use std::prelude::v1::*;
 
 use rustls::RootCertStore;
 
-use orbital_core_base::codec;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::value::Value;
 
@@ -322,11 +321,9 @@ impl TlsStream {
             return self.fail("tls: bytes arrived with no session".to_string());
         };
         match fields.get("data") {
-            Some(Value::String(text)) => match codec::base64_decode(text) {
+            Some(data @ (Value::String(_) | Value::Bytes(_))) => match data.bytes_view() {
                 Ok(bytes) => client.feed(&bytes),
-                Err(message) => {
-                    return self.fail(format!("tls: os/recv data is not base64: {message}"))
-                }
+                Err(error) => return self.fail(format!("tls: os/recv data is not bytes: {error}")),
             },
             _ => return self.fail("tls: os/recv answered no data".to_string()),
         }
@@ -353,7 +350,7 @@ impl TlsStream {
                         OsOp::Send,
                         vec![
                             self.sock.clone(),
-                            Value::string(codec::base64_encode(&bytes)),
+                            Value::bytes(bytes),
                         ],
                     );
                 }
@@ -422,7 +419,7 @@ impl TlsStream {
             OsOp::Send,
             vec![
                 self.sock.clone(),
-                Value::string(codec::base64_encode(&alert)),
+                Value::bytes(alert),
             ],
         )
     }
@@ -438,7 +435,7 @@ impl Driver for TlsStream {
                 DriverStep::Done(Ok(Value::Null))
             }
             TlsEvent::Data(bytes) => {
-                DriverStep::Done(Ok(Value::string(codec::base64_encode(&bytes))))
+                DriverStep::Done(Ok(Value::bytes(bytes)))
             }
             TlsEvent::TimedOut(error) => DriverStep::Done(Err(Value::string(error.message))),
             TlsEvent::Failed(message) => DriverStep::Done(Err(Value::string(message))),
@@ -681,10 +678,7 @@ pub(crate) mod tests {
                     args,
                     ..
                 } => {
-                    let Value::String(text) = &args[1] else {
-                        panic!("send data")
-                    };
-                    let bytes = codec::base64_decode(text).expect("base64");
+                    let bytes = args[1].bytes_view().expect("send data").into_owned();
                     self.server.receive(&bytes);
                     self.sent.push(bytes);
                     IoAnswer::Os(Ok((Value::object(ValueMap::from_iter([(
@@ -705,7 +699,7 @@ pub(crate) mod tests {
                     IoAnswer::Os(Ok((Value::object(ValueMap::from_iter([
                         (
                             "data".into(),
-                            Value::String(codec::base64_encode(&data).into()),
+                            Value::bytes(data),
                         ),
                         ("eof".into(), Value::Bool(false)),
                     ]))).into()))
@@ -927,10 +921,7 @@ pub(crate) mod tests {
                 args,
                 ..
             }) => {
-                let Value::String(text) = &args[1] else {
-                    panic!("send data")
-                };
-                codec::base64_decode(text).expect("base64")
+                args[1].bytes_view().expect("send data").into_owned()
             }
             other => panic!("the handshake begins with a raw os/send, got {other:?}"),
         }

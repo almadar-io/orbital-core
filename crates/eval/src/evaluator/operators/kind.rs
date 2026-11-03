@@ -28,7 +28,7 @@ impl TypePredicate {
         matches!(
             (self, value),
             (Self::String, Value::String(_))
-                | (Self::Number, Value::Number(_))
+                | (Self::Number, Value::Number(_) | Value::Int(_))
                 | (Self::Boolean, Value::Bool(_))
                 | (Self::Array, Value::Array(_))
                 | (Self::Object, Value::Object(_))
@@ -42,7 +42,6 @@ impl TypePredicate {
             | T::Enum { .. }
             | T::Trait
             | T::CallKey
-            | T::Bytes
             | T::Email
             | T::Url
             | T::Phone
@@ -50,6 +49,7 @@ impl TypePredicate {
             | T::Image
             | T::Reference { .. } => Self::String,
             T::Number | T::Integer | T::Money => Self::Number,
+            T::Bytes => return None,
             T::Boolean => Self::Boolean,
             T::Array { .. } | T::Tuple { .. } => Self::Array,
             T::Struct { .. } | T::Map { .. } | T::Row { .. } => Self::Object,
@@ -273,7 +273,18 @@ operator_kind! {
     BytesIndexOfOp => BytesIndexOfOp,
     BytesAtOp => BytesAtOp,
     BytesReadUintOp => BytesReadUintOp,
+    BytesReadIntOp => BytesReadIntOp,
     BytesWriteUintOp => BytesWriteUintOp,
+    MemReadOp => MemReadOp,
+    MemReadUintOp => MemReadUintOp,
+    MemReadIntOp => MemReadIntOp,
+    MemLengthOp => MemLengthOp,
+    KernelWorklistOp => KernelWorklistOp,
+    KernelFrameOp => KernelFrameOp,
+    KernelStampOp => KernelStampOp,
+    KernelApplyOp => KernelApplyOp,
+    ArrayPmapOp => ArrayPmapOp,
+    ArrayPreduceOp => ArrayPreduceOp,
     Base64EncodeOp => Base64EncodeOp,
     Base64DecodeOp => Base64DecodeOp,
     Base64ValidOp => Base64ValidOp,
@@ -447,13 +458,14 @@ impl OperatorKind {
     pub fn raw_callback_params(&self) -> Option<&'static [&'static str]> {
         match self {
             Self::MapOp
+            | Self::ArrayPmapOp
             | Self::FilterOp
             | Self::CountOp
             | Self::FindOp
             | Self::ArrayEveryOp
             | Self::ArraySomeOp
             | Self::ObjectFilterOp => Some(&["item", "index"]),
-            Self::ReduceOp => Some(&["acc", "item"]),
+            Self::ReduceOp | Self::ArrayPreduceOp => Some(&["acc", "item"]),
             _ => None,
         }
     }
@@ -494,6 +506,7 @@ impl OperatorKind {
     pub fn callback_index_position(&self) -> Option<usize> {
         match self {
             Self::MapOp
+            | Self::ArrayPmapOp
             | Self::FilterOp
             | Self::CountOp
             | Self::FindOp

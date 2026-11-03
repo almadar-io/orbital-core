@@ -921,7 +921,7 @@ fn control_a_callback_still_sees_both_the_parameter_and_item() {
         serde_json::to_value(&out.last().unwrap().1.entity_data).unwrap()["out"].clone()
     };
     assert_eq!(mapped(json!(["fn", ["x", "i"], ["str/concat", "@x", "@item"]])), json!(["aa", "bb"]));
-    assert_eq!(mapped(json!(["fn", ["x", "i"], ["+", "@i", "@index"]])), json!([0.0, 2.0]));
+    assert_eq!(mapped(json!(["fn", ["x", "i"], ["+", "@i", "@index"]])), json!([0, 2]));
 }
 
 fn fanout_schema(listeners: usize) -> OrbitalSchema {

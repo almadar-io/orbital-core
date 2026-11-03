@@ -23,6 +23,9 @@ pub enum OsFamily {
     Sys,
     Kv,
     Dev,
+    Mem,
+    Kernel,
+    Ffi,
 }
 
 /// The one family that answers `op`.
@@ -45,6 +48,10 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
         KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
         MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
+        ArenaNew | ArenaDrop | Alloc | Free | Borrow | Release | MemWrite | Freeze | AtomicLoad | AtomicStore
+        | AtomicAdd | AtomicCas => OsFamily::Mem,
+        QueueFront | QueueBack => OsFamily::Kernel,
+        FfiCall => OsFamily::Ffi,
     }
 }
 
@@ -182,6 +189,21 @@ os_ops! {
     KvDelete => ("kv/delete", Single),
     KvScan => ("kv/scan", Single),
     KvBatch => ("kv/batch", Single),
+    ArenaNew => ("mem/arena-new", Single),
+    ArenaDrop => ("mem/arena-drop", Single),
+    Alloc => ("mem/alloc", Single),
+    Free => ("mem/free", Single),
+    Borrow => ("mem/borrow", Single),
+    Release => ("mem/release", Single),
+    MemWrite => ("mem/write", Single),
+    Freeze => ("mem/freeze", Single),
+    AtomicLoad => ("mem/atomic-load", Single),
+    AtomicStore => ("mem/atomic-store", Single),
+    AtomicAdd => ("mem/atomic-add", Single),
+    AtomicCas => ("mem/atomic-cas", Single),
+    QueueFront => ("kernel/queue-front", Single),
+    QueueBack => ("kernel/queue-back", Single),
+    FfiCall => ("ffi/call", Single),
 }
 
 impl OsOp {
@@ -211,9 +233,10 @@ impl OsOp {
     }
 
     /// Whether the operation is answered by the host on either side: `os/fetch` is the browser host's only ask, and
-    /// `os/recv` and `os/close` read and release the handle of a streamed fetch there (a native host's sockets).
+    /// `os/recv` and `os/close` read and release the handle of a streamed fetch there (a native host's sockets); the
+    /// `mem/` and `kernel/` families are the kernel's own, so every kernel runs them.
     pub fn runs_on_any_host(self) -> bool {
-        matches!(self, OsOp::Fetch | OsOp::Recv | OsOp::Close)
+        matches!(self, OsOp::Fetch | OsOp::Recv | OsOp::Close) || matches!(family_of(self), OsFamily::Mem | OsFamily::Kernel)
     }
 
     /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
@@ -226,7 +249,7 @@ impl OsOp {
 
     /// Whether the kernel owns the operation: it answers it itself and a host implements no part of it.
     pub fn is_kernel_owned(self) -> bool {
-        self == OsOp::TlsUpgrade
+        self == OsOp::TlsUpgrade || matches!(family_of(self), OsFamily::Mem | OsFamily::Kernel)
     }
 
     /// Whether the operation streams events to its call site's route.
@@ -246,6 +269,7 @@ impl OsOp {
                     | OsOp::Recvfrom
                     | OsOp::StdinRead
                     | OsOp::IrqWait
+                    | OsOp::FfiCall
             )
     }
 }
@@ -265,6 +289,7 @@ pub enum OsErrorKind {
     Unsupported,
     Closed,
     Tls,
+    Borrowed,
 }
 
 impl OsErrorKind {
@@ -280,6 +305,7 @@ impl OsErrorKind {
             OsErrorKind::Unsupported => "unsupported",
             OsErrorKind::Closed => "closed",
             OsErrorKind::Tls => "tls",
+            OsErrorKind::Borrowed => "borrowed",
         }
     }
 
@@ -295,6 +321,7 @@ impl OsErrorKind {
             OsErrorKind::Unsupported,
             OsErrorKind::Closed,
             OsErrorKind::Tls,
+            OsErrorKind::Borrowed,
         ]
         .into_iter()
         .find(|kind| kind.as_str() == name)
@@ -390,6 +417,34 @@ impl SegmentEncode {
     }
 }
 
+/// An `os/` answer with each field the operator table declares `bytes` made a bytes value: a host that answers over
+/// JSON writes it as standard padded base64 text, and this is where the kernel checks it (EXEC-EVAL-10). A bytes
+/// field that is neither bytes nor standard base64 text is an `Io` failure, never read as empty.
+pub fn answer_with_declared_bytes(op: OsOp, answer: crate::value::Value) -> Result<crate::value::Value, OsError> {
+    use crate::language::registry::{try_get_operator, OperatorTypeRef, OperatorTypeRefKind};
+    use crate::value::Value;
+    if !matches!(answer, Value::Object(_)) {
+        return Ok(answer);
+    }
+    let Value::Object(mut fields) = answer else { unreachable!("matched an object above") };
+    let produces = try_get_operator(op.name()).and_then(|operator| operator.effect.as_ref()).and_then(|effect| effect.produces.as_ref());
+    let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields: declared, .. })) = produces else {
+        return Ok(Value::Object(fields));
+    };
+    for (name, kind) in declared {
+        if kind.kind_name() != "bytes" {
+            continue;
+        }
+        let Some(Value::String(text)) = fields.get(name.as_str()) else {
+            continue;
+        };
+        let data = crate::codec::base64_decode(text)
+            .map_err(|e| OsError::new(OsErrorKind::Io, format!("{}: the answer field {name} is not standard base64: {e}", op.name())))?;
+        fields.insert(name.as_str().into(), Value::bytes(data));
+    }
+    Ok(Value::Object(fields))
+}
+
 /// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential, encode? }`
 /// objects becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
 /// followed by the value of the credential it names, passed through its `encode` when it has one (an empty name is
@@ -403,8 +458,6 @@ pub fn resolve_credential_segments(
     source: Option<&dyn Fn(&str, Option<&str>) -> Result<Option<String>, String>>,
 ) -> Result<Vec<crate::value::Value>, OsError> {
     use crate::value::Value;
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
     let (OsOp::Send, Some(Value::Array(segments))) = (op, args.get(1)) else {
         return Ok(args.to_vec());
     };
@@ -415,10 +468,10 @@ pub fn resolve_credential_segments(
         let Value::Object(fields) = segment else {
             return Err(invalid(at, "is not a { bytes, credential } object"));
         };
-        let (Some(Value::String(text)), Some(Value::String(name))) = (fields.get("bytes"), fields.get("credential")) else {
+        let (Some(segment_bytes @ (Value::String(_) | Value::Bytes(_))), Some(Value::String(name))) = (fields.get("bytes"), fields.get("credential")) else {
             return Err(invalid(at, "needs a bytes text and a credential name"));
         };
-        bytes.extend(STANDARD.decode(text.as_str()).map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?);
+        bytes.extend_from_slice(&segment_bytes.bytes_view().map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?);
         let encode = match fields.get("encode") {
             None => None,
             Some(Value::String(requested)) => Some(
@@ -452,7 +505,7 @@ pub fn resolve_credential_segments(
         }
     }
     let mut resolved = args.to_vec();
-    resolved[1] = Value::string(STANDARD.encode(&bytes));
+    resolved[1] = Value::bytes(bytes);
     Ok(resolved)
 }
 
@@ -470,19 +523,31 @@ mod tests {
         for op in OsOp::ALL {
             assert_eq!(OsOp::from_name(op.name()), Some(*op));
             assert_eq!(op.name().starts_with("kv/"), op.is_kv());
-            assert!(op.name().starts_with("os/") || op.is_kv());
+            assert_eq!(op.name().starts_with("mem/"), family_of(*op) == OsFamily::Mem);
+            assert_eq!(op.name().starts_with("kernel/"), family_of(*op) == OsFamily::Kernel);
+            assert_eq!(op.name().starts_with("ffi/"), family_of(*op) == OsFamily::Ffi);
+            assert!(
+                op.name().starts_with("os/")
+                    || op.name().starts_with("mem/")
+                    || op.name().starts_with("kernel/")
+                    || op.name().starts_with("ffi/")
+                    || op.is_kv()
+            );
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 102);
+        assert_eq!(OsOp::ALL.len(), 117);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
     #[test]
-    fn os_ops_are_exactly_the_table_operators_hosted_by_os_or_kv() {
+    fn os_ops_are_exactly_the_effect_operators_hosted_by_os_kv_or_kernel() {
         use crate::language::registry::operators;
         let mut declared: Vec<&str> = operators()
             .iter()
-            .filter(|(_, operator)| matches!(operator.host.as_deref(), Some("os" | "kv")))
+            .filter(|(_, operator)| {
+                operator.has_side_effects
+                    && matches!(operator.host.as_deref(), Some("os" | "kv" | "kernel"))
+            })
             .map(|(name, _)| name.as_str())
             .collect();
         declared.sort_unstable();
@@ -558,11 +623,59 @@ mod tests {
                 OsOp::Send,
                 OsOp::Recv,
                 OsOp::Recvfrom,
-                OsOp::IrqWait
+                OsOp::IrqWait,
+                OsOp::FfiCall
             ]
         );
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
         assert!(!OsOp::Spawn.defers_completion() && !OsOp::Sendto.defers_completion());
+    }
+
+    #[test]
+    fn the_mem_family_is_exactly_the_twelve_kernel_owned_mem_ops() {
+        let mem: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Mem).map(|op| op.name()).collect();
+        assert_eq!(
+            mem,
+            vec![
+                "mem/arena-new",
+                "mem/arena-drop",
+                "mem/alloc",
+                "mem/free",
+                "mem/borrow",
+                "mem/release",
+                "mem/write",
+                "mem/freeze",
+                "mem/atomic-load",
+                "mem/atomic-store",
+                "mem/atomic-add",
+                "mem/atomic-cas"
+            ]
+        );
+        assert!(OsOp::ALL.iter().filter(|op| op.is_kernel_owned()).all(|op| {
+            op == &OsOp::TlsUpgrade || op.name().starts_with("mem/") || op.name().starts_with("kernel/")
+        }));
+        assert!(!OsOp::ReadFile.is_kernel_owned(), "control: a host-answered op");
+        assert!(OsOp::Alloc.runs_on_any_host() && !OsOp::ReadFile.runs_on_any_host());
+        for op in [OsOp::Freeze, OsOp::AtomicLoad, OsOp::AtomicStore, OsOp::AtomicAdd, OsOp::AtomicCas] {
+            assert!(op.runs_on_any_host() && op.is_kernel_owned(), "{}", op.name());
+        }
+    }
+
+    #[test]
+    fn the_kernel_family_is_exactly_the_two_queue_ops() {
+        let kernel: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Kernel).map(|op| op.name()).collect();
+        assert_eq!(kernel, vec!["kernel/queue-front", "kernel/queue-back"]);
+        assert!(OsOp::QueueFront.is_kernel_owned() && OsOp::QueueBack.runs_on_any_host());
+        assert!(!OsOp::Stat.runs_on_any_host(), "control: a host-answered op");
+    }
+
+    #[test]
+    fn the_ffi_family_is_exactly_the_one_host_answered_call() {
+        let ffi: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Ffi).map(|op| op.name()).collect();
+        assert_eq!(ffi, vec!["ffi/call"]);
+        assert!(OsOp::FfiCall.defers_completion() && !OsOp::FfiCall.is_stream());
+        assert!(!OsOp::FfiCall.is_kernel_owned() && !OsOp::FfiCall.runs_on_any_host(), "a host answers it");
+        assert!(!OsOp::Pid.defers_completion(), "control: an answer that never defers");
     }
 
     #[test]
@@ -752,12 +865,11 @@ mod tests {
     }
 
     fn send_resolved(segment: serde_json::Value, value: &str) -> Result<Vec<u8>, OsError> {
-        use base64::Engine;
         let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
         let source = held("CRED", value);
         let resolved = resolve_credential_segments(OsOp::Send, &args, None, Some(&source))?;
-        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
-        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+        let crate::value::Value::Bytes(data) = &resolved[1] else { panic!("bytes operand") };
+        Ok(data.to_vec())
     }
 
     #[test]
@@ -770,6 +882,19 @@ mod tests {
             let expected = format!("P={}", v.expect);
             assert_eq!(send_resolved(segment, &v.input).expect("resolved"), expected.into_bytes(), "{} {:?}", v.encode, v.input);
         }
+    }
+
+    #[test]
+    fn a_declared_bytes_answer_field_becomes_bytes_and_an_undeclared_one_is_left_alone() {
+        use crate::value::Value;
+        let answer: Value = serde_json::from_value(json!({ "data": "aGk=", "eof": false })).expect("answer");
+        let read = answer_with_declared_bytes(OsOp::ReadFile, answer.clone()).expect("converted");
+        assert_eq!(read.get("data"), Some(&Value::bytes(b"hi".to_vec())));
+        assert_eq!(read.get("eof"), Some(&Value::Bool(false)));
+        let wrote: Value = serde_json::from_value(json!({ "bytes": "aGk=" })).expect("answer");
+        assert_eq!(answer_with_declared_bytes(OsOp::WriteFile, wrote.clone()).expect("untouched"), wrote);
+        let bad: Value = serde_json::from_value(json!({ "data": "not base64!" })).expect("answer");
+        assert_eq!(answer_with_declared_bytes(OsOp::ReadFile, bad).expect_err("refused").kind, OsErrorKind::Io);
     }
 
     #[test]
@@ -791,12 +916,11 @@ mod tests {
     }
 
     fn send_as(segment: serde_json::Value, principal: Option<&str>) -> Result<Vec<u8>, OsError> {
-        use base64::Engine;
         let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
         let source = |name: &str, owner: Option<&str>| Ok((name == "CRED").then(|| format!("value-of-{}", owner.unwrap_or("app"))));
         let resolved = resolve_credential_segments(OsOp::Send, &args, principal, Some(&source))?;
-        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
-        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+        let crate::value::Value::Bytes(data) = &resolved[1] else { panic!("bytes operand") };
+        Ok(data.to_vec())
     }
 
     #[test]

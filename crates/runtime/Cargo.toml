@@ -32,6 +32,8 @@ hmac = { version = "0.12", default-features = false }
 rand_chacha = { version = "0.3", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
+libloading = { version = "0.8", optional = true }
+libffi = { version = "3.2", features = ["system"], optional = true }
 orbital-core-base = { path = "../base", default-features = false }
 orbital-core-eval = { path = "../eval", default-features = false }
 
@@ -60,6 +62,8 @@ std = [
 wire-drivers = ["std"]
 async = ["std", "orbital-core-eval/async"]
 client-http = ["std", "dep:ureq", "ureq/tls"]
+# The native `ffi/call` answerer (dlopen + the system libffi): a native host capability the other builds leave out.
+ffi = ["std", "dep:libloading", "dep:libffi"]
 
 [dev-dependencies]
 tempfile = "3.10"

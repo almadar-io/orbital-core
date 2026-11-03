@@ -208,7 +208,7 @@ fn parse<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, St
 }
 
 fn to_json<T: Serialize>(value: &T) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|e| format!("serialize: {e}"))
+    orbital_core_base::js_readable::to_js_readable_json(value)
 }
 
 fn context_of(json: &str) -> Result<BindingContext, String> {
@@ -412,7 +412,7 @@ fn is_row_binding_term(term: &str) -> bool {
 fn is_scalar(value: &Value) -> bool {
     matches!(
         value,
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::Bytes(_) | Value::String(_)
     )
 }
 
@@ -872,6 +872,13 @@ mod resolve_values_tests {
         let out = resolve(json!({ "entity": {} }), json!([{ "type": "typography", "content": "plain" }, 3]));
         assert_eq!(out[0]["value"], json!({ "type": "typography", "content": "plain" }));
         assert_eq!(out[1]["value"].as_f64(), Some(3.0));
+    }
+
+    #[test]
+    fn exec_eval_11_an_int_beyond_2_53_is_refused_on_its_way_to_javascript() {
+        let evaluate = |digits: &str| super::evaluate_many_json(&json!({ "entity": {} }).to_string(), &json!([["str/to-int", digits]]).to_string());
+        assert!(evaluate("9007199254740993").unwrap_err().starts_with("0.value is the int 9007199254740993, beyond 2^53"));
+        assert!(evaluate("9007199254740992").unwrap().contains("9007199254740992"), "control: 2^53 crosses");
     }
 
     #[test]

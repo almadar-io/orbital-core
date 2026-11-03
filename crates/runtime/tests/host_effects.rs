@@ -65,13 +65,21 @@ fn run(
 fn run_on(
     server: EmbeddedServer,
     request: EventRequest,
-    mut host: impl FnMut(&IoRequest) -> IoAnswer,
+    host: impl FnMut(&IoRequest) -> IoAnswer,
 ) -> (EventResponse, Vec<IoRequest>) {
-    let mut seen = Vec::new();
     if request.client_id.as_deref() == Some(VIEWER_SESSION) {
         support::identity::enable(server.kernel(), &["role"]);
         support::identity::sign_in_server(&server, VIEWER_SESSION, "u1", json!({ "role": "member" }));
     }
+    drive(&server, request, host)
+}
+
+fn drive(
+    server: &EmbeddedServer,
+    request: EventRequest,
+    mut host: impl FnMut(&IoRequest) -> IoAnswer,
+) -> (EventResponse, Vec<IoRequest>) {
+    let mut seen = Vec::new();
     let mut progress = server.start("Main", request).unwrap();
     loop {
         match progress {
@@ -851,7 +859,7 @@ mod os_effects {
     use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 
     fn data(text: &str) -> IoAnswer {
-        IoAnswer::Os(Ok(serde_json::from_value(json!({ "data": text })).unwrap()))
+        IoAnswer::Os(Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([("data".into(), Value::bytes(text.as_bytes().to_vec()))])).into()))
     }
 
     #[test]
@@ -869,7 +877,7 @@ mod os_effects {
         assert_eq!(*op, OsOp::ReadFile);
         assert_eq!(serde_json::to_value(args).unwrap(), json!(["/data/a.txt"]));
         assert!(key.is_none() && site.is_none());
-        assert_eq!(payload_of(&response, "OK"), json!({ "data": "hello" }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "data": "aGVsbG8=" }));
     }
 
     #[test]
@@ -919,7 +927,7 @@ mod os_effects {
             serde_json::to_value(args).unwrap(),
             json!(["GET", "https://api.example.test/items", { "headers": [{ "name": "accept", "value": "application/json" }] }])
         );
-        assert_eq!(payload_of(&response, "OK"), json!({ "status": 404.0, "headers": [{ "name": "content-type", "value": "text/plain" }], "body": "bm9wZQ==" }), "a non-2xx status is a success answer");
+        assert_eq!(payload_of(&response, "OK"), json!({ "status": 404, "headers": [{ "name": "content-type", "value": "text/plain" }], "body": "bm9wZQ==" }), "a non-2xx status is a success answer");
     }
 
     #[test]
@@ -979,7 +987,7 @@ mod os_effects {
         let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
         assert_eq!(*op, OsOp::Fetch);
         assert_eq!(serde_json::to_value(args).unwrap(), json!(["GET", "https://api.example.test/events", { "stream": true }]));
-        assert_eq!(payload_of(&response, "OK"), json!({ "status": 200.0, "headers": [{ "name": "content-type", "value": "text/event-stream" }], "body": "", "handle": 3.0 }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "status": 200, "headers": [{ "name": "content-type", "value": "text/event-stream" }], "body": "", "handle": 3 }));
     }
 
     #[test]
@@ -1000,6 +1008,66 @@ mod os_effects {
         assert_eq!(*op, OsOp::Recv);
         assert_eq!(serde_json::to_value(args).unwrap(), json!([3.0, 4096.0]));
         assert_eq!(payload_of(&response, "OK"), json!({ "data": "YWJj", "eof": false }));
+    }
+
+    #[cfg(target_os = "macos")]
+    const MATH: &str = "/usr/lib/libSystem.B.dylib";
+    #[cfg(not(target_os = "macos"))]
+    const MATH: &str = "libm.so.6";
+
+    fn ffi_server() -> EmbeddedServer {
+        let grants = json!({ "ffi": [{ "library": MATH, "symbol": "cos", "signature": "(f64) -> f64" }] });
+        EmbeddedServer::new(schema_with(json!(["ffi/call", MATH, "cos", "@payload.args", routes()]), grants)).unwrap()
+    }
+
+    fn ffi_go(args: Json) -> EventRequest {
+        EventRequest {
+            event: "GO".to_string(),
+            target_trait: Some("Host".to_string()),
+            payload: Some(serde_json::from_value(json!({ "args": args })).unwrap()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_ffi_call_with_the_wrong_arity_is_invalid_without_asking_the_host() {
+        let (response, seen) = run_on(ffi_server(), ffi_go(json!([])), |request| panic!("a malformed call must not reach the host, asked {request:?}"));
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "BAD")["kind"], json!("invalid"));
+    }
+
+    #[test]
+    fn an_ffi_call_to_a_symbol_the_program_does_not_grant_is_denied_without_asking_the_host() {
+        let grants = json!({ "ffi": [{ "library": MATH, "symbol": "sin", "signature": "(f64) -> f64" }] });
+        let server = EmbeddedServer::new(schema_with(json!(["ffi/call", MATH, "cos", "@payload.args", routes()]), grants)).unwrap();
+        let (response, seen) = run_on(server, ffi_go(json!([0.0])), |request| panic!("an ungranted call must not reach the host, asked {request:?}"));
+        assert!(seen.is_empty());
+        assert_eq!(payload_of(&response, "BAD")["kind"], json!("denied"));
+    }
+
+    #[test]
+    fn an_ffi_call_asks_the_host_with_the_granted_signature_and_plain_values() {
+        let (response, seen) = run_on(ffi_server(), ffi_go(json!([0.0])), |_| {
+            IoAnswer::Os(Ok(serde_json::from_value(json!({ "value": 1.0, "buffers": [] })).unwrap()))
+        });
+        let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
+        assert_eq!(*op, OsOp::FfiCall);
+        assert_eq!(serde_json::to_value(args).unwrap(), json!([MATH, "cos", "(f64) -> f64", [0.0]]));
+        assert_eq!(payload_of(&response, "OK"), json!({ "value": 1.0, "buffers": [] }));
+    }
+
+    #[cfg(feature = "ffi")]
+    #[test]
+    fn an_ffi_call_runs_the_granted_c_function_through_the_native_host() {
+        use orbital_core_runtime::os_host::{answer_os, OsHandles, OsHost};
+        let server = ffi_server();
+        let grants = server.kernel().os_grants();
+        let handles = OsHandles::default();
+        let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
+        let (response, _) = run_on(server, ffi_go(json!([0.0])), |request| {
+            answer_os(Some(&OsHost { grants: &grants, handles: &handles, on_event: &on_event, secrets: None }), request)
+        });
+        assert_eq!(payload_of(&response, "OK")["value"], json!(1.0));
     }
 
     #[test]
@@ -1315,7 +1383,7 @@ mod os_deferred {
         let (response, _) = run(keyed_wait(), go(None), |_| {
             IoAnswer::Os(Ok(serde_json::from_value(json!({ "code": 0 })).unwrap()))
         });
-        assert_eq!(payload_of(&response, "OK"), json!({ "code": 0.0, "key": "k" }));
+        assert_eq!(payload_of(&response, "OK"), json!({ "code": 0, "key": "k" }));
     }
 
     #[test]
@@ -1658,7 +1726,7 @@ mod os_completion {
         assert!(summary.is_ok(), "{summary:?}");
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "read");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::bytes(b"hello".to_vec())));
         assert_eq!(held.entity.get_path("eof"), Some(&Value::Bool(false)));
         assert_eq!(held.entity.get_path("key"), Some(&Value::string("f1")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
@@ -1672,7 +1740,7 @@ mod os_completion {
         wired.sink.drive(progress).unwrap();
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "slurped", "answered within the SLURP_NOW dispatch");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::bytes(b"hello".to_vec())));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "no completion dispatch without a key");
     }
 
@@ -1688,7 +1756,7 @@ mod os_completion {
         assert!(summary.is_ok(), "{summary:?}");
         let held = wired.kernel.snapshot_trait("Sup", None);
         assert_eq!(held.state, "slurped");
-        assert_eq!(held.entity.get_path("data"), Some(&Value::string("aGVsbG8=")));
+        assert_eq!(held.entity.get_path("data"), Some(&Value::bytes(b"hello".to_vec())));
         assert_eq!(held.entity.get_path("key"), Some(&Value::string("f2")));
         assert!(wired.done.recv_timeout(Duration::from_millis(300)).is_err(), "exactly one completion");
     }
@@ -1772,7 +1840,7 @@ mod os_completion {
 
     fn number_of(wired: &Wired, field: &str) -> f64 {
         match wired.kernel.snapshot_trait("Sup", None).entity.get_path(field) {
-            Some(Value::Number(n)) => *n,
+            Some(read) if read.is_numeric() => read.as_number().expect("an exact number"),
             other => panic!("{field}: {other:?}"),
         }
     }
@@ -1985,12 +2053,12 @@ mod os_twin {
             "os/mkdir", "os/rmdir", "os/list-dir", "os/glob", "os/mktemp", "os/realpath", "os/chdir", "os/stat",
             "os/lstat", "os/access", "os/exists", "os/chmod", "os/chown", "os/utimes",
         ];
-        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait"];
+        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait", "ffi/call"];
         assert_eq!(names, finite_fs.iter().chain(rest.iter()).copied().collect::<Vec<_>>());
         assert!(!names.iter().any(|n| n == "os/cwd"), "control: os/cwd answers inline");
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
         let ok = os_completion_event_json(&site, "k", &json!({ "ok": { "code": 3 } }).to_string()).unwrap();
-        assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3.0, "key": "k" } }));
+        assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3, "key": "k" } }));
         let failed = os_completion_event_json(&site, "k", &json!({ "error": { "kind": "closed", "message": "gone" } }).to_string()).unwrap();
         assert_eq!(serde_json::from_str::<Json>(&failed).unwrap(), json!({ "event": "FAILED", "payload": { "error": "gone", "kind": "closed", "key": "k" } }));
         let unrouted = json!({ "trait": "Sup", "followOn": false, "emit": {} }).to_string();
@@ -2506,6 +2574,7 @@ mod os_grants_per_orbital {
         json!({ "env": ["HOME"] })
     }
 
+    /// EXEC-GRANTS-2 through a running kernel.
     #[test]
     fn an_orbital_with_a_grant_is_answered_and_a_sibling_without_one_is_refused() {
         assert_eq!(state_of(program(None, Some(home()), None), "TraitA"), "ok");
@@ -2522,5 +2591,867 @@ mod os_grants_per_orbital {
     fn control_no_grant_anywhere_refuses_every_orbital() {
         assert_eq!(state_of(program(None, None, None), "TraitA"), "bad");
         assert_eq!(state_of(program(None, None, None), "TraitB"), "bad");
+    }
+}
+
+mod mem_effects {
+    use super::*;
+    use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+    use orbital_core_base::value::ValueMap;
+
+    fn ops() -> Vec<(&'static str, Json)> {
+        vec![
+            ("NEW_BUMP", json!(["mem/arena-new", "bump", 64])),
+            ("NEW_STACK", json!(["mem/arena-new", "stack", 64])),
+            ("NEW_BIG", json!(["mem/arena-new", "bump", 4096])),
+            ("ALLOC", json!(["mem/alloc", "@payload.arena", 16, 8])),
+            ("BORROW_X", json!(["mem/borrow", "@payload.block", "exclusive"])),
+            ("BORROW_S", json!(["mem/borrow", "@payload.block", "shared"])),
+            ("WRITE", json!(["mem/write", "@payload.xborrow", 0, "@payload.data"])),
+            ("RELEASE_X", json!(["mem/release", "@payload.xborrow"])),
+            ("RELEASE_S", json!(["mem/release", "@payload.sborrow"])),
+            ("FREE", json!(["mem/free", "@payload.block"])),
+            ("DROP", json!(["mem/arena-drop", "@payload.arena"])),
+        ]
+    }
+
+    fn server() -> EmbeddedServer {
+        let mut transitions: Vec<Json> = ops()
+            .into_iter()
+            .map(|(event, mut effect)| {
+                effect.as_array_mut().unwrap().push(routes());
+                json!({ "from": "idle", "to": "idle", "event": event, "effects": [effect] })
+            })
+            .collect();
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "READ", "effects": [
+            ["emit", "OK", { "data": ["mem/read", "@payload.sborrow", 0, 4], "length": ["mem/length", "@payload.sborrow"] }]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "PARK", "effects": [
+            ["mem/arena-new", "bump", 8, routes()],
+            ["os/read-file", "/data/a.txt", { "emit": { "success": "READ_OK", "failure": "BAD" } }]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "OK" }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "BAD" }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "READ_OK" }));
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "osGrants": { "mem": [{ "target": "arena:1024", "kinds": ["create", "free"] }] },
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": transitions
+                    } }]
+            }]
+        }))
+        .unwrap();
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    #[derive(Debug)]
+    enum Answer {
+        Ok(Value),
+        Failed(String),
+    }
+
+    struct Session {
+        server: EmbeddedServer,
+        held: ValueMap,
+    }
+
+    impl Session {
+        fn new() -> Self {
+            Self { server: server(), held: ValueMap::default() }
+        }
+
+        fn request(&self, event: &str) -> EventRequest {
+            EventRequest {
+                event: event.to_string(),
+                target_trait: Some("Host".to_string()),
+                payload: Some(Value::object(self.held.clone())),
+                ..Default::default()
+            }
+        }
+
+        fn answer(response: &EventResponse) -> Answer {
+            let find = |event: &str| response.emitted_events.iter().find(|e| e.event == event);
+            if let Some(ok) = find("OK") {
+                return Answer::Ok(ok.payload.clone().expect("an answer carries a payload"));
+            }
+            let bad = find("BAD").unwrap_or_else(|| panic!("neither OK nor BAD: {:?}", response.emitted_events));
+            let payload = bad.payload.clone().expect("a failure carries a payload");
+            match payload.get("kind") {
+                Some(Value::String(kind)) => Answer::Failed(kind.to_string()),
+                other => panic!("a failure names its kind: {other:?}"),
+            }
+        }
+
+        fn call(&mut self, event: &str, keep_borrow_as: Option<&str>) -> Answer {
+            let (response, _) = drive(&self.server, self.request(event), |request| panic!("a mem op asked the host: {request:?}"));
+            let answer = Self::answer(&response);
+            if let Answer::Ok(Value::Object(fields)) = &answer {
+                for (key, value) in fields.iter() {
+                    let name = match (key.as_str() == "borrow", keep_borrow_as) {
+                        (true, Some(name)) => name,
+                        _ => key.as_str(),
+                    };
+                    self.held.insert(name.into(), value.clone());
+                }
+            }
+            answer
+        }
+
+        fn ok(&mut self, event: &str, keep_borrow_as: Option<&str>) {
+            match self.call(event, keep_borrow_as) {
+                Answer::Ok(_) => {}
+                other => panic!("{event} should succeed: {other:?}"),
+            }
+        }
+
+        fn fails_with(&mut self, event: &str, kind: &str) {
+            match self.call(event, None) {
+                Answer::Failed(found) => assert_eq!(found, kind, "{event}"),
+                other => panic!("{event} should fail with {kind}: {other:?}"),
+            }
+        }
+    }
+
+    fn setup() -> Session {
+        let mut session = Session::new();
+        session.ok("NEW_BUMP", None);
+        session.ok("ALLOC", None);
+        session.held.insert("data".into(), Value::bytes(b"abcd".to_vec()));
+        session
+    }
+
+    #[test]
+    fn alloc_exclusive_write_release_then_shared_read_round_trips() {
+        let mut session = setup();
+        session.ok("BORROW_X", Some("xborrow"));
+        session.ok("WRITE", None);
+        session.ok("RELEASE_X", None);
+        session.ok("BORROW_S", Some("sborrow"));
+        let (response, _) = drive(&session.server, session.request("READ"), |request| panic!("asked the host: {request:?}"));
+        let Answer::Ok(read) = Session::answer(&response) else { panic!("read answered") };
+        assert_eq!(read.get("data").and_then(Value::as_bytes), Some(&b"abcd"[..]));
+        assert_eq!(read.get("length").and_then(Value::as_int), Some(16));
+    }
+
+    #[test]
+    fn a_second_exclusive_borrow_is_borrowed_and_two_shared_borrows_succeed() {
+        let mut session = setup();
+        session.ok("BORROW_X", Some("xborrow"));
+        session.fails_with("BORROW_X", "borrowed");
+        session.fails_with("BORROW_S", "borrowed");
+        session.ok("RELEASE_X", None);
+        session.ok("BORROW_S", Some("sborrow"));
+        session.ok("BORROW_S", Some("other"));
+    }
+
+    #[test]
+    fn a_shared_borrow_cannot_write() {
+        let mut session = setup();
+        session.ok("BORROW_S", Some("xborrow"));
+        session.fails_with("WRITE", "borrowed");
+    }
+
+    #[test]
+    fn free_and_arena_drop_with_a_live_borrow_are_borrowed_and_free_after_release_closes_the_block() {
+        let mut session = setup();
+        session.ok("BORROW_X", Some("xborrow"));
+        session.fails_with("FREE", "borrowed");
+        session.fails_with("DROP", "borrowed");
+        session.ok("RELEASE_X", None);
+        session.ok("FREE", None);
+        session.fails_with("FREE", "closed");
+        session.fails_with("BORROW_X", "closed");
+        session.ok("DROP", None);
+        session.fails_with("ALLOC", "closed");
+    }
+
+    /// EXEC-METAL-1: the kernel answers `mem/*` against the orbital's grants; no host is asked.
+    #[test]
+    fn an_arena_beyond_the_grant_is_denied() {
+        let mut session = Session::new();
+        session.fails_with("NEW_BIG", "denied");
+        session.ok("NEW_BUMP", None);
+    }
+
+    #[test]
+    fn a_stack_arena_is_gone_in_the_next_dispatch_and_a_bump_arena_is_not() {
+        let mut session = Session::new();
+        session.ok("NEW_STACK", None);
+        let stack = session.held.get("arena").cloned().unwrap();
+        session.ok("NEW_BUMP", None);
+        session.ok("ALLOC", None);
+        let bump = session.held.get("arena").cloned().unwrap();
+        session.held.insert("arena".into(), stack);
+        session.fails_with("ALLOC", "closed");
+        session.held.insert("arena".into(), bump);
+        session.ok("ALLOC", None);
+    }
+
+    #[test]
+    fn an_alloc_beyond_the_arenas_capacity_is_invalid() {
+        let mut session = Session::new();
+        session.ok("NEW_BUMP", None);
+        for _ in 0..4 {
+            session.ok("ALLOC", None);
+        }
+        session.fails_with("ALLOC", "invalid");
+    }
+
+    #[test]
+    fn a_forged_handle_is_invalid() {
+        let mut session = Session::new();
+        session.held.insert("arena".into(), Value::Int(1));
+        session.fails_with("ALLOC", "invalid");
+    }
+
+    #[test]
+    fn a_step_that_parks_and_replays_allocates_once() {
+        let mut session = Session::new();
+        let (response, seen) = drive(&session.server, session.request("PARK"), |request| match request {
+            IoRequest::Os { op: OsOp::ReadFile, .. } => IoAnswer::Os(Err(OsError::new(OsErrorKind::Denied, "no"))),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        assert_eq!(seen.len(), 1);
+        let oks: Vec<_> = response.emitted_events.iter().filter(|e| e.event == "OK").collect();
+        assert_eq!(oks.len(), 1);
+        let arena = oks[0].payload.as_ref().and_then(|p| p.get("arena")).and_then(|a| a.get("id")).and_then(Value::as_int);
+        assert_eq!(arena, Some(1));
+        let Answer::Ok(next) = session.call("NEW_BUMP", None) else { panic!("a second arena") };
+        let id = next.get("arena").and_then(|a| a.get("id")).and_then(Value::as_int);
+        assert_eq!(id, Some(2));
+    }
+}
+
+mod kernel_effects {
+    use super::*;
+    use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+    use orbital_core_base::value::ValueMap;
+
+    const FULL: fn() -> Json = || {
+        json!({
+            "mem": [
+                { "target": "shared:1024", "kinds": ["create", "atomic", "free"] },
+                { "target": "arena:1024", "kinds": ["create", "free"] }
+            ],
+            "kernel": [
+                { "target": "queue", "kinds": ["reorder"] },
+                { "target": "introspect", "kinds": ["read"] }
+            ]
+        })
+    };
+
+    fn host_ops() -> Vec<(&'static str, Json)> {
+        vec![
+            ("GO_FRONT", json!(["kernel/queue-front", "T2"])),
+            ("GO_BACK", json!(["kernel/queue-back", "T1"])),
+            ("NEW_SHARED", json!(["mem/arena-new", "shared", 64])),
+            ("NEW_BIG_SHARED", json!(["mem/arena-new", "shared", 4096])),
+            ("NEW_BUMP", json!(["mem/arena-new", "bump", 64])),
+            ("ALLOC", json!(["mem/alloc", "@payload.arena", 16, 8])),
+            ("ADD", json!(["mem/atomic-add", "@payload.block", 0, 5])),
+            ("LOAD", json!(["mem/atomic-load", "@payload.block", 0])),
+            ("STORE", json!(["mem/atomic-store", "@payload.block", 0, 3])),
+            ("CAS", json!(["mem/atomic-cas", "@payload.block", 0, 10, 7])),
+            ("FREEZE", json!(["mem/freeze", "@payload.block"])),
+            ("BORROW_X", json!(["mem/borrow", "@payload.block", "exclusive"])),
+            ("BORROW_S", json!(["mem/borrow", "@payload.block", "shared"])),
+            ("RELEASE_X", json!(["mem/release", "@payload.xborrow"])),
+            ("WRITE", json!(["mem/write", "@payload.xborrow", 0, "@payload.data"])),
+        ]
+    }
+
+    fn server(grants: Json) -> EmbeddedServer {
+        let mut transitions: Vec<Json> = host_ops()
+            .into_iter()
+            .map(|(event, mut effect)| {
+                effect.as_array_mut().unwrap().push(routes());
+                let mut effects = vec![effect];
+                if event.starts_with("GO_") {
+                    effects.insert(0, json!(["emit", "E2"]));
+                    effects.insert(0, json!(["emit", "E1"]));
+                }
+                json!({ "from": "idle", "to": "idle", "event": event, "effects": effects })
+            })
+            .collect();
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "GO_PLAIN", "effects": [["emit", "E1"], ["emit", "E2"]] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "GO_OWN", "effects": [
+            ["emit", "E1"], ["emit", "OWN"], ["kernel/queue-front", "NOPE", routes()]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "OWN", "effects": [["emit", "OWNED"]] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "FAIL_WRITE", "effects": [
+            ["mem/write", "@payload.xborrow", 0, "@payload.data", routes()],
+            ["emit", "BADEMIT", { "n": "not a number" }]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "FAIL_FREEZE", "effects": [
+            ["mem/freeze", "@payload.block", routes()],
+            ["emit", "BADEMIT", { "n": "not a number" }]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "WRITE_ADD", "effects": [
+            ["mem/write", "@payload.xborrow", 0, "@payload.data", { "emit": { "success": "WROTE", "failure": "BAD" } }],
+            ["mem/atomic-add", "@payload.block", 0, 1, routes()]
+        ] }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "READ", "effects": [
+            ["emit", "OK", { "data": ["mem/read", "@payload.xborrow", 0, 4] }]
+        ] }));
+        for event in ["WROTE", "BADEMIT", "OWNED"] {
+            transitions.push(json!({ "from": "idle", "to": "idle", "event": event }));
+        }
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "PARK", "effects": [
+            ["mem/atomic-add", "@payload.block", 0, 1, routes()],
+            ["os/read-file", "/data/a.txt", { "emit": { "success": "READ_OK", "failure": "BAD" } }]
+        ] }));
+        let spawn = |options: Json| {
+            json!({ "from": "idle", "to": "idle", "event": "SPAWN", "effects": [[
+                "program/dispatch", "@payload.address", "@payload.data",
+                { "guest": "@payload.guest", "grants": "@payload.grants" }, options
+            ]] })
+        };
+        transitions.push(spawn(json!({ "key": "k1", "emit": { "success": "DONE", "failure": "FAILED" } })));
+        transitions.push({
+            let mut unkeyed = spawn(json!({ "emit": { "success": "DONE", "failure": "FAILED" } }));
+            unkeyed["event"] = json!("SPAWN_UNKEYED");
+            unkeyed
+        });
+        for event in ["OK", "BAD", "READ_OK", "DONE", "FAILED"] {
+            transitions.push(json!({ "from": "idle", "to": "idle", "event": event }));
+        }
+        let listener = |name: &str, heard: &str, trigger: &str, effects: Json| {
+            json!({ "name": name, "linkedEntity": "Job",
+                "emits": [{ "event": "R1" }, { "event": "R2" }, { "event": "SEEN" }],
+                "listens": [{ "event": heard, "triggers": trigger, "source": { "kind": "trait", "trait": "Host" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": trigger, "effects": effects }] } })
+        };
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "osGrants": grants,
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    { "name": "Host", "linkedEntity": "Job", "emits": [{ "event": "E1" }, { "event": "E2" }, { "event": "OWN" }, { "event": "OWNED" },
+                            { "event": "BADEMIT", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions } },
+                    listener("L1", "E1", "T1", json!([
+                        ["emit", "R1"],
+                        ["emit", "SEEN", { "work": ["kernel/worklist"], "frame": ["kernel/frame"], "stamp": ["kernel/stamp"] }]
+                    ])),
+                    listener("L2", "E2", "T2", json!([["emit", "R2"]]))
+                ]
+            }]
+        }))
+        .unwrap();
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    fn request(event: &str, held: &ValueMap) -> EventRequest {
+        EventRequest {
+            event: event.to_string(),
+            target_trait: Some("Host".to_string()),
+            payload: Some(Value::object(held.clone())),
+            ..Default::default()
+        }
+    }
+
+    fn order(grants: Json, event: &str) -> Vec<String> {
+        let server = server(grants);
+        let (response, _) = drive(&server, request(event, &ValueMap::default()), |request| panic!("asked the host: {request:?}"));
+        response.emitted_events.iter().map(|emitted| emitted.event.clone()).collect()
+    }
+
+    fn at(events: &[String], name: &str) -> usize {
+        events.iter().position(|event| event == name).unwrap_or_else(|| panic!("{name} missing from {events:?}"))
+    }
+
+    #[derive(Debug)]
+    enum Answer {
+        Ok(Value),
+        Failed(String),
+    }
+
+    struct Session {
+        server: EmbeddedServer,
+        held: ValueMap,
+    }
+
+    impl Session {
+        fn new(grants: Json) -> Self {
+            Self { server: server(grants), held: ValueMap::default() }
+        }
+
+        fn answer(response: &EventResponse) -> Answer {
+            if let Some(ok) = response.emitted_events.iter().find(|e| e.event == "OK") {
+                return Answer::Ok(ok.payload.clone().expect("an answer carries a payload"));
+            }
+            let bad = response.emitted_events.iter().find(|e| e.event == "BAD").expect("neither OK nor BAD");
+            match bad.payload.as_ref().and_then(|payload| payload.get("kind")) {
+                Some(Value::String(kind)) => Answer::Failed(kind.to_string()),
+                other => panic!("a failure names its kind: {other:?}"),
+            }
+        }
+
+        fn call(&mut self, event: &str) -> Answer {
+            let (response, _) = drive(&self.server, request(event, &self.held), |request| panic!("asked the host: {request:?}"));
+            let answer = Self::answer(&response);
+            if let Answer::Ok(Value::Object(fields)) = &answer {
+                for (key, value) in fields.iter() {
+                    if key.as_str() == "borrow" {
+                        self.held.insert("xborrow".into(), value.clone());
+                    } else {
+                        self.held.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+            answer
+        }
+
+        fn ok(&mut self, event: &str) -> Value {
+            match self.call(event) {
+                Answer::Ok(value) => value,
+                other => panic!("{event} should succeed: {other:?}"),
+            }
+        }
+
+        fn fails_with(&mut self, event: &str, kind: &str) {
+            match self.call(event) {
+                Answer::Failed(found) => assert_eq!(found, kind, "{event}"),
+                other => panic!("{event} should fail with {kind}: {other:?}"),
+            }
+        }
+
+        fn shared_block() -> Self {
+            let mut session = Self::new(FULL());
+            session.ok("NEW_SHARED");
+            session.ok("ALLOC");
+            session
+        }
+    }
+
+    fn value_of(answer: &Value) -> i64 {
+        answer.get("value").and_then(Value::as_int).expect("the answer carries an int value")
+    }
+
+    #[test]
+    fn control_without_a_directive_the_listeners_run_in_emit_order() {
+        let events = order(FULL(), "GO_PLAIN");
+        assert!(at(&events, "R1") < at(&events, "R2"), "{events:?}");
+    }
+
+    #[test]
+    fn queue_front_moves_a_pending_listener_delivery_ahead() {
+        let events = order(FULL(), "GO_FRONT");
+        assert!(at(&events, "R2") < at(&events, "R1"), "{events:?}");
+    }
+
+    #[test]
+    fn queue_back_moves_a_pending_listener_delivery_behind() {
+        let events = order(FULL(), "GO_BACK");
+        assert!(at(&events, "R2") < at(&events, "R1"), "{events:?}");
+    }
+
+    #[test]
+    fn queue_front_without_the_reorder_grant_is_denied_and_changes_nothing() {
+        let grants = json!({ "kernel": [{ "target": "introspect", "kinds": ["read"] }] });
+        let mut session = Session::new(grants.clone());
+        session.fails_with("GO_FRONT", "denied");
+        let events = order(grants, "GO_FRONT");
+        assert!(at(&events, "R1") < at(&events, "R2"), "{events:?}");
+    }
+
+    #[test]
+    fn introspection_answers_the_worklist_frame_and_stamp_of_the_step() {
+        let first = server(FULL());
+        let (response, _) = drive(&first, request("GO_PLAIN", &ValueMap::default()), |request| panic!("asked the host: {request:?}"));
+        let seen = response.emitted_events.iter().find(|e| e.event == "SEEN").expect("the listener reported");
+        let payload = seen.payload.as_ref().expect("a report carries a payload");
+        let work = payload.get("work").expect("work");
+        let Value::Array(items) = work else { panic!("work is a list: {work:?}") };
+        assert_eq!(items.len(), 1);
+        let pending = &items[0];
+        assert_eq!(pending.get("event"), Some(&Value::string("T2")));
+        assert_eq!(pending.get("trait"), Some(&Value::string("L2")));
+        assert_eq!(pending.get("orbital"), Some(&Value::string("Main")));
+        let frame = payload.get("frame").expect("frame");
+        assert_eq!(frame.get("trait"), Some(&Value::string("L1")));
+        assert_eq!(frame.get("state"), Some(&Value::string("idle")));
+        assert_eq!(frame.get("event"), Some(&Value::string("T1")));
+        let stamp = payload.get("stamp").expect("stamp");
+        assert!(stamp.get("now").and_then(Value::as_int).is_some());
+        assert_eq!(
+            stamp.get("step").and_then(Value::as_int),
+            Some(0),
+            "L1's delivery is the dispatch's first cascade delivery: Host handles none of its own emits and the seed step is not counted"
+        );
+        let journal = stamp.get("journal").and_then(Value::as_int).expect("journal position");
+        assert!(journal >= 0);
+        let (again, _) = drive(&server(FULL()), request("GO_PLAIN", &ValueMap::default()), |request| panic!("asked the host: {request:?}"));
+        let again = again.emitted_events.iter().find(|e| e.event == "SEEN").and_then(|e| e.payload.as_ref()).and_then(|p| p.get("stamp")).and_then(|s| s.get("journal")).and_then(Value::as_int);
+        assert_eq!(again, Some(journal), "the same dispatch on a fresh kernel reaches the same journal position");
+        assert!(stamp.get("dispatch").and_then(Value::as_int).is_some());
+    }
+
+    mod guest {
+        use super::*;
+        use orbital_core_runtime::entity_source::InMemoryEntityCache;
+        use orbital_core_runtime::native_host::NativeHost;
+        use orbital_core_runtime::os_host::completion::OsCompletionSink;
+        use orbital_core_runtime::os_host::{OsGrantTable, OsHandles};
+        use orbital_core_runtime::resumable::{substrate_completion_event, CallSite};
+        use orbital_core_runtime::secret_source::SecretSource;
+        use std::sync::{mpsc, Arc, Mutex};
+        use std::thread::ThreadId;
+        use std::time::Duration;
+
+        type Settle = (CallSite, String, Result<Value, Value>, ThreadId);
+
+        struct Settled(Mutex<mpsc::Sender<Settle>>);
+
+        impl OsCompletionSink for Settled {
+            fn complete(&self, _: &CallSite, _: &str, _: Result<Value, OsError>) {}
+
+            fn settle(&self, site: &CallSite, key: &str, outcome: Result<Value, Value>) {
+                self.0.lock().unwrap().send((site.clone(), key.to_string(), outcome, std::thread::current().id())).unwrap();
+            }
+        }
+
+        struct NoSecrets;
+
+        impl SecretSource for NoSecrets {
+            fn secret(&self, _: &str) -> Result<Option<String>, String> {
+                Ok(None)
+            }
+        }
+
+        fn native() -> (NativeHost, mpsc::Receiver<Settle>) {
+            let handles = Arc::new(OsHandles::default());
+            let (tx, rx) = mpsc::channel();
+            handles.completions.set_sink(Arc::new(Settled(Mutex::new(tx))));
+            let host = NativeHost::new(
+                Arc::new(InMemoryEntityCache::new()),
+                Arc::new(NoSecrets),
+                OsGrantTable::default(),
+                handles,
+                Arc::new(|_: Option<&CallSite>, _: Value| {}),
+            );
+            (host, rx)
+        }
+
+        fn parent_grants() -> Json {
+            json!({
+                "mem": [{ "target": "shared:1024", "kinds": ["create", "atomic", "free"] }],
+                "kernel": [{ "target": "guest", "kinds": ["spawn"] }]
+            })
+        }
+
+        fn guest_program() -> Json {
+            json!({
+                "name": "Guest", "typeContractVersion": 1, "orbitals": [{
+                    "name": "G",
+                    "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                    "traits": [{ "name": "Work", "linkedEntity": "Cell",
+                        "stateMachine": {
+                            "states": [{ "name": "idle", "isInitial": true }],
+                            "transitions": [
+                                { "from": "idle", "to": "idle", "event": "BUMP", "effects": [["mem/atomic-add", "@payload.arena.blocks.0", 0, 5, routes()]] },
+                                { "from": "idle", "to": "idle", "event": "BORROW", "effects": [["mem/borrow", "@payload.arena.blocks.0", "shared", routes()]] },
+                                { "from": "idle", "to": "idle", "event": "OK" },
+                                { "from": "idle", "to": "idle", "event": "BAD" }
+                            ]
+                        } }]
+                }]
+            })
+        }
+
+        fn value(json: Json) -> Value {
+            serde_json::from_value(json).unwrap()
+        }
+
+        /// `SPAWN` held for a guest at `G.Work.BUMP` given `grants` and `data`.
+        fn spawn(session: &Session, event: &str, grants: Json, data: ValueMap) -> EventRequest {
+            spawn_at(session, event, "G.Work.BUMP", grants, data)
+        }
+
+        fn spawn_at(session: &Session, event: &str, address: &str, grants: Json, data: ValueMap) -> EventRequest {
+            let mut held = session.held.clone();
+            held.insert("address".into(), Value::string(address.to_string()));
+            held.insert("guest".into(), value(guest_program()));
+            held.insert("grants".into(), value(grants));
+            held.insert("data".into(), Value::object(data));
+            request(event, &held)
+        }
+
+        fn arena_data(session: &Session) -> ValueMap {
+            let mut data = ValueMap::default();
+            data.insert("arena".into(), session.held.get("arena").cloned().expect("the session holds an arena"));
+            data
+        }
+
+        fn atomic_grants() -> Json {
+            json!({ "mem": [{ "target": "shared:64", "kinds": ["atomic"] }] })
+        }
+
+        fn failure_of(response: &EventResponse) -> Value {
+            response.emitted_events.iter().find(|e| e.event == "FAILED").and_then(|e| e.payload.clone()).expect("the dispatch failed")
+        }
+
+        fn refused(grants: Json, event: &str, guest_grants: Json, data: impl Fn(&Session) -> ValueMap) -> Value {
+            let mut session = Session::new(grants);
+            session.ok("NEW_SHARED");
+            session.ok("ALLOC");
+            let (response, seen) = drive(&session.server, spawn(&session, event, guest_grants, data(&session)), |request| panic!("a refusal asks no host: {request:?}"));
+            assert!(seen.is_empty());
+            failure_of(&response)
+        }
+
+        #[test]
+        fn a_guest_runs_on_another_thread_and_its_atomic_add_on_a_shared_block_is_seen_by_the_parent() {
+            let mut session = Session::new(parent_grants());
+            session.ok("NEW_SHARED");
+            session.ok("ALLOC");
+            let (host, settled) = native();
+            let (response, seen) = drive(&session.server, spawn(&session, "SPAWN", atomic_grants(), arena_data(&session)), |request| match request {
+                IoRequest::Guest { .. } => host.answer(request),
+                other => panic!("the fixture asks for {other:?}"),
+            });
+            assert!(response.success);
+            assert!(matches!(seen.as_slice(), [IoRequest::Guest { arenas, .. }] if arenas.0.len() == 1), "{seen:?}");
+            let pending = session.server.kernel().pending_asks();
+            assert!(
+                matches!(pending.as_slice(), [ask] if ask.operator == "program/dispatch" && ask.key == "k1"),
+                "the running guest is a pending ask of its key: {pending:?}"
+            );
+            let (site, key, outcome, thread) = settled.recv_timeout(Duration::from_secs(10)).expect("the guest settles later");
+            assert_ne!(thread, std::thread::current().id(), "the guest ran on a thread of its own");
+            let (event, payload) = substrate_completion_event(&site, &key, outcome).expect("the call site routes the outcome");
+            assert_eq!(event, "DONE");
+            assert_eq!(payload.get("key"), Some(&Value::string("k1")));
+            assert_eq!(payload.get("result").and_then(|result| result.get("ok")), Some(&Value::Bool(true)));
+            let mut completion = ValueMap::default();
+            completion.insert("key".into(), Value::string("k1"));
+            let (done, _) = drive(&session.server, request("DONE", &completion), |request| panic!("asked the host: {request:?}"));
+            assert!(done.success, "the completion is an ordinary event of the parent");
+            assert!(session.server.kernel().pending_asks().is_empty(), "the completion ends the guest's ask");
+            assert_eq!(value_of(&session.ok("LOAD")), 5, "the guest's add is the parent's add");
+        }
+
+        /// The events the guest emitted at `address`, run to completion on its own thread.
+        fn guest_emitted(session: &Session, address: &str) -> Vec<Value> {
+            let (host, settled) = native();
+            drive(&session.server, spawn_at(session, "SPAWN", address, atomic_grants(), arena_data(session)), |request| match request {
+                IoRequest::Guest { .. } => host.answer(request),
+                other => panic!("the fixture asks for {other:?}"),
+            });
+            let (_, _, outcome, _) = settled.recv_timeout(Duration::from_secs(10)).expect("the guest settles");
+            let payload = outcome.expect("the guest dispatch ran");
+            match payload.get("result").and_then(|result| result.get("emitted")) {
+                Some(Value::Array(emitted)) => emitted.iter().cloned().collect(),
+                other => panic!("the guest reports what it emitted: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn a_guest_borrows_a_frozen_shared_block_but_not_a_live_one() {
+            let mut live = Session::new(parent_grants());
+            live.ok("NEW_SHARED");
+            live.ok("ALLOC");
+            let emitted = guest_emitted(&live, "G.Work.BORROW");
+            assert_eq!(emitted[0].get("event"), Some(&Value::string("BAD")), "{emitted:?}");
+            assert_eq!(emitted[0].get("payload").and_then(|p| p.get("kind")), Some(&Value::string("invalid")));
+            let mut frozen = Session::new(parent_grants());
+            frozen.ok("NEW_SHARED");
+            frozen.ok("ALLOC");
+            frozen.ok("FREEZE");
+            let emitted = guest_emitted(&frozen, "G.Work.BORROW");
+            assert_eq!(emitted[0].get("event"), Some(&Value::string("OK")), "{emitted:?}");
+        }
+
+        #[test]
+        fn once_a_guest_holds_the_arena_the_owner_reaches_a_live_block_only_through_atomics() {
+            let mut session = Session::new(parent_grants());
+            session.ok("NEW_SHARED");
+            session.ok("ALLOC");
+            guest_emitted(&session, "G.Work.BORROW");
+            session.fails_with("BORROW_X", "invalid");
+            session.fails_with("BORROW_S", "invalid");
+            assert_eq!(value_of(&session.ok("ADD")), 5, "control: atomics still reach it");
+            session.ok("FREEZE");
+            session.ok("BORROW_S");
+            assert_eq!(session.ok("READ").get("data").and_then(Value::as_bytes).expect("bytes").to_vec(), vec![5, 0, 0, 0], "a frozen block stays readable and keeps the cell the atomic add left");
+        }
+
+        #[test]
+        fn an_unkeyed_guest_dispatch_is_invalid() {
+            let failure = refused(parent_grants(), "SPAWN_UNKEYED", atomic_grants(), arena_data);
+            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "{failure:?}");
+        }
+
+        #[test]
+        fn without_the_kernel_guest_grant_a_guest_dispatch_is_denied() {
+            let grants = json!({ "mem": [{ "target": "shared:1024", "kinds": ["create", "atomic", "free"] }] });
+            let failure = refused(grants, "SPAWN", atomic_grants(), arena_data);
+            assert_eq!(failure.get("kind"), Some(&Value::string("denied")), "{failure:?}");
+        }
+
+        #[test]
+        fn a_guest_given_grants_beyond_the_askers_fails_naming_them() {
+            let beyond = json!({ "mem": [{ "target": "shared:64", "kinds": ["atomic"] }], "sys": ["cpu"], "env": ["HOME"] });
+            let failure = refused(parent_grants(), "SPAWN", beyond, arena_data);
+            assert_eq!(failure.get("kind"), Some(&Value::string("denied")), "{failure:?}");
+            let message = failure.get("error").and_then(Value::as_str).expect("an error").to_string();
+            assert!(message.contains("sys [cpu]") && message.contains("env \"HOME\""), "{message}");
+            assert!(!message.contains("mem"), "the covered grant is not named: {message}");
+        }
+
+        #[test]
+        fn a_sealed_value_that_is_not_a_shared_arena_does_not_cross() {
+            let block = |session: &Session| {
+                let mut data = ValueMap::default();
+                data.insert("block".into(), session.held.get("block").cloned().expect("the session holds a block"));
+                data
+            };
+            let failure = refused(parent_grants(), "SPAWN", atomic_grants(), block);
+            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "{failure:?}");
+            let failure = {
+                let mut grants = parent_grants();
+                grants["mem"] = json!([
+                    { "target": "shared:1024", "kinds": ["create", "atomic", "free"] },
+                    { "target": "arena:1024", "kinds": ["create", "free"] }
+                ]);
+                let mut session = Session::new(grants);
+                session.ok("NEW_BUMP");
+                let (response, seen) = drive(&session.server, spawn(&session, "SPAWN", atomic_grants(), arena_data(&session)), |request| panic!("asked the host: {request:?}"));
+                assert!(seen.is_empty());
+                failure_of(&response)
+            };
+            assert_eq!(failure.get("kind"), Some(&Value::string("invalid")), "control: an arena that is not shared does not cross either: {failure:?}");
+        }
+    }
+
+    #[test]
+    fn atomic_add_answers_the_new_value_and_cas_swaps_only_on_a_match() {
+        let mut session = Session::shared_block();
+        assert_eq!(value_of(&session.ok("ADD")), 5);
+        assert_eq!(value_of(&session.ok("ADD")), 10);
+        assert_eq!(value_of(&session.ok("LOAD")), 10);
+        let swapped = session.ok("CAS");
+        assert_eq!((value_of(&swapped), swapped.get("swapped")), (10, Some(&Value::Bool(true))));
+        let missed = session.ok("CAS");
+        assert_eq!((value_of(&missed), missed.get("swapped")), (7, Some(&Value::Bool(false))));
+        assert_eq!(value_of(&session.ok("LOAD")), 7);
+    }
+
+    #[test]
+    fn a_step_that_parks_and_replays_adds_once() {
+        let mut session = Session::shared_block();
+        let (response, seen) = drive(&session.server, request("PARK", &session.held), |request| match request {
+            IoRequest::Os { op: OsOp::ReadFile, .. } => IoAnswer::Os(Err(OsError::new(OsErrorKind::Denied, "no"))),
+            other => panic!("the fixture asks for {other:?}"),
+        });
+        assert_eq!(seen.len(), 1);
+        let Answer::Ok(added) = Session::answer(&response) else { panic!("the add answered") };
+        assert_eq!(value_of(&added), 1);
+        assert_eq!(value_of(&session.ok("LOAD")), 1);
+    }
+
+    #[test]
+    fn an_atomic_op_on_a_local_block_is_invalid_and_without_the_atomic_grant_is_denied() {
+        let mut local = Session::new(FULL());
+        local.ok("NEW_BUMP");
+        local.ok("ALLOC");
+        local.fails_with("ADD", "invalid");
+        let mut denied = Session::new(json!({ "mem": [{ "target": "shared:1024", "kinds": ["create"] }] }));
+        denied.ok("NEW_SHARED");
+        denied.ok("ALLOC");
+        denied.fails_with("ADD", "denied");
+    }
+
+    #[test]
+    fn freeze_then_write_fails_and_the_frozen_block_stays_readable() {
+        let mut session = Session::new(FULL());
+        session.ok("NEW_BUMP");
+        session.ok("ALLOC");
+        session.held.insert("data".into(), Value::bytes(b"abcd".to_vec()));
+        session.ok("BORROW_X");
+        session.ok("WRITE");
+        session.ok("RELEASE_X");
+        session.ok("FREEZE");
+        session.fails_with("BORROW_X", "borrowed");
+        session.ok("BORROW_S");
+    }
+
+    #[test]
+    fn freezing_a_shared_block_refuses_atomic_writes_but_not_loads() {
+        let mut session = Session::shared_block();
+        session.ok("STORE");
+        session.ok("FREEZE");
+        session.fails_with("STORE", "borrowed");
+        assert_eq!(value_of(&session.ok("LOAD")), 3);
+    }
+
+    #[test]
+    fn a_shared_arena_needs_the_shared_grant() {
+        let mut arena_only = Session::new(json!({ "mem": [{ "target": "arena:1024", "kinds": ["create"] }] }));
+        arena_only.fails_with("NEW_SHARED", "denied");
+        let mut session = Session::new(FULL());
+        session.fails_with("NEW_BIG_SHARED", "denied");
+        session.ok("NEW_SHARED");
+    }
+
+    fn failing(session: &Session, event: &str) {
+        match session.server.start("Main", request(event, &session.held)) {
+            Ok(ServerProgress::Done(response)) => assert!(!response.success, "{event} should be rejected"),
+            Ok(_) => panic!("{event} should not park"),
+            Err(_) => {}
+        }
+    }
+
+    fn read_back(session: &mut Session) -> Vec<u8> {
+        let read = session.ok("READ");
+        read.get("data").and_then(Value::as_bytes).expect("bytes").to_vec()
+    }
+
+    #[test]
+    fn a_failed_step_leaves_no_shared_freeze_behind_and_a_committed_one_is_visible() {
+        let mut session = Session::shared_block();
+        failing(&session, "FAIL_FREEZE");
+        session.ok("STORE");
+        session.ok("FREEZE");
+        session.fails_with("STORE", "borrowed");
+    }
+
+    #[test]
+    fn the_owner_initialises_a_committed_shared_block_before_any_guest_holds_it() {
+        let mut session = Session::shared_block();
+        session.ok("BORROW_X");
+        session.held.insert("data".into(), Value::bytes(b"abcd".to_vec()));
+        session.ok("WRITE");
+        session.ok("RELEASE_X");
+        session.ok("BORROW_S");
+        let read = session.ok("READ");
+        assert_eq!(read.get("data").and_then(Value::as_bytes).expect("bytes").to_vec(), b"abcd".to_vec());
+        let written = i64::from(u32::from_le_bytes(*b"abcd"));
+        assert_eq!(value_of(&session.ok("ADD")), written + 5, "control: atomics reach the written cell too");
+    }
+
+    #[test]
+    fn a_frozen_shared_block_is_read_through_a_shared_borrow_and_takes_no_exclusive_one() {
+        let mut session = Session::shared_block();
+        session.ok("FREEZE");
+        session.fails_with("BORROW_X", "borrowed");
+        session.ok("BORROW_S");
+        let read = session.ok("READ");
+        assert_eq!(read.get("data").and_then(Value::as_bytes).expect("bytes").to_vec(), vec![0; 4]);
+    }
+
+    #[test]
+    fn a_seed_step_reorder_naming_nothing_keeps_own_emits_ahead_of_listeners() {
+        let events = order(FULL(), "GO_OWN");
+        assert!(at(&events, "OWNED") < at(&events, "R1"), "{events:?}");
     }
 }

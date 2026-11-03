@@ -24,15 +24,20 @@ impl Operator for ConcatOp {
 /// A `string | number | boolean | date | datetime` operand rendered as text; any other kind is a type error.
 pub(super) fn joinable_text(value: &Value) -> Result<String, EvalError> {
     match value {
-        Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(value.to_string_value()),
+        Value::String(_) | Value::Number(_) | Value::Int(_) | Value::Bytes(_) | Value::Bool(_) => {
+            Ok(value.to_string_value())
+        }
         other => Err(other.kind_error("string, number or boolean")),
     }
 }
 
-fn whole_number(value: &Value) -> Result<f64, EvalError> {
+fn whole_number(value: &Value) -> Result<i64, EvalError> {
+    if let Value::Int(i) = value {
+        return Ok(*i);
+    }
     let n = value.number()?;
     if n.fract() == 0.0 {
-        Ok(n)
+        Ok(n as i64)
     } else {
         Err(EvalError::InvalidArgument(format!(
             "expected a whole number, got {n}"
@@ -43,7 +48,7 @@ fn whole_number(value: &Value) -> Result<f64, EvalError> {
 /// A repeat or length count: a whole number from 0.
 fn count_arg(value: &Value) -> Result<usize, EvalError> {
     let n = whole_number(value)?;
-    if n < 0.0 || n > u32::MAX as f64 {
+    if n < 0 || n > i64::from(u32::MAX) {
         return Err(EvalError::InvalidArgument(format!(
             "expected a whole number from 0, got {n}"
         )));
@@ -54,12 +59,12 @@ fn count_arg(value: &Value) -> Result<usize, EvalError> {
 /// A slice index: a whole number, negative counting from the end.
 fn index_arg(value: &Value) -> Result<i64, EvalError> {
     let n = whole_number(value)?;
-    if n.abs() > u32::MAX as f64 {
+    if n.abs() > i64::from(u32::MAX) {
         return Err(EvalError::InvalidArgument(format!(
             "index {n} is out of range"
         )));
     }
-    Ok(n as i64)
+    Ok(n)
 }
 
 /// A padding character: a string of exactly one character.
@@ -100,18 +105,14 @@ impl Operator for StrToNumberOp {
     }
 }
 
-/// str/to-int - Rust `i64::from_str`: an optional `+` or `-`, then one or more ASCII digits, nothing else; null for
-/// any other text and for a value beyond 2^53 - 1 either way.
+/// str/to-int - Rust `i64::from_str`: an optional `+` or `-`, then one or more ASCII digits, nothing else; an exact
+/// int, null for any other text and for a value beyond the 64-bit range.
 pub struct StrToIntOp;
 impl Operator for StrToIntOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/to-int", == 1);
         match eval_expr(&args[0], ctx)? {
-            Value::String(text) => Ok(text
-                .parse::<i64>()
-                .ok()
-                .filter(|n| n.unsigned_abs() < (1u64 << 53))
-                .map_or(Value::Null, |n| Value::Number(n as f64))),
+            Value::String(text) => Ok(text.parse::<i64>().map_or(Value::Null, Value::Int)),
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
                 actual: other.type_name().into(),
@@ -192,7 +193,7 @@ impl Operator for StrLenOp {
         require_arity!(args, "str/len", 1);
         let val = eval_expr(&args[0], ctx)?;
         let s = val.text()?;
-        Ok(Value::Number(s.chars().count() as f64))
+        Ok(super::util::int_of(s.chars().count()))
     }
 }
 
@@ -630,10 +631,10 @@ impl Operator for StrCollateOp {
         require_arity!(args, "str/collate", == 2);
         let a = collate_text(&args[0], ctx)?;
         let b = collate_text(&args[1], ctx)?;
-        Ok(Value::Number(match root_collator().compare(&a, &b) {
-            std::cmp::Ordering::Less => -1.0,
-            std::cmp::Ordering::Equal => 0.0,
-            std::cmp::Ordering::Greater => 1.0,
+        Ok(Value::Int(match root_collator().compare(&a, &b) {
+            std::cmp::Ordering::Less => -1,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 1,
         }))
     }
 }
@@ -1077,6 +1078,8 @@ mod tests {
             to_int("-9007199254740991"),
             Value::Number(-9_007_199_254_740_991.0)
         );
+        assert!(matches!(to_int("9007199254740993"), Value::Int(9_007_199_254_740_993)), "exact beyond 2^53");
+        assert!(matches!(to_int("-9223372036854775808"), Value::Int(i64::MIN)));
     }
 
     #[test]
@@ -1093,8 +1096,7 @@ mod tests {
             "--1",
             "+-1",
             "١٢",
-            "9007199254740992",
-            "-9007199254740992",
+            "9223372036854775808",
             "99999999999999999999999",
         ] {
             assert_eq!(to_int(text), Value::Null, "{text:?}");
@@ -1158,5 +1160,21 @@ mod tests {
             run(serde_json::json!(["str/join", ["a", 2], ","])).unwrap(),
             Value::string("a,2".to_string())
         );
+    }
+
+    #[test]
+    fn str_producers_answer_ints_and_concat_prints_ints_and_bytes() {
+        assert!(matches!(to_int("42"), Value::Int(42)));
+        assert!(matches!(run(serde_json::json!(["str/len", "héé"])).unwrap(), Value::Int(3)));
+        assert!(matches!(run(serde_json::json!(["str/collate", "a", "b"])).unwrap(), Value::Int(-1)));
+        assert!(matches!(run(serde_json::json!(["str/to-number", "42"])).unwrap(), Value::Number(_)), "control: to-number stays a number");
+        let mut ctx = BindingContext::default();
+        ctx.set_local("i", Value::Int(1152921504606846977));
+        ctx.set_local("b", Value::bytes(vec![1, 2]));
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/concat", "@i", "-", "@b"])).unwrap();
+        assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::string("1152921504606846977-AQI=".to_string()));
+        ctx.set_local("n", Value::Int(2));
+        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/repeat", "a", "@n"])).unwrap();
+        assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::string("aa".to_string()));
     }
 }

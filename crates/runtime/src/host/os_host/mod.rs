@@ -6,6 +6,7 @@ use std::prelude::v1::*;
 
 pub mod args;
 pub mod completion;
+pub mod ffi;
 pub mod fs;
 pub mod net;
 pub mod process;
@@ -75,6 +76,7 @@ pub struct OsHandles {
     pub fs: fs::FsTable,
     pub process: process::ProcTable,
     pub net: net::NetTable,
+    pub ffi: ffi::FfiTable,
     pub completions: Arc<completion::Completions>,
     /// Where `~/` and `./` paths and grants are anchored: the user's home and the directory the program started in.
     pub anchors: OsAnchors,
@@ -89,6 +91,7 @@ impl Default for OsHandles {
             fs: fs::FsTable::new(ids.clone()),
             process: process::ProcTable::default(),
             net: net::NetTable::new(ids),
+            ffi: ffi::FfiTable::default(),
             completions: Arc::default(),
             anchors: OsAnchors::of_process(),
             kv: crate::kv_host::KvStores::default(),
@@ -108,6 +111,7 @@ impl OsHandles {
         self.process.clear();
         self.fs.clear();
         self.net.clear();
+        self.ffi.clear();
     }
 }
 
@@ -133,8 +137,12 @@ fn dispatch(
         OsFamily::Process => process::answer(op, args, key, site, host),
         OsFamily::Net => net::answer(op, args, key, site, host),
         OsFamily::Sys => sys::answer(op, args, key, site, host),
+        OsFamily::Ffi => ffi::answer(op, args, key, site, host),
         OsFamily::Kv => Some(crate::kv_host::answer(op, args, host)),
         OsFamily::Dev => Some(Err(OsError::new(OsErrorKind::Unsupported, format!("{}: this host has no devices", op.name())))),
+        OsFamily::Mem | OsFamily::Kernel => {
+            Some(Err(OsError::new(OsErrorKind::Unsupported, format!("{}: answered by the kernel, never a host", op.name()))))
+        }
     };
     // `os/close` takes an fd or a socket: the fs table is asked first, and a handle it does not own
     // (`None`) is offered to the net table.
@@ -182,6 +190,7 @@ fn defer(
         OsOp::Recv => net::recv_later(args, key, site, host),
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         OsOp::StdinRead => process::stdin_later(args, key, site, host),
+        OsOp::FfiCall => ffi::later(op, args, key, site, host),
         _ if family_of(op) == OsFamily::Fs => fs::later(op, args, key, site, host),
         _ => return None,
     })
@@ -286,6 +295,21 @@ mod tests {
     /// Operators whose success payload the table declares but this host cannot answer in a unit fixture, each
     /// with the reason; every other declared payload is run below.
     const NOT_RUN: &[(&str, &str)] = &[
+        ("mem/arena-new", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/arena-drop", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/alloc", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/free", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/borrow", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/release", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/write", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/freeze", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/atomic-load", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/atomic-store", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/atomic-add", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("mem/atomic-cas", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("kernel/queue-front", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("kernel/queue-back", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("ffi/call", "needs a foreign library; answered by the native host's ffi feature, exercised in its own tests"),
         ("os/watch-files", "a stream the host does not implement (G-ORB-307)"),
         ("os/watch-process", "a stream the host does not implement (G-ORB-307)"),
         ("os/watch-signal", "a stream the host does not implement (G-ORB-307)"),
@@ -309,8 +333,10 @@ mod tests {
 
     fn fits(declared: &str, value: &Value) -> bool {
         match declared {
-            "string" | "bytes" => matches!(value, Value::String(_)),
-            "number" | "int" => matches!(value, Value::Number(_)),
+            "string" => matches!(value, Value::String(_)),
+            "bytes" => matches!(value, Value::Bytes(_)),
+            "number" => matches!(value, Value::Number(_) | Value::Int(_)),
+            "int" => value.as_int().is_some(),
             "boolean" => matches!(value, Value::Bool(_)),
             "array" => matches!(value, Value::Array(_)),
             "object" => matches!(value, Value::Object(_)),
@@ -407,13 +433,13 @@ mod tests {
         };
         let (a, copy, moved, hard, soft, sub) = (root.join("a.txt"), root.join("b.txt"), root.join("c.txt"), root.join("d.txt"), root.join("s.lnk"), root.join("sub"));
 
-        run(OsOp::WriteFile, vec![text(&a), s("aGVsbG8=")]);
-        run(OsOp::AppendFile, vec![text(&a), s("IQ==")]);
+        run(OsOp::WriteFile, vec![text(&a), Value::bytes(b"hello".to_vec())]);
+        run(OsOp::AppendFile, vec![text(&a), Value::bytes(b"!".to_vec())]);
         run(OsOp::ReadFile, vec![text(&a)]);
         let fd = field(&run(OsOp::Open, vec![text(&a), s("r+")]), "fd");
         run(OsOp::Read, vec![fd.clone(), n(2.0)]);
         run(OsOp::Seek, vec![fd.clone(), n(0.0), s("set")]);
-        run(OsOp::Write, vec![fd.clone(), s("eA==")]);
+        run(OsOp::Write, vec![fd.clone(), Value::bytes(b"x".to_vec())]);
         run(OsOp::Fsync, vec![fd.clone()]);
         run(OsOp::Close, vec![fd]);
         run(OsOp::Truncate, vec![text(&a), n(3.0)]);
@@ -812,7 +838,7 @@ mod tests {
 
     #[test]
     fn every_op_belongs_to_exactly_one_family_in_contract_order() {
-        let mut counts = [0usize; 6];
+        let mut counts = [0usize; 9];
         for op in OsOp::ALL {
             let slot = match family_of(*op) {
                 OsFamily::Fs => 0,
@@ -821,11 +847,14 @@ mod tests {
                 OsFamily::Sys => 3,
                 OsFamily::Kv => 4,
                 OsFamily::Dev => 5,
+                OsFamily::Mem => 6,
+                OsFamily::Kernel => 7,
+                OsFamily::Ffi => 8,
             };
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 31, 5, 4]);
+        assert_eq!(counts, [32, 18, 12, 31, 5, 4, 12, 2, 1]);
     }
 
     #[test]

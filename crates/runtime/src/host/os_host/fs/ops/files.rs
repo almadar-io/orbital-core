@@ -191,7 +191,7 @@ impl<'a> Cx<'a> {
         let size = u64::try_from(size)
             .map_err(|_| self.err(OsErrorKind::Invalid, "size cannot be negative"))?;
         match args.first() {
-            Some(Value::Number(_)) => {
+            Some(handle) if handle.is_numeric() => {
                 let fd = self.fd_arg(args, 0)?;
                 self.with_file(fd, |f| f.set_len(size).map_err(|e| self.fd_io(&e)))?;
             }

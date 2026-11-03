@@ -133,6 +133,10 @@ impl BlockingHost<'_> {
                     errors: Vec::new(),
                 }),
             }),
+            IoRequest::Guest { .. } => IoAnswer::Substrate(Err(crate::agent_ports::guest_failure(
+                OsErrorKind::Unsupported,
+                "program/dispatch: this host starts no guest kernels",
+            ))),
             IoRequest::PageFacts { .. }
             | IoRequest::Prompt { .. }
             | IoRequest::Embed { .. }

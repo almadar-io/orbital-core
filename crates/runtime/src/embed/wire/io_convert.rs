@@ -150,6 +150,15 @@ impl From<IoRequestWire> for IoRequest {
                 key,
                 site: CallSite::from(site),
             },
+            IoRequestWire::Guest { program, address, payload, grants, key, site } => Self::Guest {
+                program,
+                address,
+                payload,
+                grants,
+                arenas: Default::default(),
+                key,
+                site: CallSite::from(site),
+            },
         }
     }
 }
@@ -286,6 +295,14 @@ impl From<&IoRequest> for IoRequestWire {
             IoRequest::CredentialModeWrite { mode } => Self::CredentialModeWrite { mode: mode.clone() },
             IoRequest::Deliver { envelope, key, site } => Self::Deliver {
                 envelope: envelope.clone(),
+                key: key.clone(),
+                site: CallSiteWire::from(site),
+            },
+            IoRequest::Guest { program, address, payload, grants, key, site, .. } => Self::Guest {
+                program: program.clone(),
+                address: address.clone(),
+                payload: payload.clone(),
+                grants: grants.clone(),
                 key: key.clone(),
                 site: CallSiteWire::from(site),
             },
