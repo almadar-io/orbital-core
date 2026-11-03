@@ -3575,3 +3575,59 @@ fn a_glob_the_asker_cannot_be_shown_to_contain_is_not_covered() {
     let home = grants_of(json!({ "fs": [{ "glob": "~/data/a.txt", "modes": ["read"] }] }));
     assert!(covers(&asker, &home).is_err(), "control: another anchor");
 }
+
+#[test]
+fn a_drive_headed_anchor_renders_as_the_host_names_it_and_as_a_rooted_glob() {
+    let drive: Vec<String> = ["C:", "Users", "r", ".almadar"].map(String::from).to_vec();
+    assert_eq!(host_rooted(&drive, Some("derived/**")), "C:/Users/r/.almadar/derived/**");
+    assert_eq!(rooted(&drive, Some("derived/**")), "/C:/Users/r/.almadar/derived/**");
+    let posix: Vec<String> = ["home", "r"].map(String::from).to_vec();
+    assert_eq!(host_rooted(&posix, Some("x")), "/home/r/x");
+    assert_eq!(rooted(&posix, Some("x")), "/home/r/x");
+    assert_eq!(rooted(&[], None), "/");
+    let lower: Vec<String> = ["c:", "x"].map(String::from).to_vec();
+    assert_eq!(host_rooted(&lower, None), "/c:/x", "only the normalized upper-case drive segment is a drive");
+}
+
+#[cfg(unix)]
+#[test]
+fn posix_paths_normalize_as_before_and_never_climb_above_the_root() {
+    assert_eq!(normalized_segments(Path::new("/a/b/../c")), Some(vec!["a".to_string(), "c".to_string()]));
+    assert_eq!(normalized_segments(Path::new("/a/..")), Some(vec![]));
+    assert_eq!(normalized_segments(Path::new("/..")), None);
+    assert_eq!(normalized_segments(Path::new("a/b")), None);
+    assert!(!allows(&fs_grants("/C:/x/**", &[FsMode::Read]), "C:/x/a", FsMode::Read), "not a drive path off Windows");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_drive_rooted_windows_path_is_its_drive_then_its_segments() {
+    let seg = |p: &str| normalized_segments(Path::new(p));
+    let expect = |v: &[&str]| Some(v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert_eq!(seg(r"C:\Users\r\.almadar"), expect(&["C:", "Users", "r", ".almadar"]));
+    assert_eq!(seg("c:/Users/r"), expect(&["C:", "Users", "r"]));
+    assert_eq!(seg(r"\\?\C:\Users"), expect(&["C:", "Users"]));
+    assert_eq!(seg(r"C:\a\..\b"), expect(&["C:", "b"]));
+    assert_eq!(seg(r"C:\.."), None, "never climbs above the drive");
+    assert_eq!(seg(r"C:relative"), None, "drive-relative");
+    assert_eq!(seg(r"\\server\share\x"), None, "UNC");
+    assert_eq!(seg(r"\\.\pipe\x"), None, "device");
+
+    let grants = fs_grants("/C:/Users/r/.almadar/derived/**", &[FsMode::Write]);
+    assert!(allows(&grants, r"C:\Users\r\.almadar\derived\a", FsMode::Write));
+    assert!(allows(&grants, "C:/Users/r/.almadar/derived/a", FsMode::Write));
+    assert!(!allows(&grants, r"D:\Users\r\.almadar\derived\a", FsMode::Write), "other drive");
+    assert!(!allows(&grants, r"C:\Users\r\.almadar\other", FsMode::Write), "outside the grant");
+    assert!(!allows(&grants, r"C:\Users\r\.almadar\derived\..\..\x", FsMode::Write), "climbs out");
+
+    let host = boot(None, &[("D", r"C:\Users\r\.almadar\derived")]);
+    let at = |v: serde_json::Value| {
+        AnchoredPath::from_value(&serde_json::from_value::<Value>(v).unwrap()).expect("anchored")
+    };
+    assert_eq!(host.resolve_path(&at(json!({"anchor": {"env": "D"}, "path": "a"}))), Ok("C:/Users/r/.almadar/derived/a".to_string()));
+    let granted = anchored(vec![AnchoredFsGrant { anchor: GrantAnchor::Env("D".into()), glob: "**".into(), modes: vec![FsMode::Write] }], vec![]);
+    let (grants, problems) = granted.resolve_anchors(&host);
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(grants.fs_allows(Path::new("C:/Users/r/.almadar/derived/a"), FsMode::Write));
+    assert!(!grants.fs_allows(Path::new("C:/Users/r/.almadar/a"), FsMode::Write), "outside the anchor");
+}

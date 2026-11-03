@@ -111,18 +111,18 @@ pub(super) fn answer(
     _site: Option<&CallSite>,
     host: &OsHost<'_>,
 ) -> Option<Result<Value, OsError>> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         ops::answer(op, args, host)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (args, host);
         unsupported(op)
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 fn unsupported(op: OsOp) -> Option<Result<Value, OsError>> {
     match op {
         OsOp::Close => None,
@@ -134,9 +134,9 @@ fn unsupported(op: OsOp) -> Option<Result<Value, OsError>> {
 }
 
 pub(super) fn later(op: OsOp, args: &[Value], key: &str, site: &CallSite, host: &OsHost<'_>) -> Result<(), OsError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     { ops::later(op, args, key, site, host) }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let (args, net) = (args.to_vec(), host.handles.net.clone());
         super::completion::Completions::run_later(&host.handles.completions, key, site, move || {
@@ -158,11 +158,11 @@ pub(super) fn read_later(
     site: &CallSite,
     host: &OsHost<'_>,
 ) -> Result<(), OsError> {
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
         ops::read_later(args, key, site, host)
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (args, key, site, host);
         Err(OsError::new(
@@ -172,8 +172,11 @@ pub(super) fn read_later(
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod ops;
 
 #[cfg(all(test, unix))]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod tests_windows;

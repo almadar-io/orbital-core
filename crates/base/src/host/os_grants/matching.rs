@@ -4,19 +4,30 @@ use super::*;
 
 #[cfg(feature = "std")]
 /// The absolute path as its `/`-separated segments with `.` dropped and `..` collapsed; `None` for a
-/// relative path, a non-UTF-8 segment, a platform prefix, or a `..` that climbs above the root.
+/// relative path, a non-UTF-8 segment, a `..` that climbs above the root, or a platform prefix other than a drive
+/// letter. A drive-rooted Windows path (`C:\x`, `\\?\C:\x`) is `/C:/x`: its drive is the first segment.
 pub(super) fn normalized_segments(path: &Path) -> Option<Vec<String>> {
     let mut segments: Vec<String> = Vec::new();
     let mut rooted = false;
+    let mut floor = 0;
     for component in path.components() {
         match component {
             Component::RootDir => rooted = true,
             Component::CurDir => {}
             Component::ParentDir => {
-                segments.pop()?;
+                if segments.len() == floor {
+                    return None;
+                }
+                segments.pop();
             }
             Component::Normal(part) => segments.push(part.to_str()?.to_string()),
-            Component::Prefix(_) => return None,
+            Component::Prefix(prefix) => match prefix.kind() {
+                std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) if segments.is_empty() => {
+                    segments.push(format!("{}:", char::from(letter.to_ascii_uppercase())));
+                    floor = 1;
+                }
+                _ => return None,
+            },
         }
     }
     rooted.then_some(segments)
@@ -79,9 +90,11 @@ pub(super) fn anchor_of(text: &str) -> Option<(Anchor, &str)> {
 /// when a `..` climbs above it.
 pub(super) fn anchored_segments(path: &Path) -> Option<(Anchor, Vec<String>)> {
     let text = path.to_str()?;
-    match anchor_of(text)? {
-        (Anchor::Root, _) => Some((Anchor::Root, normalized_segments(path)?)),
-        (anchor, rest) => {
+    match anchor_of(text) {
+        None if path.is_absolute() => Some((Anchor::Root, normalized_segments(path)?)),
+        None => None,
+        Some((Anchor::Root, _)) => Some((Anchor::Root, normalized_segments(path)?)),
+        Some((anchor, rest)) => {
             let mut segments: Vec<String> = Vec::new();
             for component in Path::new(rest).components() {
                 match component {
@@ -305,6 +318,13 @@ impl OsGrants {
             fs: vec![FsGrant { glob: glob.to_string(), modes: vec![FsMode::Read] }],
             ..OsGrants::default()
         }
+    }
+
+    #[cfg(feature = "std")]
+    /// [`Self::read_matcher`] for a pattern the host holds as an absolute path (`C:\x\*` on Windows); `None` for a
+    /// form [`normalized_segments`] refuses.
+    pub fn host_read_matcher(pattern: &Path) -> Option<OsGrants> {
+        normalized_segments(pattern).map(|segments| Self::read_matcher(&super::anchors::rooted(&segments, None)))
     }
 
     pub fn exec_allows(&self, command: &str) -> bool {
