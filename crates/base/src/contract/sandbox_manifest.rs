@@ -299,15 +299,22 @@ mod tests {
 
         let tampered = signed.replace("a.example", "b.example");
         let (bytes, signature) = signed_bytes_and_signature(&tampered);
-        assert!(!ed25519_verify(&public, &bytes, &signature), "control: a changed egress breaks the signature");
+        assert!(
+            !ed25519_verify(&public, &bytes, &signature),
+            "control: a changed egress breaks the signature"
+        );
         let (bytes, signature) = signed_bytes_and_signature(&signed);
         let mut other = seed;
         other[0] ^= 1;
-        assert!(!ed25519_verify(&ed25519_public_key(&other), &bytes, &signature), "control: another key does not verify it");
+        assert!(
+            !ed25519_verify(&ed25519_public_key(&other), &bytes, &signature),
+            "control: another key does not verify it"
+        );
     }
 
     #[test]
-    fn signing_refuses_a_non_object_and_a_manifest_that_is_already_signed_and_a_seed_must_be_64_hex() {
+    fn signing_refuses_a_non_object_and_a_manifest_that_is_already_signed_and_a_seed_must_be_64_hex(
+    ) {
         let seed = parse_seed(SEED).unwrap();
         assert!(sign_manifest(&serde_json::json!([1]), "k", &seed).is_err());
         assert!(sign_manifest(&serde_json::json!({ "signature": {} }), "k", &seed).is_err());
@@ -317,22 +324,39 @@ mod tests {
 
     #[test]
     fn the_canonical_form_sorts_keys_and_sha256_hex_is_lower_case_hex() {
-        assert_eq!(canonical_json(&serde_json::json!({ "b": [2, { "z": 1, "a": 0 }], "a": null })), r#"{"a":null,"b":[2,{"a":0,"z":1}]}"#);
-        assert_eq!(sha256_hex(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(
+            canonical_json(&serde_json::json!({ "b": [2, { "z": 1, "a": 0 }], "a": null })),
+            r#"{"a":null,"b":[2,{"a":0,"z":1}]}"#
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
-    fn a_program_without_deployment_is_the_one_unit_main_and_a_bad_artifact_hash_or_unit_is_refused() {
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({ "name": "App", "orbitals": [] })).unwrap();
+    fn a_program_without_deployment_is_the_one_unit_main_and_a_bad_artifact_hash_or_unit_is_refused(
+    ) {
+        let schema: OrbitalSchema =
+            serde_json::from_value(serde_json::json!({ "name": "App", "orbitals": [] })).unwrap();
         assert_eq!(unit_names(&schema), vec!["main".to_string()]);
         let digest = sha256_hex(b"x");
         let manifest = Manifest::build(&schema, "main", &digest).unwrap();
         assert_eq!(manifest.program, format!("sha256:{digest}"));
-        assert!(matches!(Manifest::build(&schema, "main", "xyz"), Err(ManifestBuildError::BadArtifactHash(_))));
-        assert!(matches!(Manifest::build(&schema, "other", &digest), Err(ManifestBuildError::UnknownUnit { .. })));
+        assert!(matches!(
+            Manifest::build(&schema, "main", "xyz"),
+            Err(ManifestBuildError::BadArtifactHash(_))
+        ));
+        assert!(matches!(
+            Manifest::build(&schema, "other", &digest),
+            Err(ManifestBuildError::UnknownUnit { .. })
+        ));
     }
 
-    fn manifest_credentials(config: Json, effects: Json) -> Result<BTreeMap<String, Vec<String>>, ManifestBuildError> {
+    fn manifest_credentials(
+        config: Json,
+        effects: Json,
+    ) -> Result<BTreeMap<String, Vec<String>>, ManifestBuildError> {
         let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
             "name": "App",
             "orbitals": [{
@@ -362,7 +386,10 @@ mod tests {
     }
 
     fn expect(names: &[&str]) -> BTreeMap<String, Vec<String>> {
-        BTreeMap::from([("Api".to_string(), names.iter().map(|n| n.to_string()).collect())])
+        BTreeMap::from([(
+            "Api".to_string(),
+            names.iter().map(|n| n.to_string()).collect(),
+        )])
     }
 
     #[test]
@@ -373,37 +400,68 @@ mod tests {
                 { "bytes": ["bytes/from-string", "\r\n"], "credential": "" }
             ], { "key": "s" }]])
         };
-        assert_eq!(manifest_credentials(secret_config(), send("@config.credential".into())).unwrap(), expect(&["FOO"]));
-        assert_eq!(manifest_credentials(secret_config(), send("LITERAL".into())).unwrap(), expect(&["LITERAL"]));
-        assert!(manifest_credentials(secret_config(), send("@config.idle".into())).unwrap().is_empty(), "an empty knob is bytes alone");
-        assert!(manifest_credentials(secret_config(), send("".into())).unwrap().is_empty(), "the empty name is bytes alone");
+        assert_eq!(
+            manifest_credentials(secret_config(), send("@config.credential".into())).unwrap(),
+            expect(&["FOO"])
+        );
+        assert_eq!(
+            manifest_credentials(secret_config(), send("LITERAL".into())).unwrap(),
+            expect(&["LITERAL"])
+        );
+        assert!(
+            manifest_credentials(secret_config(), send("@config.idle".into()))
+                .unwrap()
+                .is_empty(),
+            "an empty knob is bytes alone"
+        );
+        assert!(
+            manifest_credentials(secret_config(), send("".into()))
+                .unwrap()
+                .is_empty(),
+            "the empty name is bytes alone"
+        );
         for computed in ["@payload.name", "@config.plain", "@config.missing"] {
             let err = manifest_credentials(secret_config(), send(computed.into())).unwrap_err();
-            assert!(matches!(err, ManifestBuildError::ComputedCredential { ref slot, .. } if slot == "os/send.segment"), "{computed}: {err}");
+            assert!(
+                matches!(err, ManifestBuildError::ComputedCredential { ref slot, .. } if slot == "os/send.segment"),
+                "{computed}: {err}"
+            );
         }
     }
 
     #[test]
     fn a_credential_operator_lists_its_secret_knob_and_a_program_without_credentials_lists_none() {
         let hmac = serde_json::json!([["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]]]);
-        assert_eq!(manifest_credentials(secret_config(), hmac).unwrap(), expect(&["SIGN_KEY"]));
+        assert_eq!(
+            manifest_credentials(secret_config(), hmac).unwrap(),
+            expect(&["SIGN_KEY"])
+        );
         let both = serde_json::json!([
             ["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]],
             ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "@config.credential" }], { "key": "s" }]
         ]);
-        assert_eq!(manifest_credentials(secret_config(), both).unwrap(), expect(&["FOO", "SIGN_KEY"]));
+        assert_eq!(
+            manifest_credentials(secret_config(), both).unwrap(),
+            expect(&["FOO", "SIGN_KEY"])
+        );
         let plain = serde_json::json!([
             ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "" }], { "key": "s" }],
             ["set", "@entity.id", "@payload.id"]
         ]);
-        assert!(manifest_credentials(secret_config(), plain).unwrap().is_empty());
-        assert!(manifest_credentials(secret_config(), serde_json::json!([])).unwrap().is_empty());
+        assert!(manifest_credentials(secret_config(), plain)
+            .unwrap()
+            .is_empty());
+        assert!(manifest_credentials(secret_config(), serde_json::json!([]))
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn an_http_auth_slot_is_not_a_credential_source() {
         let http = serde_json::json!([["http", "GET", "https://a.example", "/v1",
             { "auth": { "scheme": "bearer", "credential": "stripe" } }, { "emit": { "success": "OK" } }]]);
-        assert!(manifest_credentials(secret_config(), http).unwrap().is_empty());
+        assert!(manifest_credentials(secret_config(), http)
+            .unwrap()
+            .is_empty());
     }
 }

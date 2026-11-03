@@ -7,10 +7,10 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::value::ValueMap;
 use super::helpers::{get_array, get_number, get_string, get_string_array};
 use chrono::{Datelike, Duration, NaiveDate};
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 
 /// One day column of the grid.
 #[derive(Debug, Clone)]
@@ -151,7 +151,10 @@ mod tests {
     #[test]
     fn test_time_slots_default_and_explicit() {
         let slots = calendar_time_slots(&props(r#"{}"#));
-        assert_eq!(slots, vec!["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]);
+        assert_eq!(
+            slots,
+            vec!["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]
+        );
         let slots = calendar_time_slots(&props(r#"{"timeSlots": ["08:00", "12:00"]}"#));
         assert_eq!(slots, vec!["08:00", "12:00"]);
     }

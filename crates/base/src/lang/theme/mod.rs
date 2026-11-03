@@ -178,7 +178,13 @@ pub fn carry_theme_definitions(schema: &mut OrbitalSchema, presets: &ThemePreset
             ThemeRef::Reference(key) if !key.is_empty() => Some(split_theme_key(key).0),
             _ => None,
         })
-        .chain(schema.themes.iter().flatten().map(|key| split_theme_key(key).0))
+        .chain(
+            schema
+                .themes
+                .iter()
+                .flatten()
+                .map(|key| split_theme_key(key).0),
+        )
         .chain(std::iter::once(DEFAULT_THEME_BASE.to_string()))
         .collect();
     bases.sort();

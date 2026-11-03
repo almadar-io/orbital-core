@@ -57,10 +57,13 @@ pub fn decode_quote_body(body: &str) -> Option<SExpression> {
 
 /// The IR call `["quote", <body>]` for `expr`.
 pub fn quote_expr(expr: &SExpression) -> SExpression {
-    SExpression::Array(vec![
-        SExpression::string(QUOTE_HEAD.to_string()),
-        SExpression::string(encode_quote_body(expr)),
-    ].into())
+    SExpression::Array(
+        vec![
+            SExpression::string(QUOTE_HEAD.to_string()),
+            SExpression::string(encode_quote_body(expr)),
+        ]
+        .into(),
+    )
 }
 
 /// The encoded body when `expr` is a `(quote x)` call.
@@ -152,10 +155,13 @@ fn extract_holes(
             return Err(QuasiquoteError::UnquoteInUnquote);
         }
         holes.push(items[1].clone());
-        return Ok(SExpression::Array(vec![
-            SExpression::string(UNQUOTE_HEAD.to_string()),
-            SExpression::Number((holes.len() - 1) as f64),
-        ].into()));
+        return Ok(SExpression::Array(
+            vec![
+                SExpression::string(UNQUOTE_HEAD.to_string()),
+                SExpression::Number((holes.len() - 1) as f64),
+            ]
+            .into(),
+        ));
     }
     match expr {
         SExpression::Array(items) => Ok(SExpression::Array(

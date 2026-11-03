@@ -13,13 +13,14 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::value::ValueMap;
-use crate::client::client_kernel::ClientKernel;
+use crate::client::client_kernel::{BegunDispatch, BegunFrame, BegunMount, ClientKernel};
 use crate::client::helpers::{format_value, get_string, SlotContent};
-use orbital_core_base::client_effect::ClientEffect;
+use crate::client::http::BridgeError;
 use crate::effects::response::EventResponse;
+use orbital_core_base::client_effect::{ClientEffect, HostAskCompletion};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
@@ -44,6 +45,24 @@ pub fn extract_entity_id(payload: &Value) -> Option<String> {
 }
 
 /// Shared, render-agnostic client state + circuit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PendingHostAsk {
+    pub source_trait: String,
+    pub op: String,
+    pub args: Vec<Value>,
+    pub completion: Option<HostAskCompletion>,
+}
+
+pub fn host_ask_failure_payload(completion: &HostAskCompletion, error: &str, kind: &str) -> Value {
+    let mut payload = ValueMap::new();
+    payload.insert("error".into(), Value::string(error));
+    payload.insert("kind".into(), Value::string(kind));
+    if let Some(key) = &completion.key {
+        payload.insert("key".into(), Value::string(key.as_str()));
+    }
+    Value::object(payload)
+}
+
 pub struct ClientCore {
     /// Orbital schema (resolved).
     pub schema: OrbitalSchema,
@@ -81,6 +100,8 @@ pub struct ClientCore {
     /// re-dispatched to the trait that emitted it — e.g. a `fetch`'s `BrowseItemLoaded`
     /// back to the browse trait; `None` for a user action, which targets the active trait).
     pub pending_events: Vec<(String, Option<String>, Value)>,
+    /// Ordered client-site asks handed to the host under EXEC-DIST-13.
+    pub pending_host_asks: Vec<PendingHostAsk>,
     /// Entity currently being edited (for form pre-population).
     pub editing_entity: Option<Value>,
     /// Traits a host embeds (`traitEmbedIds`): they render at the host's `@trait.X` site,
@@ -102,6 +123,35 @@ pub struct ClientCore {
     next_await_token: u64,
     awaiting_motion: Option<std::time::Duration>,
     ticks_started: web_time::Instant,
+}
+
+#[derive(Debug, Clone)]
+pub enum PendingPageMount {
+    Batch(BegunMount),
+    Single(BegunDispatch),
+}
+
+impl PendingPageMount {
+    pub fn awaiting(&self) -> Vec<crate::kernel::AwaitingTrait> {
+        match self {
+            Self::Batch(begun) => begun.awaiting().cloned().collect(),
+            Self::Single(begun) => begun.awaiting().to_vec(),
+        }
+    }
+
+    pub fn has_legs(&self) -> bool {
+        match self {
+            Self::Batch(begun) => begun.has_legs(),
+            Self::Single(begun) => begun.has_legs(),
+        }
+    }
+
+    pub fn settle(&self, kernel: &ClientKernel) -> Result<EventResponse, BridgeError> {
+        match self {
+            Self::Batch(begun) => kernel.settle_mount(begun),
+            Self::Single(begun) => kernel.settle(begun),
+        }
+    }
 }
 
 struct AwaitingEntry {
@@ -141,6 +191,7 @@ impl ClientCore {
             entities: HashMap::new(),
             status_message: None,
             pending_events: Vec::new(),
+            pending_host_asks: Vec::new(),
             editing_entity: None,
             embedded,
             current_page,
@@ -308,6 +359,49 @@ impl ClientCore {
         self.mount_traits_blocking(&traits, payload);
     }
 
+    /// Run a page's local mount now; the caller settles its server flight off the UI thread.
+    pub fn begin_mount_page(&mut self) -> Result<PendingPageMount, BridgeError> {
+        let kernel = self.client_kernel.clone().ok_or_else(|| {
+            BridgeError::InvalidRequest("split page mount needs a client kernel".into())
+        })?;
+        let traits = self.page_mount_traits();
+        let payload = self.page_mount_payload();
+        self.page_entered = false;
+        if traits.is_empty() {
+            let begun = kernel.begin(&self.current_trait_name, None, "INIT", payload)?;
+            self.process_response(
+                "INIT",
+                Some(self.current_trait_name.clone()),
+                begun.local.clone(),
+            );
+            return Ok(PendingPageMount::Single(begun));
+        }
+        kernel.remount(traits.iter().cloned());
+        let seeds: Vec<crate::effects::response::MountSeed> = traits
+            .iter()
+            .map(|name| crate::effects::response::MountSeed {
+                r#trait: name.clone(),
+                event: crate::effects::response::LifecycleEvent::Init,
+            })
+            .collect();
+        let begun = kernel.begin_mount(&seeds, payload)?;
+        for (trait_name, local) in begun.locals() {
+            self.process_response("INIT", Some(trait_name.to_string()), local.clone());
+        }
+        Ok(PendingPageMount::Batch(begun))
+    }
+
+    pub fn finish_mount_page(&mut self, result: Result<EventResponse, BridgeError>) {
+        match result {
+            Ok(response) => self.process_response("INIT", None, response),
+            Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+        }
+    }
+
+    pub fn needs_page_mount(&self) -> bool {
+        self.page_entered
+    }
+
     /// Dispatch a control's event as the trait whose content rendered it (`source`), or the
     /// active trait when the content carries none.
     pub fn dispatch_control(&mut self, event: &str, source: Option<&str>, payload: Value) {
@@ -315,6 +409,62 @@ impl ClientCore {
             .map(str::to_string)
             .unwrap_or_else(|| self.current_trait_name.clone());
         self.drive_blocking(event, Some(&origin), payload);
+    }
+
+    /// Drive a control's local cascade and paint it before its server leg is posted.
+    pub fn begin_control(
+        &mut self,
+        event: &str,
+        source: Option<&str>,
+        payload: Value,
+    ) -> Result<BegunDispatch, BridgeError> {
+        let kernel = self.client_kernel.clone().ok_or_else(|| {
+            BridgeError::InvalidRequest("split control dispatch needs a client kernel".into())
+        })?;
+        let origin = source.unwrap_or(&self.current_trait_name).to_string();
+        let entity_id = extract_entity_id(&payload);
+        let begun = kernel.begin(&origin, entity_id.as_deref(), event, payload)?;
+        self.process_response(event, Some(origin), begun.local.clone());
+        Ok(begun)
+    }
+
+    /// Return a host-ask outcome to its authored trait and row address.
+    pub fn begin_host_completion(
+        &mut self,
+        completion: &HostAskCompletion,
+        event: &str,
+        payload: Value,
+    ) -> Result<BegunDispatch, BridgeError> {
+        let kernel = self.client_kernel.clone().ok_or_else(|| {
+            BridgeError::InvalidRequest("host completion needs a client kernel".into())
+        })?;
+        let begun = kernel.begin(
+            &completion.trait_name,
+            completion.entity_id.as_deref(),
+            event,
+            payload,
+        )?;
+        self.process_response(
+            event,
+            Some(completion.trait_name.clone()),
+            begun.local.clone(),
+        );
+        Ok(begun)
+    }
+
+    pub fn finish_control(
+        &mut self,
+        begun: &BegunDispatch,
+        result: Result<EventResponse, BridgeError>,
+    ) {
+        match result {
+            Ok(response) => self.process_response(
+                begun.event(),
+                Some(begun.trait_name().to_string()),
+                response,
+            ),
+            Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+        }
     }
 
     /// What a host paints in `slot`: `main` holds the current page's writers only.
@@ -414,8 +564,11 @@ impl ClientCore {
     /// Report to the kernel which traits have rendered output on screen: those with `main` content or a slot
     /// they authored. A `[visible]` tick of any other trait does not fire. Call before each frame.
     pub fn report_presence(&self) {
-        let Some(kernel) = &self.client_kernel else { return };
-        let mut shown: std::collections::HashSet<&str> = self.trait_content.keys().map(|k| k.as_str()).collect();
+        let Some(kernel) = &self.client_kernel else {
+            return;
+        };
+        let mut shown: std::collections::HashSet<&str> =
+            self.trait_content.keys().map(|k| k.as_str()).collect();
         for contents in self.ui_slots.values() {
             shown.extend(contents.iter().filter_map(|c| c.source_trait.as_deref()));
         }
@@ -431,14 +584,18 @@ impl ClientCore {
     /// Whether the schema declares any tick: a host requests continuous repaint then, since the client is otherwise
     /// event-reactive and `set`-effect loops (`gameflowTick every 33ms`) would never advance.
     pub fn has_ticks(&self) -> bool {
-        self.client_kernel.as_ref().is_some_and(|kernel| kernel.tick_count() > 0)
+        self.client_kernel
+            .as_ref()
+            .is_some_and(|kernel| kernel.tick_count() > 0)
     }
 
     /// One host frame of the kernel's tick clock through the client kernel ([`ClientKernel::frame`]): every due tick
     /// runs once and the responses are painted. Answers whether any tick ran, so the host repaints only when state may
     /// have advanced. A core without a client kernel runs no ticks.
     pub fn drive_ticks_blocking(&mut self) -> bool {
-        let Some(kernel) = self.client_kernel.clone() else { return false };
+        let Some(kernel) = self.client_kernel.clone() else {
+            return false;
+        };
         self.report_presence();
         let now_ms = u64::try_from(self.ticks_started.elapsed().as_millis()).unwrap_or(u64::MAX);
         match kernel.frame(now_ms) {
@@ -453,6 +610,33 @@ impl ClientCore {
                 tracing::error!(target: "almadar::client", %error, "frame failed");
                 false
             }
+        }
+    }
+
+    /// Run due ticks locally and paint their results before a worker settles server legs.
+    pub fn begin_frame(&mut self) -> Result<Option<BegunFrame>, BridgeError> {
+        let kernel = self.client_kernel.clone().ok_or_else(|| {
+            BridgeError::InvalidRequest("split frame needs a client kernel".into())
+        })?;
+        self.report_presence();
+        let now_ms = u64::try_from(self.ticks_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let Some(begun) = kernel.begin_frame(now_ms)? else {
+            return Ok(None);
+        };
+        for response in begun.local() {
+            self.process_response("frame", None, response.clone());
+        }
+        Ok(Some(begun))
+    }
+
+    pub fn finish_frame(&mut self, result: Result<Vec<EventResponse>, BridgeError>) {
+        match result {
+            Ok(responses) => {
+                for response in responses {
+                    self.process_response("frame", None, response);
+                }
+            }
+            Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
         }
     }
 
@@ -670,7 +854,10 @@ impl ClientCore {
             .flat_map(|entry| entry.renders.iter())
     }
 
-    fn skeleton_content(&self, render: &orbital_core_base::ir::types::AwaitRender) -> Option<SlotContent> {
+    fn skeleton_content(
+        &self,
+        render: &orbital_core_base::ir::types::AwaitRender,
+    ) -> Option<SlotContent> {
         let node = serde_json::json!({ "type": "skeleton", "spec": render.skeleton });
         let mut content = self.parse_pattern(&serde_json::from_value(node).ok()?)?;
         content.source_trait = Some(render.trait_name.clone());
@@ -816,7 +1003,9 @@ impl ClientCore {
         // Every trait writes its own slots; an embedded trait never writes `main` (its host
         // splices it in via `@trait.X`).
         let embedded = self.embedded.clone();
-        let is_main = |slot: &str| orbital_core_base::slots::slot_role(slot) == orbital_core_base::slots::SlotRole::Main;
+        let is_main = |slot: &str| {
+            orbital_core_base::slots::slot_role(slot) == orbital_core_base::slots::SlotRole::Main
+        };
         let writes = |slot: &str, src: &str| !is_main(slot) || !embedded.contains(src);
 
         // Index every render-ui's (config+props merged) content under its SOURCE trait so
@@ -834,7 +1023,9 @@ impl ClientCore {
                     if is_main(slot) {
                         self.trait_content.insert(src.clone().into(), content);
                     } else {
-                        self.trait_content.entry(src.clone().into()).or_insert(content);
+                        self.trait_content
+                            .entry(src.clone().into())
+                            .or_insert(content);
                     }
                 }
             }
@@ -889,10 +1080,8 @@ impl ClientCore {
             if let (crate::effects::response::TransitionRejectionCode::RepaintFailed, Some(slot)) =
                 (rejection.code, &rejection.slot)
             {
-                self.slot_faults.insert(
-                    slot.clone(),
-                    rejection.error.clone().unwrap_or_default(),
-                );
+                self.slot_faults
+                    .insert(slot.clone(), rejection.error.clone().unwrap_or_default());
             }
         }
 
@@ -941,7 +1130,7 @@ impl ClientCore {
     /// Execute a non-render client-side effect (navigate/navigate-back → status).
     /// `origin_trait` is the trait this effect came from. `render-ui` is handled inline
     /// by [`process_response`] (it needs the per-slot suppression rule); this covers the
-    /// two navigation variants, and stays defensive for a direct `RenderUi` call.
+    /// navigation and host asks, and stays defensive for a direct `RenderUi` call.
     pub fn execute_client_effect(&mut self, effect: ClientEffect, origin_trait: &str) {
         match &effect {
             ClientEffect::RenderUi { slot, .. } => {
@@ -961,8 +1150,17 @@ impl ClientCore {
                 debug!("Navigate-back effect");
                 self.navigate_back();
             }
-            ClientEffect::HostAsk { op, .. } => {
-                tracing::error!(op = %op, trait_name = origin_trait, "host-ask: this client core has no host to answer it");
+            ClientEffect::HostAsk {
+                op,
+                args,
+                completion,
+            } => {
+                self.pending_host_asks.push(PendingHostAsk {
+                    source_trait: origin_trait.to_string(),
+                    op: op.clone(),
+                    args: args.clone(),
+                    completion: completion.clone(),
+                });
             }
         }
     }
@@ -999,7 +1197,8 @@ fn pages_of(
 /// The page an orbital opens on: the one marked initial, else its first.
 fn initial_page(schema: &OrbitalSchema, idx: usize) -> Option<String> {
     let pages: Vec<_> = pages_of(schema, idx).collect();
-    orbital_core_base::ir::types::initial_of(&pages, |p| p.is_initial == Some(true)).map(|p| p.name.clone())
+    orbital_core_base::ir::types::initial_of(&pages, |p| p.is_initial == Some(true))
+        .map(|p| p.name.clone())
 }
 
 /// The page a visit was on, for `navigate-back`.

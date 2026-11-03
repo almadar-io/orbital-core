@@ -11,11 +11,11 @@
 use std::prelude::v1::*;
 
 use crate::schema::types::PayloadTypeWhen;
+use crate::sync::OnceLock;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 #[cfg(feature = "std")]
 use std::path::PathBuf;
-use crate::sync::OnceLock;
 
 // ============================================================================
 // 3.1 — canonical-operators.json (installed @almadar/std operator table)
@@ -58,7 +58,9 @@ impl OperatorTypeRef {
             OperatorTypeRef::Tagged(kind) => match kind {
                 OperatorTypeRefKind::Literal { value } => value.is_null(),
                 OperatorTypeRefKind::Union { of } => of.iter().any(OperatorTypeRef::admits_null),
-                OperatorTypeRefKind::Var { bound, .. } => bound.as_ref().is_none_or(|b| b.admits_null()),
+                OperatorTypeRefKind::Var { bound, .. } => {
+                    bound.as_ref().is_none_or(|b| b.admits_null())
+                }
                 OperatorTypeRefKind::Sexpr { of } => of.as_ref().is_none_or(|t| t.admits_null()),
                 OperatorTypeRefKind::FieldOf { .. } => true,
                 _ => false,
@@ -70,7 +72,9 @@ impl OperatorTypeRef {
     /// else (a union with a non-literal member included).
     pub fn literal_strings(&self) -> Option<Vec<&str>> {
         match self {
-            OperatorTypeRef::Tagged(OperatorTypeRefKind::Literal { value }) => value.as_str().map(|text| vec![text]),
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Literal { value }) => {
+                value.as_str().map(|text| vec![text])
+            }
             OperatorTypeRef::Tagged(OperatorTypeRefKind::Union { of }) => {
                 let mut out = Vec::new();
                 for member in of {
@@ -388,7 +392,10 @@ impl EmbeddedOperator {
         let Some(selector) = &self.result_by_option else {
             return Some(&self.return_type);
         };
-        let at = self.params.iter().position(|param| param.name == "options")?;
+        let at = self
+            .params
+            .iter()
+            .position(|param| param.name == "options")?;
         let Some(SExpression::Object(options)) = args.get(at + 1) else {
             return Some(&self.return_type);
         };
@@ -430,7 +437,9 @@ impl EmbeddedOperator {
         let mut keys: Vec<&str> = fields.keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut emit_keys: Vec<&str> = match fields.get("emit") {
-            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) => fields.keys().map(String::as_str).collect(),
+            Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) => {
+                fields.keys().map(String::as_str).collect()
+            }
             _ => Vec::new(),
         };
         emit_keys.sort_unstable();
@@ -439,12 +448,19 @@ impl EmbeddedOperator {
 
     /// The first parameter's field names (sorted) and those of them that are required: a request object's contract.
     pub fn request_fields(&self) -> Option<(Vec<&str>, Vec<&str>)> {
-        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, optional, .. }) = &self.params.first()?.ty else {
+        let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object {
+            fields, optional, ..
+        }) = &self.params.first()?.ty
+        else {
             return None;
         };
         let mut declared: Vec<&str> = fields.keys().map(String::as_str).collect();
         declared.sort_unstable();
-        let required = declared.iter().copied().filter(|name| !optional.iter().any(|o| o == name)).collect();
+        let required = declared
+            .iter()
+            .copied()
+            .filter(|name| !optional.iter().any(|o| o == name))
+            .collect();
         Some((declared, required))
     }
 }
@@ -527,13 +543,16 @@ pub fn operators() -> &'static HashMap<String, EmbeddedOperator> {
 
 /// [`operators`] for a running kernel (dispatch, wasm or native): the typed language-data error when no operator table
 /// is installed, never a panic.
-pub fn try_operators() -> Result<&'static HashMap<String, EmbeddedOperator>, crate::language_data::LanguageDataError> {
+pub fn try_operators(
+) -> Result<&'static HashMap<String, EmbeddedOperator>, crate::language_data::LanguageDataError> {
     crate::language_data::operator_data()?;
     Ok(operators())
 }
 
 /// [`get_operator`] for a running kernel: the typed language-data error when no operator table is installed.
-pub fn lookup_operator(name: &str) -> Result<Option<&'static EmbeddedOperator>, crate::language_data::LanguageDataError> {
+pub fn lookup_operator(
+    name: &str,
+) -> Result<Option<&'static EmbeddedOperator>, crate::language_data::LanguageDataError> {
     Ok(try_operators()?.get(name))
 }
 
@@ -545,8 +564,14 @@ pub fn emit_slots() -> &'static HashSet<String> {
         let mut slots = HashSet::new();
         for op in operators().values() {
             for param in &op.params {
-                if let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) = &param.ty {
-                    if let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields: emit, .. })) = fields.get("emit") {
+                if let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) =
+                    &param.ty
+                {
+                    if let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object {
+                        fields: emit,
+                        ..
+                    })) = fields.get("emit")
+                    {
                         slots.extend(emit.keys().cloned());
                     }
                 }
@@ -563,7 +588,10 @@ pub fn running_release() -> Option<&'static str> {
 
 /// The host effects the installed operator table holds to a closed call shape (`closedCall`).
 pub fn closed_call_effects() -> impl Iterator<Item = &'static str> {
-    operators().iter().filter(|(_, op)| op.closed_call.is_some()).map(|(name, _)| name.as_str())
+    operators()
+        .iter()
+        .filter(|(_, op)| op.closed_call.is_some())
+        .map(|(name, _)| name.as_str())
 }
 
 /// Whether the installed operator table gives `name` an options parameter with an `emit` entry: the operators whose
@@ -594,7 +622,10 @@ pub fn table_dispatch_facts() -> Option<&'static DispatchFacts> {
     crate::language_data::operator_data().ok()?;
     Some(TABLE.get_or_init(|| {
         let list = |op: &str, read: fn(&EmbeddedOperator) -> &Vec<String>| {
-            get_operator(op).map(read).cloned().expect("the operator table declares its dispatch facts (checked at load)")
+            get_operator(op)
+                .map(read)
+                .cloned()
+                .expect("the operator table declares its dispatch facts (checked at load)")
         };
         DispatchFacts {
             bus_excluded: list("emit", |op| &op.bus_excluded),
@@ -635,7 +666,10 @@ pub fn is_known_operator(name: &str) -> bool {
 /// Whether bare `name` is the basename of a namespaced operator (`delete` of `kv/delete`, `join` of `str/join`):
 /// a list headed by it reads like a call with its namespace dropped.
 pub fn names_operator_basename(name: &str) -> bool {
-    !name.contains('/') && operators().keys().any(|op| op.rsplit_once('/').is_some_and(|(_, base)| base == name))
+    !name.contains('/')
+        && operators()
+            .keys()
+            .any(|op| op.rsplit_once('/').is_some_and(|(_, base)| base == name))
 }
 
 /// Look up the metadata for an operator by name.
@@ -705,9 +739,9 @@ pub fn is_shell_target(name: &str, shell: &str) -> bool {
 // 3.2 — patterns-registry.json (installed @almadar/core language data)
 // ============================================================================
 
+mod binding_contexts;
 mod patterns;
 mod services;
-mod binding_contexts;
 pub use binding_contexts::{
     allowed_sigils_for_context, binding_context_rules, known_contexts, BindingContextRule,
 };
@@ -717,10 +751,11 @@ pub use patterns::{
     EmbeddedPattern, EmbeddedPatternProp, EmbeddedPayloadField, RequiredFlag, PATTERNS,
 };
 pub use services::{
-    baked_service_actions, baked_service_catalog, baked_service_credentials, baked_service_registry, lolo_spelling,
-    parse_service_catalog, parse_service_registry_data, response_shape_fields, services_json, EmbeddedParamItems,
-    EmbeddedParamMember, EmbeddedService, EmbeddedServiceCredential, EmbeddedServiceParam, ResponseShapeField,
-    ServiceRegistryData, EVENT_ADDRESS_TYPE,
+    baked_service_actions, baked_service_catalog, baked_service_credentials,
+    baked_service_registry, lolo_spelling, parse_service_catalog, parse_service_registry_data,
+    response_shape_fields, services_json, EmbeddedParamItems, EmbeddedParamMember, EmbeddedService,
+    EmbeddedServiceCredential, EmbeddedServiceParam, ResponseShapeField, ServiceRegistryData,
+    EVENT_ADDRESS_TYPE,
 };
 
 #[cfg(test)]

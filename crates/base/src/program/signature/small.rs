@@ -57,7 +57,10 @@ impl<V> SmallMap<V> {
 
 impl<'a, V> IntoIterator for &'a SmallMap<V> {
     type Item = (&'a String, &'a V);
-    type IntoIter = std::iter::Map<std::slice::Iter<'a, (String, V)>, fn(&'a (String, V)) -> (&'a String, &'a V)>;
+    type IntoIter = std::iter::Map<
+        std::slice::Iter<'a, (String, V)>,
+        fn(&'a (String, V)) -> (&'a String, &'a V),
+    >;
     fn into_iter(self) -> Self::IntoIter {
         self.0.iter().map(|(k, v)| (k, v))
     }

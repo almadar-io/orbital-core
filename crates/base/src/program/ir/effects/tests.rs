@@ -29,9 +29,7 @@ fn a_substrate_operator_is_exactly_one_the_table_hosts_on_the_substrate_or_the_p
         checked_substrate > 0,
         "the table hosts operators on the substrate"
     );
-    for name in [
-        "llm/generate",
-    ] {
+    for name in ["llm/generate"] {
         let host = crate::language::registry::get_operator(name).and_then(|o| o.host.as_deref());
         assert_eq!(host, Some("substrate"), "{name}");
         assert!(is_substrate_operator(name), "{name}");

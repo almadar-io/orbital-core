@@ -75,7 +75,11 @@ pub struct LazyTrait {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listens: Vec<ListenDefinition>,
     /// Whether the trait declares a `[background]` tick: the host runs it with no client mounted, so the orbital loads at boot.
-    #[serde(default, rename = "backgroundTicks", skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        default,
+        rename = "backgroundTicks",
+        skip_serializing_if = "std::ops::Not::not"
+    )]
     pub background_ticks: bool,
 }
 
@@ -95,7 +99,10 @@ pub struct LazyTrait {
 /// docs/Almadar_LOLO_Expects_Proposal.md.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
-#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; the Entity variant carries the access policies and propositions inline")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public unboxed layout is the API; the Entity variant carries the access policies and propositions inline"
+)]
 pub enum ExpectDeclaration {
     /// `expects entity Customer [identity] { role : "admin" | "member" }` — the `@user`
     /// fields this orbital reads, typed. Bare `expects entity [identity]` (no name, no
@@ -305,7 +312,10 @@ pub struct EntityRefExtends {
 ///
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
-#[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs"
+)]
 pub enum EntityRef {
     /// Extends form: inherit an imported entity and append fields
     Extends(EntityRefExtends),
@@ -326,12 +336,16 @@ impl<'de> Deserialize<'de> for EntityRef {
         match &value {
             serde_json::Value::String(reference) => Ok(Self::Reference(reference.clone())),
             serde_json::Value::Object(object) if object.contains_key("extends") => {
-                serde_json::from_value(value).map(Self::Extends).map_err(D::Error::custom)
+                serde_json::from_value(value)
+                    .map(Self::Extends)
+                    .map_err(D::Error::custom)
             }
-            serde_json::Value::Object(_) => {
-                serde_json::from_value(value).map(Self::Inline).map_err(D::Error::custom)
-            }
-            _ => Err(D::Error::custom("entity must be an inline object, an extends object, or a string reference")),
+            serde_json::Value::Object(_) => serde_json::from_value(value)
+                .map(Self::Inline)
+                .map_err(D::Error::custom),
+            _ => Err(D::Error::custom(
+                "entity must be an inline object, an extends object, or a string reference",
+            )),
         }
     }
 }

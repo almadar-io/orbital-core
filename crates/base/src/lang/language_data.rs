@@ -207,7 +207,10 @@ pub fn register_host_release(version: &'static str) -> Result<(), &'static str> 
 
 /// The release the running host registered, else this crate's own version (a host that registers nothing).
 pub fn running_version() -> &'static str {
-    HOST_RELEASE.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
+    HOST_RELEASE
+        .get()
+        .copied()
+        .unwrap_or(env!("CARGO_PKG_VERSION"))
 }
 
 #[cfg(feature = "std")]
@@ -228,9 +231,11 @@ pub fn load_language_data_for(
 ) -> Result<LanguageData, LanguageDataError> {
     let block = read_language_block(CORE_PACKAGE, start_dir, user_store, running)?;
     let program_types = block.read("programTypes")?;
-    crate::language::program_types::parse(&program_types).map_err(|reason| LanguageDataError::Invalid {
-        path: block.declared_path("programTypes").unwrap_or_default(),
-        reason,
+    crate::language::program_types::parse(&program_types).map_err(|reason| {
+        LanguageDataError::Invalid {
+            path: block.declared_path("programTypes").unwrap_or_default(),
+            reason,
+        }
     })?;
     let protocols = block.read("protocols")?;
     crate::protocols::parse(&protocols).map_err(|reason| LanguageDataError::Invalid {
@@ -290,7 +295,8 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
         path: data.root.clone(),
         reason,
     };
-    let doc: Value = serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+    let doc: Value =
+        serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
     let section = |name: &str| {
         doc.get(name)
             .and_then(Value::as_object)
@@ -303,15 +309,25 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
         reason: e.to_string(),
     };
     for (name, meta) in section("categories")? {
-        serde_json::from_value::<EmbeddedCategory>(meta.clone()).map_err(|e| unreadable(format!("category `{name}`"), e))?;
+        serde_json::from_value::<EmbeddedCategory>(meta.clone())
+            .map_err(|e| unreadable(format!("category `{name}`"), e))?;
     }
     let operators = section("operators")?;
     for (name, meta) in operators {
-        let operator = serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+        let operator = serde_json::from_value::<EmbeddedOperator>(meta.clone())
+            .map_err(|e| unreadable(format!("operator `{name}`"), e))?;
         check_option_since(data, name, meta, &operator)?;
     }
-    for (name, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
-        if operators.get(name).and_then(|meta| meta.get(field)).and_then(Value::as_array).is_none() {
+    for (name, field) in [
+        ("emit", "busExcluded"),
+        ("program/dispatch", "targetOptions"),
+    ] {
+        if operators
+            .get(name)
+            .and_then(|meta| meta.get(field))
+            .and_then(Value::as_array)
+            .is_none()
+        {
             return Err(LanguageDataError::Unreadable {
                 package: STD_PACKAGE,
                 version: data.std_version.clone(),
@@ -340,7 +356,11 @@ fn check_option_since(
         semver::Version::parse(since)
             .ok()
             .filter(|v| v.pre.is_empty() && v.build.is_empty())
-            .ok_or_else(|| refuse(format!("`optionSince` {option:?} is {since:?}, not a release version")))?;
+            .ok_or_else(|| {
+                refuse(format!(
+                    "`optionSince` {option:?} is {since:?}, not a release version"
+                ))
+            })?;
         let segments: Vec<&str> = option.split('/').collect();
         let declared = segments.split_first().is_some_and(|(param, rest)| {
             !rest.is_empty()
@@ -352,7 +372,9 @@ fn check_option_since(
                     .is_some_and(|ty| declares_path(ty, rest))
         });
         if !declared {
-            return Err(refuse(format!("`optionSince` names {option:?}, which is not an option the operator declares")));
+            return Err(refuse(format!(
+                "`optionSince` names {option:?}, which is not an option the operator declares"
+            )));
         }
     }
     Ok(())
@@ -371,7 +393,9 @@ fn declares_path(ty: &Value, segments: &[&str]) -> bool {
             .is_some_and(|field| declares_path(field, rest));
     }
     match ty.get("of") {
-        Some(Value::Array(branches)) => branches.iter().any(|branch| declares_path(branch, segments)),
+        Some(Value::Array(branches)) => branches
+            .iter()
+            .any(|branch| declares_path(branch, segments)),
         Some(inner @ Value::Object(_)) => declares_path(inner, segments),
         _ => false,
     }
@@ -384,7 +408,10 @@ pub fn release_newer(since: &str, running: &str) -> Result<bool, semver::Error> 
 
 /// Operators whose canonical category targets `rust` but that the evaluator
 /// cannot resolve, sorted.
-pub fn unimplemented_rust_operators(table: &str, implemented: OperatorProbe) -> Result<Vec<String>, String> {
+pub fn unimplemented_rust_operators(
+    table: &str,
+    implemented: OperatorProbe,
+) -> Result<Vec<String>, String> {
     let doc: Value = serde_json::from_str(table).map_err(|e| format!("invalid JSON: {e}"))?;
     let categories = doc
         .get("categories")
@@ -546,7 +573,10 @@ pub static LANGUAGE_DATA: OnceLock<LanguageData> = OnceLock::new();
 /// Installs the language data process-wide, for hosts that cannot walk
 /// `node_modules` (wasm, tests). Returns the data back if something was
 /// already installed or lazily loaded.
-#[expect(clippy::result_large_err, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
+#[expect(
+    clippy::result_large_err,
+    reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs"
+)]
 pub fn install_language_data(data: LanguageData) -> Result<(), LanguageData> {
     LANGUAGE_DATA.set(data)
 }
@@ -561,7 +591,9 @@ pub fn language_data() -> Result<&'static LanguageData, LanguageDataError> {
     }
     #[cfg(not(feature = "std"))]
     {
-        Err(LanguageDataError::NotInstalled { package: CORE_PACKAGE })
+        Err(LanguageDataError::NotInstalled {
+            package: CORE_PACKAGE,
+        })
     }
     #[cfg(feature = "std")]
     {
@@ -626,7 +658,8 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
         reason,
     };
     let part = |field: &str, text: &str| {
-        serde_json::from_str::<Value>(text).map_err(|e| invalid(format!("`{field}` is not JSON: {e}")))
+        serde_json::from_str::<Value>(text)
+            .map_err(|e| invalid(format!("`{field}` is not JSON: {e}")))
     };
     let themes = language
         .themes
@@ -742,7 +775,8 @@ pub fn parse_language_bundle(
     crate::language::program_types::parse(&program_types)
         .map_err(|reason| invalid(format!("`core.programTypes`: {reason}")))?;
     let protocols = text(core, "protocols", "core")?;
-    crate::protocols::parse(&protocols).map_err(|reason| invalid(format!("`core.protocols`: {reason}")))?;
+    crate::protocols::parse(&protocols)
+        .map_err(|reason| invalid(format!("`core.protocols`: {reason}")))?;
     let language = LanguageData {
         core_version: version(core, "core")?,
         root: PathBuf::new(),
@@ -761,7 +795,7 @@ pub fn parse_language_bundle(
         root: PathBuf::new(),
         operators,
     };
-check_operator_entries(&ops)?;
+    check_operator_entries(&ops)?;
     let packs = value
         .get("vocabularies")
         .and_then(Value::as_array)
@@ -777,7 +811,10 @@ check_operator_entries(&ops)?;
     Ok((language, ops, packs))
 }
 
-pub fn bundle_pack(entry: &Value, running: &str) -> Result<crate::i18n::packs::VocabularyPack, String> {
+pub fn bundle_pack(
+    entry: &Value,
+    running: &str,
+) -> Result<crate::i18n::packs::VocabularyPack, String> {
     let text = |field: &str| {
         entry
             .get(field)
@@ -830,7 +867,9 @@ pub fn operator_data() -> Result<&'static OperatorData, LanguageDataError> {
     }
     #[cfg(not(feature = "std"))]
     {
-        Err(LanguageDataError::NotInstalled { package: STD_PACKAGE })
+        Err(LanguageDataError::NotInstalled {
+            package: STD_PACKAGE,
+        })
     }
     #[cfg(feature = "std")]
     {
@@ -860,7 +899,10 @@ pub fn operator_data_after_preflight() -> &'static OperatorData {
 pub type OperatorProbe = fn(&str) -> bool;
 
 /// Refuses an operator table naming a rust-target operator `implemented` rejects.
-pub fn certify_operator_data(data: &OperatorData, implemented: OperatorProbe) -> Result<(), LanguageDataError> {
+pub fn certify_operator_data(
+    data: &OperatorData,
+    implemented: OperatorProbe,
+) -> Result<(), LanguageDataError> {
     let missing = unimplemented_rust_operators(&data.operators, implemented).map_err(|reason| {
         LanguageDataError::Invalid {
             path: data.root.clone(),

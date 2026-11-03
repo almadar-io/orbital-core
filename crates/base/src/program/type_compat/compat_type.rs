@@ -56,7 +56,9 @@ pub fn decode_literal_union(text: &str) -> Result<Option<Vec<String>>, &'static 
     if !text.trim_start().starts_with('"') {
         return Ok(None);
     }
-    quoted_literal_union_members(text).map(Some).ok_or("invalid quoted literal union")
+    quoted_literal_union_members(text)
+        .map(Some)
+        .ok_or("invalid quoted literal union")
 }
 
 pub(super) fn quoted_literal_union_members(text: &str) -> Option<Vec<String>> {
@@ -64,7 +66,9 @@ pub(super) fn quoted_literal_union_members(text: &str) -> Option<Vec<String>> {
     let mut members = Vec::new();
     loop {
         let mut chars = remaining.char_indices();
-        if chars.next()?.1 != '"' { return None; }
+        if chars.next()?.1 != '"' {
+            return None;
+        }
         let mut token = String::from("\"");
         let mut escaped = false;
         let mut end = None;
@@ -75,8 +79,15 @@ pub(super) fn quoted_literal_union_members(text: &str) -> Option<Vec<String>> {
                 continue;
             }
             match ch {
-                '\\' => { token.push(ch); escaped = true; }
-                '"' => { token.push(ch); end = Some(index + ch.len_utf8()); break; }
+                '\\' => {
+                    token.push(ch);
+                    escaped = true;
+                }
+                '"' => {
+                    token.push(ch);
+                    end = Some(index + ch.len_utf8());
+                    break;
+                }
                 ch if ch < ' ' => {
                     // Older shape text wrote control characters without JSON escaping.
                     let encoded = serde_json::to_string(&ch.to_string()).ok()?;
@@ -87,15 +98,25 @@ pub(super) fn quoted_literal_union_members(text: &str) -> Option<Vec<String>> {
         }
         members.push(serde_json::from_str::<String>(&token).ok()?);
         remaining = remaining.get(end?..)?.trim_start();
-        if remaining.is_empty() { return Some(members); }
+        if remaining.is_empty() {
+            return Some(members);
+        }
         remaining = remaining.strip_prefix('|')?.trim_start();
     }
 }
 
 /// The literal union (`"a" | "b"`) that writes a nonempty closed string set.
 pub fn literal_union_text(values: &[String]) -> Option<String> {
-    if values.is_empty() { return None; }
-    Some(values.iter().map(|value| serde_json::to_string(value).expect("a string serializes")).collect::<Vec<_>>().join(" | "))
+    if values.is_empty() {
+        return None;
+    }
+    Some(
+        values
+            .iter()
+            .map(|value| serde_json::to_string(value).expect("a string serializes"))
+            .collect::<Vec<_>>()
+            .join(" | "),
+    )
 }
 
 pub(super) fn is_string_literal_union(text: &str) -> bool {
@@ -137,10 +158,15 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         // A tagged union of struct variants (`type Pick = A | B` in a payload):
         // an object-family declaration — the variants themselves are checked
         // by the variant-aware validators.
-        "union" => CompatType::Ty(OirType::Union { variants: crate::ir::types::no_fields() }),
+        "union" => CompatType::Ty(OirType::Union {
+            variants: crate::ir::types::no_fields(),
+        }),
         // A schemaless object — an empty Struct is its nearest `OirType` shape;
         // the family arm makes every cross-variant object pairing erase.
-        "object" => CompatType::Ty(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
+        "object" => CompatType::Ty(OirType::Struct {
+            fields: crate::ir::types::no_fields(),
+            additional: None,
+        }),
         "array" => CompatType::Ty(OirType::array(OirType::erased())),
         _ if tuple_type_slots(t).is_some() => {
             let items = tuple_type_slots(t)
@@ -171,7 +197,10 @@ pub fn parse_compat_type(s: &str) -> CompatType {
                 },
                 declared => match parse_compat_type(declared) {
                     CompatType::Ty(ty) => ty,
-                    CompatType::Named(_) => OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
+                    CompatType::Named(_) => OirType::Struct {
+                        fields: crate::ir::types::no_fields(),
+                        additional: None,
+                    },
                     CompatType::MapTag => OirType::map(OirType::String, OirType::erased()),
                     _ => OirType::erased(),
                 },
@@ -188,7 +217,11 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         _ if is_string_literal_union(t) => CompatType::Ty(OirType::Enum {
             name: t.to_string(),
         }),
-        _ if super::short_type_name(t).chars().next().is_some_and(char::is_uppercase) => {
+        _ if super::short_type_name(t)
+            .chars()
+            .next()
+            .is_some_and(char::is_uppercase) =>
+        {
             match crate::language::program_types::program_type(t) {
                 Some(shape) => CompatType::Ty(shape.clone()),
                 None => CompatType::Named(t.to_string()),
@@ -214,7 +247,8 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         return sub_compat(src, &Ty((**inner).clone())).map(|c| Coercion::Wrap(Box::new(c)));
     }
     if let Ty(OirType::Optional { inner }) = src {
-        return sub_compat(&Ty((**inner).clone()), dst).map(|c| Coercion::Unwrap { inner: Box::new(c) });
+        return sub_compat(&Ty((**inner).clone()), dst)
+            .map(|c| Coercion::Unwrap { inner: Box::new(c) });
     }
     match (src, dst) {
         (Ty(s), Ty(d)) => sub(s, d),

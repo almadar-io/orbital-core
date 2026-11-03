@@ -1329,8 +1329,14 @@ fn an_unknown_trait_key_is_refused_and_a_known_one_is_not() {
     let local = serde_json::from_value::<TraitReference>(trait_json(json!({ "local": true })))
         .unwrap_err()
         .to_string();
-    assert!(local.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && local.contains("`local`"), "{local}");
-    assert!(serde_json::from_value::<TraitReference>(trait_json(json!({ "dispatch": "client", "description": "d" }))).is_ok());
+    assert!(
+        local.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && local.contains("`local`"),
+        "{local}"
+    );
+    assert!(serde_json::from_value::<TraitReference>(trait_json(
+        json!({ "dispatch": "client", "description": "d" })
+    ))
+    .is_ok());
 }
 
 #[test]

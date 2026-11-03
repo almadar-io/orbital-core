@@ -6,7 +6,12 @@ pub(super) fn agrees(a: &OirType, b: &OirType) -> bool {
     sub(a, b).is_some() || sub(b, a).is_some()
 }
 
-pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings, mode: Mode) -> bool {
+pub(super) fn fits(
+    actual: &OirType,
+    expected: &OirType,
+    bindings: &CallBindings,
+    mode: Mode,
+) -> bool {
     // An optional value is refused where a present one is declared: only `as` or a presence proof unwraps it.
     if mode != Mode::Runtime
         && matches!(actual, OirType::Optional { .. })
@@ -17,12 +22,17 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
     // A plain string is not a date: the program parses it (`time/parse`) or reads a value declared `date`.
     if mode == Mode::Proof
         && matches!(unwrap_optional(actual), OirType::String)
-        && matches!(expected, OirType::Date | OirType::DateTime | OirType::Instant)
+        && matches!(
+            expected,
+            OirType::Date | OirType::DateTime | OirType::Instant
+        )
     {
         return false;
     }
-    let date_at_rest = matches!(unwrap_optional(actual), OirType::Date | OirType::DateTime | OirType::Instant)
-        && matches!(expected, OirType::String);
+    let date_at_rest = matches!(
+        unwrap_optional(actual),
+        OirType::Date | OirType::DateTime | OirType::Instant
+    ) && matches!(expected, OirType::String);
     // A semantic string (email, url, ...) is a string, and a reference to another row is its id string.
     let text_at_rest = matches!(
         unwrap_optional(actual),
@@ -47,7 +57,8 @@ pub(super) fn fits(actual: &OirType, expected: &OirType, bindings: &CallBindings
 fn unwraps(coercion: &crate::type_compat::Coercion) -> bool {
     match coercion {
         crate::type_compat::Coercion::Unwrap { .. } => true,
-        crate::type_compat::Coercion::Wrap(inner) | crate::type_compat::Coercion::Element(inner) => unwraps(inner),
+        crate::type_compat::Coercion::Wrap(inner)
+        | crate::type_compat::Coercion::Element(inner) => unwraps(inner),
         _ => false,
     }
 }
@@ -67,7 +78,10 @@ pub(super) fn demands_type(formal: &OperatorTypeRef) -> bool {
     match formal {
         OperatorTypeRef::Primitive(name) => {
             checkable(name).is_some()
-                || matches!(name.as_str(), "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment")
+                || matches!(
+                    name.as_str(),
+                    "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment"
+                )
         }
         OperatorTypeRef::Tagged(kind) => match kind {
             K::Array { .. }
@@ -181,7 +195,10 @@ pub(super) fn fill_empty_list_slots(prior: &OirType, actual: &OirType) -> Option
     match (prior, actual) {
         (
             OirType::Struct { fields, additional },
-            OirType::Struct { fields: supplied, additional: next_additional },
+            OirType::Struct {
+                fields: supplied,
+                additional: next_additional,
+            },
         ) => {
             let mut fields = fields.clone();
             let mut additional = additional.clone();
@@ -304,21 +321,27 @@ pub(super) fn variables_in(formal: &OperatorTypeRef, out: &mut Vec<String>) {
     }
 }
 
-
 pub(super) fn has_typed_additional(ty: &OirType) -> bool {
     match ty {
-        OirType::Struct { fields, additional } => additional.is_some()
-            || fields.iter().any(|field| has_typed_additional(&field.field_type)),
+        OirType::Struct { fields, additional } => {
+            additional.is_some()
+                || fields
+                    .iter()
+                    .any(|field| has_typed_additional(&field.field_type))
+        }
         OirType::Array { inner } | OirType::Optional { inner } => has_typed_additional(inner),
         OirType::Map { key, value } => has_typed_additional(key) || has_typed_additional(value),
         OirType::Tuple { items } => items.iter().any(has_typed_additional),
-        OirType::Union { variants } => variants.iter().any(|field| has_typed_additional(&field.field_type)),
+        OirType::Union { variants } => variants
+            .iter()
+            .any(|field| has_typed_additional(&field.field_type)),
         _ => false,
     }
 }
 
 pub(super) fn is_typed_record_join(all: &[OirType]) -> bool {
-    all.iter().all(|ty| matches!(unwrap_optional(ty), OirType::Struct { .. }))
+    all.iter()
+        .all(|ty| matches!(unwrap_optional(ty), OirType::Struct { .. }))
         && all.iter().any(has_typed_additional)
 }
 
@@ -327,18 +350,27 @@ pub(super) fn join_struct_member_types(types: Vec<OirType>) -> Option<OirType> {
     if types.len() == 1 {
         return Some(first);
     }
-    let list = types[1..].iter().try_fold(first, |prior, next| match (&prior, next) {
-        (OirType::Array { inner: left }, OirType::Array { inner: right }) => {
-            let records = [(**left).clone(), (**right).clone()];
-            unify_structs(&records).map(OirType::array).or_else(|| {
-                (!is_typed_record_join(&records)).then(|| merge_list_shapes(&prior, next)).flatten()
-            })
+    let list = types[1..]
+        .iter()
+        .try_fold(first, |prior, next| match (&prior, next) {
+            (OirType::Array { inner: left }, OirType::Array { inner: right }) => {
+                let records = [(**left).clone(), (**right).clone()];
+                unify_structs(&records).map(OirType::array).or_else(|| {
+                    (!is_typed_record_join(&records))
+                        .then(|| merge_list_shapes(&prior, next))
+                        .flatten()
+                })
+            }
+            _ => merge_list_shapes(&prior, next),
+        });
+    Some(list.unwrap_or_else(|| {
+        OirType::Union {
+            variants: types
+                .into_iter()
+                .enumerate()
+                .map(|(index, ty)| OirField::new(index.to_string(), ty))
+                .collect(),
         }
-        _ => merge_list_shapes(&prior, next),
-    });
-    Some(list.unwrap_or_else(|| OirType::Union {
-        variants: types.into_iter().enumerate()
-            .map(|(index, ty)| OirField::new(index.to_string(), ty)).collect(),
     }))
 }
 
@@ -356,11 +388,17 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
             }
         }
     }
-    if is_typed_record_join(all) && all.iter().any(|ty| match unwrap_optional(ty) {
-        OirType::Struct { fields, additional: None } => merged.iter()
-            .any(|field| !fields.iter().any(|known| known.name == field.name)),
-        _ => false,
-    }) {
+    if is_typed_record_join(all)
+        && all.iter().any(|ty| match unwrap_optional(ty) {
+            OirType::Struct {
+                fields,
+                additional: None,
+            } => merged
+                .iter()
+                .any(|field| !fields.iter().any(|known| known.name == field.name)),
+            _ => false,
+        })
+    {
         return None;
     }
     for m in &mut merged {
@@ -368,8 +406,11 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
         let mut types = Vec::new();
         for ty in all {
             if let OirType::Struct { fields, additional } = unwrap_optional(ty) {
-                let member = fields.iter().find(|field| field.name == m.name)
-                    .map(|field| &field.field_type).or(additional.as_deref());
+                let member = fields
+                    .iter()
+                    .find(|field| field.name == m.name)
+                    .map(|field| &field.field_type)
+                    .or(additional.as_deref());
                 if let Some(member) = member {
                     if !types.contains(member) {
                         types.push(member.clone());
@@ -381,7 +422,11 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     }
     let mut additional_types = Vec::new();
     let all_additional = all.iter().all(|ty| {
-        let OirType::Struct { additional: Some(value), .. } = unwrap_optional(ty) else {
+        let OirType::Struct {
+            additional: Some(value),
+            ..
+        } = unwrap_optional(ty)
+        else {
             return false;
         };
         if !additional_types.contains(value.as_ref()) {
@@ -394,6 +439,13 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     } else {
         None
     };
-    let joined = OirType::Struct { fields: merged.into(), additional };
-    Some(if all.iter().any(OirType::is_optional) { OirType::optional(joined) } else { joined })
+    let joined = OirType::Struct {
+        fields: merged.into(),
+        additional,
+    };
+    Some(if all.iter().any(OirType::is_optional) {
+        OirType::optional(joined)
+    } else {
+        joined
+    })
 }

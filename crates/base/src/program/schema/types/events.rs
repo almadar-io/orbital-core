@@ -466,7 +466,11 @@ pub struct PayloadTypeWhen {
 pub struct PayloadField {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
-    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "additionalProperties",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub additional_properties: Option<Box<PayloadField>>,
     /// The field's name; empty for a list's or map's element (`items`), which has none.
     #[serde(default)]

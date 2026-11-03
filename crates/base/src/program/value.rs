@@ -23,8 +23,10 @@ pub fn value_map_with_capacity(fields: usize) -> ValueMap {
 #[macro_export]
 macro_rules! static_key {
     ($text:literal) => {{
-        static KEY: $crate::sync::OnceLock<$crate::value::Shared<String>> = $crate::sync::OnceLock::new();
-        KEY.get_or_init(|| $crate::value::Shared::new($text.to_string())).clone()
+        static KEY: $crate::sync::OnceLock<$crate::value::Shared<String>> =
+            $crate::sync::OnceLock::new();
+        KEY.get_or_init(|| $crate::value::Shared::new($text.to_string()))
+            .clone()
     }};
 }
 
@@ -154,7 +156,6 @@ impl std::borrow::Borrow<String> for Shared<String> {
         &self.0
     }
 }
-
 
 impl From<&str> for Shared<String> {
     fn from(text: &str) -> Self {
@@ -361,7 +362,10 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
-        let mut object = ValueMap::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
+        let mut object = ValueMap::with_capacity_and_hasher(
+            map.size_hint().unwrap_or(0).min(4096),
+            Default::default(),
+        );
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
             object.insert(key.into(), value);
         }
@@ -477,7 +481,9 @@ impl Value {
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => crate::str_utils::js_number_string(*n),
             Value::String(s) => s.clone().into_inner(),
-            Value::Array(_) | Value::Object(_) | Value::Sealed(_) => crate::json_value::js_json_string(self),
+            Value::Array(_) | Value::Object(_) | Value::Sealed(_) => {
+                crate::json_value::js_json_string(self)
+            }
             Value::Lambda(l) => format!("<fn({})>", l.params.join(", ")),
         }
     }
@@ -695,7 +701,10 @@ impl Value {
 
     /// A type mismatch naming `expected` and this value's kind.
     pub fn kind_error(&self, expected: &str) -> crate::error::EvalError {
-        crate::error::EvalError::TypeMismatch { expected: expected.to_string(), actual: self.type_name().to_string() }
+        crate::error::EvalError::TypeMismatch {
+            expected: expected.to_string(),
+            actual: self.type_name().to_string(),
+        }
     }
 
     /// This value as a number, or a type mismatch: no other kind reads as a number.
@@ -716,9 +725,9 @@ impl Value {
     /// The order of two values of one orderable kind (number, string, boolean); any other pair is a type mismatch.
     pub fn compare(&self, other: &Value) -> Result<std::cmp::Ordering, crate::error::EvalError> {
         match (self, other) {
-            (Value::Number(a), Value::Number(b)) => {
-                a.partial_cmp(b).ok_or_else(|| crate::error::EvalError::InvalidArgument("NaN has no order".to_string()))
-            }
+            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).ok_or_else(|| {
+                crate::error::EvalError::InvalidArgument("NaN has no order".to_string())
+            }),
             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
             (a, b) => Err(a.kind_error(b.type_name())),
@@ -775,10 +784,15 @@ impl From<SExpression> for Value {
             SExpression::Bool(b) => Value::Bool(b),
             SExpression::Number(n) => Value::Number(n),
             SExpression::String(s) => Value::string(s),
-            SExpression::Array(arr) => Value::Array(arr.into_inner().into_iter().map(Value::from).collect()),
-            SExpression::Object(obj) => {
-                Value::Object(obj.into_inner().into_iter().map(|(k, v)| (k, Value::from(v))).collect())
+            SExpression::Array(arr) => {
+                Value::Array(arr.into_inner().into_iter().map(Value::from).collect())
             }
+            SExpression::Object(obj) => Value::Object(
+                obj.into_inner()
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::from(v)))
+                    .collect(),
+            ),
         }
     }
 }
@@ -799,7 +813,9 @@ impl From<Value> for SExpression {
                     .map(|(k, v)| (k.into(), SExpression::from(v)))
                     .collect(),
             ),
-            Value::Sealed(sealed) => SExpression::from(Value::object(Arc::unwrap_or_clone(sealed).fields)),
+            Value::Sealed(sealed) => {
+                SExpression::from(Value::object(Arc::unwrap_or_clone(sealed).fields))
+            }
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
             Value::Lambda(l) => {
                 let Lambda { params, body } = Arc::unwrap_or_clone(l);
@@ -837,7 +853,10 @@ impl std::ops::IndexMut<&str> for Value {
         }
         match self {
             Value::Object(fields) => fields.entry(key.to_string().into()).or_insert(Value::Null),
-            other => panic!("cannot index a {} value by field name `{key}`", other.type_name()),
+            other => panic!(
+                "cannot index a {} value by field name `{key}`",
+                other.type_name()
+            ),
         }
     }
 }
@@ -846,15 +865,22 @@ impl std::ops::IndexMut<&str> for Value {
 impl std::ops::Index<usize> for Value {
     type Output = Value;
     fn index(&self, at: usize) -> &Value {
-        self.as_array().and_then(|items| items.get(at)).unwrap_or(&NULL)
+        self.as_array()
+            .and_then(|items| items.get(at))
+            .unwrap_or(&NULL)
     }
 }
 
 impl std::ops::IndexMut<usize> for Value {
     fn index_mut(&mut self, at: usize) -> &mut Value {
         match self {
-            Value::Array(items) => items.get_mut(at).unwrap_or_else(|| panic!("array index {at} is out of range")),
-            other => panic!("cannot index a {} value by position {at}", other.type_name()),
+            Value::Array(items) => items
+                .get_mut(at)
+                .unwrap_or_else(|| panic!("array index {at} is out of range")),
+            other => panic!(
+                "cannot index a {} value by position {at}",
+                other.type_name()
+            ),
         }
     }
 }
@@ -924,8 +950,14 @@ mod tests {
         let a = Value::lambda(vec!["x".into()], body.clone());
         let b = Value::lambda(vec!["x".into()], body.clone());
         assert_eq!(a, b);
-        assert_ne!(a, Value::lambda(vec!["y".into()], body.clone()), "control: params differ");
-        let SExpression::Array(arr) = SExpression::from(a) else { panic!("fn form is an array") };
+        assert_ne!(
+            a,
+            Value::lambda(vec!["y".into()], body.clone()),
+            "control: params differ"
+        );
+        let SExpression::Array(arr) = SExpression::from(a) else {
+            panic!("fn form is an array")
+        };
         assert_eq!(arr.len(), 3);
     }
 
@@ -934,9 +966,16 @@ mod tests {
         let mut v = Value::Null;
         v["a"]["b"] = Value::Number(1.0);
         assert_eq!(v["a"]["b"], Value::Number(1.0));
-        assert_eq!(v.get("a").and_then(|a| a.get("b")), Some(&Value::Number(1.0)));
+        assert_eq!(
+            v.get("a").and_then(|a| a.get("b")),
+            Some(&Value::Number(1.0))
+        );
         assert_eq!(v["missing"], Value::Null);
-        assert_eq!(Value::Number(2.0)["a"], Value::Null, "control: a number has no fields");
+        assert_eq!(
+            Value::Number(2.0)["a"],
+            Value::Null,
+            "control: a number has no fields"
+        );
         assert_eq!(Value::Number(2.0).get("a"), None);
     }
 
@@ -946,7 +985,11 @@ mod tests {
         v[1] = Value::Number(3.0);
         assert_eq!(v[1], Value::Number(3.0));
         assert_eq!(v[5], Value::Null);
-        assert_eq!(Value::Null[0], Value::Null, "control: a non-array has no elements");
+        assert_eq!(
+            Value::Null[0],
+            Value::Null,
+            "control: a non-array has no elements"
+        );
     }
 
     #[test]
@@ -957,16 +1000,24 @@ mod tests {
         assert!(taken.is_object() && v.is_null());
     }
 
-
     #[test]
     fn split_path_reads_an_escaped_dot_and_backslash_as_literals() {
-        let segs = |p: &str| split_path(p).iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let segs = |p: &str| {
+            split_path(p)
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(segs("a.b"), ["a", "b"]);
         assert_eq!(segs(r"http\.method"), ["http.method"]);
         assert_eq!(segs(r"a.b\.c"), ["a", "b.c"]);
         assert_eq!(segs(r"a\\.b"), [r"a\", "b"]);
         assert_eq!(segs(r"a\\\.b"), [r"a\.b"]);
-        assert_eq!(segs(r"a\x.b"), [r"a\x", "b"], "any other backslash stays as written");
+        assert_eq!(
+            segs(r"a\x.b"),
+            [r"a\x", "b"],
+            "any other backslash stays as written"
+        );
         assert_eq!(segs(""), [""]);
     }
 
@@ -976,7 +1027,11 @@ mod tests {
         assert!(v.set_path(r"a.b\.c", Value::Number(1.0)));
         assert_eq!(v.get_path(r"a.b\.c"), Some(&Value::Number(1.0)));
         assert_eq!(v.get_path_owned(r"a.b\.c"), Some(Value::Number(1.0)));
-        assert_eq!(v.get_path("a.b.c"), None, "control: a plain path is not the literal key");
+        assert_eq!(
+            v.get_path("a.b.c"),
+            None,
+            "control: a plain path is not the literal key"
+        );
     }
     use super::*;
 
@@ -999,15 +1054,35 @@ mod tests {
 
     #[test]
     fn a_strict_accessor_reads_only_its_own_kind() {
-        assert_eq!(Value::Bool(true).boolean().ok(), Some(true), "control: a boolean is a boolean");
-        for not_bool in [Value::Null, Value::Number(1.0), Value::string("true"), Value::array(vec![])] {
+        assert_eq!(
+            Value::Bool(true).boolean().ok(),
+            Some(true),
+            "control: a boolean is a boolean"
+        );
+        for not_bool in [
+            Value::Null,
+            Value::Number(1.0),
+            Value::string("true"),
+            Value::array(vec![]),
+        ] {
             assert!(not_bool.boolean().is_err(), "{not_bool:?} is not a boolean");
         }
-        assert_eq!(Value::Number(3.0).number().ok(), Some(3.0), "control: a number is a number");
+        assert_eq!(
+            Value::Number(3.0).number().ok(),
+            Some(3.0),
+            "control: a number is a number"
+        );
         for not_number in [Value::Null, Value::Bool(true), Value::string("3")] {
-            assert!(not_number.number().is_err(), "{not_number:?} is not a number");
+            assert!(
+                not_number.number().is_err(),
+                "{not_number:?} is not a number"
+            );
         }
-        assert_eq!(Value::string("a").text().ok(), Some("a"), "control: text is text");
+        assert_eq!(
+            Value::string("a").text().ok(),
+            Some("a"),
+            "control: text is text"
+        );
         assert!(Value::Null.text().is_err(), "null is not the empty string");
         assert!(Value::Number(1.0).text().is_err(), "a number is not text");
     }
@@ -1023,14 +1098,8 @@ mod tests {
 
         let value = Value::object(obj);
 
-        assert_eq!(
-            value.get_path("name"),
-            Some(&Value::string("John"))
-        );
-        assert_eq!(
-            value.get_path("address.city"),
-            Some(&Value::string("NYC"))
-        );
+        assert_eq!(value.get_path("name"), Some(&Value::string("John")));
+        assert_eq!(value.get_path("address.city"), Some(&Value::string("NYC")));
         assert_eq!(value.get_path("address.country"), None);
         assert_eq!(value.get_path("nonexistent"), None);
     }
@@ -1055,10 +1124,7 @@ mod tests {
             Some(Value::Number(3.0))
         );
         assert_eq!(value.get_path_owned("data.count"), Some(Value::Number(3.0)));
-        assert_eq!(
-            value.get_path_owned("data.1"),
-            Some(Value::string("b"))
-        );
+        assert_eq!(value.get_path_owned("data.1"), Some(Value::string("b")));
         // length is terminal — anything past it does not resolve.
         assert_eq!(value.get_path_owned("data.length.foo"), None);
         // length on a non-array does not resolve.
@@ -1083,37 +1149,68 @@ mod tests {
         let mut value = Value::object(ValueMap::default());
 
         assert!(value.set_path("name", Value::string("John")));
-        assert_eq!(
-            value.get_path("name"),
-            Some(&Value::string("John"))
-        );
+        assert_eq!(value.get_path("name"), Some(&Value::string("John")));
 
         assert!(value.set_path("address.city", Value::string("NYC")));
-        assert_eq!(
-            value.get_path("address.city"),
-            Some(&Value::string("NYC"))
-        );
+        assert_eq!(value.get_path("address.city"), Some(&Value::string("NYC")));
     }
 
     #[test]
     fn equality_is_structural_and_different_kinds_are_unequal() {
-        assert_ne!(Value::Number(1.0), Value::string("1"), "a number and a string are unequal");
-        assert_ne!(Value::Bool(true), Value::Number(1.0), "a boolean and a number are unequal");
-        assert_eq!(Value::Number(1.0), Value::Number(1.0), "control: same kind, same value");
-        assert_ne!(Value::Null, Value::string(String::new()), "null is not the empty string");
+        assert_ne!(
+            Value::Number(1.0),
+            Value::string("1"),
+            "a number and a string are unequal"
+        );
+        assert_ne!(
+            Value::Bool(true),
+            Value::Number(1.0),
+            "a boolean and a number are unequal"
+        );
+        assert_eq!(
+            Value::Number(1.0),
+            Value::Number(1.0),
+            "control: same kind, same value"
+        );
+        assert_ne!(
+            Value::Null,
+            Value::string(String::new()),
+            "null is not the empty string"
+        );
         assert_eq!(Value::Null, Value::Null, "control: null is null");
         let list = |n: f64| Value::array(vec![Value::Number(n)]);
         assert_eq!(list(1.0), list(1.0), "control: lists compare item by item");
-        assert_ne!(Value::array(vec![Value::string("emit")]), Value::object(ValueMap::default()), "a list and an object are unequal");
+        assert_ne!(
+            Value::array(vec![Value::string("emit")]),
+            Value::object(ValueMap::default()),
+            "a list and an object are unequal"
+        );
     }
 
     #[test]
     fn ordering_is_within_one_orderable_kind() {
-        assert_eq!(Value::Number(1.0).compare(&Value::Number(2.0)).ok(), Some(std::cmp::Ordering::Less));
-        assert_eq!(Value::string("a").compare(&Value::string("b")).ok(), Some(std::cmp::Ordering::Less));
-        assert!(Value::Number(1.0).compare(&Value::string("2")).is_err(), "a number and a string have no order");
-        assert!(Value::Null.compare(&Value::Number(0.0)).is_err(), "null is not zero");
-        assert!(Value::Number(f64::NAN).compare(&Value::Number(1.0)).is_err(), "NaN has no order");
+        assert_eq!(
+            Value::Number(1.0).compare(&Value::Number(2.0)).ok(),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert_eq!(
+            Value::string("a").compare(&Value::string("b")).ok(),
+            Some(std::cmp::Ordering::Less)
+        );
+        assert!(
+            Value::Number(1.0).compare(&Value::string("2")).is_err(),
+            "a number and a string have no order"
+        );
+        assert!(
+            Value::Null.compare(&Value::Number(0.0)).is_err(),
+            "null is not zero"
+        );
+        assert!(
+            Value::Number(f64::NAN)
+                .compare(&Value::Number(1.0))
+                .is_err(),
+            "NaN has no order"
+        );
     }
 
     #[derive(serde::Serialize)]
@@ -1140,7 +1237,15 @@ mod tests {
     fn sample() -> Sample {
         Sample {
             zeta: "z".into(),
-            alpha: vec![Kind::Plain, Kind::Wrapped(7), Kind::Pair(-2, "p".into()), Kind::Shaped { zed: true, alpha: Some(1.5) }],
+            alpha: vec![
+                Kind::Plain,
+                Kind::Wrapped(7),
+                Kind::Pair(-2, "p".into()),
+                Kind::Shaped {
+                    zed: true,
+                    alpha: Some(1.5),
+                },
+            ],
             skipped: None,
             by_key: [(10, (-1, 2, 0.5)), (2, (3, 4, 1.0))].into_iter().collect(),
             raw: serde_json::json!({"b": [1, {"y": null, "x": "s"}], "a": 2.5}),
@@ -1172,7 +1277,11 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(keys, ["alpha", "by_key", "hole", "raw", "unit", "zeta"]);
-        assert_eq!(direct.get_path("hole"), Some(&Value::Null), "a non-finite number is null");
+        assert_eq!(
+            direct.get_path("hole"),
+            Some(&Value::Null),
+            "a non-finite number is null"
+        );
     }
 
     #[test]
@@ -1183,9 +1292,12 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(keys, ["zeta", "alpha", "by_key", "raw", "unit", "hole"]);
-        let twice = crate::value_serialize::to_value(&vec!["same".to_string(), "same".to_string()]).unwrap();
+        let twice = crate::value_serialize::to_value(&vec!["same".to_string(), "same".to_string()])
+            .unwrap();
         let Value::Array(items) = twice else { panic!() };
-        let (Value::String(a), Value::String(b)) = (&items[0], &items[1]) else { panic!() };
+        let (Value::String(a), Value::String(b)) = (&items[0], &items[1]) else {
+            panic!()
+        };
         assert!(Shared::ptr_eq(a, b));
     }
 
@@ -1206,15 +1318,27 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert!(Shared::ptr_eq(&node(&value, "x"), &node(&value, "y")));
-        assert!(!Shared::ptr_eq(&node(&value, "x"), &node(&value, "w")), "control: a different leaf is a different node");
+        assert!(
+            !Shared::ptr_eq(&node(&value, "x"), &node(&value, "w")),
+            "control: a different leaf is a different node"
+        );
         assert!(value.set_path("x.z", Value::Number(1.0)));
         assert_eq!(value.get_path("x.z"), Some(&Value::Number(1.0)));
-        assert_eq!(value.get_path("y.z"), Some(&Value::Null), "the sibling still reads the shared original");
+        assert_eq!(
+            value.get_path("y.z"),
+            Some(&Value::Null),
+            "the sibling still reads the shared original"
+        );
     }
 
     #[test]
     fn a_sealed_value_reads_like_an_object_and_never_comes_back_from_the_wire() {
-        let fields: ValueMap = [("subject".into(), Value::string("u1")), ("n".into(), Value::Number(2.0))].into_iter().collect();
+        let fields: ValueMap = [
+            ("subject".into(), Value::string("u1")),
+            ("n".into(), Value::Number(2.0)),
+        ]
+        .into_iter()
+        .collect();
         let sealed = Value::sealed("Verified", fields.clone());
         assert!(sealed.is_sealed_as("Verified"));
         assert!(!sealed.is_sealed_as("Viewer"));
@@ -1226,9 +1350,15 @@ mod tests {
         assert_eq!(wire, serde_json::json!({"subject": "u1", "n": 2.0}));
         let back: Value = serde_json::from_value(wire).unwrap();
         assert!(!back.is_sealed_as("Verified"));
-        assert_ne!(back, sealed, "control: the plain object with the same fields is a different value");
+        assert_ne!(
+            back, sealed,
+            "control: the plain object with the same fields is a different value"
+        );
         let mut copy = sealed.clone();
-        assert!(!copy.set_path("subject", Value::string("root")), "a sealed record is not written through a path");
+        assert!(
+            !copy.set_path("subject", Value::string("root")),
+            "a sealed record is not written through a path"
+        );
         assert_eq!(copy.get_path("subject"), Some(&Value::string("u1")));
     }
 
@@ -1241,9 +1371,15 @@ mod tests {
                 *item = std::convert::identity(*item);
             }
         });
-        assert!(Shared::ptr_eq(&original, &held), "an edit that wrote the same values must not copy");
+        assert!(
+            Shared::ptr_eq(&original, &held),
+            "an edit that wrote the same values must not copy"
+        );
         held.edit(|_| {});
-        assert!(Shared::ptr_eq(&original, &held), "an edit that did nothing must not copy");
+        assert!(
+            Shared::ptr_eq(&original, &held),
+            "an edit that did nothing must not copy"
+        );
     }
 
     #[test]
@@ -1251,8 +1387,15 @@ mod tests {
         let original = Shared::new(vec![1, 2, 3]);
         let mut held = original.clone();
         held.edit(|items| items.push(4));
-        assert!(!Shared::ptr_eq(&original, &held), "control: a real change takes its own allocation");
-        assert_eq!(*original, vec![1, 2, 3], "the other holder still reads the old data");
+        assert!(
+            !Shared::ptr_eq(&original, &held),
+            "control: a real change takes its own allocation"
+        );
+        assert_eq!(
+            *original,
+            vec![1, 2, 3],
+            "the other holder still reads the old data"
+        );
         assert_eq!(*held, vec![1, 2, 3, 4]);
     }
 
@@ -1263,6 +1406,9 @@ mod tests {
         assert_eq!(*only, "ab");
         let mut empty: Shared<Vec<u8>> = Shared::new(Vec::new());
         empty.edit(|items| items.clear());
-        assert!(empty.is_empty(), "an empty list edited to empty stays empty");
+        assert!(
+            empty.is_empty(),
+            "an empty list edited to empty stays empty"
+        );
     }
 }

@@ -274,7 +274,6 @@ impl OirField {
     }
 }
 
-
 /// Validation constraint
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

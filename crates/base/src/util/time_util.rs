@@ -28,12 +28,17 @@ static HOST_CLOCK: crate::sync::OnceLock<fn() -> i64> = crate::sync::OnceLock::n
 /// A bare-metal host's wall clock in Unix milliseconds, installed once at boot; there is no OS clock to read.
 #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
 pub fn install_clock(clock: fn() -> i64) {
-    assert!(HOST_CLOCK.set(clock).is_ok(), "the host clock is installed once");
+    assert!(
+        HOST_CLOCK.set(clock).is_ok(),
+        "the host clock is installed once"
+    );
 }
 
 #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
 pub fn now_millis() -> i64 {
-    HOST_CLOCK.get().expect("the host installs its clock (time_util::install_clock) before the kernel reads time")()
+    HOST_CLOCK.get().expect(
+        "the host installs its clock (time_util::install_clock) before the kernel reads time",
+    )()
 }
 
 /// Milliseconds since the Unix epoch, as `f64` (the shape the time operators want).

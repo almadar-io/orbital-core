@@ -1,7 +1,7 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
 use crate::str_utils::js_number_string;
 use crate::value::Value;
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// JS-semantics conversion for stringify: integer-valued numbers serialize
 /// without a decimal point (`JSON.stringify(1)` → `"1"`, never `"1.0"`),
@@ -65,7 +65,9 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
         }
     };
     match value {
-        Value::Sealed(sealed) => write_value_json(&Value::object(sealed.fields().clone()), indent, depth, out),
+        Value::Sealed(sealed) => {
+            write_value_json(&Value::object(sealed.fields().clone()), indent, depth, out)
+        }
         Value::Null | Value::Lambda(_) => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => {
@@ -77,7 +79,9 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
                 out.push_str("null");
             }
         }
-        Value::String(text) => out.push_str(&serde_json::to_string(text.as_str()).expect("a string always writes")),
+        Value::String(text) => {
+            out.push_str(&serde_json::to_string(text.as_str()).expect("a string always writes"))
+        }
         Value::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {
@@ -202,8 +206,16 @@ mod tests {
             serde_json::json!([u64::MAX, i64::MIN, "", " "]),
         ];
         for case in &cases {
-            assert_eq!(js_json_string(case), serde_json::to_string(case).unwrap(), "compact {case}");
-            assert_eq!(js_json_string_pretty(case), serde_json::to_string_pretty(case).unwrap(), "pretty {case}");
+            assert_eq!(
+                js_json_string(case),
+                serde_json::to_string(case).unwrap(),
+                "compact {case}"
+            );
+            assert_eq!(
+                js_json_string_pretty(case),
+                serde_json::to_string_pretty(case).unwrap(),
+                "pretty {case}"
+            );
         }
     }
 
@@ -211,37 +223,99 @@ mod tests {
     fn a_value_is_written_as_the_tree_route_writes_it() {
         let nested = Value::Object(
             [
-                ("ints".into(), Value::array(vec![Value::Number(0.0), Value::Number(-0.0), Value::Number(-7.0), Value::Number(9.2e18)])),
-                ("floats".into(), Value::array(vec![Value::Number(0.5), Value::Number(1e21), Value::Number(1e-7), Value::Number(1.7976931348623157e308)])),
-                ("non_finite".into(), Value::array(vec![Value::Number(f64::NAN), Value::Number(f64::INFINITY), Value::Number(f64::NEG_INFINITY)])),
-                ("text".into(), Value::string("q\"uote \\ \u{1} \n é 💡 /".to_string())),
+                (
+                    "ints".into(),
+                    Value::array(vec![
+                        Value::Number(0.0),
+                        Value::Number(-0.0),
+                        Value::Number(-7.0),
+                        Value::Number(9.2e18),
+                    ]),
+                ),
+                (
+                    "floats".into(),
+                    Value::array(vec![
+                        Value::Number(0.5),
+                        Value::Number(1e21),
+                        Value::Number(1e-7),
+                        Value::Number(1.7976931348623157e308),
+                    ]),
+                ),
+                (
+                    "non_finite".into(),
+                    Value::array(vec![
+                        Value::Number(f64::NAN),
+                        Value::Number(f64::INFINITY),
+                        Value::Number(f64::NEG_INFINITY),
+                    ]),
+                ),
+                (
+                    "text".into(),
+                    Value::string("q\"uote \\ \u{1} \n é 💡 /".to_string()),
+                ),
                 ("empty".into(), Value::Object(Default::default())),
                 ("none".into(), Value::array(Vec::new())),
-                ("flags".into(), Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Null])),
+                (
+                    "flags".into(),
+                    Value::array(vec![Value::Bool(true), Value::Bool(false), Value::Null]),
+                ),
             ]
             .into_iter()
             .collect(),
         );
-        for value in [Value::Null, Value::Number(3.0), Value::string("x".to_string()), nested] {
-            assert_eq!(value_json_string(&value, false), js_json_string(&value_to_json(&value)), "compact {value:?}");
-            assert_eq!(value_json_string(&value, true), js_json_string_pretty(&value_to_json(&value)), "pretty {value:?}");
+        for value in [
+            Value::Null,
+            Value::Number(3.0),
+            Value::string("x".to_string()),
+            nested,
+        ] {
+            assert_eq!(
+                value_json_string(&value, false),
+                js_json_string(&value_to_json(&value)),
+                "compact {value:?}"
+            );
+            assert_eq!(
+                value_json_string(&value, true),
+                js_json_string_pretty(&value_to_json(&value)),
+                "pretty {value:?}"
+            );
         }
     }
 
     #[test]
     fn edge_a_value_keeps_its_keys_in_the_order_it_holds_them() {
-        let value = Value::Object([("b".into(), Value::Number(1.0)), ("a".into(), Value::Number(2.0))].into_iter().collect());
+        let value = Value::Object(
+            [
+                ("b".into(), Value::Number(1.0)),
+                ("a".into(), Value::Number(2.0)),
+            ]
+            .into_iter()
+            .collect(),
+        );
         assert_eq!(value_json_string(&value, false), "{\"b\":1,\"a\":2}");
     }
 
     #[test]
     fn js_json_pretty_writes_floats_as_ecmascript_inside_indented_containers() {
-        let value = Value::Object([("n".into(), Value::Number(1e21)), ("f".into(), Value::Number(0.5))].into_iter().collect());
-        assert_eq!(js_json_string_pretty(&value), "{\n  \"n\": 1e+21,\n  \"f\": 0.5\n}");
+        let value = Value::Object(
+            [
+                ("n".into(), Value::Number(1e21)),
+                ("f".into(), Value::Number(0.5)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            js_json_string_pretty(&value),
+            "{\n  \"n\": 1e+21,\n  \"f\": 0.5\n}"
+        );
     }
 
     #[test]
     fn control_serde_json_default_number_text_is_not_ecmascript() {
-        assert_eq!(serde_json::to_string(&Value::Number(1e19)).unwrap(), "1e+19");
+        assert_eq!(
+            serde_json::to_string(&Value::Number(1e19)).unwrap(),
+            "1e+19"
+        );
     }
 }

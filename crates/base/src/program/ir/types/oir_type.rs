@@ -165,8 +165,12 @@ impl OirType {
             }
             Self::Struct { fields, additional } => {
                 let mut changed = false;
-                for field in fields { changed |= field.field_type.rewrite(replace); }
-                if let Some(additional) = additional { changed |= additional.rewrite(replace); }
+                for field in fields {
+                    changed |= field.field_type.rewrite(replace);
+                }
+                if let Some(additional) = additional {
+                    changed |= additional.rewrite(replace);
+                }
                 changed
             }
             Self::FieldRef { record, value } => {
@@ -204,7 +208,11 @@ impl OirType {
 
     pub fn erased() -> Self {
         static NAME: crate::sync::OnceLock<Shared<String>> = crate::sync::OnceLock::new();
-        Self::Var { name: NAME.get_or_init(|| Shared::new(Self::ERASED_VAR.to_string())).clone() }
+        Self::Var {
+            name: NAME
+                .get_or_init(|| Shared::new(Self::ERASED_VAR.to_string()))
+                .clone(),
+        }
     }
 
     pub fn is_erased(&self) -> bool {
@@ -213,7 +221,9 @@ impl OirType {
 
     /// The type of a run-time tuple slot whose value is null.
     pub fn absent_slot() -> Self {
-        Self::Optional { inner: Box::new(Self::erased()) }
+        Self::Optional {
+            inner: Box::new(Self::erased()),
+        }
     }
 
     pub fn is_absent_slot(&self) -> bool {

@@ -6,8 +6,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use std::collections::BTreeMap;
 use crate::sync::OnceLock;
+use std::collections::BTreeMap;
 
 use crate::ir::types::{field_shape, OirType};
 use crate::schema::types::FieldDefinition;
@@ -168,8 +168,12 @@ mod tests {
             ["behavior", "data", "pages", "source"].map(|n| Some(n.to_string()))
         );
         let map: FieldDefinition =
-            serde_json::from_value(json!({ "type": "object", "items": { "type": "string" } })).unwrap();
-        assert!(members(map).is_empty(), "control: a map record declares no members");
+            serde_json::from_value(json!({ "type": "object", "items": { "type": "string" } }))
+                .unwrap();
+        assert!(
+            members(map).is_empty(),
+            "control: a map record declares no members"
+        );
     }
 
     #[test]

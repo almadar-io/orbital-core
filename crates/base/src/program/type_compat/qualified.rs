@@ -91,7 +91,10 @@ mod tests {
 
     #[test]
     fn a_finding_words_a_qualified_name_without_the_qualifier_spelling() {
-        assert_eq!(describe_type_name("B::Item"), "Item (declared by behavior B)");
+        assert_eq!(
+            describe_type_name("B::Item"),
+            "Item (declared by behavior B)"
+        );
         assert_eq!(describe_type_name("Item"), "Item");
     }
 

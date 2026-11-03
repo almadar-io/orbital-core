@@ -46,7 +46,12 @@ fn as_items(expr: &SExpression) -> Option<&[SExpression]> {
 
 /// The items of an op tuple (an array whose head is a batch action), or `None` for an expression.
 pub fn op_tuple(expr: &SExpression) -> Option<&[SExpression]> {
-    as_items(expr).filter(|items| items.first().and_then(|h| h.as_str()).is_some_and(|h| BATCH_ACTIONS.contains(&h)))
+    as_items(expr).filter(|items| {
+        items
+            .first()
+            .and_then(|h| h.as_str())
+            .is_some_and(|h| BATCH_ACTIONS.contains(&h))
+    })
 }
 
 /// An array whose head is a batch action is an op tuple, not an expression.
@@ -122,7 +127,10 @@ pub fn batch_entities(ops: &SExpression) -> Vec<&str> {
 /// `array/flatten` of lists, `array/take` (nothing for a literal 0), `if` branches). `None` when some element comes from something it cannot follow (a binding, another call, an op whose
 /// entity is not a literal): the batch may then write anything.
 pub fn batch_written_entities(ops: &SExpression) -> Option<std::collections::BTreeSet<&str>> {
-    fn element<'a>(e: &'a SExpression, out: &mut std::collections::BTreeSet<&'a str>) -> Option<()> {
+    fn element<'a>(
+        e: &'a SExpression,
+        out: &mut std::collections::BTreeSet<&'a str>,
+    ) -> Option<()> {
         if is_op_tuple(e) {
             let tuple = as_items(e)?;
             let entity = op_entity(tuple)?;
@@ -272,25 +280,75 @@ mod tests {
             ["if", "@entity.held", [["delete", "NameLock", "@entity.held"]], ["array/take", [["delete", "NameLock", ""]], 0.0]],
             ["if", "@entity.heldRow", [["update", "NameHolder", "h", { "name": "n" }]], [["create", "NameHolder", { "id": "h" }]]]
         ]]));
-        assert_eq!(batch_written_entities(&built).unwrap().into_iter().collect::<Vec<_>>(), vec!["NameHolder", "NameLock"]);
-        let listed = ops(json!(["array/flatten", ["list", [["create", "A", {}]], [["update", "B", "b", {}]]]]));
-        assert_eq!(batch_written_entities(&listed).unwrap().into_iter().collect::<Vec<_>>(), vec!["A", "B"]);
+        assert_eq!(
+            batch_written_entities(&built)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["NameHolder", "NameLock"]
+        );
+        let listed = ops(json!([
+            "array/flatten",
+            ["list", [["create", "A", {}]], [["update", "B", "b", {}]]]
+        ]));
+        assert_eq!(
+            batch_written_entities(&listed)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
     }
 
     #[test]
     fn a_take_of_none_writes_nothing_and_any_other_take_is_a_subset_of_its_list() {
-        assert!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 0.0]))).unwrap().is_empty());
-        assert_eq!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 1.0]))).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
-        assert_eq!(batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], "@entity.n"]))).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
+        assert!(
+            batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 0.0])))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            batch_written_entities(&ops(json!(["array/take", [["create", "A", {}]], 1.0])))
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["A"]
+        );
+        assert_eq!(
+            batch_written_entities(&ops(json!([
+                "array/take",
+                [["create", "A", {}]],
+                "@entity.n"
+            ])))
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+            vec!["A"]
+        );
     }
 
     #[test]
     fn control_a_flatten_or_take_over_something_it_cannot_follow_may_write_anything() {
         assert!(batch_written_entities(&ops(json!(["array/flatten", "@entity.lists"]))).is_none());
-        assert!(batch_written_entities(&ops(json!(["array/flatten", [[["create", "A", {}]], "@payload.more"]]))).is_none());
-        assert!(batch_written_entities(&ops(json!(["array/take", "@payload.ops", 0.0]))).unwrap().is_empty(), "taking none of anything is nothing");
+        assert!(batch_written_entities(&ops(json!([
+            "array/flatten",
+            [[["create", "A", {}]], "@payload.more"]
+        ])))
+        .is_none());
+        assert!(
+            batch_written_entities(&ops(json!(["array/take", "@payload.ops", 0.0])))
+                .unwrap()
+                .is_empty(),
+            "taking none of anything is nothing"
+        );
         assert!(batch_written_entities(&ops(json!(["array/take", "@payload.ops", 2.0]))).is_none());
-        assert!(batch_written_entities(&ops(json!(["if", "@c", [["create", "A", {}]], "@payload.ops"]))).is_none());
+        assert!(batch_written_entities(&ops(json!([
+            "if",
+            "@c",
+            [["create", "A", {}]],
+            "@payload.ops"
+        ])))
+        .is_none());
     }
 
     #[test]
@@ -301,34 +359,106 @@ mod tests {
             ["array/map", ["array/filter", "@entity.pending", ["fn", "u", true]], ["fn", "u", ["update", "GraphNode", "@u.id", { "depth": 1 }]]],
             ["array/prepend", ["array/map", "@entity.edges", ["fn", "e", ["delete", "GraphEdge", "@e.id"]]], ["delete", "GraphNode", "n"]]
         ]));
-        let written: Vec<&str> = batch_written_entities(&built).unwrap().into_iter().collect();
+        let written: Vec<&str> = batch_written_entities(&built)
+            .unwrap()
+            .into_iter()
+            .collect();
         assert_eq!(written, vec!["GraphEdge", "GraphNode"]);
-        let deletes_only = ops(json!(["array/map", "@entity.edges", ["fn", "e", ["delete", "GraphEdge", "@e.id"]]]));
-        assert!(batch_written_entities(&deletes_only).unwrap().is_empty(), "a delete writes no row");
-        let branch = ops(json!(["array/map", "@entity.items", ["fn", "i", ["if", "@i.new", ["create", "A", {}], ["update", "B", "@i.id", {}]]]]));
-        assert_eq!(batch_written_entities(&branch).unwrap().into_iter().collect::<Vec<_>>(), vec!["A", "B"]);
+        let deletes_only = ops(json!([
+            "array/map",
+            "@entity.edges",
+            ["fn", "e", ["delete", "GraphEdge", "@e.id"]]
+        ]));
+        assert!(
+            batch_written_entities(&deletes_only).unwrap().is_empty(),
+            "a delete writes no row"
+        );
+        let branch = ops(json!([
+            "array/map",
+            "@entity.items",
+            [
+                "fn",
+                "i",
+                [
+                    "if",
+                    "@i.new",
+                    ["create", "A", {}],
+                    ["update", "B", "@i.id", {}]
+                ]
+            ]
+        ]));
+        assert_eq!(
+            batch_written_entities(&branch)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["A", "B"]
+        );
     }
 
     #[test]
     fn a_let_bound_batch_names_what_its_body_writes() {
-        let trim = ops(json!(["let", [["rows", ["array/sort", "@payload.data", "at", "asc"]]],
-            ["array/map", ["array/take", "@rows", 2.0], ["fn", "r", ["delete", "Snapshot", "@r.id"]]]]));
-        assert!(batch_written_entities(&trim).unwrap().is_empty(), "a let around deletes writes no row");
-        let create = ops(json!(["let", [["n", 1.0]], ["array/map", "@payload.items", ["fn", "x", ["create", "A", {}]]]]));
-        assert_eq!(batch_written_entities(&create).unwrap().into_iter().collect::<Vec<_>>(), vec!["A"]);
+        let trim = ops(json!([
+            "let",
+            [["rows", ["array/sort", "@payload.data", "at", "asc"]]],
+            [
+                "array/map",
+                ["array/take", "@rows", 2.0],
+                ["fn", "r", ["delete", "Snapshot", "@r.id"]]
+            ]
+        ]));
+        assert!(
+            batch_written_entities(&trim).unwrap().is_empty(),
+            "a let around deletes writes no row"
+        );
+        let create = ops(json!([
+            "let",
+            [["n", 1.0]],
+            [
+                "array/map",
+                "@payload.items",
+                ["fn", "x", ["create", "A", {}]]
+            ]
+        ]));
+        assert_eq!(
+            batch_written_entities(&create)
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec!["A"]
+        );
     }
 
     #[test]
     fn control_a_let_whose_body_is_a_binding_may_write_anything() {
-        assert!(batch_written_entities(&ops(json!(["let", [["ops", "@payload.ops"]], "@ops"]))).is_none());
+        assert!(
+            batch_written_entities(&ops(json!(["let", [["ops", "@payload.ops"]], "@ops"])))
+                .is_none()
+        );
     }
 
     #[test]
     fn control_a_batch_it_cannot_follow_is_none() {
-        assert!(batch_written_entities(&ops(json!("@payload.ops"))).is_none(), "a binding can hold any op");
-        assert!(batch_written_entities(&ops(json!(["array/concat", [["create", "A", {}]], "@payload.ops"]))).is_none());
-        assert!(batch_written_entities(&ops(json!(["array/map", "@entity.items", ["fn", "i", "@i.op"]]))).is_none());
-        assert!(batch_written_entities(&ops(json!([["create", "@config.target", {}]]))).is_none(), "a bound entity name");
+        assert!(
+            batch_written_entities(&ops(json!("@payload.ops"))).is_none(),
+            "a binding can hold any op"
+        );
+        assert!(batch_written_entities(&ops(json!([
+            "array/concat",
+            [["create", "A", {}]],
+            "@payload.ops"
+        ])))
+        .is_none());
+        assert!(batch_written_entities(&ops(json!([
+            "array/map",
+            "@entity.items",
+            ["fn", "i", "@i.op"]
+        ])))
+        .is_none());
+        assert!(
+            batch_written_entities(&ops(json!([["create", "@config.target", {}]]))).is_none(),
+            "a bound entity name"
+        );
     }
 
     fn sx(v: serde_json::Value) -> SExpression {

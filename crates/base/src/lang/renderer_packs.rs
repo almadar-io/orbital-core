@@ -334,7 +334,10 @@ mod tests {
     fn control_a_missing_local_pack_is_not_installed() {
         let root = tmp("nolocal");
         let err = find_renderer_pack("zzlocal", 1, &root.join("renderers/zzlocal")).unwrap_err();
-        assert!(matches!(err, RendererPackError::NotInstalled { .. }), "{err:?}");
+        assert!(
+            matches!(err, RendererPackError::NotInstalled { .. }),
+            "{err:?}"
+        );
     }
 
     #[test]
@@ -400,19 +403,36 @@ mod tests {
     #[test]
     fn a_shell_template_falls_back_to_the_shell_repos_templates_dir() {
         let crate_dir = Path::new("/nonexistent/orbital-shell-zz");
-        assert_eq!(shell_template("zz-shell-not-shipped", crate_dir), crate_dir.join("templates/zz-shell-not-shipped"));
+        assert_eq!(
+            shell_template("zz-shell-not-shipped", crate_dir),
+            crate_dir.join("templates/zz-shell-not-shipped")
+        );
     }
 
     #[test]
     fn control_every_shell_repo_carries_its_scaffold_under_templates() {
         let crates = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("..");
-        for (repo, name) in [("python", "python-shell"), ("rust", "rust-shell"), ("mobile", "mobile-shell"), ("android", "android-shell"), ("ios", "ios-shell"), ("chrome", "chrome-shell"), ("typescript", "almadar-shell")] {
+        for (repo, name) in [
+            ("python", "python-shell"),
+            ("rust", "rust-shell"),
+            ("mobile", "mobile-shell"),
+            ("android", "android-shell"),
+            ("ios", "ios-shell"),
+            ("chrome", "chrome-shell"),
+            ("typescript", "almadar-shell"),
+        ] {
             let dir = crates.join(format!("orbital-shell-{repo}"));
             if !dir.is_dir() {
                 continue;
             }
-            assert!(dir.join("templates").join(name).is_dir(), "{repo}: templates/{name}");
-            assert!(!dir.join("template").exists() && !dir.join("renderer-pack").exists(), "{repo}: old layout left behind");
+            assert!(
+                dir.join("templates").join(name).is_dir(),
+                "{repo}: templates/{name}"
+            );
+            assert!(
+                !dir.join("template").exists() && !dir.join("renderer-pack").exists(),
+                "{repo}: old layout left behind"
+            );
         }
     }
 }

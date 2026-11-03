@@ -3,9 +3,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::os::OsOp;
 #[cfg(feature = "std")]
 use crate::os::{OsError, OsErrorKind};
-use crate::os::OsOp;
 use crate::schema::sexpr::SExpression;
 use crate::value::Value;
 use serde::{Deserialize, Serialize};
@@ -136,23 +136,53 @@ named_kinds!(DesktopKind {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum OsGrantNeed {
-    Fs { access: FsMode, path: usize },
-    FsGlob { glob: usize },
-    FsOpen { path: usize, flags: usize },
-    Exec { command: usize, options: usize },
-    Env { name: usize },
-    Stdio { access: StdioKind },
+    Fs {
+        access: FsMode,
+        path: usize,
+    },
+    FsGlob {
+        glob: usize,
+    },
+    FsOpen {
+        path: usize,
+        flags: usize,
+    },
+    Exec {
+        command: usize,
+        options: usize,
+    },
+    Env {
+        name: usize,
+    },
+    Stdio {
+        access: StdioKind,
+    },
     Net {
         access: Vec<NetKind>,
         host: usize,
         #[serde(default)]
         port: Option<usize>,
     },
-    Sys { access: SysKind },
-    Desktop { access: DesktopKind },
-    Kv { access: KvMode, store: usize },
-    Mmio { access: DevKind, base: usize, offset: usize, width: usize },
-    Irq { access: DevKind, line: usize },
+    Sys {
+        access: SysKind,
+    },
+    Desktop {
+        access: DesktopKind,
+    },
+    Kv {
+        access: KvMode,
+        store: usize,
+    },
+    Mmio {
+        access: DevKind,
+        base: usize,
+        offset: usize,
+        width: usize,
+    },
+    Irq {
+        access: DevKind,
+        line: usize,
+    },
 }
 
 /// The needs the installed operator table declares for `op`; empty for a call on a handle, whose grant was checked
@@ -164,10 +194,14 @@ pub fn os_grant_needs(op: OsOp) -> &'static [OsGrantNeed] {
 }
 
 /// [`os_grant_needs`] for a running kernel: the typed language-data error when no operator table is installed.
-pub fn try_os_grant_needs(op: OsOp) -> Result<&'static [OsGrantNeed], crate::language_data::LanguageDataError> {
-    op.try_table_entry()?.grant.as_deref().ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
-        path: Default::default(),
-        reason: format!("the operator table declares no `grant` for `{}`", op.name()),
+pub fn try_os_grant_needs(
+    op: OsOp,
+) -> Result<&'static [OsGrantNeed], crate::language_data::LanguageDataError> {
+    op.try_table_entry()?.grant.as_deref().ok_or_else(|| {
+        crate::language_data::LanguageDataError::Invalid {
+            path: Default::default(),
+            reason: format!("the operator table declares no `grant` for `{}`", op.name()),
+        }
     })
 }
 
@@ -226,9 +260,13 @@ pub fn dev_target(target: &str) -> Option<DevTarget> {
     if let Some(window) = target.strip_prefix("mmio:") {
         let (base, length) = window.split_once('+')?;
         let (base, length) = (dev_number(base)?, dev_number(length)?);
-        (length > 0 && base.checked_add(length).is_some()).then_some(DevTarget::Mmio { base, length })
+        (length > 0 && base.checked_add(length).is_some())
+            .then_some(DevTarget::Mmio { base, length })
     } else {
-        target.strip_prefix("irq:").and_then(dev_number).map(|line| DevTarget::Irq { line })
+        target
+            .strip_prefix("irq:")
+            .and_then(dev_number)
+            .map(|line| DevTarget::Irq { line })
     }
 }
 
@@ -364,30 +402,35 @@ pub struct OsGrants {
     pub credentials: Vec<CredentialKind>,
     /// `kv: { <store>: [read, write] }`: a store name, or a `*`/`?` glob over one, and the modes it grants.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    #[cfg_attr(feature = "ts-export", ts(as = "Option<BTreeMap<String, Vec<KvMode>>>"))]
+    #[cfg_attr(
+        feature = "ts-export",
+        ts(as = "Option<BTreeMap<String, Vec<KvMode>>>")
+    )]
     pub kv: BTreeMap<String, Vec<KvMode>>,
     #[serde(skip_serializing_if = "AnchoredGrants::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<AnchoredGrants>"))]
     pub anchored: AnchoredGrants,
 }
 
-mod matching;
 mod anchors;
 mod entries;
+mod matching;
 mod requirements;
 mod static_check;
 mod table;
-pub use table::OsGrantTable;
-pub use static_check::{os_grant_findings, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
-use matching::*;
-use anchors::*;
-pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};
 #[cfg(feature = "std")]
 pub use anchors::ToolPaths;
+use anchors::*;
+pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};
+use matching::*;
 pub use requirements::{
     anchored_arg_positions, anchored_net_args, concat_static_prefix, os_requirements,
     os_requirements_deferring, requirement_target_positions, resolve_anchored_args, OsRequirement,
 };
+pub use static_check::{
+    os_grant_findings, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport,
+};
+pub use table::OsGrantTable;
 
 #[cfg(test)]
 mod tests;

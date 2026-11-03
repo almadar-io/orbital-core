@@ -86,7 +86,10 @@ impl OirPage {
 
 /// The page an app opens on: the first one marked initial, else the first declared.
 pub fn initial_of<T>(pages: &[T], is_initial: impl Fn(&T) -> bool) -> Option<&T> {
-    pages.iter().find(|p| is_initial(p)).or_else(|| pages.first())
+    pages
+        .iter()
+        .find(|p| is_initial(p))
+        .or_else(|| pages.first())
 }
 
 /// View type

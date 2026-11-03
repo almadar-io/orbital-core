@@ -4,13 +4,13 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::entity_source::InMemoryEntityCache;
 use crate::config::KernelConfig;
-use crate::process_result::{ProcessEventResult, RuntimeStats};
+use crate::entity_source::InMemoryEntityCache;
 use crate::kernel::RuntimeKernel;
+use crate::process_result::{ProcessEventResult, RuntimeStats};
 use orbital_core_base::effect_types::RuntimeEnvironment;
-use orbital_core_eval::state_machine::types::TraitState;
 use orbital_core_base::value::Value;
+use orbital_core_eval::state_machine::types::TraitState;
 use std::sync::Arc;
 
 /// Orbital event

@@ -26,7 +26,6 @@ pub fn builtin_theme_names() -> &'static [String] {
 // 3.1c — Embedded services-registry.json (call-service integrator contracts)
 // ============================================================================
 
-
 /// A single field of an emit/listen payload schema, mirroring trait
 /// `payloadSchema` entries so L1/L2 consumers can compare the component's
 /// documented bus shape against the trait's declared `emits {}` payload.

@@ -1,12 +1,11 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
+use crate::schema::sexpr::SExpression;
 use crate::schema::types::EntityDefinition;
 use crate::schema::types::EntityRef;
-use crate::schema::sexpr::SExpression;
 use crate::schema::types::OrbitalSchema;
 use crate::value::Value;
 use std::collections::HashMap;
-
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// Value for a declared `@mock "..."` field — the declared string used
 /// LITERALLY, never interpreted through any domain-name lookup. Comma-
@@ -309,7 +308,10 @@ pub fn stamp_owner(
         if let Some(map) = row.as_object_mut() {
             for col in &cols {
                 if stamps_row(col, i) {
-                    map.insert((*col).to_string().into(), Value::string(viewer_id.to_string()));
+                    map.insert(
+                        (*col).to_string().into(),
+                        Value::string(viewer_id.to_string()),
+                    );
                 }
             }
         }

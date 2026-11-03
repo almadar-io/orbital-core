@@ -268,7 +268,9 @@ pub fn vocabulary_packs() -> Result<&'static [VocabularyPack], LanguageDataError
     }
     #[cfg(not(feature = "std"))]
     {
-        Err(LanguageDataError::NotInstalled { package: crate::language_data::CORE_PACKAGE })
+        Err(LanguageDataError::NotInstalled {
+            package: crate::language_data::CORE_PACKAGE,
+        })
     }
     #[cfg(feature = "std")]
     {

@@ -430,7 +430,12 @@ pub enum PageFactField {
 
 impl PageFactField {
     /// Every fact, in the spelling a program writes it.
-    pub const ALL: [PageFactField; 4] = [Self::Hostname, Self::Referrer, Self::ScreenWidth, Self::Href];
+    pub const ALL: [PageFactField; 4] = [
+        Self::Hostname,
+        Self::Referrer,
+        Self::ScreenWidth,
+        Self::Href,
+    ];
 
     /// The bare word a program writes (`hostname`, `referrer`, `screenWidth`, `href`).
     pub fn as_str(self) -> &'static str {

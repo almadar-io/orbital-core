@@ -1,8 +1,7 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
 use crate::schema::types::EntityDefinition;
 use crate::schema::types::FieldDefinition;
-
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// The bare sigil root this module's `@user.<f>` readers are about.
 pub const USER_SIGIL: &str = "@user.";

@@ -156,7 +156,10 @@ impl OirExpr {
                 S::Array(v.into())
             }
             OirExpr::Object { fields } => {
-                let mut m = crate::schema::sexpr::SObject::with_capacity_and_hasher(fields.len(), Default::default());
+                let mut m = crate::schema::sexpr::SObject::with_capacity_and_hasher(
+                    fields.len(),
+                    Default::default(),
+                );
                 for (k, val) in fields {
                     m.insert(k.as_str().into(), val.to_sexpression()?);
                 }
@@ -239,7 +242,10 @@ impl OirExpr {
                     source.to_sexpression()?,
                     arr(
                         "fn",
-                        vec![S::String(variable.clone().into()), predicate.to_sexpression()?],
+                        vec![
+                            S::String(variable.clone().into()),
+                            predicate.to_sexpression()?,
+                        ],
                     ),
                 ],
             ),
@@ -256,10 +262,13 @@ impl OirExpr {
                     arr(
                         "fn",
                         vec![
-                            S::Array(vec![
-                                S::String(accumulator.clone().into()),
-                                S::String(variable.clone().into()),
-                            ].into()),
+                            S::Array(
+                                vec![
+                                    S::String(accumulator.clone().into()),
+                                    S::String(variable.clone().into()),
+                                ]
+                                .into(),
+                            ),
                             body.to_sexpression()?,
                         ],
                     ),
@@ -482,7 +491,10 @@ impl OirExpr {
         match self {
             Self::Effect { effect } => {
                 crate::runs_on::ir_effect_site(effect, residence) == crate::runs_on::RunsOn::Server
-                    || effect.child_exprs().iter().any(|e| e.runs_server_effect(residence))
+                    || effect
+                        .child_exprs()
+                        .iter()
+                        .any(|e| e.runs_server_effect(residence))
             }
             Self::Conditional {
                 condition,
@@ -493,7 +505,10 @@ impl OirExpr {
                 (then_live && then_branch.runs_server_effect(residence))
                     || else_branch.runs_server_effect(residence)
             }
-            _ => self.child_exprs().iter().any(|e| e.runs_server_effect(residence)),
+            _ => self
+                .child_exprs()
+                .iter()
+                .any(|e| e.runs_server_effect(residence)),
         }
     }
 
@@ -529,7 +544,8 @@ impl OirExpr {
     /// True when this expression provably evaluates falsy — the same rule as
     /// `SExpression::is_statically_false`, through the canonical bridge.
     pub fn is_statically_false(&self) -> bool {
-        self.to_sexpression().is_some_and(|s| s.is_statically_false())
+        self.to_sexpression()
+            .is_some_and(|s| s.is_statically_false())
     }
 
     pub fn calls_function(&self, function: &str) -> bool {

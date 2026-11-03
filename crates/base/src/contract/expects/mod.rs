@@ -59,12 +59,12 @@ fn base_type(field: &Value) -> Option<&str> {
         .map(|t| if t == "enum" { "string" } else { t })
 }
 
-mod merge;
-mod imports;
-mod walk;
 mod derive;
-use merge::*;
-use imports::*;
-use walk::*;
+mod imports;
+mod merge;
+mod walk;
 pub use derive::derive_expectations;
+use imports::*;
 pub use merge::merge_expectation_shape;
+use merge::*;
+use walk::*;

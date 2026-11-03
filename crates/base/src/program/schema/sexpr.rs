@@ -91,7 +91,10 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
         Ok(SExpression::Null)
     }
 
-    fn visit_some<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<SExpression, D::Error> {
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<SExpression, D::Error> {
         deserializer.deserialize_any(self)
     }
 
@@ -128,7 +131,10 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<SExpression, A::Error> {
-        let mut object = SObject::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
+        let mut object = SObject::with_capacity_and_hasher(
+            map.size_hint().unwrap_or(0).min(4096),
+            Default::default(),
+        );
         while let Some((key, value)) = map.next_entry::<InternedKey, SExpression>()? {
             object.insert(key.0, value);
         }
@@ -151,10 +157,10 @@ enum RewriteFrame<'a> {
     Object(&'a SExpression, usize),
 }
 
-mod methods;
-mod walk;
 mod convert;
 mod json;
+mod methods;
+mod walk;
 use walk::*;
 /// A `(list …)` literal marker, stripped; any other array unchanged.
 pub fn strip_literal_list_marker(arr: &[SExpression]) -> &[SExpression] {

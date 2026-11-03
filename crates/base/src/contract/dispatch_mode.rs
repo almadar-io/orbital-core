@@ -38,21 +38,33 @@ pub fn compute(declared: Option<Declared>) -> DispatchMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use {crate::ir::types::{OirEntity, OirPersistence, OirTrait}};
+    use crate::ir::types::{OirEntity, OirPersistence, OirTrait};
     use crate::runs_on::Residence;
     use crate::schema::types::{EntityDefinition, TraitDefinition};
 
     #[test]
     fn dispatch_mode_rule_table() {
-        assert_eq!(compute(Some(Declared::Client)), DispatchMode::HybridClientOnly);
-        assert_eq!(compute(Some(Declared::Optimistic)), DispatchMode::RuntimeOptimistic);
-        assert_eq!(compute(Some(Declared::Server)), DispatchMode::PersistedAwaited);
+        assert_eq!(
+            compute(Some(Declared::Client)),
+            DispatchMode::HybridClientOnly
+        );
+        assert_eq!(
+            compute(Some(Declared::Optimistic)),
+            DispatchMode::RuntimeOptimistic
+        );
+        assert_eq!(
+            compute(Some(Declared::Server)),
+            DispatchMode::PersistedAwaited
+        );
         assert_eq!(compute(None), DispatchMode::PersistedAwaited);
     }
 
     #[test]
     fn server_is_server_whatever_the_entity_or_effects() {
-        for effects in [serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([["fetch", "Row", {}]])] {
+        for effects in [
+            serde_json::json!([["set", "@entity.x", 1]]),
+            serde_json::json!([["fetch", "Row", {}]]),
+        ] {
             let t = schema_trait(Some("server"), effects);
             assert_eq!(mode_of(&t, true), DispatchMode::PersistedAwaited);
             assert_eq!(mode_of(&t, false), DispatchMode::PersistedAwaited);
@@ -101,7 +113,10 @@ mod tests {
 
     #[test]
     fn client_is_client_only_whatever_the_entity_or_effects() {
-        for effects in [serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([["fetch", "Row", {}]])] {
+        for effects in [
+            serde_json::json!([["set", "@entity.x", 1]]),
+            serde_json::json!([["fetch", "Row", {}]]),
+        ] {
             let t = schema_trait(Some("client"), effects);
             assert_eq!(mode_of(&t, true), DispatchMode::HybridClientOnly);
             assert_eq!(mode_of(&t, false), DispatchMode::HybridClientOnly);
@@ -110,7 +125,10 @@ mod tests {
 
     #[test]
     fn optimistic_is_optimistic_whatever_the_entity_or_effects() {
-        for effects in [serde_json::json!([["set", "@entity.x", 1]]), serde_json::json!([["fetch", "Row", {}]])] {
+        for effects in [
+            serde_json::json!([["set", "@entity.x", 1]]),
+            serde_json::json!([["fetch", "Row", {}]]),
+        ] {
             let t = schema_trait(Some("optimistic"), effects);
             assert_eq!(mode_of(&t, true), DispatchMode::RuntimeOptimistic);
             assert_eq!(mode_of(&t, false), DispatchMode::RuntimeOptimistic);
@@ -135,13 +153,23 @@ mod tests {
             }))
             .unwrap_err()
             .to_string();
-            assert!(err.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && err.contains("`local`") && err.contains("dispatch"), "{err}");
+            assert!(
+                err.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY")
+                    && err.contains("`local`")
+                    && err.contains("dispatch"),
+                "{err}"
+            );
         }
     }
 
     #[test]
     fn dispatch_mode_ir_and_schema_agree() {
-        for dispatch in [None, Some(Declared::Client), Some(Declared::Optimistic), Some(Declared::Server)] {
+        for dispatch in [
+            None,
+            Some(Declared::Client),
+            Some(Declared::Optimistic),
+            Some(Declared::Server),
+        ] {
             for entity_is_runtime in [true, false] {
                 let mut oir_trait = OirTrait::new("T");
                 oir_trait.dispatch = dispatch;
@@ -157,7 +185,10 @@ mod tests {
                 schema.dispatch = dispatch;
                 let schema_mode = mode_of(&schema, entity_is_runtime);
 
-                assert_eq!(ir_mode, schema_mode, "dispatch={dispatch:?} runtime={entity_is_runtime}");
+                assert_eq!(
+                    ir_mode, schema_mode,
+                    "dispatch={dispatch:?} runtime={entity_is_runtime}"
+                );
                 assert_eq!(ir_mode, compute(dispatch));
             }
         }

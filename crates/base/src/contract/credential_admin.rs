@@ -24,7 +24,14 @@ pub enum CredentialAdminOp {
 }
 
 impl CredentialAdminOp {
-    pub const ALL: [CredentialAdminOp; 6] = [Self::List, Self::Set, Self::Remove, Self::Test, Self::Mode, Self::Rotate];
+    pub const ALL: [CredentialAdminOp; 6] = [
+        Self::List,
+        Self::Set,
+        Self::Remove,
+        Self::Test,
+        Self::Mode,
+        Self::Rotate,
+    ];
 
     /// The surface name, `credential-<verb>`.
     pub fn name(self) -> &'static str {

@@ -39,13 +39,28 @@ pub enum BridgeError {
 /// trait (scoped-listen delivery), `traits`/`entityByTrait` fill the stateless addressing
 /// fields the compiled server also reads (`handlers.rs:510-532`).
 #[cfg(feature = "client-http")]
-fn build_event_request(event: &str, entity_id: Option<&str>, trait_name: Option<&str>, payload: Value) -> EventRequest {
+fn build_event_request(
+    event: &str,
+    entity_id: Option<&str>,
+    trait_name: Option<&str>,
+    payload: Value,
+) -> EventRequest {
     EventRequest {
         event: event.to_string(),
         entity_id: Some(entity_id.unwrap_or("singleton").to_string()),
         target_trait: trait_name.map(str::to_string),
-        traits: trait_name.map(|t| vec![TraitFrom { r#trait: t.to_string(), from: t.to_string(), event: None }]),
-        payload: if payload.is_null() { None } else { Some(payload) },
+        traits: trait_name.map(|t| {
+            vec![TraitFrom {
+                r#trait: t.to_string(),
+                from: t.to_string(),
+                event: None,
+            }]
+        }),
+        payload: if payload.is_null() {
+            None
+        } else {
+            Some(payload)
+        },
         ..Default::default()
     }
 }
@@ -157,7 +172,9 @@ impl SyncServerBridge {
         reference: &orbital_core_base::row_set::RowSetRef,
     ) -> Result<crate::row_query::RowPage, BridgeError> {
         let url = format!("{}/api/orbitals/resolve-rows", self.base_url);
-        let request = crate::row_query::ResolveRowsRequest { reference: reference.clone() };
+        let request = crate::row_query::ResolveRowsRequest {
+            reference: reference.clone(),
+        };
         let response = ureq::post(&url)
             .send_json(&request)
             .map_err(|e| BridgeError::Network(e.to_string()))?;
@@ -166,14 +183,20 @@ impl SyncServerBridge {
             error!(body = %body, "Server refused to resolve a row set");
             return Err(BridgeError::Server(body));
         }
-        response.into_json().map_err(|e| BridgeError::Parse(e.to_string()))
+        response
+            .into_json()
+            .map_err(|e| BridgeError::Parse(e.to_string()))
     }
 
     /// Post a full `EventRequest` AS-IS (the client-kernel "server leg" — carries
     /// `traits`/`entityByTrait`/`clientId` that `send_event_with_options`'s
     /// narrower `(event, entity_id, trait_name, payload)` signature can't express)
     /// to `/api/orbitals/{orbital}/events`.
-    pub fn send_request(&self, orbital: &str, request: &EventRequest) -> Result<EventResponse, BridgeError> {
+    pub fn send_request(
+        &self,
+        orbital: &str,
+        request: &EventRequest,
+    ) -> Result<EventResponse, BridgeError> {
         let url = format!("{}/api/orbitals/{}/events", self.base_url, orbital);
 
         debug!(url = %url, event = %request.event, "Sending server leg (sync)");
@@ -237,12 +260,18 @@ mod tests {
 
     #[test]
     fn the_builder_keeps_the_url() {
-        let bridge = ServerBridgeBuilder::new().url("http://localhost:3030").build_sync().unwrap();
+        let bridge = ServerBridgeBuilder::new()
+            .url("http://localhost:3030")
+            .build_sync()
+            .unwrap();
         assert_eq!(bridge.base_url, "http://localhost:3030");
     }
 
     #[test]
     fn control_the_builder_without_a_url_is_refused() {
-        assert!(matches!(ServerBridgeBuilder::new().build_sync(), Err(BridgeError::InvalidRequest(_))));
+        assert!(matches!(
+            ServerBridgeBuilder::new().build_sync(),
+            Err(BridgeError::InvalidRequest(_))
+        ));
     }
 }

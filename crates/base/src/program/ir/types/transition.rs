@@ -293,7 +293,9 @@ pub enum OirInterval {
     /// the raw source string — see `crate::cron` for parsing/matching.
     /// `resolve_tick` only produces this variant after confirming the
     /// string is a syntactically valid cron expression.
-    Cron { expression: String },
+    Cron {
+        expression: String,
+    },
 }
 
 impl OirInterval {

@@ -60,6 +60,26 @@ fn client_core_drives_render_through_client_kernel() {
     assert_eq!(title, Some(Value::string("Hello")));
 }
 
+#[test]
+fn split_control_paints_the_local_response_before_server_settlement() {
+    let schema = render_ui_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, Arc::clone(&kernel));
+    let mut payload = ValueMap::default();
+    payload.insert("title".into(), Value::string("Immediate"));
+    let begun = core
+        .begin_control("SHOW", Some("RenderTrait"), Value::object(payload))
+        .unwrap();
+    assert_eq!(core.current_state, "shown");
+    let title = core.ui_slots["main"][0]
+        .props
+        .as_object()
+        .and_then(|props| props.get("title"));
+    assert_eq!(title, Some(&Value::string("Immediate")));
+    core.finish_control(&begun, kernel.settle(&begun));
+    assert_eq!(core.current_state, "shown");
+}
+
 /// Two peer traits that both own `main`, and a third embedded by the first (`@trait.Child`).
 fn peer_main_schema() -> OrbitalSchema {
     let shows = |title: &str| {
@@ -302,9 +322,17 @@ fn an_unmatched_path_enters_the_page_declared_not_found() {
     assert!(core.page_entered, "the host mounts the not-found page");
     assert_eq!(core.status_message, None);
     core.navigate_back();
-    assert_eq!(core.current_page.as_deref(), Some("ListPage"), "back returns to where the path was left");
+    assert_eq!(
+        core.current_page.as_deref(),
+        Some("ListPage"),
+        "back returns to where the path was left"
+    );
     core.navigate_to("/notes/42", None);
-    assert_eq!(core.current_page.as_deref(), Some("DetailPage"), "control: a matching path never reaches it");
+    assert_eq!(
+        core.current_page.as_deref(),
+        Some("DetailPage"),
+        "control: a matching path never reaches it"
+    );
 }
 
 /// The desktop shows one page at a time, like the web and native routers: `main` holds the
@@ -423,8 +451,7 @@ fn process_response_never_replays_a_delivered_emit() {
         core.pending_events
     );
     core.settle(8);
-    let listener =
-        serde_json::to_value(kernel.snapshot_trait("Listener", None).entity).unwrap();
+    let listener = serde_json::to_value(kernel.snapshot_trait("Listener", None).entity).unwrap();
     let emitter = serde_json::to_value(kernel.snapshot_trait("Emitter", None).entity).unwrap();
     assert_eq!(
         listener.get("count").and_then(|v| v.as_f64()),
@@ -643,10 +670,7 @@ fn navigate_back_returns_to_the_previous_page() {
     core.navigate_to("/notes/2", None);
     core.navigate_back();
     assert_eq!(core.current_page.as_deref(), Some("DetailPage"));
-    assert_eq!(
-        core.route_params.get("id"),
-        Some(&Value::string("1"))
-    );
+    assert_eq!(core.route_params.get("id"), Some(&Value::string("1")));
     core.navigate_back();
     assert_eq!(core.current_page.as_deref(), Some("ListPage"));
     assert!(core.route_params.is_empty());
@@ -666,9 +690,12 @@ fn a_navigate_effect_mounts_the_page_it_lands_on() {
     let mut schema = routed_schema();
     let list: &mut serde_json::Value =
         &mut serde_json::to_value(&schema.orbitals[0].traits[0]).unwrap();
-    list["stateMachine"]["transitions"].as_array_mut().unwrap().push(serde_json::json!(
-        { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["navigate", "/notes/9"]] }
-    ));
+    list["stateMachine"]["transitions"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!(
+            { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["navigate", "/notes/9"]] }
+        ));
     schema.orbitals[0].traits[0] = serde_json::from_value(list.clone()).unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
@@ -711,17 +738,37 @@ fn kernel_core(ticks: serde_json::Value) -> ClientCore {
 fn a_frame_tick_runs_through_the_kernel_frame_on_every_host_frame() {
     let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]);
     let twin = crate::embed::EmbeddedKernel::new(ticking_schema(ticks.clone()), "twin").unwrap();
-    let wire = twin.frame(0).unwrap().expect("the embedded kernel's frame fires it");
+    let wire = twin
+        .frame(0)
+        .unwrap()
+        .expect("the embedded kernel's frame fires it");
     assert_eq!(wire.fired.len(), 1);
     let mut core = kernel_core(ticks);
     assert!(core.has_ticks());
-    assert!(core.drive_ticks_blocking(), "the client core fires the same tick through the same frame");
+    assert!(
+        core.drive_ticks_blocking(),
+        "the client core fires the same tick through the same frame"
+    );
     assert!(core.drive_ticks_blocking());
 }
 
 #[test]
-fn control_an_interval_tick_waits_out_its_interval_a_tickless_orbital_runs_nothing_and_a_bridge_core_runs_no_ticks() {
-    let mut slow = kernel_core(serde_json::json!([{ "name": "slow", "interval": "1h", "effects": [] }]));
+fn split_frame_processes_the_local_tick_before_settlement() {
+    let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]);
+    let mut core = kernel_core(ticks);
+    let kernel = core.client_kernel.clone().unwrap();
+    let begun = core.begin_frame().unwrap().expect("frame tick due");
+    assert!(!begun.local().is_empty());
+    assert!(!begun.has_legs());
+    core.finish_frame(kernel.settle_frame(&begun));
+    assert!(core.status_message.is_none());
+}
+
+#[test]
+fn control_an_interval_tick_waits_out_its_interval_a_tickless_orbital_runs_nothing_and_a_bridge_core_runs_no_ticks(
+) {
+    let mut slow =
+        kernel_core(serde_json::json!([{ "name": "slow", "interval": "1h", "effects": [] }]));
     assert!(slow.has_ticks());
     assert!(!slow.drive_ticks_blocking());
     assert!(!slow.drive_ticks_blocking(), "still inside the hour");
@@ -732,20 +779,33 @@ fn control_an_interval_tick_waits_out_its_interval_a_tickless_orbital_runs_nothi
         ticking_schema(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }])),
         None,
     );
-    assert!(!bare.has_ticks() && !bare.drive_ticks_blocking(), "only a client-kernel core is driven by the frame");
+    assert!(
+        !bare.has_ticks() && !bare.drive_ticks_blocking(),
+        "only a client-kernel core is driven by the frame"
+    );
 }
 
 #[test]
 fn a_visible_tick_runs_only_while_its_trait_has_rendered_output_on_screen() {
     let ticks = serde_json::json!([{ "name": "v", "interval": "frame", "whileVisible": true, "effects": [] }]);
     let mut core = kernel_core(ticks.clone());
-    assert!(!core.drive_ticks_blocking(), "nothing is rendered, so the [visible] tick is dropped");
+    assert!(
+        !core.drive_ticks_blocking(),
+        "nothing is rendered, so the [visible] tick is dropped"
+    );
     core.trait_content.insert("T".into(), Value::Null);
-    assert!(core.drive_ticks_blocking(), "the trait's output is on screen");
+    assert!(
+        core.drive_ticks_blocking(),
+        "the trait's output is on screen"
+    );
     core.trait_content.remove("T");
     assert!(!core.drive_ticks_blocking(), "off screen again");
-    let mut always = kernel_core(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]));
-    assert!(always.drive_ticks_blocking(), "control: a tick that is not [visible] needs no presence");
+    let mut always =
+        kernel_core(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]));
+    assert!(
+        always.drive_ticks_blocking(),
+        "control: a tick that is not [visible] needs no presence"
+    );
 }
 
 #[test]
@@ -758,4 +818,66 @@ fn the_mount_scopes_the_tick_clock_of_a_client_kernel_core() {
     assert!(!core.drive_ticks_blocking(), "T is not in the mount");
     kernel.mount(["T"]);
     assert!(core.drive_ticks_blocking(), "mounting T starts its ticks");
+}
+
+#[test]
+fn host_asks_preserve_order_args_and_kernel_completion_for_the_client_host() {
+    let mut core = ClientCore::new(render_ui_schema(), None);
+    let completion = HostAskCompletion {
+        trait_name: "RenderTrait".into(),
+        entity_id: Some("row-1".into()),
+        key: Some("audio".into()),
+        success: Some("PLAYED".into()),
+        failure: Some("FAILED".into()),
+    };
+    core.execute_client_effect(
+        ClientEffect::HostAsk {
+            op: "audio/play-sound".into(),
+            args: vec![Value::string("jump")],
+            completion: Some(completion.clone()),
+        },
+        "RenderTrait",
+    );
+    core.execute_client_effect(
+        ClientEffect::HostAsk {
+            op: "audio/stop-music".into(),
+            args: Vec::new(),
+            completion: None,
+        },
+        "RenderTrait",
+    );
+    assert_eq!(core.pending_host_asks.len(), 2);
+    assert_eq!(core.pending_host_asks[0].source_trait, "RenderTrait");
+    assert_eq!(core.pending_host_asks[0].op, "audio/play-sound");
+    assert_eq!(core.pending_host_asks[0].args, [Value::string("jump")]);
+    assert_eq!(core.pending_host_asks[0].completion, Some(completion));
+    assert_eq!(core.pending_host_asks[1].op, "audio/stop-music");
+    assert!(core.pending_host_asks[1].args.is_empty());
+}
+
+#[test]
+fn host_completion_returns_to_its_authored_trait() {
+    let schema = render_ui_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, Arc::clone(&kernel));
+    let completion = HostAskCompletion {
+        trait_name: "RenderTrait".into(),
+        success: Some("SHOW".into()),
+        ..Default::default()
+    };
+    let mut payload = ValueMap::default();
+    payload.insert("title".into(), Value::string("Played"));
+    let begun = core
+        .begin_host_completion(&completion, "SHOW", Value::object(payload))
+        .unwrap();
+    assert_eq!(begun.trait_name(), "RenderTrait");
+    assert_eq!(begun.event(), "SHOW");
+    assert_eq!(
+        core.ui_slots["main"][0]
+            .props
+            .as_object()
+            .and_then(|props| props.get("title")),
+        Some(&Value::string("Played"))
+    );
+    core.finish_control(&begun, kernel.settle(&begun));
 }

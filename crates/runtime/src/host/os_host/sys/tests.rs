@@ -2,6 +2,14 @@ use super::*;
 use std::path::Path;
 use {crate::os_host::OsHandles, orbital_core_base::os_grants::OsGrants};
 
+#[cfg(unix)]
+#[test]
+fn proc_loadavg_preserves_three_host_readings() {
+    assert_eq!(posix::parse_proc_loadavg(OsOp::LoadAvg, "1.25 0.50 0.10 2/100 42\n").unwrap(), [1.25, 0.5, 0.1]);
+    assert!(posix::parse_proc_loadavg(OsOp::LoadAvg, "1.25 missing 0.10\n").is_err());
+    assert!(posix::parse_proc_loadavg(OsOp::LoadAvg, "1.25 0.50\n").is_err());
+}
+
 fn s(v: &str) -> Value {
     Value::string(v.to_string())
 }

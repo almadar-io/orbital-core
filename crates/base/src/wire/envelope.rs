@@ -108,14 +108,8 @@ impl DeliveryRefused {
     /// `{ id, to: { instance, orbital, trait? }, event, reason, causalId }`.
     pub fn payload(&self) -> Value {
         let mut to = ValueMap::default();
-        to.insert(
-            "instance".into(),
-            Value::string(self.to.instance.clone()),
-        );
-        to.insert(
-            "orbital".into(),
-            Value::string(self.to.orbital.clone()),
-        );
+        to.insert("instance".into(), Value::string(self.to.instance.clone()));
+        to.insert("orbital".into(), Value::string(self.to.orbital.clone()));
         if let Some(trait_name) = &self.to.trait_name {
             to.insert("trait".into(), Value::string(trait_name.clone()));
         }
@@ -127,10 +121,7 @@ impl DeliveryRefused {
             "reason".into(),
             Value::string(self.reason.as_str().to_string()),
         );
-        payload.insert(
-            "causalId".into(),
-            Value::string(self.causal_id.clone()),
-        );
+        payload.insert("causalId".into(), Value::string(self.causal_id.clone()));
         Value::object(payload)
     }
 }

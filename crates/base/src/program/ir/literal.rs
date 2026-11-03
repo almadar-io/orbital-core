@@ -45,7 +45,10 @@ pub const LITERAL_TYPE_MISMATCH_MARKER: &str = "LITERAL_TYPE_MISMATCH:";
 
 impl LiteralMismatch {
     pub fn marker(&self) -> String {
-        format!("{LITERAL_TYPE_MISMATCH_MARKER} expected {} got {}", self.expected, self.found)
+        format!(
+            "{LITERAL_TYPE_MISMATCH_MARKER} expected {} got {}",
+            self.expected, self.found
+        )
     }
 }
 
@@ -141,8 +144,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         | (OirType::FieldRef { .. }, OirValue::String(s))
         | (OirType::File, OirValue::String(s)) => Ok(Some(r.string(s))),
 
-        (OirType::Number, OirValue::Number(n))
-        | (OirType::Money, OirValue::Number(n)) => {
+        (OirType::Number, OirValue::Number(n)) | (OirType::Money, OirValue::Number(n)) => {
             Ok(Some(r.number(*n)))
         }
         (OirType::Integer, OirValue::Number(n)) if n.fract() == 0.0 => {
@@ -162,10 +164,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         }
 
         (
-            OirType::Struct { .. }
-            | OirType::Map { .. }
-            | OirType::Node
-            | OirType::Row { .. },
+            OirType::Struct { .. } | OirType::Map { .. } | OirType::Node | OirType::Row { .. },
             OirValue::Object(_),
         ) => Ok(r.object()),
 
@@ -250,7 +249,12 @@ mod tests {
     #[test]
     fn null_against_optional_renders_null() {
         assert_eq!(
-            render_default(&r(), &OirValue::Null, &OirType::optional(OirType::String), None),
+            render_default(
+                &r(),
+                &OirValue::Null,
+                &OirType::optional(OirType::String),
+                None
+            ),
             Ok(Some("null".to_string()))
         );
     }
@@ -366,7 +370,10 @@ mod tests {
         fields.insert("a".to_string(), OirValue::Number(1.0));
         let value = OirValue::Object(fields);
         for ty in [
-            OirType::Struct { fields: crate::ir::types::no_fields(), additional: None },
+            OirType::Struct {
+                fields: crate::ir::types::no_fields(),
+                additional: None,
+            },
             OirType::map(OirType::String, OirType::Number),
             OirType::Node,
         ] {
@@ -462,8 +469,13 @@ mod tests {
         assert_eq!(number_vs_string.expected, "number");
         assert_eq!(number_vs_string.found, "string");
 
-        let enum_vs_number = render_default(&r(), &OirValue::Number(1.0), &OirType::enum_type("Status"), None)
-            .expect_err("Number value against Enum type");
+        let enum_vs_number = render_default(
+            &r(),
+            &OirValue::Number(1.0),
+            &OirType::enum_type("Status"),
+            None,
+        )
+        .expect_err("Number value against Enum type");
         assert_eq!(enum_vs_number.expected, "enum(Status)");
         assert_eq!(enum_vs_number.found, "number");
     }

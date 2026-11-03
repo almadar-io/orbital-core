@@ -7,8 +7,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::schema::types::{EventDefinition, PayloadField, TraitReference};
 use crate::schema::types::OrbitalSchema;
+use crate::schema::types::{EventDefinition, PayloadField, TraitReference};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,7 +84,9 @@ pub fn find_external_input(
 pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for def in crate::policy::inline_entity_defs(schema) {
-        if def.persistence == Some(crate::schema::types::Persistence::Runtime) || out.contains(&def.name) {
+        if def.persistence == Some(crate::schema::types::Persistence::Runtime)
+            || out.contains(&def.name)
+        {
             continue;
         }
         out.push(def.name.clone());
@@ -192,7 +194,14 @@ mod tests {
             ]
         }))
         .unwrap();
-        assert_eq!(readable_entities_of(&two), vec!["Task".to_string(), "Comment".to_string(), "Project".to_string()]);
+        assert_eq!(
+            readable_entities_of(&two),
+            vec![
+                "Task".to_string(),
+                "Comment".to_string(),
+                "Project".to_string()
+            ]
+        );
         s.orbitals.clear();
         assert!(readable_entities_of(&s).is_empty());
     }

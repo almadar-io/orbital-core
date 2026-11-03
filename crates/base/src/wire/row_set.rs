@@ -1,9 +1,9 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
 use crate::value::Value;
 use serde::Deserialize;
 use serde::Serialize;
 use std::cmp::Ordering;
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use std::sync::Arc;
 
 /// The comparison operators of a `compare` leaf.
@@ -412,7 +412,16 @@ mod nearest_tests {
     fn a_zero_k_is_refused_at_the_wire_and_a_positive_one_is_read() {
         let wire = |k: u64| serde_json::json!({ "field": "embedding", "vector": [1.0], "k": k });
         assert!(serde_json::from_value::<RowNearest>(wire(0)).is_err());
-        assert_eq!(serde_json::from_value::<RowNearest>(wire(1)).unwrap().k.get(), 1);
-        assert!(serde_json::from_value::<RowNearest>(serde_json::json!({ "field": "e", "vector": [1.0], "k": -1 })).is_err());
+        assert_eq!(
+            serde_json::from_value::<RowNearest>(wire(1))
+                .unwrap()
+                .k
+                .get(),
+            1
+        );
+        assert!(serde_json::from_value::<RowNearest>(
+            serde_json::json!({ "field": "e", "vector": [1.0], "k": -1 })
+        )
+        .is_err());
     }
 }

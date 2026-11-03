@@ -1,7 +1,6 @@
 use crate::bus_event::BusEventSource;
 use crate::schema::types::ListenSource;
 
-
 /// The source identity rule shared by runtime delivery and static route validation.
 pub fn matches_listen_source(
     declared: Option<&ListenSource>,

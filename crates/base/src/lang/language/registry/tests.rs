@@ -80,17 +80,38 @@ fn the_service_catalog_lists_each_service_with_its_backend_and_credentials_sorte
     .unwrap();
     let shown: Vec<(&str, Option<&str>, Vec<(&str, bool, &str)>)> = catalog
         .iter()
-        .map(|s| (s.name.as_str(), s.backend.as_deref(), s.credentials.iter().map(|c| (c.env_var.as_str(), c.required, c.description.as_str())).collect()))
+        .map(|s| {
+            (
+                s.name.as_str(),
+                s.backend.as_deref(),
+                s.credentials
+                    .iter()
+                    .map(|c| (c.env_var.as_str(), c.required, c.description.as_str()))
+                    .collect(),
+            )
+        })
         .collect();
     assert_eq!(
         shown,
         vec![
             ("bare", None, vec![]),
             ("files", Some("mock"), vec![]),
-            ("stripe", Some("production"), vec![("STRIPE_KEY", true, "live key"), ("STRIPE_HOOK", false, "webhook")]),
+            (
+                "stripe",
+                Some("production"),
+                vec![
+                    ("STRIPE_KEY", true, "live key"),
+                    ("STRIPE_HOOK", false, "webhook")
+                ]
+            ),
         ]
     );
-    assert!(parse_service_catalog(r#"{"services": {}}"#).unwrap().is_empty(), "control: an empty registry lists no service");
+    assert!(
+        parse_service_catalog(r#"{"services": {}}"#)
+            .unwrap()
+            .is_empty(),
+        "control: an empty registry lists no service"
+    );
 }
 
 #[test]
@@ -227,8 +248,16 @@ fn os_host_effects_are_the_installed_tables_host_os_operators() {
 #[test]
 fn emit_capable_operators_are_the_ones_whose_parameters_take_an_emit_options_object() {
     for op in [
-        "fetch", "persist", "call-service", "random-bytes", "credential-status",
-        "credential-forget", "credential-set", "access-check", "os/read-file", "kv/get",
+        "fetch",
+        "persist",
+        "call-service",
+        "random-bytes",
+        "credential-status",
+        "credential-forget",
+        "credential-set",
+        "access-check",
+        "os/read-file",
+        "kv/get",
     ] {
         assert!(takes_emit_options(op), "{op} takes emit options");
     }
@@ -243,7 +272,24 @@ fn every_os_and_kv_operator_declares_a_grant_and_no_other_operator_does() {
         let granted = matches!(op.host.as_deref(), Some("os" | "kv"));
         assert_eq!(op.grant.is_some(), granted, "{name}");
     }
-    assert_eq!(get_operator("os/read").and_then(|op| op.grant.as_deref()), Some(&[][..]), "a handle call needs nothing");
+    assert_eq!(
+        get_operator("os/read").and_then(|op| op.grant.as_deref()),
+        Some(&[][..]),
+        "a handle call needs nothing"
+    );
+}
+
+#[test]
+fn format_number_options_are_all_optional() {
+    let operator = get_operator("format/number").expect("format/number");
+    let OperatorTypeRef::Tagged(OperatorTypeRefKind::Object {
+        fields, optional, ..
+    }) = &operator.params[1].ty
+    else {
+        panic!("format/number options must be an object");
+    };
+    assert_eq!(fields.len(), 4);
+    assert!(fields.keys().all(|field| optional.contains(field)));
 }
 
 #[test]
@@ -253,26 +299,68 @@ fn the_host_effects_are_the_tables_closed_calls_with_their_option_keys_request_a
     assert_eq!(
         names,
         [
-            "access-check", "credential-connect", "credential-forget", "credential-list", "credential-mode", "credential-remove",
-            "credential-rotate", "credential-set", "credential-status", "credential-test", "random-bytes"
+            "access-check",
+            "credential-connect",
+            "credential-forget",
+            "credential-list",
+            "credential-mode",
+            "credential-remove",
+            "credential-rotate",
+            "credential-set",
+            "credential-status",
+            "credential-test",
+            "random-bytes"
         ]
     );
     let bytes = get_operator("random-bytes").expect("random-bytes");
-    let range = bytes.closed_call.as_ref().and_then(|c| c.int_range).expect("range");
+    let range = bytes
+        .closed_call
+        .as_ref()
+        .and_then(|c| c.int_range)
+        .expect("range");
     assert_eq!((range.arg, range.min, range.max), (0, 1, 1024));
-    assert_eq!(bytes.option_keys(), Some((vec!["emit", "key"], vec!["failure", "success"])));
-    assert_eq!(get_operator("access-check").and_then(|op| op.option_keys()), Some((vec!["emit"], vec!["failure", "success"])), "control: only random-bytes is keyed");
+    assert_eq!(
+        bytes.option_keys(),
+        Some((vec!["emit", "key"], vec!["failure", "success"]))
+    );
+    assert_eq!(
+        get_operator("access-check").and_then(|op| op.option_keys()),
+        Some((vec!["emit"], vec!["failure", "success"])),
+        "control: only random-bytes is keyed"
+    );
     let list = get_operator("credential-list").expect("list");
-    assert_eq!(list.request_fields(), Some((vec!["service"], vec![])), "service is optional");
-    assert_eq!(get_operator("credential-set").and_then(|op| op.request_fields()), Some((vec!["envVar", "service", "value"], vec!["envVar", "service", "value"])));
-    assert!(get_operator("credential-set").is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)));
-    assert!(!get_operator("access-check").is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)), "control: access-check's request is checked by its own contract");
-    assert_eq!(get_operator("fetch").map(|op| op.closed_call.is_none()), Some(true), "control: a data effect is not a host effect");
+    assert_eq!(
+        list.request_fields(),
+        Some((vec!["service"], vec![])),
+        "service is optional"
+    );
+    assert_eq!(
+        get_operator("credential-set").and_then(|op| op.request_fields()),
+        Some((
+            vec!["envVar", "service", "value"],
+            vec!["envVar", "service", "value"]
+        ))
+    );
+    assert!(get_operator("credential-set")
+        .is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)));
+    assert!(
+        !get_operator("access-check")
+            .is_some_and(|op| op.closed_call.as_ref().is_some_and(|c| c.request)),
+        "control: access-check's request is checked by its own contract"
+    );
+    assert_eq!(
+        get_operator("fetch").map(|op| op.closed_call.is_none()),
+        Some(true),
+        "control: a data effect is not a host effect"
+    );
 }
 
 #[test]
 fn the_redis_operator_is_retired_and_no_operator_connects_under_a_scheme() {
-    assert!(get_operator("redis").is_none(), "std-redis speaks RESP over os/tcp-connect");
+    assert!(
+        get_operator("redis").is_none(),
+        "std-redis speaks RESP over os/tcp-connect"
+    );
 }
 
 #[test]
@@ -298,12 +386,21 @@ const NO_LANGUAGE_TEST: &str = "language::registry::tests::a_running_kernel_read
 fn a_running_kernel_reads_the_operator_table_through_the_typed_sibling() {
     if std::env::var_os(NO_LANGUAGE_CHILD).is_none() {
         let table = lookup_operator("array/find").expect("control: the installed table answers");
-        assert!(table.is_some(), "control: array/find is in the installed table");
+        assert!(
+            table.is_some(),
+            "control: array/find is in the installed table"
+        );
         assert!(try_operators().is_ok());
-        let empty = std::env::temp_dir().join(format!("orbital-base-no-table-{}", std::process::id()));
+        let empty =
+            std::env::temp_dir().join(format!("orbital-base-no-table-{}", std::process::id()));
         std::fs::create_dir_all(&empty).unwrap();
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "--nocapture", "--test-threads=1", NO_LANGUAGE_TEST])
+            .args([
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+                NO_LANGUAGE_TEST,
+            ])
             .env(NO_LANGUAGE_CHILD, "1")
             .env("HOME", &empty)
             .env("USERPROFILE", &empty)
@@ -311,8 +408,15 @@ fn a_running_kernel_reads_the_operator_table_through_the_typed_sibling() {
             .output()
             .unwrap();
         std::fs::remove_dir_all(&empty).ok();
-        let report = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-        assert!(output.status.success() && report.contains("1 passed"), "{report}");
+        let report = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success() && report.contains("1 passed"),
+            "{report}"
+        );
         return;
     }
     let error = lookup_operator("array/find").unwrap_err();
@@ -320,5 +424,8 @@ fn a_running_kernel_reads_the_operator_table_through_the_typed_sibling() {
     assert!(try_operators().is_err());
     assert_eq!(try_operators_json().unwrap_err(), error);
     assert_eq!(crate::os::OsOp::Spawn.try_table_entry().unwrap_err(), error);
-    assert_eq!(crate::os_grants::try_os_grant_needs(crate::os::OsOp::Spawn).unwrap_err(), error);
+    assert_eq!(
+        crate::os_grants::try_os_grant_needs(crate::os::OsOp::Spawn).unwrap_err(),
+        error
+    );
 }

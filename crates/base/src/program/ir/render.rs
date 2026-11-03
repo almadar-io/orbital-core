@@ -352,7 +352,11 @@ pub trait TargetTypeRenderer {
     fn classify_array(&self, inner_ty: &OirType, inner: TypeMappingClass) -> TypeMappingClass;
     /// Class of [`TargetTypeRenderer::tuple`]: an array of the slot type when every slot
     /// agrees, else an array of `json`.
-    fn classify_tuple(&self, items_ty: &[OirType], items: Vec<TypeMappingClass>) -> TypeMappingClass {
+    fn classify_tuple(
+        &self,
+        items_ty: &[OirType],
+        items: Vec<TypeMappingClass>,
+    ) -> TypeMappingClass {
         match items_ty.first() {
             Some(first) if items_ty.iter().all(|t| t == first) => match items.into_iter().next() {
                 Some(cls) => self.classify_array(first, cls),
@@ -377,7 +381,11 @@ pub trait TargetTypeRenderer {
     /// `array` does.
     fn classify_optional(&self, inner_ty: &OirType, inner: TypeMappingClass) -> TypeMappingClass;
     /// Class of [`TargetTypeRenderer::struct_ty`].
-    fn classify_struct_ty(&self, fields: &[OirField], additional: Option<&OirType>) -> TypeMappingClass;
+    fn classify_struct_ty(
+        &self,
+        fields: &[OirField],
+        additional: Option<&OirType>,
+    ) -> TypeMappingClass;
     /// Pair decision: the default renders via `json()`, so the default
     /// classifies as `json()`; shells with a real union facility — TS, Kotlin,
     /// Swift, Python, Rust (see [`TargetTypeRenderer::union_ty`]) — override
@@ -510,7 +518,9 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
             let inner_cls = classify_type(r, inner, None);
             r.classify_optional(inner, inner_cls)
         }
-        OirType::Struct { fields, additional } => r.classify_struct_ty(fields, additional.as_deref()),
+        OirType::Struct { fields, additional } => {
+            r.classify_struct_ty(fields, additional.as_deref())
+        }
         OirType::Union { variants } => r.classify_union_ty(variants),
     }
 }
@@ -649,8 +659,14 @@ mod tests {
         ) -> TypeMappingClass {
             inner
         }
-        fn classify_struct_ty(&self, _fields: &[OirField], additional: Option<&OirType>) -> TypeMappingClass {
-            additional.map_or(TypeMappingClass::Faithful, |value| classify_type(self, value, None))
+        fn classify_struct_ty(
+            &self,
+            _fields: &[OirField],
+            additional: Option<&OirType>,
+        ) -> TypeMappingClass {
+            additional.map_or(TypeMappingClass::Faithful, |value| {
+                classify_type(self, value, None)
+            })
         }
     }
 
@@ -708,7 +724,10 @@ mod tests {
             format!("optional<{inner}>")
         }
         fn struct_ty(&self, _fields: &[OirField], additional: Option<&OirType>) -> String {
-            additional.map_or_else(|| "struct".to_string(), |value| format!("struct<*:{}>", render_type(self, value, None)))
+            additional.map_or_else(
+                || "struct".to_string(),
+                |value| format!("struct<*:{}>", render_type(self, value, None)),
+            )
         }
 
         fn classify_string(&self, _enum_values: Option<&[String]>) -> TypeMappingClass {
@@ -764,8 +783,14 @@ mod tests {
         ) -> TypeMappingClass {
             inner
         }
-        fn classify_struct_ty(&self, _fields: &[OirField], additional: Option<&OirType>) -> TypeMappingClass {
-            additional.map_or(TypeMappingClass::Faithful, |value| classify_type(self, value, None))
+        fn classify_struct_ty(
+            &self,
+            _fields: &[OirField],
+            additional: Option<&OirType>,
+        ) -> TypeMappingClass {
+            additional.map_or(TypeMappingClass::Faithful, |value| {
+                classify_type(self, value, None)
+            })
         }
     }
 
@@ -881,7 +906,8 @@ mod tests {
                     merged_from: None,
                 },
                 OirField::new("count", OirType::Integer),
-            ].into(),
+            ]
+            .into(),
         };
         assert_eq!(tag(&ty), "struct<kind:string<x|y>,count:integer>");
     }
@@ -893,20 +919,46 @@ mod tests {
             additional: Some(Box::new(OirType::array(OirType::String))),
         };
         assert_eq!(tag(&open), "struct<id:string,*:array<string>>");
-        let lossy = OirType::Struct { fields: crate::ir::types::no_fields(), additional: Some(Box::new(OirType::Tuple { items: vec![OirType::String, OirType::Number] })) };
-        assert_eq!(classify_type(&TagRenderer, &lossy, None), TypeMappingClass::Lossy);
-        let closed = OirType::Struct { fields: crate::ir::types::no_fields(), additional: None };
+        let lossy = OirType::Struct {
+            fields: crate::ir::types::no_fields(),
+            additional: Some(Box::new(OirType::Tuple {
+                items: vec![OirType::String, OirType::Number],
+            })),
+        };
+        assert_eq!(
+            classify_type(&TagRenderer, &lossy, None),
+            TypeMappingClass::Lossy
+        );
+        let closed = OirType::Struct {
+            fields: crate::ir::types::no_fields(),
+            additional: None,
+        };
         assert_eq!(tag(&closed), "struct<>");
-        assert_eq!(classify_type(&TagRenderer, &closed, None), TypeMappingClass::Faithful);
+        assert_eq!(
+            classify_type(&TagRenderer, &closed, None),
+            TypeMappingClass::Faithful
+        );
     }
-
 
     #[test]
     fn encoded_literal_enum_names_reach_the_existing_renderer_as_closed_members() {
-        let values = vec!["atomic".to_string(), "stop".to_string(), "pipe|member".to_string(), "quote\"member".to_string(), "back\\slash".to_string()];
+        let values = vec![
+            "atomic".to_string(),
+            "stop".to_string(),
+            "pipe|member".to_string(),
+            "quote\"member".to_string(),
+            "back\\slash".to_string(),
+        ];
         let name = crate::type_compat::literal_union_text(&values).unwrap();
-        assert_eq!(tag(&OirType::Enum { name: name.clone() }), format!("enum({name})<{}>", values.join("|")));
-        assert_eq!(tag(&OirType::Enum { name: "Legacy".to_string() }), "enum(Legacy)");
+        assert_eq!(
+            tag(&OirType::Enum { name: name.clone() }),
+            format!("enum({name})<{}>", values.join("|"))
+        );
+        assert_eq!(
+            tag(&OirType::Enum {
+                name: "Legacy".to_string()
+            }),
+            "enum(Legacy)"
+        );
     }
-
 }

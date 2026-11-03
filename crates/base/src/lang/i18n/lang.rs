@@ -8,8 +8,8 @@
 use std::prelude::v1::*;
 
 use super::tables::{self, I18nDefinition};
-use std::collections::HashMap;
 use crate::sync::OnceLock;
+use std::collections::HashMap;
 
 /// One vocabulary section's inverted (native -> English) map.
 type SectionMap = HashMap<&'static str, &'static str>;

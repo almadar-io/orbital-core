@@ -252,8 +252,16 @@ fn ts_i18n_data_is_current() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lang/i18n");
     let files = [
         (here.join("en.json"), core.join("i18n/en.json"), None),
-        (here.join("orb-notation.json"), core.join("i18n/orb-notation.json"), None),
-        (here.join("en.json"), core.join("generated/i18n-tables.ts"), Some(i18n_tables_ts())),
+        (
+            here.join("orb-notation.json"),
+            core.join("i18n/orb-notation.json"),
+            None,
+        ),
+        (
+            here.join("en.json"),
+            core.join("generated/i18n-tables.ts"),
+            Some(i18n_tables_ts()),
+        ),
     ];
     let write = std::env::var("I18N_TS_WRITE").as_deref() == Ok("1");
     for (source, target, generated) in files {

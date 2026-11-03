@@ -356,10 +356,23 @@ mod tests {
 
     #[test]
     fn match_patterns_follow_chromes_grammar() {
-        for good in ["<all_urls>", "https://example.com/*", "*://*.example.org/a/*", "file:///tmp/*", "http://*/*"] {
+        for good in [
+            "<all_urls>",
+            "https://example.com/*",
+            "*://*.example.org/a/*",
+            "file:///tmp/*",
+            "http://*/*",
+        ] {
             assert!(is_match_pattern(good), "{good}");
         }
-        for bad in ["example.com", "https://example.com", "ws://example.com/*", "https://*.*/x", "https://a*b.com/*", "https://*./*"] {
+        for bad in [
+            "example.com",
+            "https://example.com",
+            "ws://example.com/*",
+            "https://*.*/x",
+            "https://a*b.com/*",
+            "https://*./*",
+        ] {
             assert!(!is_match_pattern(bad), "{bad}");
         }
     }
@@ -424,17 +437,38 @@ mod tests {
 
     #[test]
     fn a_capture_ask_carries_its_tab_format_and_quality() {
-        let ask = TabAsk::Capture { tab: 3, format: TabImageFormat::Jpeg, quality: Some(80) };
-        assert_eq!(serde_json::to_value(&ask).unwrap(), json!({ "kind": "capture", "tab": 3, "format": "jpeg", "quality": 80 }));
-        let png = TabAsk::Capture { tab: 3, format: TabImageFormat::Png, quality: None };
-        assert_eq!(serde_json::to_value(&png).unwrap(), json!({ "kind": "capture", "tab": 3, "format": "png" }), "no quality is no key");
-        assert_eq!(TabImageFormat::Jpeg.data_url_prefix(), "data:image/jpeg;base64,");
+        let ask = TabAsk::Capture {
+            tab: 3,
+            format: TabImageFormat::Jpeg,
+            quality: Some(80),
+        };
+        assert_eq!(
+            serde_json::to_value(&ask).unwrap(),
+            json!({ "kind": "capture", "tab": 3, "format": "jpeg", "quality": 80 })
+        );
+        let png = TabAsk::Capture {
+            tab: 3,
+            format: TabImageFormat::Png,
+            quality: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&png).unwrap(),
+            json!({ "kind": "capture", "tab": 3, "format": "png" }),
+            "no quality is no key"
+        );
+        assert_eq!(
+            TabImageFormat::Jpeg.data_url_prefix(),
+            "data:image/jpeg;base64,"
+        );
     }
 
     #[test]
     fn control_a_failure_kind_names_itself_as_its_payload_spelling() {
         let failure = TabFailure::new(TabFailureKind::NotReady, "Tab 3 has no page script");
-        assert_eq!(serde_json::to_value(&failure).unwrap(), json!({ "kind": "not-ready", "message": "Tab 3 has no page script" }));
+        assert_eq!(
+            serde_json::to_value(&failure).unwrap(),
+            json!({ "kind": "not-ready", "message": "Tab 3 has no page script" })
+        );
         assert_eq!(failure.kind.as_str(), "not-ready");
     }
 }

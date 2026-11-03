@@ -158,12 +158,21 @@ mod tests {
 
     #[test]
     fn a_placed_error_prints_flat_position_fields_and_reads_back() {
-        let at = SourcePosition { line: 3, column: 4, end_line: 3, end_column: 9, approximate: true };
+        let at = SourcePosition {
+            line: 3,
+            column: 4,
+            end_line: 3,
+            end_column: 9,
+            approximate: true,
+        };
         let json = serde_json::to_value(error().placed(Some(at))).unwrap();
         assert_eq!(json["line"], 3);
         assert_eq!(json["endColumn"], 9);
         assert_eq!(json["approximate"], true);
-        assert!(json.get("position").is_none(), "the position is flat, never nested: {json}");
+        assert!(
+            json.get("position").is_none(),
+            "the position is flat, never nested: {json}"
+        );
         let back: ValidationJsonError = serde_json::from_value(json).unwrap();
         assert_eq!(back.position(), Some(at));
     }
@@ -174,10 +183,24 @@ mod tests {
         for key in ["line", "column", "endLine", "endColumn", "approximate"] {
             assert!(json.get(key).is_none(), "{key} is absent: {json}");
         }
-        assert_eq!(serde_json::from_value::<ValidationJsonError>(json).unwrap().position(), None);
-        let exact = SourcePosition { line: 1, column: 1, end_line: 1, end_column: 2, approximate: false };
+        assert_eq!(
+            serde_json::from_value::<ValidationJsonError>(json)
+                .unwrap()
+                .position(),
+            None
+        );
+        let exact = SourcePosition {
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 2,
+            approximate: false,
+        };
         let json = serde_json::to_value(error().placed(Some(exact))).unwrap();
-        assert!(json.get("approximate").is_none(), "control: an exact position prints no flag: {json}");
+        assert!(
+            json.get("approximate").is_none(),
+            "control: an exact position prints no flag: {json}"
+        );
         assert_eq!(json["line"], 1);
     }
 

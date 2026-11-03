@@ -599,7 +599,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(installed.params.contains_key("hosting"), "the installed registry lists hosting");
+        assert!(
+            installed.params.contains_key("hosting"),
+            "the installed registry lists hosting"
+        );
         assert!(checked > 0, "no contract action checked");
     }
 
@@ -623,16 +626,26 @@ mod tests {
         args.insert("version".into(), ArgKind::Number);
         assert!(validate_params(installed, "hosting", "rollback", &args).is_empty());
         args.insert("recipient".into(), ArgKind::String);
-        assert_eq!(validate_params(installed, "hosting", "rollback", &args).len(), 1, "an undeclared param is refused");
+        assert_eq!(
+            validate_params(installed, "hosting", "rollback", &args).len(),
+            1,
+            "an undeclared param is refused"
+        );
     }
 
     #[test]
     fn installed_hosting_rollback_requires_app_and_version_and_checks_the_version_type() {
         let installed = crate::language::registry::baked_service_registry();
-        assert_eq!(validate_params(installed, "hosting", "rollback", &Args::new()).len(), 2);
+        assert_eq!(
+            validate_params(installed, "hosting", "rollback", &Args::new()).len(),
+            2
+        );
         let mut args = Args::new();
         args.insert("appId".into(), ArgKind::String);
         args.insert("version".into(), ArgKind::String);
-        assert_eq!(validate_params(installed, "hosting", "rollback", &args).len(), 1);
+        assert_eq!(
+            validate_params(installed, "hosting", "rollback", &args).len(),
+            1
+        );
     }
 }

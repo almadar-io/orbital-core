@@ -10,8 +10,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use std::collections::HashSet;
 use crate::sync::LazyLock;
+use std::collections::HashSet;
 
 fn flagged(flag: &str) -> HashSet<String> {
     let registry: serde_json::Value =

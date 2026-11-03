@@ -122,7 +122,10 @@ pub(super) fn relative_glob_matches(glob: &str, path: &[String]) -> bool {
     if !valid_relative(glob) {
         return false;
     }
-    let pattern: Vec<&str> = glob.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    let pattern: Vec<&str> = glob
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
     segments_match(&pattern, path)
 }
 
@@ -132,11 +135,21 @@ pub(super) fn relative_glob_reaches_under(glob: &str, root: &[String]) -> bool {
     if !valid_relative(glob) {
         return false;
     }
-    let mut pattern: &[&str] = &glob.split('/').filter(|s| !s.is_empty() && *s != ".").collect::<Vec<_>>();
+    let mut pattern: &[&str] = &glob
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect::<Vec<_>>();
     for segment in root {
         match pattern.split_first() {
             Some((&"**", _)) => return true,
-            Some((head, rest)) if segment_matches(&head.chars().collect::<Vec<_>>(), &segment.chars().collect::<Vec<_>>()) => pattern = rest,
+            Some((head, rest))
+                if segment_matches(
+                    &head.chars().collect::<Vec<_>>(),
+                    &segment.chars().collect::<Vec<_>>(),
+                ) =>
+            {
+                pattern = rest
+            }
             _ => return false,
         }
     }
@@ -149,7 +162,11 @@ pub(super) fn relative_glob_reaches_under(glob: &str, root: &[String]) -> bool {
 pub(super) fn host_pattern_suffix(host: &str) -> Option<&str> {
     let suffix = host.strip_prefix("*.")?;
     let labels: Vec<&str> = suffix.split('.').collect();
-    let label = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    let label = |l: &str| {
+        !l.is_empty()
+            && l.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
     (labels.len() >= 2
         && labels.iter().all(|l| label(l))
         && !labels[labels.len() - 1].chars().all(|c| c.is_ascii_digit()))
@@ -167,7 +184,9 @@ pub(super) fn grant_host_covers(grant_host: &str, host: &str) -> bool {
                 .and_then(|rest| rest.strip_suffix('.'))
                 .is_some_and(|label| {
                     !label.is_empty()
-                        && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                        && label
+                            .chars()
+                            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
                 })
         });
     }
@@ -265,13 +284,19 @@ impl OsGrants {
     /// [`Self::fs_allows`] for a host holding an absolute `path`: also matched in its `~/` and `./` forms when it lies
     /// under the home or start directory the host knows, so an anchored grant covers it.
     pub fn fs_allows_at(&self, path: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
-        anchors.forms(path).iter().any(|form| self.fs_allows(form, mode))
+        anchors
+            .forms(path)
+            .iter()
+            .any(|form| self.fs_allows(form, mode))
     }
 
     #[cfg(feature = "std")]
     /// [`Self::fs_tree_allows`] for a host holding an absolute `root`, as [`Self::fs_allows_at`].
     pub fn fs_tree_allows_at(&self, root: &Path, mode: FsMode, anchors: &OsAnchors) -> bool {
-        anchors.forms(root).iter().any(|form| self.fs_tree_allows(form, mode))
+        anchors
+            .forms(root)
+            .iter()
+            .any(|form| self.fs_tree_allows(form, mode))
     }
 
     #[cfg(feature = "std")]
@@ -282,14 +307,19 @@ impl OsGrants {
             return false;
         };
         self.fs.iter().any(|g| {
-            g.modes.contains(&mode) && g.glob.ends_with("/**") && glob_matches(&g.glob, anchor, &segments)
+            g.modes.contains(&mode)
+                && g.glob.ends_with("/**")
+                && glob_matches(&g.glob, anchor, &segments)
         })
     }
 
     /// The one-grant set that matches exactly what `glob` matches, for reading.
     pub fn read_matcher(glob: &str) -> OsGrants {
         OsGrants {
-            fs: vec![FsGrant { glob: glob.to_string(), modes: vec![FsMode::Read] }],
+            fs: vec![FsGrant {
+                glob: glob.to_string(),
+                modes: vec![FsMode::Read],
+            }],
             ..OsGrants::default()
         }
     }
@@ -311,7 +341,8 @@ impl OsGrants {
     pub fn net_names_host(&self, host: &str, kind: NetKind) -> bool {
         let host = host.trim_start_matches('[').trim_end_matches(']');
         self.net.iter().any(|g| {
-            g.kinds.contains(&kind) && split_target(&g.target).is_some_and(|(h, _)| grant_host_covers(h, host))
+            g.kinds.contains(&kind)
+                && split_target(&g.target).is_some_and(|(h, _)| grant_host_covers(h, host))
         })
     }
 
@@ -320,7 +351,8 @@ impl OsGrants {
     pub fn net_pattern_allows(&self, port: u16, kinds: &[NetKind]) -> bool {
         self.net.iter().any(|g| {
             kinds.iter().any(|k| g.kinds.contains(k))
-                && split_target(&g.target).is_some_and(|(h, p)| p == port && host_pattern_suffix(h).is_some())
+                && split_target(&g.target)
+                    .is_some_and(|(h, p)| p == port && host_pattern_suffix(h).is_some())
         })
     }
 
@@ -329,7 +361,8 @@ impl OsGrants {
     pub fn net_names_pattern(&self, pattern: &str, port: u16, kind: NetKind) -> bool {
         self.net.iter().any(|g| {
             g.kinds.contains(&kind)
-                && split_target(&g.target).is_some_and(|(h, p)| p == port && h.eq_ignore_ascii_case(pattern))
+                && split_target(&g.target)
+                    .is_some_and(|(h, p)| p == port && h.eq_ignore_ascii_case(pattern))
         })
     }
 
@@ -359,11 +392,19 @@ impl OsGrants {
         self.dev.iter().any(|g| {
             g.kinds.contains(&kind)
                 && match (dev_target(&g.target), resource) {
-                    (Some(DevTarget::Mmio { base, length }), DevResource::Mmio { base: at, offset, width }) => {
+                    (
+                        Some(DevTarget::Mmio { base, length }),
+                        DevResource::Mmio {
+                            base: at,
+                            offset,
+                            width,
+                        },
+                    ) => {
                         matches!(kind, DevKind::Read | DevKind::Write)
-                            && at.checked_add(*offset).and_then(|start| start.checked_add(*width)).is_some_and(|end| {
-                                *at + *offset >= base && end <= base + length
-                            })
+                            && at
+                                .checked_add(*offset)
+                                .and_then(|start| start.checked_add(*width))
+                                .is_some_and(|end| *at + *offset >= base && end <= base + length)
                     }
                     (Some(DevTarget::Irq { line }), DevResource::Irq { line: asked }) => {
                         matches!(kind, DevKind::Wait | DevKind::Ack) && line == *asked

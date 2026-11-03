@@ -70,7 +70,12 @@ pub struct ShapeField {
 }
 
 const fn field(name: &'static str, field_type: &'static str) -> ShapeField {
-    ShapeField { name, field_type, fields: &[], open: false }
+    ShapeField {
+        name,
+        field_type,
+        fields: &[],
+        open: false,
+    }
 }
 
 /// What distinguishes a call site within one operator's contract.
@@ -116,12 +121,19 @@ pub const TAB_CLOSE_SHAPE: &[ShapeField] = &[field("closed", "boolean"), field("
 pub const TAB_NAVIGATE_SHAPE: &[ShapeField] = &[field("url", "string"), field("key", "string")];
 
 /// `browser/tab-query` hands back the tab and its elements (`{ elementId, fields }` each) and the call's key.
-pub const TAB_QUERY_SHAPE: &[ShapeField] =
-    &[field("tab", "number"), field("elements", "array"), field("key", "string")];
+pub const TAB_QUERY_SHAPE: &[ShapeField] = &[
+    field("tab", "number"),
+    field("elements", "array"),
+    field("key", "string"),
+];
 
 /// `browser/tab-capture` hands back the tab, the image format, the image as bytes, and the call's key.
-pub const TAB_CAPTURE_SHAPE: &[ShapeField] =
-    &[field("tab", "number"), field("format", "string"), field("image", "bytes"), field("key", "string")];
+pub const TAB_CAPTURE_SHAPE: &[ShapeField] = &[
+    field("tab", "number"),
+    field("format", "string"),
+    field("image", "bytes"),
+    field("key", "string"),
+];
 
 /// `browser/tab-watch` hands back the watch's id and the call's key.
 pub const TAB_WATCH_SHAPE: &[ShapeField] = &[field("watchId", "string"), field("key", "string")];
@@ -139,8 +151,11 @@ pub const TAB_APPLY_SHAPE: &[ShapeField] = &[
 ];
 
 /// `browser/tab-apply-many` hands back the treated and the missing elements (`{ tab, elementId }` each) and the key.
-pub const TAB_APPLY_MANY_SHAPE: &[ShapeField] =
-    &[field("applied", "array"), field("missing", "array"), field("key", "string")];
+pub const TAB_APPLY_MANY_SHAPE: &[ShapeField] = &[
+    field("applied", "array"),
+    field("missing", "array"),
+    field("key", "string"),
+];
 
 /// `browser/tab-act` hands back whether the interaction was done, where, and the call's key.
 pub const TAB_ACT_SHAPE: &[ShapeField] = &[
@@ -153,8 +168,11 @@ pub const TAB_ACT_SHAPE: &[ShapeField] = &[
 /// A `browser/tab-*` failure: the message, its kind (`invalid`: the request was refused before any ask; `unavailable`:
 /// the host has no browser tabs; `not-ready`: the tab has no page script running; `not-found`: the element left the
 /// page; `failed`) and the call's key (absent unkeyed).
-pub const TAB_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("kind", "string"), field("key", "string")];
+pub const TAB_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("kind", "string"),
+    field("key", "string"),
+];
 
 /// The success shape of a `browser/tab-<op>` effect.
 pub fn tab_success_shape(op: crate::tab::TabOp) -> &'static [ShapeField] {
@@ -183,8 +201,11 @@ pub const EMBED_SHAPE: &[ShapeField] = &[field("embeddings", "array"), field("ke
 
 /// A `browser/prompt` or `browser/embed` failure: the message, its kind (`unconfigured`: the host wires no model or
 /// embedder; `unavailable`: it has one that cannot answer now; `failed`: it answered with an error) and the call's key.
-pub const MODEL_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("kind", "string"), field("key", "string")];
+pub const MODEL_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("kind", "string"),
+    field("key", "string"),
+];
 
 /// `random-bytes` hands back the bytes as base64url without padding; a keyed call adds its `key`.
 pub const RANDOM_BYTES_SHAPE: &[ShapeField] = &[field("value", "string")];
@@ -205,26 +226,35 @@ pub const THEME_SHAPE: &[ShapeField] = &[field("theme", "string")];
 pub const HOST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
 /// A keyed `call-service` failure: the message and the call's key.
-pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("key", "string")];
+pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("key", "string")];
 
 /// A `persist` failure: the message and the store's code (`duplicate-id`, `not-found`, `no-row-key`; absent for
 /// any other cause, such as an access denial).
-pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+pub const PERSIST_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("code", "string")];
 
 /// A `fetch` failure: the message and the code (`not-found` for a by-id miss; absent for any other cause, until
 /// the read contract gains a typed refusal, `G-ORB-334`).
 pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
 
 /// A keyed `fetch` failure: the unkeyed failure with the call's `key` beside it (EXEC-FETCH-3).
-pub const KEYED_FETCH_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("code", "string"), field("key", "string")];
+pub const KEYED_FETCH_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("code", "string"),
+    field("key", "string"),
+];
 
 /// An agent-port or program-host failure: the message, and a program's validator issues when it has any.
-pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("errors", "array")];
+pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] =
+    &[field("error", "string"), field("errors", "array")];
 
 /// A keyed agent-port or program op's failure: the substrate failure with the call's `key` beside it.
-pub const KEYED_SUBSTRATE_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("errors", "array"), field("key", "string")];
+pub const KEYED_SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[
+    field("error", "string"),
+    field("errors", "array"),
+    field("key", "string"),
+];
 
 /// A `persist batch` failure: the persist failure (message and the failing operation's store code, absent for a cause
 /// that has none), the failing operation's position in the batch (absent when no single operation is at fault, such
@@ -288,7 +318,9 @@ fn nested_open(declared: &OperatorTypeRef) -> bool {
 
 fn nested_shape(declared: &OperatorTypeRef) -> &'static [ShapeField] {
     match declared {
-        OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) => shape_of_fields(fields),
+        OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. }) => {
+            shape_of_fields(fields)
+        }
         OperatorTypeRef::Tagged(OperatorTypeRefKind::Array { of }) => nested_shape(of),
         _ => &[],
     }
@@ -311,10 +343,20 @@ fn credential_success(operator: &str) -> Option<ProducedPayload> {
     let payloads = PAYLOADS.get_or_init(|| {
         CREDENTIAL_OPS
             .iter()
-            .map(|op| table_payload(op, get_operator(op).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref())))
+            .map(|op| {
+                table_payload(
+                    op,
+                    get_operator(op)
+                        .and_then(|o| o.effect.as_ref())
+                        .and_then(|e| e.produces.as_ref()),
+                )
+            })
             .collect()
     });
-    CREDENTIAL_OPS.iter().position(|op| *op == operator).map(|at| payloads[at].clone())
+    CREDENTIAL_OPS
+        .iter()
+        .position(|op| *op == operator)
+        .map(|at| payloads[at].clone())
 }
 
 fn os_contract(op: OsOp) -> &'static OsContract {
@@ -335,7 +377,10 @@ fn os_contract(op: OsOp) -> &'static OsContract {
             })
             .collect()
     });
-    let at = OsOp::ALL.iter().position(|candidate| *candidate == op).expect("every OsOp is in ALL");
+    let at = OsOp::ALL
+        .iter()
+        .position(|candidate| *candidate == op)
+        .expect("every OsOp is in ALL");
     &contracts[at]
 }
 
@@ -349,7 +394,11 @@ fn os_contract(op: OsOp) -> &'static OsContract {
 pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload {
     if let Some(op) = OsOp::from_name(operator) {
         let contract = os_contract(op);
-        return if variant == CallVariant::StdinStream { contract.success.clone() } else { contract.unrouted.clone() };
+        return if variant == CallVariant::StdinStream {
+            contract.success.clone()
+        } else {
+            contract.unrouted.clone()
+        };
     }
     if let Some(op) = crate::tab::TabOp::from_name(operator) {
         return ProducedPayload::Shape(tab_success_shape(op));
@@ -359,7 +408,9 @@ pub fn success_payload(operator: &str, variant: CallVariant) -> ProducedPayload 
     }
     match operator {
         "persist" => match variant {
-            CallVariant::PersistAction("create" | "upsert" | "update") => ProducedPayload::EntityRow,
+            CallVariant::PersistAction("create" | "upsert" | "update") => {
+                ProducedPayload::EntityRow
+            }
             CallVariant::PersistAction("delete") => ProducedPayload::Fields(PERSIST_DELETE_FIELDS),
             CallVariant::PersistAction("batch") => ProducedPayload::Fields(PERSIST_BATCH_FIELDS),
             _ => ProducedPayload::Opaque,
@@ -389,17 +440,21 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
     }
     match operator {
         "browser/prompt" | "browser/embed" => ProducedPayload::Shape(MODEL_FAILURE_SHAPE),
-        "browser/page-facts" | "random-bytes" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
-        "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
-            ProducedPayload::Shape(HOST_FAILURE_SHAPE)
+        "browser/page-facts" | "random-bytes" if keyed => {
+            ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE)
         }
-        "credential-connect" | "identity/sign-in" | "identity/sign-out" | "theme/set" | "theme/clear" => {
-            ProducedPayload::Shape(OS_FAILURE_SHAPE)
+        "random-bytes" | "credential-status" | "credential-forget" | "access-check"
+        | "browser/page-facts" => ProducedPayload::Shape(HOST_FAILURE_SHAPE),
+        "credential-connect" | "identity/sign-in" | "identity/sign-out" | "theme/set"
+        | "theme/clear" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
+        "credential-list" | "credential-set" | "credential-remove" | "credential-test"
+        | "credential-mode" | "credential-rotate" => {
+            ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE)
         }
-        "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
-        | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "persist" => match variant {
-            CallVariant::PersistAction("batch") => ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE),
+            CallVariant::PersistAction("batch") => {
+                ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE)
+            }
             _ => ProducedPayload::Shape(PERSIST_FAILURE_SHAPE),
         },
         "fetch" if keyed => ProducedPayload::Shape(KEYED_FETCH_FAILURE_SHAPE),
@@ -407,7 +462,11 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         _ if crate::agent_ports::is_agent_port_operator(operator)
             || crate::language::registry::is_program_host_effect(operator) =>
         {
-            ProducedPayload::Shape(if keyed { KEYED_SUBSTRATE_FAILURE_SHAPE } else { SUBSTRATE_FAILURE_SHAPE })
+            ProducedPayload::Shape(if keyed {
+                KEYED_SUBSTRATE_FAILURE_SHAPE
+            } else {
+                SUBSTRATE_FAILURE_SHAPE
+            })
         }
         "call-service" if keyed => ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE),
         _ => ProducedPayload::Opaque,
@@ -470,82 +529,202 @@ mod tests {
     struct Pairs(&'static [(&'static str, &'static str)]);
 
     fn pairs(payload: ProducedPayload) -> Pairs {
-        let ProducedPayload::Shape(shape) = payload else { panic!("a shape: {payload:?}") };
-        Pairs(Box::leak(shape.iter().map(|f| (f.name, f.field_type)).collect::<Vec<_>>().into_boxed_slice()))
+        let ProducedPayload::Shape(shape) = payload else {
+            panic!("a shape: {payload:?}")
+        };
+        Pairs(Box::leak(
+            shape
+                .iter()
+                .map(|f| (f.name, f.field_type))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ))
     }
 
     #[test]
     fn os_binary_reads_declare_bytes_while_text_facts_stay_strings() {
         for operator in ["os/read-file", "os/read", "os/recv", "os/recvfrom"] {
-            let ProducedPayload::Shape(shape) = success_payload(operator, CallVariant::Plain) else {
+            let ProducedPayload::Shape(shape) = success_payload(operator, CallVariant::Plain)
+            else {
                 panic!("{operator} must declare its payload");
             };
-            assert_eq!(shape.iter().find(|f| f.name == "data").unwrap().field_type, "bytes", "{operator}");
+            assert_eq!(
+                shape.iter().find(|f| f.name == "data").unwrap().field_type,
+                "bytes",
+                "{operator}"
+            );
         }
         let ProducedPayload::Shape(shape) = message_payload("os/stdin-read") else {
             panic!("stdin chunks must declare their payload");
         };
-        assert_eq!(pairs(ProducedPayload::Shape(shape)), Pairs(&[("data", "bytes"), ("key", "string")]));
-        assert_eq!(pairs(success_payload("os/getenv", CallVariant::Plain)), Pairs(&[("key", "string"), ("value", "string")]));
+        assert_eq!(
+            pairs(ProducedPayload::Shape(shape)),
+            Pairs(&[("data", "bytes"), ("key", "string")])
+        );
+        assert_eq!(
+            pairs(success_payload("os/getenv", CallVariant::Plain)),
+            Pairs(&[("key", "string"), ("value", "string")])
+        );
     }
 
     #[test]
     fn device_calls_declare_an_int_register_value_and_an_irq_line() {
-        assert_eq!(pairs(success_payload("os/mmio-read", CallVariant::Plain)), Pairs(&[("key", "string"), ("value", "int")]));
-        assert_eq!(pairs(success_payload("os/irq-wait", CallVariant::Plain)), Pairs(&[("irq", "int"), ("key", "string")]));
+        assert_eq!(
+            pairs(success_payload("os/mmio-read", CallVariant::Plain)),
+            Pairs(&[("key", "string"), ("value", "int")])
+        );
+        assert_eq!(
+            pairs(success_payload("os/irq-wait", CallVariant::Plain)),
+            Pairs(&[("irq", "int"), ("key", "string")])
+        );
         for operator in ["os/mmio-write", "os/irq-ack"] {
-            assert_eq!(pairs(success_payload(operator, CallVariant::Plain)), Pairs(&[("key", "string")]), "{operator}");
+            assert_eq!(
+                pairs(success_payload(operator, CallVariant::Plain)),
+                Pairs(&[("key", "string")]),
+                "{operator}"
+            );
         }
-        assert_eq!(message_payload("os/irq-wait"), ProducedPayload::Opaque, "control: a single answer has no stream event");
+        assert_eq!(
+            message_payload("os/irq-wait"),
+            ProducedPayload::Opaque,
+            "control: a single answer has no stream event"
+        );
     }
 
     #[test]
     fn stdin_success_is_narrowed_between_single_read_and_stream_end() {
-        assert_eq!(pairs(success_payload("os/stdin-read", CallVariant::Plain)), pairs(success_payload("os/read", CallVariant::Plain)));
-        assert_eq!(pairs(success_payload("os/stdin-read", CallVariant::StdinStream)), Pairs(&[("eof", "boolean"), ("key", "string")]));
-        assert_eq!(pairs(message_payload("os/stdin-read")), Pairs(&[("data", "bytes"), ("key", "string")]));
+        assert_eq!(
+            pairs(success_payload("os/stdin-read", CallVariant::Plain)),
+            pairs(success_payload("os/read", CallVariant::Plain))
+        );
+        assert_eq!(
+            pairs(success_payload("os/stdin-read", CallVariant::StdinStream)),
+            Pairs(&[("eof", "boolean"), ("key", "string")])
+        );
+        assert_eq!(
+            pairs(message_payload("os/stdin-read")),
+            Pairs(&[("data", "bytes"), ("key", "string")])
+        );
     }
 
     #[test]
     fn every_tab_effect_emits_its_shape_and_the_one_typed_failure() {
         for op in crate::tab::TabOp::ALL {
             let shape = tab_success_shape(op);
-            assert_eq!(success_payload(op.name(), CallVariant::Plain), ProducedPayload::Shape(shape), "{}", op.name());
-            assert!(shape.iter().any(|f| f.name == "key"), "{} echoes the key", op.name());
+            assert_eq!(
+                success_payload(op.name(), CallVariant::Plain),
+                ProducedPayload::Shape(shape),
+                "{}",
+                op.name()
+            );
+            assert!(
+                shape.iter().any(|f| f.name == "key"),
+                "{} echoes the key",
+                op.name()
+            );
             for keyed in [false, true] {
-                assert_eq!(failure_payload(op.name(), CallVariant::Plain, keyed), ProducedPayload::Shape(TAB_FAILURE_SHAPE));
+                assert_eq!(
+                    failure_payload(op.name(), CallVariant::Plain, keyed),
+                    ProducedPayload::Shape(TAB_FAILURE_SHAPE)
+                );
             }
         }
-        assert_eq!(undeclared_reads(&["tab", "elements", "key"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), Vec::<&str>::new());
-        assert_eq!(undeclared_reads(&["tabs"], &success_payload("browser/tab-query", CallVariant::Plain), &[]), vec!["tabs"]);
-        assert_eq!(undeclared_reads(&["tab", "format", "image", "key"], &success_payload("browser/tab-capture", CallVariant::Plain), &[]), Vec::<&str>::new());
-        assert_eq!(undeclared_reads(&["elements"], &success_payload("browser/tab-capture", CallVariant::Plain), &[]), vec!["elements"]);
-        assert_eq!(success_payload("browser/tab-nope", CallVariant::Plain), ProducedPayload::Opaque);
+        assert_eq!(
+            undeclared_reads(
+                &["tab", "elements", "key"],
+                &success_payload("browser/tab-query", CallVariant::Plain),
+                &[]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["tabs"],
+                &success_payload("browser/tab-query", CallVariant::Plain),
+                &[]
+            ),
+            vec!["tabs"]
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["tab", "format", "image", "key"],
+                &success_payload("browser/tab-capture", CallVariant::Plain),
+                &[]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["elements"],
+                &success_payload("browser/tab-capture", CallVariant::Plain),
+                &[]
+            ),
+            vec!["elements"]
+        );
+        assert_eq!(
+            success_payload("browser/tab-nope", CallVariant::Plain),
+            ProducedPayload::Opaque
+        );
     }
 
     #[test]
     fn keyed_socket_answers_and_accepted_connections_declare_the_call_key() {
-        for (operator, event) in [("os/send", false), ("os/recv", false), ("os/tcp-listen", false), ("os/tcp-listen", true)] {
-            let payload = if event { message_payload(operator) } else { success_payload(operator, CallVariant::Plain) };
-            let ProducedPayload::Shape(shape) = payload else { panic!("{operator} declares its payload") };
-            assert!(shape.iter().any(|f| f.name == "key" && f.field_type == "string"), "{operator} event={event}");
+        for (operator, event) in [
+            ("os/send", false),
+            ("os/recv", false),
+            ("os/tcp-listen", false),
+            ("os/tcp-listen", true),
+        ] {
+            let payload = if event {
+                message_payload(operator)
+            } else {
+                success_payload(operator, CallVariant::Plain)
+            };
+            let ProducedPayload::Shape(shape) = payload else {
+                panic!("{operator} declares its payload")
+            };
+            assert!(
+                shape
+                    .iter()
+                    .any(|f| f.name == "key" && f.field_type == "string"),
+                "{operator} event={event}"
+            );
         }
-        assert_eq!(message_payload("os/send"), ProducedPayload::Opaque, "control: a single answer has no event");
+        assert_eq!(
+            message_payload("os/send"),
+            ProducedPayload::Opaque,
+            "control: a single answer has no event"
+        );
     }
 
     #[test]
     fn a_file_event_carries_its_instant_as_text() {
-        let ProducedPayload::Shape(shape) = message_payload("os/watch-files") else { panic!("file events declare a payload") };
-        assert_eq!(shape.iter().find(|f| f.name == "timestamp").map(|f| f.field_type), Some("string"));
+        let ProducedPayload::Shape(shape) = message_payload("os/watch-files") else {
+            panic!("file events declare a payload")
+        };
+        assert_eq!(
+            shape
+                .iter()
+                .find(|f| f.name == "timestamp")
+                .map(|f| f.field_type),
+            Some("string")
+        );
     }
 
     #[test]
     fn every_os_payload_is_the_one_the_table_declares() {
         for op in OsOp::ALL {
-            let declared = get_operator(op.name()).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref());
-            match (declared, success_payload(op.name(), CallVariant::StdinStream)) {
+            let declared = get_operator(op.name())
+                .and_then(|o| o.effect.as_ref())
+                .and_then(|e| e.produces.as_ref());
+            match (
+                declared,
+                success_payload(op.name(), CallVariant::StdinStream),
+            ) {
                 (None, payload) => assert_eq!(payload, ProducedPayload::Opaque, "{}", op.name()),
-                (Some(_), ProducedPayload::Shape(shape)) => assert!(shape.iter().any(|f| f.name == "key"), "{}", op.name()),
+                (Some(_), ProducedPayload::Shape(shape)) => {
+                    assert!(shape.iter().any(|f| f.name == "key"), "{}", op.name())
+                }
                 (Some(_), other) => panic!("{}: {other:?}", op.name()),
             }
         }
@@ -553,27 +732,68 @@ mod tests {
 
     #[test]
     fn current_exe_answers_a_path_like_cwd() {
-        assert_eq!(pairs(success_payload("os/current-exe", CallVariant::Plain)), pairs(success_payload("os/cwd", CallVariant::Plain)));
-        assert_eq!(undeclared_reads(&["path"], &success_payload("os/current-exe", CallVariant::Plain), &[]), Vec::<&str>::new());
-        assert_eq!(undeclared_reads(&["exe"], &success_payload("os/current-exe", CallVariant::Plain), &[]), vec!["exe"]);
+        assert_eq!(
+            pairs(success_payload("os/current-exe", CallVariant::Plain)),
+            pairs(success_payload("os/cwd", CallVariant::Plain))
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["path"],
+                &success_payload("os/current-exe", CallVariant::Plain),
+                &[]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["exe"],
+                &success_payload("os/current-exe", CallVariant::Plain),
+                &[]
+            ),
+            vec!["exe"]
+        );
     }
 
     #[test]
     fn identity_effects_emit_the_subject_and_fail_with_a_kind() {
         for op in ["identity/sign-in", "identity/sign-out"] {
-            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(IDENTITY_SHAPE), "{op}");
-            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
+            assert_eq!(
+                success_payload(op, CallVariant::Plain),
+                ProducedPayload::Shape(IDENTITY_SHAPE),
+                "{op}"
+            );
+            assert_eq!(
+                failure_payload(op, CallVariant::Plain, false),
+                ProducedPayload::Shape(OS_FAILURE_SHAPE),
+                "{op}"
+            );
         }
-        assert_eq!(success_payload("identity/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not an identity effect");
+        assert_eq!(
+            success_payload("identity/other", CallVariant::Plain),
+            ProducedPayload::Opaque,
+            "control: another name is not an identity effect"
+        );
     }
 
     #[test]
     fn theme_effects_emit_the_theme_in_effect_and_fail_with_a_kind() {
         for op in ["theme/set", "theme/clear"] {
-            assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(THEME_SHAPE), "{op}");
-            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
+            assert_eq!(
+                success_payload(op, CallVariant::Plain),
+                ProducedPayload::Shape(THEME_SHAPE),
+                "{op}"
+            );
+            assert_eq!(
+                failure_payload(op, CallVariant::Plain, false),
+                ProducedPayload::Shape(OS_FAILURE_SHAPE),
+                "{op}"
+            );
         }
-        assert_eq!(success_payload("theme/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not a theme effect");
+        assert_eq!(
+            success_payload("theme/other", CallVariant::Plain),
+            ProducedPayload::Opaque,
+            "control: another name is not a theme effect"
+        );
     }
 
     #[test]
@@ -582,30 +802,94 @@ mod tests {
             success_payload("random-bytes", CallVariant::Plain),
             ProducedPayload::Shape(RANDOM_BYTES_SHAPE)
         );
-        assert_eq!(success_payload("access-check", CallVariant::Plain), ProducedPayload::Shape(ACCESS_CHECK_SHAPE));
-        assert_eq!(failure_payload("access-check", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
-        for op in ["credential-status", "credential-forget"] {
-            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
-        }
-        assert_eq!(failure_payload("credential-connect", CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "a connect failure names its kind");
-        for op in ["credential-list", "credential-set", "credential-remove", "credential-test", "credential-mode", "credential-rotate"] {
-            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE), "{op}");
-        }
-        assert_eq!(undeclared_reads(&["saved"], &success_payload("credential-set", CallVariant::Plain), &[]), Vec::<&str>::new());
-        assert_eq!(undeclared_reads(&["last4"], &success_payload("credential-set", CallVariant::Plain), &[]), vec!["last4"], "control: the masked tail is std's, not the operator's");
-        assert_eq!(undeclared_reads(&["value"], &success_payload("credential-set", CallVariant::Plain), &[]), vec!["value"]);
-        assert_eq!(failure_payload("random-bytes", CallVariant::Plain, false), ProducedPayload::Shape(HOST_FAILURE_SHAPE));
-        assert_eq!(failure_payload("random-bytes", CallVariant::Plain, true), ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE));
         assert_eq!(
-            undeclared_reads(&["value", "bytes"], &success_payload("random-bytes", CallVariant::Plain), &[]),
-            vec!["bytes"]
+            success_payload("access-check", CallVariant::Plain),
+            ProducedPayload::Shape(ACCESS_CHECK_SHAPE)
         );
         assert_eq!(
-            undeclared_reads(&["connected", "label"], &success_payload("credential-status", CallVariant::Plain), &[]),
+            failure_payload("access-check", CallVariant::Plain, false),
+            ProducedPayload::Shape(HOST_FAILURE_SHAPE)
+        );
+        for op in ["credential-status", "credential-forget"] {
+            assert_eq!(
+                failure_payload(op, CallVariant::Plain, false),
+                ProducedPayload::Shape(HOST_FAILURE_SHAPE)
+            );
+        }
+        assert_eq!(
+            failure_payload("credential-connect", CallVariant::Plain, false),
+            ProducedPayload::Shape(OS_FAILURE_SHAPE),
+            "a connect failure names its kind"
+        );
+        for op in [
+            "credential-list",
+            "credential-set",
+            "credential-remove",
+            "credential-test",
+            "credential-mode",
+            "credential-rotate",
+        ] {
+            assert_eq!(
+                failure_payload(op, CallVariant::Plain, false),
+                ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
+                "{op}"
+            );
+        }
+        assert_eq!(
+            undeclared_reads(
+                &["saved"],
+                &success_payload("credential-set", CallVariant::Plain),
+                &[]
+            ),
             Vec::<&str>::new()
         );
         assert_eq!(
-            undeclared_reads(&["connected", "value"], &success_payload("credential-status", CallVariant::Plain), &[]),
+            undeclared_reads(
+                &["last4"],
+                &success_payload("credential-set", CallVariant::Plain),
+                &[]
+            ),
+            vec!["last4"],
+            "control: the masked tail is std's, not the operator's"
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["value"],
+                &success_payload("credential-set", CallVariant::Plain),
+                &[]
+            ),
+            vec!["value"]
+        );
+        assert_eq!(
+            failure_payload("random-bytes", CallVariant::Plain, false),
+            ProducedPayload::Shape(HOST_FAILURE_SHAPE)
+        );
+        assert_eq!(
+            failure_payload("random-bytes", CallVariant::Plain, true),
+            ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE)
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["value", "bytes"],
+                &success_payload("random-bytes", CallVariant::Plain),
+                &[]
+            ),
+            vec!["bytes"]
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["connected", "label"],
+                &success_payload("credential-status", CallVariant::Plain),
+                &[]
+            ),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["connected", "value"],
+                &success_payload("credential-status", CallVariant::Plain),
+                &[]
+            ),
             vec!["value"],
             "the credential value is never a field of the status"
         );
@@ -614,17 +898,33 @@ mod tests {
     #[test]
     fn every_credential_payload_is_the_one_the_table_declares() {
         for op in [
-            "credential-status", "credential-forget", "credential-list", "credential-set", "credential-remove",
-            "credential-test", "credential-mode", "credential-rotate",
+            "credential-status",
+            "credential-forget",
+            "credential-list",
+            "credential-set",
+            "credential-remove",
+            "credential-test",
+            "credential-mode",
+            "credential-rotate",
         ] {
-            let declared = get_operator(op).and_then(|o| o.effect.as_ref()).and_then(|e| e.produces.as_ref());
-            let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) = declared else {
+            let declared = get_operator(op)
+                .and_then(|o| o.effect.as_ref())
+                .and_then(|e| e.produces.as_ref());
+            let Some(OperatorTypeRef::Tagged(OperatorTypeRefKind::Object { fields, .. })) =
+                declared
+            else {
                 panic!("{op}: the table declares no object payload");
             };
-            let mut table: Vec<(&str, &str)> = fields.iter().map(|(name, ty)| (name.as_str(), ty.kind_name())).collect();
+            let mut table: Vec<(&str, &str)> = fields
+                .iter()
+                .map(|(name, ty)| (name.as_str(), ty.kind_name()))
+                .collect();
             table.sort_unstable();
-            let ProducedPayload::Shape(shape) = success_payload(op, CallVariant::Plain) else { panic!("{op}: no shape") };
-            let mut emitted: Vec<(&str, &str)> = shape.iter().map(|f| (f.name, f.field_type)).collect();
+            let ProducedPayload::Shape(shape) = success_payload(op, CallVariant::Plain) else {
+                panic!("{op}: no shape")
+            };
+            let mut emitted: Vec<(&str, &str)> =
+                shape.iter().map(|f| (f.name, f.field_type)).collect();
             emitted.sort_unstable();
             assert_eq!(emitted, table, "{op}");
         }
@@ -632,16 +932,44 @@ mod tests {
 
     #[test]
     fn on_device_model_effects_emit_their_closed_payloads() {
-        assert_eq!(success_payload("browser/prompt", CallVariant::Plain), ProducedPayload::Shape(PROMPT_SHAPE));
-        assert_eq!(success_payload("browser/embed", CallVariant::Plain), ProducedPayload::Shape(EMBED_SHAPE));
+        assert_eq!(
+            success_payload("browser/prompt", CallVariant::Plain),
+            ProducedPayload::Shape(PROMPT_SHAPE)
+        );
+        assert_eq!(
+            success_payload("browser/embed", CallVariant::Plain),
+            ProducedPayload::Shape(EMBED_SHAPE)
+        );
         for keyed in [false, true] {
             for op in ["browser/prompt", "browser/embed"] {
-                assert_eq!(failure_payload(op, CallVariant::Plain, keyed), ProducedPayload::Shape(MODEL_FAILURE_SHAPE));
+                assert_eq!(
+                    failure_payload(op, CallVariant::Plain, keyed),
+                    ProducedPayload::Shape(MODEL_FAILURE_SHAPE)
+                );
             }
         }
-        assert!(undeclared_reads(&["reply", "key"], &success_payload("browser/prompt", CallVariant::Plain), &[]).is_empty());
-        assert_eq!(undeclared_reads(&["embeddings", "reply"], &success_payload("browser/embed", CallVariant::Plain), &[]), vec!["reply"]);
-        assert_eq!(undeclared_reads(&["kind", "status"], &failure_payload("browser/prompt", CallVariant::Plain, false), &[]), vec!["status"]);
+        assert!(undeclared_reads(
+            &["reply", "key"],
+            &success_payload("browser/prompt", CallVariant::Plain),
+            &[]
+        )
+        .is_empty());
+        assert_eq!(
+            undeclared_reads(
+                &["embeddings", "reply"],
+                &success_payload("browser/embed", CallVariant::Plain),
+                &[]
+            ),
+            vec!["reply"]
+        );
+        assert_eq!(
+            undeclared_reads(
+                &["kind", "status"],
+                &failure_payload("browser/prompt", CallVariant::Plain, false),
+                &[]
+            ),
+            vec!["status"]
+        );
     }
 
     #[test]
@@ -668,7 +996,10 @@ mod tests {
     /// "create" there would compare against the wrong contract.
     #[test]
     fn an_actionless_persist_is_not_guessed_at() {
-        assert_eq!(success_payload("persist", CallVariant::Plain), ProducedPayload::Opaque);
+        assert_eq!(
+            success_payload("persist", CallVariant::Plain),
+            ProducedPayload::Opaque
+        );
     }
 
     #[test]
@@ -717,45 +1048,90 @@ mod tests {
         let failure = failure_payload("persist", CallVariant::Plain, false);
         assert_eq!(failure, ProducedPayload::Shape(PERSIST_FAILURE_SHAPE));
         assert!(undeclared_reads(&["error", "code"], &failure, &[]).is_empty());
-        assert_eq!(undeclared_reads(&["entityType", "id"], &failure, &[]), vec!["entityType", "id"]);
+        assert_eq!(
+            undeclared_reads(&["entityType", "id"], &failure, &[]),
+            vec!["entityType", "id"]
+        );
     }
 
     #[test]
     fn a_persist_batch_failure_names_the_failing_operation() {
         let failure = failure_payload("persist", CallVariant::PersistAction("batch"), false);
         assert_eq!(failure, ProducedPayload::Shape(PERSIST_BATCH_FAILURE_SHAPE));
-        assert!(undeclared_reads(&["error", "code", "index", "completedCount"], &failure, &[]).is_empty());
-        assert_eq!(undeclared_reads(&["totalCount"], &failure, &[]), vec!["totalCount"]);
+        assert!(
+            undeclared_reads(&["error", "code", "index", "completedCount"], &failure, &[])
+                .is_empty()
+        );
+        assert_eq!(
+            undeclared_reads(&["totalCount"], &failure, &[]),
+            vec!["totalCount"]
+        );
         assert_eq!(
             failure_payload("persist", CallVariant::PersistAction("update"), false),
             ProducedPayload::Shape(PERSIST_FAILURE_SHAPE),
             "control: a single persist keeps the two-field failure"
         );
-        assert_eq!(undeclared_reads(&["index"], &failure_payload("persist", CallVariant::Plain, false), &[]), vec!["index"]);
+        assert_eq!(
+            undeclared_reads(
+                &["index"],
+                &failure_payload("persist", CallVariant::Plain, false),
+                &[]
+            ),
+            vec!["index"]
+        );
     }
 
     #[test]
     fn a_fetch_failure_carries_no_payload_and_an_agent_port_failure_carries_error_and_errors() {
         let fetch = failure_payload("fetch", CallVariant::Plain, false);
         assert_eq!(fetch, ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
-        assert_eq!(undeclared_reads(&["message", "requestId"], &fetch, &[]), vec!["message", "requestId"]);
+        assert_eq!(
+            undeclared_reads(&["message", "requestId"], &fetch, &[]),
+            vec!["message", "requestId"]
+        );
         assert!(undeclared_reads(&["error", "code"], &fetch, &[]).is_empty());
-        for op in crate::agent_ports::AGENT_PORT_OPERATORS.iter().copied().chain(["program/eval", "program/validate"]) {
+        for op in crate::agent_ports::AGENT_PORT_OPERATORS
+            .iter()
+            .copied()
+            .chain(["program/eval", "program/validate"])
+        {
             let failure = failure_payload(op, CallVariant::Plain, false);
-            assert_eq!(failure, ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE), "{op}");
+            assert_eq!(
+                failure,
+                ProducedPayload::Shape(SUBSTRATE_FAILURE_SHAPE),
+                "{op}"
+            );
             assert!(undeclared_reads(&["error", "errors"], &failure, &[]).is_empty());
-            assert_eq!(undeclared_reads(&["message"], &failure, &[]), vec!["message"]);
+            assert_eq!(
+                undeclared_reads(&["message"], &failure, &[]),
+                vec!["message"]
+            );
         }
     }
 
     #[test]
     fn a_keyed_agent_port_or_program_failure_echoes_its_key() {
-        for op in crate::agent_ports::AGENT_PORT_OPERATORS.iter().copied().chain(["program/eval", "program/validate"]) {
+        for op in crate::agent_ports::AGENT_PORT_OPERATORS
+            .iter()
+            .copied()
+            .chain(["program/eval", "program/validate"])
+        {
             let keyed = failure_payload(op, CallVariant::Plain, true);
-            assert_eq!(keyed, ProducedPayload::Shape(KEYED_SUBSTRATE_FAILURE_SHAPE), "{op}");
-            assert!(undeclared_reads(&["error", "errors", "key"], &keyed, &[]).is_empty(), "{op}");
             assert_eq!(
-                undeclared_reads(&["key"], &failure_payload(op, CallVariant::Plain, false), &[]),
+                keyed,
+                ProducedPayload::Shape(KEYED_SUBSTRATE_FAILURE_SHAPE),
+                "{op}"
+            );
+            assert!(
+                undeclared_reads(&["error", "errors", "key"], &keyed, &[]).is_empty(),
+                "{op}"
+            );
+            assert_eq!(
+                undeclared_reads(
+                    &["key"],
+                    &failure_payload(op, CallVariant::Plain, false),
+                    &[]
+                ),
                 vec!["key"],
                 "control: an unkeyed {op} failure carries no key"
             );
@@ -768,10 +1144,19 @@ mod tests {
             failure_payload("call-service", CallVariant::Plain, true),
             ProducedPayload::Shape(KEYED_CALL_FAILURE_SHAPE)
         );
-        assert_eq!(failure_payload("call-service", CallVariant::Plain, false), ProducedPayload::Opaque);
+        assert_eq!(
+            failure_payload("call-service", CallVariant::Plain, false),
+            ProducedPayload::Opaque
+        );
         assert_eq!(message_payload("call-service"), ProducedPayload::Opaque);
-        assert_eq!(failure_payload("fetch", CallVariant::Plain, true), ProducedPayload::Shape(KEYED_FETCH_FAILURE_SHAPE));
-        assert_eq!(failure_payload("fetch", CallVariant::Plain, false), ProducedPayload::Shape(FETCH_FAILURE_SHAPE));
+        assert_eq!(
+            failure_payload("fetch", CallVariant::Plain, true),
+            ProducedPayload::Shape(KEYED_FETCH_FAILURE_SHAPE)
+        );
+        assert_eq!(
+            failure_payload("fetch", CallVariant::Plain, false),
+            ProducedPayload::Shape(FETCH_FAILURE_SHAPE)
+        );
     }
 
     #[test]
@@ -782,5 +1167,4 @@ mod tests {
         );
         assert!(undeclared_reads(&["whatever"], &ProducedPayload::Opaque, &[]).is_empty());
     }
-
 }

@@ -18,8 +18,8 @@
 
 pub mod effects;
 pub mod embedded_traits;
-pub mod gated_traits;
 pub mod expr;
+pub mod gated_traits;
 pub mod literal;
 pub mod pretty;
 pub mod render;
@@ -28,8 +28,8 @@ pub mod validation;
 
 pub use effects::*;
 pub use embedded_traits::*;
-pub use gated_traits::*;
 pub use expr::*;
+pub use gated_traits::*;
 pub use literal::*;
 pub use pretty::*;
 pub use render::*;

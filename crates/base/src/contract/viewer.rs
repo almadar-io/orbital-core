@@ -55,14 +55,19 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
         Value::Null => serde_json::Value::Null,
         Value::Bool(flag) => serde_json::Value::Bool(*flag),
         Value::String(text) => serde_json::Value::String(text.clone().into_inner()),
-        Value::Number(number) if number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 => {
+        Value::Number(number)
+            if number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0 =>
+        {
             serde_json::Value::from(*number as i64)
         }
         Value::Number(number) => serde_json::Number::from_f64(*number)
             .map(serde_json::Value::Number)
             .ok_or_else(|| format!("viewer claim {at}: {number} is not a JSON number"))?,
         Value::Array(items) => serde_json::Value::Array(
-            items.iter().map(|item| json_of(item, at)).collect::<Result<_, _>>()?,
+            items
+                .iter()
+                .map(|item| json_of(item, at))
+                .collect::<Result<_, _>>()?,
         ),
         Value::Object(map) => serde_json::Value::Object(
             map.iter()
@@ -70,7 +75,9 @@ fn json_of(value: &Value, at: &str) -> Result<serde_json::Value, String> {
                 .collect::<Result<_, String>>()?,
         ),
         Value::Lambda(_) => return Err(format!("viewer claim {at}: a function is not a claim")),
-        Value::Sealed(_) => return Err(format!("viewer claim {at}: a sealed value is not a claim")),
+        Value::Sealed(_) => {
+            return Err(format!("viewer claim {at}: a sealed value is not a claim"))
+        }
     })
 }
 
@@ -217,7 +224,10 @@ mod tests {
         let viewer = Viewer::from_user(&source).unwrap();
         assert_eq!(viewer.to_user().unwrap(), source);
         let wire = serde_json::to_value(&viewer).unwrap();
-        assert!(wire["claims"].as_array().unwrap().contains(&json!({ "name": "scores", "value": [1, 2] })));
+        assert!(wire["claims"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "name": "scores", "value": [1, 2] })));
         let back: Viewer = serde_json::from_value(wire).unwrap();
         assert_eq!(back.to_user().unwrap(), source);
     }

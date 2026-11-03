@@ -89,7 +89,9 @@ fn credential_connect_prints_its_request_object() {
             .into_iter()
             .collect(),
     );
-    let printed = pretty_print_expr(&OirExpr::effect(crate::ir::effects::OirEffect::credential_connect(request, None)));
+    let printed = pretty_print_expr(&OirExpr::effect(
+        crate::ir::effects::OirEffect::credential_connect(request, None),
+    ));
     assert!(printed.starts_with("credential-connect("), "{printed}");
     assert!(printed.contains("credential: \"token_name\""), "{printed}");
 }

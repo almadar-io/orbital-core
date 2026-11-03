@@ -339,7 +339,11 @@ impl KeyVocabulary {
             return row;
         };
         let canonical: Vec<Shared<String>> = fields.keys().map(|k| self.key(k)).collect();
-        if fields.keys().zip(&canonical).all(|(k, c)| Shared::ptr_eq(k, c)) {
+        if fields
+            .keys()
+            .zip(&canonical)
+            .all(|(k, c)| Shared::ptr_eq(k, c))
+        {
             return Value::Object(fields);
         }
         let mut shared = ValueMap::with_capacity_and_hasher(fields.len(), Default::default());

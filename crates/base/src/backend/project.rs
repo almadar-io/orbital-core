@@ -60,8 +60,12 @@ pub const ORB_MANIFEST_FILE: &str = ".orb-manifest.json";
 /// root. No existing `GeneratedFile::path` in any shell started with any of
 /// these before their own addition (each backend otherwise emits bare
 /// relative names under its own `generated_dir`), so each is purely additive.
-const WORKSPACE_RELATIVE_PREFIXES: &[&str] =
-    &["packages/", "Sources/", "app/src/test/", "app/src/main/assets/"];
+const WORKSPACE_RELATIVE_PREFIXES: &[&str] = &[
+    "packages/",
+    "Sources/",
+    "app/src/test/",
+    "app/src/main/assets/",
+];
 
 /// Write a generated project for `oir`: copy the shell template, clean, run the
 /// backend, refuse codegen markers, write the files and prune what the previous
@@ -91,12 +95,14 @@ where
 
     // Step 2: Copy shell template if requested
     if options.copy_template {
-        tracing::info_span!(target: ns::SHELL, "copy template").in_scope(|| shell.init_project(output_dir, &oir.name))?;
+        tracing::info_span!(target: ns::SHELL, "copy template")
+            .in_scope(|| shell.init_project(output_dir, &oir.name))?;
     }
 
     // Step 3: Clean existing generated files if requested
     if options.clean {
-        tracing::info_span!(target: ns::SHELL, "clean generated").in_scope(|| shell.clean_generated(output_dir))?;
+        tracing::info_span!(target: ns::SHELL, "clean generated")
+            .in_scope(|| shell.clean_generated(output_dir))?;
     }
 
     // Step 4: Generate code
@@ -190,7 +196,12 @@ where
 /// generates their client-side data effects; any other backend is refused
 /// before it writes a file.
 fn ensure_backend_supports<B: Backend>(oir: &OirModule, backend: &B) -> Result<(), WriteError> {
-    let local: Vec<&str> = oir.entities.iter().filter(|e| e.browser).map(|e| e.name.as_str()).collect();
+    let local: Vec<&str> = oir
+        .entities
+        .iter()
+        .filter(|e| e.browser)
+        .map(|e| e.name.as_str())
+        .collect();
     if local.is_empty() || backend.supports_browser_stored_entities() {
         return Ok(());
     }
@@ -205,7 +216,11 @@ fn ensure_backend_supports<B: Backend>(oir: &OirModule, backend: &B) -> Result<(
 /// shell that generates no browser leg has nowhere to run them, so it is
 /// refused before it writes a file. A client or server build is one half of a
 /// split deployment whose other half may host the call, so it is not judged here.
-fn ensure_services_hostable<B: Backend>(oir: &OirModule, backend: &B, options: &WriteOptions) -> Result<(), WriteError> {
+fn ensure_services_hostable<B: Backend>(
+    oir: &OirModule,
+    backend: &B,
+    options: &WriteOptions,
+) -> Result<(), WriteError> {
     use crate::runs_on::{is_browser_only, SERVICE_RUNTIME_UNSUPPORTED};
     if options.mode != ShellMode::Full || backend.supports_browser_stored_entities() {
         return Ok(());
@@ -234,8 +249,15 @@ fn ensure_services_hostable<B: Backend>(oir: &OirModule, backend: &B, options: &
 /// the shell's `generated_dir` — the ONE resolution rule the write loop and
 /// the stale-prune pass both use, so a manifest entry always resolves to the
 /// exact file it named.
-fn resolve_manifest_path(output_dir: &Path, generated_dir: &Path, logical_path: &str) -> std::path::PathBuf {
-    if WORKSPACE_RELATIVE_PREFIXES.iter().any(|prefix| logical_path.starts_with(prefix)) {
+fn resolve_manifest_path(
+    output_dir: &Path,
+    generated_dir: &Path,
+    logical_path: &str,
+) -> std::path::PathBuf {
+    if WORKSPACE_RELATIVE_PREFIXES
+        .iter()
+        .any(|prefix| logical_path.starts_with(prefix))
+    {
         output_dir.join(logical_path)
     } else {
         generated_dir.join(logical_path)
@@ -315,7 +337,11 @@ pub fn copy_locales(source_path: &Path, output: &Path) -> std::io::Result<()> {
     let destination = output.join("locales");
     std::fs::create_dir_all(&destination)?;
     let same_folder = |dir: &Path| matches!((dir.canonicalize(), destination.canonicalize()), (Ok(a), Ok(b)) if a == b);
-    if let Some(source_locales) = source_path.parent().map(|d| d.join("locales")).filter(|d| d.is_dir() && !same_folder(d)) {
+    if let Some(source_locales) = source_path
+        .parent()
+        .map(|d| d.join("locales"))
+        .filter(|d| d.is_dir() && !same_folder(d))
+    {
         for entry in std::fs::read_dir(source_locales)?.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("json") {
@@ -357,8 +383,14 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("locales")).unwrap();
         std::fs::write(dir.path().join("locales/en.json"), r#"{"hi":"Hi"}"#).unwrap();
         copy_locales(&dir.path().join("program.orb"), dir.path()).expect("copies");
-        assert_eq!(std::fs::read_to_string(dir.path().join("locales/en.json")).unwrap(), r#"{"hi":"Hi"}"#);
-        assert_eq!(std::fs::read_to_string(dir.path().join("locales/ar.json")).unwrap(), "{}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("locales/en.json")).unwrap(),
+            r#"{"hi":"Hi"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("locales/ar.json")).unwrap(),
+            "{}"
+        );
     }
 
     #[test]
@@ -368,14 +400,20 @@ mod tests {
         std::fs::create_dir_all(src.path().join("locales")).unwrap();
         std::fs::write(src.path().join("locales/sl.json"), r#"{"hi":"Zdravo"}"#).unwrap();
         copy_locales(&src.path().join("app.lolo"), out.path()).expect("copies");
-        assert_eq!(std::fs::read_to_string(out.path().join("locales/sl.json")).unwrap(), r#"{"hi":"Zdravo"}"#);
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("locales/sl.json")).unwrap(),
+            r#"{"hi":"Zdravo"}"#
+        );
     }
 
     struct OneFile;
 
     impl Backend for OneFile {
         fn generate(&self, _module: &OirModule) -> GeneratedOutput {
-            GeneratedOutput { files: vec![crate::generate::GeneratedFile::new("src/app.txt", "hi")], warnings: vec![] }
+            GeneratedOutput {
+                files: vec![crate::generate::GeneratedFile::new("src/app.txt", "hi")],
+                warnings: vec![],
+            }
         }
         fn name(&self) -> &'static str {
             "one-file"
@@ -383,23 +421,52 @@ mod tests {
     }
 
     fn shell(generated_dir: &'static str) -> crate::shell::BaseShell {
-        crate::shell::BaseShell::new("t", "t", &[], PathBuf::from("/nonexistent-template"), generated_dir, "", "", "")
+        crate::shell::BaseShell::new(
+            "t",
+            "t",
+            &[],
+            PathBuf::from("/nonexistent-template"),
+            generated_dir,
+            "",
+            "",
+            "",
+        )
     }
 
     #[test]
     fn a_project_at_the_root_is_written_into_a_fresh_directory_without_a_template() {
         let root = tempfile::TempDir::new().unwrap();
         let out = root.path().join("fresh");
-        write_project(&OirModule::new("App", "1.0.0"), &out, &shell("."), &OneFile, &WriteOptions::default()).unwrap();
-        assert_eq!(std::fs::read_to_string(out.join("src/app.txt")).unwrap(), "hi");
+        write_project(
+            &OirModule::new("App", "1.0.0"),
+            &out,
+            &shell("."),
+            &OneFile,
+            &WriteOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("src/app.txt")).unwrap(),
+            "hi"
+        );
     }
 
     #[test]
     fn control_a_nested_generated_dir_is_written_into_a_fresh_directory() {
         let root = tempfile::TempDir::new().unwrap();
         let out = root.path().join("fresh");
-        write_project(&OirModule::new("App", "1.0.0"), &out, &shell("gen"), &OneFile, &WriteOptions::default()).unwrap();
-        assert_eq!(std::fs::read_to_string(out.join("gen/src/app.txt")).unwrap(), "hi");
+        write_project(
+            &OirModule::new("App", "1.0.0"),
+            &out,
+            &shell("gen"),
+            &OneFile,
+            &WriteOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("gen/src/app.txt")).unwrap(),
+            "hi"
+        );
     }
 
     fn site() -> tempfile::TempDir {

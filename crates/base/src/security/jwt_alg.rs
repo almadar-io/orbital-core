@@ -1,5 +1,3 @@
-
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum JwtAlg {
     #[serde(rename = "RS256")]

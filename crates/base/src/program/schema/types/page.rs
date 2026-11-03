@@ -41,7 +41,11 @@ pub struct PageDefinition {
     pub is_initial: Option<bool>,
 
     /// Whether this is the page shown for a path no page matches (`[notFound]`)
-    #[serde(rename = "isNotFound", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "isNotFound",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub is_not_found: Option<bool>,
 
     /// Traits active on this page

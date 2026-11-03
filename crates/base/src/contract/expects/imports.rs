@@ -120,7 +120,10 @@ pub(super) fn imported_identity_of(
 /// The page a navigate target reaches, deterministically: exact, then the one parameterised
 /// route a trailing-slash prefix adds a segment to, then a `:param` match, then a page beneath
 /// the prefix.
-pub(super) fn find_matching_page_path(nav_path: &str, page_paths: &BTreeSet<String>) -> Option<String> {
+pub(super) fn find_matching_page_path(
+    nav_path: &str,
+    page_paths: &BTreeSet<String>,
+) -> Option<String> {
     if page_paths.contains(nav_path) {
         return Some(nav_path.to_string());
     }

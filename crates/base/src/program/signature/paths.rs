@@ -15,7 +15,12 @@ pub(super) fn walk_path(ty: &OirType, path: &str) -> Path {
 
 /// [`walk_path`] where a segment's owner may be a declared name, read through `resolve`. `maps_may_miss` reads a map's
 /// key as possibly absent, as an operator call (`object/get`) does; a binding path keeps the value type.
-pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolve: &dyn Fn(&str) -> Option<OirType>) -> Path {
+pub(super) fn walk_path_in(
+    ty: &OirType,
+    path: &str,
+    maps_may_miss: bool,
+    resolve: &dyn Fn(&str) -> Option<OirType>,
+) -> Path {
     let mut current = ty.clone();
     let mut may_be_absent = false;
     let segments = crate::value::split_path(path);
@@ -23,7 +28,9 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
         let mut here = language_value(unwrap_optional(&current)).clone();
         let mut hops = 0;
         while let OirType::TypeRef { name } | OirType::Reference { entity: name } = &here {
-            let Some(next) = resolve(name).or_else(|| crate::sealed::sealed_record(name)) else { break };
+            let Some(next) = resolve(name).or_else(|| crate::sealed::sealed_record(name)) else {
+                break;
+            };
             hops += 1;
             if hops > 16 {
                 break;
@@ -32,19 +39,21 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             here = language_value(unwrap_optional(&next)).clone();
         }
         match &here {
-            OirType::Struct { fields, additional } => match fields.iter().find(|f| f.name == segment) {
-                Some(field) => {
-                    current = field.field_type.clone();
-                    may_be_absent |= !field.required;
-                }
-                None => match additional.as_deref() {
-                    Some(value) => {
-                        current = value.clone();
-                        may_be_absent = true;
+            OirType::Struct { fields, additional } => {
+                match fields.iter().find(|f| f.name == segment) {
+                    Some(field) => {
+                        current = field.field_type.clone();
+                        may_be_absent |= !field.required;
                     }
-                    None => return Path::Missing,
-                },
-            },
+                    None => match additional.as_deref() {
+                        Some(value) => {
+                            current = value.clone();
+                            may_be_absent = true;
+                        }
+                        None => return Path::Missing,
+                    },
+                }
+            }
             OirType::Map { value, .. } => {
                 current = (**value).clone();
                 may_be_absent |= maps_may_miss;
@@ -83,7 +92,9 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
                             distinct.push(OirField::new((*name).to_string(), (*ty).clone()));
                         }
                     }
-                    OirType::Union { variants: distinct.into() }
+                    OirType::Union {
+                        variants: distinct.into(),
+                    }
                 };
                 current = if declared.len() == variants.len() {
                     joined
@@ -106,7 +117,6 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
         current
     })
 }
-
 
 /// The type at `segments` below `ty` (a field, a map value, a list or tuple index), when it is determined.
 pub fn type_at_path(ty: &OirType, segments: &[String]) -> Option<OirType> {
@@ -162,7 +172,9 @@ pub(super) fn children_of(
             _ => None,
         });
     let is_shape = |t: &OirType| match unwrap_optional(t) {
-        OirType::Union { variants } => shape_variants.as_ref().is_some_and(|names| *names == variant_names(variants)),
+        OirType::Union { variants } => shape_variants
+            .as_ref()
+            .is_some_and(|names| *names == variant_names(variants)),
         OirType::TypeRef { name } => {
             shape_identity.is_some() && identity(name).map(|(name, _)| name) == shape_identity
         }
@@ -223,13 +235,17 @@ pub(super) fn children_of(
                         ..v.clone()
                     })
                 })
-                .collect::<Option<Vec<_>>>()?.into(),
+                .collect::<Option<Vec<_>>>()?
+                .into(),
         }),
         OirType::Array { inner } if is_shape(inner) => Some(OirType::array(element(inner))),
         OirType::Map { key, value } if is_shape(value) => {
             Some(OirType::map((**key).clone(), element(value)))
         }
-        _ => Some(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }),
+        _ => Some(OirType::Struct {
+            fields: crate::ir::types::no_fields(),
+            additional: None,
+        }),
     }
 }
 
@@ -259,6 +275,8 @@ pub fn project_children_type(
     match kept.as_slice() {
         [] => None,
         [only] => Some(only.field_type.clone()),
-        _ => Some(OirType::Union { variants: kept.into() }),
+        _ => Some(OirType::Union {
+            variants: kept.into(),
+        }),
     }
 }

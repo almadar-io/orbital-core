@@ -138,7 +138,11 @@ impl ValueSourceSlots {
                 if arg_count < 2 {
                     return None;
                 }
-                let first_branch = if skip_dead_branches && condition_dead { 2 } else { 1 };
+                let first_branch = if skip_dead_branches && condition_dead {
+                    2
+                } else {
+                    1
+                };
                 (first_branch..arg_count).map(ValueSlot::Arg).collect()
             }
             Self::Args => (0..arg_count).map(ValueSlot::Arg).collect(),
@@ -176,7 +180,12 @@ pub(super) fn plan_value_sources(
     condition_dead: bool,
 ) -> Option<Vec<ValueSlot>> {
     let sem = (walk.lookup)(op)?.semantics?;
-    ValueSourceSlots::of_semantics(sem)?.apply(arg_count, is_lambda, condition_dead, walk.skip_dead_branches)
+    ValueSourceSlots::of_semantics(sem)?.apply(
+        arg_count,
+        is_lambda,
+        condition_dead,
+        walk.skip_dead_branches,
+    )
 }
 
 /// Borrowed view of a recognized FC-5 dynamic-children tuple

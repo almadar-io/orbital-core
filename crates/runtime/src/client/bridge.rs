@@ -9,9 +9,9 @@
 use std::prelude::v1::*;
 
 use crate::client::http::BridgeError;
+use crate::effects::response::{EventRequest, EventResponse};
 use crate::row_query::RowPage;
 use orbital_core_base::row_set::RowSetRef;
-use crate::effects::response::{EventRequest, EventResponse};
 use orbital_core_base::value::Value;
 
 /// Abstract event transport. `Send + Sync` so the desktop/game clients can move an
@@ -151,9 +151,15 @@ pub struct KernelBridge {
 
 impl KernelBridge {
     /// Register a resolved schema in a fresh server-environment kernel.
-    pub fn new(schema: orbital_core_base::schema::types::OrbitalSchema) -> Result<Self, crate::kernel::EntryError> {
-        use {crate::entity_source::{EntitySource, InMemoryEntityCache}, crate::config::KernelConfig, crate::kernel::RuntimeKernel};
+    pub fn new(
+        schema: orbital_core_base::schema::types::OrbitalSchema,
+    ) -> Result<Self, crate::kernel::EntryError> {
         use std::sync::Arc;
+        use {
+            crate::config::KernelConfig,
+            crate::entity_source::{EntitySource, InMemoryEntityCache},
+            crate::kernel::RuntimeKernel,
+        };
 
         // Keep a typed clone before erasing to `Arc<dyn EntitySource>` for the kernel —
         // writes through it are visible to the kernel immediately (shared allocation).
@@ -186,7 +192,8 @@ impl KernelBridge {
         on_event: std::sync::Arc<crate::native_host::StreamEvents>,
     ) -> Self {
         let host = crate::native_host::NativeHost::new(
-            std::sync::Arc::clone(&self.entities) as std::sync::Arc<dyn crate::entity_source::EntitySource>,
+            std::sync::Arc::clone(&self.entities)
+                as std::sync::Arc<dyn crate::entity_source::EntitySource>,
             secrets,
             self.kernel.os_grant_table(),
             handles,
@@ -199,13 +206,20 @@ impl KernelBridge {
     /// Run a dispatch: through the native host when there is one, else straight through with no host.
     fn run(
         &self,
-        hosted: impl FnOnce() -> Result<crate::resumable::Progress<crate::resumable::DispatchOutcomes>, crate::resumable::DispatchError>,
+        hosted: impl FnOnce() -> Result<
+            crate::resumable::Progress<crate::resumable::DispatchOutcomes>,
+            crate::resumable::DispatchError,
+        >,
         bare: impl FnOnce() -> Result<crate::resumable::DispatchOutcomes, crate::kernel::KernelError>,
     ) -> Result<crate::resumable::DispatchOutcomes, BridgeError> {
         #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
         if let Some(host) = &self.host {
             return hosted()
-                .and_then(|progress| crate::resumable::drive_concurrent(&self.kernel, progress, &|request| host.answer(request)))
+                .and_then(|progress| {
+                    crate::resumable::drive_concurrent(&self.kernel, progress, &|request| {
+                        host.answer(request)
+                    })
+                })
                 .map_err(|e| BridgeError::Server(e.to_string()));
         }
         #[cfg(target_arch = "wasm32")]
@@ -255,17 +269,33 @@ impl KernelBridge {
             Vec::new()
         } else {
             self.run(
-                || self.kernel.start_dispatch_each(&handlers, entity_id, event, payload.clone(), None, None),
-                || self.kernel.dispatch_each(&handlers, entity_id, event, payload.clone()),
+                || {
+                    self.kernel.start_dispatch_each(
+                        &handlers,
+                        entity_id,
+                        event,
+                        payload.clone(),
+                        None,
+                        None,
+                    )
+                },
+                || {
+                    self.kernel
+                        .dispatch_each(&handlers, entity_id, event, payload.clone())
+                },
             )?
         };
-        Ok(EventResponse::from_discovery(&outcomes, &handlers, event, held))
+        Ok(EventResponse::from_discovery(
+            &outcomes, &handlers, event, held,
+        ))
     }
 }
 
 impl ServerBridge for KernelBridge {
     fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, BridgeError> {
-        self.kernel.resolve_rows(reference).map_err(BridgeError::Server)
+        self.kernel
+            .resolve_rows(reference)
+            .map_err(BridgeError::Server)
     }
 
     /// A `mount` request runs every seed's lifecycle event in one dispatch, as
@@ -287,11 +317,22 @@ impl ServerBridge for KernelBridge {
         let entity_id = request.entity_id.as_deref();
         let payload = request.payload.clone().unwrap_or(Value::Null);
         let outcomes = self.run(
-            || self.kernel.start_dispatch_mount(seeds, entity_id, payload.clone()),
-            || self.kernel.dispatch_mount(seeds, entity_id, payload.clone()),
+            || {
+                self.kernel
+                    .start_dispatch_mount(seeds, entity_id, payload.clone())
+            },
+            || {
+                self.kernel
+                    .dispatch_mount(seeds, entity_id, payload.clone())
+            },
         )?;
-        let mut response = EventResponse::from_process_results(&outcomes, &seeds[0].r#trait, seeds[0].event.as_str());
-        self.kernel.seal_outcomes(&mut response, &outcomes, entity_id, true);
+        let mut response = EventResponse::from_process_results(
+            &outcomes,
+            &seeds[0].r#trait,
+            seeds[0].event.as_str(),
+        );
+        self.kernel
+            .seal_outcomes(&mut response, &outcomes, entity_id, true);
         Ok(response)
     }
 
@@ -310,8 +351,20 @@ impl ServerBridge for KernelBridge {
         // this event (and any it emits) — so a button's CREATE reaches the modal trait
         // that listens for it. `dispatch` is the canonical fan-out in orbital-core.
         let outcomes = self.run(
-            || self.kernel.start_dispatch(&trait_name, entity_id, event, payload.clone(), None, None),
-            || self.kernel.dispatch(&trait_name, entity_id, event, payload.clone()),
+            || {
+                self.kernel.start_dispatch(
+                    &trait_name,
+                    entity_id,
+                    event,
+                    payload.clone(),
+                    None,
+                    None,
+                )
+            },
+            || {
+                self.kernel
+                    .dispatch(&trait_name, entity_id, event, payload.clone())
+            },
         )?;
         let response = self.kernel.response_for(&outcomes, &trait_name, event);
         tracing::debug!(
@@ -367,7 +420,10 @@ mod tests {
     use std::sync::Arc;
 
     fn bridge(granted: &std::path::Path, path: &std::path::Path) -> KernelBridge {
-        let (granted, path) = (granted.canonicalize().unwrap(), path.canonicalize().unwrap());
+        let (granted, path) = (
+            granted.canonicalize().unwrap(),
+            path.canonicalize().unwrap(),
+        );
         let to = |state: &str, event: &str| {
             json!({ "from": "reading", "to": state, "event": event,
                 "effects": [["render-ui", "main", { "type": "typography", "content": "@payload" }]] })
@@ -407,8 +463,13 @@ mod tests {
     }
 
     fn read(b: &KernelBridge) -> (String, String) {
-        let response = b.send_event_with_options("Main", "READ", None, Some("Read"), Value::Null).unwrap();
-        (b.kernel.held_states(&["Read".to_string()], None)["Read"].clone(), format!("{response:?}"))
+        let response = b
+            .send_event_with_options("Main", "READ", None, Some("Read"), Value::Null)
+            .unwrap();
+        (
+            b.kernel.held_states(&["Read".to_string()], None)["Read"].clone(),
+            format!("{response:?}"),
+        )
     }
 
     #[test]
@@ -420,7 +481,10 @@ mod tests {
         use base64::Engine;
         let data = base64::engine::general_purpose::STANDARD.encode("hello from disk");
         assert_eq!(state, "read", "{response}");
-        assert!(response.contains(&format!("\"data\": String(\"{data}\")")), "{response}");
+        assert!(
+            response.contains(&format!("\"data\": String(\"{data}\")")),
+            "{response}"
+        );
     }
 
     #[test]
@@ -442,6 +506,9 @@ mod tests {
         std::fs::write(&file, "hello from disk").unwrap();
         let (state, response) = read(&bridge(dir.path(), &file));
         assert_eq!(state, "failed", "{response}");
-        assert!(response.contains("no http host") || response.to_lowercase().contains("unsupported"), "{response}");
+        assert!(
+            response.contains("no http host") || response.to_lowercase().contains("unsupported"),
+            "{response}"
+        );
     }
 }

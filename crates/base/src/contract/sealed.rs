@@ -18,7 +18,9 @@ pub fn is_sealed_type(name: &str) -> bool {
 
 /// The type a sealed record is declared as.
 pub fn sealed_type_ref(name: &str) -> OirType {
-    OirType::TypeRef { name: name.to_string() }
+    OirType::TypeRef {
+        name: name.to_string(),
+    }
 }
 
 /// The name of the sealed type `ty` is, when it is one.
@@ -42,7 +44,12 @@ pub fn sealed_record(name: &str) -> Option<OirType> {
                     OirType::array(OirType::Struct {
                         fields: vec![
                             OirField::new("name", OirType::String),
-                            OirField::new("value", OirType::TypeRef { name: "JsonValue".to_string() }),
+                            OirField::new(
+                                "value",
+                                OirType::TypeRef {
+                                    name: "JsonValue".to_string(),
+                                },
+                            ),
                         ]
                         .into(),
                         additional: None,

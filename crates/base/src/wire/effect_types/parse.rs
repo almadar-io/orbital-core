@@ -264,7 +264,8 @@ pub(super) fn parse_fetch(args: &[SExpression]) -> Option<Effect> {
                 let key = option("key");
                 let emit = parse_emit_config(&config_value);
                 (
-                    id, filter, limit, offset, order_by, include, deliver, total, nearest, key, emit,
+                    id, filter, limit, offset, order_by, include, deliver, total, nearest, key,
+                    emit,
                 )
             } else {
                 (

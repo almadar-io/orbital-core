@@ -5,8 +5,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::value::ValueMap;
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
 
 // Calendar derivation helpers ride the same glob import every generated renderer
@@ -339,7 +339,11 @@ pub fn resolve_row_set_markers(
     ) -> Result<crate::row_query::RowPage, String>,
 ) -> Value {
     if let Some(reference) = crate::row_query::as_row_set_marker(props) {
-        return Value::array(resolve(&reference).map(|page| page.rows).unwrap_or_default());
+        return Value::array(
+            resolve(&reference)
+                .map(|page| page.rows)
+                .unwrap_or_default(),
+        );
     }
     match props {
         Value::Array(items) => Value::Array(
@@ -448,9 +452,11 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
             }
             Value::string(s.to_string())
         }
-        Value::Array(arr) => {
-            Value::Array(arr.iter().map(|v| substitute_row_bindings(v, param, row)).collect())
-        }
+        Value::Array(arr) => Value::Array(
+            arr.iter()
+                .map(|v| substitute_row_bindings(v, param, row))
+                .collect(),
+        ),
         Value::Object(obj) => {
             let mut out = ValueMap::with_capacity_and_hasher(obj.len(), Default::default());
             for (k, v) in obj {
@@ -841,9 +847,11 @@ pub fn from_json(json: serde_json::Value) -> Value {
         serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or(0.0)),
         serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(arr) => Value::Array(arr.into_iter().map(from_json).collect()),
-        serde_json::Value::Object(obj) => {
-            Value::Object(obj.into_iter().map(|(k, v)| (k.into(), from_json(v))).collect())
-        }
+        serde_json::Value::Object(obj) => Value::Object(
+            obj.into_iter()
+                .map(|(k, v)| (k.into(), from_json(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -852,15 +860,30 @@ pub fn to_json(value: &Value) -> serde_json::Value {
     match value {
         Value::Null => serde_json::Value::Null,
         Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Number(n)
+            if n.is_finite() && n.fract() == 0.0 && n.abs() <= 9_007_199_254_740_991.0 =>
+        {
+            if *n >= 0.0 {
+                serde_json::Value::Number(serde_json::Number::from(*n as u64))
+            } else {
+                serde_json::Value::Number(serde_json::Number::from(*n as i64))
+            }
+        }
         Value::Number(n) => serde_json::json!(*n),
         Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
-        Value::Object(obj) => {
-            serde_json::Value::Object(obj.iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
-        }
-        Value::Sealed(sealed) => {
-            serde_json::Value::Object(sealed.fields().iter().map(|(k, v)| (k.to_string(), to_json(v))).collect())
-        }
+        Value::Object(obj) => serde_json::Value::Object(
+            obj.iter()
+                .map(|(k, v)| (k.to_string(), to_json(v)))
+                .collect(),
+        ),
+        Value::Sealed(sealed) => serde_json::Value::Object(
+            sealed
+                .fields()
+                .iter()
+                .map(|(k, v)| (k.to_string(), to_json(v)))
+                .collect(),
+        ),
         Value::Lambda(l) => {
             // Lambdas can't be serialized to JSON, represent as a string
             serde_json::Value::String(format!("[lambda({} params)]", l.params.len()))
@@ -900,8 +923,8 @@ pub fn icon_name_to_glyph(name: &str) -> &'static str {
         "folder" => "▷",
         "list" | "list-ordered" | "list-checks" | "list-todo" | "book" | "book-open" => "☰",
         "database" | "server" | "hard-drive" | "cpu" | "save" | "download" | "image"
-        | "package" | "truck" | "warehouse" | "ticket" | "printer" | "qr-code"
-        | "id-card" | "briefcase" | "store" => "▣",
+        | "package" | "truck" | "warehouse" | "ticket" | "printer" | "qr-code" | "id-card"
+        | "briefcase" | "store" => "▣",
         "shopping-cart" | "shopping-bag" => "⊠",
         "clock" | "calendar" | "calendar-check" | "calendar-clock" | "calendar-range" => "⏱",
         "settings" | "gear" | "sliders" => "⚙",
@@ -939,6 +962,15 @@ mod tests {
         from_json(json)
     }
 
+    #[test]
+    fn json_conversion_keeps_integral_schema_fields_as_json_integers() {
+        let value = json_value(r#"{"typeContractVersion":1,"cursor":2,"zoom":1.5}"#);
+        let json = to_json(&value);
+        assert_eq!(json["typeContractVersion"].as_u64(), Some(1));
+        assert_eq!(json["cursor"].as_u64(), Some(2));
+        assert_eq!(json["zoom"].as_f64(), Some(1.5));
+    }
+
     fn marker_props() -> Value {
         use orbital_core_base::row_set::{row_set_marker, RowSetRef};
         let mut props = json_value(r#"{"type":"table-view","title":"T"}"#);
@@ -960,7 +992,10 @@ mod tests {
         use crate::row_query::RowPage;
         let rows = vec![json_value(r#"{"id":"b"}"#)];
         let resolved = resolve_row_set_markers(&marker_props(), &|_| {
-            Ok(RowPage { rows: rows.clone(), total: 1 })
+            Ok(RowPage {
+                rows: rows.clone(),
+                total: 1,
+            })
         });
         assert_eq!(
             resolved.as_object().unwrap().get("entity"),
@@ -977,7 +1012,10 @@ mod tests {
             Some(&Value::array(Vec::new()))
         );
         let plain = json_value(r#"{"entity":[{"id":"a"}],"x":{"y":[1,2]}}"#);
-        assert_eq!(resolve_row_set_markers(&plain, &|_| Err("unused".into())), plain);
+        assert_eq!(
+            resolve_row_set_markers(&plain, &|_| Err("unused".into())),
+            plain
+        );
     }
 
     #[test]
@@ -1006,7 +1044,10 @@ mod tests {
             merge_class_name("almadar-card", &with_cn),
             "almadar-card flex-1 hover:shadow-lg"
         );
-        assert_eq!(merge_class_name("almadar-card", &without_cn), "almadar-card");
+        assert_eq!(
+            merge_class_name("almadar-card", &without_cn),
+            "almadar-card"
+        );
         assert_eq!(merge_class_name("", &with_cn), "flex-1 hover:shadow-lg");
         assert_eq!(merge_class_name("", &without_cn), "");
     }

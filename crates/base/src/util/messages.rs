@@ -34,7 +34,9 @@ fn walk(value: &mut Value, namespace: &str, path: &str, issues: &mut Vec<Message
             if matches!(items.first(), Some(Value::String(op)) if op == TRANSLATE_OP) {
                 let key_path = format!("{path}[1]");
                 match items.get_mut(1) {
-                    Some(Value::String(key)) if !key.is_empty() && !key.contains(NAMESPACE_SEPARATOR) => {
+                    Some(Value::String(key))
+                        if !key.is_empty() && !key.contains(NAMESPACE_SEPARATOR) =>
+                    {
                         *key = format!("{namespace}{NAMESPACE_SEPARATOR}{key}");
                     }
                     Some(Value::String(key)) => issues.push(MessageKeyIssue::Invalid {
@@ -66,7 +68,10 @@ mod tests {
     fn a_literal_key_is_qualified_with_the_behavior_name() {
         let mut v = json!(["render-ui", "main", { "type": "typography", "content": ["i18n/t", "hero.title"] }]);
         assert!(qualify_message_keys(&mut v, "std-almadar-home").is_empty());
-        assert_eq!(v[2]["content"], json!(["i18n/t", "std-almadar-home:hero.title"]));
+        assert_eq!(
+            v[2]["content"],
+            json!(["i18n/t", "std-almadar-home:hero.title"])
+        );
     }
 
     #[test]
@@ -91,14 +96,19 @@ mod tests {
         let mut v = json!({ "content": ["i18n/t", ["str/concat", "post.", "@entity.slug"]] });
         assert_eq!(
             qualify_message_keys(&mut v, "home"),
-            vec![MessageKeyIssue::Dynamic { path: ".content[1]".into() }]
+            vec![MessageKeyIssue::Dynamic {
+                path: ".content[1]".into()
+            }]
         );
     }
 
     #[test]
     fn edge_a_missing_key_is_reported_as_dynamic() {
         let mut v = json!(["i18n/t"]);
-        assert_eq!(qualify_message_keys(&mut v, "home"), vec![MessageKeyIssue::Dynamic { path: "[1]".into() }]);
+        assert_eq!(
+            qualify_message_keys(&mut v, "home"),
+            vec![MessageKeyIssue::Dynamic { path: "[1]".into() }]
+        );
     }
 
     #[test]
@@ -107,8 +117,14 @@ mod tests {
         assert_eq!(
             qualify_message_keys(&mut v, "home"),
             vec![
-                MessageKeyIssue::Invalid { path: "[0][1]".into(), key: "".into() },
-                MessageKeyIssue::Invalid { path: "[1][1]".into(), key: "other:hero.title".into() },
+                MessageKeyIssue::Invalid {
+                    path: "[0][1]".into(),
+                    key: "".into()
+                },
+                MessageKeyIssue::Invalid {
+                    path: "[1][1]".into(),
+                    key: "other:hero.title".into()
+                },
             ]
         );
     }
@@ -126,7 +142,12 @@ pub enum CatalogIssue {
     /// A key is absent from a declared locale other than `en`.
     KeyUntranslated { key: String, locale: String },
     /// The `{{placeholders}}` of a message differ from the params passed.
-    ParamMismatch { key: String, locale: String, expected: Vec<String>, passed: Vec<String> },
+    ParamMismatch {
+        key: String,
+        locale: String,
+        expected: Vec<String>,
+        passed: Vec<String>,
+    },
     /// The params of an `i18n/t` call are not an object literal.
     ParamsNotLiteral { key: String },
     /// A catalog key no call uses.
@@ -150,12 +171,22 @@ impl CatalogIssue {
     pub fn message(&self) -> String {
         match self {
             CatalogIssue::NoLocales => {
-                "`i18n/t` is used, so the app must declare `locales [en, …]` (including `en`)".to_string()
+                "`i18n/t` is used, so the app must declare `locales [en, …]` (including `en`)"
+                    .to_string()
             }
-            CatalogIssue::CatalogInvalid { locale, detail } => format!("catalog `{locale}`: {detail}"),
+            CatalogIssue::CatalogInvalid { locale, detail } => {
+                format!("catalog `{locale}`: {detail}")
+            }
             CatalogIssue::KeyMissing { key } => format!("key `{key}` is not in the `en` catalog"),
-            CatalogIssue::KeyUntranslated { key, locale } => format!("key `{key}` is not in the `{locale}` catalog"),
-            CatalogIssue::ParamMismatch { key, locale, expected, passed } => format!(
+            CatalogIssue::KeyUntranslated { key, locale } => {
+                format!("key `{key}` is not in the `{locale}` catalog")
+            }
+            CatalogIssue::ParamMismatch {
+                key,
+                locale,
+                expected,
+                passed,
+            } => format!(
                 "key `{key}` in `{locale}` expects params [{}] but the call passes [{}]",
                 expected.join(", "),
                 passed.join(", ")
@@ -163,7 +194,9 @@ impl CatalogIssue {
             CatalogIssue::ParamsNotLiteral { key } => {
                 format!("the params of `{key}` must be an object literal so its placeholders can be checked")
             }
-            CatalogIssue::KeyUnused { key, locale } => format!("catalog `{locale}` key `{key}` is used by no `i18n/t` call"),
+            CatalogIssue::KeyUnused { key, locale } => {
+                format!("catalog `{locale}` key `{key}` is used by no `i18n/t` call")
+            }
         }
     }
 }
@@ -176,18 +209,25 @@ struct Call {
 fn collect_calls(value: &Value, prefix: &str, out: &mut Vec<Call>, issues: &mut Vec<CatalogIssue>) {
     match value {
         Value::Array(items) => {
-            if let (Some(Value::String(op)), Some(Value::String(qualified))) = (items.first(), items.get(1)) {
+            if let (Some(Value::String(op)), Some(Value::String(qualified))) =
+                (items.first(), items.get(1))
+            {
                 if op == TRANSLATE_OP {
                     if let Some(key) = qualified.strip_prefix(prefix) {
                         let params = match items.get(2) {
                             None => Some(Vec::new()),
                             Some(Value::Object(map)) => Some(map.keys().cloned().collect()),
                             Some(_) => {
-                                issues.push(CatalogIssue::ParamsNotLiteral { key: key.to_string() });
+                                issues.push(CatalogIssue::ParamsNotLiteral {
+                                    key: key.to_string(),
+                                });
                                 None
                             }
                         };
-                        out.push(Call { key: key.to_string(), params });
+                        out.push(Call {
+                            key: key.to_string(),
+                            params,
+                        });
                     }
                 }
             }
@@ -280,7 +320,9 @@ pub fn check_catalogs(
         let messages = parsed.get(locale);
         for call in &calls {
             match messages.and_then(|m| m.get(&call.key)) {
-                None if locale == "en" => issues.push(CatalogIssue::KeyMissing { key: call.key.clone() }),
+                None if locale == "en" => issues.push(CatalogIssue::KeyMissing {
+                    key: call.key.clone(),
+                }),
                 None => issues.push(CatalogIssue::KeyUntranslated {
                     key: call.key.clone(),
                     locale: locale.clone(),
@@ -332,7 +374,9 @@ mod catalog_tests {
         vec!["en".into(), "ar".into()]
     }
     fn catalogs(en: Value, ar: Value) -> BTreeMap<String, Option<Value>> {
-        [("en".to_string(), Some(en)), ("ar".to_string(), Some(ar))].into_iter().collect()
+        [("en".to_string(), Some(en)), ("ar".to_string(), Some(ar))]
+            .into_iter()
+            .collect()
     }
     fn codes(issues: &[CatalogIssue]) -> Vec<&'static str> {
         issues.iter().map(|i| i.code()).collect()
@@ -353,14 +397,20 @@ mod catalog_tests {
     fn a_key_missing_from_en_is_reported() {
         let mut c = complete();
         c.insert("en".into(), Some(json!({ "posts.count": "{{n}} posts" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_MISSING"]);
+        assert_eq!(
+            codes(&check_catalogs(&program(), "home", Some(&locales()), &c)),
+            vec!["ORB_I18N_KEY_MISSING"]
+        );
     }
 
     #[test]
     fn a_key_missing_from_another_declared_locale_is_untranslated() {
         let mut c = complete();
         c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNTRANSLATED"]);
+        assert_eq!(
+            codes(&check_catalogs(&program(), "home", Some(&locales()), &c)),
+            vec!["ORB_I18N_KEY_UNTRANSLATED"]
+        );
     }
 
     #[test]
@@ -376,7 +426,10 @@ mod catalog_tests {
     #[test]
     fn placeholders_must_match_the_params_in_every_locale() {
         let mut c = complete();
-        c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا", "posts.count": "{{count}} مقالات" })));
+        c.insert(
+            "ar".into(),
+            Some(json!({ "hero.title": "مرحبا", "posts.count": "{{count}} مقالات" })),
+        );
         let issues = check_catalogs(&program(), "home", Some(&locales()), &c);
         assert_eq!(codes(&issues), vec!["ORB_I18N_PARAM_MISMATCH"]);
     }
@@ -384,36 +437,69 @@ mod catalog_tests {
     #[test]
     fn edge_params_that_are_not_an_object_literal_are_rejected() {
         let p = json!(["i18n/t", "home:posts.count", "@config.counts"]);
-        let c = catalogs(json!({ "posts.count": "{{n}}" }), json!({ "posts.count": "{{n}}" }));
-        assert_eq!(codes(&check_catalogs(&p, "home", Some(&locales()), &c)), vec!["ORB_I18N_PARAM_MISMATCH"]);
+        let c = catalogs(
+            json!({ "posts.count": "{{n}}" }),
+            json!({ "posts.count": "{{n}}" }),
+        );
+        assert_eq!(
+            codes(&check_catalogs(&p, "home", Some(&locales()), &c)),
+            vec!["ORB_I18N_PARAM_MISMATCH"]
+        );
     }
 
     #[test]
     fn an_unused_catalog_key_is_reported() {
         let mut c = complete();
-        c.insert("en".into(), Some(json!({ "hero.title": "Hello", "posts.count": "{{n}} posts", "stale": "x" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNUSED"]);
+        c.insert(
+            "en".into(),
+            Some(json!({ "hero.title": "Hello", "posts.count": "{{n}} posts", "stale": "x" })),
+        );
+        assert_eq!(
+            codes(&check_catalogs(&program(), "home", Some(&locales()), &c)),
+            vec!["ORB_I18N_KEY_UNUSED"]
+        );
     }
 
     #[test]
     fn using_i18n_without_locales_is_rejected_and_control_without_calls_is_fine() {
-        assert_eq!(codes(&check_catalogs(&program(), "home", None, &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
+        assert_eq!(
+            codes(&check_catalogs(&program(), "home", None, &BTreeMap::new())),
+            vec!["ORB_I18N_NO_LOCALES"]
+        );
         assert!(check_catalogs(&json!(["do"]), "home", None, &BTreeMap::new()).is_empty());
     }
 
     #[test]
     fn edge_locales_without_en_are_rejected() {
         let only_ar = vec!["ar".to_string()];
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&only_ar), &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
+        assert_eq!(
+            codes(&check_catalogs(
+                &program(),
+                "home",
+                Some(&only_ar),
+                &BTreeMap::new()
+            )),
+            vec!["ORB_I18N_NO_LOCALES"]
+        );
     }
 
     #[test]
     fn a_malformed_or_undeclared_catalog_is_invalid() {
         let mut c = complete();
-        c.insert("ar".into(), Some(json!({ "hero.title": { "nested": "x" }, "posts.count": "{{n}}" })));
+        c.insert(
+            "ar".into(),
+            Some(json!({ "hero.title": { "nested": "x" }, "posts.count": "{{n}}" })),
+        );
         c.insert("sl".into(), Some(json!({})));
         let found = codes(&check_catalogs(&program(), "home", Some(&locales()), &c));
-        assert!(found.iter().filter(|c| **c == "ORB_I18N_CATALOG_INVALID").count() == 2, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .filter(|c| **c == "ORB_I18N_CATALOG_INVALID")
+                .count()
+                == 2,
+            "{found:?}"
+        );
     }
 }
 
@@ -426,20 +512,40 @@ pub fn render_only_violations(program: &Value) -> Vec<String> {
         return out;
     };
     for (oi, orbital) in orbitals.iter().enumerate() {
-        for (ti, tr) in orbital.get("traits").and_then(Value::as_array).into_iter().flatten().enumerate() {
+        for (ti, tr) in orbital
+            .get("traits")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
             let base = format!("orbitals[{oi}].traits[{ti}]");
             let rows = [
-                ("stateMachine.transitions", tr.get("stateMachine").and_then(|m| m.get("transitions"))),
+                (
+                    "stateMachine.transitions",
+                    tr.get("stateMachine").and_then(|m| m.get("transitions")),
+                ),
                 ("ticks", tr.get("ticks")),
                 ("listens", tr.get("listens")),
             ];
             for (field, rows) in rows {
-                for (ri, row) in rows.and_then(Value::as_array).into_iter().flatten().enumerate() {
+                for (ri, row) in rows
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                {
                     let at = format!("{base}.{field}[{ri}]");
                     if let Some(guard) = row.get("guard") {
                         scan(guard, &format!("{at}.guard"), &mut out);
                     }
-                    for (ei, effect) in row.get("effects").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                    for (ei, effect) in row
+                        .get("effects")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .enumerate()
+                    {
                         if effect.get(0).and_then(Value::as_str) != Some("render-ui") {
                             scan(effect, &format!("{at}.effects[{ei}]"), &mut out);
                         }
@@ -453,7 +559,9 @@ pub fn render_only_violations(program: &Value) -> Vec<String> {
 
 fn scan(value: &Value, path: &str, out: &mut Vec<String>) {
     match value {
-        Value::String(s) if s == "@locale" || s.starts_with("@locale.") => out.push(path.to_string()),
+        Value::String(s) if s == "@locale" || s.starts_with("@locale.") => {
+            out.push(path.to_string())
+        }
         Value::Array(items) => {
             if items.first().and_then(Value::as_str) == Some("render-ui") {
                 return;
@@ -486,25 +594,35 @@ mod render_only_tests {
 
     #[test]
     fn control_inside_render_ui_is_allowed() {
-        let p = program(json!({ "effects": [["render-ui", "main", { "content": ["i18n/t", "a:b"], "dir": "@locale" }]] }));
+        let p = program(
+            json!({ "effects": [["render-ui", "main", { "content": ["i18n/t", "a:b"], "dir": "@locale" }]] }),
+        );
         assert!(render_only_violations(&p).is_empty());
     }
 
     #[test]
     fn inside_a_set_effect_is_reported() {
         let p = program(json!({ "effects": [["set", "@entity.title", ["i18n/t", "a:b"]]] }));
-        assert_eq!(render_only_violations(&p), vec!["orbitals[0].traits[0].stateMachine.transitions[0].effects[0][2]"]);
+        assert_eq!(
+            render_only_violations(&p),
+            vec!["orbitals[0].traits[0].stateMachine.transitions[0].effects[0][2]"]
+        );
     }
 
     #[test]
     fn a_guard_reading_locale_is_reported() {
         let p = program(json!({ "guard": ["=", "@locale", "ar"], "effects": [] }));
-        assert_eq!(render_only_violations(&p), vec!["orbitals[0].traits[0].stateMachine.transitions[0].guard[1]"]);
+        assert_eq!(
+            render_only_violations(&p),
+            vec!["orbitals[0].traits[0].stateMachine.transitions[0].guard[1]"]
+        );
     }
 
     #[test]
     fn edge_render_ui_nested_in_do_is_allowed() {
-        let p = program(json!({ "effects": [["do", ["render-ui", "main", { "content": ["i18n/t", "a:b"] }]]] }));
+        let p = program(
+            json!({ "effects": [["do", ["render-ui", "main", { "content": ["i18n/t", "a:b"] }]]] }),
+        );
         assert!(render_only_violations(&p).is_empty());
     }
 }
@@ -545,7 +663,11 @@ pub fn duplicate_translation_locales<'a>(
         };
         match seen.iter_mut().find(|(g, l, _)| g == group && l == locale) {
             Some((_, _, paths)) => paths.push(path.to_string()),
-            None => seen.push((group.to_string(), locale.to_string(), vec![path.to_string()])),
+            None => seen.push((
+                group.to_string(),
+                locale.to_string(),
+                vec![path.to_string()],
+            )),
         }
     }
     seen.retain(|(_, _, paths)| paths.len() > 1);

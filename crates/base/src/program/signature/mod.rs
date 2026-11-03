@@ -52,7 +52,10 @@ pub enum Known {
     Absent,
     /// The argument is an object literal some of whose values are the null literal: `present` is the record of the
     /// fields that have a type, `nulls` the keys written as null.
-    RecordWithNulls { present: OirType, nulls: Vec<String> },
+    RecordWithNulls {
+        present: OirType,
+        nulls: Vec<String>,
+    },
 }
 
 /// A lambda's result type given its parameters' types. A lambda whose declared type has a `children-of` parameter
@@ -128,7 +131,11 @@ pub enum Mismatch {
     NullOperand { operator: String, operand: String },
     /// An operand whose value an operator that can fail on a well-typed value produced (`source`, answering null
     /// then), handed to an operator that needs a value, with no default or presence check in front of it.
-    MissingResult { operator: String, operand: String, source: String },
+    MissingResult {
+        operator: String,
+        operand: String,
+        source: String,
+    },
 }
 
 impl fmt::Display for Mismatch {
@@ -153,8 +160,15 @@ impl fmt::Display for Mismatch {
                     "`{operand}` can be missing, so `{operator}` over it is undecided"
                 )
             }
-            Mismatch::MissingResult { operator, operand, source } => {
-                write!(f, "`{operand}` is missing when `{source}` fails, and `{operator}` needs a value")
+            Mismatch::MissingResult {
+                operator,
+                operand,
+                source,
+            } => {
+                write!(
+                    f,
+                    "`{operand}` is missing when `{source}` fails, and `{operator}` needs a value"
+                )
             }
         }
     }
@@ -167,7 +181,8 @@ struct NamedTypes(std::sync::Arc<BTreeMap<String, OirType>>);
 
 impl Default for NamedTypes {
     fn default() -> Self {
-        static EMPTY: crate::sync::OnceLock<std::sync::Arc<BTreeMap<String, OirType>>> = crate::sync::OnceLock::new();
+        static EMPTY: crate::sync::OnceLock<std::sync::Arc<BTreeMap<String, OirType>>> =
+            crate::sync::OnceLock::new();
         NamedTypes(std::sync::Arc::clone(EMPTY.get_or_init(Default::default)))
     }
 }
@@ -446,7 +461,9 @@ impl<'a> Signature<'a> {
                             return Ok(());
                         }
                         if is_typed_record_join(&records) {
-                            return Err(undetermined("record elements have unknown additional values at a named field"));
+                            return Err(undetermined(
+                                "record elements have unknown additional values at a named field",
+                            ));
                         }
                     }
                 }
@@ -465,7 +482,9 @@ impl<'a> Signature<'a> {
                         return Ok(());
                     }
                     if is_typed_record_join(&records) {
-                        return Err(undetermined("record branches have unknown additional values at a named field"));
+                        return Err(undetermined(
+                            "record branches have unknown additional values at a named field",
+                        ));
                     }
                 }
             }
@@ -659,22 +678,22 @@ impl<'a> Signature<'a> {
     }
 }
 
-mod records;
-mod paths;
-mod describe;
-mod shapes;
 mod bind;
+mod describe;
+mod paths;
+mod records;
 mod resolve;
-use records::*;
-use paths::*;
-use describe::*;
-use shapes::*;
-use bind::*;
-pub use records::concrete_type;
-pub use paths::{project_children_type, type_at_path};
-pub use describe::describe_type;
+mod shapes;
 pub use bind::nominal_type;
+use bind::*;
+pub use describe::describe_type;
+use describe::*;
+use paths::*;
+pub use paths::{project_children_type, type_at_path};
+pub use records::concrete_type;
+use records::*;
 pub use resolve::resolve;
+use shapes::*;
 
 #[cfg(test)]
 mod tests;

@@ -126,8 +126,8 @@ pub fn pretty_print_expr(expr: &OirExpr) -> String {
 }
 
 mod decls;
-mod exprs;
 mod effect_writer;
+mod exprs;
 
 #[cfg(test)]
 mod tests;

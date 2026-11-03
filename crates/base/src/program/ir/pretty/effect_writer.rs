@@ -278,7 +278,9 @@ impl PrettyPrinter {
                 }
                 self.write(")");
             }
-            OirEffect::BrowserTab { op, request, key, .. } => {
+            OirEffect::BrowserTab {
+                op, request, key, ..
+            } => {
                 self.write(op.name());
                 self.write("(");
                 self.write_expr(request);

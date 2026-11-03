@@ -6,9 +6,11 @@ use std::prelude::v1::*;
 
 use std::collections::HashSet;
 
-use crate::ir::expr::{OirBinding, OirBindingRoot, OirExpr};
 use crate::ir::effects::OirEffect;
-use crate::ir::types::{OirEntity, OirModule, OirPage, OirPersistence, OirTrait, OirTransition, OirTransitionFrom};
+use crate::ir::expr::{OirBinding, OirBindingRoot, OirExpr};
+use crate::ir::types::{
+    OirEntity, OirModule, OirPage, OirPersistence, OirTrait, OirTransition, OirTransitionFrom,
+};
 
 /// Validation error
 #[derive(Debug, Clone)]

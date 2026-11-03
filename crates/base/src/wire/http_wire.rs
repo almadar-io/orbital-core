@@ -1,14 +1,13 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
+use crate::ir::types::OirType;
+use crate::value::Value;
+use crate::value::ValueMap;
 use core::net::IpAddr;
 use core::net::Ipv4Addr;
 use core::net::Ipv6Addr;
 use serde::Deserialize;
 use serde::Serialize;
-use crate::value::Value;
-use crate::value::ValueMap;
-use crate::ir::types::OirType;
-
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -89,7 +88,9 @@ impl RetryOn {
     pub const ENTRIES: &'static str = "retry.on entries are 1xx, 408, 5xx, 429, timeout, failed or an integer status code from 100 through 599";
 
     pub fn status(code: u64) -> Option<Self> {
-        (100..=599).contains(&code).then_some(Self::Status(code as u16))
+        (100..=599)
+            .contains(&code)
+            .then_some(Self::Status(code as u16))
     }
 
     pub fn tag(self) -> Option<&'static str> {
@@ -157,8 +158,14 @@ impl<'de> Deserialize<'de> for RetryOn {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RetryDelay {
-    Backoff { #[serde(rename = "backoffMs")] backoff_ms: u64 },
-    Schedule { #[serde(rename = "scheduleMs")] schedule_ms: Vec<u64> },
+    Backoff {
+        #[serde(rename = "backoffMs")]
+        backoff_ms: u64,
+    },
+    Schedule {
+        #[serde(rename = "scheduleMs")]
+        schedule_ms: Vec<u64>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,7 +195,8 @@ pub enum RetryOutcome {
 }
 
 impl HttpRetry {
-    pub const KEYS: &'static [&'static str] = &["max", "on", "backoffMs", "scheduleMs", "noResponseMax"];
+    pub const KEYS: &'static [&'static str] =
+        &["max", "on", "backoffMs", "scheduleMs", "noResponseMax"];
 
     pub fn next_delay(&self, attempt: &mut u32, outcome: RetryOutcome) -> Option<u64> {
         if *attempt >= self.max
@@ -263,7 +271,9 @@ pub fn check_http_path(path: &str) -> Result<(), HttpRefusal> {
         return Err(HttpRefusal::OriginEscape(path.to_string()));
     }
     if path.contains('#') {
-        return Err(HttpRefusal::Invalid("path must not carry a fragment".to_string()));
+        return Err(HttpRefusal::Invalid(
+            "path must not carry a fragment".to_string(),
+        ));
     }
     Ok(())
 }
@@ -372,7 +382,11 @@ pub fn parse_origin_prefix(origin: &str) -> Option<(OriginParts, String)> {
         return None;
     }
     let prefix = rest.trim_end_matches('/');
-    if prefix.contains("//") || prefix.split('/').any(|segment| segment == "." || segment == "..") {
+    if prefix.contains("//")
+        || prefix
+            .split('/')
+            .any(|segment| segment == "." || segment == "..")
+    {
         return None;
     }
     Some((parts, prefix.to_string()))
@@ -426,18 +440,41 @@ pub fn parse_credential_status_slot(selection: &Value) -> Result<CredentialSlot,
 pub fn whole_number(value: Option<&Value>, what: &str) -> Result<Option<u64>, HttpRefusal> {
     match value {
         None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= u64::MAX as f64 => Ok(Some(*n as u64)),
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 && *n <= u64::MAX as f64 => {
+            Ok(Some(*n as u64))
+        }
         Some(_) => invalid(format!("{what} must be a whole number")),
     }
 }
 
 pub fn is_header_name(name: &str) -> bool {
-    !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_alphanumeric()
-        || matches!(byte, b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'))
+    !name.is_empty()
+        && name.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 pub fn is_header_value(value: &str) -> bool {
-    value.bytes().all(|byte| byte == b'\t' || (byte >= b' ' && byte != 127))
+    value
+        .bytes()
+        .all(|byte| byte == b'\t' || (byte >= b' ' && byte != 127))
 }
 
 pub fn check_header(name: &str, value: &str) -> Result<(), HttpRefusal> {
@@ -445,7 +482,9 @@ pub fn check_header(name: &str, value: &str) -> Result<(), HttpRefusal> {
         return invalid("invalid HTTP header name");
     }
     if !is_header_value(value) {
-        return invalid(format!("header `{name}` must be single-line without control characters"));
+        return invalid(format!(
+            "header `{name}` must be single-line without control characters"
+        ));
     }
     Ok(())
 }
@@ -493,7 +532,10 @@ pub fn parse_grant_request(value: &Value) -> Result<GrantRequest, HttpRefusal> {
     };
     closed_keys(map, GrantRequest::KEYS, "auth.grantRequest")?;
     let headers = parse_http_headers(map.get("headers"))?;
-    if headers.iter().any(|(name, _)| GrantRequest::is_driver_owned_header(name)) {
+    if headers
+        .iter()
+        .any(|(name, _)| GrantRequest::is_driver_owned_header(name))
+    {
         return invalid("grant Authorization and Content-Type headers are kernel-owned");
     }
     let method = match map.get("method") {
@@ -518,7 +560,8 @@ pub fn parse_retry(value: &Value) -> Result<HttpRetry, HttpRefusal> {
         .iter()
         .map(|(name, value)| (name.to_string(), RetryOperand::Literal(value.clone())))
         .collect();
-    HttpRetry::check_partial(&fields)?.ok_or_else(|| HttpRefusal::Invalid("retry must contain concrete values".into()))
+    HttpRetry::check_partial(&fields)?
+        .ok_or_else(|| HttpRefusal::Invalid("retry must contain concrete values".into()))
 }
 
 impl RetryOperand {
@@ -527,13 +570,19 @@ impl RetryOperand {
             Self::Literal(value) => whole_number(Some(value), what)?
                 .map(Some)
                 .ok_or_else(|| HttpRefusal::Invalid(missing.into())),
-            Self::Typed(ty) if crate::type_compat::oir_type_satisfies(ty, &OirType::Number) => Ok(None),
+            Self::Typed(ty) if crate::type_compat::oir_type_satisfies(ty, &OirType::Number) => {
+                Ok(None)
+            }
             Self::Unresolved => Ok(None),
             _ => invalid(format!("{what} must be a whole number")),
         }
     }
 
-    pub fn list(&self, inners: &[OirType], message: &str) -> Result<Option<Vec<Self>>, HttpRefusal> {
+    pub fn list(
+        &self,
+        inners: &[OirType],
+        message: &str,
+    ) -> Result<Option<Vec<Self>>, HttpRefusal> {
         match self {
             Self::Literal(Value::Array(values)) => {
                 Ok(Some(values.iter().cloned().map(Self::Literal).collect()))
@@ -547,7 +596,12 @@ impl RetryOperand {
             }
             Self::Typed(ty)
                 if inners.iter().any(|inner| {
-                    crate::type_compat::oir_type_satisfies(ty, &OirType::Array { inner: Box::new(inner.clone()) })
+                    crate::type_compat::oir_type_satisfies(
+                        ty,
+                        &OirType::Array {
+                            inner: Box::new(inner.clone()),
+                        },
+                    )
                 }) =>
             {
                 Ok(None)
@@ -564,7 +618,10 @@ impl RetryOperand {
                 None => invalid(RetryOn::ENTRIES),
             },
             Self::Literal(Value::Number(n)) => {
-                match (n.fract() == 0.0 && *n >= 0.0).then(|| RetryOn::status(*n as u64)).flatten() {
+                match (n.fract() == 0.0 && *n >= 0.0)
+                    .then(|| RetryOn::status(*n as u64))
+                    .flatten()
+                {
                     Some(rule) => Ok(Some(rule)),
                     None => invalid(RetryOn::ENTRIES),
                 }
@@ -590,7 +647,10 @@ impl HttpRetry {
             return invalid(format!("retry has no key `{name}`"));
         }
         let get = |key: &str| {
-            fields.iter().find(|(name, _)| name == key).map(|(_, value)| value)
+            fields
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value)
         };
         let max_message = "retry.max must be a whole number of at least 1";
         let Some(raw_max) = get("max") else {

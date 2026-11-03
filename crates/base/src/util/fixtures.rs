@@ -7,9 +7,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::sync::OnceLock;
 use std::fs;
 use std::path::{Path, PathBuf};
-use crate::sync::OnceLock;
 
 /// One `fixtures/events-wire/<name>/` case: every `*.json` it carries, by file name.
 #[derive(Debug, Clone)]

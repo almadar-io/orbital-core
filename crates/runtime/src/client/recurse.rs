@@ -8,9 +8,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::value::ValueMap;
 use orbital_core_base::ir::expr::{OirBinding, OirBindingRoot};
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 
 /// Return the ordered child pattern specs to render for a layout/container
 /// pattern: the entries of its `children` array (empty if none).
@@ -23,10 +23,7 @@ use orbital_core_base::value::Value;
 /// trait's content tagged with `Some("X")` (so the renderer can switch the event
 /// source for that subtree); an inline child is `(child, None)` (inherits the parent
 /// source).
-pub fn child_patterns(
-    props: &Value,
-    trait_content: &ValueMap,
-) -> Vec<(Value, Option<String>)> {
+pub fn child_patterns(props: &Value, trait_content: &ValueMap) -> Vec<(Value, Option<String>)> {
     let Some(arr) = props
         .as_object()
         .and_then(|o| o.get("children"))
@@ -97,9 +94,7 @@ mod tests {
     #[test]
     fn no_children_is_empty() {
         let empty = ValueMap::default();
-        assert!(
-            child_patterns(&obj(vec![("type", Value::string("button"))]), &empty).is_empty()
-        );
+        assert!(child_patterns(&obj(vec![("type", Value::string("button"))]), &empty).is_empty());
         assert!(child_patterns(&Value::Null, &empty).is_empty());
     }
 
@@ -134,8 +129,15 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("table-view")
         );
-        assert_eq!(kids[0].1.as_deref(), Some("Search"), "@trait child carries its source");
-        assert_eq!(trait_ref_name("@trait.Search.main").as_deref(), Some("Search"));
+        assert_eq!(
+            kids[0].1.as_deref(),
+            Some("Search"),
+            "@trait child carries its source"
+        );
+        assert_eq!(
+            trait_ref_name("@trait.Search.main").as_deref(),
+            Some("Search")
+        );
         assert_eq!(trait_ref_name("not-a-trait"), None);
     }
 
@@ -158,7 +160,11 @@ mod tests {
         assert_eq!(kids.len(), 1, "overlay peer present in index resolves");
         assert_eq!(kids[0].1.as_deref(), Some("Popover1"));
         assert_eq!(
-            kids[0].0.as_object().and_then(|o| o.get("type")).and_then(|v| v.as_str()),
+            kids[0]
+                .0
+                .as_object()
+                .and_then(|o| o.get("type"))
+                .and_then(|v| v.as_str()),
             Some("popover")
         );
     }
@@ -224,7 +230,10 @@ mod tests {
         };
 
         let mut tc = ValueMap::default();
-        tc.insert("Catalog".into(), obj(vec![("type", Value::string("stack"))]));
+        tc.insert(
+            "Catalog".into(),
+            obj(vec![("type", Value::string("stack"))]),
+        );
 
         let entities = HashMap::new();
         let editing = None;
@@ -247,15 +256,23 @@ mod tests {
         let props = obj(vec![(
             "children",
             Value::array(vec![
-                Value::String("@trait.Catalog".into()),            // → source switches to Catalog
+                Value::String("@trait.Catalog".into()), // → source switches to Catalog
                 obj(vec![("type", Value::String("button".into()))]), // inline → inherits Layout
             ]),
         )]);
 
         ctx.render_children(std::ptr::null_mut(), &props);
         let seen = seen.borrow();
-        assert_eq!(seen[0].as_deref(), Some("Catalog"), "@trait child renders with X as source");
-        assert_eq!(seen[1].as_deref(), Some("Layout"), "inline sibling keeps parent source");
+        assert_eq!(
+            seen[0].as_deref(),
+            Some("Catalog"),
+            "@trait child renders with X as source"
+        );
+        assert_eq!(
+            seen[1].as_deref(),
+            Some("Layout"),
+            "inline sibling keeps parent source"
+        );
         // Source restored after the loop.
         assert_eq!(ctx.source_trait.as_deref(), Some("Layout"));
     }

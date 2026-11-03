@@ -124,12 +124,7 @@ impl AsyncEventBus {
     }
 
     /// Emit a namespaced event
-    pub fn emit_namespaced(
-        &self,
-        namespace: &str,
-        event_name: &str,
-        payload: crate::value::Value,
-    ) {
+    pub fn emit_namespaced(&self, namespace: &str, event_name: &str, payload: crate::value::Value) {
         self.emit(Event::namespaced(namespace, event_name, payload));
     }
 

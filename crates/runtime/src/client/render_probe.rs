@@ -123,7 +123,9 @@ fn dedup_sorted(mut v: Vec<String>) -> Vec<String> {
 /// A fresh in-process kernel for `schema`, its session unbound (the anonymous viewer). It holds only the rows the
 /// program writes itself.
 pub fn probe_kernel(schema: &OrbitalSchema) -> Result<Arc<dyn ServerBridge>, String> {
-    Ok(Arc::new(KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?))
+    Ok(Arc::new(
+        KernelBridge::new(schema.clone()).map_err(|e| format!("kernel bridge: {e}"))?,
+    ))
 }
 
 /// Probe `schema` through the in-process kernel, restricted to `traits` when given.
@@ -1109,9 +1111,11 @@ mod tests {
             &target,
             false,
             |s, _| {
-                let bridge = KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
-                let note: Value = serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
-                    .map_err(|e| e.to_string())?;
+                let bridge =
+                    KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
+                let note: Value =
+                    serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
+                        .map_err(|e| e.to_string())?;
                 bridge.seed("Note", vec![note])?;
                 Ok(Arc::new(bridge) as Arc<dyn ServerBridge>)
             },
@@ -1185,23 +1189,43 @@ mod tests {
     }
 
     fn shown(from: &str, entity: Option<serde_json::Value>) -> Vec<RenderedSlot> {
-        let target = Target { supported: &["stack"], stubs: &[] };
+        let target = Target {
+            supported: &["stack"],
+            stubs: &[],
+        };
         let seed = entity.map(|e| e.as_object().cloned().unwrap());
-        played_render_facts(&show_program(), "NotesView", from, seed.as_ref(), "SHOW", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap()
+        played_render_facts(
+            &show_program(),
+            "NotesView",
+            from,
+            seed.as_ref(),
+            "SHOW",
+            Value::Null,
+            &target,
+            true,
+            |s, _| probe_kernel(s),
+        )
+        .unwrap()
     }
 
     #[test]
     fn the_probe_seeds_the_requests_entity_and_from_state_as_the_step_does() {
         let slots = shown("armed", Some(serde_json::json!({ "title": "seeded" })));
         assert_eq!(slots.len(), 1, "{slots:?}");
-        assert_eq!(slots[0].props.as_ref().unwrap()["initialData"]["title"], "seeded");
+        assert_eq!(
+            slots[0].props.as_ref().unwrap()["initialData"]["title"],
+            "seeded"
+        );
     }
 
     #[test]
     fn control_a_request_with_no_entity_seed_renders_the_declared_default_row() {
         let slots = shown("armed", None);
         assert_eq!(slots.len(), 1, "{slots:?}");
-        assert_eq!(slots[0].props.as_ref().unwrap()["initialData"]["title"], "blank");
+        assert_eq!(
+            slots[0].props.as_ref().unwrap()["initialData"]["title"],
+            "blank"
+        );
     }
 
     #[test]
@@ -1233,8 +1257,22 @@ mod tests {
     }
 
     fn facts(schema: &OrbitalSchema, with_props: bool) -> Vec<RenderedSlot> {
-        let target = Target { supported: &["stack"], stubs: &[] };
-        played_render_facts(schema, "NotesView", "idle", None, "INIT", Value::Null, &target, with_props, |s, _| probe_kernel(s)).unwrap()
+        let target = Target {
+            supported: &["stack"],
+            stubs: &[],
+        };
+        played_render_facts(
+            schema,
+            "NotesView",
+            "idle",
+            None,
+            "INIT",
+            Value::Null,
+            &target,
+            with_props,
+            |s, _| probe_kernel(s),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1277,7 +1315,12 @@ mod tests {
         assert!(slots[0].props.is_none() && slots[0].fault.is_none());
         let wire = serde_json::to_value(&slots).unwrap();
         assert_eq!(
-            wire[0].as_object().unwrap().keys().cloned().collect::<Vec<_>>(),
+            wire[0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
             ["slot", "sourceTrait", "ownerEntity", "nodes"],
             "the wire carries only the node facts, as before"
         );
@@ -1295,14 +1338,20 @@ mod tests {
         }))
         .unwrap();
         app.process_response("TICK", Some("NotesView".into()), response);
-        assert_eq!(app.slot_faults.get("main").map(String::as_str), Some("boom"));
+        assert_eq!(
+            app.slot_faults.get("main").map(String::as_str),
+            Some("boom")
+        );
         let painted: crate::effects::response::EventResponse = serde_json::from_value(serde_json::json!({
             "success": true,
             "clientEffectsByTrait": [{ "traitName": "NotesView", "effect": ["render-ui", "main", { "type": "stack" }] }]
         }))
         .unwrap();
         app.process_response("TICK", Some("NotesView".into()), painted);
-        assert!(app.slot_faults.is_empty(), "control: a later paint of the slot clears its fault");
+        assert!(
+            app.slot_faults.is_empty(),
+            "control: a later paint of the slot clears its fault"
+        );
     }
 
     #[test]
@@ -1311,7 +1360,10 @@ mod tests {
             ["render-ui", "main", { "type": "stack", "x": ["/", 1, "not-a-number"] }]
         ]));
         let slots = facts(&schema, true);
-        assert!(slots.is_empty(), "EXEC-STEP-7: no client effect of a failed transition: {slots:?}");
+        assert!(
+            slots.is_empty(),
+            "EXEC-STEP-7: no client effect of a failed transition: {slots:?}"
+        );
     }
 
     #[test]

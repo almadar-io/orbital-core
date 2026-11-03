@@ -23,11 +23,16 @@ pub struct StateMachine {
 impl StateMachine {
     /// Every proposition the machine states: each state's `@holds` and each transition's `@ensures`.
     pub fn propositions_mut(&mut self) -> impl Iterator<Item = &mut SExpression> {
-        let StateMachine { states, transitions, .. } = self;
-        states
-            .iter_mut()
-            .filter_map(|s| s.holds.as_mut())
-            .chain(transitions.iter_mut().flat_map(|t| t.ensures.iter_mut().flatten()))
+        let StateMachine {
+            states,
+            transitions,
+            ..
+        } = self;
+        states.iter_mut().filter_map(|s| s.holds.as_mut()).chain(
+            transitions
+                .iter_mut()
+                .flat_map(|t| t.ensures.iter_mut().flatten()),
+        )
     }
 }
 
@@ -179,7 +184,11 @@ pub struct TransitionDefinition {
 
     /// Predicted renders this transition's server effects lead to (awaiting-server skeletons). Computed by
     /// orbital-compiler from the resolved schema; never authored.
-    #[serde(rename = "awaitRender", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "awaitRender",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub await_render: Option<Vec<crate::ir::types::AwaitRender>>,
 }
 

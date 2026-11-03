@@ -7,7 +7,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::schema::types::{InboundDeclaration, InboundVerification, OrbitalSchema, TraitReference};
+use crate::schema::types::{
+    InboundDeclaration, InboundVerification, OrbitalSchema, TraitReference,
+};
 use crate::value::{Value, ValueMap};
 use serde::{Deserialize, Serialize};
 
@@ -74,7 +76,9 @@ pub fn inbound_routes_of(schema: &OrbitalSchema) -> Vec<InboundRoute> {
 /// else is the 404 answer a host writes for a hook it does not serve.
 pub fn find_inbound(schema: &OrbitalSchema, name: &str) -> Result<InboundRoute, InboundAnswer> {
     let declared = schema.inbound.iter().flatten().any(|n| n == name);
-    let mut routes = inbound_routes_of(schema).into_iter().filter(|r| r.name == name);
+    let mut routes = inbound_routes_of(schema)
+        .into_iter()
+        .filter(|r| r.name == name);
     match (declared, routes.next(), routes.next()) {
         (true, Some(route), None) => Ok(route),
         _ => Err(unknown_hook(name)),
@@ -131,7 +135,11 @@ pub fn inbound_unanswered(trait_name: &str, event: &str) -> InboundAnswer {
 
 /// [`inbound_unanswered`] naming the deferred dispatches that failed while the delivery waited: a refused payload
 /// deep in the handler's work is the likely reason it never answered.
-pub fn inbound_unanswered_after(trait_name: &str, event: &str, failures: &[String]) -> InboundAnswer {
+pub fn inbound_unanswered_after(
+    trait_name: &str,
+    event: &str,
+    failures: &[String],
+) -> InboundAnswer {
     let mut error = format!(
         "inbound-unanswered: {trait_name} handled {event}, but it never emitted its answer event and no open call is left that could bring one"
     );
@@ -171,7 +179,11 @@ pub fn constant_time_eq(a: &str, b: &str) -> bool {
 /// Whether the sender passed the route's `verifies` check. `None` when the route declares none. An
 /// unset or empty credential never passes: a declared check with no secret is refused before delivery
 /// ([`credential_unset`]).
-pub fn sender_verified(route: &InboundRoute, header_value: &str, credential: Option<&str>) -> Option<bool> {
+pub fn sender_verified(
+    route: &InboundRoute,
+    header_value: &str,
+    credential: Option<&str>,
+) -> Option<bool> {
     route.verifies.as_ref()?;
     Some(match credential {
         None | Some("") => false,
@@ -234,7 +246,11 @@ pub fn inbound_only_trait(
 ) -> Option<String> {
     inbound_routes_of(schema)
         .into_iter()
-        .find(|r| r.orbital == orbital && r.event == event && trait_name.map_or(true, |t| t == r.trait_name))
+        .find(|r| {
+            r.orbital == orbital
+                && r.event == event
+                && trait_name.map_or(true, |t| t == r.trait_name)
+        })
         .map(|r| r.trait_name)
 }
 
@@ -246,7 +262,10 @@ pub fn inbound_only_message(trait_name: &str, event: &str) -> String {
 /// The answer a dispatch produced: the first emit of the route's answer event, whose payload is
 /// `{ status, body, stderr? }` (`stderr` absent or null is none). A dispatch that emitted none, or one whose payload is
 /// not that shape, is a 500.
-pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a str, &'a Value)>) -> InboundAnswer {
+pub fn answer_of<'a>(
+    route: &InboundRoute,
+    emits: impl IntoIterator<Item = (&'a str, &'a Value)>,
+) -> InboundAnswer {
     let Some((_, payload)) = emits.into_iter().find(|(event, _)| *event == route.answer) else {
         return dispatch_failed("inbound-unanswered");
     };
@@ -267,12 +286,16 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
         Some(_) => Err(()),
     };
     match (status, body, stderr, headers) {
-        (Some(s), Some(b), Ok(stderr), Ok(headers)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
-            status: s as u16,
-            body: b.to_string(),
-            stderr: stderr.map(|v| v.into_inner()),
-            headers,
-        },
+        (Some(s), Some(b), Ok(stderr), Ok(headers))
+            if s.fract() == 0.0 && (100.0..=599.0).contains(&s) =>
+        {
+            InboundAnswer {
+                status: s as u16,
+                body: b.to_string(),
+                stderr: stderr.map(|v| v.into_inner()),
+                headers,
+            }
+        }
         _ => dispatch_failed("inbound-answer-invalid"),
     }
 }
@@ -285,7 +308,11 @@ pub fn answer_of_response<'a>(
     emitted: impl IntoIterator<Item = (&'a str, &'a Value)> + Clone,
     failure: Option<&str>,
 ) -> InboundAnswer {
-    if emitted.clone().into_iter().any(|(event, _)| event == route.answer) {
+    if emitted
+        .clone()
+        .into_iter()
+        .any(|(event, _)| event == route.answer)
+    {
         return answer_of(route, emitted);
     }
     dispatch_failed(failure.unwrap_or("inbound-unanswered"))
@@ -330,7 +357,11 @@ mod tests {
 
     #[test]
     fn a_declared_handler_is_found_by_its_name() {
-        let route = find_inbound(&schema(json!(["google-calendar"]), false), "google-calendar").unwrap();
+        let route = find_inbound(
+            &schema(json!(["google-calendar"]), false),
+            "google-calendar",
+        )
+        .unwrap();
         assert_eq!(
             route,
             InboundRoute {
@@ -348,9 +379,16 @@ mod tests {
     fn a_handler_the_app_does_not_declare_is_not_served() {
         let refused = find_inbound(&schema(json!([]), false), "google-calendar").unwrap_err();
         assert_eq!(refused.status, 404);
-        assert_eq!(refused.body, r#"{"error":"Unknown hook provider: google-calendar"}"#);
-        let absent: OrbitalSchema = serde_json::from_value(json!({ "name": "App", "orbitals": [] })).unwrap();
-        assert_eq!(find_inbound(&absent, "google-calendar").unwrap_err().status, 404);
+        assert_eq!(
+            refused.body,
+            r#"{"error":"Unknown hook provider: google-calendar"}"#
+        );
+        let absent: OrbitalSchema =
+            serde_json::from_value(json!({ "name": "App", "orbitals": [] })).unwrap();
+        assert_eq!(
+            find_inbound(&absent, "google-calendar").unwrap_err().status,
+            404
+        );
     }
 
     #[test]
@@ -373,7 +411,11 @@ mod tests {
     fn the_payload_lower_cases_header_names_and_parses_the_body() {
         let payload = inbound_payload(
             &route(),
-            [("X-Goog-Channel-Id", "c1"), ("Accept", "a"), ("accept", "b")],
+            [
+                ("X-Goog-Channel-Id", "c1"),
+                ("Accept", "a"),
+                ("accept", "b"),
+            ],
             r#"{"k":1}"#,
             None,
         );
@@ -381,9 +423,15 @@ mod tests {
             payload.get_path("headers.x-goog-channel-id"),
             Some(&Value::string("c1"))
         );
-        assert_eq!(payload.get_path("headers.accept"), Some(&Value::string("a, b")));
+        assert_eq!(
+            payload.get_path("headers.accept"),
+            Some(&Value::string("a, b"))
+        );
         assert_eq!(payload.get_path("body.k"), Some(&Value::Number(1.0)));
-        assert_eq!(payload.get_path("rawBody"), Some(&Value::string(r#"{"k":1}"#)));
+        assert_eq!(
+            payload.get_path("rawBody"),
+            Some(&Value::string(r#"{"k":1}"#))
+        );
     }
 
     #[test]
@@ -391,7 +439,11 @@ mod tests {
         for raw in ["", "not json"] {
             let payload = inbound_payload(&route(), [], raw, None);
             assert_eq!(payload.get_path("body"), Some(&Value::Null), "{raw}");
-            assert_eq!(payload.get_path("rawBody"), Some(&Value::string(raw)), "{raw}");
+            assert_eq!(
+                payload.get_path("rawBody"),
+                Some(&Value::string(raw)),
+                "{raw}"
+            );
         }
     }
 
@@ -405,18 +457,35 @@ mod tests {
         }
     }
 
-    fn verified(route: &InboundRoute, token: Option<&str>, credential: Option<&str>) -> Option<bool> {
-        let headers: Vec<(&str, &str)> = token.map(|t| ("X-Goog-Channel-Token", t)).into_iter().collect();
+    fn verified(
+        route: &InboundRoute,
+        token: Option<&str>,
+        credential: Option<&str>,
+    ) -> Option<bool> {
+        let headers: Vec<(&str, &str)> = token
+            .map(|t| ("X-Goog-Channel-Token", t))
+            .into_iter()
+            .collect();
         inbound_payload(route, headers, "", credential)
             .get_path("verified")
             .and_then(Value::as_bool)
     }
 
     #[test]
-    fn the_kernel_compares_the_named_header_with_the_credential_and_the_secret_stays_out_of_the_payload() {
-        assert_eq!(verified(&verifying_route(), Some("s3cret"), Some("s3cret")), Some(true));
-        assert_eq!(verified(&verifying_route(), Some("wrong"), Some("s3cret")), Some(false));
-        assert_eq!(verified(&verifying_route(), None, Some("s3cret")), Some(false));
+    fn the_kernel_compares_the_named_header_with_the_credential_and_the_secret_stays_out_of_the_payload(
+    ) {
+        assert_eq!(
+            verified(&verifying_route(), Some("s3cret"), Some("s3cret")),
+            Some(true)
+        );
+        assert_eq!(
+            verified(&verifying_route(), Some("wrong"), Some("s3cret")),
+            Some(false)
+        );
+        assert_eq!(
+            verified(&verifying_route(), None, Some("s3cret")),
+            Some(false)
+        );
         let payload = inbound_payload(
             &verifying_route(),
             [("X-Goog-Channel-Token", "wrong")],
@@ -428,16 +497,26 @@ mod tests {
 
     #[test]
     fn an_unset_or_empty_credential_never_verifies() {
-        assert_eq!(verified(&verifying_route(), Some("anything"), None), Some(false));
+        assert_eq!(
+            verified(&verifying_route(), Some("anything"), None),
+            Some(false)
+        );
         assert_eq!(verified(&verifying_route(), None, Some("")), Some(false));
-        assert_eq!(verified(&verifying_route(), Some(""), Some("")), Some(false), "an empty header never matches an empty secret");
+        assert_eq!(
+            verified(&verifying_route(), Some(""), Some("")),
+            Some(false),
+            "an empty header never matches an empty secret"
+        );
     }
 
     #[test]
     fn an_unset_credential_is_a_401_naming_it() {
         let answer = credential_unset("GOOGLE_CALENDAR_CHANNEL_TOKEN");
         assert_eq!(answer.status, 401);
-        assert_eq!(answer.body, r#"{"error":"credential GOOGLE_CALENDAR_CHANNEL_TOKEN is not set"}"#);
+        assert_eq!(
+            answer.body,
+            r#"{"error":"credential GOOGLE_CALENDAR_CHANNEL_TOKEN is not set"}"#
+        );
     }
 
     #[test]
@@ -471,13 +550,23 @@ mod tests {
             inbound_only_trait(&s, "CalOrbital", None, "PUSH"),
             Some("Inbound".to_string())
         );
-        assert_eq!(inbound_only_trait(&s, "CalOrbital", Some("Other"), "PUSH"), None);
-        assert_eq!(inbound_only_trait(&s, "CalOrbital", Some("Inbound"), "INIT"), None);
+        assert_eq!(
+            inbound_only_trait(&s, "CalOrbital", Some("Other"), "PUSH"),
+            None
+        );
+        assert_eq!(
+            inbound_only_trait(&s, "CalOrbital", Some("Inbound"), "INIT"),
+            None
+        );
         assert_eq!(inbound_only_trait(&s, "OtherOrbital", None, "PUSH"), None);
     }
 
     fn route() -> InboundRoute {
-        find_inbound(&schema(json!(["google-calendar"]), false), "google-calendar").unwrap()
+        find_inbound(
+            &schema(json!(["google-calendar"]), false),
+            "google-calendar",
+        )
+        .unwrap()
     }
 
     fn emit(status: serde_json::Value, body: serde_json::Value) -> Value {
@@ -491,7 +580,11 @@ mod tests {
         let other = Value::Null;
         let answer = answer_of(
             &route(),
-            [("OTHER", &other), ("PUSH_ANSWERED", &first), ("PUSH_ANSWERED", &second)],
+            [
+                ("OTHER", &other),
+                ("PUSH_ANSWERED", &first),
+                ("PUSH_ANSWERED", &second),
+            ],
         );
         assert_eq!(
             answer,
@@ -512,12 +605,17 @@ mod tests {
         assert_eq!(body["code"], "inbound-unanswered");
         assert_eq!(body["trait"], "VerifyWalkCli");
         assert_eq!(body["event"], "VERIFY_WALK_CALLED");
-        assert!(body["error"].as_str().unwrap().starts_with("inbound-unanswered: VerifyWalkCli handled VERIFY_WALK_CALLED"));
+        assert!(body["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("inbound-unanswered: VerifyWalkCli handled VERIFY_WALK_CALLED"));
     }
 
     #[test]
     fn an_answer_carries_its_stderr_and_one_without_or_with_null_stderr_has_none() {
-        let with: Value = serde_json::from_value(json!({ "status": 500, "body": "", "stderr": "orb x: failed" })).unwrap();
+        let with: Value =
+            serde_json::from_value(json!({ "status": 500, "body": "", "stderr": "orb x: failed" }))
+                .unwrap();
         let answer = answer_of(&route(), [("PUSH_ANSWERED", &with)]);
         assert_eq!(
             answer,
@@ -528,7 +626,8 @@ mod tests {
                 headers: None,
             }
         );
-        let null: Value = serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
+        let null: Value =
+            serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
         assert_eq!(answer_of(&route(), [("PUSH_ANSWERED", &null)]).stderr, None);
         let without = emit(json!(200), json!("ok"));
         assert_eq!(
@@ -567,7 +666,11 @@ mod tests {
     }
 
     fn calendar_route() -> InboundRoute {
-        find_inbound(&schema(json!(["google-calendar"]), false), "google-calendar").unwrap()
+        find_inbound(
+            &schema(json!(["google-calendar"]), false),
+            "google-calendar",
+        )
+        .unwrap()
     }
 
     #[test]
@@ -577,13 +680,27 @@ mod tests {
         let answer: Value = serde_json::from_value(answer).unwrap();
         let other: Value = serde_json::from_value(other).unwrap();
         let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
-        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None, headers: None });
+        assert_eq!(
+            answer_of_response(&calendar_route(), emitted, Some("ignored")),
+            InboundAnswer {
+                status: 202,
+                body: "ok".into(),
+                stderr: None,
+                headers: None
+            }
+        );
     }
 
     #[test]
     fn control_without_the_answer_event_the_responses_error_or_unanswered_is_a_500() {
         let empty: [(&str, &Value); 0] = [];
-        assert_eq!(answer_of_response(&calendar_route(), empty, Some("boom")), dispatch_failed("boom"));
-        assert_eq!(answer_of_response(&calendar_route(), empty, None), dispatch_failed("inbound-unanswered"));
+        assert_eq!(
+            answer_of_response(&calendar_route(), empty, Some("boom")),
+            dispatch_failed("boom")
+        );
+        assert_eq!(
+            answer_of_response(&calendar_route(), empty, None),
+            dispatch_failed("inbound-unanswered")
+        );
     }
 }

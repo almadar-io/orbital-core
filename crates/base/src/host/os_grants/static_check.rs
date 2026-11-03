@@ -4,7 +4,8 @@
 //! walks the program and answers typed findings, and the std lint words them.
 
 use super::{
-    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, OsGrants, OsRequirement,
+    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, OsGrants,
+    OsRequirement,
 };
 use crate::collections::IndexMap;
 use crate::os::{split_envelope, OsOp};
@@ -178,7 +179,8 @@ fn anchored_path_values(
     path: &SExpression,
     config: &IndexMap<String, ConfigField>,
 ) -> Option<Vec<SExpression>> {
-    let readable = |value: &SExpression| matches!(value, SExpression::String(s) if !s.starts_with('@'));
+    let readable =
+        |value: &SExpression| matches!(value, SExpression::String(s) if !s.starts_with('@'));
     let SExpression::Array(arr) = path else {
         let values = config_values(path, config)?;
         return values.iter().all(readable).then_some(values);
@@ -274,7 +276,10 @@ fn describe(need: &OsRequirement) -> String {
         }
         OsRequirement::NetPattern { port, kinds } => {
             let kinds: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
-            format!("net a host chosen per call at port {port} {}", kinds.join(" or "))
+            format!(
+                "net a host chosen per call at port {port} {}",
+                kinds.join(" or ")
+            )
         }
         OsRequirement::NetAnchored { host, port, kinds } => {
             let kinds: Vec<&str> = kinds.iter().map(|k| k.name()).collect();
@@ -622,8 +627,8 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
                     let (positional, _) = split_envelope(op, args);
-                    let as_written = os_requirements_deferring(op, positional, &knob_fed)
-                        .unwrap_or_default();
+                    let as_written =
+                        os_requirements_deferring(op, positional, &knob_fed).unwrap_or_default();
                     needs.extend(as_written.iter().cloned());
                     needs.extend(deferred_reach(op, positional));
                     for (at, arg) in positional.iter().enumerate() {
@@ -651,7 +656,10 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                                 substituted[at] = match (key, arg) {
                                     (Some(key), SExpression::Object(options)) => {
                                         let mut options = options.clone();
-                                        options.insert(key.to_string().into(), SExpression::Object(fields));
+                                        options.insert(
+                                            key.to_string().into(),
+                                            SExpression::Object(fields),
+                                        );
                                         SExpression::Object(options)
                                     }
                                     _ => SExpression::Object(fields),
@@ -662,7 +670,8 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                                     continue;
                                 };
                                 needs.extend(found.iter().cloned());
-                                for need in found.into_iter().filter(|need| !as_written.contains(need))
+                                for need in
+                                    found.into_iter().filter(|need| !as_written.contains(need))
                                 {
                                     if !grants.allows(&need) {
                                         out.push(missing(
@@ -705,7 +714,8 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                             .filter(|(_, a)| knob_fed(a))
                             .filter_map(|(i, a)| Some((i, config_values(a, &config)?)))
                             .collect();
-                        let mut combos: Vec<Vec<SExpression>> = values.into_iter().map(|v| vec![v]).collect();
+                        let mut combos: Vec<Vec<SExpression>> =
+                            values.into_iter().map(|v| vec![v]).collect();
                         for (_, options) in &later {
                             combos = combos
                                 .into_iter()
@@ -724,26 +734,32 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                             for ((i, _), value) in later.iter().zip(&combo[1..]) {
                                 substituted[*i] = value.clone();
                             }
-                            let found =
-                                match os_requirements_deferring(op, &substituted, &knob_fed) {
-                                    Ok(found) if !(concat && found.is_empty()) => found,
-                                    Err(_) if !concat => continue,
-                                    _ => {
-                                        out.push(not_static(
-                                            &orbital.name,
-                                            op,
-                                            at + 1,
-                                            &site,
-                                            Some(OsGrantVia::ComputedPath),
-                                        ));
-                                        break;
-                                    }
-                                };
+                            let found = match os_requirements_deferring(op, &substituted, &knob_fed)
+                            {
+                                Ok(found) if !(concat && found.is_empty()) => found,
+                                Err(_) if !concat => continue,
+                                _ => {
+                                    out.push(not_static(
+                                        &orbital.name,
+                                        op,
+                                        at + 1,
+                                        &site,
+                                        Some(OsGrantVia::ComputedPath),
+                                    ));
+                                    break;
+                                }
+                            };
                             needs.extend(found.iter().cloned());
                             for need in found.into_iter().filter(|need| !as_written.contains(need))
                             {
                                 if !grants.allows(&need) {
-                                    let finding = missing(&orbital.name, op, &need, &site, Some(OsGrantVia::Config));
+                                    let finding = missing(
+                                        &orbital.name,
+                                        op,
+                                        &need,
+                                        &site,
+                                        Some(OsGrantVia::Config),
+                                    );
                                     if !out.contains(&finding) {
                                         out.push(finding);
                                     }

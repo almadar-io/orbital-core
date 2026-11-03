@@ -1,18 +1,17 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
 use crate::client_effect::ClientEffect;
 use crate::client_effect::HostAskCompletion;
 use crate::client_effect::NavigateOptions;
+use crate::dispatch_mode::DispatchMode;
 use crate::row_set::RowCompareOp;
 use crate::row_set::RowPredicate;
-use crate::dispatch_mode::DispatchMode;
 use crate::theme::ResolvedTheme;
 use crate::value::Value;
 use std::path::PathBuf;
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 use ts_rs::Config;
 use ts_rs::TypeVisitor;
 use ts_rs::TS;
-
 
 /// Declares a type whose TypeScript form is written here: `$name` is its exported name and
 /// `$decl` its right-hand side.
@@ -45,7 +44,6 @@ macro_rules! declared_by_hand {
         }
     };
 }
-
 
 // The evaluator value serializes as plain JSON; `@almadar/core` calls that `JsonValue`.
 impl TS for Value {

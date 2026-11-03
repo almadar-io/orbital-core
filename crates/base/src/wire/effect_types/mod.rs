@@ -4,11 +4,11 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::value::{Shared, Value};
-use crate::value::ValueMap;
 use crate::error::EvalError;
 use crate::os::{accepts_arity, split_envelope, OsOp};
 use crate::schema::sexpr::SExpression;
+use crate::value::ValueMap;
+use crate::value::{Shared, Value};
 use serde::{Deserialize, Serialize};
 
 pub fn call_key_text(value: &Value) -> Result<&str, EvalError> {
@@ -89,8 +89,8 @@ impl FetchDeliver {
 }
 
 mod effect;
-mod result;
 mod parse;
+mod result;
 pub use effect::{Effect, CLIENT_EFFECT_KINDS};
 pub use parse::{is_known_effect_name, parse_effect, strip_trailing_emit_options};
 pub use result::{BatchFailure, EffectOutcome, EffectResult, LogLevel, PersistOperation};

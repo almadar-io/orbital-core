@@ -13,9 +13,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::sync::OnceLock;
 use serde::Deserialize;
 use std::collections::HashMap;
-use crate::sync::OnceLock;
 
 fn language() -> &'static crate::language_data::LanguageData {
     crate::language_data::language_data_after_preflight()
@@ -220,9 +220,8 @@ struct PatternRegistryFile {
 fn component_mappings() -> &'static HashMap<String, ComponentMapping> {
     static PARSED: OnceLock<HashMap<String, ComponentMapping>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        let file: ComponentMappingFile =
-            serde_json::from_str(&language().component_mapping)
-                .expect("installed component-mapping.json is corrupt — reinstall @almadar/core");
+        let file: ComponentMappingFile = serde_json::from_str(&language().component_mapping)
+            .expect("installed component-mapping.json is corrupt — reinstall @almadar/core");
         file.mappings
     })
 }
@@ -230,9 +229,8 @@ fn component_mappings() -> &'static HashMap<String, ComponentMapping> {
 fn event_contracts() -> &'static HashMap<String, EventContract> {
     static PARSED: OnceLock<HashMap<String, EventContract>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        let file: EventContractsFile =
-            serde_json::from_str(&language().event_contracts)
-                .expect("installed event-contracts.json is corrupt — reinstall @almadar/core");
+        let file: EventContractsFile = serde_json::from_str(&language().event_contracts)
+            .expect("installed event-contracts.json is corrupt — reinstall @almadar/core");
         file.contracts
     })
 }
@@ -240,9 +238,8 @@ fn event_contracts() -> &'static HashMap<String, EventContract> {
 fn pattern_definitions() -> &'static HashMap<String, RegistryPattern> {
     static PARSED: OnceLock<HashMap<String, RegistryPattern>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        let file: PatternRegistryFile =
-            serde_json::from_str(&language().patterns)
-                .expect("installed patterns-registry.json is corrupt — reinstall @almadar/core");
+        let file: PatternRegistryFile = serde_json::from_str(&language().patterns)
+            .expect("installed patterns-registry.json is corrupt — reinstall @almadar/core");
         file.patterns
     })
 }

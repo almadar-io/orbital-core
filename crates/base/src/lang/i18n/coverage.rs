@@ -292,8 +292,10 @@ mod tests {
     #[test]
     fn pack_completeness_reports_an_orphan_operator_and_an_empty_value() {
         let mut pack = complete("qz");
-        pack.operators
-            .insert("nonexistent/orphan-operator".to_string(), "qz:x".to_string());
+        pack.operators.insert(
+            "nonexistent/orphan-operator".to_string(),
+            "qz:x".to_string(),
+        );
         pack.keywords.insert("state".to_string(), String::new());
         let problems = check_translation_coverage(&defs_with(pack));
         assert!(problems.iter().any(|p| p.kind == ProblemKind::Orphan

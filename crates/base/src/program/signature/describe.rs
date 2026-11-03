@@ -70,7 +70,11 @@ pub fn describe_type(ty: &OirType) -> String {
         OirType::Array { inner } => format!("[{}]", describe_type(inner)),
         OirType::Tuple { items } => format!(
             "[{}]",
-            items.iter().map(describe_type).collect::<Vec<_>>().join(", ")
+            items
+                .iter()
+                .map(describe_type)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         OirType::Optional { inner } => format!("{}?", describe_type(inner)),
         OirType::Struct { fields, additional } => {
@@ -100,16 +104,27 @@ pub fn describe_type(ty: &OirType) -> String {
             .join(" | "),
         OirType::TypeRef { name } => crate::type_compat::describe_type_name(name),
         OirType::Enum { name } => crate::type_compat::literal_union_members(name)
-            .map(|members| members.iter().map(|m| format!("\"{m}\"")).collect::<Vec<_>>().join(" | "))
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|m| format!("\"{m}\""))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            })
             .unwrap_or_else(|| oir_type_kind(ty)),
-        OirType::FieldRef { record, value: Some(value) } => {
+        OirType::FieldRef {
+            record,
+            value: Some(value),
+        } => {
             format!("field {} {}", describe_type(record), describe_type(value))
         }
-        OirType::FieldRef { record, value: None } => format!("field {}", describe_type(record)),
+        OirType::FieldRef {
+            record,
+            value: None,
+        } => format!("field {}", describe_type(record)),
         other => oir_type_kind(other),
     }
 }
-
 
 pub(super) fn undetermined(reason: &str) -> Mismatch {
     Mismatch::Undetermined {
@@ -119,7 +134,11 @@ pub(super) fn undetermined(reason: &str) -> Mismatch {
 
 /// A json or expression value at a position that declares a type: it is shown to have that type by `(as x T)`.
 pub(super) fn loose(ty: &OirType, formal: &OperatorTypeRef) -> Mismatch {
-    undetermined(&format!("{}, and `{}` is declared", why_uninformative(ty), expected_name(formal)))
+    undetermined(&format!(
+        "{}, and `{}` is declared",
+        why_uninformative(ty),
+        expected_name(formal)
+    ))
 }
 
 pub(super) const NO_TYPE: &str = "its type is not determined";

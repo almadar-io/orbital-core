@@ -201,7 +201,10 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
             for l in listens {
                 let triggers = l.triggers.as_deref().unwrap_or(&l.event);
                 if let Some(src) = listen_source_trait(&l.source) {
-                    listen_index.insert((td.name.as_str(), triggers), (src, l.event.as_str(), &l.payload_mapping));
+                    listen_index.insert(
+                        (td.name.as_str(), triggers),
+                        (src, l.event.as_str(), &l.payload_mapping),
+                    );
                 }
             }
         }
@@ -209,8 +212,11 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
 
     non_main_slot_transitions(schema)
         .into_iter()
-        .map(
-            |st| match listen_index.get(&(st.trait_name.as_str(), st.event.as_str())).copied() {
+        .map(|st| {
+            match listen_index
+                .get(&(st.trait_name.as_str(), st.event.as_str()))
+                .copied()
+            {
                 Some((src_trait, src_event, mapping)) => ModalOpenPath {
                     source_trait: src_trait.to_string(),
                     source_event: src_event.to_string(),
@@ -227,8 +233,8 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
                     modal_event: st.event,
                     payload_mapping: None,
                 },
-            },
-        )
+            }
+        })
         .collect()
 }
 
@@ -291,8 +297,8 @@ pub fn overlay_only_traits(schema: &OrbitalSchema) -> std::collections::HashSet<
                 }
             }
 
-            let only_overlay =
-                !render_slots.is_empty() && render_slots.iter().all(|s| slot_role(s) != SlotRole::Main);
+            let only_overlay = !render_slots.is_empty()
+                && render_slots.iter().all(|s| slot_role(s) != SlotRole::Main);
             if !initial_has_render && only_overlay {
                 out.insert(td.name.clone());
             }
@@ -308,7 +314,14 @@ mod tests {
         for slot in ["modal", "drawer", "dock", "overlay", "center"] {
             assert!(super::is_portal_slot(slot), "{slot}");
         }
-        for slot in ["main", "sidebar", "toast", "hud", "floating", "overlay.menu"] {
+        for slot in [
+            "main",
+            "sidebar",
+            "toast",
+            "hud",
+            "floating",
+            "overlay.menu",
+        ] {
             assert!(!super::is_portal_slot(slot), "control: {slot}");
         }
     }

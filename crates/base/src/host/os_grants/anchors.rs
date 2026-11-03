@@ -44,7 +44,8 @@ impl EnvSnapshot {
     /// Every variable of this process whose name and value are UTF-8.
     pub fn of_process() -> Self {
         Self::from_pairs(
-            std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
+            std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))),
         )
     }
 
@@ -77,12 +78,17 @@ pub struct OsAnchors {
 /// keeps that answer, found or not, for the life of the host.
 #[cfg(feature = "std")]
 #[derive(Clone, Default)]
-pub struct ToolPaths(std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Result<PathBuf, String>>>>);
+pub struct ToolPaths(
+    std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<String, Result<PathBuf, String>>>>,
+);
 
 #[cfg(feature = "std")]
 impl std::fmt::Debug for ToolPaths {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f.debug_map().entries(held.iter()).finish()
     }
 }
@@ -91,8 +97,14 @@ impl std::fmt::Debug for ToolPaths {
 impl PartialEq for ToolPaths {
     fn eq(&self, other: &Self) -> bool {
         std::sync::Arc::ptr_eq(&self.0, &other.0)
-            || *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
-                == *other.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+            || *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                == *other
+                    .0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -101,7 +113,9 @@ impl Eq for ToolPaths {}
 
 #[cfg(feature = "std")]
 fn is_executable_file(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else { return false };
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
     if !meta.is_file() {
         return false;
     }
@@ -130,11 +144,14 @@ impl OsAnchors {
     /// The process's own: `HOME` (`USERPROFILE` on Windows), its working directory, the directory of its executable
     /// and its environment, read once.
     pub fn of_process() -> Self {
-        let home = usable_home(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")));
+        let home =
+            usable_home(std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")));
         Self {
             home,
             start: std::env::current_dir().ok(),
-            exe_dir: std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)),
+            exe_dir: std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(Path::to_path_buf)),
             exe: std::env::current_exe().ok(),
             env: EnvSnapshot::of_process(),
             tools: ToolPaths::default(),
@@ -146,27 +163,38 @@ impl OsAnchors {
     /// character (`*`, `?`), which would widen the grant.
     pub fn anchor_segments(&self, anchor: &GrantAnchor) -> Result<Vec<String>, String> {
         let dir = match anchor {
-            GrantAnchor::Exe => return Err("exe names the executable file, not a directory".to_string()),
-            GrantAnchor::ExeDir => self
-                .exe_dir
-                .clone()
-                .ok_or_else(|| "this host does not know the directory of its executable".to_string())?,
-            GrantAnchor::Cwd => self
-                .start
-                .clone()
-                .ok_or_else(|| "this host does not know the directory the program was invoked in".to_string())?,
+            GrantAnchor::Exe => {
+                return Err("exe names the executable file, not a directory".to_string())
+            }
+            GrantAnchor::ExeDir => self.exe_dir.clone().ok_or_else(|| {
+                "this host does not know the directory of its executable".to_string()
+            })?,
+            GrantAnchor::Cwd => self.start.clone().ok_or_else(|| {
+                "this host does not know the directory the program was invoked in".to_string()
+            })?,
             GrantAnchor::Env(name) => match self.env.get(name) {
                 None | Some("") => return Err(format!("env {name} is unset")),
                 Some(value) if !Path::new(value).is_absolute() => {
-                    return Err(format!("env {name} is {value:?}, which is not an absolute path"))
+                    return Err(format!(
+                        "env {name} is {value:?}, which is not an absolute path"
+                    ))
                 }
                 Some(value) => PathBuf::from(value),
             },
         };
-        let segments = normalized_segments(&dir)
-            .ok_or_else(|| format!("{} ({}) is not an absolute UTF-8 path", anchor.label(), dir.display()))?;
+        let segments = normalized_segments(&dir).ok_or_else(|| {
+            format!(
+                "{} ({}) is not an absolute UTF-8 path",
+                anchor.label(),
+                dir.display()
+            )
+        })?;
         if segments.iter().any(|s| s.contains(['*', '?'])) {
-            return Err(format!("{} ({}) holds a glob character", anchor.label(), dir.display()));
+            return Err(format!(
+                "{} ({}) holds a glob character",
+                anchor.label(),
+                dir.display()
+            ));
         }
         Ok(segments)
     }
@@ -175,7 +203,11 @@ impl OsAnchors {
     /// it is asked and kept: the first absolute `PATH` directory holding an executable file of that name. A name that
     /// finds none stays unavailable.
     pub fn resolve_tool(&self, name: &str) -> Result<PathBuf, String> {
-        let mut held = self.tools.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = self
+            .tools
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         held.entry(name.to_string())
             .or_insert_with(|| {
                 let path = self.env.get("PATH").filter(|p| !p.is_empty()).ok_or_else(|| format!("command {name:?} is unavailable: the boot environment has no PATH"))?;
@@ -191,14 +223,29 @@ impl OsAnchors {
     /// What boot resolved for the bare command `name`, or `None` when no program declared it: a name nobody declared is
     /// never looked up.
     pub fn declared_tool(&self, name: &str) -> Option<Result<PathBuf, String>> {
-        self.tools.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(name).cloned()
+        self.tools
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .cloned()
     }
 
     /// The running executable, or why this host cannot name it.
     pub fn exe_path(&self) -> Result<String, String> {
-        let exe = self.exe.as_ref().ok_or_else(|| "this host does not know its own executable".to_string())?;
-        let text = exe.to_str().filter(|t| exe.is_absolute() && !t.contains(['*', '?']));
-        text.map(str::to_string).ok_or_else(|| format!("exe ({}) is not an absolute UTF-8 path without glob characters", exe.display()))
+        let exe = self
+            .exe
+            .as_ref()
+            .ok_or_else(|| "this host does not know its own executable".to_string())?;
+        let text = exe
+            .to_str()
+            .filter(|t| exe.is_absolute() && !t.contains(['*', '?']));
+        text.map(str::to_string).ok_or_else(|| {
+            format!(
+                "exe ({}) is not an absolute UTF-8 path without glob characters",
+                exe.display()
+            )
+        })
     }
 
     /// The absolute path a `~/` or `./` form names; `None` for any other form (an absolute path, or a bare relative
@@ -210,8 +257,19 @@ impl OsAnchors {
             _ => return Ok(None),
         };
         match anchor {
-            Some(dir) => Ok(Some(if rest.is_empty() { dir.clone() } else { dir.join(rest) })),
-            None => Err(format!("{text}: this host has no {} directory", if text.starts_with('~') { "home" } else { "start" })),
+            Some(dir) => Ok(Some(if rest.is_empty() {
+                dir.clone()
+            } else {
+                dir.join(rest)
+            })),
+            None => Err(format!(
+                "{text}: this host has no {} directory",
+                if text.starts_with('~') {
+                    "home"
+                } else {
+                    "start"
+                }
+            )),
         }
     }
 
@@ -255,10 +313,20 @@ impl OsGrants {
     /// An env anchor whose variable is unset is an optional override, not a mistake, when the program also declares a
     /// `~/` fs entry granting at least the same modes: that entry is the anchor choice the program wrote. A variable that
     /// is set but unusable, and every other anchor, still report.
-    fn home_entry_stands_in(&self, anchor: &GrantAnchor, modes: &[FsMode], anchors: &OsAnchors) -> bool {
-        let GrantAnchor::Env(name) = anchor else { return false };
+    fn home_entry_stands_in(
+        &self,
+        anchor: &GrantAnchor,
+        modes: &[FsMode],
+        anchors: &OsAnchors,
+    ) -> bool {
+        let GrantAnchor::Env(name) = anchor else {
+            return false;
+        };
         matches!(anchors.env.get(name), None | Some(""))
-            && self.fs.iter().any(|f| matches!(anchor_of(&f.glob), Some((Anchor::Home, _))) && modes.iter().all(|m| f.modes.contains(m)))
+            && self.fs.iter().any(|f| {
+                matches!(anchor_of(&f.glob), Some((Anchor::Home, _)))
+                    && modes.iter().all(|m| f.modes.contains(m))
+            })
     }
 
     #[cfg(feature = "std")]
@@ -271,13 +339,26 @@ impl OsGrants {
         for (i, g) in self.anchored.fs.iter().enumerate() {
             let path = format!("anchored.fs[{i}]");
             if !valid_relative(&g.glob) {
-                problems.push(EntryProblem { path, message: format!("{} {:?} is not a relative glob without `..`", g.anchor.label(), g.glob) });
+                problems.push(EntryProblem {
+                    path,
+                    message: format!(
+                        "{} {:?} is not a relative glob without `..`",
+                        g.anchor.label(),
+                        g.glob
+                    ),
+                });
                 continue;
             }
             match anchors.anchor_segments(&g.anchor) {
-                Ok(segments) => added.fs.push(FsGrant { glob: rooted(&segments, Some(&g.glob)), modes: g.modes.clone() }),
+                Ok(segments) => added.fs.push(FsGrant {
+                    glob: rooted(&segments, Some(&g.glob)),
+                    modes: g.modes.clone(),
+                }),
                 Err(_) if self.home_entry_stands_in(&g.anchor, &g.modes, anchors) => {}
-                Err(why) => problems.push(EntryProblem { path, message: format!("{} {:?} grants nothing: {why}", g.anchor.label(), g.glob) }),
+                Err(why) => problems.push(EntryProblem {
+                    path,
+                    message: format!("{} {:?} grants nothing: {why}", g.anchor.label(), g.glob),
+                }),
             }
         }
         for (i, e) in self.anchored.exec.iter().enumerate() {
@@ -289,13 +370,19 @@ impl OsGrants {
             if e.anchor == GrantAnchor::Exe {
                 match anchors.exe_path() {
                     Ok(exe) => added.exec.push(exe),
-                    Err(why) => problems.push(EntryProblem { path, message: format!("exec exe grants nothing: {why}") }),
+                    Err(why) => problems.push(EntryProblem {
+                        path,
+                        message: format!("exec exe grants nothing: {why}"),
+                    }),
                 }
                 continue;
             }
             match anchors.anchor_segments(&e.anchor) {
                 Ok(segments) => added.exec.push(rooted(&segments, e.path.as_deref())),
-                Err(why) => problems.push(EntryProblem { path, message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)) }),
+                Err(why) => problems.push(EntryProblem {
+                    path,
+                    message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)),
+                }),
             }
         }
         for (i, g) in self.anchored.net.iter().enumerate() {
@@ -306,18 +393,28 @@ impl OsGrants {
             }
             match (anchors.net_part(&g.host), anchors.net_part(&g.port)) {
                 (Ok(host), Ok(port)) => match port.parse::<u16>() {
-                    Ok(port) => added.net.push(NetGrant { target: net_target(&host, port), kinds: g.kinds.clone() }),
+                    Ok(port) => added.net.push(NetGrant {
+                        target: net_target(&host, port),
+                        kinds: g.kinds.clone(),
+                    }),
                     Err(_) => problems.push(EntryProblem {
                         path,
-                        message: format!("net {} grants nothing: the port {port:?} is not a port number", g.label()),
+                        message: format!(
+                            "net {} grants nothing: the port {port:?} is not a port number",
+                            g.label()
+                        ),
                     }),
                 },
-                (Err(why), _) | (_, Err(why)) => {
-                    problems.push(EntryProblem { path, message: format!("net {} grants nothing: {why}", g.label()) })
-                }
+                (Err(why), _) | (_, Err(why)) => problems.push(EntryProblem {
+                    path,
+                    message: format!("net {} grants nothing: {why}", g.label()),
+                }),
             }
         }
-        let mut resolved = OsGrants { anchored: AnchoredGrants::default(), ..self.clone() };
+        let mut resolved = OsGrants {
+            anchored: AnchoredGrants::default(),
+            ..self.clone()
+        };
         resolved.exec.clear();
         for (i, command) in self.exec.iter().enumerate() {
             if valid_absolute_command(command) {
@@ -327,9 +424,17 @@ impl OsGrants {
             match anchors.resolve_tool(command) {
                 Ok(path) => match path.to_str() {
                     Some(text) => added.exec.push(text.to_string()),
-                    None => problems.push(EntryProblem { path: format!("exec[{i}]"), message: format!("command {command:?} resolves to a path that is not UTF-8") }),
+                    None => problems.push(EntryProblem {
+                        path: format!("exec[{i}]"),
+                        message: format!(
+                            "command {command:?} resolves to a path that is not UTF-8"
+                        ),
+                    }),
                 },
-                Err(why) => problems.push(EntryProblem { path: format!("exec[{i}]"), message: why }),
+                Err(why) => problems.push(EntryProblem {
+                    path: format!("exec[{i}]"),
+                    message: why,
+                }),
             }
         }
         resolved.union(&added);
@@ -346,9 +451,17 @@ impl OsGrants {
         let twins: Vec<FsGrant> = self
             .fs
             .iter()
-            .filter_map(|g| Some(FsGrant { glob: canonical_glob(&g.glob, anchors)?, modes: g.modes.clone() }))
+            .filter_map(|g| {
+                Some(FsGrant {
+                    glob: canonical_glob(&g.glob, anchors)?,
+                    modes: g.modes.clone(),
+                })
+            })
             .collect();
-        self.union(&OsGrants { fs: twins, ..OsGrants::default() });
+        self.union(&OsGrants {
+            fs: twins,
+            ..OsGrants::default()
+        });
     }
 }
 
@@ -360,7 +473,10 @@ fn canonical_glob(glob: &str, anchors: &OsAnchors) -> Option<String> {
         Err(_) => return None,
     };
     let segments: Vec<&str> = absolute.split('/').filter(|s| !s.is_empty()).collect();
-    let literal = segments.iter().take_while(|s| !s.contains(['*', '?'])).count();
+    let literal = segments
+        .iter()
+        .take_while(|s| !s.contains(['*', '?']))
+        .count();
     let mut base = PathBuf::from("/");
     base.extend(&segments[..literal]);
     let mut tail: Vec<std::ffi::OsString> = Vec::new();
@@ -431,7 +547,9 @@ pub(super) fn anchor_from_sexpr(expr: &SExpression) -> Option<GrantAnchor> {
         SExpression::String(word) if word == "exe-dir" => Some(GrantAnchor::ExeDir),
         SExpression::String(word) if word == "cwd" => Some(GrantAnchor::Cwd),
         SExpression::Object(map) if map.len() == 1 => match map.get("env") {
-            Some(SExpression::String(name)) if !name.starts_with('@') => Some(GrantAnchor::Env(name.clone().into_inner())),
+            Some(SExpression::String(name)) if !name.starts_with('@') => {
+                Some(GrantAnchor::Env(name.clone().into_inner()))
+            }
             _ => None,
         },
         _ => None,
@@ -446,7 +564,9 @@ pub(super) fn anchored_keys<'a, K: AsRef<str> + 'a>(mut keys: impl Iterator<Item
 impl AnchoredPath {
     /// The evaluated argument a host receives; `None` when it is not an anchored path.
     pub fn from_value(value: &Value) -> Option<Self> {
-        let Value::Object(map) = value else { return None };
+        let Value::Object(map) = value else {
+            return None;
+        };
         if !anchored_keys(map.keys()) {
             return None;
         }
@@ -456,20 +576,30 @@ impl AnchoredPath {
             Some(Value::String(p)) => Some(p.clone()),
             Some(_) => return None,
         };
-        Some(Self { anchor, path: path.map(|v| v.into_inner()) })
+        Some(Self {
+            anchor,
+            path: path.map(|v| v.into_inner()),
+        })
     }
 }
 
 /// An argument written as an anchored path: its literal anchor and its `path` expression (absent for the anchor
 /// itself). `Ok(None)` when the argument is not an object of that shape; `Err(())` when it is one whose anchor is
 /// not a literal anchor.
-pub(super) fn anchored_sexpr(expr: &SExpression) -> Result<Option<(GrantAnchor, Option<&SExpression>)>, ()> {
-    let SExpression::Object(map) = expr else { return Ok(None) };
+pub(super) fn anchored_sexpr(
+    expr: &SExpression,
+) -> Result<Option<(GrantAnchor, Option<&SExpression>)>, ()> {
+    let SExpression::Object(map) = expr else {
+        return Ok(None);
+    };
     if !map.contains_key("anchor") || !anchored_keys(map.keys()) {
         return Ok(None);
     }
     let anchor = map.get("anchor").and_then(anchor_from_sexpr).ok_or(())?;
-    Ok(Some((anchor, map.get("path").filter(|p| !matches!(p, SExpression::Null)))))
+    Ok(Some((
+        anchor,
+        map.get("path").filter(|p| !matches!(p, SExpression::Null)),
+    )))
 }
 
 #[cfg(feature = "std")]
@@ -486,7 +616,10 @@ impl OsAnchors {
         let rest = match &anchored.path {
             None => Vec::new(),
             Some(path) => relative_segments(path).ok_or_else(|| {
-                format!("{path:?} is not a path relative to {} that stays under it", anchored.anchor.label())
+                format!(
+                    "{path:?} is not a path relative to {} that stays under it",
+                    anchored.anchor.label()
+                )
             })?,
         };
         let mut segments = base;
@@ -507,19 +640,38 @@ pub(super) fn net_target(host: &str, port: u16) -> String {
 pub(super) fn anchored_net_problem(g: &AnchoredNetGrant) -> Option<String> {
     let part = |p: &NetPart| match p {
         NetPart::Anchor(GrantAnchor::Env(_)) => None,
-        NetPart::Anchor(other) => Some(format!("net {} takes only `env` anchors, not {}", g.label(), other.label())),
-        NetPart::Literal(text) if text.is_empty() => Some(format!("net {} has an empty part", g.label())),
+        NetPart::Anchor(other) => Some(format!(
+            "net {} takes only `env` anchors, not {}",
+            g.label(),
+            other.label()
+        )),
+        NetPart::Literal(text) if text.is_empty() => {
+            Some(format!("net {} has an empty part", g.label()))
+        }
         NetPart::Literal(_) => None,
     };
-    if matches!((&g.host, &g.port), (NetPart::Literal(_), NetPart::Literal(_))) {
-        return Some(format!("net {} anchors nothing: write it as \"host:port\"", g.label()));
+    if matches!(
+        (&g.host, &g.port),
+        (NetPart::Literal(_), NetPart::Literal(_))
+    ) {
+        return Some(format!(
+            "net {} anchors nothing: write it as \"host:port\"",
+            g.label()
+        ));
     }
     if let NetPart::Literal(port) = &g.port {
         if port.parse::<u16>().is_err() {
-            return Some(format!("net {} has a port that is not a port number", g.label()));
+            return Some(format!(
+                "net {} has a port that is not a port number",
+                g.label()
+            ));
         }
     }
-    part(&g.host).or_else(|| part(&g.port)).or_else(|| g.kinds.is_empty().then(|| format!("net {} grants no kind", g.label())))
+    part(&g.host).or_else(|| part(&g.port)).or_else(|| {
+        g.kinds
+            .is_empty()
+            .then(|| format!("net {} grants no kind", g.label()))
+    })
 }
 
 #[cfg(feature = "std")]
@@ -530,7 +682,10 @@ impl OsAnchors {
             NetPart::Literal(text) => Ok(text.clone()),
             NetPart::Anchor(GrantAnchor::Env(name)) => match self.env.get(name) {
                 None | Some("") => Err(format!("env {name} is unset")),
-                Some(value) => Ok(value.trim_start_matches('[').trim_end_matches(']').to_string()),
+                Some(value) => Ok(value
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string()),
             },
             NetPart::Anchor(other) => Err(format!("{} is not a net anchor", other.label())),
         }

@@ -169,7 +169,10 @@ fn quoted(value: &str) -> Option<&str> {
 fn is_kebab(v: &str) -> bool {
     !v.is_empty()
         && v.split('-').all(|part| {
-            !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
         })
 }
 
@@ -454,12 +457,18 @@ mod tests {
         assert!(header_tags(";; @exposure nope\n").is_err());
         assert!(header_tags(";; @capabilities \"\"\n").is_err());
         assert_eq!(
-            header_tags(";; @pattern \"data-grid\"\n").unwrap().pattern.as_deref(),
+            header_tags(";; @pattern \"data-grid\"\n")
+                .unwrap()
+                .pattern
+                .as_deref(),
             Some("data-grid")
         );
         assert!(header_tags(";; @pattern \"Data Grid\"\n").is_err());
         assert!(header_tags(";; @pattern \"a--b\"\n").is_err());
-        assert_eq!(header_tags(";; @pattern data-grid\n").unwrap().pattern, None);
+        assert_eq!(
+            header_tags(";; @pattern data-grid\n").unwrap().pattern,
+            None
+        );
         assert_eq!(
             header_tags("orbital O {\n;; @exposure app\n").unwrap(),
             HeaderTags::default()
@@ -471,13 +480,20 @@ mod tests {
                 .as_deref(),
             Some("app")
         );
-        assert_eq!(header_tags(";; @exposurex app\n").unwrap(), HeaderTags::default());
-        assert_eq!(header_tags(";; @exposure Bad1\n").unwrap(), HeaderTags::default());
+        assert_eq!(
+            header_tags(";; @exposurex app\n").unwrap(),
+            HeaderTags::default()
+        );
+        assert_eq!(
+            header_tags(";; @exposure Bad1\n").unwrap(),
+            HeaderTags::default()
+        );
     }
 
     #[test]
     fn leading_comments_follow_the_bracket_and_stop_at_the_first_orbital() {
-        let text = "app a [\n  version: \"1\"\n]\n;; first line\n;; second   line\n\norbital O {\n;; no\n";
+        let text =
+            "app a [\n  version: \"1\"\n]\n;; first line\n;; second   line\n\norbital O {\n;; no\n";
         assert_eq!(
             leading_header_comments(text).as_deref(),
             Some("first line second line")
@@ -496,7 +512,10 @@ mod tests {
         };
         assert_eq!(d("Real.", None, ""), "Real.");
         assert_eq!(d("n as a Function", Some("app a [\n]\n;; hi\n"), ""), "hi");
-        assert_eq!(d("n as a Function - more", None, ""), "n as a Function - more");
+        assert_eq!(
+            d("n as a Function - more", None, ""),
+            "n as a Function - more"
+        );
         assert_eq!(d("", None, "a, b"), "app organism — n (states: a, b)");
         assert_eq!(d("", None, ""), "app organism — n (states: <no states>)");
     }
@@ -506,20 +525,59 @@ mod tests {
         let std = Some(PackageSource::Std);
         let io = Some(PackageSource::Io);
         let r = |f: &IndexedFile, s, h, e| resolve_exposure(f, s, h, e);
-        assert_eq!(r(&file(&["app", "organisms"]), io, false, Some("both")).as_deref(), Some("both"));
-        assert_eq!(r(&file(&["app", "templates"]), io, false, None).as_deref(), Some("internal"));
-        assert_eq!(r(&file(&["game", "atoms"]), io, true, None).as_deref(), Some("internal"));
-        assert_eq!(r(&file(&["ui", "core", "atoms"]), std, true, None).as_deref(), Some("both"));
-        assert_eq!(r(&file(&["ui", "core", "atoms"]), std, false, None).as_deref(), Some("palette"));
-        assert_eq!(r(&file(&["agent", "atoms"]), std, false, None).as_deref(), Some("both"));
-        assert_eq!(r(&file(&["agent", "organisms"]), std, false, None).as_deref(), Some("internal"));
-        assert_eq!(r(&file(&["app", "organisms"]), io, false, None).as_deref(), Some("app"));
-        assert_eq!(r(&file(&["experience", "organisms"]), io, false, None).as_deref(), Some("experience"));
-        assert_eq!(r(&file(&["learning", "atoms"]), io, false, None).as_deref(), Some("both"));
-        assert_eq!(r(&file(&["curated", "organisms"]), io, false, None).as_deref(), Some("internal"));
+        assert_eq!(
+            r(&file(&["app", "organisms"]), io, false, Some("both")).as_deref(),
+            Some("both")
+        );
+        assert_eq!(
+            r(&file(&["app", "templates"]), io, false, None).as_deref(),
+            Some("internal")
+        );
+        assert_eq!(
+            r(&file(&["game", "atoms"]), io, true, None).as_deref(),
+            Some("internal")
+        );
+        assert_eq!(
+            r(&file(&["ui", "core", "atoms"]), std, true, None).as_deref(),
+            Some("both")
+        );
+        assert_eq!(
+            r(&file(&["ui", "core", "atoms"]), std, false, None).as_deref(),
+            Some("palette")
+        );
+        assert_eq!(
+            r(&file(&["agent", "atoms"]), std, false, None).as_deref(),
+            Some("both")
+        );
+        assert_eq!(
+            r(&file(&["agent", "organisms"]), std, false, None).as_deref(),
+            Some("internal")
+        );
+        assert_eq!(
+            r(&file(&["app", "organisms"]), io, false, None).as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            r(&file(&["experience", "organisms"]), io, false, None).as_deref(),
+            Some("experience")
+        );
+        assert_eq!(
+            r(&file(&["learning", "atoms"]), io, false, None).as_deref(),
+            Some("both")
+        );
+        assert_eq!(
+            r(&file(&["curated", "organisms"]), io, false, None).as_deref(),
+            Some("internal")
+        );
         assert_eq!(r(&file(&["agent", "atoms"]), None, false, None), None);
-        assert_eq!(r(&file(&["agent", "atoms"]), None, false, Some("app")).as_deref(), Some("app"));
-        assert_eq!(r(&file(&["websites", "atoms", "blog"]), io, false, None).as_deref(), Some("internal"));
+        assert_eq!(
+            r(&file(&["agent", "atoms"]), None, false, Some("app")).as_deref(),
+            Some("app")
+        );
+        assert_eq!(
+            r(&file(&["websites", "atoms", "blog"]), io, false, None).as_deref(),
+            Some("internal")
+        );
     }
 
     #[test]
@@ -535,7 +593,9 @@ mod tests {
         let found = hand_authored_behaviors(tmp.path()).unwrap();
         assert!(found.contains("std-board"));
         assert_eq!(found.len(), 1);
-        assert!(hand_authored_behaviors(&tmp.path().join("absent")).unwrap().is_empty());
+        assert!(hand_authored_behaviors(&tmp.path().join("absent"))
+            .unwrap()
+            .is_empty());
         fs::write(dir.join(".hand-authored.json"), "[").unwrap();
         assert!(hand_authored_behaviors(tmp.path()).is_err());
     }

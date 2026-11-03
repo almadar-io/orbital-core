@@ -1,7 +1,11 @@
+use super::CssVars;
+use crate::schema::types::{
+    DensityTokens, DiagramTokens, ElevationTokens, EnterAnimation, GeometryTokens, IconFamily,
+    IconographyTokens, IllustrationTokens, MotionDurationKey, MotionEasingKey, MotionIntent,
+    MotionTokens, SceneTokens, SurfaceTokens, TypeIntent, TypeScaleTokens, TypeSizeKey, TypeWeight,
+};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
-use super::CssVars;
-use crate::schema::types::{DensityTokens, DiagramTokens, ElevationTokens, EnterAnimation, GeometryTokens, IconFamily, IconographyTokens, IllustrationTokens, MotionDurationKey, MotionEasingKey, MotionIntent, MotionTokens, SceneTokens, SurfaceTokens, TypeIntent, TypeScaleTokens, TypeSizeKey, TypeWeight};
 
 fn put(vars: &mut CssVars, name: &str, value: Option<&str>) {
     if let Some(v) = value {

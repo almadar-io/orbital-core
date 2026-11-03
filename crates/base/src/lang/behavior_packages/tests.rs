@@ -207,8 +207,7 @@ fn an_old_manifest_with_embeddings_loads_with_no_snapshot() {
         );
     fs::write(pkg_dir.join("package.json"), json).unwrap();
     let found =
-        discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
-            .unwrap();
+        discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c")).unwrap();
     assert_eq!(found[0].vectors, None);
 }
 
@@ -265,9 +264,7 @@ fn malformed_locks_fail_discovery() {
         ),
         (
             "relative url",
-            format!(
-                r#"{{"version":1,"files":{{"a":{{"sha256":"{SHA}","bytes":1,"url":"/x"}}}}}}"#
-            ),
+            format!(r#"{{"version":1,"files":{{"a":{{"sha256":"{SHA}","bytes":1,"url":"/x"}}}}}}"#),
         ),
     ];
     for (label, body) in bad {
@@ -275,9 +272,8 @@ fn malformed_locks_fail_discovery() {
         let nm = tmp.path().join("node_modules");
         let pkg_dir = fake_package(&nm, "pkg-a", "pa", "1.0.0");
         fs::write(pkg_dir.join("sidecars.lock.json"), body).unwrap();
-        let err =
-            discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
-                .unwrap_err();
+        let err = discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
+            .unwrap_err();
         assert!(
             matches!(err, DiscoverError::InvalidSidecarLock { .. }),
             "{label}: {err}"
@@ -291,8 +287,7 @@ fn package_without_a_lock_has_no_sidecars() {
     let nm = tmp.path().join("node_modules");
     fake_package(&nm, "pkg-a", "pa", "1.0.0");
     let found =
-        discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c"))
-            .unwrap();
+        discover_with_cache(tmp.path(), &tmp.path().join("store"), &tmp.path().join("c")).unwrap();
     assert!(found[0].sidecars.is_empty());
 }
 
@@ -384,8 +379,15 @@ fn live_package(node_modules: &Path, name: &str, prefix: &str, files: &[&str]) -
     let mut pkg_json: Value = serde_json::from_str(&raw).unwrap();
     let orb = pkg_json["orb"].as_object_mut().unwrap();
     orb.remove("registry");
-    orb.insert("source".to_string(), Value::String("behaviors/lolo".to_string()));
-    fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&pkg_json).unwrap()).unwrap();
+    orb.insert(
+        "source".to_string(),
+        Value::String("behaviors/lolo".to_string()),
+    );
+    fs::write(
+        pkg_dir.join("package.json"),
+        serde_json::to_string_pretty(&pkg_json).unwrap(),
+    )
+    .unwrap();
     pkg_dir
 }
 
@@ -397,7 +399,12 @@ fn discover_in(tmp: &TestTempDir) -> Result<Vec<BehaviorPackage>, DiscoverError>
 #[test]
 fn unique_behavior_names_in_a_package_pass() {
     let tmp = TestTempDir::new("unique-names");
-    live_package(&tmp.path().join("node_modules"), "pkg-a", "pkg-a", &["infra/atoms/std-a.lolo", "ui/atoms/std-b.lolo"]);
+    live_package(
+        &tmp.path().join("node_modules"),
+        "pkg-a",
+        "pkg-a",
+        &["infra/atoms/std-a.lolo", "ui/atoms/std-b.lolo"],
+    );
     assert_eq!(discover_in(&tmp).unwrap().len(), 1);
 }
 
@@ -408,10 +415,17 @@ fn same_behavior_name_twice_in_one_package_is_refused_naming_both_files() {
         &tmp.path().join("node_modules"),
         "pkg-a",
         "pkg-a",
-        &["infra/atoms/std-calendar.lolo", "ui/core/atoms/std-calendar.lolo"],
+        &[
+            "infra/atoms/std-calendar.lolo",
+            "ui/core/atoms/std-calendar.lolo",
+        ],
     );
     match discover_in(&tmp).unwrap_err() {
-        DiscoverError::DuplicateBehaviorName { name, path_a, path_b } => {
+        DiscoverError::DuplicateBehaviorName {
+            name,
+            path_a,
+            path_b,
+        } => {
             assert_eq!(name, "std-calendar");
             let both = format!("{path_a:?}{path_b:?}");
             assert!(both.contains("infra/atoms/std-calendar.lolo"), "{both}");
@@ -702,12 +716,7 @@ fn not_installed_message_names_the_package_and_install_command() {
 
 /// A plain npm package.json (no `orb` block) — `find_npm_package` targets
 /// ordinary npm packages like verify engines, not behavior packages.
-fn fake_npm_package(
-    node_modules: &Path,
-    name: &str,
-    version: &str,
-    bin: Option<Value>,
-) -> PathBuf {
+fn fake_npm_package(node_modules: &Path, name: &str, version: &str, bin: Option<Value>) -> PathBuf {
     let pkg_dir = node_modules.join(name);
     fs::create_dir_all(&pkg_dir).unwrap();
     let mut pkg_json = serde_json::json!({ "name": name, "version": version });
@@ -863,7 +872,11 @@ fn set_compiler_range(pkg_dir: &Path, range: &str) {
     let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
     let mut json: Value = serde_json::from_str(&raw).unwrap();
     json["orb"]["compiler"] = Value::String(range.to_string());
-    fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
+    fs::write(
+        pkg_dir.join("package.json"),
+        serde_json::to_string_pretty(&json).unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -875,7 +888,11 @@ fn discovery_refuses_a_package_whose_compiler_range_excludes_the_running_orb() {
 
     let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
     match &err {
-        DiscoverError::IncompatibleCompiler { package, range, running } => {
+        DiscoverError::IncompatibleCompiler {
+            package,
+            range,
+            running,
+        } => {
             assert_eq!(package, "pkg-a");
             assert_eq!(range, ">=99.0.0");
             assert_eq!(running, crate::language_data::running_version());
@@ -883,7 +900,12 @@ fn discovery_refuses_a_package_whose_compiler_range_excludes_the_running_orb() {
         other => panic!("expected IncompatibleCompiler, got {other:?}"),
     }
     let text = err.to_string();
-    assert!(text.contains("pkg-a") && text.contains(">=99.0.0") && text.contains(crate::language_data::running_version()), "{text}");
+    assert!(
+        text.contains("pkg-a")
+            && text.contains(">=99.0.0")
+            && text.contains(crate::language_data::running_version()),
+        "{text}"
+    );
 }
 
 #[test]
@@ -891,7 +913,10 @@ fn discovery_loads_a_package_whose_compiler_range_includes_the_running_orb() {
     let tmp = TestTempDir::new("compiler-range-included");
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
-    set_compiler_range(&pkg, &format!(">={}", crate::language_data::running_version()));
+    set_compiler_range(
+        &pkg,
+        &format!(">={}", crate::language_data::running_version()),
+    );
 
     let packages = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap();
     assert_eq!(packages.len(), 1);
@@ -907,7 +932,11 @@ fn discovery_judges_a_range_against_the_release_the_host_names_not_the_core_crat
     let store = tmp.path().join("unused-user-store");
 
     let packages = discover_uncached(tmp.path(), &store, &cache, "18.0.5").unwrap();
-    assert_eq!(packages.len(), 1, "the release the range names satisfies it");
+    assert_eq!(
+        packages.len(),
+        1,
+        "the release the range names satisfies it"
+    );
 
     match discover_uncached(tmp.path(), &store, &cache, "18.0.0").unwrap_err() {
         DiscoverError::IncompatibleCompiler { running, .. } => assert_eq!(running, "18.0.0"),
@@ -919,7 +948,11 @@ fn discovery_judges_a_range_against_the_release_the_host_names_not_the_core_crat
 fn a_host_registers_its_release_once_and_discovery_reads_it() {
     let first = crate::language_data::register_host_release("18.0.5");
     let again = crate::language_data::register_host_release("99.0.0");
-    assert_eq!(again, Err(crate::language_data::running_version()), "the first registration wins");
+    assert_eq!(
+        again,
+        Err(crate::language_data::running_version()),
+        "the first registration wins"
+    );
     if first.is_ok() {
         assert_eq!(crate::language_data::running_version(), "18.0.5");
     }
@@ -933,5 +966,8 @@ fn discovery_refuses_a_compiler_range_that_is_not_semver() {
     set_compiler_range(&pkg, "latest-ish");
 
     let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
-    assert!(matches!(err, DiscoverError::InvalidPackageJson { .. }), "{err:?}");
+    assert!(
+        matches!(err, DiscoverError::InvalidPackageJson { .. }),
+        "{err:?}"
+    );
 }

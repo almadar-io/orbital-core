@@ -1,9 +1,8 @@
-#[cfg(not(feature = "std"))]
-use std::prelude::v1::*;
 use crate::value::Value;
 use serde::Deserialize;
 use serde::Serialize;
-
+#[cfg(not(feature = "std"))]
+use std::prelude::v1::*;
 
 /// The `@event.source` keys of [`BusEventSource`] (core's `deliveryRecordValue`); the wire struct
 /// also carries `pendingKey` and `persistSuccess`, which a delivery record's value leaves out.

@@ -122,8 +122,14 @@ impl TraitValueRef {
     /// The wire object `{"behavior", "trait"}`.
     pub fn to_value(&self) -> Value {
         Value::object(ValueMap::from_iter([
-            ("behavior".into(), Value::String(self.behavior.clone().into())),
-            ("trait".into(), Value::String(self.trait_name.clone().into())),
+            (
+                "behavior".into(),
+                Value::String(self.behavior.clone().into()),
+            ),
+            (
+                "trait".into(),
+                Value::String(self.trait_name.clone().into()),
+            ),
         ]))
     }
 
@@ -343,7 +349,10 @@ impl OrbitalValueRef {
     /// The wire object `{"behavior", "orbital"}`.
     pub fn to_value(&self) -> Value {
         Value::object(ValueMap::from_iter([
-            ("behavior".into(), Value::String(self.behavior.clone().into())),
+            (
+                "behavior".into(),
+                Value::String(self.behavior.clone().into()),
+            ),
             ("orbital".into(), Value::String(self.orbital.clone().into())),
         ]))
     }
@@ -646,19 +655,36 @@ mod tests {
             { "name": "Plain", "entity": { "name": "Thing", "fields": [] }, "traits": [], "pages": [] }
         ] }));
         let borrowed = program_with_orbital_imports(&program).unwrap();
-        assert_eq!(into_program_with_orbital_imports(program.clone()).unwrap(), borrowed);
-        assert_ne!(borrowed["orbitals"][0], program["orbitals"][0], "the value became its import orbital");
+        assert_eq!(
+            into_program_with_orbital_imports(program.clone()).unwrap(),
+            borrowed
+        );
+        assert_ne!(
+            borrowed["orbitals"][0], program["orbitals"][0],
+            "the value became its import orbital"
+        );
         let no_orbitals = val(serde_json::json!({ "name": "App" }));
-        assert_eq!(into_program_with_orbital_imports(no_orbitals.clone()).unwrap(), no_orbitals, "control: no orbitals list, nothing to convert");
+        assert_eq!(
+            into_program_with_orbital_imports(no_orbitals.clone()).unwrap(),
+            no_orbitals,
+            "control: no orbitals list, nothing to convert"
+        );
     }
 
     #[test]
     fn a_program_holding_no_orbital_value_is_returned_unchanged_and_unshared_copies_stay_shared() {
-        let program = val(serde_json::json!({ "name": "App", "orbitals": [{ "name": "Plain", "pages": [] }] }));
+        let program = val(
+            serde_json::json!({ "name": "App", "orbitals": [{ "name": "Plain", "pages": [] }] }),
+        );
         let out = into_program_with_orbital_imports(program.clone()).unwrap();
         assert_eq!(out, program);
-        let (Value::Object(a), Value::Object(b)) = (&program, &out) else { panic!("objects") };
-        assert!(crate::value::Shared::ptr_eq(a, b), "nothing converted, nothing copied");
+        let (Value::Object(a), Value::Object(b)) = (&program, &out) else {
+            panic!("objects")
+        };
+        assert!(
+            crate::value::Shared::ptr_eq(a, b),
+            "nothing converted, nothing copied"
+        );
     }
 
     #[test]

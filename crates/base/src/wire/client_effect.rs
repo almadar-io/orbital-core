@@ -142,13 +142,20 @@ impl ClientEffect {
 
     /// [`Self::from_result`] for an effect `trait_name` ran on `entity` (its frame when that is a row): a host ask
     /// that declared `emit` routes carries them as its return address.
-    pub fn from_result_in(result: &EffectResult, site: Option<(&str, Option<&str>)>) -> Option<ClientEffect> {
+    pub fn from_result_in(
+        result: &EffectResult,
+        site: Option<(&str, Option<&str>)>,
+    ) -> Option<ClientEffect> {
         match (&result.outcome, &result.effect) {
-            (EffectOutcome::HostAsked, Effect::Custom { name, args, .. }) => Some(ClientEffect::HostAsk {
-                op: name.clone(),
-                args: args.clone(),
-                completion: site.and_then(|(trait_name, entity)| HostAskCompletion::of(&result.effect, trait_name, entity)),
-            }),
+            (EffectOutcome::HostAsked, Effect::Custom { name, args, .. }) => {
+                Some(ClientEffect::HostAsk {
+                    op: name.clone(),
+                    args: args.clone(),
+                    completion: site.and_then(|(trait_name, entity)| {
+                        HostAskCompletion::of(&result.effect, trait_name, entity)
+                    }),
+                })
+            }
             _ => Self::from_effect(&result.effect),
         }
     }
@@ -235,8 +242,13 @@ impl Serialize for ClientEffect {
                 seq.serialize_element("navigate-back")?;
                 seq.end()
             }
-            ClientEffect::HostAsk { op, args, completion } => {
-                let mut seq = serializer.serialize_seq(Some(if completion.is_some() { 4 } else { 3 }))?;
+            ClientEffect::HostAsk {
+                op,
+                args,
+                completion,
+            } => {
+                let mut seq =
+                    serializer.serialize_seq(Some(if completion.is_some() { 4 } else { 3 }))?;
                 seq.serialize_element("host-ask")?;
                 seq.serialize_element(op)?;
                 seq.serialize_element(args)?;
@@ -335,7 +347,11 @@ impl<'de> Visitor<'de> for ClientEffectVisitor {
                     .get(3)
                     .map(|v| HostAskCompletion::from_value(v).map_err(DeError::custom))
                     .transpose()?;
-                Ok(ClientEffect::HostAsk { op, args, completion })
+                Ok(ClientEffect::HostAsk {
+                    op,
+                    args,
+                    completion,
+                })
             }
             other => Err(DeError::custom(format!(
                 "unknown client-effect tag: {other}"
@@ -537,7 +553,11 @@ mod tests {
             completion: None,
         };
         roundtrip(&effect, r#"["host-ask","audio/play-sound",["footstep"]]"#);
-        let bare = ClientEffect::HostAsk { op: "auth/sign-out".to_string(), args: vec![], completion: None };
+        let bare = ClientEffect::HostAsk {
+            op: "auth/sign-out".to_string(),
+            args: vec![],
+            completion: None,
+        };
         roundtrip(&bare, r#"["host-ask","auth/sign-out",[]]"#);
     }
 
@@ -561,19 +581,31 @@ mod tests {
         let success_only = ClientEffect::HostAsk {
             op: "auth/sign-in".to_string(),
             args: vec![],
-            completion: Some(HostAskCompletion { trait_name: "SignIn".to_string(), success: Some("OK".to_string()), ..Default::default() }),
+            completion: Some(HostAskCompletion {
+                trait_name: "SignIn".to_string(),
+                success: Some("OK".to_string()),
+                ..Default::default()
+            }),
         };
-        roundtrip(&success_only, r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","success":"OK"}]"#);
+        roundtrip(
+            &success_only,
+            r#"["host-ask","auth/sign-in",[],{"trait":"SignIn","success":"OK"}]"#,
+        );
     }
 
     #[test]
     fn a_completion_is_declared_only_by_routes_and_names_its_trait() {
-        let routed = |key: Option<&str>, success: Option<&str>, failure: Option<&str>| Effect::Custom {
-            name: "auth/sign-in".to_string(),
-            args: vec![],
-            key: key.map(|k| Value::String(k.to_string().into())),
-            emit: Some(crate::effect_types::FetchEmit { success: success.map(str::to_string), failure: failure.map(str::to_string), ..Default::default() }),
-        };
+        let routed =
+            |key: Option<&str>, success: Option<&str>, failure: Option<&str>| Effect::Custom {
+                name: "auth/sign-in".to_string(),
+                args: vec![],
+                key: key.map(|k| Value::String(k.to_string().into())),
+                emit: Some(crate::effect_types::FetchEmit {
+                    success: success.map(str::to_string),
+                    failure: failure.map(str::to_string),
+                    ..Default::default()
+                }),
+            };
         let asked = EffectResult::host_asked(routed(Some("k"), Some("OK"), Some("BAD")));
         assert_eq!(
             ClientEffect::from_result_in(&asked, Some(("SignIn", Some("row-1")))),
@@ -592,7 +624,11 @@ mod tests {
         let undeclared = EffectResult::host_asked(routed(None, None, None));
         assert_eq!(
             ClientEffect::from_result_in(&undeclared, Some(("SignIn", None))),
-            Some(ClientEffect::HostAsk { op: "auth/sign-in".to_string(), args: vec![], completion: None }),
+            Some(ClientEffect::HostAsk {
+                op: "auth/sign-in".to_string(),
+                args: vec![],
+                completion: None
+            }),
             "control: an ask with no route has no return address"
         );
     }
@@ -600,15 +636,32 @@ mod tests {
     #[test]
     fn a_malformed_host_ask_tuple_is_refused() {
         for (wire, reason) in [
-            (r#"["host-ask","auth/sign-out"]"#, "takes an operator and its arguments"),
-            (r#"["host-ask","auth/sign-out",[],{"trait":"T"},1]"#, "takes an operator and its arguments"),
+            (
+                r#"["host-ask","auth/sign-out"]"#,
+                "takes an operator and its arguments",
+            ),
+            (
+                r#"["host-ask","auth/sign-out",[],{"trait":"T"},1]"#,
+                "takes an operator and its arguments",
+            ),
             (r#"["host-ask","auth/sign-in",[],1]"#, "completion"),
-            (r#"["host-ask","auth/sign-in",[],{"success":"OK"}]"#, "completion needs the asking trait"),
-            (r#"["host-ask","auth/sign-in",[],{"trait":"T","success":3}]"#, "completion success must be a string"),
+            (
+                r#"["host-ask","auth/sign-in",[],{"success":"OK"}]"#,
+                "completion needs the asking trait",
+            ),
+            (
+                r#"["host-ask","auth/sign-in",[],{"trait":"T","success":3}]"#,
+                "completion success must be a string",
+            ),
             (r#"["host-ask",3,[]]"#, "op must be a string"),
-            (r#"["host-ask","audio/play-sound","footstep"]"#, "args must be an array"),
+            (
+                r#"["host-ask","audio/play-sound","footstep"]"#,
+                "args must be an array",
+            ),
         ] {
-            let err = serde_json::from_str::<ClientEffect>(wire).unwrap_err().to_string();
+            let err = serde_json::from_str::<ClientEffect>(wire)
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(reason), "{wire}: {err}");
         }
     }
@@ -623,10 +676,21 @@ mod tests {
         };
         assert_eq!(
             ClientEffect::from_result(&EffectResult::host_asked(custom.clone())),
-            Some(ClientEffect::HostAsk { op: "auth/sign-out".to_string(), args: vec![], completion: None })
+            Some(ClientEffect::HostAsk {
+                op: "auth/sign-out".to_string(),
+                args: vec![],
+                completion: None
+            })
         );
-        assert_eq!(ClientEffect::from_result(&EffectResult::executed(custom.clone())), None, "control: a server-run custom effect reaches no client");
-        assert_eq!(ClientEffect::from_result(&EffectResult::noop(custom, "x")), None);
+        assert_eq!(
+            ClientEffect::from_result(&EffectResult::executed(custom.clone())),
+            None,
+            "control: a server-run custom effect reaches no client"
+        );
+        assert_eq!(
+            ClientEffect::from_result(&EffectResult::noop(custom, "x")),
+            None
+        );
         assert_eq!(
             ClientEffect::from_result(&EffectResult::executed(Effect::NavigateBack)),
             Some(ClientEffect::NavigateBack),

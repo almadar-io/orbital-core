@@ -4,9 +4,9 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use crate::sync::OnceLock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct I18nMeta {

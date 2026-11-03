@@ -193,7 +193,10 @@ impl OsOp {
     /// The most positional arguments the operation takes: the operator table's `maxArity` less its trailing
     /// `options` parameter, which the envelope carries.
     pub fn max_args(self) -> usize {
-        let max = self.table_entry().max_arity.unwrap_or_else(|| panic!("the operator table bounds the arity of `{}`", self.name()));
+        let max = self
+            .table_entry()
+            .max_arity
+            .unwrap_or_else(|| panic!("the operator table bounds the arity of `{}`", self.name()));
         max as usize - 1
     }
 
@@ -203,10 +206,17 @@ impl OsOp {
     }
 
     /// [`Self::table_entry`] for a running kernel: the typed language-data error when no operator table is installed.
-    pub fn try_table_entry(self) -> Result<&'static crate::language::registry::EmbeddedOperator, crate::language_data::LanguageDataError> {
-        crate::language::registry::lookup_operator(self.name())?.ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
-            path: Default::default(),
-            reason: format!("the operator table declares no `{}`", self.name()),
+    pub fn try_table_entry(
+        self,
+    ) -> Result<
+        &'static crate::language::registry::EmbeddedOperator,
+        crate::language_data::LanguageDataError,
+    > {
+        crate::language::registry::lookup_operator(self.name())?.ok_or_else(|| {
+            crate::language_data::LanguageDataError::Invalid {
+                path: Default::default(),
+                reason: format!("the operator table declares no `{}`", self.name()),
+            }
         })
     }
 
@@ -408,41 +418,81 @@ pub fn resolve_credential_segments(
     let (OsOp::Send, Some(Value::Array(segments))) = (op, args.get(1)) else {
         return Ok(args.to_vec());
     };
-    let invalid = |at: usize, what: &str| OsError::new(OsErrorKind::Invalid, format!("{}: segment {} {what}", op.name(), at + 1));
+    let invalid = |at: usize, what: &str| {
+        OsError::new(
+            OsErrorKind::Invalid,
+            format!("{}: segment {} {what}", op.name(), at + 1),
+        )
+    };
     let denied = |what: &str| OsError::new(OsErrorKind::Denied, format!("{}: {what}", op.name()));
     let mut bytes = Vec::new();
     for (at, segment) in segments.iter().enumerate() {
         let Value::Object(fields) = segment else {
             return Err(invalid(at, "is not a { bytes, credential } object"));
         };
-        let (Some(Value::String(text)), Some(Value::String(name))) = (fields.get("bytes"), fields.get("credential")) else {
+        let (Some(Value::String(text)), Some(Value::String(name))) =
+            (fields.get("bytes"), fields.get("credential"))
+        else {
             return Err(invalid(at, "needs a bytes text and a credential name"));
         };
-        bytes.extend(STANDARD.decode(text.as_str()).map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?);
+        bytes.extend(
+            STANDARD
+                .decode(text.as_str())
+                .map_err(|e| invalid(at, &format!("bytes are not standard base64: {e}")))?,
+        );
         let encode = match fields.get("encode") {
             None => None,
-            Some(Value::String(requested)) => Some(
-                SegmentEncode::from_name(requested.as_str())
-                    .ok_or_else(|| invalid(at, &format!("encode must be one of {}", SegmentEncode::NAMES.join(", "))))?,
-            ),
-            Some(_) => return Err(invalid(at, &format!("encode must be one of {}", SegmentEncode::NAMES.join(", ")))),
+            Some(Value::String(requested)) => {
+                Some(SegmentEncode::from_name(requested.as_str()).ok_or_else(|| {
+                    invalid(
+                        at,
+                        &format!("encode must be one of {}", SegmentEncode::NAMES.join(", ")),
+                    )
+                })?)
+            }
+            Some(_) => {
+                return Err(invalid(
+                    at,
+                    &format!("encode must be one of {}", SegmentEncode::NAMES.join(", ")),
+                ))
+            }
         };
         let scope = match fields.get("scope") {
             None => SegmentScope::App,
             Some(Value::String(requested)) => SegmentScope::from_name(requested.as_str())
-                .ok_or_else(|| invalid(at, &format!("scope must be one of {}", SegmentScope::NAMES.join(", "))))?,
-            Some(_) => return Err(invalid(at, &format!("scope must be one of {}", SegmentScope::NAMES.join(", ")))),
+                .ok_or_else(|| {
+                    invalid(
+                        at,
+                        &format!("scope must be one of {}", SegmentScope::NAMES.join(", ")),
+                    )
+                })?,
+            Some(_) => {
+                return Err(invalid(
+                    at,
+                    &format!("scope must be one of {}", SegmentScope::NAMES.join(", ")),
+                ))
+            }
         };
         if name.as_str().is_empty() {
             continue;
         }
-        let owner = match scope {
-            SegmentScope::App => None,
-            SegmentScope::User => Some(principal.ok_or_else(|| denied(&format!("segment {} needs a signed-in viewer", at + 1)))?),
-        };
-        let held = source
-            .ok_or_else(|| denied("no credential source is configured"))?(name.as_str(), owner)
-            .map_err(|message| OsError::new(OsErrorKind::Io, format!("{}: credential {name}: {message}", op.name())))?;
+        let owner =
+            match scope {
+                SegmentScope::App => None,
+                SegmentScope::User => Some(principal.ok_or_else(|| {
+                    denied(&format!("segment {} needs a signed-in viewer", at + 1))
+                })?),
+            };
+        let held = source.ok_or_else(|| denied("no credential source is configured"))?(
+            name.as_str(),
+            owner,
+        )
+        .map_err(|message| {
+            OsError::new(
+                OsErrorKind::Io,
+                format!("{}: credential {name}: {message}", op.name()),
+            )
+        })?;
         match held {
             Some(value) => match encode {
                 Some(encode) => bytes.extend_from_slice(encode.apply(&value).as_bytes()),
@@ -513,7 +563,12 @@ mod tests {
             let entry = get_operator(op.name()).expect("table entry");
             let last = entry.params.last().expect("a parameter");
             assert_eq!(last.name, "options", "{}", op.name());
-            assert_eq!(op.max_args() + 1, entry.max_arity.expect("bounded") as usize, "{}", op.name());
+            assert_eq!(
+                op.max_args() + 1,
+                entry.max_arity.expect("bounded") as usize,
+                "{}",
+                op.name()
+            );
             assert_eq!(op.min_args(), entry.min_arity as usize, "{}", op.name());
         }
     }
@@ -713,8 +768,14 @@ mod tests {
     fn arity_is_the_declared_range() {
         assert!(accepts_arity(OsOp::ReadFile, 1));
         assert!(!accepts_arity(OsOp::ReadFile, 0));
-        assert!(!accepts_arity(OsOp::ReadFile, 2), "the table declares a path and the options");
-        assert!(accepts_arity(OsOp::Spawn, 3) && !accepts_arity(OsOp::Spawn, 2), "the table requires the config");
+        assert!(
+            !accepts_arity(OsOp::ReadFile, 2),
+            "the table declares a path and the options"
+        );
+        assert!(
+            accepts_arity(OsOp::Spawn, 3) && !accepts_arity(OsOp::Spawn, 2),
+            "the table requires the config"
+        );
         assert!(accepts_arity(OsOp::VolumeMute, 1) && !accepts_arity(OsOp::VolumeMute, 0));
         assert!(accepts_arity(OsOp::WatchProcess, 2) && !accepts_arity(OsOp::WatchProcess, 1));
         assert!(accepts_arity(OsOp::Exists, 1) && !accepts_arity(OsOp::Exists, 2));
@@ -742,22 +803,33 @@ mod tests {
     }
 
     fn encode_vectors() -> Vec<EncodeVector> {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/operators/credential-encode-vectors.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/operators/credential-encode-vectors.json"
+        );
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("vectors")
     }
 
-    fn held(name: &str, value: &str) -> impl Fn(&str, Option<&str>) -> Result<Option<String>, String> {
+    fn held(
+        name: &str,
+        value: &str,
+    ) -> impl Fn(&str, Option<&str>) -> Result<Option<String>, String> {
         let (name, value) = (name.to_string(), value.to_string());
         move |asked, _| Ok((asked == name).then(|| value.clone()))
     }
 
     fn send_resolved(segment: serde_json::Value, value: &str) -> Result<Vec<u8>, OsError> {
         use base64::Engine;
-        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let args: Vec<crate::value::Value> =
+            serde_json::from_value(json!([5, [segment]])).expect("value args");
         let source = held("CRED", value);
         let resolved = resolve_credential_segments(OsOp::Send, &args, None, Some(&source))?;
-        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
-        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+        let crate::value::Value::String(text) = &resolved[1] else {
+            panic!("bytes operand")
+        };
+        Ok(base64::engine::general_purpose::STANDARD
+            .decode(text.as_str())
+            .expect("standard base64"))
     }
 
     #[test]
@@ -768,42 +840,74 @@ mod tests {
             let prefix = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"P=");
             let segment = json!({ "bytes": prefix, "credential": "CRED", "encode": v.encode });
             let expected = format!("P={}", v.expect);
-            assert_eq!(send_resolved(segment, &v.input).expect("resolved"), expected.into_bytes(), "{} {:?}", v.encode, v.input);
+            assert_eq!(
+                send_resolved(segment, &v.input).expect("resolved"),
+                expected.into_bytes(),
+                "{} {:?}",
+                v.encode,
+                v.input
+            );
         }
     }
 
     #[test]
     fn a_segment_without_encode_writes_the_credential_verbatim() {
         let segment = json!({ "bytes": "", "credential": "CRED" });
-        assert_eq!(send_resolved(segment, "a b&c").expect("resolved"), b"a b&c".to_vec());
+        assert_eq!(
+            send_resolved(segment, "a b&c").expect("resolved"),
+            b"a b&c".to_vec()
+        );
     }
 
     #[test]
-    fn an_unknown_or_non_text_segment_encode_is_refused_and_a_known_one_beside_no_credential_is_inert() {
-        for bad in [json!("rot13"), json!("BASE64"), json!(""), json!(7), json!(null)] {
+    fn an_unknown_or_non_text_segment_encode_is_refused_and_a_known_one_beside_no_credential_is_inert(
+    ) {
+        for bad in [
+            json!("rot13"),
+            json!("BASE64"),
+            json!(""),
+            json!(7),
+            json!(null),
+        ] {
             let segment = json!({ "bytes": "", "credential": "CRED", "encode": bad });
             let error = send_resolved(segment, "x").expect_err("refused");
             assert_eq!(error.kind, OsErrorKind::Invalid, "{bad}");
             assert!(error.message.contains("encode"), "{}", error.message);
         }
         let bytes_alone = json!({ "bytes": "QQ==", "credential": "", "encode": "form" });
-        assert_eq!(send_resolved(bytes_alone, "x").expect("resolved"), b"A".to_vec());
+        assert_eq!(
+            send_resolved(bytes_alone, "x").expect("resolved"),
+            b"A".to_vec()
+        );
     }
 
     fn send_as(segment: serde_json::Value, principal: Option<&str>) -> Result<Vec<u8>, OsError> {
         use base64::Engine;
-        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
-        let source = |name: &str, owner: Option<&str>| Ok((name == "CRED").then(|| format!("value-of-{}", owner.unwrap_or("app"))));
+        let args: Vec<crate::value::Value> =
+            serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let source = |name: &str, owner: Option<&str>| {
+            Ok((name == "CRED").then(|| format!("value-of-{}", owner.unwrap_or("app"))))
+        };
         let resolved = resolve_credential_segments(OsOp::Send, &args, principal, Some(&source))?;
-        let crate::value::Value::String(text) = &resolved[1] else { panic!("bytes operand") };
-        Ok(base64::engine::general_purpose::STANDARD.decode(text.as_str()).expect("standard base64"))
+        let crate::value::Value::String(text) = &resolved[1] else {
+            panic!("bytes operand")
+        };
+        Ok(base64::engine::general_purpose::STANDARD
+            .decode(text.as_str())
+            .expect("standard base64"))
     }
 
     #[test]
     fn a_user_segment_reads_the_viewers_credential_and_two_viewers_get_two_values() {
         let segment = json!({ "bytes": "", "credential": "CRED", "scope": "user" });
-        assert_eq!(send_as(segment.clone(), Some("alice")).expect("alice"), b"value-of-alice".to_vec());
-        assert_eq!(send_as(segment, Some("bob")).expect("bob"), b"value-of-bob".to_vec());
+        assert_eq!(
+            send_as(segment.clone(), Some("alice")).expect("alice"),
+            b"value-of-alice".to_vec()
+        );
+        assert_eq!(
+            send_as(segment, Some("bob")).expect("bob"),
+            b"value-of-bob".to_vec()
+        );
     }
 
     #[test]
@@ -816,15 +920,30 @@ mod tests {
 
     #[test]
     fn an_app_segment_ignores_the_viewer_and_the_default_scope_is_app() {
-        for segment in [json!({ "bytes": "", "credential": "CRED" }), json!({ "bytes": "", "credential": "CRED", "scope": "app" })] {
-            assert_eq!(send_as(segment.clone(), Some("alice")).expect("viewer"), b"value-of-app".to_vec());
-            assert_eq!(send_as(segment, None).expect("no viewer"), b"value-of-app".to_vec());
+        for segment in [
+            json!({ "bytes": "", "credential": "CRED" }),
+            json!({ "bytes": "", "credential": "CRED", "scope": "app" }),
+        ] {
+            assert_eq!(
+                send_as(segment.clone(), Some("alice")).expect("viewer"),
+                b"value-of-app".to_vec()
+            );
+            assert_eq!(
+                send_as(segment, None).expect("no viewer"),
+                b"value-of-app".to_vec()
+            );
         }
     }
 
     #[test]
     fn an_unknown_or_non_text_segment_scope_is_refused() {
-        for bad in [json!("team"), json!("USER"), json!(""), json!(1), json!(null)] {
+        for bad in [
+            json!("team"),
+            json!("USER"),
+            json!(""),
+            json!(1),
+            json!(null),
+        ] {
             let segment = json!({ "bytes": "", "credential": "CRED", "scope": bad });
             let error = send_as(segment, Some("alice")).expect_err("refused");
             assert_eq!(error.kind, OsErrorKind::Invalid, "{bad}");

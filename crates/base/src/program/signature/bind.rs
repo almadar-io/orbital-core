@@ -30,13 +30,15 @@ pub(super) fn bind_type(
             if !variants.is_empty() && !binds_variable(formal) {
                 let mut trial = b.clone();
                 for variant in variants {
-                    bind_type(formal, &element(&variant.field_type), &mut trial, mode).map_err(|found| match found {
-                        Mismatch::Type { expected, actual } => undetermined(&format!(
+                    bind_type(formal, &element(&variant.field_type), &mut trial, mode).map_err(
+                        |found| match found {
+                            Mismatch::Type { expected, actual } => undetermined(&format!(
                             "it is a union ({}) and its `{actual}` variant does not fit {expected}",
                             describe_type(ty)
                         )),
-                        other => other,
-                    })?;
+                            other => other,
+                        },
+                    )?;
                 }
                 *b = trial;
                 return Ok(());
@@ -75,7 +77,12 @@ pub(super) fn bind_type(
                 // A formal that admits null takes an optional value as the value it holds, or null.
                 if let (Mode::Proof, Known::Type(OirType::Optional { inner })) = (mode, known) {
                     if formal.admits_null() {
-                        let unwrapped = Actual { known: Some(Known::Type((**inner).clone())), text: actual.text.clone(), texts: actual.texts.clone(), lambda: None };
+                        let unwrapped = Actual {
+                            known: Some(Known::Type((**inner).clone())),
+                            text: actual.text.clone(),
+                            texts: actual.texts.clone(),
+                            lambda: None,
+                        };
                         return bind_type(formal, &unwrapped, b, mode);
                     }
                 }
@@ -109,7 +116,9 @@ pub(super) fn bind_type(
             }
             K::Literal { value } => match (value, known) {
                 (serde_json::Value::Null, _) => Err(type_mismatch(formal, actual)),
-                (_, Known::Type(ty)) if mode == Mode::Proof && is_uninformative(ty) => Err(loose(ty, formal)),
+                (_, Known::Type(ty)) if mode == Mode::Proof && is_uninformative(ty) => {
+                    Err(loose(ty, formal))
+                }
                 // A literal string fits only itself; a string whose text is not known here could be it.
                 (serde_json::Value::String(want), Known::Type(ty))
                     if matches!(unwrap_optional(ty), OirType::String) =>
@@ -189,7 +198,9 @@ pub(super) fn bind_type(
                 },
             },
             K::Tuple { items } => match known {
-                Known::EmptyList | Known::Absent | Known::Void | Known::RecordWithNulls { .. } => Ok(()),
+                Known::EmptyList | Known::Absent | Known::Void | Known::RecordWithNulls { .. } => {
+                    Ok(())
+                }
                 Known::Type(ty) => match unwrap_optional(ty) {
                     OirType::Tuple { items: slots } if slots.is_empty() => Ok(()),
                     OirType::Tuple { items: slots } if slots.len() == items.len() => {
@@ -226,7 +237,9 @@ pub(super) fn bind_type(
                             }
                         }
                         // A closed record's values are whichever field a key names: alike, one type; unlike, their join.
-                        let alike = members.first().is_none_or(|first| members.iter().all(|m| b.agrees(first, m)));
+                        let alike = members
+                            .first()
+                            .is_none_or(|first| members.iter().all(|m| b.agrees(first, m)));
                         if alike {
                             for member in &members {
                                 bind_type(value, &element(member), b, mode)?;
@@ -255,7 +268,9 @@ pub(super) fn bind_type(
                             _ => Vec::new(),
                         };
                         if holders.is_empty() {
-                            return Err(undetermined("it is a record whose fields the call cannot see"));
+                            return Err(undetermined(
+                                "it is a record whose fields the call cannot see",
+                            ));
                         }
                         for variant in holders {
                             bind_type(formal, &element(&variant.field_type), b, mode)?;
@@ -400,7 +415,9 @@ pub(super) fn bind_type(
             },
             K::KeyOf { of } => bind_key(of, actual, formal, b, mode),
             K::FieldOf { of } => {
-                if matches!(known, Known::Type(ty) if !ty.is_optional()) || matches!(known, Known::EmptyList) {
+                if matches!(known, Known::Type(ty) if !ty.is_optional())
+                    || matches!(known, Known::EmptyList)
+                {
                     b.defaulted.insert(of.clone());
                 }
                 if b.absent.contains_key(of) {
@@ -558,7 +575,12 @@ pub(super) fn bind_nominal(
     b: &CallBindings,
 ) -> Result<(), Mismatch> {
     let sealed = crate::sealed::is_sealed_type(name);
-    if !sealed && !matches!(name, "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment") {
+    if !sealed
+        && !matches!(
+            name,
+            "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment"
+        )
+    {
         return Ok(());
     }
     let Known::Type(ty) = known else {
@@ -670,7 +692,10 @@ fn bind_record_with_nulls(
             }
         }
         K::Union { of } => {
-            if let Some(member) = of.iter().find(|m| matches!(m, OperatorTypeRef::Tagged(K::Map { .. }))) {
+            if let Some(member) = of
+                .iter()
+                .find(|m| matches!(m, OperatorTypeRef::Tagged(K::Map { .. })))
+            {
                 let mut trial = b.clone();
                 bind_record_with_nulls(member, present, nulls, actual, &mut trial, mode)?;
                 *b = trial;
@@ -726,7 +751,11 @@ pub(super) fn bind_bound(
     }
     let mut scratch = CallBindings::new();
     scratch.use_named_types(std::sync::Arc::clone(&bindings.named_types.0));
-    let checked = if mode == Mode::Proof { Mode::Proof } else { Mode::Runtime };
+    let checked = if mode == Mode::Proof {
+        Mode::Proof
+    } else {
+        Mode::Runtime
+    };
     match bind_type(bound, actual, &mut scratch, checked) {
         Ok(()) => Ok(()),
         // A bound is a constraint on the kind: the elements of a list that fits it are the variable's own business.
@@ -785,7 +814,10 @@ pub(super) fn bind_key(
         // A number is an index, valid exactly when the value it indexes is a list.
         let index_into_list = matches!(unwrap_optional(ty), OirType::Number | OirType::Integer)
             && b.last(record_var).is_some_and(|record| {
-                matches!(unwrap_optional(record), OirType::Array { .. } | OirType::Tuple { .. })
+                matches!(
+                    unwrap_optional(record),
+                    OirType::Array { .. } | OirType::Tuple { .. }
+                )
             });
         if known_text && !index_into_list && !is_uninformative(ty) && paths.is_empty() {
             return Err(Mismatch::Type {
@@ -813,7 +845,9 @@ pub(super) fn bind_key(
     }
     for path in paths {
         if mode != Mode::Runtime {
-            let walked = walk_path_in(&record, path, true, &|name| b.named_types.get(name).cloned());
+            let walked = walk_path_in(&record, path, true, &|name| {
+                b.named_types.get(name).cloned()
+            });
             if let Path::Missing = walked {
                 b.absent
                     .insert(record_var.to_string(), (b.index, path.clone()));

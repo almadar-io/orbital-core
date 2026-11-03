@@ -9,8 +9,8 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use std::collections::{HashMap, HashSet};
 use crate::sync::LazyLock;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
@@ -198,7 +198,13 @@ pub static PATTERN_EVENT_PROPS: LazyLock<HashMap<&'static str, HashSet<&'static 
 pub static PATTERN_EVENT_NAME_PROPS: LazyLock<
     HashMap<&'static str, HashMap<&'static str, (&'static str, &'static str)>>,
 > = LazyLock::new(|| {
-    const KINDS: [&str; 5] = ["event", "event-ref", "event-listen", "event-list", "event-map"];
+    const KINDS: [&str; 5] = [
+        "event",
+        "event-ref",
+        "event-listen",
+        "event-list",
+        "event-map",
+    ];
     patterns_map()
         .iter()
         .filter_map(|(name, def)| {
@@ -207,7 +213,10 @@ pub static PATTERN_EVENT_NAME_PROPS: LazyLock<
                 .filter_map(|(prop, prop_def)| {
                     let kind = prop_def.get("kind").and_then(Value::as_str)?;
                     let kind = KINDS.iter().copied().find(|k| *k == kind)?;
-                    let field = prop_def.get("eventField").and_then(Value::as_str).unwrap_or("event");
+                    let field = prop_def
+                        .get("eventField")
+                        .and_then(Value::as_str)
+                        .unwrap_or("event");
                     Some((prop.as_str(), (kind, field)))
                 })
                 .collect();

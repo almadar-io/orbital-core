@@ -8,8 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::schema::sexpr::SExpression;
 use crate::effect_row::EffectRow;
+use crate::schema::sexpr::SExpression;
 
 /// `ConfigField.default`'s deserializer: distinguishes an ABSENT `default`
 /// key (→ `None`, via `#[serde(default)]` on the field, which short-circuits
@@ -51,7 +51,12 @@ pub struct ResolvedMark {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(remote = "Self")]
 pub struct OrbitalSchema {
-    #[serde(default, rename = "typeContractVersion", skip_serializing_if = "Option::is_none", deserialize_with = "crate::ir::types::deserialize_type_contract_version")]
+    #[serde(
+        default,
+        rename = "typeContractVersion",
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::ir::types::deserialize_type_contract_version"
+    )]
     pub type_contract_version: Option<u32>,
     /// Present exactly when the program is RESOLVED (inlined, composed, enriched): stamped by the compiler as the
     /// last step of resolution, never authored. A loader takes a program carrying it as-is.
@@ -242,7 +247,8 @@ pub struct SchemaMetadata {
     /// contextual edit) reads this to trace a resolved render-ui prop back to
     /// the config knob it came from. See [`ConfigProvenanceRecord`].
     #[serde(rename = "configProvenance", skip_serializing_if = "Option::is_none")]
-    pub config_provenance: Option<crate::collections::IndexMap<String, Vec<ConfigProvenanceRecord>>>,
+    pub config_provenance:
+        Option<crate::collections::IndexMap<String, Vec<ConfigProvenanceRecord>>>,
 
     /// For a program that declares `locales`: each loaded behavior's name →
     /// the folder of its source file, relative to the program's own folder.
@@ -256,11 +262,19 @@ pub struct SchemaMetadata {
 
     /// Where each effect operator the client's traits run executes (`server`, `client`, `any`), written into a
     /// compiled client program so a browser kernel with no installed operator table places every effect.
-    #[serde(rename = "operatorSites", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "operatorSites",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub operator_sites: Option<std::collections::BTreeMap<String, String>>,
 
     /// The operator table's dispatch facts, written into a compiled client program for a browser kernel with no table.
-    #[serde(rename = "dispatchFacts", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "dispatchFacts",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub dispatch_facts: Option<crate::language::registry::DispatchFacts>,
 
     /// The endpoint protocol table, written into a compiled client program for a browser kernel with no installed core.
@@ -286,14 +300,14 @@ pub struct ConfigProvenanceRecord {
     pub knob: String,
 }
 
-mod theme;
-mod services;
-mod orbital;
 mod entity;
-mod traits;
 mod events;
-mod state_machine;
+mod orbital;
 mod page;
+mod services;
+mod state_machine;
+mod theme;
+mod traits;
 pub use entity::{
     compose_nullability, tuple_slots_of, AccessWaivers, AssetAspect, AssetDimension, Cardinality,
     EntityDefinition, EntityIndex, FieldDefinition, FieldProjection, FieldType, OnDelete,

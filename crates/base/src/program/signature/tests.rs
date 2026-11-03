@@ -398,7 +398,13 @@ fn a_map_whose_values_differ_in_type_is_a_record() {
         Mode::Runtime,
     )
     .unwrap();
-    assert_eq!(sig.result(&b), Some(OirType::Struct { fields: Default::default(), additional: None }));
+    assert_eq!(
+        sig.result(&b),
+        Some(OirType::Struct {
+            fields: Default::default(),
+            additional: None
+        })
+    );
 }
 
 #[test]
@@ -453,16 +459,29 @@ fn a_list_literal_of_unlike_tuples_is_a_list_of_one_element_type() {
 
 #[test]
 fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
-    let flatten = op(json!([p("arr", list(list(var("T"))))]), list(var("T")), Some(1));
+    let flatten = op(
+        json!([p("arr", list(list(var("T"))))]),
+        list(var("T")),
+        Some(1),
+    );
     let update = OirType::Tuple {
-        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Default::default(), additional: None }],
+        items: vec![
+            OirType::String,
+            OirType::String,
+            OirType::String,
+            OirType::Struct {
+                fields: Default::default(),
+                additional: None,
+            },
+        ],
     };
     let delete = OirType::Tuple {
         items: vec![OirType::String, OirType::String, OirType::String],
     };
     let sig = Signature::of(&flatten);
     let mut b = CallBindings::new();
-    sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(update)))), Mode::Runtime).unwrap();
+    sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(update)))), Mode::Runtime)
+        .unwrap();
     assert_eq!(
         sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(delete)))), Mode::Runtime),
         Ok(())
@@ -470,26 +489,52 @@ fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
     assert_eq!(
         sig.result(&b),
         Some(s_arr(s_arr(OirType::Tuple {
-            items: vec![OirType::String, OirType::String, OirType::String, absent_slot()],
+            items: vec![
+                OirType::String,
+                OirType::String,
+                OirType::String,
+                absent_slot()
+            ],
         })))
     );
     let rekey = OirType::Tuple {
         items: vec![OirType::String, OirType::String, absent_slot()],
     };
     let update = OirType::Tuple {
-        items: vec![OirType::String, OirType::String, OirType::String, OirType::Struct { fields: Default::default(), additional: None }],
+        items: vec![
+            OirType::String,
+            OirType::String,
+            OirType::String,
+            OirType::Struct {
+                fields: Default::default(),
+                additional: None,
+            },
+        ],
     };
     let mut b = CallBindings::new();
-    sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(rekey)))), Mode::Runtime).unwrap();
+    sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(rekey)))), Mode::Runtime)
+        .unwrap();
     assert_eq!(
         sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(update)))), Mode::Runtime),
         Ok(()),
         "a joined delete/create group beside an update group"
     );
     let mut b = CallBindings::new();
-    sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(OirType::Number)))), Mode::Runtime).unwrap();
+    sig.bind(
+        &mut b,
+        0,
+        &ty(s_arr(s_arr(s_arr(OirType::Number)))),
+        Mode::Runtime,
+    )
+    .unwrap();
     assert!(
-        sig.bind(&mut b, 0, &ty(s_arr(s_arr(s_arr(OirType::String)))), Mode::Runtime).is_err(),
+        sig.bind(
+            &mut b,
+            0,
+            &ty(s_arr(s_arr(s_arr(OirType::String)))),
+            Mode::Runtime
+        )
+        .is_err(),
         "control: lists of unlike scalars stay two types"
     );
 }
@@ -620,7 +665,10 @@ fn reduce_op() -> EmbeddedOperator {
         json!([
             p("items", list(var("T"))),
             p("seed", var("A")),
-            p("step", json!({"kind":"fn", "params":[var("A"), var("T")], "returns":var("A")}))
+            p(
+                "step",
+                json!({"kind":"fn", "params":[var("A"), var("T")], "returns":var("A")})
+            )
         ]),
         var("A"),
         Some(3),
@@ -629,27 +677,50 @@ fn reduce_op() -> EmbeddedOperator {
 
 fn reduce_answer(seed: OirType, step_result: OirType) -> Result<Option<OirType>, Mismatch> {
     let step = move |_: &[Option<OirType>]| Some(step_result.clone());
-    let callback = Actual { known: None, text: None, texts: None, lambda: Some(&step) };
-    call(&reduce_op(), &[ty(s_arr(OirType::Number)), ty(seed), callback], Mode::Proof)
+    let callback = Actual {
+        known: None,
+        text: None,
+        texts: None,
+        lambda: Some(&step),
+    };
+    call(
+        &reduce_op(),
+        &[ty(s_arr(OirType::Number)), ty(seed), callback],
+        Mode::Proof,
+    )
 }
 
 #[test]
 fn a_reduce_with_a_present_start_answers_the_start_type_when_the_step_answers_it() {
-    assert_eq!(reduce_answer(OirType::Number, OirType::Number), Ok(Some(OirType::Number)));
+    assert_eq!(
+        reduce_answer(OirType::Number, OirType::Number),
+        Ok(Some(OirType::Number))
+    );
     let record = struct_of(&[("n", OirType::Number)]);
-    assert_eq!(reduce_answer(record.clone(), record.clone()), Ok(Some(record)));
+    assert_eq!(
+        reduce_answer(record.clone(), record.clone()),
+        Ok(Some(record))
+    );
 }
 
 #[test]
 fn a_reduce_whose_step_answers_an_optional_answers_an_optional() {
     let optional = OirType::optional(OirType::Number);
-    assert_eq!(reduce_answer(OirType::Number, optional.clone()), Ok(Some(optional.clone())), "number start, number? step");
+    assert_eq!(
+        reduce_answer(OirType::Number, optional.clone()),
+        Ok(Some(optional.clone())),
+        "number start, number? step"
+    );
     assert_eq!(
         reduce_answer(optional.clone(), OirType::Number),
         Ok(Some(optional.clone())),
         "control: an optional start stays optional"
     );
-    assert_eq!(reduce_answer(optional.clone(), optional.clone()), Ok(Some(optional)), "control: number? both");
+    assert_eq!(
+        reduce_answer(optional.clone(), optional.clone()),
+        Ok(Some(optional)),
+        "control: number? both"
+    );
 }
 
 #[test]
@@ -657,27 +728,56 @@ fn an_unproved_optional_is_refused_at_a_present_position_in_every_static_mode() 
     let plain = op(json!([p("n", json!("number"))]), json!("number"), Some(1));
     let maybe = OirType::optional(OirType::Number);
     for mode in [Mode::Static, Mode::Proof] {
-        assert!(call(&plain, &[ty(maybe.clone())], mode).is_err(), "{mode:?}: number? at number");
-        assert_eq!(call(&plain, &[ty(OirType::Number)], mode), Ok(Some(OirType::Number)), "{mode:?}: control");
+        assert!(
+            call(&plain, &[ty(maybe.clone())], mode).is_err(),
+            "{mode:?}: number? at number"
+        );
+        assert_eq!(
+            call(&plain, &[ty(OirType::Number)], mode),
+            Ok(Some(OirType::Number)),
+            "{mode:?}: control"
+        );
     }
     let date = op(json!([p("s", json!("string"))]), json!("string"), Some(1));
     for mode in [Mode::Static, Mode::Proof] {
-        assert!(call(&date, &[ty(OirType::optional(OirType::Date))], mode).is_err(), "{mode:?}: date? at string");
-        assert!(call(&date, &[ty(OirType::Date)], mode).is_ok(), "{mode:?}: control, a date at rest is a string");
+        assert!(
+            call(&date, &[ty(OirType::optional(OirType::Date))], mode).is_err(),
+            "{mode:?}: date? at string"
+        );
+        assert!(
+            call(&date, &[ty(OirType::Date)], mode).is_ok(),
+            "{mode:?}: control, a date at rest is a string"
+        );
     }
 }
 
 #[test]
-fn a_string_still_fits_a_callkey_position_and_a_list_of_optionals_does_not_fit_a_list_of_presents() {
+fn a_string_still_fits_a_callkey_position_and_a_list_of_optionals_does_not_fit_a_list_of_presents()
+{
     let keyed = op(json!([p("k", json!("callkey"))]), json!("callkey"), Some(1));
-    let items = op(json!([p("xs", list(json!("number")))]), json!("number"), Some(1));
+    let items = op(
+        json!([p("xs", list(json!("number")))]),
+        json!("number"),
+        Some(1),
+    );
     for mode in [Mode::Static, Mode::Proof] {
-        assert!(call(&keyed, &[ty(OirType::String)], mode).is_ok(), "{mode:?}: a string at a callkey position");
         assert!(
-            call(&items, &[ty(OirType::array(OirType::optional(OirType::Number)))], mode).is_err(),
+            call(&keyed, &[ty(OirType::String)], mode).is_ok(),
+            "{mode:?}: a string at a callkey position"
+        );
+        assert!(
+            call(
+                &items,
+                &[ty(OirType::array(OirType::optional(OirType::Number)))],
+                mode
+            )
+            .is_err(),
             "{mode:?}: [number?] at [number]"
         );
-        assert!(call(&items, &[ty(OirType::array(OirType::Number))], mode).is_ok(), "{mode:?}: control");
+        assert!(
+            call(&items, &[ty(OirType::array(OirType::Number))], mode).is_ok(),
+            "{mode:?}: control"
+        );
     }
 }
 
@@ -745,7 +845,8 @@ fn record_bounds_require_every_declared_union_member_to_be_a_record() {
         variants: vec![
             OirField::new("record", shape.clone()),
             OirField::new("other", other),
-        ].into(),
+        ]
+        .into(),
     };
     assert!(call(
         &operator,
@@ -942,7 +1043,11 @@ fn fold(
 }
 
 fn optional_fields(fields: &[(&str, OirType)]) -> OirType {
-    let OirType::Struct { mut fields, additional } = struct_of(fields) else {
+    let OirType::Struct {
+        mut fields,
+        additional,
+    } = struct_of(fields)
+    else {
         unreachable!()
     };
     fields.iter_mut().for_each(|f| f.required = false);
@@ -955,7 +1060,10 @@ fn children_reference_identity_requires_a_declared_alias() {
     let mut bindings = CallBindings::new();
     assert_eq!(
         children_of(&node, "Tree", &OirType::String, &bindings),
-        Some(OirType::Struct { fields: Default::default(), additional: None })
+        Some(OirType::Struct {
+            fields: Default::default(),
+            additional: None
+        })
     );
     let required = struct_of(&[(
         "kids",
@@ -1046,31 +1154,54 @@ fn children_reference_identity_requires_a_declared_alias() {
     ])));
     assert_eq!(
         children_of(&node, "Alias", &OirType::String, &bindings),
-        Some(OirType::Struct { fields: Default::default(), additional: None })
+        Some(OirType::Struct {
+            fields: Default::default(),
+            additional: None
+        })
     );
 }
 
 #[test]
 fn children_declared_optional_come_back_optional_in_a_list_or_map() {
     let bindings = CallBindings::new();
-    let own = || OirType::TypeRef { name: "Tree".into() };
+    let own = || OirType::TypeRef {
+        name: "Tree".into(),
+    };
     let maybe = || OirType::optional(own());
     let kids = struct_of(&[
         ("kids", s_arr(maybe())),
         ("named", OirType::map(OirType::String, maybe())),
         ("plain", s_arr(own())),
     ]);
-    let Some(OirType::Struct { fields, .. }) = children_of(&kids, "Tree", &OirType::String, &bindings) else {
+    let Some(OirType::Struct { fields, .. }) =
+        children_of(&kids, "Tree", &OirType::String, &bindings)
+    else {
         panic!("child fields")
     };
-    let of = |name: &str| fields.iter().find(|f| f.name == name).map(|f| f.field_type.clone());
-    assert_eq!(of("kids"), Some(s_arr(OirType::optional(OirType::String))), "a null element folds to null");
+    let of = |name: &str| {
+        fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.field_type.clone())
+    };
+    assert_eq!(
+        of("kids"),
+        Some(s_arr(OirType::optional(OirType::String))),
+        "a null element folds to null"
+    );
     assert_eq!(
         of("named"),
-        Some(OirType::map(OirType::String, OirType::optional(OirType::String))),
+        Some(OirType::map(
+            OirType::String,
+            OirType::optional(OirType::String)
+        )),
         "a null map value folds to null"
     );
-    assert_eq!(of("plain"), Some(s_arr(OirType::String)), "control: non-optional children fold to the result alone");
+    assert_eq!(
+        of("plain"),
+        Some(s_arr(OirType::String)),
+        "control: non-optional children fold to the result alone"
+    );
     assert_eq!(
         children_of(&s_arr(maybe()), "Tree", &OirType::String, &bindings),
         Some(s_arr(OirType::optional(OirType::String))),
@@ -1113,8 +1244,7 @@ fn a_fold_step_whose_result_changes_with_its_children_is_a_mismatch() {
             OirType::String
         })
     };
-    let Err(Mismatch::Type { expected, actual }) = fold(tree_type(), Some("Tree"), &step)
-    else {
+    let Err(Mismatch::Type { expected, actual }) = fold(tree_type(), Some("Tree"), &step) else {
         panic!("a step returning number over string children is refused");
     };
     assert!(
@@ -1151,7 +1281,8 @@ fn a_fold_over_a_tagged_union_types_the_children_of_every_variant() {
                 "Not",
                 struct_of(&[("kind", OirType::String), ("of", own())]),
             ),
-        ].into(),
+        ]
+        .into(),
     };
     let last = std::cell::RefCell::new(None);
     let step = |params: &[Option<OirType>]| {
@@ -1163,7 +1294,8 @@ fn a_fold_over_a_tagged_union_types_the_children_of_every_variant() {
         variants: vec![
             OirField::new("All", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("Not", struct_of(&[("of", OirType::String)])),
-        ].into(),
+        ]
+        .into(),
     };
     assert_eq!(last.borrow().clone(), Some(expected));
 }
@@ -1173,7 +1305,8 @@ fn pred_children() -> OirType {
         variants: vec![
             OirField::new("All", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("Not", struct_of(&[("of", OirType::String)])),
-        ].into(),
+        ]
+        .into(),
     }
 }
 
@@ -1192,7 +1325,8 @@ fn control_a_union_member_read_whose_variants_agree_is_one_type() {
         variants: vec![
             OirField::new("A", struct_of(&[("of", s_arr(OirType::String))])),
             OirField::new("B", struct_of(&[("of", s_arr(OirType::String))])),
-        ].into(),
+        ]
+        .into(),
     };
     let Path::Found(found) = walk_path(&alike, "of") else {
         panic!("agreeing variants read as one type")
@@ -1260,15 +1394,31 @@ fn get() -> EmbeddedOperator {
 fn a_key_read_through_a_maybe_missing_record_is_that_fields_type_maybe_missing() {
     let row = struct_of(&[("name", OirType::String), ("count", OirType::Number)]);
     assert_eq!(
-        call(&get(), &[ty(OirType::optional(row.clone())), text("count")], Mode::Static),
+        call(
+            &get(),
+            &[ty(OirType::optional(row.clone())), text("count")],
+            Mode::Static
+        ),
         Ok(Some(OirType::optional(OirType::Number)))
     );
     assert_eq!(
-        call(&get(), &[ty(OirType::optional(row.clone())), text("count"), ty(OirType::Number)], Mode::Static),
+        call(
+            &get(),
+            &[
+                ty(OirType::optional(row.clone())),
+                text("count"),
+                ty(OirType::Number)
+            ],
+            Mode::Static
+        ),
         Ok(Some(OirType::Number)),
         "control: a present default answers the missing record"
     );
-    assert_eq!(call(&get(), &[ty(row), text("count")], Mode::Static), Ok(Some(OirType::Number)), "control: a present record");
+    assert_eq!(
+        call(&get(), &[ty(row), text("count")], Mode::Static),
+        Ok(Some(OirType::Number)),
+        "control: a present record"
+    );
 }
 
 #[test]
@@ -1291,7 +1441,10 @@ fn a_key_names_a_field_and_the_result_is_that_fields_type() {
 fn a_dotted_key_reads_through_a_declared_name_between_its_segments() {
     let density = struct_of(&[("h", OirType::String)]);
     let outer = struct_of(&[
-        ("density", OirType::optional(OirType::TypeRef { name: "D".into() })),
+        (
+            "density",
+            OirType::optional(OirType::TypeRef { name: "D".into() }),
+        ),
         ("name", OirType::String),
     ]);
     let get_op = get();
@@ -1299,7 +1452,10 @@ fn a_dotted_key_reads_through_a_declared_name_between_its_segments() {
     let read = |names: &[(&str, OirType)], path: &str| {
         let mut b = CallBindings::new();
         b.use_named_types(std::sync::Arc::new(
-            names.iter().map(|(n, t)| ((*n).to_string(), t.clone())).collect(),
+            names
+                .iter()
+                .map(|(n, t)| ((*n).to_string(), t.clone()))
+                .collect(),
         ));
         sig.bind(&mut b, 0, &ty(outer.clone()), Mode::Static)?;
         sig.bind(&mut b, 1, &text(path), Mode::Static)?;
@@ -1310,10 +1466,17 @@ fn a_dotted_key_reads_through_a_declared_name_between_its_segments() {
         Ok(Some(OirType::String))
     );
     assert!(
-        matches!(read(&[("D", density)], "density.zzz"), Err(Mismatch::NoField { .. }) | Ok(None)),
+        matches!(
+            read(&[("D", density)], "density.zzz"),
+            Err(Mismatch::NoField { .. }) | Ok(None)
+        ),
         "control: a segment the named type does not declare is not a field"
     );
-    assert_eq!(read(&[], "density.h"), Ok(None), "control: an undeclared name stays opaque");
+    assert_eq!(
+        read(&[], "density.h"),
+        Ok(None),
+        "control: an undeclared name stays opaque"
+    );
 }
 
 fn get_of_record_or_list() -> EmbeddedOperator {
@@ -1360,9 +1523,8 @@ fn a_tuple_is_addressed_by_index_whatever_its_items_are() {
 
 #[test]
 fn a_tagged_union_member_read_is_the_field_its_variants_declare() {
-    let variant = |name: &str, fields: &[(&str, OirType)]| {
-        OirField::new(name.to_string(), struct_of(fields))
-    };
+    let variant =
+        |name: &str, fields: &[(&str, OirType)]| OirField::new(name.to_string(), struct_of(fields));
     let union = OirType::Union {
         variants: vec![
             variant(
@@ -1373,7 +1535,8 @@ fn a_tagged_union_member_read_is_the_field_its_variants_declare() {
                 "text",
                 &[("type", OirType::String), ("content", OirType::String)],
             ),
-        ].into(),
+        ]
+        .into(),
     };
     assert_eq!(
         type_at_path(&union, &["type".to_string()]),
@@ -1487,7 +1650,11 @@ fn a_dot_path_walks_nested_records_and_a_map_takes_any_key() {
         "a map may not hold the key (G-ORB-619)"
     );
     assert_eq!(
-        call(&get(), &[ty(map), text("anything"), ty(OirType::Number)], Mode::Static),
+        call(
+            &get(),
+            &[ty(map), text("anything"), ty(OirType::Number)],
+            Mode::Static
+        ),
         Ok(Some(OirType::Number)),
         "control: a default answers the miss"
     );
@@ -1706,12 +1873,20 @@ fn a_key_read_from_a_value_is_the_value_type_of_a_map_and_nothing_of_a_struct() 
     let dynamic = Actual::of_type(OirType::String);
     let map = OirType::map(OirType::String, OirType::Number);
     assert_eq!(
-        call(&get(), &[ty(map.clone()), Actual::of_type(OirType::String)], Mode::Static),
+        call(
+            &get(),
+            &[ty(map.clone()), Actual::of_type(OirType::String)],
+            Mode::Static
+        ),
         Ok(Some(OirType::optional(OirType::Number))),
         "a map holds one value type under every key, and a key it lacks answers null"
     );
     assert_eq!(
-        call(&get(), &[ty(map), dynamic, ty(OirType::Number)], Mode::Static),
+        call(
+            &get(),
+            &[ty(map), dynamic, ty(OirType::Number)],
+            Mode::Static
+        ),
         Ok(Some(OirType::Number)),
         "control: a default answers the missing key"
     );
@@ -1765,7 +1940,9 @@ fn additional_records_transforms_preserve_the_same_value_slot() {
     assert_eq!(fill_empty_list_slots(&prior, &actual), Some(actual));
     let node = OirType::Struct {
         fields: Default::default(),
-        additional: Some(Box::new(OirType::TypeRef { name: "Node".into() })),
+        additional: Some(Box::new(OirType::TypeRef {
+            name: "Node".into(),
+        })),
     };
     assert_eq!(
         children_of(&node, "Node", &OirType::String, &CallBindings::new()),
@@ -1779,36 +1956,77 @@ fn additional_records_transforms_preserve_the_same_value_slot() {
 #[test]
 fn additional_records_paths_and_pick_omit_keep_presence_distinct() {
     let optional = optional_fields(&[("maybe", OirType::String)]);
-    assert_eq!(type_at_path(&optional, &["maybe".into()]), Some(OirType::optional(OirType::String)));
+    assert_eq!(
+        type_at_path(&optional, &["maybe".into()]),
+        Some(OirType::optional(OirType::String))
+    );
     let row = OirType::Struct {
         fields: vec![OirField::new("fixed", OirType::String)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
-    assert_eq!(type_at_path(&row, &["extra".into()]), Some(OirType::optional(OirType::Number)));
-    let operator = |kind: &str| op(
-        json!([p("obj", record("R")), p("keys", list(json!({ "kind": "keyOf", "of": "R" })))]),
-        json!({ "kind": kind, "of": "R" }), Some(2),
+    assert_eq!(
+        type_at_path(&row, &["extra".into()]),
+        Some(OirType::optional(OirType::Number))
     );
+    let operator = |kind: &str| {
+        op(
+            json!([
+                p("obj", record("R")),
+                p("keys", list(json!({ "kind": "keyOf", "of": "R" })))
+            ]),
+            json!({ "kind": kind, "of": "R" }),
+            Some(2),
+        )
+    };
     let keys = |name: &str| Actual {
-        known: None, text: None, texts: Some(vec![name.into()]), lambda: None,
+        known: None,
+        text: None,
+        texts: Some(vec![name.into()]),
+        lambda: None,
     };
     let mut extra = OirField::new("extra", OirType::Number);
     extra.required = false;
-    assert_eq!(call(&operator("pickOf"), &[ty(row.clone()), keys("extra")], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![extra].into(), additional: None })));
-    assert_eq!(call(&operator("omitOf"), &[ty(row), keys("fixed")], Mode::Static),
-        Ok(Some(OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Number)) })));
+    assert_eq!(
+        call(
+            &operator("pickOf"),
+            &[ty(row.clone()), keys("extra")],
+            Mode::Static
+        ),
+        Ok(Some(OirType::Struct {
+            fields: vec![extra].into(),
+            additional: None
+        }))
+    );
+    assert_eq!(
+        call(&operator("omitOf"), &[ty(row), keys("fixed")], Mode::Static),
+        Ok(Some(OirType::Struct {
+            fields: Default::default(),
+            additional: Some(Box::new(OirType::Number))
+        }))
+    );
 }
 
 #[test]
 fn omit_with_literal_keys_is_exact_and_with_computed_keys_makes_each_field_optional() {
     let omit = op(
-        json!([p("obj", record("R")), p("keys", list(json!({ "kind": "keyOf", "of": "R" })))]),
-        json!({ "kind": "omitOf", "of": "R" }), Some(2),
+        json!([
+            p("obj", record("R")),
+            p("keys", list(json!({ "kind": "keyOf", "of": "R" })))
+        ]),
+        json!({ "kind": "omitOf", "of": "R" }),
+        Some(2),
     );
     let row = struct_of(&[("a", OirType::String), ("b", OirType::Number)]);
-    let literal = Actual { known: None, text: None, texts: Some(vec!["b".into()]), lambda: None };
-    assert_eq!(call(&omit, &[ty(row.clone()), literal], Mode::Static), Ok(Some(struct_of(&[("a", OirType::String)]))));
+    let literal = Actual {
+        known: None,
+        text: None,
+        texts: Some(vec!["b".into()]),
+        lambda: None,
+    };
+    assert_eq!(
+        call(&omit, &[ty(row.clone()), literal], Mode::Static),
+        Ok(Some(struct_of(&[("a", OirType::String)])))
+    );
     let computed = ty(OirType::array(OirType::String));
     let mut a = OirField::new("a", OirType::String);
     a.required = false;
@@ -1816,7 +2034,10 @@ fn omit_with_literal_keys_is_exact_and_with_computed_keys_makes_each_field_optio
     b.required = false;
     assert_eq!(
         call(&omit, &[ty(row), computed], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![a, b].into(), additional: None })),
+        Ok(Some(OirType::Struct {
+            fields: vec![a, b].into(),
+            additional: None
+        })),
         "keys known only at run time drop any subset"
     );
 }
@@ -1824,8 +2045,12 @@ fn omit_with_literal_keys_is_exact_and_with_computed_keys_makes_each_field_optio
 #[test]
 fn a_map_position_takes_a_mixed_closed_record_and_hands_back_optional_fields() {
     let filter = op(
-        json!([p("obj", json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }))]),
-        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }), Some(1),
+        json!([p(
+            "obj",
+            json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } })
+        )]),
+        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }),
+        Some(1),
     );
     let mixed = struct_of(&[("a", OirType::String), ("b", OirType::Number)]);
     let mut a = OirField::new("a", OirType::String);
@@ -1834,12 +2059,26 @@ fn a_map_position_takes_a_mixed_closed_record_and_hands_back_optional_fields() {
     b.required = false;
     assert_eq!(
         call(&filter, &[ty(mixed)], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![a, b].into(), additional: None })),
+        Ok(Some(OirType::Struct {
+            fields: vec![a, b].into(),
+            additional: None
+        })),
     );
     let map = OirType::map(OirType::String, OirType::Number);
-    assert_eq!(call(&filter, &[ty(map.clone())], Mode::Static), Ok(Some(map)), "a map keeps its value type");
+    assert_eq!(
+        call(&filter, &[ty(map.clone())], Mode::Static),
+        Ok(Some(map)),
+        "a map keeps its value type"
+    );
     assert!(
-        matches!(call(&filter, &[ty(OirType::Row { entity: "E".into() })], Mode::Static), Err(Mismatch::Undetermined { .. })),
+        matches!(
+            call(
+                &filter,
+                &[ty(OirType::Row { entity: "E".into() })],
+                Mode::Static
+            ),
+            Err(Mismatch::Undetermined { .. })
+        ),
         "control: a record whose fields the call cannot see stays undetermined"
     );
 }
@@ -1847,32 +2086,71 @@ fn a_map_position_takes_a_mixed_closed_record_and_hands_back_optional_fields() {
 #[test]
 fn a_map_position_takes_a_union_of_a_map_and_empty_records_as_the_map() {
     let filter = op(
-        json!([p("obj", json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }))]),
-        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }), Some(1),
+        json!([p(
+            "obj",
+            json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } })
+        )]),
+        json!({ "kind": "map", "key": { "kind": "var", "name": "K" }, "value": { "kind": "var", "name": "V" } }),
+        Some(1),
     );
-    let empty = || OirType::Struct { fields: Default::default(), additional: None };
+    let empty = || OirType::Struct {
+        fields: Default::default(),
+        additional: None,
+    };
     let map = OirType::map(OirType::String, OirType::optional(OirType::Number));
     let union = OirType::Union {
-        variants: vec![OirField::new("number", empty()), OirField::new("boolean", empty()), OirField::new("map", map.clone())].into(),
+        variants: vec![
+            OirField::new("number", empty()),
+            OirField::new("boolean", empty()),
+            OirField::new("map", map.clone()),
+        ]
+        .into(),
     };
-    assert_eq!(call(&filter, &[ty(union)], Mode::Static), Ok(Some(map)), "empty records hold no values");
-    let only_empty = OirType::Union { variants: vec![OirField::new("number", empty()), OirField::new("boolean", empty())].into() };
+    assert_eq!(
+        call(&filter, &[ty(union)], Mode::Static),
+        Ok(Some(map)),
+        "empty records hold no values"
+    );
+    let only_empty = OirType::Union {
+        variants: vec![
+            OirField::new("number", empty()),
+            OirField::new("boolean", empty()),
+        ]
+        .into(),
+    };
     assert!(
-        matches!(call(&filter, &[ty(only_empty)], Mode::Static), Err(Mismatch::Undetermined { .. })),
+        matches!(
+            call(&filter, &[ty(only_empty)], Mode::Static),
+            Err(Mismatch::Undetermined { .. })
+        ),
         "control: a union of only empty records stays undetermined"
     );
 }
 
 #[test]
 fn a_type_mismatch_names_an_optional_actual_with_its_question_mark() {
-    let cond = op(json!([p("cond", json!("boolean"))]), json!("boolean"), Some(1));
+    let cond = op(
+        json!([p("cond", json!("boolean"))]),
+        json!("boolean"),
+        Some(1),
+    );
     assert_eq!(
-        call(&cond, &[ty(OirType::optional(OirType::Boolean))], Mode::Proof),
-        Err(Mismatch::Type { expected: "boolean".into(), actual: "boolean?".into() })
+        call(
+            &cond,
+            &[ty(OirType::optional(OirType::Boolean))],
+            Mode::Proof
+        ),
+        Err(Mismatch::Type {
+            expected: "boolean".into(),
+            actual: "boolean?".into()
+        })
     );
     assert_eq!(
         call(&cond, &[ty(OirType::String)], Mode::Proof),
-        Err(Mismatch::Type { expected: "boolean".into(), actual: "string".into() }),
+        Err(Mismatch::Type {
+            expected: "boolean".into(),
+            actual: "string".into()
+        }),
         "control: a present type prints bare"
     );
 }
@@ -1884,86 +2162,216 @@ fn additional_records_branch_join_covers_both_extra_value_types() {
         additional: Some(Box::new(additional)),
     };
     let joined = unify_structs(&[branch(OirType::Number), branch(OirType::Boolean)]).unwrap();
-    let OirType::Struct { additional: Some(additional), .. } = joined else { panic!("typed extras retained") };
+    let OirType::Struct {
+        additional: Some(additional),
+        ..
+    } = joined
+    else {
+        panic!("typed extras retained")
+    };
     assert!(crate::type_compat::sub(&OirType::Number, &additional).is_some());
     assert!(crate::type_compat::sub(&OirType::Boolean, &additional).is_some());
-    let mixed = unify_structs(&[branch(OirType::Number), struct_of(&[("fixed", OirType::String)])]).unwrap();
-    assert!(matches!(mixed, OirType::Struct { additional: None, .. }));
+    let mixed = unify_structs(&[
+        branch(OirType::Number),
+        struct_of(&[("fixed", OirType::String)]),
+    ])
+    .unwrap();
+    assert!(matches!(
+        mixed,
+        OirType::Struct {
+            additional: None,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn additional_records_merge_retains_typed_extras_and_right_known_fields() {
-    let merge = op(json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]),
-        json!({ "kind": "mergeOf", "of": "R" }), None);
-    let left = OirType::Struct { fields: vec![OirField::new("left", OirType::Number)].into(), additional: Some(Box::new(OirType::Number)) };
-    let right = OirType::Struct { fields: vec![OirField::new("right", OirType::String)].into(), additional: Some(Box::new(OirType::Number)) };
-    assert_eq!(call(&merge, &[ty(left), ty(right)], Mode::Static), Ok(Some(OirType::Struct {
-        fields: vec![OirField::new("left", OirType::Number), OirField::new("right", OirType::String)].into(),
+    let merge = op(
+        json!([p(
+            "...objs",
+            json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true })
+        )]),
+        json!({ "kind": "mergeOf", "of": "R" }),
+        None,
+    );
+    let left = OirType::Struct {
+        fields: vec![OirField::new("left", OirType::Number)].into(),
         additional: Some(Box::new(OirType::Number)),
-    })));
+    };
+    let right = OirType::Struct {
+        fields: vec![OirField::new("right", OirType::String)].into(),
+        additional: Some(Box::new(OirType::Number)),
+    };
+    assert_eq!(
+        call(&merge, &[ty(left), ty(right)], Mode::Static),
+        Ok(Some(OirType::Struct {
+            fields: vec![
+                OirField::new("left", OirType::Number),
+                OirField::new("right", OirType::String)
+            ]
+            .into(),
+            additional: Some(Box::new(OirType::Number)),
+        }))
+    );
 }
 
 #[test]
 fn a_nullable_merge_is_the_optional_of_the_merged_record() {
-    let objs = json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]);
-    let nullable = op(objs.clone(), json!({ "kind": "union", "of": [{ "kind": "mergeOf", "of": "R" }, { "kind": "literal", "value": null }] }), None);
+    let objs = json!([p(
+        "...objs",
+        json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true })
+    )]);
+    let nullable = op(
+        objs.clone(),
+        json!({ "kind": "union", "of": [{ "kind": "mergeOf", "of": "R" }, { "kind": "literal", "value": null }] }),
+        None,
+    );
     let plain = op(objs, json!({ "kind": "mergeOf", "of": "R" }), None);
-    let operands = [ty(struct_of(&[("a", OirType::Number)])), ty(struct_of(&[("b", OirType::String)]))];
+    let operands = [
+        ty(struct_of(&[("a", OirType::Number)])),
+        ty(struct_of(&[("b", OirType::String)])),
+    ];
     let merged = struct_of(&[("a", OirType::Number), ("b", OirType::String)]);
-    assert_eq!(call(&plain, &operands, Mode::Static), Ok(Some(merged.clone())), "control: the plain merge");
-    assert_eq!(call(&nullable, &operands, Mode::Static), Ok(Some(OirType::optional(merged))));
+    assert_eq!(
+        call(&plain, &operands, Mode::Static),
+        Ok(Some(merged.clone())),
+        "control: the plain merge"
+    );
+    assert_eq!(
+        call(&nullable, &operands, Mode::Static),
+        Ok(Some(OirType::optional(merged)))
+    );
 }
 
 #[test]
 fn additional_records_unknown_branch_does_not_claim_a_missing_named_field() {
-    let mut choose = op(json!([p("condition", json!("boolean")), p("yes", var("T")), p("no", var("T"))]),
-        var("T"), Some(3));
+    let mut choose = op(
+        json!([
+            p("condition", json!("boolean")),
+            p("yes", var("T")),
+            p("no", var("T"))
+        ]),
+        var("T"),
+        Some(3),
+    );
     choose.return_semantics = Some("branch-union".into());
     let typed = OirType::Struct {
         fields: vec![OirField::new("amount", OirType::Number)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
-    for operands in [[typed.clone(), struct_of(&[])], [struct_of(&[]), typed.clone()]] {
-        assert!(matches!(call(&choose,
-            &[ty(OirType::Boolean), ty(operands[0].clone()), ty(operands[1].clone())],
-            Mode::Static), Err(Mismatch::Undetermined { .. })));
+    for operands in [
+        [typed.clone(), struct_of(&[])],
+        [struct_of(&[]), typed.clone()],
+    ] {
+        assert!(matches!(
+            call(
+                &choose,
+                &[
+                    ty(OirType::Boolean),
+                    ty(operands[0].clone()),
+                    ty(operands[1].clone())
+                ],
+                Mode::Static
+            ),
+            Err(Mismatch::Undetermined { .. })
+        ));
     }
-    let mut concat = op(json!([p("left", list(var("E"))), p("right", list(var("E")))]),
-        list(var("E")), Some(2));
+    let mut concat = op(
+        json!([p("left", list(var("E"))), p("right", list(var("E")))]),
+        list(var("E")),
+        Some(2),
+    );
     concat.return_semantics = Some("union-of-args".into());
-    assert!(matches!(call(&concat,
-        &[ty(s_arr(typed.clone())), ty(s_arr(struct_of(&[])))], Mode::Static),
-        Err(Mismatch::Undetermined { .. })));
-    let array = op(json!([]), list(json!({ "kind": "var", "name": "T", "each": true })), None);
+    assert!(matches!(
+        call(
+            &concat,
+            &[ty(s_arr(typed.clone())), ty(s_arr(struct_of(&[])))],
+            Mode::Static
+        ),
+        Err(Mismatch::Undetermined { .. })
+    ));
+    let array = op(
+        json!([]),
+        list(json!({ "kind": "var", "name": "T", "each": true })),
+        None,
+    );
     let mut bindings = CallBindings::new();
-    bindings.vars.insert("T".into(), vec![typed.clone(), struct_of(&[])]);
+    bindings
+        .vars
+        .insert("T".into(), vec![typed.clone(), struct_of(&[])]);
     assert_eq!(Signature::of(&array).result(&bindings), None);
     let roster = struct_of(&[("typed", typed), ("unknown", struct_of(&[]))]);
-    assert_eq!(call(&get(), &[ty(roster), ty(OirType::String)], Mode::Static), Ok(None));
+    assert_eq!(
+        call(&get(), &[ty(roster), ty(OirType::String)], Mode::Static),
+        Ok(None)
+    );
 }
 
 #[test]
 fn additional_records_unknown_merge_cannot_overwrite_known_members_unnoticed() {
-    let merge = op(json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]),
-        json!({ "kind": "mergeOf", "of": "R" }), None);
+    let merge = op(
+        json!([p(
+            "...objs",
+            json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true })
+        )]),
+        json!({ "kind": "mergeOf", "of": "R" }),
+        None,
+    );
     let typed = OirType::Struct {
         fields: vec![OirField::new("amount", OirType::Number)].into(),
         additional: Some(Box::new(OirType::Number)),
     };
-    assert_eq!(call(&merge, &[ty(typed.clone()), ty(struct_of(&[]))], Mode::Static), Ok(None));
+    assert_eq!(
+        call(
+            &merge,
+            &[ty(typed.clone()), ty(struct_of(&[]))],
+            Mode::Static
+        ),
+        Ok(None)
+    );
     let mut optional = typed.clone();
-    if let OirType::Struct { fields, .. } = &mut optional { fields[0].required = false; }
-    assert_eq!(call(&merge, &[ty(struct_of(&[])), ty(optional)], Mode::Static), Ok(None));
-    assert_eq!(call(&merge, &[ty(struct_of(&[])), ty(typed)], Mode::Static),
-        Ok(Some(struct_of(&[("amount", OirType::Number)]))));
+    if let OirType::Struct { fields, .. } = &mut optional {
+        fields[0].required = false;
+    }
+    assert_eq!(
+        call(&merge, &[ty(struct_of(&[])), ty(optional)], Mode::Static),
+        Ok(None)
+    );
+    assert_eq!(
+        call(&merge, &[ty(struct_of(&[])), ty(typed)], Mode::Static),
+        Ok(Some(struct_of(&[("amount", OirType::Number)])))
+    );
     let ordinary = struct_of(&[("amount", OirType::Number)]);
-    assert_eq!(call(&merge, &[ty(ordinary.clone()), ty(struct_of(&[]))], Mode::Static), Ok(Some(ordinary)));
-    let left = OirType::Struct { fields: Default::default(), additional: Some(Box::new(OirType::Number)) };
+    assert_eq!(
+        call(
+            &merge,
+            &[ty(ordinary.clone()), ty(struct_of(&[]))],
+            Mode::Static
+        ),
+        Ok(Some(ordinary))
+    );
+    let left = OirType::Struct {
+        fields: Default::default(),
+        additional: Some(Box::new(OirType::Number)),
+    };
     let mut amount = OirField::new("amount", OirType::String);
     amount.required = false;
-    let right = OirType::Struct { fields: vec![amount].into(), additional: Some(Box::new(OirType::Number)) };
-    let merged = call(&merge, &[ty(left), ty(right)], Mode::Static).unwrap().unwrap();
-    let OirType::Struct { fields, additional: Some(_), .. } = merged else { panic!("typed merge retained") };
+    let right = OirType::Struct {
+        fields: vec![amount].into(),
+        additional: Some(Box::new(OirType::Number)),
+    };
+    let merged = call(&merge, &[ty(left), ty(right)], Mode::Static)
+        .unwrap()
+        .unwrap();
+    let OirType::Struct {
+        fields,
+        additional: Some(_),
+        ..
+    } = merged
+    else {
+        panic!("typed merge retained")
+    };
     assert!(!fields[0].required);
     assert!(crate::type_compat::sub(&OirType::Number, &fields[0].field_type).is_some());
     assert!(crate::type_compat::sub(&OirType::String, &fields[0].field_type).is_some());
@@ -2062,7 +2470,10 @@ fn omitting_or_picking_keys_of_a_map_is_the_map() {
     maybe.required = false;
     assert_eq!(
         call(&omit, &[ty(row.clone()), computed()], Mode::Static),
-        Ok(Some(OirType::Struct { fields: vec![maybe].into(), additional: None })),
+        Ok(Some(OirType::Struct {
+            fields: vec![maybe].into(),
+            additional: None
+        })),
         "keys computed from data say nothing about which fields of a record go: each may be gone"
     );
     assert_eq!(
@@ -2307,7 +2718,10 @@ fn a_union_parameter_binds_the_member_that_fits() {
 #[test]
 fn a_union_argument_binds_when_every_variant_fits_a_union_parameter() {
     let spawn = op(
-        json!([p("command", json!({ "kind": "union", "of": ["string", "object"] }))]),
+        json!([p(
+            "command",
+            json!({ "kind": "union", "of": ["string", "object"] })
+        )]),
         json!("boolean"),
         Some(1),
     );
@@ -2316,7 +2730,8 @@ fn a_union_argument_binds_when_every_variant_fits_a_union_parameter() {
         variants: vec![
             OirField::new("string", OirType::String),
             OirField::new("config", config),
-        ].into(),
+        ]
+        .into(),
     };
     assert!(call(&spawn, &[ty(string_or_config)], Mode::Static).is_ok());
 }
@@ -2324,7 +2739,10 @@ fn a_union_argument_binds_when_every_variant_fits_a_union_parameter() {
 #[test]
 fn control_a_union_argument_with_a_variant_no_member_fits_is_refused() {
     let show = op(
-        json!([p("v", json!({ "kind": "union", "of": ["string", "number"] }))]),
+        json!([p(
+            "v",
+            json!({ "kind": "union", "of": ["string", "number"] })
+        )]),
         json!("boolean"),
         Some(1),
     );
@@ -2332,7 +2750,8 @@ fn control_a_union_argument_with_a_variant_no_member_fits_is_refused() {
         variants: vec![
             OirField::new("string", OirType::String),
             OirField::new("boolean", OirType::Boolean),
-        ].into(),
+        ]
+        .into(),
     };
     assert!(call(&show, &[ty(string_or_boolean)], Mode::Static).is_err());
 }
@@ -2945,7 +3364,8 @@ fn an_empty_list_takes_its_type_from_a_sibling_binding_and_never_from_nothing() 
 }
 
 #[test]
-fn a_fold_with_a_present_start_answers_the_start_type_and_a_nullable_step_or_start_answers_optional() {
+fn a_fold_with_a_present_start_answers_the_start_type_and_a_nullable_step_or_start_answers_optional(
+) {
     let reduce = op(
         json!([
             p("arr", list(var("T"))),
@@ -3096,7 +3516,10 @@ fn a_member_of_a_value_that_is_program_data_is_held_as_such() {
     let app = call(&get(), &[ty(OirType::Orbital), text("app")], Mode::Static).unwrap();
     assert_eq!(
         app,
-        Some(OirType::optional(OirType::map(OirType::String, OirType::SExpr)))
+        Some(OirType::optional(OirType::map(
+            OirType::String,
+            OirType::SExpr
+        )))
     );
 }
 
@@ -3293,44 +3716,98 @@ fn union_of(types: &[OirType]) -> OirType {
 fn a_proof_binds_only_what_every_value_of_the_argument_type_fits() {
     let upper = op(json!([p("s", json!("string"))]), json!("string"), Some(1));
     let sig = Signature::of(&upper);
-    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    let bind =
+        |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
     let string_or_number = union_of(&[OirType::String, OirType::Number]);
     assert!(bind(string_or_number, Mode::Proof).is_err());
-    assert!(bind(OirType::Date, Mode::Static).is_ok(), "control: a date passes a string position at rest");
-    assert!(bind(OirType::Date, Mode::Proof).is_ok(), "a date stays a string at rest in a strict call");
+    assert!(
+        bind(OirType::Date, Mode::Static).is_ok(),
+        "control: a date passes a string position at rest"
+    );
+    assert!(
+        bind(OirType::Date, Mode::Proof).is_ok(),
+        "a date stays a string at rest in a strict call"
+    );
 
     let when = op(json!([p("d", json!("date"))]), json!("number"), Some(1));
     let when_sig = Signature::of(&when);
-    let bind_date = |ty: OirType, mode: Mode| when_sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
-    let refused = bind_date(OirType::String, Mode::Proof).unwrap_err().to_string();
-    assert!(refused.contains("time/parse") && refused.contains("declare the field `date`"), "{refused}");
-    assert!(bind_date(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_err());
-    assert!(bind_date(OirType::Date, Mode::Proof).is_ok(), "control: a date-typed value passes a date position");
-    assert!(bind_date(OirType::Number, Mode::Proof).is_err(), "epoch ms is not a date: a point in time is ISO text");
-    assert!(bind_date(OirType::String, Mode::Static).is_ok(), "control: only a strict call refuses a string at a date position");
-    assert!(matches!(bind(OirType::erased(), Mode::Proof), Err(Mismatch::Undetermined { .. })));
+    let bind_date = |ty: OirType, mode: Mode| {
+        when_sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode)
+    };
+    let refused = bind_date(OirType::String, Mode::Proof)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("time/parse") && refused.contains("declare the field `date`"),
+        "{refused}"
+    );
+    assert!(bind_date(
+        OirType::Optional {
+            inner: Box::new(OirType::String)
+        },
+        Mode::Proof
+    )
+    .is_err());
+    assert!(
+        bind_date(OirType::Date, Mode::Proof).is_ok(),
+        "control: a date-typed value passes a date position"
+    );
+    assert!(
+        bind_date(OirType::Number, Mode::Proof).is_err(),
+        "epoch ms is not a date: a point in time is ISO text"
+    );
+    assert!(
+        bind_date(OirType::String, Mode::Static).is_ok(),
+        "control: only a strict call refuses a string at a date position"
+    );
+    assert!(matches!(
+        bind(OirType::erased(), Mode::Proof),
+        Err(Mismatch::Undetermined { .. })
+    ));
     assert!(bind(OirType::String, Mode::Proof).is_ok());
     assert!(
-        bind(OirType::Optional { inner: Box::new(OirType::String) }, Mode::Proof).is_err(),
+        bind(
+            OirType::Optional {
+                inner: Box::new(OirType::String)
+            },
+            Mode::Proof
+        )
+        .is_err(),
         "an optional value does not pass a position that excludes null"
     );
-    assert!(bind(union_of(&[OirType::String, OirType::String]), Mode::Proof).is_ok(), "every variant fits");
+    assert!(
+        bind(union_of(&[OirType::String, OirType::String]), Mode::Proof).is_ok(),
+        "every variant fits"
+    );
 }
 
 #[test]
 fn a_proof_checks_each_list_element_variant_and_a_bounded_variable() {
-    let first = op(json!([p("xs", list(json!("string")))]), json!("string"), Some(1));
+    let first = op(
+        json!([p("xs", list(json!("string")))]),
+        json!("string"),
+        Some(1),
+    );
     let sig = Signature::of(&first);
-    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
-    assert!(bind(s_arr(union_of(&[OirType::String, OirType::Number])), Mode::Proof).is_err());
+    let bind =
+        |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    assert!(bind(
+        s_arr(union_of(&[OirType::String, OirType::Number])),
+        Mode::Proof
+    )
+    .is_err());
     assert!(bind(s_arr(OirType::String), Mode::Proof).is_ok());
     let bounded = op(
-        json!([p("x", json!({ "kind": "var", "name": "T", "bound": "number" }))]),
+        json!([p(
+            "x",
+            json!({ "kind": "var", "name": "T", "bound": "number" })
+        )]),
         json!({ "kind": "var", "name": "T" }),
         Some(1),
     );
     let sig = Signature::of(&bounded);
-    let bind = |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
+    let bind =
+        |ty: OirType, mode: Mode| sig.bind(&mut CallBindings::new(), 0, &Actual::of_type(ty), mode);
     assert!(bind(union_of(&[OirType::Number, OirType::String]), Mode::Proof).is_err());
     assert!(bind(OirType::Number, Mode::Proof).is_ok());
 }
@@ -3342,86 +3819,195 @@ fn strict_bind(params: serde_json::Value, actual: Actual<'_>) -> Result<(), Mism
 
 #[test]
 fn a_loose_value_at_a_concrete_position_is_undetermined_and_a_narrowed_one_binds() {
-    for formal in [json!("number"), json!("bytes"), json!("vector"), json!({ "kind": "record" })] {
-        let loose = strict_bind(json!([p("x", formal.clone())]), Actual::of_type(OirType::erased()));
-        assert!(matches!(loose, Err(Mismatch::Undetermined { .. })), "{formal}: {loose:?}");
+    for formal in [
+        json!("number"),
+        json!("bytes"),
+        json!("vector"),
+        json!({ "kind": "record" }),
+    ] {
+        let loose = strict_bind(
+            json!([p("x", formal.clone())]),
+            Actual::of_type(OirType::erased()),
+        );
+        assert!(
+            matches!(loose, Err(Mismatch::Undetermined { .. })),
+            "{formal}: {loose:?}"
+        );
     }
     let object = json!({ "kind": "object", "fields": { "a": "number" } });
     assert!(matches!(
         strict_bind(json!([p("x", object)]), Actual::of_type(OirType::SExpr)),
         Err(Mismatch::Undetermined { .. })
     ));
-    assert!(strict_bind(json!([p("x", json!("number"))]), Actual::of_type(OirType::Number)).is_ok());
-    assert!(strict_bind(json!([p("x", json!("bytes"))]), Actual::of_type(OirType::Bytes)).is_ok());
+    assert!(strict_bind(
+        json!([p("x", json!("number"))]),
+        Actual::of_type(OirType::Number)
+    )
+    .is_ok());
+    assert!(strict_bind(
+        json!([p("x", json!("bytes"))]),
+        Actual::of_type(OirType::Bytes)
+    )
+    .is_ok());
 }
 
 #[test]
 fn a_value_of_unknown_type_is_undetermined_at_every_declared_type() {
-    for formal in [json!("string"), json!("bytes"), json!({ "kind": "record" }), list(json!("number"))] {
+    for formal in [
+        json!("string"),
+        json!("bytes"),
+        json!({ "kind": "record" }),
+        list(json!("number")),
+    ] {
         let found = strict_bind(json!([p("x", formal.clone())]), Actual::unknown());
-        assert!(matches!(found, Err(Mismatch::Undetermined { .. })), "{formal}: {found:?}");
+        assert!(
+            matches!(found, Err(Mismatch::Undetermined { .. })),
+            "{formal}: {found:?}"
+        );
     }
     let operator = op(json!([p("x", json!("string"))]), json!("boolean"), None);
     assert!(
-        Signature::of(&operator).bind(&mut CallBindings::new(), 0, &Actual::unknown(), Mode::Static).is_ok(),
+        Signature::of(&operator)
+            .bind(
+                &mut CallBindings::new(),
+                0,
+                &Actual::unknown(),
+                Mode::Static
+            )
+            .is_ok(),
         "control: the lenient binder lets it pass"
     );
-    assert!(strict_bind(json!([p("x", json!({ "kind": "fn", "params": [], "returns": "number" }))]), Actual::unknown()).is_ok());
+    assert!(strict_bind(
+        json!([p(
+            "x",
+            json!({ "kind": "fn", "params": [], "returns": "number" })
+        )]),
+        Actual::unknown()
+    )
+    .is_ok());
 }
 
 #[test]
 fn nominal_std_structs_and_entity_names_are_checked() {
     let vector = OirType::Struct {
-        fields: vec![OirField::new("x", OirType::Number), OirField::new("y", OirType::Number)].into(),
+        fields: vec![
+            OirField::new("x", OirType::Number),
+            OirField::new("y", OirType::Number),
+        ]
+        .into(),
         additional: None,
     };
     assert!(strict_bind(json!([p("v", json!("vector"))]), Actual::of_type(vector)).is_ok());
-    assert!(strict_bind(json!([p("v", json!("vector"))]), Actual::of_type(OirType::Number)).is_err());
-    assert!(strict_bind(json!([p("b", json!("bytes"))]), Actual::of_type(OirType::String)).is_err());
+    assert!(strict_bind(
+        json!([p("v", json!("vector"))]),
+        Actual::of_type(OirType::Number)
+    )
+    .is_err());
+    assert!(strict_bind(
+        json!([p("b", json!("bytes"))]),
+        Actual::of_type(OirType::String)
+    )
+    .is_err());
     let entity = json!({ "kind": "entity" });
-    assert!(strict_bind(json!([p("e", entity.clone())]), Actual::of_type(OirType::String)).is_ok());
+    assert!(strict_bind(
+        json!([p("e", entity.clone())]),
+        Actual::of_type(OirType::String)
+    )
+    .is_ok());
     assert!(strict_bind(json!([p("e", entity)]), Actual::of_type(OirType::Number)).is_err());
 }
 
 #[test]
 fn an_optional_value_binds_only_where_the_formal_admits_null() {
-    let optional = |ty: OirType| Actual::of_type(OirType::Optional { inner: Box::new(ty) });
-    assert!(strict_bind(json!([p("x", list(json!("number")))]), optional(OirType::Number)).is_err());
-    let nullable = json!({ "kind": "union", "of": ["number", { "kind": "literal", "value": null }] });
-    assert!(strict_bind(json!([p("x", nullable)]), optional(OirType::Number)).is_ok(), "the formal admits null");
-    assert!(strict_bind(json!([p("x", var("T"))]), optional(OirType::Number)).is_ok(), "an unbounded variable holds it");
-    assert!(strict_bind(json!([p("x", json!("number"))]), Actual::of_type(OirType::Number)).is_ok());
+    let optional = |ty: OirType| {
+        Actual::of_type(OirType::Optional {
+            inner: Box::new(ty),
+        })
+    };
+    assert!(strict_bind(
+        json!([p("x", list(json!("number")))]),
+        optional(OirType::Number)
+    )
+    .is_err());
+    let nullable =
+        json!({ "kind": "union", "of": ["number", { "kind": "literal", "value": null }] });
+    assert!(
+        strict_bind(json!([p("x", nullable)]), optional(OirType::Number)).is_ok(),
+        "the formal admits null"
+    );
+    assert!(
+        strict_bind(json!([p("x", var("T"))]), optional(OirType::Number)).is_ok(),
+        "an unbounded variable holds it"
+    );
+    assert!(strict_bind(
+        json!([p("x", json!("number"))]),
+        Actual::of_type(OirType::Number)
+    )
+    .is_ok());
 }
 
 #[test]
 fn a_loose_union_at_a_concrete_position_asks_for_a_narrowing_and_binds_to_a_variable_whole() {
     let loose = union_of(&[OirType::String, OirType::Number]);
-    let found = strict_bind(json!([p("x", json!("string"))]), Actual::of_type(loose.clone()));
-    assert!(matches!(found, Err(Mismatch::Undetermined { .. })), "{found:?}");
+    let found = strict_bind(
+        json!([p("x", json!("string"))]),
+        Actual::of_type(loose.clone()),
+    );
+    assert!(
+        matches!(found, Err(Mismatch::Undetermined { .. })),
+        "{found:?}"
+    );
     assert!(strict_bind(json!([p("x", var("T"))]), Actual::of_type(loose)).is_ok());
 }
 
 #[test]
 fn a_number_path_is_an_index_only_into_a_list() {
     let indexable = json!({ "kind": "var", "name": "R", "bound": { "kind": "union", "of": [{ "kind": "record" }, { "kind": "array", "of": { "kind": "var", "name": "E", "each": true } }] } });
-    let get = op(json!([p("obj", indexable), p("path", json!({ "kind": "keyOf", "of": "R" }))]), json!("boolean"), Some(2));
+    let get = op(
+        json!([
+            p("obj", indexable),
+            p("path", json!({ "kind": "keyOf", "of": "R" }))
+        ]),
+        json!("boolean"),
+        Some(2),
+    );
     let sig = Signature::of(&get);
     let bind = |record: OirType, path: OirType| {
         let mut b = CallBindings::new();
         sig.bind(&mut b, 0, &Actual::of_type(record), Mode::Proof)?;
         sig.bind(&mut b, 1, &Actual::of_type(path), Mode::Proof)
     };
-    assert!(bind(s_arr(OirType::String), OirType::Number).is_ok(), "an index into a list");
-    assert!(bind(OirType::Tuple { items: vec![OirType::String] }, OirType::Integer).is_ok());
-    assert!(bind(OirType::map(OirType::String, OirType::Number), OirType::Number).is_err(), "a map needs a string key");
-    let record = OirType::Struct { fields: vec![OirField::new("a", OirType::Number)].into(), additional: None };
+    assert!(
+        bind(s_arr(OirType::String), OirType::Number).is_ok(),
+        "an index into a list"
+    );
+    assert!(bind(
+        OirType::Tuple {
+            items: vec![OirType::String]
+        },
+        OirType::Integer
+    )
+    .is_ok());
+    assert!(
+        bind(
+            OirType::map(OirType::String, OirType::Number),
+            OirType::Number
+        )
+        .is_err(),
+        "a map needs a string key"
+    );
+    let record = OirType::Struct {
+        fields: vec![OirField::new("a", OirType::Number)].into(),
+        additional: None,
+    };
     assert!(bind(record.clone(), OirType::Number).is_err());
     assert!(bind(record, OirType::String).is_ok());
 }
 
 #[test]
 fn the_null_alternative_left_out_keeps_an_optional_the_variable_itself_binds() {
-    let nullable = json!({ "kind": "union", "of": [var("R"), { "kind": "literal", "value": null }] });
+    let nullable =
+        json!({ "kind": "union", "of": [var("R"), { "kind": "literal", "value": null }] });
     let operator = op(json!([p("x", var("R"))]), nullable, Some(1));
     let sig = Signature::of(&operator);
     let result = |bound: OirType| {
@@ -3429,18 +4015,37 @@ fn the_null_alternative_left_out_keeps_an_optional_the_variable_itself_binds() {
         sig.bind(&mut b, 0, &ty(bound), Mode::Static).unwrap();
         (sig.result(&b), sig.result_without_null(&b))
     };
-    assert_eq!(result(OirType::Number), (Some(OirType::optional(OirType::Number)), Some(OirType::Number)));
+    assert_eq!(
+        result(OirType::Number),
+        (
+            Some(OirType::optional(OirType::Number)),
+            Some(OirType::Number)
+        )
+    );
     let both = OirType::optional(OirType::Number);
-    assert_eq!(result(both.clone()).1, Some(both), "an optional the variable holds survives");
+    assert_eq!(
+        result(both.clone()).1,
+        Some(both),
+        "an optional the variable holds survives"
+    );
     let plain = op(json!([p("x", var("R"))]), var("R"), Some(1));
     let mut b = CallBindings::new();
-    Signature::of(&plain).bind(&mut b, 0, &ty(OirType::Number), Mode::Static).unwrap();
-    assert_eq!(Signature::of(&plain).result_without_null(&b), None, "control: no null alternative declared");
+    Signature::of(&plain)
+        .bind(&mut b, 0, &ty(OirType::Number), Mode::Static)
+        .unwrap();
+    assert_eq!(
+        Signature::of(&plain).result_without_null(&b),
+        None,
+        "control: no null alternative declared"
+    );
 }
 
 fn map_param(value: serde_json::Value) -> EmbeddedOperator {
     op(
-        json!([p("env", json!({ "kind": "map", "key": "string", "value": value }))]),
+        json!([p(
+            "env",
+            json!({ "kind": "map", "key": "string", "value": value })
+        )]),
         json!("void"),
         None,
     )
@@ -3458,26 +4063,52 @@ fn with_nulls(present: &[(&str, OirType)], nulls: &[&str]) -> Actual<'static> {
 
 #[test]
 fn a_null_value_in_a_record_literal_fits_a_map_whose_value_type_admits_null() {
-    let nullable = map_param(json!({ "kind": "union", "of": ["string", { "kind": "literal", "value": null }] }));
+    let nullable = map_param(
+        json!({ "kind": "union", "of": ["string", { "kind": "literal", "value": null }] }),
+    );
     let strict = map_param(json!("string"));
     let all_null = with_nulls(&[], &["PATH"]);
-    assert!(call(&nullable, &[all_null], Mode::Proof).is_ok(), "every value null, the value type admits null");
-    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
-    assert!(call(&nullable, &[mixed], Mode::Proof).is_ok(), "control: mixed string and null, the value type admits null");
-    let all_null = with_nulls(&[], &["PATH"]);
-    assert!(call(&strict, &[all_null], Mode::Proof).is_err(), "control: a Map string string refuses a null value");
-    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
-    assert!(call(&strict, &[mixed], Mode::Proof).is_err(), "control: mixed is refused when the value type excludes null");
     assert!(
-        call(&nullable, &[ty(struct_of(&[]))], Mode::Proof).is_ok() && call(&strict, &[ty(struct_of(&[]))], Mode::Proof).is_ok(),
+        call(&nullable, &[all_null], Mode::Proof).is_ok(),
+        "every value null, the value type admits null"
+    );
+    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
+    assert!(
+        call(&nullable, &[mixed], Mode::Proof).is_ok(),
+        "control: mixed string and null, the value type admits null"
+    );
+    let all_null = with_nulls(&[], &["PATH"]);
+    assert!(
+        call(&strict, &[all_null], Mode::Proof).is_err(),
+        "control: a Map string string refuses a null value"
+    );
+    let mixed = with_nulls(&[("PATH", OirType::String)], &["HOME"]);
+    assert!(
+        call(&strict, &[mixed], Mode::Proof).is_err(),
+        "control: mixed is refused when the value type excludes null"
+    );
+    assert!(
+        call(&nullable, &[ty(struct_of(&[]))], Mode::Proof).is_ok()
+            && call(&strict, &[ty(struct_of(&[]))], Mode::Proof).is_ok(),
         "control: the empty record fits either"
     );
     let wrong = with_nulls(&[("PATH", OirType::Number)], &["HOME"]);
-    assert!(call(&nullable, &[wrong], Mode::Proof).is_err(), "control: a present value of the wrong type is still refused");
+    assert!(
+        call(&nullable, &[wrong], Mode::Proof).is_err(),
+        "control: a present value of the wrong type is still refused"
+    );
 }
 
 fn branch_pick() -> EmbeddedOperator {
-    let mut pick = op(json!([p("condition", json!("boolean")), p("yes", var("T")), p("no", var("T"))]), var("T"), Some(3));
+    let mut pick = op(
+        json!([
+            p("condition", json!("boolean")),
+            p("yes", var("T")),
+            p("no", var("T"))
+        ]),
+        var("T"),
+        Some(3),
+    );
     pick.return_semantics = Some("branch-union".into());
     pick
 }
@@ -3496,8 +4127,24 @@ fn a_branch_of_a_record_and_null_is_the_optional_record_either_way_round() {
             Ok(Some(OirType::optional(record.clone())))
         );
         let maybe = OirType::optional(record.clone());
-        assert_eq!(call(&pick, &[boolean(), ty(maybe.clone()), ty(record.clone())], mode), Ok(Some(maybe.clone())), "a nested branch");
-        assert_eq!(call(&pick, &[boolean(), ty(record.clone()), ty(maybe.clone())], mode), Ok(Some(maybe)), "a nested branch, other side");
+        assert_eq!(
+            call(
+                &pick,
+                &[boolean(), ty(maybe.clone()), ty(record.clone())],
+                mode
+            ),
+            Ok(Some(maybe.clone())),
+            "a nested branch"
+        );
+        assert_eq!(
+            call(
+                &pick,
+                &[boolean(), ty(record.clone()), ty(maybe.clone())],
+                mode
+            ),
+            Ok(Some(maybe)),
+            "a nested branch, other side"
+        );
     }
 }
 
@@ -3506,17 +4153,42 @@ fn control_branches_of_two_records_stay_non_null_and_two_nulls_are_null() {
     let record = struct_of(&[("hp", OirType::Number)]);
     let other = struct_of(&[("hp", OirType::Number)]);
     let pick = branch_pick();
-    assert_eq!(call(&pick, &[boolean(), ty(record.clone()), ty(other)], Mode::Static), Ok(Some(record.clone())));
-    assert_eq!(call(&pick, &[boolean(), ty(record), ty(OirType::Number)], Mode::Static).is_err(), true);
-    assert_eq!(call(&pick, &[boolean(), absent(), absent()], Mode::Static), Ok(None));
+    assert_eq!(
+        call(
+            &pick,
+            &[boolean(), ty(record.clone()), ty(other)],
+            Mode::Static
+        ),
+        Ok(Some(record.clone()))
+    );
+    assert_eq!(
+        call(
+            &pick,
+            &[boolean(), ty(record), ty(OirType::Number)],
+            Mode::Static
+        )
+        .is_err(),
+        true
+    );
+    assert_eq!(
+        call(&pick, &[boolean(), absent(), absent()], Mode::Static),
+        Ok(None)
+    );
 }
 
 #[test]
 fn a_list_of_x_y_shape_return_types_as_a_list_of_cell_records() {
-    let reachable = op(json!([p("steps", json!("number"))]), list(json!({ "kind": "object", "fields": { "x": "number", "y": "number" } })), Some(1));
+    let reachable = op(
+        json!([p("steps", json!("number"))]),
+        list(json!({ "kind": "object", "fields": { "x": "number", "y": "number" } })),
+        Some(1),
+    );
     assert_eq!(
         call(&reachable, &[ty(OirType::Number)], Mode::Static),
-        Ok(Some(s_arr(struct_of(&[("x", OirType::Number), ("y", OirType::Number)]))))
+        Ok(Some(s_arr(struct_of(&[
+            ("x", OirType::Number),
+            ("y", OirType::Number)
+        ]))))
     );
 }
 
@@ -3526,29 +4198,69 @@ fn a_declared_union_result_is_a_determined_union_of_its_members_and_nullable_kee
     let sig_op = op(json!([p("s", json!("string"))]), members, Some(1));
     let sig = Signature::of(&sig_op);
     let mut b = CallBindings::new();
-    sig.bind(&mut b, 0, &ty(OirType::String), Mode::Static).unwrap();
-    assert_eq!(sig.result(&b), Some(OirType::optional(union_of_named(&[("date", OirType::Date), ("datetime", OirType::DateTime)]))));
+    sig.bind(&mut b, 0, &ty(OirType::String), Mode::Static)
+        .unwrap();
+    assert_eq!(
+        sig.result(&b),
+        Some(OirType::optional(union_of_named(&[
+            ("date", OirType::Date),
+            ("datetime", OirType::DateTime)
+        ])))
+    );
     let plain = json!({ "kind": "union", "of": ["date", "datetime"] });
     let plain_op = op(json!([p("s", json!("string"))]), plain, Some(1));
-    assert_eq!(Signature::of(&plain_op).result(&b), Some(union_of_named(&[("date", OirType::Date), ("datetime", OirType::DateTime)])));
+    assert_eq!(
+        Signature::of(&plain_op).result(&b),
+        Some(union_of_named(&[
+            ("date", OirType::Date),
+            ("datetime", OirType::DateTime)
+        ]))
+    );
     let unresolved = json!({ "kind": "union", "of": ["date", { "kind": "var", "name": "T" }] });
     let unresolved_op = op(json!([p("s", json!("string"))]), unresolved, Some(1));
-    assert_eq!(Signature::of(&unresolved_op).result(&CallBindings::new()), None, "control: a member nothing binds stays undetermined");
+    assert_eq!(
+        Signature::of(&unresolved_op).result(&CallBindings::new()),
+        None,
+        "control: a member nothing binds stays undetermined"
+    );
 }
 
 fn union_of_named(members: &[(&str, OirType)]) -> OirType {
-    OirType::Union { variants: members.iter().map(|(n, t)| crate::ir::types::OirField::new(*n, t.clone())).collect() }
+    OirType::Union {
+        variants: members
+            .iter()
+            .map(|(n, t)| crate::ir::types::OirField::new(*n, t.clone()))
+            .collect(),
+    }
 }
 
 #[test]
 fn a_verified_parameter_binds_only_a_verified_never_text_a_record_or_a_literal_of_its_fields() {
-    let operator = op(json!([p("verified", json!("Verified"))]), json!("void"), Some(2));
+    let operator = op(
+        json!([p("verified", json!("Verified"))]),
+        json!("void"),
+        Some(2),
+    );
     let signature = Signature::of(&operator);
-    let bind = |actual: OirType| signature.bind(&mut CallBindings::new(), 0, &ty(actual), Mode::Proof);
-    assert!(bind(crate::sealed::sealed_type_ref("Verified")).is_ok(), "a Verified is what jws/verify answers");
+    let bind =
+        |actual: OirType| signature.bind(&mut CallBindings::new(), 0, &ty(actual), Mode::Proof);
+    assert!(
+        bind(crate::sealed::sealed_type_ref("Verified")).is_ok(),
+        "a Verified is what jws/verify answers"
+    );
     assert!(bind(OirType::String).is_err(), "text is not a Verified");
-    assert!(bind(crate::sealed::sealed_record("Verified").expect("record")).is_err(), "a record of the same fields is not a Verified");
-    assert!(bind(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None }).is_err(), "an object literal is not a Verified");
+    assert!(
+        bind(crate::sealed::sealed_record("Verified").expect("record")).is_err(),
+        "a record of the same fields is not a Verified"
+    );
+    assert!(
+        bind(OirType::Struct {
+            fields: crate::ir::types::no_fields(),
+            additional: None
+        })
+        .is_err(),
+        "an object literal is not a Verified"
+    );
 }
 
 fn verify_like_result() -> serde_json::Value {
@@ -3558,17 +4270,39 @@ fn verify_like_result() -> serde_json::Value {
 
 #[test]
 fn a_union_of_a_sealed_type_and_a_failure_record_with_a_literal_kind_resolves() {
-    let operator = op(json!([p("token", json!("string"))]), verify_like_result(), Some(1));
+    let operator = op(
+        json!([p("token", json!("string"))]),
+        verify_like_result(),
+        Some(1),
+    );
     let resolved = Signature::of(&operator).result(&CallBindings::new());
-    let Some(OirType::Union { variants }) = resolved else { panic!("undetermined: {resolved:?}") };
-    assert!(variants.iter().any(|v| v.field_type == crate::sealed::sealed_type_ref("Verified")), "the sealed member stays the nominal Verified");
+    let Some(OirType::Union { variants }) = resolved else {
+        panic!("undetermined: {resolved:?}")
+    };
+    assert!(
+        variants
+            .iter()
+            .any(|v| v.field_type == crate::sealed::sealed_type_ref("Verified")),
+        "the sealed member stays the nominal Verified"
+    );
     assert!(variants.iter().any(|v| matches!(&v.field_type, OirType::Struct { fields, .. } if fields.iter().any(|f| f.name == "kind" && f.field_type == OirType::String))), "a union of string literals is text");
 }
 
 #[test]
-fn a_sealed_or_unknown_declared_name_in_a_result_resolves_as_a_nominal_ref_and_a_bare_literal_union_of_mixed_types_stays_undetermined() {
+fn a_sealed_or_unknown_declared_name_in_a_result_resolves_as_a_nominal_ref_and_a_bare_literal_union_of_mixed_types_stays_undetermined(
+) {
     let sealed = op(json!([]), json!("Verified"), Some(0));
-    assert_eq!(Signature::of(&sealed).result(&CallBindings::new()), Some(crate::sealed::sealed_type_ref("Verified")));
-    let mixed = op(json!([]), json!({ "kind": "union", "of": [{ "kind": "literal", "value": "a" }, { "kind": "literal", "value": 1 }] }), Some(0));
-    assert!(matches!(Signature::of(&mixed).result(&CallBindings::new()), Some(OirType::Union { variants }) if variants.len() == 2), "control: no collapse across types");
+    assert_eq!(
+        Signature::of(&sealed).result(&CallBindings::new()),
+        Some(crate::sealed::sealed_type_ref("Verified"))
+    );
+    let mixed = op(
+        json!([]),
+        json!({ "kind": "union", "of": [{ "kind": "literal", "value": "a" }, { "kind": "literal", "value": 1 }] }),
+        Some(0),
+    );
+    assert!(
+        matches!(Signature::of(&mixed).result(&CallBindings::new()), Some(OirType::Union { variants }) if variants.len() == 2),
+        "control: no collapse across types"
+    );
 }

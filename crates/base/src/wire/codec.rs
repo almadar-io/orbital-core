@@ -186,15 +186,31 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CodecFailure {
-    Magic, Method, Flags, HeaderCrc, Truncated, Block, Crc, Size, Trailing, OutputLimit,
+    Magic,
+    Method,
+    Flags,
+    HeaderCrc,
+    Truncated,
+    Block,
+    Crc,
+    Size,
+    Trailing,
+    OutputLimit,
 }
 
 impl CodecFailure {
     pub fn code(self) -> &'static str {
         match self {
-            Self::Magic => "magic", Self::Method => "method", Self::Flags => "flags",
-            Self::HeaderCrc => "header-crc", Self::Truncated => "truncated", Self::Block => "block",
-            Self::Crc => "crc", Self::Size => "size", Self::Trailing => "trailing", Self::OutputLimit => "output-limit",
+            Self::Magic => "magic",
+            Self::Method => "method",
+            Self::Flags => "flags",
+            Self::HeaderCrc => "header-crc",
+            Self::Truncated => "truncated",
+            Self::Block => "block",
+            Self::Crc => "crc",
+            Self::Size => "size",
+            Self::Trailing => "trailing",
+            Self::OutputLimit => "output-limit",
         }
     }
 }
@@ -211,16 +227,27 @@ pub fn gzip_compress(data: &[u8]) -> Vec<u8> {
 
 /// One gzip member: the fixed header (no name or time, OS unknown), the raw deflate stream, CRC-32 and size.
 pub fn gzip_compress_level(data: &[u8], level: u32) -> Vec<u8> {
-    let extra_flags = if level >= 9 { 2 } else if level <= 1 { 4 } else { 0 };
+    let extra_flags = if level >= 9 {
+        2
+    } else if level <= 1 {
+        4
+    } else {
+        0
+    };
     let mut out = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, extra_flags, 255];
-    out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(data, level.min(10) as u8));
+    out.extend_from_slice(&miniz_oxide::deflate::compress_to_vec(
+        data,
+        level.min(10) as u8,
+    ));
     out.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
     out.extend_from_slice(&(data.len() as u32).to_le_bytes());
     out
 }
 
 pub fn gzip_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
-    gzip_decode(data, max).map(|out| out.data).map_err(|error| error.code().to_string())
+    gzip_decode(data, max)
+        .map(|out| out.data)
+        .map_err(|error| error.code().to_string())
 }
 
 pub type CodecResult = Result<CodecDecoded, CodecFailure>;
@@ -231,37 +258,67 @@ pub fn gzip_decode(data: &[u8], max: usize) -> CodecResult {
     loop {
         let start = offset;
         if data.len() - start < 18 {
-            return Err(if start == 0 { CodecFailure::Truncated } else { CodecFailure::Trailing });
+            return Err(if start == 0 {
+                CodecFailure::Truncated
+            } else {
+                CodecFailure::Trailing
+            });
         }
         if data[start..start + 2] != [31, 139] {
-            return Err(if start == 0 { CodecFailure::Magic } else { CodecFailure::Trailing });
+            return Err(if start == 0 {
+                CodecFailure::Magic
+            } else {
+                CodecFailure::Trailing
+            });
         }
-        if data[start + 2] != 8 { return Err(CodecFailure::Method); }
+        if data[start + 2] != 8 {
+            return Err(CodecFailure::Method);
+        }
         let flags = data[start + 3];
-        if flags & 224 != 0 { return Err(CodecFailure::Flags); }
+        if flags & 224 != 0 {
+            return Err(CodecFailure::Flags);
+        }
         offset += 10;
         if flags & 4 != 0 {
-            let extra = data.get(offset..offset + 2).ok_or(CodecFailure::Truncated)?;
+            let extra = data
+                .get(offset..offset + 2)
+                .ok_or(CodecFailure::Truncated)?;
             offset += 2 + usize::from(u16::from_le_bytes([extra[0], extra[1]]));
-            if offset > data.len() { return Err(CodecFailure::Truncated); }
+            if offset > data.len() {
+                return Err(CodecFailure::Truncated);
+            }
         }
         for mask in [8, 16] {
             if flags & mask != 0 {
-                offset += data[offset..].iter().position(|byte| *byte == 0).ok_or(CodecFailure::Truncated)? + 1;
+                offset += data[offset..]
+                    .iter()
+                    .position(|byte| *byte == 0)
+                    .ok_or(CodecFailure::Truncated)?
+                    + 1;
             }
         }
         if flags & 2 != 0 {
             let header_sum = crc32fast::hash(&data[start..offset]);
-            let header_crc = data.get(offset..offset + 2).ok_or(CodecFailure::Truncated)?;
-            if u16::from_le_bytes([header_crc[0], header_crc[1]]) != header_sum as u16 { return Err(CodecFailure::HeaderCrc); }
+            let header_crc = data
+                .get(offset..offset + 2)
+                .ok_or(CodecFailure::Truncated)?;
+            if u16::from_le_bytes([header_crc[0], header_crc[1]]) != header_sum as u16 {
+                return Err(CodecFailure::HeaderCrc);
+            }
             offset += 2;
         }
-        let mut decoder = miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Raw);
+        let mut decoder =
+            miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Raw);
         let mut crc = crc32fast::Hasher::new();
         let member_start = out.len();
         loop {
             let mut buffer = [0; 8192];
-            let step = miniz_oxide::inflate::stream::inflate(&mut decoder, &data[offset..], &mut buffer, miniz_oxide::MZFlush::None);
+            let step = miniz_oxide::inflate::stream::inflate(
+                &mut decoder,
+                &data[offset..],
+                &mut buffer,
+                miniz_oxide::MZFlush::None,
+            );
             let ended = match step.status {
                 Ok(status) => status == miniz_oxide::MZStatus::StreamEnd,
                 Err(miniz_oxide::MZError::Buf) => false,
@@ -269,20 +326,41 @@ pub fn gzip_decode(data: &[u8], max: usize) -> CodecResult {
             };
             let (consumed, produced) = (step.bytes_consumed, step.bytes_written);
             offset += consumed;
-            if produced > max - out.len() { return Err(CodecFailure::OutputLimit); }
+            if produced > max - out.len() {
+                return Err(CodecFailure::OutputLimit);
+            }
             crc.update(&buffer[..produced]);
             out.extend_from_slice(&buffer[..produced]);
-            if ended { break; }
-            if consumed == 0 && produced == 0 { return Err(if offset == data.len() { CodecFailure::Truncated } else { CodecFailure::Block }); }
+            if ended {
+                break;
+            }
+            if consumed == 0 && produced == 0 {
+                return Err(if offset == data.len() {
+                    CodecFailure::Truncated
+                } else {
+                    CodecFailure::Block
+                });
+            }
         }
         let sum = crc.finalize();
-        let trailer = data.get(offset..offset + 8).ok_or(CodecFailure::Truncated)?;
+        let trailer = data
+            .get(offset..offset + 8)
+            .ok_or(CodecFailure::Truncated)?;
         let expected_crc = u32::from_le_bytes(trailer[..4].try_into().expect("four bytes"));
         let expected_size = u32::from_le_bytes(trailer[4..].try_into().expect("four bytes"));
-        if sum != expected_crc { return Err(CodecFailure::Crc); }
-        if (out.len() - member_start) as u32 != expected_size { return Err(CodecFailure::Size); }
+        if sum != expected_crc {
+            return Err(CodecFailure::Crc);
+        }
+        if (out.len() - member_start) as u32 != expected_size {
+            return Err(CodecFailure::Size);
+        }
         offset += 8;
-        if offset == data.len() { return Ok(CodecDecoded { data: out, crc: Some(sum) }); }
+        if offset == data.len() {
+            return Ok(CodecDecoded {
+                data: out,
+                crc: Some(sum),
+            });
+        }
     }
 }
 
@@ -293,15 +371,22 @@ pub fn brotli_compress(data: &[u8]) -> Vec<u8> {
 
 #[cfg(feature = "std")]
 pub fn brotli_compress_options(data: &[u8], quality: i32, window: i32) -> Vec<u8> {
-    let params = brotli::enc::BrotliEncoderParams { quality, lgwin: window, ..Default::default() };
+    let params = brotli::enc::BrotliEncoderParams {
+        quality,
+        lgwin: window,
+        ..Default::default()
+    };
     let mut out = Vec::new();
-    brotli::BrotliCompress(&mut &data[..], &mut out, &params).expect("brotli into memory cannot fail");
+    brotli::BrotliCompress(&mut &data[..], &mut out, &params)
+        .expect("brotli into memory cannot fail");
     out
 }
 
 #[cfg(feature = "std")]
 pub fn brotli_decompress(data: &[u8], max: usize) -> Result<Vec<u8>, String> {
-    brotli_decode(data, max).map(|out| out.data).map_err(|error| error.code().to_string())
+    brotli_decode(data, max)
+        .map(|out| out.data)
+        .map_err(|error| error.code().to_string())
 }
 
 #[cfg(feature = "std")]
@@ -311,29 +396,49 @@ pub fn brotli_decode(data: &[u8], max: usize) -> CodecResult {
     let mut out = Vec::new();
     let mut buffer = [0; 8192];
     loop {
-        let n = reader.read(&mut buffer).map_err(|error| if error.kind() == std::io::ErrorKind::UnexpectedEof { CodecFailure::Truncated } else { CodecFailure::Block })?;
-        if n == 0 { return Ok(CodecDecoded { data: out, crc: None }); }
-        if n > max - out.len() { return Err(CodecFailure::OutputLimit); }
+        let n = reader.read(&mut buffer).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                CodecFailure::Truncated
+            } else {
+                CodecFailure::Block
+            }
+        })?;
+        if n == 0 {
+            return Ok(CodecDecoded {
+                data: out,
+                crc: None,
+            });
+        }
+        if n > max - out.len() {
+            return Err(CodecFailure::OutputLimit);
+        }
         out.extend_from_slice(&buffer[..n]);
     }
 }
 
 /// The Ed25519 public key of the 32-byte signing `seed`.
 pub fn ed25519_public_key(seed: &[u8; 32]) -> [u8; 32] {
-    ed25519_dalek::SigningKey::from_bytes(seed).verifying_key().to_bytes()
+    ed25519_dalek::SigningKey::from_bytes(seed)
+        .verifying_key()
+        .to_bytes()
 }
 
 /// The 64-byte Ed25519 signature of `message` under the 32-byte signing `seed`.
 pub fn ed25519_sign(seed: &[u8; 32], message: &[u8]) -> [u8; 64] {
     use ed25519_dalek::Signer;
-    ed25519_dalek::SigningKey::from_bytes(seed).sign(message).to_bytes()
+    ed25519_dalek::SigningKey::from_bytes(seed)
+        .sign(message)
+        .to_bytes()
 }
 
 /// Whether `signature` is `public_key`'s Ed25519 signature of `message`; a key that is not a curve point is not valid.
 pub fn ed25519_verify(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
     use ed25519_dalek::Verifier;
-    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else { return false };
-    key.verify(message, &ed25519_dalek::Signature::from_bytes(signature)).is_ok()
+    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    key.verify(message, &ed25519_dalek::Signature::from_bytes(signature))
+        .is_ok()
 }
 
 /// The outcome of an RSASSA-PKCS1-v1_5 / SHA-256 verification: a verdict on a well-formed key and signature, or the
@@ -362,7 +467,10 @@ impl RsaVerdict {
 /// The smallest accepted RSA modulus, 2048 bits, what JWS RS256 requires.
 pub const RSA_MIN_MODULUS_BYTES: usize = 256;
 
-const SHA256_DIGEST_INFO: [u8; 19] = [0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05, 0x00, 0x04, 0x20];
+const SHA256_DIGEST_INFO: [u8; 19] = [
+    0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+    0x00, 0x04, 0x20,
+];
 
 /// RSASSA-PKCS1-v1_5 with SHA-256 (RFC 8017 section 8.2.2) over a public key given as big-endian modulus and exponent: the
 /// signature is raised to the exponent modulo the modulus and the block must equal 00 01 FF..FF 00 DigestInfo hash byte for
@@ -380,7 +488,9 @@ pub fn rsa_pkcs1_sha256_verify(n: &[u8], e: &[u8], message: &[u8], signature: &[
     if signature_int >= modulus {
         return RsaVerdict::SignatureRange;
     }
-    let recovered = signature_int.modpow(&BigUint::from_bytes_be(e), &modulus).to_bytes_be();
+    let recovered = signature_int
+        .modpow(&BigUint::from_bytes_be(e), &modulus)
+        .to_bytes_be();
     let k = n.len();
     let mut expected = Vec::with_capacity(k);
     expected.extend_from_slice(&[0x00, 0x01]);
@@ -423,7 +533,12 @@ impl EcdsaVerdict {
 /// ECDSA over P-256 with SHA-256 (FIPS 186-4 section 6.4.2) for a public key given as two 32-byte big-endian coordinates and
 /// a raw 64-byte r||s signature. r or s of zero is a range refusal before the key is looked at; a coordinate not below the
 /// field prime or a point off the curve is a point refusal; r or s not below the group order is a range refusal.
-pub fn ecdsa_p256_sha256_verify(x: &[u8], y: &[u8], message: &[u8], signature: &[u8]) -> EcdsaVerdict {
+pub fn ecdsa_p256_sha256_verify(
+    x: &[u8],
+    y: &[u8],
+    message: &[u8],
+    signature: &[u8],
+) -> EcdsaVerdict {
     use p256::ecdsa::signature::Verifier;
     use p256::elliptic_curve::sec1::FromEncodedPoint;
     use p256::elliptic_curve::PrimeField;
@@ -434,12 +549,22 @@ pub fn ecdsa_p256_sha256_verify(x: &[u8], y: &[u8], message: &[u8], signature: &
     if r_bytes.iter().all(|b| *b == 0) || s_bytes.iter().all(|b| *b == 0) {
         return EcdsaVerdict::Range;
     }
-    let encoded = p256::EncodedPoint::from_affine_coordinates(p256::FieldBytes::from_slice(x), p256::FieldBytes::from_slice(y), false);
-    let Some(point) = Option::<p256::AffinePoint>::from(p256::AffinePoint::from_encoded_point(&encoded)) else {
+    let encoded = p256::EncodedPoint::from_affine_coordinates(
+        p256::FieldBytes::from_slice(x),
+        p256::FieldBytes::from_slice(y),
+        false,
+    );
+    let Some(point) =
+        Option::<p256::AffinePoint>::from(p256::AffinePoint::from_encoded_point(&encoded))
+    else {
         return EcdsaVerdict::Point;
     };
     for half in [r_bytes, s_bytes] {
-        if Option::<p256::Scalar>::from(p256::Scalar::from_repr(*p256::FieldBytes::from_slice(half))).is_none() {
+        if Option::<p256::Scalar>::from(p256::Scalar::from_repr(*p256::FieldBytes::from_slice(
+            half,
+        )))
+        .is_none()
+        {
             return EcdsaVerdict::Range;
         }
     }
@@ -476,7 +601,11 @@ pub fn ecdsa_p256_sha256_sign(pem: &str, message: &[u8]) -> Result<[u8; 64], Sig
 /// RSASSA-PKCS1-v1_5 / SHA-256 (RFC 8017 section 8.2.1) under a PKCS#8 PEM private key. The private operation is blinded
 /// with a ChaCha20 stream seeded from `seed`; a modulus under [`RSA_MIN_MODULUS_BYTES`] is refused. The key is zeroized when
 /// it drops.
-pub fn rsa_pkcs1_sha256_sign(pem: &str, message: &[u8], seed: [u8; 32]) -> Result<Vec<u8>, SignFailure> {
+pub fn rsa_pkcs1_sha256_sign(
+    pem: &str,
+    message: &[u8],
+    seed: [u8; 32],
+) -> Result<Vec<u8>, SignFailure> {
     use rand_chacha::rand_core::SeedableRng;
     use rsa::pkcs8::DecodePrivateKey;
     use rsa::signature::{RandomizedSigner, SignatureEncoding};
@@ -487,7 +616,9 @@ pub fn rsa_pkcs1_sha256_sign(pem: &str, message: &[u8], seed: [u8; 32]) -> Resul
     }
     let signing = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
-    let signature = signing.try_sign_with_rng(&mut rng, message).map_err(|_| SignFailure::Key)?;
+    let signature = signing
+        .try_sign_with_rng(&mut rng, message)
+        .map_err(|_| SignFailure::Key)?;
     Ok(signature.to_vec())
 }
 
@@ -507,11 +638,17 @@ pub fn ecdh_p256_ephemeral(peer: &[u8], seed: [u8; 32]) -> Option<EcdhExchange> 
     let peer = p256::PublicKey::from_sec1_bytes(peer).ok()?;
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
     let secret = p256::ecdh::EphemeralSecret::random(&mut rng);
-    let public = p256::PublicKey::from(&secret).to_encoded_point(false).as_bytes().to_vec();
+    let public = p256::PublicKey::from(&secret)
+        .to_encoded_point(false)
+        .as_bytes()
+        .to_vec();
     let shared = secret.diffie_hellman(&peer);
     let mut out = [0u8; 32];
     out.copy_from_slice(shared.raw_secret_bytes());
-    Some(EcdhExchange { public, shared: out })
+    Some(EcdhExchange {
+        public,
+        shared: out,
+    })
 }
 
 /// AES-128-GCM seal: ciphertext followed by the 16-byte tag. `None` when the key is not 16 bytes or the nonce not 12.
@@ -521,7 +658,15 @@ pub fn aes128_gcm_seal(key: &[u8], nonce: &[u8], plaintext: &[u8], aad: &[u8]) -
         return None;
     }
     let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).ok()?;
-    cipher.encrypt(aes_gcm::Nonce::from_slice(nonce), Payload { msg: plaintext, aad }).ok()
+    cipher
+        .encrypt(
+            aes_gcm::Nonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .ok()
 }
 
 /// AES-128-GCM open of ciphertext followed by its tag. `None` when the key or nonce is the wrong size or the tag does not
@@ -532,7 +677,12 @@ pub fn aes128_gcm_open(key: &[u8], nonce: &[u8], sealed: &[u8], aad: &[u8]) -> O
         return None;
     }
     let cipher = aes_gcm::Aes128Gcm::new_from_slice(key).ok()?;
-    cipher.decrypt(aes_gcm::Nonce::from_slice(nonce), Payload { msg: sealed, aad }).ok()
+    cipher
+        .decrypt(
+            aes_gcm::Nonce::from_slice(nonce),
+            Payload { msg: sealed, aad },
+        )
+        .ok()
 }
 
 /// One regular file of a tar archive.
@@ -546,14 +696,26 @@ pub struct TarFile {
 /// Why a tar archive was refused; every refusal is one of these closed codes, never a partial read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TarFailure {
-    Truncated, HeaderChecksum, Number, Path, Duplicate, Type, Pax, EntryLimit,
+    Truncated,
+    HeaderChecksum,
+    Number,
+    Path,
+    Duplicate,
+    Type,
+    Pax,
+    EntryLimit,
 }
 
 impl TarFailure {
     pub fn code(self) -> &'static str {
         match self {
-            Self::Truncated => "truncated", Self::HeaderChecksum => "header-checksum", Self::Number => "number",
-            Self::Path => "path", Self::Duplicate => "duplicate", Self::Type => "type", Self::Pax => "pax",
+            Self::Truncated => "truncated",
+            Self::HeaderChecksum => "header-checksum",
+            Self::Number => "number",
+            Self::Path => "path",
+            Self::Duplicate => "duplicate",
+            Self::Type => "type",
+            Self::Pax => "pax",
             Self::EntryLimit => "entry-limit",
         }
     }
@@ -570,7 +732,9 @@ fn tar_path_safe(path: &str) -> bool {
     !path.is_empty()
         && !path.contains('\\')
         && !path.contains('\0')
-        && path.split('/').all(|part| !part.is_empty() && part != "." && part != "..")
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 /// The `path` record of a pax extended header (`<len> <key>=<value>\n` records); `None` when it sets no path.
@@ -578,12 +742,19 @@ fn pax_path(data: &[u8]) -> Result<Option<String>, TarFailure> {
     let mut path = None;
     let mut rest = data;
     while !rest.is_empty() {
-        let space = rest.iter().position(|b| *b == b' ').ok_or(TarFailure::Pax)?;
-        let len: usize = core::str::from_utf8(&rest[..space]).ok().and_then(|t| t.parse().ok()).ok_or(TarFailure::Pax)?;
+        let space = rest
+            .iter()
+            .position(|b| *b == b' ')
+            .ok_or(TarFailure::Pax)?;
+        let len: usize = core::str::from_utf8(&rest[..space])
+            .ok()
+            .and_then(|t| t.parse().ok())
+            .ok_or(TarFailure::Pax)?;
         if len <= space + 1 || len > rest.len() || rest[len - 1] != b'\n' {
             return Err(TarFailure::Pax);
         }
-        let record = core::str::from_utf8(&rest[space + 1..len - 1]).map_err(|_| TarFailure::Pax)?;
+        let record =
+            core::str::from_utf8(&rest[space + 1..len - 1]).map_err(|_| TarFailure::Pax)?;
         let (key, value) = record.split_once('=').ok_or(TarFailure::Pax)?;
         if key == "path" {
             path = Some(value.to_string());
@@ -622,13 +793,26 @@ pub fn tar_files(archive: &[u8], max_entries: usize) -> Result<Vec<TarFile>, Tar
             return Ok(files);
         }
         let stored = octal(&header[148..156])?;
-        let sum: usize = header.iter().enumerate().map(|(i, b)| if (148..156).contains(&i) { 32 } else { usize::from(*b) }).sum();
+        let sum: usize = header
+            .iter()
+            .enumerate()
+            .map(|(i, b)| {
+                if (148..156).contains(&i) {
+                    32
+                } else {
+                    usize::from(*b)
+                }
+            })
+            .sum();
         if stored != sum {
             return Err(TarFailure::HeaderChecksum);
         }
         let size = octal(&header[124..136])?;
         let start = offset + 512;
-        let end = start.checked_add(size).filter(|end| *end <= archive.len()).ok_or(TarFailure::Truncated)?;
+        let end = start
+            .checked_add(size)
+            .filter(|end| *end <= archive.len())
+            .ok_or(TarFailure::Truncated)?;
         let data = &archive[start..end];
         offset = start + size.div_ceil(512) * 512;
         match header[156] {
@@ -638,7 +822,11 @@ pub fn tar_files(archive: &[u8], max_entries: usize) -> Result<Vec<TarFile>, Tar
                     None => {
                         let name = text(&header[0..100])?;
                         let prefix = text(&header[345..500])?;
-                        if prefix.is_empty() { name.to_string() } else { format!("{prefix}/{name}") }
+                        if prefix.is_empty() {
+                            name.to_string()
+                        } else {
+                            format!("{prefix}/{name}")
+                        }
                     }
                 };
                 if !tar_path_safe(&path) {
@@ -651,7 +839,11 @@ pub fn tar_files(archive: &[u8], max_entries: usize) -> Result<Vec<TarFile>, Tar
                     return Err(TarFailure::EntryLimit);
                 }
                 let mode = octal(&header[100..108])?;
-                files.push(TarFile { path, data: data.to_vec(), executable: mode & 0o111 != 0 });
+                files.push(TarFile {
+                    path,
+                    data: data.to_vec(),
+                    executable: mode & 0o111 != 0,
+                });
             }
             b'5' => next_path = None,
             b'g' => {}
@@ -681,9 +873,20 @@ mod key_exchange_tests {
         assert_eq!(exchange.public.len(), 65);
         let theirs = p256::PublicKey::from_sec1_bytes(&exchange.public).expect("point");
         let derived = p256::ecdh::diffie_hellman(peer.to_nonzero_scalar(), theirs.as_affine());
-        assert_eq!(derived.raw_secret_bytes().as_slice(), exchange.shared.as_slice());
-        assert_eq!(ecdh_p256_ephemeral(peer_public.as_bytes(), [9u8; 32]), Some(exchange.clone()));
-        assert_ne!(ecdh_p256_ephemeral(peer_public.as_bytes(), [8u8; 32]).expect("exchange").public, exchange.public);
+        assert_eq!(
+            derived.raw_secret_bytes().as_slice(),
+            exchange.shared.as_slice()
+        );
+        assert_eq!(
+            ecdh_p256_ephemeral(peer_public.as_bytes(), [9u8; 32]),
+            Some(exchange.clone())
+        );
+        assert_ne!(
+            ecdh_p256_ephemeral(peer_public.as_bytes(), [8u8; 32])
+                .expect("exchange")
+                .public,
+            exchange.public
+        );
         assert_eq!(ecdh_p256_ephemeral(&[4u8; 65], [9u8; 32]), None);
         assert_eq!(ecdh_p256_ephemeral(&[], [9u8; 32]), None);
     }
@@ -692,11 +895,23 @@ mod key_exchange_tests {
     #[test]
     fn aes_gcm_refuses_a_wrong_sized_key_or_nonce_and_a_forged_tag() {
         let sealed = aes128_gcm_seal(&[1u8; 16], &[2u8; 12], b"hello", b"aad").expect("sealed");
-        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"aad").as_deref(), Some(&b"hello"[..]));
-        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"bad"), None);
-        assert_eq!(aes128_gcm_open(&[3u8; 16], &[2u8; 12], &sealed, b"aad"), None);
+        assert_eq!(
+            aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"aad").as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(
+            aes128_gcm_open(&[1u8; 16], &[2u8; 12], &sealed, b"bad"),
+            None
+        );
+        assert_eq!(
+            aes128_gcm_open(&[3u8; 16], &[2u8; 12], &sealed, b"aad"),
+            None
+        );
         assert_eq!(aes128_gcm_seal(&[1u8; 32], &[2u8; 12], b"x", b""), None);
-        assert_eq!(aes128_gcm_open(&[1u8; 16], &[2u8; 8], &sealed, b"aad"), None);
+        assert_eq!(
+            aes128_gcm_open(&[1u8; 16], &[2u8; 8], &sealed, b"aad"),
+            None
+        );
     }
 }
 
@@ -707,13 +922,30 @@ mod structured_codec_tests {
     #[test]
     fn gzip_compression_writes_the_bytes_flate2_wrote() {
         use std::io::Write;
-        let inputs: [&[u8]; 4] = [b"", b"hello", &[7u8; 70_000], b"the quick brown fox jumps over the lazy dog, again and again and again"];
+        let inputs: [&[u8]; 4] = [
+            b"",
+            b"hello",
+            &[7u8; 70_000],
+            b"the quick brown fox jumps over the lazy dog, again and again and again",
+        ];
         for data in inputs {
             for level in [0, 1, 6, 9] {
-                let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level));
                 encoder.write_all(data).unwrap();
-                assert_eq!(gzip_compress_level(data, level), encoder.finish().unwrap(), "level {level}, {} bytes", data.len());
-                assert_eq!(gzip_decode(&gzip_compress_level(data, level), data.len()).unwrap().data, data, "round trip level {level}");
+                assert_eq!(
+                    gzip_compress_level(data, level),
+                    encoder.finish().unwrap(),
+                    "level {level}, {} bytes",
+                    data.len()
+                );
+                assert_eq!(
+                    gzip_decode(&gzip_compress_level(data, level), data.len())
+                        .unwrap()
+                        .data,
+                    data,
+                    "round trip level {level}"
+                );
             }
         }
     }
@@ -723,43 +955,74 @@ mod structured_codec_tests {
         let valid = gzip_compress(b"hello");
         let code = |bytes: &[u8]| gzip_decode(bytes, 100).unwrap_err();
         assert_eq!(code(&valid[..4]), CodecFailure::Truncated);
-        let mut bad = valid.clone(); bad[0] = 0;
+        let mut bad = valid.clone();
+        bad[0] = 0;
         assert_eq!(code(&bad), CodecFailure::Magic);
-        bad = valid.clone(); bad[2] = 7;
+        bad = valid.clone();
+        bad[2] = 7;
         assert_eq!(code(&bad), CodecFailure::Method);
-        bad = valid.clone(); bad[3] = 32;
+        bad = valid.clone();
+        bad[3] = 32;
         assert_eq!(code(&bad), CodecFailure::Flags);
-        bad = valid.clone(); bad[10] = 7;
+        bad = valid.clone();
+        bad[10] = 7;
         assert_eq!(code(&bad), CodecFailure::Block);
-        bad = valid.clone(); let n = bad.len(); bad[n - 8] ^= 1;
+        bad = valid.clone();
+        let n = bad.len();
+        bad[n - 8] ^= 1;
         assert_eq!(code(&bad), CodecFailure::Crc);
-        bad = valid.clone(); bad[n - 4] ^= 1;
+        bad = valid.clone();
+        bad[n - 4] ^= 1;
         assert_eq!(code(&bad), CodecFailure::Size);
-        bad = valid.clone(); bad.extend_from_slice(b"junk");
+        bad = valid.clone();
+        bad.extend_from_slice(b"junk");
         assert_eq!(code(&bad), CodecFailure::Trailing);
-        bad = valid.clone(); bad[3] = 2; bad.splice(10..10, [0, 0]);
+        bad = valid.clone();
+        bad[3] = 2;
+        bad.splice(10..10, [0, 0]);
         assert_eq!(code(&bad), CodecFailure::HeaderCrc);
         let header_sum = crc32fast::hash(&bad[..10]) as u16;
         bad[10..12].copy_from_slice(&header_sum.to_le_bytes());
         assert_eq!(gzip_decode(&bad, 5).unwrap().data, b"hello");
-        assert_eq!(gzip_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
+        assert_eq!(
+            gzip_decode(&valid, 4).unwrap_err(),
+            CodecFailure::OutputLimit
+        );
         assert_eq!(gzip_decode(&valid, 5).unwrap().data, b"hello");
-        assert_eq!(gzip_decode(&[valid.clone(), valid].concat(), 10).unwrap().data, b"hellohello");
+        assert_eq!(
+            gzip_decode(&[valid.clone(), valid].concat(), 10)
+                .unwrap()
+                .data,
+            b"hellohello"
+        );
     }
 
     #[test]
     fn brotli_structured_failure_and_exact_limit_control() {
         let valid = brotli_compress(b"hello");
-        assert_eq!(brotli_decode(&valid, 4).unwrap_err(), CodecFailure::OutputLimit);
+        assert_eq!(
+            brotli_decode(&valid, 4).unwrap_err(),
+            CodecFailure::OutputLimit
+        );
         assert_eq!(brotli_decode(&valid, 5).unwrap().data, b"hello");
-        assert_eq!(brotli_decode(&[255; 8], 100).unwrap_err(), CodecFailure::Block);
+        assert_eq!(
+            brotli_decode(&[255; 8], 100).unwrap_err(),
+            CodecFailure::Block
+        );
     }
 
     #[test]
     fn ed25519_signs_and_verifies_rfc8032_vector_and_refuses_a_tampered_message() {
-        let seed: [u8; 32] = hex_decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60").unwrap().try_into().unwrap();
+        let seed: [u8; 32] =
+            hex_decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+                .unwrap()
+                .try_into()
+                .unwrap();
         let public = ed25519_public_key(&seed);
-        assert_eq!(hex(&public), "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a");
+        assert_eq!(
+            hex(&public),
+            "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+        );
         let signature = ed25519_sign(&seed, b"");
         assert_eq!(hex(&signature), "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
         assert!(ed25519_verify(&public, b"", &signature));
@@ -769,7 +1032,11 @@ mod structured_codec_tests {
         assert!(!ed25519_verify(&public, b"", &bent));
         let mut other = seed;
         other[0] ^= 1;
-        assert!(!ed25519_verify(&ed25519_public_key(&other), b"", &signature));
+        assert!(!ed25519_verify(
+            &ed25519_public_key(&other),
+            b"",
+            &signature
+        ));
     }
 
     fn tar_entry(name: &str, mode: u32, kind: u8, data: &[u8]) -> Vec<u8> {
@@ -795,14 +1062,33 @@ mod structured_codec_tests {
 
     #[test]
     fn tar_files_reads_regular_files_with_their_mode_and_refuses_a_truncated_entry() {
-        let archive = tar_of(&[tar_entry("dir/", 0o755, b'5', b""), tar_entry("dir/a.txt", 0o644, b'0', b"hello"), tar_entry("dir/run", 0o755, b'0', b"#!")]);
-        let files = tar_files(&archive, 10).unwrap();
-        assert_eq!(files, vec![
-            TarFile { path: "dir/a.txt".into(), data: b"hello".to_vec(), executable: false },
-            TarFile { path: "dir/run".into(), data: b"#!".to_vec(), executable: true },
+        let archive = tar_of(&[
+            tar_entry("dir/", 0o755, b'5', b""),
+            tar_entry("dir/a.txt", 0o644, b'0', b"hello"),
+            tar_entry("dir/run", 0o755, b'0', b"#!"),
         ]);
+        let files = tar_files(&archive, 10).unwrap();
+        assert_eq!(
+            files,
+            vec![
+                TarFile {
+                    path: "dir/a.txt".into(),
+                    data: b"hello".to_vec(),
+                    executable: false
+                },
+                TarFile {
+                    path: "dir/run".into(),
+                    data: b"#!".to_vec(),
+                    executable: true
+                },
+            ]
+        );
         assert_eq!(tar_files(&archive[..1026], 10), Err(TarFailure::Truncated));
-        assert_eq!(tar_files(&archive[..1536], 10), Err(TarFailure::Truncated), "no end-of-archive block");
+        assert_eq!(
+            tar_files(&archive[..1536], 10),
+            Err(TarFailure::Truncated),
+            "no end-of-archive block"
+        );
         assert_eq!(tar_files(&[0u8; 1024], 10), Ok(vec![]));
         assert_eq!(tar_files(&[], 10), Err(TarFailure::Truncated));
     }
@@ -811,46 +1097,115 @@ mod structured_codec_tests {
     fn tar_files_refuses_a_header_whose_checksum_does_not_match() {
         let mut entry = tar_entry("a.txt", 0o644, b'0', b"x");
         entry[0] = b'b';
-        assert_eq!(tar_files(&tar_of(&[entry]), 10), Err(TarFailure::HeaderChecksum));
-        assert_eq!(tar_files(&tar_of(&[tar_entry("b.txt", 0o644, b'0', b"x")]), 10).unwrap().len(), 1, "control: the same entry with its checksum");
+        assert_eq!(
+            tar_files(&tar_of(&[entry]), 10),
+            Err(TarFailure::HeaderChecksum)
+        );
+        assert_eq!(
+            tar_files(&tar_of(&[tar_entry("b.txt", 0o644, b'0', b"x")]), 10)
+                .unwrap()
+                .len(),
+            1,
+            "control: the same entry with its checksum"
+        );
     }
 
     #[test]
     fn tar_files_refuses_paths_that_are_not_relative_and_normal() {
-        for bad in ["/etc/passwd", "../evil", "a/../../evil", "a//b", "./a", "a\\b", "a/."] {
-            assert_eq!(tar_files(&tar_of(&[tar_entry(bad, 0o644, b'0', b"x")]), 10), Err(TarFailure::Path), "{bad}");
+        for bad in [
+            "/etc/passwd",
+            "../evil",
+            "a/../../evil",
+            "a//b",
+            "./a",
+            "a\\b",
+            "a/.",
+        ] {
+            assert_eq!(
+                tar_files(&tar_of(&[tar_entry(bad, 0o644, b'0', b"x")]), 10),
+                Err(TarFailure::Path),
+                "{bad}"
+            );
         }
-        assert!(tar_files(&tar_of(&[tar_entry("package/lib/a.js", 0o644, b'0', b"x")]), 10).is_ok(), "control: a nested relative path");
+        assert!(
+            tar_files(
+                &tar_of(&[tar_entry("package/lib/a.js", 0o644, b'0', b"x")]),
+                10
+            )
+            .is_ok(),
+            "control: a nested relative path"
+        );
     }
 
     #[test]
     fn tar_files_refuses_links_devices_duplicates_and_too_many_entries() {
         for kind in [b'1', b'2', b'3', b'4', b'6'] {
-            assert_eq!(tar_files(&tar_of(&[tar_entry("l", 0o644, kind, b"")]), 10), Err(TarFailure::Type), "type {}", kind as char);
+            assert_eq!(
+                tar_files(&tar_of(&[tar_entry("l", 0o644, kind, b"")]), 10),
+                Err(TarFailure::Type),
+                "type {}",
+                kind as char
+            );
         }
-        let twice = tar_of(&[tar_entry("a", 0o644, b'0', b"1"), tar_entry("a", 0o644, b'0', b"2")]);
+        let twice = tar_of(&[
+            tar_entry("a", 0o644, b'0', b"1"),
+            tar_entry("a", 0o644, b'0', b"2"),
+        ]);
         assert_eq!(tar_files(&twice, 10), Err(TarFailure::Duplicate));
-        let three = tar_of(&[tar_entry("a", 0o644, b'0', b""), tar_entry("b", 0o644, b'0', b""), tar_entry("c", 0o644, b'0', b"")]);
+        let three = tar_of(&[
+            tar_entry("a", 0o644, b'0', b""),
+            tar_entry("b", 0o644, b'0', b""),
+            tar_entry("c", 0o644, b'0', b""),
+        ]);
         assert_eq!(tar_files(&three, 2), Err(TarFailure::EntryLimit));
-        assert_eq!(tar_files(&three, 3).unwrap().len(), 3, "control: exactly the limit");
+        assert_eq!(
+            tar_files(&three, 3).unwrap().len(),
+            3,
+            "control: exactly the limit"
+        );
     }
 
     #[test]
     fn tar_files_names_the_next_entry_from_a_pax_path_or_a_gnu_long_name() {
         let long = format!("package/{}/x.js", "d".repeat(120));
         let body = format!(" path={long}\n");
-        let digits = (1..).find(|d| (body.len() + d).to_string().len() == *d).unwrap();
+        let digits = (1..)
+            .find(|d| (body.len() + d).to_string().len() == *d)
+            .unwrap();
         let record = format!("{}{body}", body.len() + digits);
-        let pax = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', record.as_bytes()), tar_entry("short", 0o644, b'0', b"p")]);
+        let pax = tar_of(&[
+            tar_entry("PaxHeader", 0o644, b'x', record.as_bytes()),
+            tar_entry("short", 0o644, b'0', b"p"),
+        ]);
         assert_eq!(tar_files(&pax, 10).unwrap()[0].path, long);
-        let gnu = tar_of(&[tar_entry("././@LongLink", 0o644, b'L', format!("{long}\0").as_bytes()), tar_entry("short", 0o644, b'0', b"g")]);
+        let gnu = tar_of(&[
+            tar_entry("././@LongLink", 0o644, b'L', format!("{long}\0").as_bytes()),
+            tar_entry("short", 0o644, b'0', b"g"),
+        ]);
         assert_eq!(tar_files(&gnu, 10).unwrap()[0].path, long);
-        let global = tar_of(&[tar_entry("pax_global_header", 0o644, b'g', b"20 comment=anything\n"), tar_entry("short", 0o644, b'0', b"s")]);
-        assert_eq!(tar_files(&global, 10).unwrap()[0].path, "short", "control: a global header names nothing");
-        let broken = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', b"99 path=x\n"), tar_entry("short", 0o644, b'0', b"p")]);
+        let global = tar_of(&[
+            tar_entry("pax_global_header", 0o644, b'g', b"20 comment=anything\n"),
+            tar_entry("short", 0o644, b'0', b"s"),
+        ]);
+        assert_eq!(
+            tar_files(&global, 10).unwrap()[0].path,
+            "short",
+            "control: a global header names nothing"
+        );
+        let broken = tar_of(&[
+            tar_entry("PaxHeader", 0o644, b'x', b"99 path=x\n"),
+            tar_entry("short", 0o644, b'0', b"p"),
+        ]);
         assert_eq!(tar_files(&broken, 10), Err(TarFailure::Pax));
-        let escaping = tar_of(&[tar_entry("PaxHeader", 0o644, b'x', b"16 path=../evil\n"), tar_entry("short", 0o644, b'0', b"p")]);
-        assert_eq!(tar_files(&escaping, 10), Err(TarFailure::Path), "a pax path is checked like a header path");
+        let escaping = tar_of(&[
+            tar_entry("PaxHeader", 0o644, b'x', b"16 path=../evil\n"),
+            tar_entry("short", 0o644, b'0', b"p"),
+        ]);
+        assert_eq!(
+            tar_files(&escaping, 10),
+            Err(TarFailure::Path),
+            "a pax path is checked like a header path"
+        );
     }
 
     #[test]
@@ -868,7 +1223,8 @@ mod signature_verification_tests {
     const RSA_SIGNATURE: &str = "RA4mgYzrg/dfjqlRbUcGMN4Vr7k7ChWG3Jsbpkz93OKGJfIJ8D8zpGCOvaMfc1WN0pWnwuPuSxHgsOMaC4bh1qH5tS1FJWFxL//Lg28IIrWHM/olBCAUXbhsqNvf3g7m50XNVmM8RvmMDZOXuBJkLm4GLAptJaSgUyK2pPFV0CCKx4zIFjtoL1ZvtZvwgT6er9VWheX+3wNm7MQwtHKYTH77z4XVi2K/+rkY7QNdh9GohExwK6cDy8sCuLG7Kjb1YykNxEcZxR8k/1X6NqZC1svDj1ghejKGi+Tkkf7nCfVH7lDIzE+FisrCetfZG8eNQ4ROWAmAA4gWv2Hjd+isWg==";
     const EC_X: &str = "DWCBVhKCGPAV0CVSa7Nu/svWxAWs1ejOo2PZPNjNAHE=";
     const EC_Y: &str = "786l0mh1J2aMm6STYLEz60poSi5F6aNJi4BnV6yCOMY=";
-    const EC_SIGNATURE: &str = "eAQcvqokeZHzlZ0shvZjYSxtc12OnlR9IZgH9nCRSoqlNKyYQx0YNoLL0SpkJkGsbGfmF1a4OIfG0VncqUiwgQ==";
+    const EC_SIGNATURE: &str =
+        "eAQcvqokeZHzlZ0shvZjYSxtc12OnlR9IZgH9nCRSoqlNKyYQx0YNoLL0SpkJkGsbGfmF1a4OIfG0VncqUiwgQ==";
     const MESSAGE: &str = "header.payload";
     const P256_P: &str = "/////wAAAAEAAAAAAAAAAAAAAAD///////////////8=";
     const P256_N: &str = "/////wAAAAD//////////7zm+q2nF56E87nKwvxjJVE=";
@@ -895,33 +1251,57 @@ mod signature_verification_tests {
     fn a_real_rs256_signature_verifies_and_its_controls_do_not() {
         let (n, e, signature) = (bytes(RSA_N), bytes(RSA_E), bytes(RSA_SIGNATURE));
         assert_eq!(rsa(&n, &e, MESSAGE, &signature), RsaVerdict::Valid);
-        assert_eq!(rsa(&n, &e, MESSAGE, &flip_last_bit(signature.clone())), RsaVerdict::Mismatch);
-        assert_eq!(rsa(&n, &e, "header.payloaD", &signature), RsaVerdict::Mismatch);
+        assert_eq!(
+            rsa(&n, &e, MESSAGE, &flip_last_bit(signature.clone())),
+            RsaVerdict::Mismatch
+        );
+        assert_eq!(
+            rsa(&n, &e, "header.payloaD", &signature),
+            RsaVerdict::Mismatch
+        );
         assert_eq!(rsa(&n, &[3], MESSAGE, &signature), RsaVerdict::Mismatch);
     }
 
     #[test]
     fn an_rsa_key_or_signature_that_cannot_be_checked_is_refused_by_a_closed_reason() {
         let (n, e, signature) = (bytes(RSA_N), bytes(RSA_E), bytes(RSA_SIGNATURE));
-        assert_eq!(rsa(&n[1..], &e, MESSAGE, &signature[1..]), RsaVerdict::KeySize);
+        assert_eq!(
+            rsa(&n[1..], &e, MESSAGE, &signature[1..]),
+            RsaVerdict::KeySize
+        );
         let mut padded = vec![0u8];
         padded.extend_from_slice(&n[1..]);
         assert_eq!(rsa(&padded, &e, MESSAGE, &signature), RsaVerdict::KeySize);
         assert_eq!(rsa(&n, &[], MESSAGE, &signature), RsaVerdict::KeySize);
         assert_eq!(rsa(&n, &n, MESSAGE, &signature), RsaVerdict::KeySize);
-        assert_eq!(rsa(&n, &e, MESSAGE, &signature[1..]), RsaVerdict::SignatureLength);
+        assert_eq!(
+            rsa(&n, &e, MESSAGE, &signature[1..]),
+            RsaVerdict::SignatureLength
+        );
         assert_eq!(rsa(&n, &e, MESSAGE, &signature), RsaVerdict::Valid);
         assert_eq!(rsa(&n, &e, MESSAGE, &n), RsaVerdict::SignatureRange);
-        assert_eq!(rsa(&n, &e, MESSAGE, &vec![0xff; n.len()]), RsaVerdict::SignatureRange);
-        assert_eq!(rsa(&n, &e, MESSAGE, &flip_last_bit(n.clone())), RsaVerdict::Mismatch);
+        assert_eq!(
+            rsa(&n, &e, MESSAGE, &vec![0xff; n.len()]),
+            RsaVerdict::SignatureRange
+        );
+        assert_eq!(
+            rsa(&n, &e, MESSAGE, &flip_last_bit(n.clone())),
+            RsaVerdict::Mismatch
+        );
     }
 
     #[test]
     fn a_real_es256_signature_verifies_and_its_controls_do_not() {
         let (x, y, signature) = (bytes(EC_X), bytes(EC_Y), bytes(EC_SIGNATURE));
         assert_eq!(ec(&x, &y, MESSAGE, &signature), EcdsaVerdict::Valid);
-        assert_eq!(ec(&x, &y, MESSAGE, &flip_last_bit(signature.clone())), EcdsaVerdict::Mismatch);
-        assert_eq!(ec(&x, &y, "header.payloaD", &signature), EcdsaVerdict::Mismatch);
+        assert_eq!(
+            ec(&x, &y, MESSAGE, &flip_last_bit(signature.clone())),
+            EcdsaVerdict::Mismatch
+        );
+        assert_eq!(
+            ec(&x, &y, "header.payloaD", &signature),
+            EcdsaVerdict::Mismatch
+        );
         assert_eq!(ec(&y, &x, MESSAGE, &signature), EcdsaVerdict::Point);
     }
 
@@ -946,8 +1326,14 @@ mod signature_verification_tests {
         big_s[32..].fill(0xff);
         assert_eq!(ec(&x, &y, MESSAGE, &big_s), EcdsaVerdict::Range);
         assert_eq!(ec(&p, &y, MESSAGE, &signature), EcdsaVerdict::Point);
-        assert_eq!(ec(&x, &flip_last_bit(y.clone()), MESSAGE, &signature), EcdsaVerdict::Point);
-        assert_eq!(ec(&x, &flip_last_bit(y.clone()), MESSAGE, &big_r), EcdsaVerdict::Point);
+        assert_eq!(
+            ec(&x, &flip_last_bit(y.clone()), MESSAGE, &signature),
+            EcdsaVerdict::Point
+        );
+        assert_eq!(
+            ec(&x, &flip_last_bit(y.clone()), MESSAGE, &big_r),
+            EcdsaVerdict::Point
+        );
         assert_eq!(ec(&x, &y, MESSAGE, &signature), EcdsaVerdict::Valid);
     }
 }

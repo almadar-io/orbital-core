@@ -19,16 +19,33 @@ pub fn stamp(path: &Path) -> Option<String> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        Some(format!("{} {}.{} {}.{} {}", meta.size(), meta.mtime(), meta.mtime_nsec(), meta.ctime(), meta.ctime_nsec(), meta.ino()))
+        Some(format!(
+            "{} {}.{} {}.{} {}",
+            meta.size(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec(),
+            meta.ino()
+        ))
     }
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
-        Some(format!("{} {} {}", meta.file_size(), meta.last_write_time(), meta.creation_time()))
+        Some(format!(
+            "{} {} {}",
+            meta.file_size(),
+            meta.last_write_time(),
+            meta.creation_time()
+        ))
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+        let modified = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
         Some(format!("{} {}", meta.len(), modified.as_nanos()))
     }
 }
@@ -52,7 +69,9 @@ pub fn note(path: &Path) {
         }
         let stamp = stamp(path);
         for set in open.iter_mut() {
-            set.0.entry(path.to_path_buf()).or_insert_with(|| stamp.clone());
+            set.0
+                .entry(path.to_path_buf())
+                .or_insert_with(|| stamp.clone());
         }
     });
 }
@@ -100,7 +119,10 @@ mod tests {
         let reads = end();
         assert!(reads.is_current());
         std::fs::write(&absent, "now here").unwrap();
-        assert!(!reads.is_current(), "a path that did not exist and now does");
+        assert!(
+            !reads.is_current(),
+            "a path that did not exist and now does"
+        );
         std::fs::remove_file(&absent).unwrap();
         assert!(reads.is_current());
         std::fs::write(&present, "changed").unwrap();

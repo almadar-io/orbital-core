@@ -251,8 +251,9 @@ pub fn runs_on(operator: &str) -> RunsOn {
 
 /// The operator sites a compiled program carries (`_metadata.operatorSites`), for a kernel with no installed
 /// operator table (a browser).
-static PROGRAM_SITES: crate::sync::LazyLock<crate::sync::RwLock<std::collections::BTreeMap<String, RunsOn>>> =
-    crate::sync::LazyLock::new(|| crate::sync::RwLock::new(std::collections::BTreeMap::new()));
+static PROGRAM_SITES: crate::sync::LazyLock<
+    crate::sync::RwLock<std::collections::BTreeMap<String, RunsOn>>,
+> = crate::sync::LazyLock::new(|| crate::sync::RwLock::new(std::collections::BTreeMap::new()));
 
 impl RunsOn {
     /// The site a registry or program table spells `text`.
@@ -267,10 +268,14 @@ impl RunsOn {
 }
 
 /// Install the sites a compiled program carries; refuses a site that is not `client`, `server` or `any`.
-pub fn install_operator_sites(sites: &std::collections::BTreeMap<String, String>) -> Result<(), String> {
+pub fn install_operator_sites(
+    sites: &std::collections::BTreeMap<String, String>,
+) -> Result<(), String> {
     let mut parsed = std::collections::BTreeMap::new();
     for (operator, site) in sites {
-        let site = RunsOn::parse(site).ok_or_else(|| format!("operatorSites: {operator}: `{site}` is not client, server or any"))?;
+        let site = RunsOn::parse(site).ok_or_else(|| {
+            format!("operatorSites: {operator}: `{site}` is not client, server or any")
+        })?;
         parsed.insert(operator.clone(), site);
     }
     PROGRAM_SITES.write().extend(parsed);
@@ -280,9 +285,9 @@ pub fn install_operator_sites(sites: &std::collections::BTreeMap<String, String>
 /// The site of `operator`, or `None` when neither the kernel's own tables, the installed program sites nor an
 /// installed operator table can place it: a client kernel then refuses the effect instead of guessing `Any`.
 pub fn runs_on_known(operator: &str) -> Option<RunsOn> {
-    let registry = crate::language_data::operator_data()
-        .ok()
-        .map(|_| crate::language::registry::get_operator(operator).and_then(|op| op.runs_on.as_deref()));
+    let registry = crate::language_data::operator_data().ok().map(|_| {
+        crate::language::registry::get_operator(operator).and_then(|op| op.runs_on.as_deref())
+    });
     known_site(operator, &PROGRAM_SITES.read(), registry)
 }
 
@@ -293,7 +298,11 @@ fn known_site(
     registry: Option<Option<&str>>,
 ) -> Option<RunsOn> {
     if let Some(op) = crate::os::OsOp::from_name(operator) {
-        return Some(if op.is_kv() || op.runs_on_any_host() { RunsOn::Any } else { RunsOn::Server });
+        return Some(if op.is_kv() || op.runs_on_any_host() {
+            RunsOn::Any
+        } else {
+            RunsOn::Server
+        });
     }
     if let Some((_, site)) = EFFECT_SITES.iter().find(|(name, _)| *name == operator) {
         return Some(*site);
@@ -306,13 +315,23 @@ fn known_site(
 
 /// The sites, from the installed operator table, of each effect operator in `operators` that the kernel's own
 /// tables do not place: what a compiled client program carries so its kernel places every effect it runs.
-pub fn operator_sites<'a>(operators: impl IntoIterator<Item = &'a str>) -> std::collections::BTreeMap<String, String> {
+pub fn operator_sites<'a>(
+    operators: impl IntoIterator<Item = &'a str>,
+) -> std::collections::BTreeMap<String, String> {
     operators
         .into_iter()
-        .filter(|name| crate::os::OsOp::from_name(name).is_none() && !EFFECT_SITES.iter().any(|(site, _)| site == name))
+        .filter(|name| {
+            crate::os::OsOp::from_name(name).is_none()
+                && !EFFECT_SITES.iter().any(|(site, _)| site == name)
+        })
         .filter_map(|name| {
             let op = crate::language::registry::try_get_operator(name)?;
-            op.has_side_effects.then(|| (name.to_string(), op.runs_on.clone().unwrap_or_else(|| "any".to_string())))
+            op.has_side_effects.then(|| {
+                (
+                    name.to_string(),
+                    op.runs_on.clone().unwrap_or_else(|| "any".to_string()),
+                )
+            })
         })
         .collect()
 }
@@ -323,12 +342,16 @@ pub fn serves_only_protocol_pages(orbital: &serde_json::Value) -> bool {
     orbital
         .get("pages")
         .and_then(serde_json::Value::as_array)
-        .is_some_and(|pages| !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some()))
+        .is_some_and(|pages| {
+            !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some())
+        })
 }
 
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
 /// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
-pub fn client_program_metadata(orbitals: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+pub fn client_program_metadata(
+    orbitals: &serde_json::Value,
+) -> serde_json::Map<String, serde_json::Value> {
     let mut heads = std::collections::BTreeSet::new();
     collect_call_heads(orbitals, &mut heads);
     let sites = operator_sites(heads.iter().map(String::as_str));
@@ -352,9 +375,13 @@ fn collect_call_heads(value: &serde_json::Value, heads: &mut std::collections::B
             if let Some(serde_json::Value::String(head)) = items.first() {
                 heads.insert(head.clone());
             }
-            items.iter().for_each(|item| collect_call_heads(item, heads));
+            items
+                .iter()
+                .for_each(|item| collect_call_heads(item, heads));
         }
-        serde_json::Value::Object(map) => map.values().for_each(|item| collect_call_heads(item, heads)),
+        serde_json::Value::Object(map) => map
+            .values()
+            .for_each(|item| collect_call_heads(item, heads)),
         _ => {}
     }
 }
@@ -426,7 +453,10 @@ pub struct LegTouch {
 }
 
 impl LegTouch {
-    pub const NONE: LegTouch = LegTouch { browser_rows: false, server_work: false };
+    pub const NONE: LegTouch = LegTouch {
+        browser_rows: false,
+        server_work: false,
+    };
 
     /// Both kinds in one dispatch.
     pub fn is_mixed(self) -> bool {
@@ -461,7 +491,10 @@ impl LegTouch {
             }
             _ => (false, true),
         };
-        LegTouch { browser_rows, server_work }
+        LegTouch {
+            browser_rows,
+            server_work,
+        }
     }
 }
 
@@ -469,7 +502,10 @@ fn then_each(
     first: &std::collections::BTreeSet<LegTouch>,
     second: &std::collections::BTreeSet<LegTouch>,
 ) -> std::collections::BTreeSet<LegTouch> {
-    first.iter().flat_map(|a| second.iter().map(move |b| a.then(*b))).collect()
+    first
+        .iter()
+        .flat_map(|a| second.iter().map(move |b| a.then(*b)))
+        .collect()
 }
 
 /// Every touch one run of `expr` can have: a delegated (server-site) call contributes [`LegTouch::of_effect`], the
@@ -482,9 +518,9 @@ pub fn expr_leg_touches(
     use std::collections::BTreeSet;
     let none = || BTreeSet::from([LegTouch::NONE]);
     let sequence = |items: &[SExpression]| {
-        items
-            .iter()
-            .fold(none(), |acc, item| then_each(&acc, &expr_leg_touches(item, residence)))
+        items.iter().fold(none(), |acc, item| {
+            then_each(&acc, &expr_leg_touches(item, residence))
+        })
     };
     match expr {
         SExpression::Array(arr) => {
@@ -494,26 +530,39 @@ pub fn expr_leg_touches(
                 let then_live = !arr[1].is_statically_false();
                 let mut arms = BTreeSet::new();
                 if then_live {
-                    arms.extend(sequence(&arr[2..if head == Some("if") { 3 } else { arr.len() }]));
+                    arms.extend(sequence(
+                        &arr[2..if head == Some("if") { 3 } else { arr.len() }],
+                    ));
                 }
                 if head == Some("if") {
-                    arms.extend(arr.get(3).map_or_else(none, |e| expr_leg_touches(e, residence)));
+                    arms.extend(
+                        arr.get(3)
+                            .map_or_else(none, |e| expr_leg_touches(e, residence)),
+                    );
                 } else {
                     arms.insert(LegTouch::NONE);
                 }
                 return then_each(&cond, &arms);
             }
             let own = match head {
-                Some(op) if runs_on(op) == RunsOn::Server => crate::effect_types::parse_effect(expr)
-                    .map(|e| LegTouch::of_effect(&e, residence))
-                    .unwrap_or(LegTouch { browser_rows: false, server_work: true }),
+                Some(op) if runs_on(op) == RunsOn::Server => {
+                    crate::effect_types::parse_effect(expr)
+                        .map(|e| LegTouch::of_effect(&e, residence))
+                        .unwrap_or(LegTouch {
+                            browser_rows: false,
+                            server_work: true,
+                        })
+                }
                 _ => LegTouch::NONE,
             };
-            then_each(&BTreeSet::from([own]), &sequence(arr.get(1..).unwrap_or_default()))
+            then_each(
+                &BTreeSet::from([own]),
+                &sequence(arr.get(1..).unwrap_or_default()),
+            )
         }
-        SExpression::Object(obj) => obj
-            .values()
-            .fold(none(), |acc, v| then_each(&acc, &expr_leg_touches(v, residence))),
+        SExpression::Object(obj) => obj.values().fold(none(), |acc, v| {
+            then_each(&acc, &expr_leg_touches(v, residence))
+        }),
         _ => none(),
     }
 }
@@ -536,21 +585,40 @@ mod tests {
     #[test]
     fn an_orbital_whose_every_page_is_a_protocol_endpoint_is_the_servers() {
         use serde_json::json;
-        assert!(serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Boot", "protocol": "boot" }] })));
-        assert!(!serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })), "control: one route page keeps it the client's");
-        assert!(!serves_only_protocol_pages(&json!({ "pages": [] })), "control: no pages is not an endpoint orbital");
-        assert!(!serves_only_protocol_pages(&json!({ "name": "Rows" })), "control: an orbital with no pages field is not one either");
+        assert!(serves_only_protocol_pages(
+            &json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Boot", "protocol": "boot" }] })
+        ));
+        assert!(
+            !serves_only_protocol_pages(
+                &json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })
+            ),
+            "control: one route page keeps it the client's"
+        );
+        assert!(
+            !serves_only_protocol_pages(&json!({ "pages": [] })),
+            "control: no pages is not an endpoint orbital"
+        );
+        assert!(
+            !serves_only_protocol_pages(&json!({ "name": "Rows" })),
+            "control: an orbital with no pages field is not one either"
+        );
     }
 
     #[test]
-    fn a_client_program_carries_the_sites_of_its_effects_and_the_language_tables_a_browser_kernel_lacks() {
+    fn a_client_program_carries_the_sites_of_its_effects_and_the_language_tables_a_browser_kernel_lacks(
+    ) {
         let program = serde_json::json!([{ "traits": [{ "stateMachine": { "transitions": [
             { "effects": [["behavior/resolve", "@payload.value", {}], ["math/abs", 1]] }
         ] } }] }]);
         let metadata = client_program_metadata(&program);
-        assert_eq!(metadata["operatorSites"], serde_json::json!({ "behavior/resolve": "server" }));
+        assert_eq!(
+            metadata["operatorSites"],
+            serde_json::json!({ "behavior/resolve": "server" })
+        );
         assert!(metadata.contains_key("dispatchFacts"));
-        assert!(metadata["protocols"].as_array().is_some_and(|rows| !rows.is_empty()));
+        assert!(metadata["protocols"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty()));
     }
 
     #[test]
@@ -572,9 +640,7 @@ mod tests {
 
     #[test]
     fn unlisted_effects_and_non_effects_run_anywhere() {
-        for op in [
-            "emit", "set", "spawn", "log", "math/ln", "no/such",
-        ] {
+        for op in ["emit", "set", "spawn", "log", "math/ln", "no/such"] {
             assert_eq!(runs_on(op), RunsOn::Any, "{op}");
         }
         assert_eq!(runs_on("persist"), RunsOn::Server);
@@ -627,13 +693,19 @@ mod tests {
     fn every_tab_effect_runs_on_the_client_and_a_neighbouring_name_does_not() {
         for op in crate::tab::TabOp::ALL {
             assert_eq!(
-                EFFECT_SITES.iter().find(|(name, _)| *name == op.name()).map(|(_, site)| *site),
+                EFFECT_SITES
+                    .iter()
+                    .find(|(name, _)| *name == op.name())
+                    .map(|(_, site)| *site),
                 Some(RunsOn::Client),
                 "{}",
                 op.name()
             );
         }
-        assert!(!EFFECT_SITES.iter().any(|(name, _)| name.starts_with("browser/tab-") && crate::tab::TabOp::from_name(name).is_none()));
+        assert!(!EFFECT_SITES
+            .iter()
+            .any(|(name, _)| name.starts_with("browser/tab-")
+                && crate::tab::TabOp::from_name(name).is_none()));
     }
 
     #[test]
@@ -678,9 +750,13 @@ mod tests {
     #[test]
     fn a_browser_only_call_is_not_server_work_for_the_dispatch_rule() {
         let residence = Residence::none().with_browser_services(["browser-svc".to_string()]);
-        let expr: crate::schema::sexpr::SExpression =
-            serde_json::from_value(serde_json::json!(["call-service", "browser-svc", "openTab", {}]))
-                .expect("expr");
+        let expr: crate::schema::sexpr::SExpression = serde_json::from_value(serde_json::json!([
+            "call-service",
+            "browser-svc",
+            "openTab",
+            {}
+        ]))
+        .expect("expr");
         assert!(!sexpr_runs_server_effect(&expr, &residence));
         assert!(
             sexpr_runs_server_effect(&expr, &Residence::none()),
@@ -698,19 +774,35 @@ mod tests {
 
     #[test]
     fn a_program_site_places_an_operator_a_kernel_without_the_operator_table_cannot() {
-        let installed = std::collections::BTreeMap::from([("behavior/catalog".to_string(), RunsOn::Server)]);
-        assert_eq!(known_site("behavior/catalog", &installed, None), Some(RunsOn::Server));
+        let installed =
+            std::collections::BTreeMap::from([("behavior/catalog".to_string(), RunsOn::Server)]);
+        assert_eq!(
+            known_site("behavior/catalog", &installed, None),
+            Some(RunsOn::Server)
+        );
         assert_eq!(known_site("fetch", &installed, None), Some(RunsOn::Server));
-        assert_eq!(known_site("behavior/catalog", &std::collections::BTreeMap::new(), Some(Some("server"))), Some(RunsOn::Server));
+        assert_eq!(
+            known_site(
+                "behavior/catalog",
+                &std::collections::BTreeMap::new(),
+                Some(Some("server"))
+            ),
+            Some(RunsOn::Server)
+        );
     }
 
     #[test]
     fn control_an_operator_no_table_places_is_unknown_and_an_installed_table_says_any() {
         let none = std::collections::BTreeMap::new();
         assert_eq!(known_site("behavior/catalog", &none, None), None);
-        assert_eq!(known_site("program/print", &none, Some(None)), Some(RunsOn::Any));
+        assert_eq!(
+            known_site("program/print", &none, Some(None)),
+            Some(RunsOn::Any)
+        );
         let bad = std::collections::BTreeMap::from([("x/y".to_string(), "sideways".to_string())]);
-        assert!(install_operator_sites(&bad).unwrap_err().contains("not client, server or any"));
+        assert!(install_operator_sites(&bad)
+            .unwrap_err()
+            .contains("not client, server or any"));
     }
 
     #[test]

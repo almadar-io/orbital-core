@@ -25,7 +25,9 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                     if let [single] = variants.as_slice() {
                         single.field_type.clone()
                     } else {
-                        OirType::Union { variants: variants.into() }
+                        OirType::Union {
+                            variants: variants.into(),
+                        }
                     }
                 } else {
                     resolve(only, b)?
@@ -66,7 +68,15 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 if let OperatorTypeRef::Tagged(K::Var { name, .. }) = &**value {
                     if let Some(OirType::Struct { fields, additional }) = b.records.get(name) {
                         return Some(OirType::Struct {
-                            fields: fields.iter().cloned().map(|mut field| { field.required = false; field }).collect::<Vec<_>>().into(),
+                            fields: fields
+                                .iter()
+                                .cloned()
+                                .map(|mut field| {
+                                    field.required = false;
+                                    field
+                                })
+                                .collect::<Vec<_>>()
+                                .into(),
                             additional: additional.clone(),
                         });
                     }
@@ -75,7 +85,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                             .first()
                             .is_some_and(|first| !all.iter().all(|t| b.agrees(first, t)))
                         {
-                            return Some(OirType::Struct { fields: crate::ir::types::no_fields(), additional: None });
+                            return Some(OirType::Struct {
+                                fields: crate::ir::types::no_fields(),
+                                additional: None,
+                            });
                         }
                     }
                 }
@@ -97,7 +110,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                     }
                     out.push(field);
                 }
-                Some(OirType::Struct { fields: out.into(), additional: None })
+                Some(OirType::Struct {
+                    fields: out.into(),
+                    additional: None,
+                })
             }
             K::Var { name, .. } => {
                 if b.voided.contains(name) {
@@ -165,7 +181,9 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                         _ => None,
                     };
                 };
-                match walk_path_in(record, key, !b.defaulted.contains(of), &|name| b.named_types.get(name).cloned()) {
+                match walk_path_in(record, key, !b.defaulted.contains(of), &|name| {
+                    b.named_types.get(name).cloned()
+                }) {
                     // A read through a record that may be missing may be missing too, unless a default answers it.
                     Path::Found(found)
                         if matches!(record, OirType::Optional { .. })
@@ -192,7 +210,15 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 // Keys that are not written out drop any subset: every field stays, each possibly dropped.
                 let Some(keys) = b.keys.get(of) else {
                     return (!pick).then(|| OirType::Struct {
-                        fields: fields.iter().cloned().map(|mut field| { field.required = false; field }).collect::<Vec<_>>().into(),
+                        fields: fields
+                            .iter()
+                            .cloned()
+                            .map(|mut field| {
+                                field.required = false;
+                                field
+                            })
+                            .collect::<Vec<_>>()
+                            .into(),
                         additional: additional.clone(),
                     });
                 };
@@ -270,11 +296,14 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 for (index, record) in all.iter().enumerate() {
                     match unwrap_optional(record) {
                         OirType::Struct { fields, additional } => {
-                            let prior_additional = all_additional.then(||
-                                join_struct_member_types(additional_types.clone())
-                            ).flatten();
-                            if typed_additional && additional.is_none() && merged.iter()
-                                .any(|prior| !fields.iter().any(|field| field.name == prior.name))
+                            let prior_additional = all_additional
+                                .then(|| join_struct_member_types(additional_types.clone()))
+                                .flatten();
+                            if typed_additional
+                                && additional.is_none()
+                                && merged.iter().any(|prior| {
+                                    !fields.iter().any(|field| field.name == prior.name)
+                                })
                             {
                                 return None;
                             }
@@ -283,7 +312,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                                     if !fields.iter().any(|field| field.name == prior.name)
                                         && prior.field_type != *value
                                     {
-                                        prior.field_type = join_struct_member_types(vec![prior.field_type.clone(), value.clone()])?;
+                                        prior.field_type = join_struct_member_types(vec![
+                                            prior.field_type.clone(),
+                                            value.clone(),
+                                        ])?;
                                     }
                                 }
                                 if !additional_types.contains(value) {
@@ -300,7 +332,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                                         *slot = field.clone();
                                         slot.required = required;
                                         if previous != slot.field_type {
-                                            slot.field_type = join_struct_member_types(vec![previous, slot.field_type.clone()])?;
+                                            slot.field_type = join_struct_member_types(vec![
+                                                previous,
+                                                slot.field_type.clone(),
+                                            ])?;
                                         }
                                     }
                                     Some(slot) => *slot = field.clone(),
@@ -308,7 +343,10 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                                         let previous = prior_additional.as_ref()?;
                                         let mut field = field.clone();
                                         if field.field_type != *previous {
-                                            field.field_type = join_struct_member_types(vec![previous.clone(), field.field_type])?;
+                                            field.field_type = join_struct_member_types(vec![
+                                                previous.clone(),
+                                                field.field_type,
+                                            ])?;
                                         }
                                         merged.push(field);
                                     }
@@ -324,16 +362,16 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                 } else {
                     None
                 };
-                Some(OirType::Struct { fields: merged.into(), additional })
+                Some(OirType::Struct {
+                    fields: merged.into(),
+                    additional,
+                })
             }
-            K::Shape => b
-                .shape
-                .clone()
-                .map(|name| {
-                    nominal_type(&name)
-                        .or_else(|| super::records::checkable(&name))
-                        .unwrap_or(OirType::TypeRef { name })
-                }),
+            K::Shape => b.shape.clone().map(|name| {
+                nominal_type(&name)
+                    .or_else(|| super::records::checkable(&name))
+                    .unwrap_or(OirType::TypeRef { name })
+            }),
             K::ChildrenOf { of, result } => {
                 children_of(b.bound(of)?, b.shape.as_deref()?, b.last(result)?, b)
             }

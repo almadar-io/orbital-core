@@ -179,9 +179,12 @@ fn parse_service_account(text: &str) -> Result<ServiceAccount, GrantError> {
         None => return Err(refused("the signing credential has no `type` field, a service-account document carries `service_account`")),
     }
     let field = |value: Option<String>, name: &str| {
-        value
-            .filter(|text| !text.is_empty())
-            .ok_or_else(|| GrantError::new(GrantErrorKind::Refused, format!("the service-account document has no `{name}`")))
+        value.filter(|text| !text.is_empty()).ok_or_else(|| {
+            GrantError::new(
+                GrantErrorKind::Refused,
+                format!("the service-account document has no `{name}`"),
+            )
+        })
     };
     Ok(ServiceAccount {
         private_key_id: field(document.private_key_id, "private_key_id")?,
@@ -215,7 +218,10 @@ pub fn assertion_jwt(
     claims.push(format!("\"aud\":{}", json_text(&spec.audience)));
     claims.push(format!("\"iat\":{iat}"));
     claims.push(format!("\"exp\":{exp}"));
-    let header = format!(r#"{{"alg":"RS256","typ":"JWT","kid":{}}}"#, json_text(&account.private_key_id));
+    let header = format!(
+        r#"{{"alg":"RS256","typ":"JWT","kid":{}}}"#,
+        json_text(&account.private_key_id)
+    );
     let signing_input = format!(
         "{}.{}",
         base64url_encode(header.as_bytes()),
@@ -248,7 +254,11 @@ fn json_headers() -> Vec<(String, String)> {
 }
 
 /// The declared JSON-body mint request: `{ "<clientIdField>": id, "<clientSecretField>": secret }`.
-pub fn json_token_request(spec: &JsonTokenSpec, client_id: &str, client_secret: &str) -> FormRequest {
+pub fn json_token_request(
+    spec: &JsonTokenSpec,
+    client_id: &str,
+    client_secret: &str,
+) -> FormRequest {
     FormRequest {
         headers: json_headers(),
         body: format!(
@@ -262,7 +272,10 @@ pub fn json_token_request(spec: &JsonTokenSpec, client_id: &str, client_secret: 
 }
 
 /// The declared JSON-body refresh request: `{ "<refreshBodyField>": refresh }`. `None` when the spec declares no refresh body field.
-pub fn json_token_refresh_request(spec: &JsonTokenSpec, refresh_token: &str) -> Option<FormRequest> {
+pub fn json_token_refresh_request(
+    spec: &JsonTokenSpec,
+    refresh_token: &str,
+) -> Option<FormRequest> {
     let field = spec.refresh_body_field.as_ref()?;
     Some(FormRequest {
         headers: json_headers(),
@@ -311,9 +324,9 @@ pub fn parse_json_token_response(
         Some(field) => match fields.get(field) {
             None => None,
             Some(value) => {
-                let seconds = value
-                    .as_u64()
-                    .ok_or_else(|| malformed("the token response lifetime is not a number of seconds"))?;
+                let seconds = value.as_u64().ok_or_else(|| {
+                    malformed("the token response lifetime is not a number of seconds")
+                })?;
                 let lifetime = i64::try_from(seconds)
                     .unwrap_or(i64::MAX / 2_000)
                     .saturating_mul(1_000);
@@ -568,7 +581,10 @@ mod tests {
             .unwrap()
         };
         let firebase = refresh("");
-        assert_eq!(firebase.body, "grant_type=refresh_token&refresh_token=r%2F1");
+        assert_eq!(
+            firebase.body,
+            "grant_type=refresh_token&refresh_token=r%2F1"
+        );
         assert_eq!(header(&firebase, "Authorization"), None);
         assert_eq!(
             refresh("pub:1").body,
@@ -577,7 +593,10 @@ mod tests {
         let mut ex = exchange(ClientAuth::None, None);
         ex.client_id = "";
         ex.verifier = None;
-        assert!(!authorization_code_request(&ex).unwrap().body.contains("client_id"));
+        assert!(!authorization_code_request(&ex)
+            .unwrap()
+            .body
+            .contains("client_id"));
     }
 
     #[test]
@@ -692,7 +711,10 @@ mod tests {
         }
     }
     fn jwt_fixture() -> serde_json::Value {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/security/jwt-bearer.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/security/jwt-bearer.json"
+        );
         serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
     }
 
@@ -723,7 +745,9 @@ mod tests {
 
     fn decoded_part(jwt: &str, index: usize) -> serde_json::Value {
         let part = jwt.split('.').nth(index).unwrap();
-        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap();
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(part)
+            .unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
 
@@ -731,10 +755,28 @@ mod tests {
     fn the_assertion_matches_the_openssl_signed_known_answer_with_every_claim_declared() {
         let fx = jwt_fixture();
         let scopes = vec!["https://a/x".to_string(), "https://a/y".to_string()];
-        let jwt = assertion_jwt(&spec(), &scopes, &account_text(), 1_700_000_000_999, [7; 32]).unwrap();
+        let jwt = assertion_jwt(
+            &spec(),
+            &scopes,
+            &account_text(),
+            1_700_000_000_999,
+            [7; 32],
+        )
+        .unwrap();
         assert_eq!(jwt.expose(), fx["full"].as_str().unwrap());
-        let other_seed = assertion_jwt(&spec(), &scopes, &account_text(), 1_700_000_000_000, [9; 32]).unwrap();
-        assert_eq!(other_seed.expose(), jwt.expose(), "the blinding seed and sub-second clock change nothing");
+        let other_seed = assertion_jwt(
+            &spec(),
+            &scopes,
+            &account_text(),
+            1_700_000_000_000,
+            [9; 32],
+        )
+        .unwrap();
+        assert_eq!(
+            other_seed.expose(),
+            jwt.expose(),
+            "the blinding seed and sub-second clock change nothing"
+        );
         assert_eq!(decoded_part(jwt.expose(), 0)["kid"], "test-key-id-0001");
         assert_eq!(decoded_part(jwt.expose(), 1)["iss"], "sa@proj.iam");
         assert_eq!(decoded_part(jwt.expose(), 1)["sub"], "user@example.com");
@@ -743,16 +785,23 @@ mod tests {
     #[test]
     fn without_a_declared_subject_sub_is_the_client_email_and_no_scope_claim_rides() {
         let fx = jwt_fixture();
-        let bare = AssertionSpec { subject: None, ..spec() };
+        let bare = AssertionSpec {
+            subject: None,
+            ..spec()
+        };
         let jwt = assertion_jwt(&bare, &[], &account_text(), 1_700_000_000_000, [1; 32]).unwrap();
         assert_eq!(jwt.expose(), fx["minimal"].as_str().unwrap());
         let claims = decoded_part(jwt.expose(), 1);
-        assert_eq!((claims["iss"].as_str(), claims["sub"].as_str()), (Some("sa@proj.iam"), Some("sa@proj.iam")));
+        assert_eq!(
+            (claims["iss"].as_str(), claims["sub"].as_str()),
+            (Some("sa@proj.iam"), Some("sa@proj.iam"))
+        );
         assert!(claims.get("scope").is_none());
     }
 
     #[test]
-    fn a_pem_a_malformed_or_wrong_type_document_and_a_missing_field_are_refused_without_the_key_text() {
+    fn a_pem_a_malformed_or_wrong_type_document_and_a_missing_field_are_refused_without_the_key_text(
+    ) {
         let pem = "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----";
         let cases = [
             pem.to_string(),
@@ -765,13 +814,22 @@ mod tests {
             account_without("client_email"),
             account_without("private_key_id"),
             account_with("client_email", serde_json::json!("")),
-            account_with("private_key", serde_json::json!("-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----")),
+            account_with(
+                "private_key",
+                serde_json::json!(
+                    "-----BEGIN PRIVATE KEY-----\nSECRET-PEM\n-----END PRIVATE KEY-----"
+                ),
+            ),
             account_with("private_key", serde_json::json!(12345)),
         ];
         for case in cases {
             let error = assertion_jwt(&spec(), &[], &case, 0, [0; 32]).unwrap_err();
             assert_eq!(error.kind, GrantErrorKind::Refused, "{case}");
-            assert!(!error.message.contains("SECRET-PEM") && !error.message.contains("12345"), "{}", error.message);
+            assert!(
+                !error.message.contains("SECRET-PEM") && !error.message.contains("12345"),
+                "{}",
+                error.message
+            );
         }
     }
 
@@ -784,8 +842,14 @@ mod tests {
     #[test]
     fn the_jwt_bearer_form_is_byte_exact_and_carries_no_client() {
         let request = jwt_bearer_request("a.b.c");
-        assert_eq!(request.body, "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=a.b.c");
-        assert_eq!(header(&request, "Content-Type"), Some("application/x-www-form-urlencoded"));
+        assert_eq!(
+            request.body,
+            "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=a.b.c"
+        );
+        assert_eq!(
+            header(&request, "Content-Type"),
+            Some("application/x-www-form-urlencoded")
+        );
         assert_eq!(header(&request, "Authorization"), None);
     }
 
@@ -804,32 +868,71 @@ mod tests {
     #[test]
     fn the_json_token_bodies_are_byte_exact_and_escape_their_values() {
         let mint = json_token_request(&gocardless(), "id\"1", "se/cret\\");
-        assert_eq!(mint.body, r#"{"secret_id":"id\"1","secret_key":"se/cret\\"}"#);
+        assert_eq!(
+            mint.body,
+            r#"{"secret_id":"id\"1","secret_key":"se/cret\\"}"#
+        );
         assert_eq!(header(&mint, "Content-Type"), Some("application/json"));
         let refresh = json_token_refresh_request(&gocardless(), "r-1").unwrap();
         assert_eq!(refresh.body, r#"{"refresh":"r-1"}"#);
-        let none = JsonTokenSpec { refresh_body_field: None, ..gocardless() };
+        let none = JsonTokenSpec {
+            refresh_body_field: None,
+            ..gocardless()
+        };
         assert!(json_token_refresh_request(&none, "r").is_none());
     }
 
     #[test]
     fn the_json_token_answer_is_read_by_its_declared_fields_with_the_skewed_expiry() {
-        let body = r#"{"access":"A1","access_expires":86400,"refresh":"R1","refresh_expires":2592000}"#;
+        let body =
+            r#"{"access":"A1","access_expires":86400,"refresh":"R1","refresh_expires":2592000}"#;
         let grant = parse_json_token_response(&gocardless(), false, 200, body, 1_000_000).unwrap();
         assert_eq!(grant.access.expose(), "A1");
-        assert_eq!(grant.refresh.as_ref().map(|r| r.expose().as_str()), Some("R1"));
-        assert_eq!(grant.expires_at, Some(1_000_000 + 86_400_000 - EXPIRY_SKEW_MS));
-        let refreshed = parse_json_token_response(&gocardless(), true, 200, r#"{"access":"A2","access_expires":60}"#, 0).unwrap();
-        assert_eq!((refreshed.refresh, refreshed.access.expose().as_str()), (None, "A2"));
+        assert_eq!(
+            grant.refresh.as_ref().map(|r| r.expose().as_str()),
+            Some("R1")
+        );
+        assert_eq!(
+            grant.expires_at,
+            Some(1_000_000 + 86_400_000 - EXPIRY_SKEW_MS)
+        );
+        let refreshed = parse_json_token_response(
+            &gocardless(),
+            true,
+            200,
+            r#"{"access":"A2","access_expires":60}"#,
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            (refreshed.refresh, refreshed.access.expose().as_str()),
+            (None, "A2")
+        );
     }
 
     #[test]
     fn json_token_failures_are_typed_by_status_and_never_echo_the_body() {
-        let kind = |refresh, status, body: &str| parse_json_token_response(&gocardless(), refresh, status, body, 0).unwrap_err().kind;
-        assert_eq!(kind(false, 401, r#"{"detail":"bad"}"#), GrantErrorKind::InvalidClient);
-        assert_eq!(kind(true, 401, r#"{"detail":"bad"}"#), GrantErrorKind::InvalidGrant);
+        let kind = |refresh, status, body: &str| {
+            parse_json_token_response(&gocardless(), refresh, status, body, 0)
+                .unwrap_err()
+                .kind
+        };
+        assert_eq!(
+            kind(false, 401, r#"{"detail":"bad"}"#),
+            GrantErrorKind::InvalidClient
+        );
+        assert_eq!(
+            kind(true, 401, r#"{"detail":"bad"}"#),
+            GrantErrorKind::InvalidGrant
+        );
         assert_eq!(kind(false, 502, "gateway"), GrantErrorKind::Malformed);
-        for body in ["not json", "[]", r#"{"access":""}"#, r#"{"other":"SECRET-A"}"#, r#"{"access":"SECRET-A","access_expires":"soon"}"#] {
+        for body in [
+            "not json",
+            "[]",
+            r#"{"access":""}"#,
+            r#"{"other":"SECRET-A"}"#,
+            r#"{"access":"SECRET-A","access_expires":"soon"}"#,
+        ] {
             let error = parse_json_token_response(&gocardless(), false, 200, body, 0).unwrap_err();
             assert_eq!(error.kind, GrantErrorKind::Malformed, "{body}");
             assert!(!error.message.contains("SECRET-A"));

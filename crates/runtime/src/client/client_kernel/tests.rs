@@ -1,9 +1,12 @@
-use orbital_core_base::value::ValueMap;
 use super::*;
 use crate::entity_source::EntitySource;
-use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, crate::effects::response::EventResponse};
 use orbital_core_base::sync::Mutex;
+use orbital_core_base::value::ValueMap;
 use std::collections::HashMap;
+use {
+    crate::effects::response::EventResponse,
+    orbital_core_base::bus_event::{BusEventSource, EmittedEvent},
+};
 
 /// Riya (2026-09-24): a mount's seeder INIT must not reach a sibling before
 /// that sibling's own INIT. `local` traits keep the dispatch client-only.
@@ -271,10 +274,17 @@ fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
     }))
     .unwrap();
     let server = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse::success(""))]));
-    let kernel = ClientKernel::new(schema, Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
-    kernel.dispatch("Composer", None, "INIT", Value::Null).unwrap();
-    kernel.dispatch("Persistor", None, "INIT", Value::Null).unwrap();
-    kernel.dispatch("Composer", None, "SUBMIT", Value::Null).unwrap();
+    let kernel =
+        ClientKernel::new(schema, Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    kernel
+        .dispatch("Composer", None, "INIT", Value::Null)
+        .unwrap();
+    kernel
+        .dispatch("Persistor", None, "INIT", Value::Null)
+        .unwrap();
+    kernel
+        .dispatch("Composer", None, "SUBMIT", Value::Null)
+        .unwrap();
     let calls = server.calls.lock();
     assert_eq!(calls.len(), 1, "the listener's server work is posted");
     assert_eq!(calls[0].target_trait.as_deref(), Some("Persistor"));
@@ -284,10 +294,7 @@ fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
 fn client_kernel_persisted_awaited_posts_leg_and_folds() {
     let mut row = ValueMap::default();
     row.insert("id".into(), Value::string("n-1"));
-    row.insert(
-        "title".into(),
-        Value::string("From server"),
-    );
+    row.insert("title".into(), Value::string("From server"));
     let mut data = HashMap::new();
     data.insert("Note".to_string(), vec![Value::object(row)]);
 
@@ -303,10 +310,8 @@ fn client_kernel_persisted_awaited_posts_leg_and_folds() {
         }],
         ..Default::default()
     };
-    let bridge: Arc<dyn ServerBridge> =
-        Arc::new(ScriptedBridge::new(vec![Ok(server_response)]));
-    let kernel =
-        ClientKernel::new(persisted_awaited_with_watcher_schema(), Some(bridge)).unwrap();
+    let bridge: Arc<dyn ServerBridge> = Arc::new(ScriptedBridge::new(vec![Ok(server_response)]));
+    let kernel = ClientKernel::new(persisted_awaited_with_watcher_schema(), Some(bridge)).unwrap();
 
     let response = kernel
         .dispatch("Persistor", None, "CREATE", Value::Null)
@@ -334,11 +339,7 @@ fn client_kernel_persisted_awaited_posts_leg_and_folds() {
     // The echoed CREATED was already locally delivered (it cascaded to Watcher
     // as part of the SAME local dispatch that built the leg) — the fold must
     // not re-fire Watcher's listener a second time.
-    let watcher_state = kernel
-        .embedded
-        .kernel()
-        .get_state("Watcher", None)
-        .unwrap();
+    let watcher_state = kernel.embedded.kernel().get_state("Watcher", None).unwrap();
     assert_eq!(
         watcher_state.current_state, "watched",
         "an echoed already-delivered event must not re-dispatch and advance Watcher again"
@@ -381,12 +382,78 @@ fn begin_paints_locally_and_posts_nothing_until_settle() {
     assert!(delta.client_effects().is_empty());
 }
 
+#[test]
+fn a_later_server_flight_waits_for_the_earlier_fold() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let bridge = Arc::new(ScriptedBridge::new(vec![
+        Ok(EventResponse {
+            success: true,
+            ..Default::default()
+        }),
+        Ok(EventResponse {
+            success: true,
+            ..Default::default()
+        }),
+    ]));
+    let kernel = Arc::new(
+        ClientKernel::new(
+            books_schema(),
+            Some(bridge.clone() as Arc<dyn ServerBridge>),
+        )
+        .unwrap(),
+    );
+    let first = kernel
+        .begin("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
+    let second = kernel
+        .begin("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
+    assert!(first.has_legs() && second.has_legs());
+    let (finished_tx, finished_rx) = mpsc::channel();
+    let worker_kernel = Arc::clone(&kernel);
+    let worker = std::thread::spawn(move || {
+        finished_tx.send(worker_kernel.settle(&second)).unwrap();
+    });
+    assert!(finished_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    assert!(bridge.calls.lock().is_empty());
+    kernel.settle(&first).unwrap();
+    finished_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    worker.join().unwrap();
+    assert_eq!(bridge.calls.lock().len(), 2);
+}
+
+#[test]
+fn dropping_an_unsettled_flight_releases_the_next_one() {
+    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse {
+        success: true,
+        ..Default::default()
+    })]));
+    let kernel = ClientKernel::new(
+        books_schema(),
+        Some(bridge.clone() as Arc<dyn ServerBridge>),
+    )
+    .unwrap();
+    let abandoned = kernel
+        .begin("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
+    let later = kernel
+        .begin("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
+    drop(abandoned);
+    kernel.settle(&later).unwrap();
+    assert_eq!(bridge.calls.lock().len(), 1);
+}
+
 fn settled_effect_results(
     server: EventResponse,
 ) -> Option<Vec<crate::effects::response::ServerEffectResult>> {
     let bridge: Arc<dyn ServerBridge> = Arc::new(ScriptedBridge::new(vec![Ok(server)]));
-    let kernel =
-        ClientKernel::new(persisted_awaited_with_watcher_schema(), Some(bridge)).unwrap();
+    let kernel = ClientKernel::new(persisted_awaited_with_watcher_schema(), Some(bridge)).unwrap();
     kernel
         .dispatch("Persistor", None, "CREATE", Value::Null)
         .unwrap()
@@ -429,8 +496,7 @@ fn control_a_server_answer_with_no_outcomes_adds_no_server_results() {
 #[test]
 fn client_kernel_runtime_optimistic_restores_on_error() {
     let server_response = EventResponse::error("sync rejected");
-    let bridge: Arc<dyn ServerBridge> =
-        Arc::new(ScriptedBridge::new(vec![Ok(server_response)]));
+    let bridge: Arc<dyn ServerBridge> = Arc::new(ScriptedBridge::new(vec![Ok(server_response)]));
     let kernel =
         ClientKernel::new(runtime_optimistic_with_call_service_schema(), Some(bridge)).unwrap();
 
@@ -455,7 +521,11 @@ fn client_kernel_runtime_optimistic_restores_on_error() {
         "RuntimeOptimistic must restore the pre-dispatch snapshot on a disagreeing response"
     );
     assert!(
-        kernel.embedded.entities().read("Cursor", "singleton").is_err(),
+        kernel
+            .embedded
+            .entities()
+            .read("Cursor", "singleton")
+            .is_err(),
         "rollback must leave the entity absent, matching the pre-dispatch snapshot"
     );
 }
@@ -511,8 +581,7 @@ fn hud_paints(response: &EventResponse) -> Vec<f64> {
 
 fn mounted_optimistic(server: Result<EventResponse, String>) -> ClientKernel {
     let bridge: Arc<dyn ServerBridge> = Arc::new(ScriptedBridge::new(vec![server]));
-    let kernel =
-        ClientKernel::new(optimistic_with_bound_sibling_schema(), Some(bridge)).unwrap();
+    let kernel = ClientKernel::new(optimistic_with_bound_sibling_schema(), Some(bridge)).unwrap();
     kernel.dispatch("Hud", None, "INIT", Value::Null).unwrap();
     kernel.dispatch("Move", None, "INIT", Value::Null).unwrap();
     kernel
@@ -656,7 +725,10 @@ fn orbital(name: &str, entity: &str, traits: Vec<serde_json::Value>) -> serde_js
 }
 
 fn schema_of(orbitals: Vec<serde_json::Value>) -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap()
+    serde_json::from_value(
+        serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals }),
+    )
+    .unwrap()
 }
 
 const BEAT_TICK: &str =
@@ -760,6 +832,28 @@ fn a_cross_orbital_tick_leg_posts_to_the_owning_orbital() {
 }
 
 #[test]
+fn a_frame_exposes_local_tick_results_before_posting_its_server_leg() {
+    let bridge = Arc::new(RecordingBridge::new());
+    let kernel = two_orbital_kernel(false, Arc::clone(&bridge));
+    assert!(
+        kernel.begin_frame(0).unwrap().is_none(),
+        "the first interval pass arms the clock"
+    );
+    let begun = kernel.begin_frame(1000).unwrap().expect("the beat is due");
+    assert!(begun.has_legs());
+    assert!(!begun.local().is_empty());
+    assert!(
+        bridge.posts.lock().is_empty(),
+        "local tick paint must precede the post"
+    );
+    kernel.settle_frame(&begun).unwrap();
+    assert_eq!(
+        *bridge.posts.lock(),
+        vec![("Beta".to_string(), "DO_CREATE".to_string())]
+    );
+}
+
+#[test]
 fn control_a_same_orbital_tick_leg_posts_to_that_orbital() {
     let bridge = Arc::new(RecordingBridge::new());
     let kernel = two_orbital_kernel(true, Arc::clone(&bridge));
@@ -805,7 +899,8 @@ fn a_cross_orbital_dispatch_leg_posts_to_the_owning_orbital() {
 }
 
 fn applies_to_kernel(applies_to: serde_json::Value) -> ClientKernel {
-    let mut tick = serde_json::json!({ "name": "beat", "interval": 1000, "effects": [["emit", "BEAT", {}]] });
+    let mut tick =
+        serde_json::json!({ "name": "beat", "interval": 1000, "effects": [["emit", "BEAT", {}]] });
     if !applies_to.is_null() {
         tick["appliesTo"] = applies_to;
     }
@@ -982,6 +1077,65 @@ fn a_mount_paints_every_seed_then_posts_one_mount_leg_for_the_server_backed_seed
 }
 
 #[test]
+fn a_server_fetch_mount_returns_the_client_listeners_render_and_state() {
+    let mut raw = serde_json::to_value(mount_schema()).unwrap();
+    raw["orbitals"][0]["traits"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "name": "TodoView", "linkedEntity": "Item", "dispatch": "client",
+            "listens": [{ "event": "LOADED", "triggers": "LOADED",
+                "source": { "kind": "trait", "trait": "List" } }],
+            "stateMachine": {
+                "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }],
+                "transitions": [
+                    { "from": "loading", "to": "loading", "event": "INIT", "effects": [
+                        ["render-ui", "main", { "type": "typography", "content": "Loading" }]
+                    ] },
+                    { "from": "loading", "to": "ready", "event": "LOADED", "effects": [
+                        ["render-ui", "main", { "type": "data-list", "entity": "@payload.data",
+                            "fields": [{ "name": "id" }] }]
+                    ] }
+                ]
+            }
+        }));
+    raw["orbitals"][0]["pages"] = serde_json::json!([
+        { "name": "Home", "path": "/", "traits": [{ "ref": "List" }, { "ref": "TodoView" }] }
+    ]);
+    let schema: OrbitalSchema = serde_json::from_value(raw).unwrap();
+    let server = Arc::new(RecordingServer {
+        server: crate::client::bridge::KernelBridge::new(schema.clone()).unwrap(),
+        sent: Mutex::new(Vec::new()),
+        fail: false,
+    });
+    let kernel =
+        ClientKernel::new(schema, Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    let begun = kernel
+        .begin_mount(
+            &[seed("List", "INIT"), seed("TodoView", "INIT")],
+            Value::Null,
+        )
+        .unwrap();
+    let settled = kernel.settle_mount(&begun).unwrap();
+    assert_eq!(server.sent.lock().len(), 1);
+    assert_eq!(kernel.snapshot_trait("TodoView", None).state, "ready");
+    assert_eq!(settled.states.get("TodoView"), Some(&"ready".to_string()));
+    assert!(
+        settled
+            .client_effects_by_trait
+            .as_ref()
+            .is_some_and(|effects| effects.iter().any(|entry| {
+                entry.trait_name == "TodoView"
+                    && matches!(
+                        &entry.effect,
+                        orbital_core_base::client_effect::ClientEffect::RenderUi { .. }
+                    )
+            })),
+        "{settled:?}"
+    );
+}
+
+#[test]
 fn a_mount_with_no_server_backed_seed_posts_nothing() {
     let (kernel, server) = mount_kernel(false);
     let begun = kernel
@@ -1027,7 +1181,10 @@ fn added_answer() -> EventResponse {
         emitted_events: vec![EmittedEvent {
             event: "ADDED".to_string(),
             payload: None,
-            source: Some(BusEventSource { r#trait: Some("InvoiceList".to_string()), ..Default::default() }),
+            source: Some(BusEventSource {
+                r#trait: Some("InvoiceList".to_string()),
+                ..Default::default()
+            }),
         }],
         ..Default::default()
     }
@@ -1036,18 +1193,42 @@ fn added_answer() -> EventResponse {
 /// G-ORB-280: the leg a fold's own arm owes the host (a refetch after a persist's success) is posted, not left for the next dispatch.
 #[test]
 fn a_fold_that_owes_the_host_a_leg_posts_it_in_the_same_dispatch() {
-    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(added_answer()), Ok(EventResponse { success: true, ..Default::default() })]));
-    let kernel = ClientKernel::new(books_schema(), Some(bridge.clone() as Arc<dyn ServerBridge>)).unwrap();
-    kernel.dispatch("InvoiceList", None, "ADD", Value::Null).unwrap();
+    let bridge = Arc::new(ScriptedBridge::new(vec![
+        Ok(added_answer()),
+        Ok(EventResponse {
+            success: true,
+            ..Default::default()
+        }),
+    ]));
+    let kernel = ClientKernel::new(
+        books_schema(),
+        Some(bridge.clone() as Arc<dyn ServerBridge>),
+    )
+    .unwrap();
+    kernel
+        .dispatch("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
     let calls = bridge.calls.lock();
-    assert_eq!(calls.iter().map(|c| c.event.as_str()).collect::<Vec<_>>(), ["ADD", "ADDED"]);
+    assert_eq!(
+        calls.iter().map(|c| c.event.as_str()).collect::<Vec<_>>(),
+        ["ADD", "ADDED"]
+    );
 }
 
 #[test]
 fn control_a_fold_that_owes_nothing_posts_one_leg() {
-    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse { success: true, ..Default::default() })]));
-    let kernel = ClientKernel::new(books_schema(), Some(bridge.clone() as Arc<dyn ServerBridge>)).unwrap();
-    kernel.dispatch("InvoiceList", None, "ADD", Value::Null).unwrap();
+    let bridge = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse {
+        success: true,
+        ..Default::default()
+    })]));
+    let kernel = ClientKernel::new(
+        books_schema(),
+        Some(bridge.clone() as Arc<dyn ServerBridge>),
+    )
+    .unwrap();
+    kernel
+        .dispatch("InvoiceList", None, "ADD", Value::Null)
+        .unwrap();
     assert_eq!(bridge.calls.lock().len(), 1);
 }
 
@@ -1067,11 +1248,23 @@ fn listen_source_kernel() -> ClientKernel {
             "transitions": [{ "from": "closed", "to": "open", "event": "CREATE" }]
         }
     });
-    ClientKernel::new(schema_of(vec![orbital("RouteOrbital", "Route", vec![catalog, create])]), None).unwrap()
+    ClientKernel::new(
+        schema_of(vec![orbital(
+            "RouteOrbital",
+            "Route",
+            vec![catalog, create],
+        )]),
+        None,
+    )
+    .unwrap()
 }
 
 fn delivered_states(response: &EventResponse) -> Vec<(String, String)> {
-    let mut states: Vec<(String, String)> = response.states.iter().map(|(t, s)| (t.clone(), s.clone())).collect();
+    let mut states: Vec<(String, String)> = response
+        .states
+        .iter()
+        .map(|(t, s)| (t.clone(), s.clone()))
+        .collect();
     states.sort();
     states
 }
@@ -1079,18 +1272,27 @@ fn delivered_states(response: &EventResponse) -> Vec<(String, String)> {
 #[test]
 fn a_listen_source_dispatch_delivers_the_listener_with_the_states_the_web_shell_gets() {
     let kernel = listen_source_kernel();
-    let response = kernel.dispatch("RouteCatalog", None, "CREATE", Value::Null).unwrap();
+    let response = kernel
+        .dispatch("RouteCatalog", None, "CREATE", Value::Null)
+        .unwrap();
     assert!(response.transitioned);
     assert_eq!(
         delivered_states(&response),
-        vec![("RouteCatalog".to_string(), "browsing".to_string()), ("RouteCreate".to_string(), "open".to_string())]
+        vec![
+            ("RouteCatalog".to_string(), "browsing".to_string()),
+            ("RouteCreate".to_string(), "open".to_string())
+        ]
     );
 }
 
 #[test]
 fn control_an_event_nobody_listens_to_delivers_nothing() {
     let kernel = listen_source_kernel();
-    let response = kernel.dispatch("RouteCatalog", None, "UNRELATED", Value::Null).unwrap();
+    let response = kernel
+        .dispatch("RouteCatalog", None, "UNRELATED", Value::Null)
+        .unwrap();
     assert!(!response.transitioned);
-    assert!(delivered_states(&response).iter().all(|(t, s)| t != "RouteCreate" || s == "closed"));
+    assert!(delivered_states(&response)
+        .iter()
+        .all(|(t, s)| t != "RouteCreate" || s == "closed"));
 }

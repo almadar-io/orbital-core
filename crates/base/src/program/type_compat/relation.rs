@@ -11,7 +11,12 @@ pub(super) struct Relation<'a> {
 }
 
 impl Relation<'_> {
-    pub(super) fn sub(&mut self, src: &OirType, dst: &OirType, progress: usize) -> Option<Coercion> {
+    pub(super) fn sub(
+        &mut self,
+        src: &OirType,
+        dst: &OirType,
+        progress: usize,
+    ) -> Option<Coercion> {
         let witness = self.sub_inner(src, dst, progress)?;
         if self.checked
             && matches!(
@@ -19,10 +24,7 @@ impl Relation<'_> {
                 Coercion::Explicit
                     | Coercion::Refine(_)
                     | Coercion::Unwrap { .. }
-                    | Coercion::Widen(
-                        WidenKind::StringToDate
-                            | WidenKind::StringToDateTime
-                    )
+                    | Coercion::Widen(WidenKind::StringToDate | WidenKind::StringToDateTime)
             )
         {
             return None;
@@ -30,9 +32,18 @@ impl Relation<'_> {
         Some(witness)
     }
 
-    pub(super) fn sub_inner(&mut self, src: &OirType, dst: &OirType, progress: usize) -> Option<Coercion> {
-        if let (OirType::Optional { inner: source }, OirType::Optional { inner: target }) = (src, dst) {
-            return self.sub(source, target, progress).map(|c| Coercion::Wrap(Box::new(c)));
+    pub(super) fn sub_inner(
+        &mut self,
+        src: &OirType,
+        dst: &OirType,
+        progress: usize,
+    ) -> Option<Coercion> {
+        if let (OirType::Optional { inner: source }, OirType::Optional { inner: target }) =
+            (src, dst)
+        {
+            return self
+                .sub(source, target, progress)
+                .map(|c| Coercion::Wrap(Box::new(c)));
         }
         // An unrefined nullable source needs an explicit unwrap.
         if let OirType::Optional { inner } = dst {
@@ -41,12 +52,15 @@ impl Relation<'_> {
                 .map(|c| Coercion::Wrap(Box::new(c)));
         }
         if let OirType::Optional { inner } = src {
-            return self.sub(inner, dst, progress).map(|c| Coercion::Unwrap { inner: Box::new(c) });
+            return self
+                .sub(inner, dst, progress)
+                .map(|c| Coercion::Unwrap { inner: Box::new(c) });
         }
         if let Some(sealed) = crate::sealed::sealed_name(dst) {
             return (crate::sealed::sealed_name(src) == Some(sealed)).then_some(Coercion::Identity);
         }
-        if let Some(record) = crate::sealed::sealed_name(src).and_then(crate::sealed::sealed_record) {
+        if let Some(record) = crate::sealed::sealed_name(src).and_then(crate::sealed::sealed_record)
+        {
             return self.sub(&record, dst, progress);
         }
         if src == dst
@@ -100,8 +114,13 @@ impl Relation<'_> {
             return result;
         }
         if let (OirType::Enum { name: source }, OirType::Enum { name: target }) = (src, dst) {
-            if let (Some(source), Some(target)) = (literal_union_members(source), literal_union_members(target)) {
-                return source.iter().all(|member| target.contains(member)).then_some(Coercion::Identity);
+            if let (Some(source), Some(target)) =
+                (literal_union_members(source), literal_union_members(target))
+            {
+                return source
+                    .iter()
+                    .all(|member| target.contains(member))
+                    .then_some(Coercion::Identity);
             }
         }
         if self.checked
@@ -148,8 +167,14 @@ impl Relation<'_> {
         // A field reference is a string at run time. The call site decides which name it holds.
         match (src, dst) {
             (
-                OirType::FieldRef { record: source_record, value: source },
-                OirType::FieldRef { record: target_record, value: target },
+                OirType::FieldRef {
+                    record: source_record,
+                    value: source,
+                },
+                OirType::FieldRef {
+                    record: target_record,
+                    value: target,
+                },
             ) => {
                 self.sub(source_record, target_record, progress + 1)?;
                 return match (source, target) {
@@ -158,17 +183,28 @@ impl Relation<'_> {
                     (None, Some(_)) => None,
                 };
             }
-            (OirType::FieldRef { .. }, OirType::String) | (OirType::String, OirType::FieldRef { .. }) => {
+            (OirType::FieldRef { .. }, OirType::String)
+            | (OirType::String, OirType::FieldRef { .. }) => {
                 return Some(Coercion::Identity);
             }
             _ => {}
         }
         match (src, dst) {
             (
-                OirType::Struct { fields: actual, additional: actual_additional },
-                OirType::Struct { fields: expected, additional: expected_additional },
+                OirType::Struct {
+                    fields: actual,
+                    additional: actual_additional,
+                },
+                OirType::Struct {
+                    fields: expected,
+                    additional: expected_additional,
+                },
             ) if !expected.is_empty() || expected_additional.is_some() => {
-                if self.checked && actual.is_empty() && actual_additional.is_none() && expected_additional.is_some() {
+                if self.checked
+                    && actual.is_empty()
+                    && actual_additional.is_none()
+                    && expected_additional.is_some()
+                {
                     return None;
                 }
                 let mut explicit = false;
@@ -179,31 +215,47 @@ impl Relation<'_> {
                                 return None;
                             }
                             // A member neither side requires may be missing either way, whether it reads as `T?` or `T`.
-                            let found_type = match (&found.field_type, field.required || found.required) {
-                                (OirType::Optional { inner }, false) => inner.as_ref(),
-                                (other, _) => other,
-                            };
+                            let found_type =
+                                match (&found.field_type, field.required || found.required) {
+                                    (OirType::Optional { inner }, false) => inner.as_ref(),
+                                    (other, _) => other,
+                                };
                             if self.checked || !is_unknowable(found_type) {
-                                explicit |= self.sub(found_type, &field.field_type, progress + 1)?.requires_cast();
+                                explicit |= self
+                                    .sub(found_type, &field.field_type, progress + 1)?
+                                    .requires_cast();
                             }
                         }
                         None if field.required => return None,
                         None => {
                             if let Some(additional) = actual_additional {
-                                explicit |= self.sub(additional, &field.field_type, progress + 1)?.requires_cast();
+                                explicit |= self
+                                    .sub(additional, &field.field_type, progress + 1)?
+                                    .requires_cast();
                             }
                         }
                     }
                 }
                 if let Some(additional) = expected_additional {
-                    for field in actual.iter().filter(|field| !expected.iter().any(|target| target.name == field.name)) {
-                        explicit |= self.sub(&field.field_type, additional, progress + 1)?.requires_cast();
+                    for field in actual
+                        .iter()
+                        .filter(|field| !expected.iter().any(|target| target.name == field.name))
+                    {
+                        explicit |= self
+                            .sub(&field.field_type, additional, progress + 1)?
+                            .requires_cast();
                     }
                     if let Some(actual_additional) = actual_additional {
-                        explicit |= self.sub(actual_additional, additional, progress + 1)?.requires_cast();
+                        explicit |= self
+                            .sub(actual_additional, additional, progress + 1)?
+                            .requires_cast();
                     }
                 }
-                return Some(if explicit { Coercion::Explicit } else { Coercion::Erase { from: src.clone() } });
+                return Some(if explicit {
+                    Coercion::Explicit
+                } else {
+                    Coercion::Erase { from: src.clone() }
+                });
             }
             (
                 OirType::Map {
@@ -229,7 +281,9 @@ impl Relation<'_> {
                     Coercion::Erase { from: src.clone() }
                 });
             }
-            (OirType::Struct { fields, additional }, OirType::Map { key, value }) if !fields.is_empty() || additional.is_some() => {
+            (OirType::Struct { fields, additional }, OirType::Map { key, value })
+                if !fields.is_empty() || additional.is_some() =>
+            {
                 let mut explicit = self
                     .sub(&OirType::String, key, progress + 1)?
                     .requires_cast();
@@ -249,7 +303,9 @@ impl Relation<'_> {
                     Coercion::Erase { from: src.clone() }
                 });
             }
-            (OirType::Map { value, .. }, OirType::Struct { fields, additional }) if !fields.is_empty() || additional.is_some() => {
+            (OirType::Map { value, .. }, OirType::Struct { fields, additional })
+                if !fields.is_empty() || additional.is_some() =>
+            {
                 if self.checked && fields.iter().any(|f| f.required && f.default.is_none()) {
                     return None;
                 }
@@ -305,7 +361,9 @@ impl Relation<'_> {
             OirType::Behavior => None,
             OirType::String => match src {
                 _ if is_string_kind(src) => Some(Coercion::Identity),
-                _ if semantic_kind(src).is_some() => Some(Coercion::Widen(WidenKind::SemanticToString)),
+                _ if semantic_kind(src).is_some() => {
+                    Some(Coercion::Widen(WidenKind::SemanticToString))
+                }
                 _ => None,
             },
             OirType::Number => match src {
@@ -455,7 +513,11 @@ impl Relation<'_> {
             // Opaque: only the same variable (identity, caught above) or an unknowable value.
             OirType::Var { .. } => match src {
                 _ if src.is_erased() => Some(Coercion::Erase { from: src.clone() }),
-                _ if dst.is_erased() && (is_object_family(src) || is_json_family(src) || matches!(src, OirType::Var { .. })) => {
+                _ if dst.is_erased()
+                    && (is_object_family(src)
+                        || is_json_family(src)
+                        || matches!(src, OirType::Var { .. })) =>
+                {
                     Some(Coercion::Erase { from: src.clone() })
                 }
                 _ => None,

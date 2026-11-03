@@ -4,10 +4,10 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::schema::types::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
 use crate::collections::IndexMap;
-use serde::{Deserialize, Serialize};
+use crate::schema::types::{FieldDefinition, FieldType, ServiceRef, ThemeDefinition};
 use crate::value::Shared;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Config field type declaration, preserving enum `values` alongside the
@@ -308,10 +308,10 @@ impl OirModule {
 
 mod entity;
 mod oir_type;
+mod page;
 mod shape;
 mod traits;
 mod transition;
-mod page;
 mod value;
 pub use entity::{OirCardinality, OirConstraint, OirEntity, OirField, OirPersistence, OirRelation};
 pub use oir_type::{no_fields, OirType};

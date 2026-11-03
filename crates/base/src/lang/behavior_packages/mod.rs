@@ -57,7 +57,9 @@ impl BehaviorPackage {
     }
 
     pub fn registry_is_locked(&self) -> bool {
-        self.sidecars.iter().any(|sidecar| sidecar.cache_path.as_path() == self.registry.root())
+        self.sidecars
+            .iter()
+            .any(|sidecar| sidecar.cache_path.as_path() == self.registry.root())
     }
 }
 
@@ -227,7 +229,10 @@ pub fn index_registry_source(
     let mut visited = HashSet::new();
     let mut stack = vec![source.root().to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let io = |source| DiscoverError::Io { path: dir.clone(), source };
+        let io = |source| DiscoverError::Io {
+            path: dir.clone(),
+            source,
+        };
         let canonical = fs::canonicalize(&dir).map_err(io)?;
         if !visited.insert(canonical) {
             continue;
@@ -246,14 +251,20 @@ pub fn index_registry_source(
             })?;
             let is_dir = if file_type.is_symlink() {
                 fs::metadata(&path)
-                    .map_err(|source| DiscoverError::Io { path: path.clone(), source })?
+                    .map_err(|source| DiscoverError::Io {
+                        path: path.clone(),
+                        source,
+                    })?
                     .is_dir()
             } else {
                 file_type.is_dir()
             };
             if is_dir {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == source.extension()) {
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == source.extension())
+            {
                 if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
                     insert_registry_path(&mut index, name.to_string(), path)?;
                 }
@@ -269,11 +280,13 @@ fn insert_registry_path(
     path: PathBuf,
 ) -> Result<(), DiscoverError> {
     match index.entry(name) {
-        std::collections::hash_map::Entry::Occupied(entry) => Err(DiscoverError::DuplicateBehaviorName {
-            name: entry.key().clone(),
-            path_a: entry.get().clone(),
-            path_b: path,
-        }),
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            Err(DiscoverError::DuplicateBehaviorName {
+                name: entry.key().clone(),
+                path_a: entry.get().clone(),
+                path_b: path,
+            })
+        }
         std::collections::hash_map::Entry::Vacant(entry) => {
             entry.insert(path);
             Ok(())
@@ -323,15 +336,25 @@ pub fn discover_with_cache(
 ) -> Result<Vec<BehaviorPackage>, DiscoverError> {
     use std::sync::{Mutex, OnceLock};
     type Key = (PathBuf, PathBuf, PathBuf);
-    static MEMO: OnceLock<Mutex<HashMap<Key, (DiscoveryStamp, Vec<BehaviorPackage>)>>> = OnceLock::new();
+    static MEMO: OnceLock<Mutex<HashMap<Key, (DiscoveryStamp, Vec<BehaviorPackage>)>>> =
+        OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    let key = (start_dir.to_path_buf(), user_store.to_path_buf(), cache_dir.to_path_buf());
+    let key = (
+        start_dir.to_path_buf(),
+        user_store.to_path_buf(),
+        cache_dir.to_path_buf(),
+    );
     if let Some((stamp, packages)) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) {
         if stamp.is_current() {
             return Ok(packages);
         }
     }
-    let packages = discover_uncached(start_dir, user_store, cache_dir, crate::language_data::running_version())?;
+    let packages = discover_uncached(
+        start_dir,
+        user_store,
+        cache_dir,
+        crate::language_data::running_version(),
+    )?;
     let stamp = DiscoveryStamp::of(start_dir, user_store, &packages);
     if let Ok(mut m) = memo.lock() {
         m.insert(key, (stamp, packages.clone()));
@@ -374,7 +397,9 @@ impl DiscoveryStamp {
     }
 
     pub fn is_current(&self) -> bool {
-        self.0.iter().all(|(path, modified)| Self::modified(path) == *modified)
+        self.0
+            .iter()
+            .all(|(path, modified)| Self::modified(path) == *modified)
     }
 }
 
@@ -388,7 +413,13 @@ fn discover_uncached(
     let mut names_seen: HashSet<String> = HashSet::new();
 
     for node_modules in node_modules_dirs(start_dir, user_store) {
-        scan_node_modules(&node_modules, cache_dir, running, &mut found, &mut names_seen)?;
+        scan_node_modules(
+            &node_modules,
+            cache_dir,
+            running,
+            &mut found,
+            &mut names_seen,
+        )?;
     }
 
     check_prefix_conflicts(&found)?;
@@ -401,10 +432,7 @@ fn discover_uncached(
 /// The shared node-style walk-up rungs: each ancestor's `node_modules`, then
 /// the user store's `node_modules` last. Nearest-first order, one definition
 /// shared by `discover` and `find_npm_package`.
-pub fn node_modules_dirs(
-    start_dir: &Path,
-    user_store: &Path,
-) -> impl Iterator<Item = PathBuf> {
+pub fn node_modules_dirs(start_dir: &Path, user_store: &Path) -> impl Iterator<Item = PathBuf> {
     let mut dirs: Vec<PathBuf> = start_dir
         .ancestors()
         .map(|dir| dir.join("node_modules"))
@@ -594,7 +622,15 @@ fn scan_node_modules(
             continue;
         }
 
-        let package = build_package(&name, obj, orb, &dir_path, &package_json_path, cache_dir, running)?;
+        let package = build_package(
+            &name,
+            obj,
+            orb,
+            &dir_path,
+            &package_json_path,
+            cache_dir,
+            running,
+        )?;
         names_seen.insert(name);
         found.push(package);
     }
@@ -695,13 +731,11 @@ fn build_package(
         RegistrySource::Materialized(_) => "registry",
         RegistrySource::Live(_) => "source",
     };
-    for (field, path, locked) in [
-        (
-            registry_field,
-            &registry.root().to_path_buf(),
-            registry_locked,
-        ),
-    ] {
+    for (field, path, locked) in [(
+        registry_field,
+        &registry.root().to_path_buf(),
+        registry_locked,
+    )] {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
                 package: name.to_string(),
@@ -810,7 +844,6 @@ fn check_prefix_conflicts(found: &[BehaviorPackage]) -> Result<(), DiscoverError
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests;

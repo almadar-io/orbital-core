@@ -401,9 +401,9 @@ fn dark_surface_replaces_base_and_absent_dark_surface_falls_back() {
 #[test]
 fn control_no_range_axes_and_empty_string_passes_through() {
     let got = light(json!({"geometry": {"radiusContainer": "8px"}}));
-    assert!(got.keys().all(|k| !k.contains("corner")
-        && !k.contains("border-style")
-        && !k.contains("surface")));
+    assert!(got
+        .keys()
+        .all(|k| !k.contains("corner") && !k.contains("border-style") && !k.contains("surface")));
     assert_eq!(
         light(json!({"geometry": {"borderStyle": ""}})),
         expect(&[("--border-style", "")])
@@ -559,8 +559,7 @@ fn surface_band_axes() {
     );
     let bare = light(json!({"surface": {"backdrop": "none"}}));
     assert!(
-        !bare.contains_key("--surface-edge-mask")
-            && !bare.contains_key("--surface-accent-image")
+        !bare.contains_key("--surface-edge-mask") && !bare.contains_key("--surface-accent-image")
     );
     let dark = run(
         json!({"surface": {"edgeMask": "url(\"light.svg\")"}}),
@@ -590,7 +589,6 @@ fn illustration_loading_artwork() {
     );
     let none = light(json!({"illustration": {"style": "minimal"}}));
     assert!(
-        !none.contains_key("--illustration-loading")
-            && !none.contains_key("--loader-icon-display")
+        !none.contains_key("--illustration-loading") && !none.contains_key("--loader-icon-display")
     );
 }

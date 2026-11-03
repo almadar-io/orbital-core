@@ -119,7 +119,11 @@ pub struct EntityDefinition {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timestamps: Option<bool>,
-    #[serde(default, rename = "softDelete", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "softDelete",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub soft_delete: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
@@ -267,7 +271,11 @@ pub struct FieldDefinition {
     pub record: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
-    #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "additionalProperties",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub additional_properties: Option<Box<FieldDefinition>>,
     /// Field name (optional for nested items/properties)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -385,7 +393,10 @@ impl FieldDefinition {
         if self.field_type != FieldType::Object || self.properties.is_some() {
             return None;
         }
-        self.record.as_deref()?.strip_prefix("@payload(.")?.strip_suffix(')')
+        self.record
+            .as_deref()?
+            .strip_prefix("@payload(.")?
+            .strip_suffix(')')
     }
 
     /// The type name this field refers to by name: the recursive back-reference the lolo lowerer leaves where a
@@ -539,14 +550,22 @@ pub fn tuple_slots_of(
 pub struct FieldProjection {
     #[serde(rename = "type")]
     pub type_name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_projected_field")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_projected_field"
+    )]
     pub field: Option<String>,
 }
 
-pub(super) fn deserialize_projected_field<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+pub(super) fn deserialize_projected_field<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
     let field = String::deserialize(deserializer)?;
     if field.is_empty() {
-        return Err(serde::de::Error::custom("a projected field must be nonempty; omit field for a named type"));
+        return Err(serde::de::Error::custom(
+            "a projected field must be nonempty; omit field for a named type",
+        ));
     }
     Ok(Some(field))
 }
@@ -678,7 +697,9 @@ impl<'de> Deserialize<'de> for TypeVarName {
         let raw = String::deserialize(d)?;
         match raw.strip_prefix('$') {
             Some(name) if !name.is_empty() => Ok(TypeVarName(name.to_string())),
-            _ => Err(serde::de::Error::custom(format!("unknown field type `{raw}`"))),
+            _ => Err(serde::de::Error::custom(format!(
+                "unknown field type `{raw}`"
+            ))),
         }
     }
 }
@@ -750,7 +771,10 @@ impl FieldDefinition {
     /// Replaces every type variable in this shape (items, properties, map
     /// values) by its binding, keeping the occurrence's own name, `required`
     /// and description. An unbound variable stays a variable.
-    pub fn substitute_type_vars(&mut self, bindings: &crate::collections::IndexMap<String, FieldDefinition>) {
+    pub fn substitute_type_vars(
+        &mut self,
+        bindings: &crate::collections::IndexMap<String, FieldDefinition>,
+    ) {
         if let FieldType::TypeVar(TypeVarName(var)) = &self.field_type {
             if let Some(bound) = bindings.get(var) {
                 let name = self.name.take();

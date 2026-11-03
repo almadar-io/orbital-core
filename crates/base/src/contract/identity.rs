@@ -223,13 +223,18 @@ static HOST_SEED: crate::sync::OnceLock<u64> = crate::sync::OnceLock::new();
 /// A bare-metal host's entropy seed, drawn from its own randomness and installed once at boot.
 #[cfg(not(feature = "std"))]
 pub fn install_process_seed(seed: u64) {
-    assert!(HOST_SEED.set(seed).is_ok(), "the process seed is installed once");
+    assert!(
+        HOST_SEED.set(seed).is_ok(),
+        "the process seed is installed once"
+    );
 }
 
 /// This process's entropy seed, as the host installed it (G-ORB-006).
 #[cfg(not(feature = "std"))]
 pub fn process_seed() -> u64 {
-    *HOST_SEED.get().expect("the host installs its entropy seed (identity::install_process_seed) before ids are minted")
+    *HOST_SEED.get().expect(
+        "the host installs its entropy seed (identity::install_process_seed) before ids are minted",
+    )
 }
 
 /// The default, NON-CRYPTOGRAPHIC entropy source: this process's seed, the clock

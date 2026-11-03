@@ -56,7 +56,9 @@ pub fn bus_excluded_events() -> &'static [String] {
 /// True when the bus will never deliver `event`, so a control wired to it is
 /// dead on both execution paths.
 pub fn is_bus_excluded_event(event: &str) -> bool {
-    bus_excluded_events().iter().any(|excluded| excluded == event)
+    bus_excluded_events()
+        .iter()
+        .any(|excluded| excluded == event)
 }
 
 pub use bus::{shared_bus, EventBus, EventCallback, SharedEventBus};

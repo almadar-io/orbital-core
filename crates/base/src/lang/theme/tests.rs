@@ -53,9 +53,9 @@ fn minimal_orbital(name: &str, theme: Option<ThemeRef>) -> Orbital {
         services: None,
         entity: EntityRef::Reference(format!("{name}Entity")),
         auxiliary_entities: None,
-        traits: vec![TraitReference::Inline(Arc::new(minimal_trait_def(&format!(
-            "{name}Trait"
-        ))))],
+        traits: vec![TraitReference::Inline(Arc::new(minimal_trait_def(
+            &format!("{name}Trait"),
+        )))],
         pages: None,
         emits: None,
         listens: None,
@@ -88,7 +88,8 @@ fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> Orbita
     OrbitalSchema {
         types: None,
         type_contract_version: None,
-        resolved: None,        store: None,
+        resolved: None,
+        store: None,
         theme_definitions: None,
         themes: None,
         site: None,
@@ -283,7 +284,10 @@ fn control_switched_to_themes_never_become_the_resolved_theme() {
         vec![minimal_orbital("A", None)],
     );
     schema.themes = Some(vec!["aqua-dark".to_string()]);
-    assert_eq!(resolve_theme(&schema, Some("A"), &presets(), None).base, "clay");
+    assert_eq!(
+        resolve_theme(&schema, Some("A"), &presets(), None).base,
+        "clay"
+    );
 }
 
 #[test]
@@ -302,8 +306,7 @@ fn edge_an_unknown_key_carries_nothing_for_it_and_resolves_as_before() {
     let before = resolve_theme(&schema, Some("A"), &presets(), None);
     carry_theme_definitions(&mut schema, &presets());
     assert_eq!(carried(&schema), vec![DEFAULT_THEME_BASE]);
-    let from_program =
-        ThemePresets::from_definitions(schema.theme_definitions.iter().flatten());
+    let from_program = ThemePresets::from_definitions(schema.theme_definitions.iter().flatten());
     let after = resolve_theme(&schema, Some("A"), &from_program, None);
     assert_eq!(
         serde_json::to_value(&before).unwrap(),
@@ -321,8 +324,7 @@ fn the_program_alone_resolves_like_the_installed_presets() {
         ],
     );
     carry_theme_definitions(&mut schema, &presets());
-    let from_program =
-        ThemePresets::from_definitions(schema.theme_definitions.iter().flatten());
+    let from_program = ThemePresets::from_definitions(schema.theme_definitions.iter().flatten());
     for orbital in ["A", "B"] {
         let installed = resolve_theme(&schema, Some(orbital), &presets(), None);
         let carried = resolve_theme(&schema, Some(orbital), &from_program, None);

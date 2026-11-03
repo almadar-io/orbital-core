@@ -72,7 +72,11 @@ impl SExpression {
                     let unchanged = reuse
                         && matches!(source, SExpression::Array(old)
                             if old.iter().zip(&items).all(|(a, b)| a.same_node(b)));
-                    let node = if unchanged { source.clone() } else { SExpression::Array(items.into()) };
+                    let node = if unchanged {
+                        source.clone()
+                    } else {
+                        SExpression::Array(items.into())
+                    };
                     done.push(exit(node)?);
                 }
                 RewriteFrame::Object(source, len) => {
@@ -366,7 +370,8 @@ impl SExpression {
         let [SExpression::Array(binding)] = bindings.as_slice() else {
             return None;
         };
-        let [SExpression::String(name), literal, SExpression::String(_)] = binding.as_slice() else {
+        let [SExpression::String(name), literal, SExpression::String(_)] = binding.as_slice()
+        else {
             return None;
         };
         (head == "let"
@@ -382,7 +387,11 @@ impl SExpression {
         SequentialBindings::from_args(self.arguments()?)
     }
 
-    pub(super) fn collect_value_leaves<'a>(&'a self, walk: &ValueWalk<'_>, out: &mut Vec<&'a SExpression>) {
+    pub(super) fn collect_value_leaves<'a>(
+        &'a self,
+        walk: &ValueWalk<'_>,
+        out: &mut Vec<&'a SExpression>,
+    ) {
         if let Some(literal) = self.declared_knob_literal() {
             return literal.collect_value_leaves(walk, out);
         }

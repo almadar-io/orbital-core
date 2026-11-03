@@ -9,8 +9,7 @@ fn is_entity(n: &str) -> bool {
     ENTITIES.contains(&n)
 }
 fn check(ty: &str, expected: Option<&str>) -> Option<RecordBindingMismatch> {
-    bound_shape_of_type_str(ty)
-        .and_then(|b| record_prop_binding_mismatch(&b, expected, is_entity))
+    bound_shape_of_type_str(ty).and_then(|b| record_prop_binding_mismatch(&b, expected, is_entity))
 }
 
 #[test]

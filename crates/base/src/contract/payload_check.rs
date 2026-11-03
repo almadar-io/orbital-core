@@ -248,7 +248,11 @@ fn element_issues(
         };
     }
     if crate::sealed::is_sealed_type(element) {
-        return vec![issue(at, PayloadIssueReason::WrongType, Some(format!("{element} (made only by the kernel)")))];
+        return vec![issue(
+            at,
+            PayloadIssueReason::WrongType,
+            Some(format!("{element} (made only by the kernel)")),
+        )];
     }
     let matches = match json_type(element) {
         None => true,
@@ -405,9 +409,15 @@ mod tests {
         let issues = payload_issues(&declared, &json!({ "who": { "subject": "root" } }));
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].reason, PayloadIssueReason::WrongType);
-        assert!(payload_issues(&declared, &json!({})).is_empty(), "control: absent and optional is fine");
+        assert!(
+            payload_issues(&declared, &json!({})).is_empty(),
+            "control: absent and optional is fine"
+        );
         let node = fields(json!([{ "name": "body", "type": "node" }]));
-        assert!(payload_issues(&node, &json!({ "body": "text" })).is_empty(), "control: another undeclared type still passes");
+        assert!(
+            payload_issues(&node, &json!({ "body": "text" })).is_empty(),
+            "control: another undeclared type still passes"
+        );
     }
 
     #[test]

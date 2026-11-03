@@ -64,7 +64,11 @@ impl Lang {
     localize_fn!(localize_type, types, canon_type);
     localize_fn!(localize_unit, units, canon_unit);
     localize_fn!(localize_literal, literals, canon_literal);
-    localize_fn!(localize_reserved_event, reserved_events, canon_reserved_event);
+    localize_fn!(
+        localize_reserved_event,
+        reserved_events,
+        canon_reserved_event
+    );
     localize_fn!(localize_orb_key, orb, canon_orb_key);
 
     /// An s-expression head — an effect verb or an operator, guarded through
@@ -250,18 +254,25 @@ mod tests {
             });
             localize_orb_value(&mut v, l);
             let text = v.to_string();
-            assert!(text.contains("\"icon\""), "{}: pattern name was translated: {text}", l.code);
+            assert!(
+                text.contains("\"icon\""),
+                "{}: pattern name was translated: {text}",
+                l.code
+            );
         }
     }
 
     #[test]
     fn a_field_type_outside_an_expression_is_still_translated() {
         for l in [ar(), sl()] {
-            let mut v: Value =
-                serde_json::json!({ "entity": { "fields": [{ "name": "avatar", "type": "icon" }] } });
+            let mut v: Value = serde_json::json!({ "entity": { "fields": [{ "name": "avatar", "type": "icon" }] } });
             localize_orb_value(&mut v, l);
             let native = l.localize_type("icon").expect("icon translates");
-            assert!(v.to_string().contains(native), "{}: field type not translated", l.code);
+            assert!(
+                v.to_string().contains(native),
+                "{}: field type not translated",
+                l.code
+            );
         }
     }
 
@@ -270,7 +281,11 @@ mod tests {
         for l in [ar(), sl()] {
             let mut v: Value = serde_json::json!({ "values": ["title", "completed"] });
             localize_orb_value(&mut v, l);
-            assert!(v.to_string().contains("\"title\""), "{}: value list altered", l.code);
+            assert!(
+                v.to_string().contains("\"title\""),
+                "{}: value list altered",
+                l.code
+            );
         }
     }
 
@@ -280,9 +295,17 @@ mod tests {
             let mut v: Value = serde_json::json!({ "entity": { "persistence": "persistent" } });
             localize_orb_value(&mut v, l);
             let native = l.localize_tag("persistent").expect("persistent translates");
-            assert!(v.to_string().contains(native), "{}: persistence not translated", l.code);
+            assert!(
+                v.to_string().contains(native),
+                "{}: persistence not translated",
+                l.code
+            );
             super::super::translate::translate_orb_value(&mut v, l);
-            assert!(v.to_string().contains("persistent"), "{}: persistence did not canon back", l.code);
+            assert!(
+                v.to_string().contains("persistent"),
+                "{}: persistence did not canon back",
+                l.code
+            );
         }
     }
 
@@ -296,8 +319,15 @@ mod tests {
                     "{}: types table is missing the field type `{t}`",
                     l.code
                 );
-                let native = l.localize_type(t).unwrap_or_else(|| panic!("{}: {t} withheld", l.code));
-                assert_eq!(l.canon_type(native), Some(t), "{}: {t} -> {native} did not canon back", l.code);
+                let native = l
+                    .localize_type(t)
+                    .unwrap_or_else(|| panic!("{}: {t} withheld", l.code));
+                assert_eq!(
+                    l.canon_type(native),
+                    Some(t),
+                    "{}: {t} -> {native} did not canon back",
+                    l.code
+                );
             }
         }
     }
