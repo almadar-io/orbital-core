@@ -59,7 +59,9 @@ impl TestKernel {
 
     pub fn register(self, schema: OrbitalSchema) -> RuntimeKernel {
         let kernel = RuntimeKernel::new(self.environment, self.source, self.config);
-        kernel.register_schema(schema).expect("test schema registers");
+        kernel
+            .register_schema(schema)
+            .expect("test schema registers");
         kernel
     }
 }
@@ -108,7 +110,10 @@ pub mod identity {
         if let (Some(base), Json::Object(extra)) = (payload.as_object_mut(), claims) {
             base.extend(extra);
         }
-        format!("{header}.{}.", orbital_core_base::codec::base64url_encode(payload.to_string().as_bytes()))
+        format!(
+            "{header}.{}.",
+            orbital_core_base::codec::base64url_encode(payload.to_string().as_bytes())
+        )
     }
 
     /// Register the sign-in program on `kernel`.
@@ -116,13 +121,18 @@ pub mod identity {
         if kernel.trait_dispatch_mode(SIGNER).is_some() {
             return;
         }
-        kernel.register_schema(program(fields)).expect("the sign-in program registers");
+        kernel
+            .register_schema(program(fields))
+            .expect("the sign-in program registers");
     }
 
     /// Sign the session this thread is in as `subject`, its claims carrying the identity row's fields.
     pub fn sign_in(kernel: &RuntimeKernel, subject: &str, claims: Json) {
-        let payload: Value = serde_json::from_value(json!({ "token": token(subject, claims) })).expect("payload");
-        kernel.dispatch(SIGNER, None, "SIGN_IN", payload).expect("the sign-in dispatches");
+        let payload: Value =
+            serde_json::from_value(json!({ "token": token(subject, claims) })).expect("payload");
+        kernel
+            .dispatch(SIGNER, None, "SIGN_IN", payload)
+            .expect("the sign-in dispatches");
     }
 
     /// [`sign_in`] in the session `client`.
@@ -138,7 +148,12 @@ pub mod identity {
         subject: &str,
         claims: Json,
     ) -> orbital_core_runtime::effects::response::EventResponse {
-        signer_request(server, client, "SIGN_IN", Some(json!({ "token": token(subject, claims) })))
+        signer_request(
+            server,
+            client,
+            "SIGN_IN",
+            Some(json!({ "token": token(subject, claims) })),
+        )
     }
 
     /// Sign the client session `client` of an embedded server out; answers the response.
@@ -164,7 +179,10 @@ pub mod identity {
             payload: payload.map(|payload| serde_json::from_value(payload).expect("payload")),
             ..Default::default()
         };
-        match server.start("TestIdentityOrbital", request).expect("the identity request starts") {
+        match server
+            .start("TestIdentityOrbital", request)
+            .expect("the identity request starts")
+        {
             ServerProgress::Done(response) => response,
             _ => panic!("the identity request never asks the host"),
         }

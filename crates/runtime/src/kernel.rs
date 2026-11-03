@@ -111,6 +111,8 @@ pub enum KernelError {
 }
 
 pub mod agent_ports;
+mod guests;
+mod guest_controls;
 pub mod dispatch_run;
 pub(crate) mod envelope;
 pub mod inbound;
@@ -463,6 +465,10 @@ pub struct RuntimeKernel {
     settled_rows: RwLock<Vec<(String, String)>>,
     /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
     removed_rows: RwLock<Vec<(Option<String>, String)>>,
+    /// The guest programs this kernel opened (`program/open`, EXEC-CONC-7), by handle.
+    guests: RwLock<HashMap<String, Arc<RuntimeKernel>>>,
+    /// The last guest handle number this kernel issued.
+    guest_seq: std::sync::atomic::AtomicU64,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
@@ -778,6 +784,8 @@ impl RuntimeKernel {
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
+            guests: RwLock::new(HashMap::new()),
+            guest_seq: std::sync::atomic::AtomicU64::new(0),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
     }

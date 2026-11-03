@@ -191,6 +191,21 @@ pub struct TraitSurface {
     pub emits: Vec<SurfaceEmit>,
     pub listens: Vec<SurfaceListen>,
     pub transitions: Vec<SurfaceTransition>,
+    /// The trait paints a `guest-view` (G-CROSS-400): a host hands it every event raised in its scope, and the kernel
+    /// routes one a painted guest control carries or ignores it.
+    pub paints_guest_views: bool,
+}
+
+/// Whether `value` (an effect as written) holds a `guest-view` node.
+fn holds_guest_view(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(node) => {
+            node.get("type").and_then(serde_json::Value::as_str) == Some("guest-view")
+                || node.values().any(holds_guest_view)
+        }
+        serde_json::Value::Array(items) => items.iter().any(holds_guest_view),
+        _ => false,
+    }
 }
 
 /// What a host reads of the whole program: every registered trait in name order, and the browser-stored entities.
@@ -452,6 +467,10 @@ impl RuntimeKernel {
                 .iter()
                 .find(|s| s.is_initial == Some(true))
                 .map(|s| s.name.clone()),
+            paints_guest_views: machine
+                .transitions
+                .iter()
+                .any(|t| t.effects.iter().flatten().any(|effect| serde_json::to_value(effect).is_ok_and(|json| holds_guest_view(&json)))),
             events,
             emits,
             listens,
@@ -621,8 +640,53 @@ mod tests {
                 "transitions": [
                     { "from": "shut", "to": "open", "event": "OPEN", "guard": [">", "@entity.n", 1.0], "awaitRender": [await_render()] },
                     { "from": "open", "to": "shut", "event": "INIT" }
-                ]
+                ],
+                "paintsGuestViews": false
             })
+        );
+    }
+
+    #[test]
+    fn a_trait_that_paints_a_guest_view_says_so_on_its_surface() {
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig::default(),
+        );
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Stage",
+                "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Host",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                            ["render-ui", "main", { "type": "stack", "children": [
+                                { "type": "guest-view", "guest": "guest-1", "source": "List", "deliver": "GUEST_CONTROL", "children": [] }
+                            ] }]
+                        ] }]
+                    }
+                }, {
+                    "name": "Plain",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                            ["render-ui", "main", { "type": "typography", "content": "guest-view" }]
+                        ] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        assert_eq!(ask(&kernel, json!({ "kind": "traitSurface", "trait": "Host" }))["paintsGuestViews"], true);
+        assert_eq!(
+            ask(&kernel, json!({ "kind": "traitSurface", "trait": "Plain" }))["paintsGuestViews"],
+            false,
+            "control: the words in a paint's text are not a guest-view node"
         );
     }
 

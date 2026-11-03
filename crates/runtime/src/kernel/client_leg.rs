@@ -642,10 +642,10 @@ impl RuntimeKernel {
         {
             let mut renders = self.renders.write();
             for painted in response.client_effects_by_trait.iter().flatten() {
-                if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, .. } =
+                if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, config } =
                     &painted.effect
                 {
-                    renders.forget_slot(&painted.trait_name, slot);
+                    renders.host_painted(&painted.trait_name, slot, config.as_ref());
                 }
             }
         }

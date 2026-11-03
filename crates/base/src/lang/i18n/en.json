@@ -991,6 +991,8 @@
     "program/eval": "program/eval",
     "program/inputs": "program/inputs",
     "program/live": "program/live",
+    "program/open": "program/open",
+    "program/close": "program/close",
     "program/self": "program/self",
     "program/print": "program/print",
     "program/read": "program/read",
