@@ -116,3 +116,53 @@ fn a_collected_leg_addresses_the_entity_the_caller_named_and_none_otherwise() {
     );
     assert_eq!(open(None).server_legs[0].entity_id, None);
 }
+
+fn launchpad_like() -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "pad",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Pad",
+            "entity": { "name": "View", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Rail", "linkedEntity": "View", "dispatch": "client",
+                  "emits": [{ "event": "RAIL_OPEN", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "CLICK", "effects": [["emit", "RAIL_OPEN", {}]] }] } },
+                { "name": "Home", "linkedEntity": "View", "dispatch": "client",
+                  "emits": [{ "event": "TAB_OPEN", "scope": "external" }, { "event": "RECENT_ADD", "scope": "external" }],
+                  "listens": [{ "event": "RAIL_OPEN", "triggers": "APP_OPEN", "source": { "kind": "trait", "trait": "Rail" } }],
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "APP_OPEN", "effects": [["emit", "TAB_OPEN", {}], ["emit", "RECENT_ADD", {}]] }] } },
+                { "name": "Stage", "linkedEntity": "View", "dispatch": "client",
+                  "emits": [{ "event": "PLAYGROUND_OPENED", "scope": "external" }],
+                  "listens": [{ "event": "TAB_OPEN", "triggers": "TAB_OPEN", "source": { "kind": "trait", "trait": "Home" } }],
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "TAB_OPEN", "effects": [["emit", "PLAYGROUND_OPENED", {}]] }] } },
+                { "name": "Recents", "linkedEntity": "Item",
+                  "listens": [{ "event": "RECENT_ADD", "triggers": "RECENT_ADD", "source": { "kind": "trait", "trait": "Home" } }],
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [{ "from": "ready", "to": "ready", "event": "RECENT_ADD", "effects": [["fetch", "Item", {}]] }] } },
+                { "name": "Catalog", "linkedEntity": "View", "dispatch": "optimistic",
+                  "listens": [{ "event": "PLAYGROUND_OPENED", "triggers": "CATALOG_LOAD", "source": { "kind": "trait", "trait": "Stage" } }],
+                  "stateMachine": { "states": [{ "name": "loading", "isInitial": true }],
+                    "transitions": [{ "from": "loading", "to": "loading", "event": "CATALOG_LOAD", "effects": [["behavior/catalog", { "paths": ["std/ui"] }, { "emit": { "success": "LISTED", "failure": "LIST_FAILED" } }]] }] } }
+            ]
+        }, {
+            "name": "Store",
+            "entity": { "name": "Item", "persistence": "persistent", "collection": "items", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::client().register(schema)
+}
+
+#[test]
+fn a_client_only_cascade_that_reaches_two_server_traits_posts_a_leg_for_each() {
+    let d = launchpad_like()
+        .dispatch_with_server_leg("Pad", "Rail", None, "CLICK", Value::Null, Some("c1"))
+        .unwrap();
+    let mut targets: Vec<_> = d.server_legs.iter().filter_map(|l| l.target_trait.clone()).collect();
+    targets.sort();
+    assert_eq!(targets, vec!["Catalog".to_string(), "Recents".to_string()], "outcomes: {:?}", d.outcomes.iter().map(|(t, r)| (t.clone(), r.executed, r.event.clone())).collect::<Vec<_>>());
+}

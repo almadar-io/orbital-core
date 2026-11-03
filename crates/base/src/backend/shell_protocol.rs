@@ -230,7 +230,16 @@ pub fn read_request<T: serde::de::DeserializeOwned>() -> Result<T, ShellFailure>
     std::io::stdin()
         .read_to_string(&mut input)
         .map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, format!("read stdin: {e}")))?;
-    serde_json::from_str(&input).map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, format!("parse request: {e}")))
+    from_deep_json(input.as_bytes()).map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, format!("parse request: {e}")))
+}
+
+/// Parse JSON at any nesting depth: a resolved program nests as deep as its expressions.
+pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    de.disable_recursion_limit();
+    let value = T::deserialize(serde_stacker::Deserializer::new(&mut de))?;
+    de.end()?;
+    Ok(value)
 }
 
 pub fn reply_exit<T: Serialize>(reply: &T, ok: bool) -> ExitCode {
@@ -397,7 +406,7 @@ pub fn exchange<Q: Serialize, R: serde::de::DeserializeOwned>(binary: &Path, arg
     let out = child
         .wait_with_output()
         .map_err(|e| ShellFailure::new(CODE_NOT_RUNNABLE, format!("{}: {e}", binary.display())))?;
-    serde_json::from_slice(&out.stdout).map_err(|e| {
+    from_deep_json(&out.stdout).map_err(|e| {
         ShellFailure::new(
             CODE_NOT_RUNNABLE,
             format!("{} exited {} without a reply: {e}", binary.display(), out.status),
@@ -442,6 +451,37 @@ pub fn ship_kernel_beside_program(file: &str, output: &std::path::Path) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn deep_json_a_request_nested_far_past_128_levels_parses() {
+        let parsed: serde_json::Value = from_deep_json(nested(4000).as_bytes()).expect("a deep request parses");
+        let mut depth = 0;
+        let mut at = &parsed;
+        while let serde_json::Value::Array(items) = at {
+            depth += 1;
+            at = &items[0];
+        }
+        assert_eq!(depth, 4000);
+        assert_eq!(at, &serde_json::json!(1));
+    }
+
+    #[test]
+    fn deep_json_control_a_shallow_request_parses_as_before() {
+        let parsed: serde_json::Value = from_deep_json(br#"{"a":[1,{"b":2}]}"#).expect("parses");
+        assert_eq!(parsed, serde_json::json!({"a":[1,{"b":2}]}));
+    }
+
+    #[test]
+    fn deep_json_edge_malformed_or_trailing_text_still_refuses() {
+        assert!(from_deep_json::<serde_json::Value>(b"[[1]").is_err());
+        assert!(from_deep_json::<serde_json::Value>(b"[1] trailing").is_err());
+        let unclosed = format!("{}1{}", "[".repeat(4000), "]".repeat(3999));
+        assert!(from_deep_json::<serde_json::Value>(unclosed.as_bytes()).is_err());
+    }
 
     struct Fake;
 

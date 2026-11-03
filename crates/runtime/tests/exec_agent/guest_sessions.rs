@@ -412,3 +412,54 @@ fn control_once_the_browser_trait_paints_the_slot_itself_the_servers_guest_view_
     let after = stage_entity(&kernel);
     assert!(after.get("clicked").is_none_or(serde_json::Value::is_null), "{after}");
 }
+
+/// The diary guest whose first screen names the first note it fetched, or "No notes yet" when it fetched none.
+fn listing_guest() -> serde_json::Value {
+    let mut program = guest();
+    program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][1]["effects"] = json!([
+        ["render-ui", "main", { "type": "typography", "content":
+            ["if", ["=", ["array/len", "@payload.data"], 0], "No notes yet", ["object/get", ["array/nth", "@payload.data", 0], "text"]] }]
+    ]);
+    program
+}
+
+fn open_with_rows(rows: serde_json::Value) -> serde_json::Value {
+    let kernel = opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", { "rows": "@payload.rows" }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] }
+    ]));
+    let payload = serde_json::from_value(json!({ "program": listing_guest(), "rows": rows })).unwrap();
+    kernel.dispatch("Opener", None, "GO", payload).unwrap();
+    entity(&kernel)
+}
+
+#[test]
+fn rows_given_to_open_are_in_the_guests_store_before_its_page_mounts() {
+    let after = open_with_rows(json!([{ "entity": "DiaryNote", "rows": [{ "id": "n1", "text": "Seeded note" }] }]));
+    assert!(
+        painted(&after["got"]).contains(&"Seeded note".to_string()),
+        "the guest's INIT fetch answered the seeded row: {after}"
+    );
+}
+
+#[test]
+fn control_a_guest_opened_without_rows_starts_with_an_empty_store() {
+    let after = open_with_rows(json!([]));
+    assert!(painted(&after["got"]).contains(&"No notes yet".to_string()), "{after}");
+}
+
+#[test]
+fn edge_rows_that_do_not_fit_or_name_an_undeclared_entity_refuse_the_open() {
+    let misfit = open_with_rows(json!([{ "entity": "DiaryNote", "rows": [{ "id": "n1", "text": 7 }] }]));
+    assert!(
+        misfit["refused"]["error"].as_str().is_some_and(|e| e.contains("DiaryNote")),
+        "a row that breaks its entity's declaration is refused, naming it: {misfit}"
+    );
+    let stranger = open_with_rows(json!([{ "entity": "Ghost", "rows": [{ "id": "g1" }] }]));
+    assert!(
+        stranger["refused"]["error"].as_str().is_some_and(|e| e.contains("Ghost")),
+        "rows for an entity the program does not declare are refused: {stranger}"
+    );
+    assert!(misfit["guest"].as_str().unwrap_or_default().is_empty(), "a refused open opens no guest: {misfit}");
+}

@@ -87,6 +87,41 @@ pub(crate) fn run_session(
     Ok(guest_answer(None, &outcomes, &seed_trait, event))
 }
 
+/// `program/open`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
+/// written into the guest's store before its page mounts. An undeclared entity or a misfit row refuses the open.
+fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value) -> Result<(), AgentPortFailure> {
+    let Value::Array(sets) = rows else {
+        return Err(failure("program/open: `rows` is a list of { entity, rows }"));
+    };
+    for set in sets.iter() {
+        let entity = set
+            .get("entity")
+            .and_then(Value::as_str)
+            .ok_or_else(|| failure("program/open: each `rows` entry names its `entity`"))?;
+        let Some(Value::Array(list)) = set.get("rows") else {
+            return Err(failure(format!("program/open: the `rows` of {entity} are a list of rows")));
+        };
+        if !guest.registry.entity_definitions.read().contains_key(entity) {
+            return Err(failure(format!("program/open: `rows` names {entity}, which the program does not declare")));
+        }
+        if let Some(misfit) = guest.rows_misfit(entity, list.iter()) {
+            return Err(failure(format!("program/open: a seeded row does not fit: {misfit}")));
+        }
+        for row in list.iter() {
+            let id = row
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| failure(format!("program/open: a seeded {entity} row has no string id")))?;
+            guest
+                .entity_source
+                .write(entity, id, row)
+                .map_err(|e| failure(format!("program/open: seeding {entity}: {e}")))?;
+        }
+        guest.rows.note_write(entity);
+    }
+    Ok(())
+}
+
 fn json_value(json: serde_json::Value) -> Value {
     serde_json::from_value(json).unwrap_or(Value::Null)
 }
@@ -284,6 +319,9 @@ impl RuntimeKernel {
         guest
             .register_schema(schema)
             .map_err(|e| failure(format!("program/open: {e}")))?;
+        if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
+            seed_guest_rows(&guest, rows)?;
+        }
         let mut arenas = Vec::with_capacity(handed.len());
         for (id, shared) in handed {
             let handle = guest

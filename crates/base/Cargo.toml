@@ -13,6 +13,7 @@ foldhash = { version = "0.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc", "rc"] }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
 serde_path_to_error = "0.1"
+serde_stacker = { version = "0.1", optional = true }
 thiserror = { version = "2", default-features = false }
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -45,6 +46,8 @@ std = [
     "indexmap/std",
     "serde/std",
     "serde_json/std",
+    "serde_json/unbounded_depth",
+    "dep:serde_stacker",
     "thiserror/std",
     "tracing/std",
     "dep:tracing-subscriber",
