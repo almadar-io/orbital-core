@@ -68,11 +68,12 @@ if (templates.length === 0) throw new Error(`${a.package} ships no templates/<na
 if (a.binary === 'orb-shell-android' || a.binary === 'orb-shell-android.exe') {
   const nativeTemplate = path.join(packageCopy, 'templates/android-native-gpu/app/build.gradle.kts');
   const bundle = path.join(packageCopy, 'native-gpu/android');
+  const contract = JSON.parse(fs.readFileSync(path.join(bundle, 'contract.json'), 'utf8'));
   const manifest = JSON.parse(fs.readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
-  const library = fs.readFileSync(path.join(bundle, 'arm64-v8a/liborbital_client_dioxus.so'));
+  const library = fs.readFileSync(path.join(bundle, contract.abi, contract.library));
   const packageVersion = JSON.parse(fs.readFileSync(path.join(packageCopy, 'package.json'), 'utf8')).version;
-  if (!fs.existsSync(nativeTemplate) || manifest.contractVersion !== 1 || manifest.abi !== 'arm64-v8a'
-    || manifest.shellVersion !== packageVersion || manifest.featureSet !== 'native-a11y'
+  if (!fs.existsSync(nativeTemplate) || manifest.contractVersion !== contract.contractVersion || manifest.abi !== contract.abi
+    || manifest.shellVersion !== packageVersion || manifest.featureSet !== contract.productionFeatureSet
     || library.toString('hex', 0, 6) !== '7f454c460201' || library.readUInt16LE(18) !== 183
     || manifest.sha256 !== createHash('sha256').update(library).digest('hex')) {
     throw new Error('packaged Android native GPU template, library, or manifest is invalid');

@@ -123,10 +123,10 @@ pub mod validation_report;
 pub mod viewer;
 
 // host — the ask surface a host must be able to answer
-#[path = "host/audio_policy.rs"]
-pub mod audio_policy;
 #[path = "host/agent_ports.rs"]
 pub mod agent_ports;
+#[path = "host/audio_policy.rs"]
+pub mod audio_policy;
 #[path = "host/drawable.rs"]
 pub mod drawable;
 #[path = "host/fx_projection.rs"]
@@ -135,6 +135,8 @@ pub mod fx_projection;
 pub mod os;
 #[path = "host/os_grants/mod.rs"]
 pub mod os_grants;
+#[path = "host/skinning_2d.rs"]
+pub mod skinning_2d;
 
 // backend — the shell/backend contract shells implement
 #[cfg(feature = "std")]

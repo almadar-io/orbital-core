@@ -1,8 +1,8 @@
 // split-core: facade
 //! Facade: every path of the former single crate resolves here through the three layers.
 
-pub use orbital_core_base::behavior_index;
 pub use orbital_core_base::audio_policy;
+pub use orbital_core_base::behavior_index;
 pub use orbital_core_base::behavior_packages;
 pub use orbital_core_base::collections;
 pub use orbital_core_base::read_set;
@@ -18,6 +18,7 @@ pub mod codec {
 pub use orbital_core_base::cron;
 pub use orbital_core_base::drawable;
 pub use orbital_core_base::fx_projection;
+pub use orbital_core_base::skinning_2d;
 pub mod effects {
     pub use orbital_core_base::effect_row;
     pub use orbital_core_base::emit_contract;

@@ -62,6 +62,10 @@ function crateVersion(repo) {
   return version;
 }
 
+function nativeGpuContract(repo) {
+  return JSON.parse(fs.readFileSync(path.join(repo, 'renderers/native/contract.json'), 'utf8'));
+}
+
 function platform(a) {
   const name = need(a, 'name');
   const plat = need(a, 'platform');
@@ -94,21 +98,37 @@ function platform(a) {
   }
   if (a['android-native-gpu']) {
     if (name !== 'orb-shell-android') throw new Error('--android-native-gpu is only valid for orb-shell-android');
+    const contract = nativeGpuContract(repo);
+    const mode = a['android-native-gpu-mode'] ?? 'production';
+    if (mode !== 'production' && mode !== 'research') {
+      throw new Error('--android-native-gpu-mode must be production or research');
+    }
+    const featureSet = mode === 'research' ? contract.researchFeatureSet : contract.productionFeatureSet;
+    if (need(a, 'android-native-gpu-features') !== featureSet) {
+      throw new Error(`--android-native-gpu-features must exactly match the ${mode} contract feature set: ${featureSet}`);
+    }
     const library = fs.readFileSync(a['android-native-gpu']);
-    if (library.length < 20 || library.toString('hex', 0, 6) !== '7f454c460201' || library.readUInt16LE(18) !== 183) {
+    if (library.length < 20 || contract.abi !== 'arm64-v8a' || library.toString('hex', 0, 6) !== '7f454c460201' || library.readUInt16LE(18) !== 183) {
       throw new Error('--android-native-gpu must be an Android arm64 ELF library');
     }
-    const libraryDir = path.join(dir, 'native-gpu/android/arm64-v8a');
+    const libraryDir = path.join(dir, 'native-gpu/android', contract.abi);
     fs.mkdirSync(libraryDir, { recursive: true });
-    fs.writeFileSync(path.join(libraryDir, 'liborbital_client_dioxus.so'), library);
+    fs.writeFileSync(path.join(libraryDir, contract.library), library);
     write(path.join(dir, 'native-gpu/android/manifest.json'), {
-      contractVersion: 1,
-      abi: 'arm64-v8a',
+      contractVersion: contract.contractVersion,
+      abi: contract.abi,
       shellVersion: need(a, 'version'),
-      featureSet: 'native-a11y',
+      featureSet,
       sha256: createHash('sha256').update(library).digest('hex'),
     });
+    fs.copyFileSync(path.join(repo, 'renderers/native/contract.json'), path.join(dir, 'native-gpu/android/contract.json'));
     copyDir(path.join(repo, 'renderers/native/template'), path.join(dir, 'templates/android-native-gpu'));
+  }
+  if (a['android-native-gpu-mode'] && !a['android-native-gpu']) {
+    throw new Error('--android-native-gpu-mode requires --android-native-gpu');
+  }
+  if (a['android-native-gpu-features'] && !a['android-native-gpu']) {
+    throw new Error('--android-native-gpu-features requires --android-native-gpu');
   }
   write(path.join(dir, 'package.json'), {
     name: `@almadar/${name}-${plat}`,

@@ -81,7 +81,10 @@ jobs:
         run: |
           extra=()
           if [[ -n "${{ inputs.shell }}" ]]; then extra+=(--shell "${{ inputs.shell }}"); fi
-          if [[ -n "${{ inputs.android-native-gpu-artifact }}" ]]; then extra+=(--android-native-gpu dist/native-gpu/liborbital_client_dioxus.so); fi
+          if [[ -n "${{ inputs.android-native-gpu-artifact }}" ]]; then
+            features=$(node -p "JSON.parse(require('fs').readFileSync('renderers/native/contract.json', 'utf8')).productionFeatureSet")
+            extra+=(--android-native-gpu dist/native-gpu/liborbital_client_dioxus.so --android-native-gpu-features "$features")
+          fi
           node .orbital-core/scripts/package-program.mjs platform --name ${{ inputs.name }} \
             --binary "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" \
             --platform ${{ matrix.name }} --version "${GITHUB_REF_NAME#v}" --repo . --out dist/npm \
