@@ -33,7 +33,8 @@ pub struct BehaviorPackage {
     /// Declared paths that `sidecars.lock.json` resolves to the content-addressed
     /// cache instead of the package. The matching field above holds `cache_path`.
     pub sidecars: Vec<LockedSidecar>,
-    pub compiler_range: String,
+    /// The `orb.language` range: the language versions the package is written for.
+    pub language_range: String,
     pub std_peer_range: Option<String>,
     /// `@almadar/core` version range this package declares, `peerDependencies`
     /// taking precedence over `dependencies` when both are present.
@@ -207,12 +208,14 @@ pub enum DiscoverError {
         field: &'static str,
         path: PathBuf,
     },
-    #[error("{package} declares `orb.compiler` {range:?}, which orb {running} does not satisfy (ORB_LANGUAGE_DATA_INCOMPATIBLE) — install a {package} whose range accepts this orb, or upgrade orb")]
-    IncompatibleCompiler {
+    #[error("{package} needs language {range:?}, but the installed @almadar/core provides language {language} (ORB_LANGUAGE_DATA_INCOMPATIBLE) — run `orb update`")]
+    IncompatibleLanguage {
         package: String,
         range: String,
-        running: String,
+        language: String,
     },
+    #[error(transparent)]
+    Language(#[from] crate::language_data::LanguageDataError),
     #[error("invalid package.json at {path:?}: {reason}")]
     InvalidPackageJson { path: PathBuf, reason: String },
     #[error("io error at {path:?}: {source}")]
@@ -349,12 +352,9 @@ pub fn discover_with_cache(
             return Ok(packages);
         }
     }
-    let packages = discover_uncached(
-        start_dir,
-        user_store,
-        cache_dir,
-        crate::language_data::running_version(),
-    )?;
+    let packages = discover_uncached(start_dir, user_store, cache_dir, &|| {
+        crate::language_data::installed_language(start_dir, user_store)
+    })?;
     let stamp = DiscoveryStamp::of(start_dir, user_store, &packages);
     if let Ok(mut m) = memo.lock() {
         m.insert(key, (stamp, packages.clone()));
@@ -403,23 +403,51 @@ impl DiscoveryStamp {
     }
 }
 
+impl DiscoverError {
+    /// The validation code a discovery failure reports.
+    pub fn code(&self) -> &'static str {
+        match self {
+            DiscoverError::DuplicateBehaviorName { .. } => "ORB_BEHAVIOR_NAME_DUPLICATE",
+            DiscoverError::PrefixConflict { .. } => "ORB_BEHAVIOR_PREFIX_CONFLICT",
+            DiscoverError::IncompatibleLanguage { .. } => crate::language_data::CODE_INCOMPATIBLE,
+            DiscoverError::Language(e) => e.code(),
+            DiscoverError::MissingDeclaredPath { .. }
+            | DiscoverError::InvalidSidecarLock { .. }
+            | DiscoverError::InvalidPackageJson { .. }
+            | DiscoverError::Io { .. } => "ORB_BEHAVIOR_PACKAGE_INVALID",
+        }
+    }
+}
+
+/// The installed core's language, asked for once, when the first behavior package needs it.
+struct InstalledLanguage<'a> {
+    ask: &'a dyn Fn() -> Result<String, crate::language_data::LanguageDataError>,
+    got: Option<String>,
+}
+
+impl InstalledLanguage<'_> {
+    fn get(&mut self) -> Result<String, DiscoverError> {
+        if let Some(language) = &self.got {
+            return Ok(language.clone());
+        }
+        let language = (self.ask)()?;
+        self.got = Some(language.clone());
+        Ok(language)
+    }
+}
+
 fn discover_uncached(
     start_dir: &Path,
     user_store: &Path,
     cache_dir: &Path,
-    running: &str,
+    language: &dyn Fn() -> Result<String, crate::language_data::LanguageDataError>,
 ) -> Result<Vec<BehaviorPackage>, DiscoverError> {
     let mut found: Vec<BehaviorPackage> = Vec::new();
     let mut names_seen: HashSet<String> = HashSet::new();
+    let mut language = InstalledLanguage { ask: language, got: None };
 
     for node_modules in node_modules_dirs(start_dir, user_store) {
-        scan_node_modules(
-            &node_modules,
-            cache_dir,
-            running,
-            &mut found,
-            &mut names_seen,
-        )?;
+        scan_node_modules(&node_modules, cache_dir, &mut language, &mut found, &mut names_seen)?;
     }
 
     check_prefix_conflicts(&found)?;
@@ -523,12 +551,12 @@ pub use crate::language_data::STD_PACKAGE;
 
 pub use crate::language_data::{install_command, not_installed_message};
 
-pub use crate::language_data::{compiler_satisfies, core_satisfies, std_peer_satisfies};
+pub use crate::language_data::{core_satisfies, language_satisfies, std_peer_satisfies};
 
 fn scan_node_modules(
     node_modules: &Path,
     cache_dir: &Path,
-    running: &str,
+    language: &mut InstalledLanguage<'_>,
     found: &mut Vec<BehaviorPackage>,
     names_seen: &mut HashSet<String>,
 ) -> Result<(), DiscoverError> {
@@ -622,15 +650,7 @@ fn scan_node_modules(
             continue;
         }
 
-        let package = build_package(
-            &name,
-            obj,
-            orb,
-            &dir_path,
-            &package_json_path,
-            cache_dir,
-            running,
-        )?;
+        let package = build_package(&name, obj, orb, &dir_path, &package_json_path, cache_dir, language)?;
         names_seen.insert(name);
         found.push(package);
     }
@@ -639,8 +659,7 @@ fn scan_node_modules(
 }
 
 /// The `orb` fields only a behavior package declares. Discovery keys on
-/// these, never on the mere presence of an `orb` block: `@almadar/core`
-/// carries `orb.language` (language data, see `language_data`) and is not a
+/// these, never on the mere presence of an `orb` block, so a package whose `orb` block carries only other keys is not a
 /// behavior package. A block with ANY behavior field is a behavior package,
 /// so a malformed one (say `registry` without `prefix`) still errors loudly.
 const BEHAVIOR_BLOCK_FIELDS: [&str; 3] = ["prefix", "registry", "source"];
@@ -656,26 +675,27 @@ fn build_package(
     dir_path: &Path,
     package_json_path: &Path,
     cache_dir: &Path,
-    running: &str,
+    language: &mut InstalledLanguage<'_>,
 ) -> Result<BehaviorPackage, DiscoverError> {
     let version = require_str(top, "version", package_json_path)?;
     let prefix = require_str(orb, "prefix", package_json_path)?;
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
-    let compiler_range = require_str(orb, "compiler", package_json_path)?;
-    match compiler_satisfies(&compiler_range, running) {
+    let range = require_str(orb, crate::language_data::LANGUAGE_RANGE_FIELD, package_json_path)?;
+    let installed = language.get()?;
+    match language_satisfies(&range, &installed) {
         Ok(true) => {}
         Ok(false) => {
-            return Err(DiscoverError::IncompatibleCompiler {
+            return Err(DiscoverError::IncompatibleLanguage {
                 package: name.to_string(),
-                range: compiler_range,
-                running: running.to_string(),
+                range,
+                language: installed,
             })
         }
-        Err(e) => {
+        Err(reason) => {
             return Err(DiscoverError::InvalidPackageJson {
                 path: package_json_path.to_path_buf(),
-                reason: format!("`orb.compiler` {compiler_range:?} is not a semver range: {e}"),
+                reason: format!("`orb`: {reason}"),
             })
         }
     }
@@ -764,7 +784,7 @@ fn build_package(
         lolo_source,
         vectors,
         sidecars,
-        compiler_range,
+        language_range: range,
         std_peer_range,
         core_range,
         is_link,

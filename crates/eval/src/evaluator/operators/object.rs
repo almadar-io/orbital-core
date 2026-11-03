@@ -434,6 +434,8 @@ impl Operator for ObjectDeepCloneOp {
                 Value::Null => Value::Null,
                 Value::Bool(b) => Value::Bool(*b),
                 Value::Number(n) => Value::Number(*n),
+                Value::Int(i) => Value::Int(*i),
+                Value::Bytes(b) => Value::Bytes(b.clone()),
                 Value::String(s) => Value::String(s.clone()),
                 Value::Array(a) => Value::Array(a.iter().map(deep_clone).collect()),
                 Value::Object(o) => {
@@ -496,7 +498,7 @@ impl Operator for ObjectGetOp {
             }
             let key = eval_expr(&args[1], ctx)?;
             let path = match (&key, obj) {
-                (Value::Number(_), Value::Array(_)) => {
+                (Value::Number(_) | Value::Int(_), Value::Array(_)) => {
                     super::array::whole_count(&key, "object/get", "index")?.to_string()
                 }
                 _ => key.text()?.to_string(),

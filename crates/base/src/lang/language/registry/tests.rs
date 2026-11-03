@@ -237,7 +237,7 @@ fn program_host_effects_are_the_installed_tables_host_program_operators() {
 #[test]
 fn os_host_effects_are_the_installed_tables_host_os_operators() {
     let from_os: std::collections::BTreeSet<&str> = os_host_effects().collect();
-    for op in ["os/read-file", "os/spawn", "os/wait", "os/kill"] {
+    for op in ["os/read-file", "os/spawn", "os/wait", "os/kill", "mem/alloc"] {
         assert!(from_os.contains(op), "{op} in {from_os:?}");
     }
     for op in ["os/path-join", "persist", "no/such"] {
@@ -267,9 +267,9 @@ fn emit_capable_operators_are_the_ones_whose_parameters_take_an_emit_options_obj
 }
 
 #[test]
-fn every_os_and_kv_operator_declares_a_grant_and_no_other_operator_does() {
+fn every_os_kv_and_kernel_operator_declares_a_grant_and_no_other_operator_does() {
     for (name, op) in operators() {
-        let granted = matches!(op.host.as_deref(), Some("os" | "kv"));
+        let granted = matches!(op.host.as_deref(), Some("os" | "kv" | "kernel"));
         assert_eq!(op.grant.is_some(), granted, "{name}");
     }
     assert_eq!(

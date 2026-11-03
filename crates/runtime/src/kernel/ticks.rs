@@ -138,6 +138,9 @@ impl RuntimeKernel {
         let mut ctx = self.with_viewer_i18n(ctx).build();
         ctx.set_prob_entropy(self.prob_entropy());
         ctx.set_sealed_outputs(self.sealed_outputs());
+        ctx.set_kernel_mem(self.kernel_mem());
+        ctx.set_kernel_introspect(self.kernel_introspect());
+        self.note_frame(trait_name, &current_state, tick_name, entity_id, stamp.now);
         ctx.set_config(bind_user_forwards(
             config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
             &user,

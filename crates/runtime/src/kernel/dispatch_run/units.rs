@@ -37,6 +37,8 @@ impl RuntimeKernel {
         let stepped = self.step_seed(in_flight, outcomes);
         self.settle_identity(stepped.is_ok());
         self.settle_theme(stepped.is_ok());
+        self.settle_mem(stepped.is_ok());
+        self.settle_kernel_step();
         self.release_origin(origin, committed_from, stepped.is_ok());
         match stepped? {
             Flow::More => Ok(Flow::More),
@@ -208,6 +210,7 @@ impl RuntimeKernel {
                 own: Vec::new(),
                 fanned: Vec::new(),
                 drops: VecDeque::new(),
+                directives: Vec::new(),
             }
         } else {
             Stage::Released(Cascade::new(released.into()))
@@ -258,11 +261,12 @@ impl RuntimeKernel {
                         own: Vec::new(),
                         fanned: Vec::new(),
                         drops: VecDeque::new(),
+                        directives: Vec::new(),
                     };
                 }
                 Ok(Flow::More)
             }
-            Stage::Scopes { idx, own, fanned, drops } => {
+            Stage::Scopes { idx, own, fanned, drops, directives } => {
                 if let Some(drop) = drops.front() {
                     self.run_row_drop(&[own.as_slice(), fanned.as_slice()], &VecDeque::new(), drop)?;
                     drops.pop_front();
@@ -273,6 +277,8 @@ impl RuntimeKernel {
                         .into_iter()
                         .chain(std::mem::take(fanned))
                         .collect();
+                    let mut queue = queue;
+                    self.reorder_queue(&mut queue, std::mem::take(directives));
                     *stage = Stage::Main(Cascade::new(queue));
                     return Ok(Flow::More);
                 };
@@ -289,6 +295,7 @@ impl RuntimeKernel {
                 }
                 let remembered = keyed_rows::memory_scope(scope, eid, self.is_keyed_row(scope, eid));
                 let view = memory.view(&remembered, seed_delivery);
+                self.note_step(scope, memory.delivered(), own.iter().chain(fanned.iter()));
                 let ran = match tick {
                     Some(tick) => {
                         self.process_tick_in_dispatch(scope, eid, &tick.state_entity, &tick.name)
@@ -324,6 +331,7 @@ impl RuntimeKernel {
                 );
                 own.extend(followups.own);
                 fanned.extend(followups.fanned);
+                directives.extend(self.take_queue_directives());
                 let mut result = result;
                 if let Some(result) = result.as_mut() {
                     result.consumed_emits = followups.consumed_emits;
@@ -620,6 +628,8 @@ impl RuntimeKernel {
             }
             return Ok(false);
         }
+        self.step.queue_directives.write().clear();
+        self.note_step(&item.trait_name, memory.delivered(), cascade.queue.iter());
         // A source trait may not exist as a processable trait (e.g. a render-only
         // layout that only emits) — skip its own processing but still fan out.
         let result = match self.process_event_in_dispatch(
@@ -686,6 +696,7 @@ impl RuntimeKernel {
             cascade.queue.push_front(item);
         }
         cascade.queue.extend(fanned);
+        self.apply_queue_directives(&mut cascade.queue);
         cascade.drops = self.row_drops_after(keyed.then_some((t.as_str(), eid)), outer_eid);
         Ok(true)
     }

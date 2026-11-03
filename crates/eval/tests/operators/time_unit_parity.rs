@@ -72,6 +72,7 @@ fn eval_err(json: &str) -> String {
 fn num(json: &str) -> f64 {
     match eval(json) {
         Value::Number(n) => n,
+        Value::Int(i) => i as f64,
         Value::String(text) => chrono::DateTime::parse_from_rfc3339(&text).unwrap().timestamp_millis() as f64,
         other => panic!("expected number or instant from {json}, got {other:?}"),
     }

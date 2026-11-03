@@ -6,7 +6,6 @@ use std::net::{SocketAddr, TcpStream};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use orbital_core_base::codec;
 use orbital_core_base::http_wire::{check_header, is_public_address, origin_allowed, split_url};
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::secret::Secret;
@@ -248,8 +247,9 @@ fn answer(stream: &mut TcpStream, ask: DriverAsk) -> DriverAnswer {
             args,
             ..
         } => DriverAnswer::Os(match args.get(1) {
-            Some(Value::String(text)) => codec::base64_decode(text)
-                .map_err(|m| OsError::new(OsErrorKind::Invalid, m))
+            Some(data @ (Value::String(_) | Value::Bytes(_))) => data
+                .bytes_view()
+                .map_err(|e| OsError::new(OsErrorKind::Invalid, e.to_string()))
                 .and_then(|bytes| {
                     stream
                         .write_all(&bytes)
@@ -258,16 +258,16 @@ fn answer(stream: &mut TcpStream, ask: DriverAsk) -> DriverAnswer {
                 }),
             _ => Err(OsError::new(
                 OsErrorKind::Invalid,
-                "os/send: the bytes must be base64 text",
+                "os/send: the data must be bytes",
             )),
         }),
         DriverAsk::Os {
             op: OsOp::Recv,
             args,
             ..
-        } => DriverAnswer::Os(match args.get(1) {
-            Some(Value::Number(count)) if *count >= 1.0 => {
-                let mut buf = vec![0u8; *count as usize];
+        } => DriverAnswer::Os(match args.get(1).and_then(Value::as_int).filter(|n| *n >= 1) {
+            Some(count) => {
+                let mut buf = vec![0u8; count as usize];
                 stream
                     .read(&mut buf)
                     .map_err(|e| io_failure(OsOp::Recv, &e))
@@ -275,7 +275,7 @@ fn answer(stream: &mut TcpStream, ask: DriverAsk) -> DriverAnswer {
                         let mut fields = ValueMap::default();
                         fields.insert(
                             "data".to_string().into(),
-                            Value::string(codec::base64_encode(&buf[..n])),
+                            Value::bytes(buf[..n].to_vec()),
                         );
                         fields.insert("eof".to_string().into(), Value::Bool(n == 0));
                         Value::object(fields)

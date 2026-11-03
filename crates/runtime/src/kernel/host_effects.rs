@@ -99,14 +99,14 @@ impl RuntimeKernel {
 
     /// `random-bytes`: `count` bytes of host CSPRNG output as base64url, or the failure.
     pub(super) fn run_random_bytes(&self, effect: &Effect, bytes: &Value) -> EffectResult {
-        let count = match bytes {
-            Value::Number(n) if n.fract() == 0.0 && (1.0..=RANDOM_BYTES_MAX).contains(n) => *n as u32,
-            other => {
+        let count = match bytes.as_int() {
+            Some(n) if (1.0..=RANDOM_BYTES_MAX).contains(&(n as f64)) => n as u32,
+            _ => {
                 return EffectResult::failed(
                     effect.clone(),
                     &format!(
                         "random-bytes: the byte count must be an integer from 1 to {RANDOM_BYTES_MAX}, got {}",
-                        other.to_string_value()
+                        bytes.to_string_value()
                     ),
                 )
             }
@@ -297,9 +297,20 @@ impl RuntimeKernel {
         let host_key = key.map(|key| self.io.host_key(key));
         let host_key = host_key.as_deref();
         #[cfg(feature = "wire-drivers")]
-        let outcome = self.tls_os(*op, args, host_key, principal, orbital.as_deref()).unwrap_or_else(|| self.io.os(*op, args, host_key, principal, orbital.as_deref()));
+        let outcome = self
+            .mem_os(*op, args, orbital.as_deref())
+            .or_else(|| self.kernel_os(*op, args, orbital.as_deref()))
+            .or_else(|| self.ffi_os(*op, args, host_key, principal, orbital.as_deref()))
+            .or_else(|| self.tls_os(*op, args, host_key, principal, orbital.as_deref()))
+            .unwrap_or_else(|| self.io.os(*op, args, host_key, principal, orbital.as_deref()));
         #[cfg(not(feature = "wire-drivers"))]
-        let outcome = if op.is_kernel_owned() {
+        let outcome = if let Some(outcome) = self.mem_os(*op, args, orbital.as_deref()) {
+            outcome
+        } else if let Some(outcome) = self.kernel_os(*op, args, orbital.as_deref()) {
+            outcome
+        } else if let Some(outcome) = self.ffi_os(*op, args, host_key, principal, orbital.as_deref()) {
+            outcome
+        } else if op.is_kernel_owned() {
             Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
         } else {
             self.io.os(*op, args, host_key, principal, orbital.as_deref())

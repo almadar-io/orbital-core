@@ -694,6 +694,7 @@ impl Strict<'_> {
             (TypeInfo::Enum { tag: None, .. }, Shape::Union(items)) if items.iter().all(|i| matches!(i, Shape::Literal(_))) => {
                 plain
             }
+            (TypeInfo::Enum { tag: None, .. }, Shape::Literal(_)) => plain,
             _ => {
                 self.fall_back(name, "its serde form and its printed shape are not a struct, a tagged enum or a string enum");
                 plain
@@ -1328,6 +1329,16 @@ fn a_default_function_the_generator_cannot_evaluate_is_refused_loudly() {
 }
 
 #[test]
+fn a_string_enum_of_one_variant_is_read_from_its_serde_derive() {
+    let one = "#[derive(Deserialize)] #[serde(rename_all = \"kebab-case\")] enum K { Admin }";
+    let (_, strict) = strict_of(one, "type K = \"admin\"", "K");
+    assert!(strict.fallbacks.borrow().is_empty(), "{:?}", strict.fallbacks.borrow());
+    let tagged = "#[derive(Deserialize)] enum G { Exe, Env(String) }";
+    let (_, strict) = strict_of(tagged, "type G = \"Exe\" | { \"Env\": string }", "G");
+    assert!(strict.fallbacks.borrow().contains_key("G"), "control: an externally tagged enum is still printed-shape only");
+}
+
+#[test]
 fn the_types_decoded_by_their_printed_shape_alone_are_the_ones_serde_cannot_describe() {
     let cfg = Config::new().with_large_int("number");
     let collect = collect_all(&cfg);
@@ -1342,6 +1353,6 @@ fn the_types_decoded_by_their_printed_shape_alone_are_the_ones_serde_cannot_desc
     }
     let fallbacks = strict.fallbacks.borrow();
     let names: Vec<&str> = fallbacks.keys().map(String::as_str).collect();
-    assert_eq!(names, ["Accepted", "CanvasTheme", "ClientEffect", "DispatchMode", "FrameDispatch", "FrameOp", "OsOp", "PlayedStep", "RepaintReason", "ResolvedMotion", "Settled"], "{fallbacks:#?}");
+    assert_eq!(names, ["Accepted", "CanvasTheme", "ClientEffect", "DispatchMode", "FrameDispatch", "FrameOp", "GrantAnchor", "NetPart", "OsOp", "PlayedStep", "ResolvedMotion", "Settled"], "{fallbacks:#?}");
     assert!(!fallbacks.contains_key("IoRequestWire"), "control: IoRequestWire is decoded from its serde derive");
 }

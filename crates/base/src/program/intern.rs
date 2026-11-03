@@ -230,6 +230,8 @@ fn same_value(a: &Value, b: &Value) -> bool {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
         (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits(),
+        (Value::Int(a), Value::Int(b)) => a == b,
+        (Value::Bytes(a), Value::Bytes(b)) => Shared::ptr_eq(a, b),
         (Value::String(a), Value::String(b)) => Shared::ptr_eq(a, b),
         (Value::Array(a), Value::Array(b)) => Shared::ptr_eq(a, b),
         (Value::Object(a), Value::Object(b)) => Shared::ptr_eq(a, b),
@@ -247,6 +249,8 @@ fn hash_value(node: &Value, state: &mut impl Hasher) {
         Value::Object(fields) => (5u8, &**fields as *const ValueMap as usize).hash(state),
         Value::Lambda(l) => (6u8, std::sync::Arc::as_ptr(&l.body) as usize).hash(state),
         Value::Sealed(sealed) => (7u8, std::sync::Arc::as_ptr(sealed) as usize).hash(state),
+        Value::Int(i) => (8u8, *i).hash(state),
+        Value::Bytes(b) => (9u8, &**b as *const Vec<u8> as usize).hash(state),
     }
 }
 

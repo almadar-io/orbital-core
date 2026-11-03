@@ -16,12 +16,8 @@ use crate::schema::types::{
 };
 use crate::value::{Value, ValueMap};
 
-pub const AGENT_PORT_OPERATORS: [&str; 4] = [
-    "program/inputs",
-    "program/dispatch",
-    "persist/read-named",
-    "program/self",
-];
+pub const AGENT_PORT_OPERATORS: [&str; 6] =
+    ["program/inputs", "program/dispatch", "persist/read-named", "program/self", "program/open", "program/close"];
 
 /// The `errors[].code` of a `persist/read-named` for a name the program does not persist.
 pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";
@@ -29,7 +25,7 @@ pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";
 const REFUSED_ARGUMENTS: &str = "arguments must be a JSON object";
 const MISMATCHED_ARGUMENTS: &str = "the arguments do not match the tool";
 
-/// Whether `name` is one of the three agent-port operators.
+/// Whether `name` is one of the agent-port operators.
 pub fn is_agent_port_operator(name: &str) -> bool {
     AGENT_PORT_OPERATORS.contains(&name)
 }
@@ -137,8 +133,10 @@ pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
     };
     let trace = match options.get("trace") {
         None => None,
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => Some(*n as usize),
-        Some(_) => return Err("program/inputs: trace must be a whole number of steps".to_string()),
+        Some(read) => match read.as_int().and_then(|n| usize::try_from(n).ok()) {
+            Some(steps) => Some(steps),
+            None => return Err("program/inputs: trace must be a whole number of steps".to_string()),
+        },
     };
     Ok(InputsReads {
         state: state.map(|v| v.into_inner()),
@@ -441,8 +439,8 @@ fn element_issues(
         None => true,
         Some("object") => matches!(value, Value::Object(_)),
         Some("array") => matches!(value, Value::Array(_)),
-        Some("string") => matches!(value, Value::String(_)),
-        Some("number") => matches!(value, Value::Number(_)),
+        Some("string") => matches!(value, Value::String(_)) || (element == "bytes" && matches!(value, Value::Bytes(_))),
+        Some("number") => value.is_numeric(),
         Some("boolean") => matches!(value, Value::Bool(_)),
         Some(_) => false,
     };
@@ -461,8 +459,8 @@ fn json_kind(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
         Value::Bool(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::String(_) => "string",
+        Value::Number(_) | Value::Int(_) => "number",
+        Value::String(_) | Value::Bytes(_) => "string",
         Value::Array(_) => "array",
         Value::Object(_) => "object",
         Value::Lambda(_) => "function",
@@ -743,12 +741,8 @@ fn request_option_error(key: &str, value: &Value) -> Option<String> {
         "targetTrait" | "entityId" | "clientId" | "locale" => value.as_str().is_some(),
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
         "mount" => list_of_records(value, &["trait", "event"], &[]),
-        "delivery" | "dispatchLog" | "viewer" | "entityByTrait" => {
-            matches!(value, Value::Object(_) | Value::Null)
-        }
-        "framesSince" => {
-            value.is_null() || matches!(value, Value::Number(n) if *n >= 0.0 && n.fract() == 0.0)
-        }
+        "delivery" | "dispatchLog" | "viewer" | "entityByTrait" => matches!(value, Value::Object(_) | Value::Null),
+        "framesSince" => value.is_null() || value.as_int().is_some_and(|n| n >= 0),
         _ => return Some(format!("program/dispatch: unsupported option \"{key}\"")),
     };
     (!ok).then(|| format!("program/dispatch: option \"{key}\" has the wrong shape"))
@@ -1123,7 +1117,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_agent_port_operators_are_named() {
+    fn only_the_agent_port_operators_are_named() {
         assert!(AGENT_PORT_OPERATORS
             .iter()
             .all(|op| is_agent_port_operator(op)));

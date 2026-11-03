@@ -144,6 +144,7 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> Result<OirType, Shap
         FieldType::String => OirType::String,
         FieldType::Number => OirType::Number,
         FieldType::Int => OirType::Integer,
+        FieldType::Sized(width) => width.oir_type(),
         FieldType::Boolean => OirType::Boolean,
         FieldType::Date => OirType::Date,
         FieldType::Datetime | FieldType::Timestamp => OirType::DateTime,
@@ -353,8 +354,9 @@ pub fn payload_type_shape(field_type: &str) -> Result<OirType, ShapeError> {
         "behavior" => return Ok(OirType::Behavior),
         "trait" => return Ok(OirType::Trait),
         // UI scalar and name-reference brands travel as strings.
-        "slot" | "icon" | "asset" | "component" | "pattern" | "event" => {
-            return Ok(OirType::String)
+        "slot" | "icon" | "asset" | "component" | "pattern" | "event" => return Ok(OirType::String),
+        width if crate::num_width::NumWidth::from_name(width).is_some() => {
+            return Ok(crate::num_width::NumWidth::from_name(width).map_or(OirType::Number, |w| w.oir_type()))
         }
         _ => {}
     }

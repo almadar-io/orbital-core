@@ -109,13 +109,15 @@ pub(super) fn as_field_in(value: &Value, ctx: Option<&BindingContext>) -> Result
 pub(super) fn same_scalar_kind(a: &Value, b: &Value) -> bool {
     matches!(
         (a, b),
-        (Value::Number(_), Value::Number(_)) | (Value::String(_), Value::String(_)) | (Value::Bool(_), Value::Bool(_))
+        (Value::Number(_) | Value::Int(_), Value::Number(_) | Value::Int(_))
+            | (Value::String(_), Value::String(_))
+            | (Value::Bool(_), Value::Bool(_))
     )
 }
 
 pub(super) fn scalar_const(value: Value) -> Result<Value, Fail> {
     match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => Ok(value),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) => Ok(value),
         _ => Err(shape("the value is not a scalar")),
     }
 }
@@ -130,7 +132,7 @@ pub(super) fn term(value: &Value, ctx: &BindingContext) -> Result<Term, Fail> {
             None => Err(Fail::Unresolved(s.clone().into_inner())),
         },
         Value::String(s) if s.contains('@') => Err(shape("a string with an embedded binding")),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) => {
             Ok(Term::Const(value.clone()))
         }
         Value::Array(items) => Err(Fail::Not(NotExpressible::Operator(
@@ -196,8 +198,8 @@ pub(super) fn numeric_ordered(args: &[Value], ctx: &BindingContext) -> std::coll
             continue;
         }
         match (term(&items[1], ctx), term(&items[2], ctx)) {
-            (Ok(Term::Field(field)), Ok(Term::Const(Value::Number(_))))
-            | (Ok(Term::Const(Value::Number(_))), Ok(Term::Field(field))) => {
+            (Ok(Term::Field(field)), Ok(Term::Const(Value::Number(_) | Value::Int(_))))
+            | (Ok(Term::Const(Value::Number(_) | Value::Int(_))), Ok(Term::Field(field))) => {
                 fields.insert(field);
             }
             _ => {}

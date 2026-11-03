@@ -118,10 +118,9 @@ pub fn describe_type(ty: &OirType) -> String {
         } => {
             format!("field {} {}", describe_type(record), describe_type(value))
         }
-        OirType::FieldRef {
-            record,
-            value: None,
-        } => format!("field {}", describe_type(record)),
+        OirType::FieldRef { record, value: None } => format!("field {}", describe_type(record)),
+        OirType::Integer => "int".to_string(),
+        OirType::Sized { width } => width.name().to_string(),
         other => oir_type_kind(other),
     }
 }

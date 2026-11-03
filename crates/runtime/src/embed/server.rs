@@ -11,6 +11,7 @@ use crate::effects::response::{RunTick, TraitFrom, TransitionHop};
 use crate::effects::executor::{ServiceHandler, SubstrateHandler};
 use crate::resumable::{completion_event, CallSite, DispatchContinuation, DispatchError, DispatchOutcomes, HostAnswered, IoReply, PendingRequest, Progress, ResolveContinuation, ResolveProgress};
 use crate::row_query::RowPage;
+use orbital_core_base::js_readable::to_js_readable_json;
 use orbital_core_base::row_set::RowSetRef;
 use crate::config::KernelConfig;
 use crate::tick_clock::{Calendar, TickClock};
@@ -518,8 +519,7 @@ impl EmbeddedServer {
         let reference: RowSetRef =
             serde_json::from_str(ref_json).map_err(|e| format!("parse ref_json: {e}"))?;
         let progress = self.resolve_rows(&reference, client_id)?;
-        serde_json::to_string(&ResolveProgressWire::from(&progress))
-            .map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&ResolveProgressWire::from(&progress))
     }
 
     /// [`Self::resume_resolve`] over JSON: the answers (`IoReplyWire[]`) in, a `ResolveProgressWire` out.
@@ -528,8 +528,7 @@ impl EmbeddedServer {
             serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
         let progress =
             self.resume_resolve(flight, replies.into_iter().map(IoReply::from).collect())?;
-        serde_json::to_string(&ResolveProgressWire::from(&progress))
-            .map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&ResolveProgressWire::from(&progress))
     }
 
     fn settle_resolve(&self, progress: ResolveProgress) -> ServerResolve {
@@ -965,7 +964,7 @@ impl EmbeddedServer {
             let _ = (key, outcome);
             None
         };
-        serde_json::to_string(&step).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&step)
     }
 
     /// The program's `os/` grants the kernel holds.
@@ -991,7 +990,7 @@ impl EmbeddedServer {
         *self.os_anchors.lock() = anchors;
         let problems: Vec<serde_json::Value> =
             problems.into_iter().map(|p| serde_json::json!({ "path": p.path, "message": p.message })).collect();
-        serde_json::to_string(&problems).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&problems)
     }
 
     #[cfg(feature = "std")]
@@ -1001,7 +1000,7 @@ impl EmbeddedServer {
         let op = OsOp::from_name(op).ok_or_else(|| format!("{op} is not an os operation"))?;
         let args: Vec<Value> = serde_json::from_str(args_json).map_err(|e| format!("parse args_json: {e}"))?;
         let resolved: Settled<Vec<Value>, OsError> = resolve_anchored_args(op, &args, &self.os_anchors.lock()).into();
-        serde_json::to_string(&resolved).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&resolved)
     }
 
     /// Whether `url`'s origin is one the registered programs declare in `egress`: the kernel's rule for a host that sends
@@ -1042,7 +1041,7 @@ impl EmbeddedServer {
     /// The last settled dispatch's ordered event and effect items; read before another dispatch starts. The response
     /// crosses once, in the dispatch's own answer: the stream carries no `complete`.
     pub fn dispatch_stream_json(&self) -> Result<String, String> {
-        serde_json::to_string(&*self.dispatch_stream.lock()).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&*self.dispatch_stream.lock())
     }
 
     /// [`Self::start`] over JSON: the request in, a `ServerProgressWire` out.
@@ -1050,7 +1049,7 @@ impl EmbeddedServer {
         let request: EventRequest =
             serde_json::from_str(request_json).map_err(|e| format!("parse request_json: {e}"))?;
         let progress = self.start(orbital, request)?;
-        serde_json::to_string(&self.started_wire(&progress)).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&self.started_wire(&progress))
     }
 
     /// [`Self::next`] over JSON: `null` while nothing can start, else a `NextWire` naming the ticket.
@@ -1059,7 +1058,7 @@ impl EmbeddedServer {
             Ok(progress) => NextWire::Started { ticket, progress: self.started_wire(&progress) },
             Err(error) => NextWire::Failed { ticket, error },
         });
-        serde_json::to_string(&next).map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&next)
     }
 
     /// The wire form of a dispatch that just started.
@@ -1072,8 +1071,7 @@ impl EmbeddedServer {
         let replies: Vec<IoReplyWire> =
             serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
         let progress = self.resume_wire(flight, replies)?;
-        serde_json::to_string(&ServerProgressWire::from(&progress))
-            .map_err(|e| format!("serialize: {e}"))
+        to_js_readable_json(&ServerProgressWire::from(&progress))
     }
 
     /// The whole orbital's held states under `states`, the dispatched traits' new ones over them (the
@@ -1168,14 +1166,14 @@ fn dispatch_error(error: DispatchError) -> String {
 /// The `os/` operations that may defer their completion (`OsOp::defers_completion`), as a JSON array of names.
 pub fn os_deferring_ops_json() -> Result<String, String> {
     let names: Vec<&str> = OsOp::ALL.iter().filter(|op| op.defers_completion()).map(|op| op.name()).collect();
-    serde_json::to_string(&names).map_err(|e| format!("serialize: {e}"))
+    to_js_readable_json(&names)
 }
 
 /// The `os/` operations whose keyed call is a stream (`OsOp::is_stream`): answered once in place, then each message
 /// delivered to its call site's `onMessage` route (EXEC-QUEUE-12), as a JSON array of names.
 pub fn os_stream_ops_json() -> Result<String, String> {
     let names: Vec<&str> = OsOp::ALL.iter().filter(|op| op.is_stream()).map(|op| op.name()).collect();
-    serde_json::to_string(&names).map_err(|e| format!("serialize: {e}"))
+    to_js_readable_json(&names)
 }
 
 /// The event a deferred keyed `os/` call's outcome fires on its call site (`completion_event`), as `{ event, payload }`
@@ -1188,7 +1186,7 @@ pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) 
         .map_err(|e| format!("parse outcome_json: {e}"))?
         .into();
     let fired = completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
-    serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
+    to_js_readable_json(&fired)
 }
 
 pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, args_json: &str, outcome_json: &str) -> Result<String, String> {
@@ -1201,7 +1199,7 @@ pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, arg
         .map(|value| crate::agent_ports::completion_result(op, value))
         .map_err(|failure| crate::agent_ports::failure_payload(&failure));
     let fired = crate::resumable::substrate_completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
-    serde_json::to_string(&fired).map_err(|e| format!("serialize: {e}"))
+    to_js_readable_json(&fired)
 }
 
 #[derive(serde::Serialize)]

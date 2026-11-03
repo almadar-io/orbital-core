@@ -226,6 +226,12 @@ fn digest_value(h: &mut Xxh3, value: &EvalValue) {
         EvalValue::Bool(b) => h.update(if *b { b"t" } else { b"f" }),
         EvalValue::Number(n) if n.is_finite() => digest_float(h, *n),
         EvalValue::Number(_) => h.update(b"n"),
+        EvalValue::Int(i) => digest_integer(h, *i),
+        EvalValue::Bytes(b) => {
+            h.update(b"b");
+            digest_len(h, b.len());
+            h.update(b);
+        }
         EvalValue::String(s) => {
             h.update(b"s");
             digest_str(h, s);

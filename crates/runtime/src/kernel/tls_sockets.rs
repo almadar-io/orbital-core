@@ -219,10 +219,7 @@ fn fail(op: OsOp, kind: OsErrorKind, what: impl std::fmt::Display) -> OsError {
 }
 
 fn sock_id(value: Option<&Value>) -> Option<i64> {
-    match value {
-        Some(Value::Number(n)) if n.fract() == 0.0 && n.is_finite() => Some(*n as i64),
-        _ => None,
-    }
+    value.and_then(Value::as_int)
 }
 
 fn record(entries: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
@@ -508,7 +505,7 @@ fn advance(
             let taken = bytes.len().min(count);
             commit(taken);
             TlsCompletion::Done(Ok(record([
-                ("data", Value::string(codec::base64_encode(&bytes[..taken]))),
+                ("data", Value::bytes(bytes[..taken].to_vec())),
                 ("eof", Value::Bool(false)),
             ])))
         }
@@ -548,28 +545,23 @@ fn advance(
 fn traffic_of(op: OsOp, args: &[Value]) -> Result<(TrafficOp, Vec<u8>), OsError> {
     Ok(match op {
         OsOp::Send => match args.get(1) {
-            Some(Value::String(text)) => {
-                let plain = codec::base64_decode(text.as_str()).map_err(|e| {
-                    fail(
-                        op,
-                        OsErrorKind::Invalid,
-                        format!("argument 2 is not standard base64: {e}"),
-                    )
-                })?;
+            Some(data @ (Value::String(_) | Value::Bytes(_))) => {
+                let plain = data
+                    .bytes_view()
+                    .map_err(|e| fail(op, OsErrorKind::Invalid, format!("argument 2 is not bytes: {e}")))?
+                    .into_owned();
                 (TrafficOp::Send { plain: plain.len() }, plain)
             }
             _ => {
                 return Err(fail(
                     op,
                     OsErrorKind::Invalid,
-                    "argument 2 must be base64 text",
+                    "argument 2 must be bytes",
                 ))
             }
         },
-        OsOp::Recv => match args.get(1) {
-            Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => {
-                (TrafficOp::Recv { count: *n as usize }, Vec::new())
-            }
+        OsOp::Recv => match args.get(1).and_then(Value::as_int).and_then(|n| usize::try_from(n).ok()) {
+            Some(count) => (TrafficOp::Recv { count }, Vec::new()),
             _ => {
                 return Err(fail(
                     op,
@@ -1131,10 +1123,7 @@ mod tests {
             match op {
                 OsOp::TcpConnect => Ok(record([("sock", Value::Number(5.0))])),
                 OsOp::Send => {
-                    let Some(Value::String(data)) = args.get(1) else {
-                        panic!("send data")
-                    };
-                    let bytes = codec::base64_decode(data.as_str()).expect("base64");
+                    let bytes = args.get(1).expect("send data").bytes_view().expect("bytes").into_owned();
                     self.server.receive(&bytes);
                     self.sent.push(bytes.clone());
                     Ok(record([("bytes", Value::Number(bytes.len() as f64))]))
@@ -1142,7 +1131,7 @@ mod tests {
                 OsOp::Recv => {
                     let bytes = self.server.take(16384);
                     Ok(record([
-                        ("data", Value::string(codec::base64_encode(&bytes))),
+                        ("data", Value::bytes(bytes.clone())),
                         ("eof", Value::Bool(bytes.is_empty())),
                     ]))
                 }
@@ -1493,7 +1482,7 @@ mod tests {
         };
         assert_eq!(
             answer.get_path("data"),
-            Some(&Value::string(codec::base64_encode(b"pong")))
+            Some(&Value::bytes(b"pong".to_vec()))
         );
         assert!(!server.kernel().tls_pending(&host_key("r1")));
         assert!(
@@ -1553,14 +1542,14 @@ mod tests {
         else {
             panic!("raw")
         };
-        let Some(Value::String(b64)) = full.get("data") else {
+        let Some(Value::Bytes(bytes)) = full.get("data") else {
             panic!("data")
         };
-        let bytes = codec::base64_decode(b64.as_str()).expect("base64");
+        let bytes = bytes.to_vec();
         let (head, tail) = bytes.split_at(bytes.len() - 3);
         let piece = |part: &[u8]| {
             Ok(record([
-                ("data", Value::string(codec::base64_encode(part))),
+                ("data", Value::bytes(part.to_vec())),
                 ("eof", Value::Bool(false)),
             ]))
         };
@@ -1582,7 +1571,7 @@ mod tests {
         };
         assert_eq!(
             answer.get_path("data"),
-            Some(&Value::string(codec::base64_encode(b"pong")))
+            Some(&Value::bytes(b"pong".to_vec()))
         );
     }
 
@@ -1592,17 +1581,17 @@ mod tests {
         else {
             panic!("raw")
         };
-        let Some(Value::String(b64)) = full.get("data") else {
+        let Some(Value::Bytes(bytes)) = full.get("data") else {
             panic!("data")
         };
-        let bytes = codec::base64_decode(b64.as_str()).expect("base64");
+        let bytes = bytes.to_vec();
         let (head, tail) = bytes.split_at(bytes.len() - 3);
         (head.to_vec(), tail.to_vec())
     }
 
     fn piece(part: &[u8]) -> Result<Value, OsError> {
         Ok(record([
-            ("data", Value::string(codec::base64_encode(part))),
+            ("data", Value::bytes(part.to_vec())),
             ("eof", Value::Bool(false)),
         ]))
     }
@@ -1659,7 +1648,7 @@ mod tests {
         };
         assert_eq!(
             answer.get_path("data"),
-            Some(&Value::string(codec::base64_encode(b"pong")))
+            Some(&Value::bytes(b"pong".to_vec()))
         );
         assert_eq!(
             server.kernel().tls_open_op_error(5, false),
@@ -1730,7 +1719,7 @@ mod tests {
         };
         assert_eq!(
             answer.get_path("data"),
-            Some(&Value::string(codec::base64_encode(b"pong")))
+            Some(&Value::bytes(b"pong".to_vec()))
         );
     }
 

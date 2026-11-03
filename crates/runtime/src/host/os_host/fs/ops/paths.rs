@@ -43,7 +43,21 @@ impl<'a> Cx<'a> {
     pub(super) fn symlink(&self, args: &[Value]) -> Result<Value, OsError> {
         let target = arg_str(args, 0, self.op)?;
         let path = self.path(arg_str(args, 1, self.op)?, FsMode::Create, false)?;
+        #[cfg(unix)]
         std::os::unix::fs::symlink(target, &path).map_err(|e| self.io(&path, &e))?;
+        #[cfg(windows)]
+        {
+            let named = match path.parent() {
+                Some(parent) if !Path::new(target).has_root() => parent.join(target),
+                _ => PathBuf::from(target),
+            };
+            let made = if fs::metadata(&named).is_ok_and(|md| md.is_dir()) {
+                std::os::windows::fs::symlink_dir(target, &path)
+            } else {
+                std::os::windows::fs::symlink_file(target, &path)
+            };
+            made.map_err(|e| self.io(&path, &e))?;
+        }
         Ok(obj([]))
     }
 }

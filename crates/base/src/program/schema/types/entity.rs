@@ -678,6 +678,9 @@ pub enum FieldType {
     /// A type variable (`t` in `type Page t = { items : [t]! }` or a trait's
     /// `(t : Type)`), written `"$t"` on the wire, the same spelling as a payload
     /// field's sentinel. Bound by [`FieldDefinition::substitute_type_vars`].
+    /// A fixed width other than `int` and `number`, spelled by its name (`"u8"`).
+    #[serde(untagged)]
+    Sized(crate::num_width::NumWidth),
     #[serde(untagged)]
     TypeVar(TypeVarName),
 }
@@ -754,7 +757,7 @@ impl FieldType {
             "timestamp" => FieldType::Timestamp,
             "instant" => FieldType::Instant,
             "object" => FieldType::Object,
-            _ => return None,
+            other => crate::num_width::NumWidth::from_name(other)?.field_type(),
         })
     }
 }

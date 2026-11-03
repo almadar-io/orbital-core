@@ -3,11 +3,39 @@
 use std::prelude::v1::*;
 
 use super::macros::*;
+use super::util::int_or_number;
 use super::*;
 
 // ============================================================================
 // Arithmetic Operators
 // ============================================================================
+
+fn int_overflow(op: &str) -> OrbitalError {
+    EvalError::InvalidArgument(format!("{op}: int overflow")).into()
+}
+
+fn require_numeric(v: &Value) -> Result<(), OrbitalError> {
+    if v.is_numeric() {
+        Ok(())
+    } else {
+        Err(v.kind_error("number").into())
+    }
+}
+
+fn arith(
+    op: &str,
+    a: &Value,
+    b: &Value,
+    int_op: fn(i64, i64) -> Option<i64>,
+    float_op: fn(f64, f64) -> f64,
+) -> EvalResult {
+    require_numeric(a)?;
+    require_numeric(b)?;
+    match (a, b) {
+        (Value::Int(x), Value::Int(y)) => int_op(*x, *y).map(Value::Int).ok_or_else(|| int_overflow(op)),
+        _ => Ok(Value::Number(float_op(a.number()?, b.number()?))),
+    }
+}
 
 pub struct AddOp;
 impl Operator for AddOp {
@@ -15,12 +43,12 @@ impl Operator for AddOp {
         if args.is_empty() {
             return Ok(Value::Number(0.0));
         }
-        let mut sum = 0.0;
+        let mut sum = Value::Int(0);
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            sum += val.number()?;
+            sum = arith("+", &sum, &val, i64::checked_add, |a, b| a + b)?;
         }
-        Ok(Value::Number(sum))
+        Ok(sum)
     }
 }
 
@@ -30,18 +58,21 @@ impl Operator for SubOp {
         if args.is_empty() {
             return Ok(Value::Number(0.0));
         }
-        let first = eval_expr(&args[0], ctx)?;
-        let mut result = first.number()?;
+        let mut result = eval_expr(&args[0], ctx)?;
+        require_numeric(&result)?;
 
         if args.len() == 1 {
-            return Ok(Value::Number(-result));
+            return match result {
+                Value::Int(i) => i.checked_neg().map(Value::Int).ok_or_else(|| int_overflow("-")),
+                other => Ok(Value::Number(-other.number()?)),
+            };
         }
 
         for arg in &args[1..] {
             let val = eval_expr(arg, ctx)?;
-            result -= val.number()?;
+            result = arith("-", &result, &val, i64::checked_sub, |a, b| a - b)?;
         }
-        Ok(Value::Number(result))
+        Ok(result)
     }
 }
 
@@ -51,12 +82,12 @@ impl Operator for MulOp {
         if args.is_empty() {
             return Ok(Value::Number(1.0));
         }
-        let mut product = 1.0;
+        let mut product = Value::Int(1);
         for arg in args {
             let val = eval_expr(arg, ctx)?;
-            product *= val.number()?;
+            product = arith("*", &product, &val, i64::checked_mul, |a, b| a * b)?;
         }
-        Ok(Value::Number(product))
+        Ok(product)
     }
 }
 
@@ -88,10 +119,18 @@ pub struct ModOp;
 impl Operator for ModOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "%", == 2);
-        let a = require_number!(eval_expr(&args[0], ctx)?);
+        let a = eval_expr(&args[0], ctx)?;
+        let b = eval_expr(&args[1], ctx)?;
+        require_numeric(&a)?;
+        require_numeric(&b)?;
 
-        let b = require_number!(eval_expr(&args[1], ctx)?);
-
+        if let (Value::Int(x), Value::Int(y)) = (&a, &b) {
+            if *y == 0 {
+                return Ok(Value::Null);
+            }
+            return x.checked_rem(*y).map(Value::Int).ok_or_else(|| int_overflow("%"));
+        }
+        let (a, b) = (a.number()?, b.number()?);
         if b == 0.0 {
             return Ok(Value::Null);
         }
@@ -104,47 +143,49 @@ impl Operator for ModOp {
 // Math Operators
 // ============================================================================
 
+fn extreme(args: &[SExpression], ctx: &BindingContext, keep: std::cmp::Ordering) -> EvalResult {
+    if args.is_empty() {
+        return Ok(Value::Null);
+    }
+    let mut best: Option<Value> = None;
+    let mut all_int = true;
+    for arg in args {
+        let val = eval_expr(arg, ctx)?;
+        require_numeric(&val)?;
+        all_int &= matches!(val, Value::Int(_));
+        if matches!(val, Value::Number(n) if n.is_nan()) {
+            continue;
+        }
+        best = match best {
+            Some(current) if val.compare(&current)? != keep => Some(current),
+            _ => Some(val),
+        };
+    }
+    match best {
+        Some(Value::Int(i)) if all_int => Ok(Value::Int(i)),
+        Some(value) => {
+            let n = value.number()?;
+            if n.is_infinite() {
+                Ok(Value::Null)
+            } else {
+                Ok(Value::Number(n))
+            }
+        }
+        None => Ok(Value::Null),
+    }
+}
+
 pub struct MinOp;
 impl Operator for MinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        if args.is_empty() {
-            return Ok(Value::Null);
-        }
-        let mut min = f64::INFINITY;
-        for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            let n = val.number()?;
-            if n < min {
-                min = n;
-            }
-        }
-        if min.is_infinite() {
-            Ok(Value::Null)
-        } else {
-            Ok(Value::Number(min))
-        }
+        extreme(args, ctx, std::cmp::Ordering::Less)
     }
 }
 
 pub struct MaxOp;
 impl Operator for MaxOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        if args.is_empty() {
-            return Ok(Value::Null);
-        }
-        let mut max = f64::NEG_INFINITY;
-        for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            let n = val.number()?;
-            if n > max {
-                max = n;
-            }
-        }
-        if max.is_infinite() {
-            Ok(Value::Null)
-        } else {
-            Ok(Value::Number(max))
-        }
+        extreme(args, ctx, std::cmp::Ordering::Greater)
     }
 }
 
@@ -152,9 +193,13 @@ pub struct ClampOp;
 impl Operator for ClampOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "clamp", >= 3);
-        let value = require_number!(eval_expr(&args[0], ctx)?);
-        let min = require_number!(eval_expr(&args[1], ctx)?);
-        let max = require_number!(eval_expr(&args[2], ctx)?);
+        let value = eval_expr(&args[0], ctx)?;
+        let min = eval_expr(&args[1], ctx)?;
+        let max = eval_expr(&args[2], ctx)?;
+        if let (Value::Int(v), Value::Int(lo), Value::Int(hi)) = (&value, &min, &max) {
+            return Ok(Value::Int((*v).max(*lo).min(*hi)));
+        }
+        let (value, min, max) = (require_number!(value), require_number!(min), require_number!(max));
 
         Ok(Value::Number(value.max(min).min(max)))
     }
@@ -164,8 +209,10 @@ pub struct AbsOp;
 impl Operator for AbsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "abs", 1);
-        let val = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(val.abs()))
+        match eval_expr(&args[0], ctx)? {
+            Value::Int(i) => i.checked_abs().map(Value::Int).ok_or_else(|| int_overflow("abs")),
+            other => Ok(Value::Number(require_number!(other).abs())),
+        }
     }
 }
 
@@ -173,8 +220,10 @@ pub struct FloorOp;
 impl Operator for FloorOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "floor", 1);
-        let val = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(val.floor()))
+        match eval_expr(&args[0], ctx)? {
+            Value::Int(i) => Ok(Value::Int(i)),
+            other => Ok(int_or_number(require_number!(other).floor())),
+        }
     }
 }
 
@@ -182,8 +231,10 @@ pub struct CeilOp;
 impl Operator for CeilOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ceil", 1);
-        let val = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(val.ceil()))
+        match eval_expr(&args[0], ctx)? {
+            Value::Int(i) => Ok(Value::Int(i)),
+            other => Ok(int_or_number(require_number!(other).ceil())),
+        }
     }
 }
 
@@ -191,13 +242,19 @@ pub struct RoundOp;
 impl Operator for RoundOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "round", 1);
-        let val = require_number!(eval_expr(&args[0], ctx)?);
+        let value = eval_expr(&args[0], ctx)?;
         let decimals = match args.get(1) {
             Some(arg) => require_number!(eval_expr(arg, ctx)?),
             None => 0.0,
         };
+        if let Value::Int(i) = value {
+            if decimals >= 0.0 {
+                return Ok(Value::Int(i));
+            }
+        }
+        let val = require_number!(value);
         if decimals == 0.0 {
-            return Ok(Value::Number(val.round()));
+            return Ok(int_or_number(val.round()));
         }
         let factor = 10f64.powf(decimals);
         Ok(Value::Number((val * factor).round() / factor))
@@ -272,7 +329,7 @@ impl Operator for MathSignOp {
             0.0
         };
 
-        Ok(Value::Number(sign))
+        Ok(Value::Int(sign as i64))
     }
 }
 
@@ -333,14 +390,14 @@ impl Operator for MathRandomIntOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "randomInt", >= 2);
         let whole = |arg: &SExpression, what: &str| -> Result<i64, OrbitalError> {
-            let n = require_number!(eval_expr(arg, ctx)?);
-            if !n.is_finite() || n.fract() != 0.0 || n.abs() > 9_007_199_254_740_991.0 {
-                return Err(EvalError::InvalidArgument(format!(
-                    "randomInt: {what} {n} is not a whole number"
-                ))
-                .into());
+            let v = eval_expr(arg, ctx)?;
+            if !v.is_numeric() {
+                return Err(v.kind_error("int").into());
             }
-            Ok(n as i64)
+            v.as_int().ok_or_else(|| {
+                EvalError::InvalidArgument(format!("randomInt: {what} {} is not a whole number", v.to_string_value()))
+                    .into()
+            })
         };
         let min = whole(&args[0], "min")?;
         let max = whole(&args[1], "max")?;
@@ -355,7 +412,7 @@ impl Operator for MathRandomIntOp {
         let range = (i128::from(max) - i128::from(min) + 1) as u128;
         let result = i128::from(min) + (u128::from(rng) % range) as i128;
 
-        Ok(Value::Number(result as f64))
+        Ok(Value::Int(result as i64))
     }
 }
 

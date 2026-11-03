@@ -296,3 +296,204 @@ fn control_a_host_runs_a_client_only_listener_no_route_places_as_a_cli_host_runs
     let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
     assert!(outcomes.iter().any(|(t, r)| t == "View" && r.new_state == "open"), "no browser runs it, so the host does: {outcomes:?}");
 }
+
+/// `View` (`[client]`) hears `Loader.LOADED`; it is on no page itself, but `Frame` embeds it with `@trait.View`, and
+/// `frame_page` places `Frame`.
+fn embedded_view_kernel(frame_page: serde_json::Value) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "loader",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Play",
+            "entity": { "name": "Load", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Loader", "linkedEntity": "Load",
+                  "emits": [{ "event": "LOADED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "LOADED", {}]] }] } },
+                { "name": "Frame", "linkedEntity": "Load", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                          ["render-ui", "main", { "type": "stack", "children": ["@trait.View"] }]
+                      ] }] } },
+                { "name": "View", "linkedEntity": "Load", "dispatch": "client",
+                  "listens": [{ "event": "LOADED", "triggers": "LOADED", "source": { "kind": "trait", "trait": "Loader" } }],
+                  "stateMachine": { "states": [{ "name": "opening", "isInitial": true }, { "name": "open" }],
+                      "transitions": [{ "from": "opening", "to": "open", "event": "LOADED" }] } }
+            ],
+            "pages": [frame_page, { "name": "Work", "path": "", "protocol": "boot", "traits": [{ "ref": "Loader" }] }] }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    k.register_schema(schema).unwrap();
+    k
+}
+
+#[test]
+fn a_server_never_runs_a_client_only_listener_a_route_page_trait_embeds() {
+    let k = embedded_view_kernel(json!({ "name": "Home", "path": "/", "traits": [{ "ref": "Frame" }] }));
+    let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().all(|(t, _)| t != "View"), "the browser runs the embedded View (EXEC-DIST-1, EXEC-EVAL-9): {outcomes:?}");
+}
+
+#[test]
+fn control_a_host_runs_a_client_only_listener_only_a_boot_trait_embeds() {
+    let k = embedded_view_kernel(json!({ "name": "Cli", "path": "", "protocol": "boot", "traits": [{ "ref": "Frame" }] }));
+    let outcomes = k.dispatch("Loader", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().any(|(t, r)| t == "View" && r.new_state == "open"), "no browser shows it, so the host runs it: {outcomes:?}");
+}
+
+/// One program on both sides: `Session` (server) emits `PAINTED`; `Frame` (`[client]`, on the route page) embeds
+/// `@trait.Stage`; `Stage` (`[client]`, on no page) hears `Session.PAINTED`.
+fn embedded_stage_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "stage",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Play",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Session", "linkedEntity": "Run",
+                  "emits": [{ "event": "PAINTED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [
+                          { "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "PAINTED", { "guest": "guest-1" }]] },
+                          { "from": "idle", "to": "idle", "event": "OPEN", "effects": [
+                              ["program/open", "@payload.program", {}, { "emit": { "success": "OPENED", "failure": "OPEN_FAILED" } }]
+                          ] },
+                          { "from": "idle", "to": "idle", "event": "OPENED", "effects": [["emit", "PAINTED", { "guest": "@payload.result.guest" }]] },
+                          { "from": "idle", "to": "idle", "event": "OPEN_FAILED" }
+                      ] } },
+                { "name": "Frame", "linkedEntity": "Run", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                          ["render-ui", "main", { "type": "stack", "children": ["@trait.Stage"] }]
+                      ] }] } },
+                { "name": "Stage", "linkedEntity": "Run", "dispatch": "client",
+                  "listens": [{ "event": "PAINTED", "triggers": "PAINTED", "source": { "kind": "trait", "trait": "Session" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }],
+                      "transitions": [{ "from": "idle", "to": "shown", "event": "PAINTED", "effects": [
+                          ["set", "@entity.guest", "@payload.guest"],
+                          ["render-ui", "main", { "type": "typography", "content": "@payload.guest" }]
+                      ] }] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Frame" }, { "ref": "Session" }] }] }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn twin_a_server_emit_reaches_the_browsers_embedded_client_listener_which_runs_it_there() {
+    let server = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    server.register_schema(embedded_stage_schema()).unwrap();
+    let outcomes = server.dispatch("Session", None, "GO", Value::Null).unwrap();
+    assert!(outcomes.iter().all(|(t, _)| t != "Stage"), "the server leaves Stage to the browser: {outcomes:?}");
+    let answer = server.client_view(EventResponse::from_process_results(&outcomes, "Session", "GO"));
+    assert!(answer.emitted_events.iter().any(|e| e.event == "PAINTED"), "the browser is told PAINTED: {answer:?}");
+
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(embedded_stage_schema(), "c1").unwrap();
+    browser.apply_server_response(&answer, &std::collections::HashSet::new()).unwrap();
+    assert_eq!(browser.get_state("Stage", None), "shown", "the browser's Stage ran PAINTED");
+}
+
+#[test]
+fn twin_a_server_legs_emit_reaches_the_browsers_embedded_client_listener_when_the_browser_folds_its_own_leg() {
+    let server = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    server.register_schema(embedded_stage_schema()).unwrap();
+    let browser = RuntimeKernel::new(
+        RuntimeEnvironment::Client,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::for_environment(RuntimeEnvironment::Client),
+    );
+    browser.register_schema(embedded_stage_schema()).unwrap();
+    browser.set_host_fans_out(true);
+    let guest: Value = serde_json::from_value(json!({ "program": {
+        "name": "Tiny", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Tiny", "entity": { "name": "T", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "TinyView", "linkedEntity": "T", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "typography", "content": "tiny" }]] }] } }],
+            "pages": [{ "name": "TinyPage", "path": "/tiny", "traits": [{ "ref": "TinyView" }] }] }]
+    } }))
+    .unwrap();
+    let d = browser.dispatch_with_server_leg("stage", "Session", None, "OPEN", guest.clone(), None).unwrap();
+    let outcomes = server.dispatch("Session", None, "OPEN", guest).unwrap();
+    assert!(outcomes.iter().all(|(t, _)| t != "Stage"), "the server leaves Stage to the browser: {outcomes:?}");
+    let answer = server.client_view(EventResponse::from_process_results(&outcomes, "Session", "OPEN"));
+    assert!(answer.emitted_events.iter().any(|e| e.event == "PAINTED"), "the browser is told PAINTED: {answer:?}");
+    browser.apply_server_response(&answer, &already_delivered_from(&d)).unwrap();
+    assert_eq!(
+        browser.get_state("Stage", None).map(|s| s.current_state).as_deref(),
+        Some("shown"),
+        "the browser's Stage ran the leg's PAINTED"
+    );
+}
+
+fn stage_with_init_schema() -> OrbitalSchema {
+    let mut schema = serde_json::to_value(embedded_stage_schema()).unwrap();
+    let stage = schema["orbitals"][0]["traits"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|t| t["name"] == "Stage")
+        .unwrap();
+    stage["stateMachine"]["transitions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.guest", ""]] }));
+    serde_json::from_value(schema).unwrap()
+}
+
+fn entered_browser(schema: OrbitalSchema) -> (orbital_core_runtime::embed::EmbeddedKernel, Vec<String>) {
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
+    let circuit = browser.page_circuit(None, Some("/")).unwrap();
+    let mut traits: Vec<String> = circuit.mounts.iter().map(|s| s.r#trait.clone()).collect();
+    traits.extend(circuit.embedded.iter().filter(|t| !traits.contains(t)).cloned().collect::<Vec<_>>());
+    let entered = browser.enter(Some("/"), "c1\u{0}/", traits).unwrap();
+    let seeded: Vec<String> = entered.seeds.iter().map(|s| s.r#trait.clone()).collect();
+    browser.dispatch_mount(&entered.seeds, None, Value::Null).unwrap();
+    (browser, seeded)
+}
+
+fn painted_answer() -> EventResponse {
+    let server = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    server.register_schema(stage_with_init_schema()).unwrap();
+    let outcomes = server.dispatch("Session", None, "GO", Value::Null).unwrap();
+    server.client_view(EventResponse::from_process_results(&outcomes, "Session", "GO"))
+}
+
+#[test]
+fn a_route_mount_seeds_the_lifecycle_of_a_trait_a_page_trait_embeds_so_its_deliveries_are_not_held() {
+    let (browser, seeded) = entered_browser(stage_with_init_schema());
+    assert!(seeded.contains(&"Stage".to_string()), "the embedded Stage is seeded with the page: {seeded:?}");
+    browser.apply_server_response(&painted_answer(), &std::collections::HashSet::new()).unwrap();
+    assert_eq!(browser.get_state("Stage", None), "shown", "the browser's embedded Stage ran PAINTED");
+}
+
+#[test]
+fn control_an_embedded_trait_with_no_lifecycle_event_is_not_seeded_and_still_hears_its_listens() {
+    let (browser, seeded) = entered_browser(embedded_stage_schema());
+    assert!(!seeded.contains(&"Stage".to_string()), "Stage handles no lifecycle event: {seeded:?}");
+    browser.apply_server_response(&painted_answer(), &std::collections::HashSet::new()).unwrap();
+    assert_eq!(browser.get_state("Stage", None), "shown");
+}
+
+#[test]
+fn edge_a_trait_both_listed_and_embedded_is_seeded_once() {
+    let mut schema = serde_json::to_value(stage_with_init_schema()).unwrap();
+    schema["orbitals"][0]["pages"][0]["traits"].as_array_mut().unwrap().push(json!({ "ref": "Stage" }));
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(serde_json::from_value(schema).unwrap(), "c1").unwrap();
+    let seeds = browser.route_mounts("/");
+    assert_eq!(seeds.iter().filter(|s| s.r#trait == "Stage").count(), 1, "{seeds:?}");
+}

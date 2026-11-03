@@ -294,10 +294,10 @@ enum Digits {
 fn fraction_digits(options: &ValueMap, key: &str) -> Result<Digits, OrbitalError> {
     match options.get(key) {
         None | Some(Value::Null) => Ok(Digits::Absent),
-        Some(Value::Number(n)) if n.fract() == 0.0 && (0.0..=100.0).contains(n) => {
-            Ok(Digits::Set(*n as usize))
-        }
-        Some(Value::Number(_)) => Ok(Digits::OutOfRange),
+        Some(value @ (Value::Number(_) | Value::Int(_))) => Ok(match value.as_int().filter(|n| (0..=100).contains(n)) {
+            Some(n) => Digits::Set(n as usize),
+            None => Digits::OutOfRange,
+        }),
         Some(other) => Err(invalid(format!(
             "format/number: `{key}` must be a whole number from 0 to 100, got {}",
             other.to_string_value()

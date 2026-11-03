@@ -63,6 +63,21 @@ pub(crate) type Stale = (String, String, Vec<Repaint>, Vec<RepaintFault>);
 #[derive(Debug, Default)]
 pub(crate) struct RenderStore {
     instances: BTreeMap<Instance, Vec<RenderedSlot>>,
+    /// What the host last painted on a `(trait, slot)` from a server leg, until the kernel paints that slot itself.
+    host_paints: BTreeMap<(String, String), Value>,
+    /// The traits whose shown content holds a `guest-view` node, kept at paint time.
+    guest_view_traits: BTreeSet<String>,
+}
+
+fn holds_guest_view(value: &Value) -> bool {
+    match value {
+        Value::Object(node) => {
+            matches!(node.get("type"), Some(Value::String(t)) if t.as_str() == "guest-view")
+                || node.values().any(holds_guest_view)
+        }
+        Value::Array(items) => items.iter().any(holds_guest_view),
+        _ => false,
+    }
 }
 
 impl RenderStore {
@@ -73,7 +88,12 @@ impl RenderStore {
         &mut self,
         trait_name: &str,
         entity_id: &str,
-        renders: Vec<(String, Value, Value, Option<orbital_core_eval::evaluator::context::LocalScope>)>,
+        renders: Vec<(
+            String,
+            Value,
+            Value,
+            Option<orbital_core_eval::evaluator::context::LocalScope>,
+        )>,
         flushed: &BindingContext,
     ) {
         if renders.is_empty() {
@@ -85,6 +105,8 @@ impl RenderStore {
             .entry((trait_name.to_string(), entity_id.to_string()))
             .or_default();
         for (slot, source, resolved, scope) in renders {
+            self.host_paints
+                .remove(&(trait_name.to_string(), slot.clone()));
             slots.retain(|s| s.slot != slot);
             if source.is_null() {
                 continue;
@@ -106,6 +128,30 @@ impl RenderStore {
             self.instances
                 .remove(&(trait_name.to_string(), entity_id.to_string()));
         }
+        self.refresh_guest_views(trait_name);
+    }
+
+    /// Whether `trait_name` shows a `guest-view` on any slot, without allocating.
+    pub(crate) fn shows_guest_view(&self, trait_name: &str) -> bool {
+        self.guest_view_traits.contains(trait_name)
+    }
+
+    fn refresh_guest_views(&mut self, trait_name: &str) {
+        let shows = self
+            .instances
+            .iter()
+            .filter(|((t, _), _)| t == trait_name)
+            .flat_map(|(_, slots)| slots.iter())
+            .any(|s| holds_guest_view(&s.resolved))
+            || self
+                .host_paints
+                .iter()
+                .any(|((t, _), content)| t == trait_name && holds_guest_view(content));
+        if shows {
+            self.guest_view_traits.insert(trait_name.to_string());
+        } else {
+            self.guest_view_traits.remove(trait_name);
+        }
     }
 
     /// What `trait_name` last painted on each slot, as the content the host holds, in paint order.
@@ -118,9 +164,37 @@ impl RenderStore {
             .collect()
     }
 
-    /// A newer paint of `slot` by `trait_name` (the host's) replaces whatever the kernel last rendered
-    /// there: that older source must not repaint over it.
-    pub(crate) fn forget_slot(&mut self, trait_name: &str, slot: &str) {
+    /// What `trait_name` shows on each slot for `entity_id`: the kernel's own renders, and the host's paints of the
+    /// slots it painted since, in paint order.
+    pub(crate) fn shown(&self, trait_name: &str, entity_id: &str) -> Vec<(String, Value)> {
+        let mut out = self.held(trait_name, entity_id);
+        out.extend(
+            self.host_paints
+                .iter()
+                .filter(|((t, _), _)| t == trait_name)
+                .map(|((_, slot), content)| (slot.clone(), content.clone())),
+        );
+        out
+    }
+
+    /// The host painted `content` on `slot` of `trait_name` from a server leg: it replaces whatever the kernel last
+    /// rendered there (that older source must not repaint over it) and is what the slot shows. A null content
+    /// clears the slot.
+    pub(crate) fn host_painted(&mut self, trait_name: &str, slot: &str, content: Option<&Value>) {
+        self.forget_slot(trait_name, slot);
+        let key = (trait_name.to_string(), slot.to_string());
+        match content.filter(|c| !c.is_null()) {
+            Some(content) => {
+                self.host_paints.insert(key, content.clone());
+            }
+            None => {
+                self.host_paints.remove(&key);
+            }
+        }
+        self.refresh_guest_views(trait_name);
+    }
+
+    fn forget_slot(&mut self, trait_name: &str, slot: &str) {
         for ((t, _), slots) in &mut self.instances {
             if t == trait_name {
                 slots.retain(|s| s.slot != slot);
@@ -133,10 +207,16 @@ impl RenderStore {
         let gone: Vec<&str> = traits.into_iter().collect();
         self.instances
             .retain(|(t, _), _| !gone.contains(&t.as_str()));
+        self.host_paints
+            .retain(|(t, _), _| !gone.contains(&t.as_str()));
+        self.guest_view_traits
+            .retain(|t| !gone.contains(&t.as_str()));
     }
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
+        self.host_paints.clear();
+        self.guest_view_traits.clear();
     }
 
     /// A kernel write to each of `entity_types`: the slots holding a row-set reference to one of them repaint
@@ -184,7 +264,10 @@ impl RenderStore {
                         Err(fault) => {
                             slot.entity = SharedEntity::from_arc(Arc::clone(&now));
                             slot.rows_dirty = rows_changed;
-                            faults.push(RepaintFault { slot: slot.slot.clone(), error: fault.to_string() });
+                            faults.push(RepaintFault {
+                                slot: slot.slot.clone(),
+                                error: fault.to_string(),
+                            });
                             continue;
                         }
                     }
@@ -503,7 +586,9 @@ mod tests {
         store.forget_traits(["A"]);
         let out = store.stale(|_| true, |_, _| val(json!({ "n": 2 })));
         assert_eq!(
-            out.iter().map(|(t, _, _, _)| t.as_str()).collect::<Vec<_>>(),
+            out.iter()
+                .map(|(t, _, _, _)| t.as_str())
+                .collect::<Vec<_>>(),
             vec!["B"]
         );
     }

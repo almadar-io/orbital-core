@@ -9,6 +9,10 @@ pub enum OirType {
     String,
     Number,
     Integer,
+    /// A fixed width other than `int` (i64) and `number` (f64): a checked range over those values.
+    Sized {
+        width: crate::num_width::NumWidth,
+    },
     Boolean,
     Date,
     DateTime,

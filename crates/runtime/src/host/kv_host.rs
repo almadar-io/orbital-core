@@ -100,6 +100,17 @@ fn check_json(op: OsOp, value: &Value, path: &str) -> Result<(), OsError> {
             OsErrorKind::Invalid,
             format!("kv value at {path} is not a finite number"),
         )),
+        Value::Int(i) if orbital_core_base::value::exact_float(*i).is_some() => Ok(()),
+        Value::Int(i) => Err(fail(
+            op,
+            OsErrorKind::Invalid,
+            format!("kv value at {path} is the int {i}, beyond 2^53, which a JavaScript host cannot read back exactly"),
+        )),
+        Value::Bytes(_) => Err(fail(
+            op,
+            OsErrorKind::Invalid,
+            format!("kv value at {path} is bytes, which a kv store keeps only as text; store (bytes/to-base64 …)"),
+        )),
         Value::Array(items) => items
             .iter()
             .enumerate()
@@ -131,6 +142,8 @@ fn write_json(value: &Value, out: &mut String) {
         Value::Null | Value::Lambda(_) | Value::Sealed(_) => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&js_number_string(*n)),
+        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Bytes(b) => write_string(&orbital_core_base::codec::base64_encode(b), out),
         Value::String(s) => write_string(s, out),
         Value::Array(items) => {
             out.push('[');
@@ -347,7 +360,7 @@ pub fn answer(op: OsOp, args: &[Value], host: &OsHost<'_>) -> Result<Value, OsEr
         }),
         OsOp::KvScan => string_arg(op, args, 1, "prefix").and_then(|_| match args.get(2) {
             None => Ok(()),
-            Some(Value::Number(n)) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => Ok(()),
+            Some(limit) if limit.as_int().is_some_and(|n| n >= 0) => Ok(()),
             Some(_) => Err(fail(
                 op,
                 OsErrorKind::Invalid,
@@ -401,10 +414,7 @@ pub fn answer(op: OsOp, args: &[Value], host: &OsHost<'_>) -> Result<Value, OsEr
         }
         OsOp::KvScan => {
             let prefix = string_arg(op, args, 1, "prefix")?;
-            let limit = match args.get(2) {
-                Some(Value::Number(n)) => Some(*n as usize),
-                _ => None,
-            };
+            let limit = args.get(2).and_then(Value::as_int).and_then(|n| usize::try_from(n).ok());
             stores.with_table(op, store, |table| {
                 let entries: Vec<Value> = table
                     .range(prefix.to_string()..)

@@ -478,13 +478,9 @@ mod tests {
         let file = dir.path().join("note.txt");
         std::fs::write(&file, "hello from disk").unwrap();
         let (state, response) = read(&hosted(bridge(dir.path(), &file)));
-        use base64::Engine;
-        let data = base64::engine::general_purpose::STANDARD.encode("hello from disk");
+        let data = b"hello from disk".to_vec();
         assert_eq!(state, "read", "{response}");
-        assert!(
-            response.contains(&format!("\"data\": String(\"{data}\")")),
-            "{response}"
-        );
+        assert!(response.contains(&format!("\"data\": Bytes({data:?})")), "{response}");
     }
 
     #[test]

@@ -73,12 +73,10 @@ pub struct QuasiquoteOp;
 pub(super) fn unquote_marker(value: &Value) -> Option<usize> {
     match value {
         Value::Array(items) if items.len() == 2 => match (&items[0], &items[1]) {
-            (Value::String(h), Value::Number(n))
-                if h == orbital_core_base::schema::quote::UNQUOTE_HEAD
-                    && *n >= 0.0
-                    && n.fract() == 0.0 =>
+            (Value::String(h), n @ (Value::Number(_) | Value::Int(_)))
+                if h == orbital_core_base::schema::quote::UNQUOTE_HEAD =>
             {
-                Some(*n as usize)
+                n.as_int().and_then(|n| usize::try_from(n).ok())
             }
             _ => None,
         },
@@ -92,7 +90,7 @@ pub(super) fn non_data_kind(value: &Value) -> Option<&'static str> {
     match value {
         Value::Array(items) => items.iter().find_map(non_data_kind),
         Value::Object(map) => map.values().find_map(non_data_kind),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) | Value::Bytes(_) => None,
         Value::Lambda(_) => Some("function"),
         Value::Sealed(_) => Some("sealed"),
     }

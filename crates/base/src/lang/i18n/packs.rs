@@ -1,6 +1,6 @@
 //! Language packs: every language but English is an installed npm package
 //! whose `package.json` declares a top-level
-//! `orbVocabulary: { compiler, vocabulary }`, the vocabulary file being one
+//! `orbVocabulary: { language, vocabulary }`, the vocabulary file being one
 //! [`I18nDefinition`]. Discovered node-style like behavior packages (each
 //! ancestor `node_modules` nearest first, the `~/.orb` user store last;
 //! nearest wins per package name). Twin of `@almadar/core/language-data`
@@ -27,9 +27,7 @@ use super::tables::{english, I18nDefinition};
 #[cfg(feature = "std")]
 use crate::behavior_packages::{node_modules_dirs, user_store_dir};
 #[cfg(feature = "std")]
-use crate::language_data::compiler_satisfies;
-#[cfg(feature = "std")]
-use crate::language_data::running_version;
+use crate::language_data::{installed_language, language_satisfies, LANGUAGE_RANGE_FIELD};
 use crate::language_data::LanguageDataError;
 
 /// The top-level `package.json` key that makes a package a language pack.
@@ -40,8 +38,8 @@ pub const VOCABULARY_BLOCK: &str = "orbVocabulary";
 pub struct VocabularyPack {
     pub package: String,
     pub version: String,
-    /// The `orb` versions the pack supports (`orbVocabulary.compiler`).
-    pub compiler: String,
+    /// The language versions the pack is written for (`orbVocabulary.language`).
+    pub language: String,
     pub definition: I18nDefinition,
 }
 
@@ -83,15 +81,17 @@ pub fn discover_vocabulary_packs(
     start_dir: &Path,
     user_store: &Path,
 ) -> Result<Vec<VocabularyPack>, LanguageDataError> {
-    discover_for(start_dir, user_store, running_version())
+    discover_for(start_dir, user_store, || installed_language(start_dir, user_store))
 }
 
+/// The packs visible from `start_dir`; `language` answers the installed core's language, asked only once a pack is found.
 #[cfg(feature = "std")]
 fn discover_for(
     start_dir: &Path,
     user_store: &Path,
-    running: &str,
+    language: impl Fn() -> Result<String, LanguageDataError>,
 ) -> Result<Vec<VocabularyPack>, LanguageDataError> {
+    let mut installed: Option<String> = None;
     let mut seen: HashSet<String> = HashSet::new();
     let mut packs: Vec<VocabularyPack> = Vec::new();
     for node_modules in node_modules_dirs(start_dir, user_store) {
@@ -115,13 +115,17 @@ fn discover_for(
             if !seen.insert(name.clone()) {
                 continue;
             }
+            let language = match &installed {
+                Some(language) => language.clone(),
+                None => installed.insert(language()?).clone(),
+            };
             packs.push(read_pack(
                 &name,
                 &manifest,
                 block,
                 &dir,
                 &package_json,
-                running,
+                &language,
             )?);
         }
     }
@@ -137,7 +141,7 @@ fn read_pack(
     block: &Value,
     dir: &Path,
     package_json: &Path,
-    running: &str,
+    language: &str,
 ) -> Result<VocabularyPack, LanguageDataError> {
     let field = |key: &str| {
         block.get(key).and_then(Value::as_str).ok_or_else(|| {
@@ -147,30 +151,23 @@ fn read_pack(
             )
         })
     };
-    let compiler = field("compiler")?.to_string();
+    let range = field(LANGUAGE_RANGE_FIELD)?.to_string();
     let version = manifest
         .get("version")
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    match compiler_satisfies(&compiler, running) {
+    match language_satisfies(&range, language) {
         Ok(true) => {}
         Ok(false) => {
             return Err(LanguageDataError::PackIncompatible {
                 package: name.to_string(),
                 version,
-                range: compiler,
-                running: running.to_string(),
+                range,
+                language: language.to_string(),
             })
         }
-        Err(e) => {
-            return Err(invalid(
-                package_json,
-                format!(
-                    "{name}: `{VOCABULARY_BLOCK}.compiler` {compiler:?} is not a semver range: {e}"
-                ),
-            ))
-        }
+        Err(reason) => return Err(invalid(package_json, format!("{name}: `{VOCABULARY_BLOCK}`: {reason}"))),
     }
     let file = dir.join(field("vocabulary")?);
     let raw = fs::read_to_string(&file).map_err(|e| invalid(&file, format!("{name}: {e}")))?;
@@ -179,7 +176,7 @@ fn read_pack(
     Ok(VocabularyPack {
         package: name.to_string(),
         version,
-        compiler,
+        language: range,
         definition,
     })
 }
@@ -298,13 +295,13 @@ mod tests {
         dir
     }
 
-    fn write_pack(root: &Path, name: &str, code: &str, orbital: &str, compiler: &str) {
+    fn write_pack(root: &Path, name: &str, code: &str, orbital: &str, language: &str) {
         let dir = root.join("node_modules").join(name);
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             dir.join("package.json"),
             json!({"name": name, "version": "1.0.0",
-                   "orbVocabulary": {"compiler": compiler, "vocabulary": "vocabulary.json"}})
+                   "orbVocabulary": {"language": language, "vocabulary": "vocabulary.json"}})
             .to_string(),
         )
         .unwrap();
@@ -319,14 +316,14 @@ mod tests {
     }
 
     fn discover(root: &Path) -> Result<Vec<VocabularyPack>, LanguageDataError> {
-        discover_for(root, &root.join("store"), "17.12.0")
+        discover_for(root, &root.join("store"), || Ok("1.2.0".to_string()))
     }
 
     #[test]
     fn every_package_declaring_orb_vocabulary_is_a_pack() {
         let root = tmp("ok");
-        write_pack(&root, "@someone/lolo-qa", "qa", "qa-orbital", ">=17.0.0");
-        write_pack(&root, "lolo-qb", "qb", "qb-orbital", ">=17.0.0");
+        write_pack(&root, "@someone/lolo-qa", "qa", "qa-orbital", "^1.2");
+        write_pack(&root, "lolo-qb", "qb", "qb-orbital", "^1.2");
         let packs = discover(&root).unwrap();
         let got: Vec<(&str, &str)> = packs
             .iter()
@@ -345,17 +342,17 @@ mod tests {
     fn the_user_store_is_the_last_rung_and_a_project_copy_shadows_it() {
         let root = tmp("store");
         let store = root.join("store");
-        write_pack(&store, "lolo-qc", "qc", "store-orbital", ">=17.0.0");
+        write_pack(&store, "lolo-qc", "qc", "store-orbital", "^1.2");
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         assert_eq!(
-            discover_for(&project, &store, "17.12.0").unwrap()[0]
+            discover_for(&project, &store, || Ok("1.2.0".to_string())).unwrap()[0]
                 .definition
                 .keywords["orbital"],
             "store-orbital"
         );
-        write_pack(&project, "lolo-qc", "qc", "project-orbital", ">=17.0.0");
-        let packs = discover_for(&project, &store, "17.12.0").unwrap();
+        write_pack(&project, "lolo-qc", "qc", "project-orbital", "^1.2");
+        let packs = discover_for(&project, &store, || Ok("1.2.0".to_string())).unwrap();
         assert_eq!(packs.len(), 1);
         assert_eq!(packs[0].definition.keywords["orbital"], "project-orbital");
     }
@@ -363,8 +360,8 @@ mod tests {
     #[test]
     fn two_packages_claiming_one_code_are_refused_naming_both() {
         let root = tmp("dup");
-        write_pack(&root, "lolo-qd-one", "qd", "qd1-orbital", ">=17.0.0");
-        write_pack(&root, "lolo-qd-two", "qd", "qd2-orbital", ">=17.0.0");
+        write_pack(&root, "lolo-qd-one", "qd", "qd1-orbital", "^1.2");
+        write_pack(&root, "lolo-qd-two", "qd", "qd2-orbital", "^1.2");
         let err = discover(&root).unwrap_err().to_string();
         assert!(
             err.contains("lolo-qd-one") && err.contains("lolo-qd-two"),
@@ -373,18 +370,46 @@ mod tests {
     }
 
     #[test]
-    fn a_pack_for_another_orb_is_incompatible() {
+    fn a_pack_for_another_language_is_incompatible_naming_both() {
         let root = tmp("range");
-        write_pack(&root, "lolo-qe", "qe", "qe-orbital", ">=18.0.0");
+        write_pack(&root, "lolo-qe", "qe", "qe-orbital", "^2");
         let err = discover(&root).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
-        assert!(err.to_string().contains("lolo-qe"), "{err}");
+        let text = err.to_string();
+        assert!(text.contains("lolo-qe") && text.contains("^2") && text.contains("1.2.0"), "{text}");
+    }
+
+    #[test]
+    fn control_no_pack_installed_never_asks_for_the_language() {
+        let root = tmp("no-pack");
+        let packs = discover_for(&root, &root.join("store"), || {
+            Err(LanguageDataError::NotInstalled { package: crate::language_data::CORE_PACKAGE })
+        })
+        .unwrap();
+        assert!(packs.is_empty());
+    }
+
+    #[test]
+    fn edge_a_pack_still_declaring_compiler_is_invalid_naming_language() {
+        let root = tmp("old-field");
+        write_pack(&root, "lolo-qz", "qz", "qz-orbital", "^1.2");
+        let manifest = root.join("node_modules/lolo-qz/package.json");
+        fs::write(
+            &manifest,
+            json!({"name": "lolo-qz", "version": "1.0.0",
+                   "orbVocabulary": {"compiler": ">=17.0.0", "vocabulary": "vocabulary.json"}})
+            .to_string(),
+        )
+        .unwrap();
+        let err = discover(&root).unwrap_err();
+        assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
+        assert!(err.to_string().contains("orbVocabulary.language"), "{err}");
     }
 
     #[test]
     fn a_selector_english_already_uses_is_refused() {
         let root = tmp("selector");
-        write_pack(&root, "lolo-qf", "qf", "orbital", ">=17.0.0");
+        write_pack(&root, "lolo-qf", "qf", "orbital", "^1.2");
         let err = discover(&root).unwrap_err().to_string();
         assert!(
             err.contains("lolo-qf") && err.contains("SelectorNotUnique"),
@@ -395,7 +420,7 @@ mod tests {
     #[test]
     fn two_english_words_on_one_spelling_are_refused() {
         let root = tmp("collision");
-        write_pack(&root, "lolo-qg", "qg", "qg-state", ">=17.0.0");
+        write_pack(&root, "lolo-qg", "qg", "qg-state", "^1.2");
         let err = discover(&root).unwrap_err().to_string();
         assert!(
             err.contains("lolo-qg") && err.contains("Collision"),
@@ -404,7 +429,7 @@ mod tests {
     }
 
     fn write_pack_with(root: &Path, name: &str, code: &str, vocab: serde_json::Value) {
-        write_pack(root, name, code, &format!("{code}-orbital"), ">=17.0.0");
+        write_pack(root, name, code, &format!("{code}-orbital"), "^1.2");
         fs::write(
             root.join("node_modules").join(name).join("vocabulary.json"),
             vocab.to_string(),
@@ -453,7 +478,7 @@ mod tests {
     #[test]
     fn english_cannot_be_replaced() {
         let root = tmp("en");
-        write_pack(&root, "lolo-en", "en", "en-orbital", ">=17.0.0");
+        write_pack(&root, "lolo-en", "en", "en-orbital", "^1.2");
         assert!(discover(&root)
             .unwrap_err()
             .to_string()
@@ -463,7 +488,7 @@ mod tests {
     #[test]
     fn edge_a_missing_vocabulary_file_names_the_package() {
         let root = tmp("nofile");
-        write_pack(&root, "lolo-qh", "qh", "qh-orbital", ">=17.0.0");
+        write_pack(&root, "lolo-qh", "qh", "qh-orbital", "^1.2");
         fs::remove_file(root.join("node_modules/lolo-qh/vocabulary.json")).unwrap();
         let err = discover(&root).unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");

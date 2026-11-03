@@ -141,7 +141,7 @@ prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
             break;
         }
     }
-    Ok(Value::Number(k - 1.0))
+    Ok(Value::Int((k - 1.0) as i64))
 });
 
 prob_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
@@ -334,7 +334,7 @@ prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
     );
     out.insert(
         "counts".into(),
-        Value::Array(counts.into_iter().map(Value::Number).collect()),
+        Value::Array(counts.into_iter().map(|count| Value::Int(count as i64)).collect()),
     );
     Ok(Value::object(out))
 });

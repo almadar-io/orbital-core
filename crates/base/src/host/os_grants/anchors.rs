@@ -298,7 +298,14 @@ pub(super) fn valid_name(name: &str) -> bool {
 
 #[cfg(feature = "std")]
 pub(super) fn rooted(segments: &[String], rest: Option<&str>) -> String {
-    let mut out = format!("/{}", segments.join("/"));
+    let out = host_rooted(segments, rest);
+    if out.starts_with('/') { out } else { format!("/{out}") }
+}
+
+/// [`rooted`] as the host names the path: a drive-headed list (`C:`, Windows) is `C:/...`, any other is `/...`.
+pub(super) fn host_rooted(segments: &[String], rest: Option<&str>) -> String {
+    let drive = segments.first().is_some_and(|s| matches!(s.as_bytes(), [l, b':'] if l.is_ascii_uppercase()));
+    let mut out = if drive { segments.join("/") } else { format!("/{}", segments.join("/")) };
     if let Some(rest) = rest {
         if !segments.is_empty() {
             out.push('/');
@@ -378,11 +385,8 @@ impl OsGrants {
                 continue;
             }
             match anchors.anchor_segments(&e.anchor) {
-                Ok(segments) => added.exec.push(rooted(&segments, e.path.as_deref())),
-                Err(why) => problems.push(EntryProblem {
-                    path,
-                    message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)),
-                }),
+                Ok(segments) => added.exec.push(host_rooted(&segments, e.path.as_deref())),
+                Err(why) => problems.push(EntryProblem { path, message: format!("exec {} grants nothing: {why}", anchored_exec_label(e)) }),
             }
         }
         for (i, g) in self.anchored.net.iter().enumerate() {
@@ -624,7 +628,7 @@ impl OsAnchors {
         };
         let mut segments = base;
         segments.extend(rest);
-        Ok(rooted(&segments, None))
+        Ok(host_rooted(&segments, None))
     }
 }
 

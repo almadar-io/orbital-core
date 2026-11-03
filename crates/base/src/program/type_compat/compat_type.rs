@@ -168,6 +168,9 @@ pub fn parse_compat_type(s: &str) -> CompatType {
             additional: None,
         }),
         "array" => CompatType::Ty(OirType::array(OirType::erased())),
+        _ if crate::num_width::NumWidth::from_name(t).is_some() => {
+            CompatType::Ty(crate::num_width::NumWidth::from_name(t).map_or(OirType::Number, |w| w.oir_type()))
+        }
         _ if tuple_type_slots(t).is_some() => {
             let items = tuple_type_slots(t)
                 .unwrap_or_default()
@@ -285,7 +288,7 @@ pub fn sub_compat(src: &CompatType, dst: &CompatType) -> Option<Coercion> {
         // Raw `money` declared accepts exactly an actual `number`; as an
         // actual it matches nothing but `money` (the legacy asymmetry).
         (_, MoneyTag) => match src {
-            Ty(OirType::Number) => Some(Coercion::Widen(WidenKind::MoneyNumber)),
+            Ty(OirType::Number | OirType::Integer) => Some(Coercion::Widen(WidenKind::MoneyNumber)),
             MoneyTag => Some(Coercion::Identity),
             _ => None,
         },

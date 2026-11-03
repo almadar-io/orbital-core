@@ -39,7 +39,7 @@ fn emitted(k: &RuntimeKernel) -> Vec<String> {
         .filter_map(|er| match &er.effect {
             Effect::Emit { event, payload } => {
                 Some(match payload.as_object().and_then(|o| o.get("n")) {
-                    Some(Value::Number(n)) => format!("{event}:{n}"),
+                    Some(n) if n.is_numeric() => format!("{event}:{}", n.as_number().expect("an exact number")),
                     _ => event.clone(),
                 })
             }

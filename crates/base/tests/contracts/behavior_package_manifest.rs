@@ -4,14 +4,22 @@ use orbital_core_base::behavior_packages::discover;
 use std::fs;
 use std::path::Path;
 
+fn core(root: &Path) {
+    let dir = root.join("node_modules/@almadar/core");
+    fs::create_dir_all(&dir).unwrap();
+    let manifest = serde_json::json!({ "name": "@almadar/core", "version": "10.1.0", "orbLanguage": { "version": "1.0.0" } });
+    fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
+}
+
 fn package(root: &Path, extra: Option<(&str, &str)>) {
+    core(root);
     let pkg = root.join("node_modules/pkg-a");
     fs::create_dir_all(pkg.join("behaviors/registry")).unwrap();
     fs::write(pkg.join("behaviors/registry/x.orb"), "{}").unwrap();
     let mut orb = serde_json::json!({
         "prefix": "pa",
         "registry": "behaviors/registry",
-        "compiler": ">=0.0.0"
+        "language": ">=0.0.0"
     });
     if let Some((key, value)) = extra {
         orb[key] = serde_json::Value::String(value.to_string());
@@ -204,7 +212,7 @@ fn peer_package(root: &Path, live: bool, name: &str) {
         "{}",
     )
     .unwrap();
-    let mut orb = serde_json::json!({ "prefix": "pb", "compiler": ">=0.0.0" });
+    let mut orb = serde_json::json!({ "prefix": "pb", "language": ">=0.0.0" });
     orb[if live { "source" } else { "registry" }] = serde_json::json!(tree);
     fs::write(
         pkg.join("package.json"),

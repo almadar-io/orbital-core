@@ -1083,6 +1083,38 @@ mod sealed_types {
     }
 
     #[test]
+    fn a_sealed_type_enters_a_union_through_its_own_variant() {
+        let named = |_: &str| None;
+        let borrow = sealed_type_ref("Borrow");
+        let union = OirType::Union {
+            variants: vec![OirField::new("number", OirType::Number), OirField::new("Borrow", borrow.clone())].into(),
+        };
+        assert!(checked_sub_with_named(&borrow, &union, &named).is_some());
+        assert!(checked_sub_with_named(&union, &union, &named).is_some(), "the union is its own subtype");
+        assert!(checked_sub_with_named(&verified(), &union, &named).is_none(), "control: another seal does not fit");
+        let records = OirType::Union {
+            variants: vec![OirField::new("number", OirType::Number), OirField::new("record", sealed_record("Borrow").expect("record"))].into(),
+        };
+        assert!(sub(&borrow, &records).is_some(), "a sealed value still reads as its record inside a union");
+        let opens = |name: &str| sealed_record(name);
+        assert!(checked_sub_with_named(&borrow, &union, &opens).is_some(), "a resolver that knows the record does not open the seal");
+    }
+
+    #[test]
+    fn a_width_widens_into_wider_widths_int_and_number_and_never_narrows() {
+        use crate::num_width::NumWidth::*;
+        let w = |width| OirType::Sized { width };
+        let named = |_: &str| None;
+        for (src, dst) in [(w(U8), w(I16)), (w(U8), OirType::Integer), (w(U32), OirType::Integer), (w(I8), OirType::Number), (w(F32), OirType::Number)] {
+            assert!(checked_sub_with_named(&src, &dst, &named).is_some(), "{src:?} into {dst:?}");
+        }
+        assert!(checked_sub_with_named(&w(U8), &w(U8), &named).is_some());
+        for (src, dst) in [(OirType::Integer, w(U8)), (w(I8), w(U16)), (w(U16), w(I16)), (OirType::Number, w(F32)), (w(I32), w(F32)), (OirType::Number, OirType::Integer)] {
+            assert!(checked_sub_with_named(&src, &dst, &named).is_none(), "control: {src:?} does not narrow into {dst:?}");
+        }
+    }
+
+    #[test]
     fn a_resolver_that_names_the_record_cannot_open_the_seal() {
         let record = sealed_record("Verified").expect("record");
         let resolve = |name: &str| (name == "Verified").then(|| record.clone());

@@ -127,14 +127,25 @@ fn str_of(value: &Value) -> String {
 }
 
 fn data_of(value: &Value) -> Vec<u8> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(str_of(get(value, "data")))
-        .expect("base64")
+    match get(value, "data") {
+        Value::Bytes(data) => data.to_vec(),
+        other => panic!("a bytes answer, got {other:?}"),
+    }
 }
 
 fn write(path: &Path, bytes: &[u8]) {
     fs::write(path, bytes).expect("write");
+}
+
+#[test]
+fn a_read_answers_its_data_as_bytes_and_a_write_takes_bytes_or_base64_text() {
+    let fx = Fx::new();
+    fx.ok(OsOp::WriteFile, vec![fx.s("a.bin"), Value::bytes(b"hi".to_vec())]);
+    let read = fx.ok(OsOp::ReadFile, vec![fx.s("a.bin")]);
+    assert_eq!(get(&read, "data"), &Value::bytes(b"hi".to_vec()));
+    assert!(!matches!(get(&read, "data"), Value::String(_)), "control: the data is not base64 text");
+    fx.ok(OsOp::AppendFile, vec![fx.s("a.bin"), st("IQ==")]);
+    assert_eq!(fs::read(fx.p("a.bin")).expect("read"), b"hi!".to_vec());
 }
 
 #[test]

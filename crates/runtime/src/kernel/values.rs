@@ -38,7 +38,7 @@ pub fn already_delivered_from(dispatch: &ClientDispatch) -> HashSet<(String, Str
 
 /// A runtime value as the expression it denotes. Equals the JSON round trip this replaces:
 /// JSON has no NaN or infinity, so a non-finite number reads back as `null`.
-pub(super) fn value_to_sexpr(value: &Value) -> SExpression {
+pub(super) fn value_to_sexpr(value: &Value) -> Result<SExpression, orbital_core_base::error::EvalError> {
     fn finite(expr: &mut SExpression) {
         match expr {
             SExpression::Number(n) if !n.is_finite() => *expr = SExpression::Null,
@@ -47,9 +47,9 @@ pub(super) fn value_to_sexpr(value: &Value) -> SExpression {
             _ => {}
         }
     }
-    let mut expr: SExpression = value.clone().into();
+    let mut expr = SExpression::try_from(value.clone())?;
     finite(&mut expr);
-    expr
+    Ok(expr)
 }
 
 /// Convert an SExpression to a runtime Value for instance seeding.

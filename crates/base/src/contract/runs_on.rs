@@ -482,8 +482,11 @@ impl LegTouch {
                 (client, !client)
             }
             Effect::PersistBatch { ops, .. } => {
-                let ops: crate::schema::sexpr::SExpression = ops.clone().into();
-                match crate::persist_batch::batch_placement(&ops, residence) {
+                let placement = match crate::schema::sexpr::SExpression::try_from(ops.clone()) {
+                    Ok(ops) => crate::persist_batch::batch_placement(&ops, residence),
+                    Err(_) => BatchPlacement::Undetermined,
+                };
+                match placement {
                     BatchPlacement::Client => (true, false),
                     BatchPlacement::Mixed => (true, true),
                     BatchPlacement::Server | BatchPlacement::Undetermined => (false, true),
@@ -789,6 +792,15 @@ mod tests {
             ),
             Some(RunsOn::Server)
         );
+    }
+
+    #[test]
+    fn the_kernel_owned_mem_ops_run_on_any_side_and_a_host_op_stays_the_servers() {
+        let none = std::collections::BTreeMap::new();
+        for op in crate::os::OsOp::ALL.iter().filter(|op| op.name().starts_with("mem/")) {
+            assert_eq!(known_site(op.name(), &none, None), Some(RunsOn::Any), "{}", op.name());
+        }
+        assert_eq!(known_site("os/read-file", &none, None), Some(RunsOn::Server), "control: a host-answered op");
     }
 
     #[test]

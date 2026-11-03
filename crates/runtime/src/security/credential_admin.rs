@@ -232,7 +232,7 @@ impl CredentialGrant {
         };
         let assertion = if grant == "jwt-bearer" {
             let ttl = match fields.get("ttlSeconds") {
-                Some(Value::Number(seconds)) if seconds.fract() == 0.0 && *seconds >= 1.0 && *seconds <= f64::from(u32::MAX) => *seconds as u32,
+                Some(seconds) if seconds.as_int().is_some_and(|n| (1..=i64::from(u32::MAX)).contains(&n)) => seconds.as_int().unwrap_or(1) as u32,
                 _ => return Err(refused("ttlSeconds must be a whole number of seconds, 1 or more".to_string())),
             };
             Some(AssertionSpec {

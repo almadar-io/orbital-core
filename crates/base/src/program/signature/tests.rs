@@ -458,6 +458,21 @@ fn a_list_literal_of_unlike_tuples_is_a_list_of_one_element_type() {
 }
 
 #[test]
+fn a_list_of_unlike_items_fits_a_declared_union_element_item_by_item() {
+    let call_c = op(json!([p("args", list(json!({ "kind": "union", "of": ["int", "number", "Borrow"] })))]), json!("void"), Some(1));
+    let borrow = crate::sealed::sealed_type_ref("Borrow");
+    let mixed = OirType::Tuple { items: vec![borrow.clone(), OirType::Integer, OirType::Number] };
+    assert!(call(&call_c, &[ty(mixed)], Mode::Proof).is_ok(), "a Borrow, an int and a number each fit");
+    let stray = OirType::Tuple { items: vec![borrow, OirType::String] };
+    assert!(call(&call_c, &[ty(stray)], Mode::Proof).is_err(), "control: a string fits no member");
+    let generic = op(json!([p("arr", list(var("T")))]), json!("number"), Some(1));
+    assert!(
+        call(&generic, &[ty(OirType::Tuple { items: vec![OirType::Number, OirType::String] })], Mode::Static).is_err(),
+        "control: a type variable element still needs one shared type"
+    );
+}
+
+#[test]
 fn lists_of_unlike_width_tuples_bound_in_turn_are_one_list_type() {
     let flatten = op(
         json!([p("arr", list(list(var("T"))))]),
@@ -4304,5 +4319,16 @@ fn a_sealed_or_unknown_declared_name_in_a_result_resolves_as_a_nominal_ref_and_a
     assert!(
         matches!(Signature::of(&mixed).result(&CallBindings::new()), Some(OirType::Union { variants }) if variants.len() == 2),
         "control: no collapse across types"
+    );
+}
+
+#[test]
+fn a_declared_int_is_the_checked_integer_primitive_never_a_nominal_type() {
+    assert_eq!(records::concrete("int"), Some(OirType::Integer));
+    assert_eq!(records::checkable("int"), Some(OirType::Integer));
+    assert_eq!(records::concrete("number"), Some(OirType::Number), "control: number is unchanged");
+    assert!(
+        matches!(records::concrete("tensor"), Some(OirType::TypeRef { .. })),
+        "control: a std struct name stays nominal"
     );
 }

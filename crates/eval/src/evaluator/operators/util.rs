@@ -2,7 +2,7 @@
 
 use orbital_core_base::value::Value;
 
-/// Structural deep-equality over `Value`. Numbers compare exactly (IEEE `==`).
+/// Structural deep-equality over `Value`. Numbers and ints compare numerically (`Int(n)` equals `Number(x)` iff exact); bytes bytewise.
 ///
 /// Single definition shared by `validate/equals` and `object/equals` (these
 /// previously carried byte-identical local copies).
@@ -10,7 +10,8 @@ pub fn deep_equals(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Null, Value::Null) => true,
         (Value::Bool(a), Value::Bool(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => a == b,
+        (Value::Number(_) | Value::Int(_), Value::Number(_) | Value::Int(_)) => a == b,
+        (Value::Bytes(a), Value::Bytes(b)) => a == b,
         (Value::String(a), Value::String(b)) => a == b,
         (Value::Array(a), Value::Array(b)) => {
             a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| deep_equals(x, y))
@@ -22,4 +23,14 @@ pub fn deep_equals(a: &Value, b: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+/// The result of an integer-valued float: `Int` when it is exactly one (at most 2^53), else `Number`.
+pub fn int_or_number(f: f64) -> Value {
+    orbital_core_base::value::exact_int(f).map_or(Value::Number(f), Value::Int)
+}
+
+/// A count, length or index as an `Int`.
+pub fn int_of(n: usize) -> Value {
+    i64::try_from(n).map_or(Value::Number(n as f64), Value::Int)
 }

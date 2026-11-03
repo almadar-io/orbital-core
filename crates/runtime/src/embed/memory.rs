@@ -50,7 +50,7 @@ fn parse<T: DeserializeOwned>(json: &str) -> Result<T, String> {
 }
 
 fn json<T: Serialize>(value: &T) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|e| format!("serialize memory store result: {e}"))
+    orbital_core_base::js_readable::to_js_readable_json(value)
 }
 
 impl MemoryStoreApi {

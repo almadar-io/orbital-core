@@ -19,7 +19,9 @@ fn json_to_value(json: serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Null,
         serde_json::Value::Bool(b) => Value::Bool(b),
-        serde_json::Value::Number(n) => Value::Number(n.as_f64().unwrap_or_default()),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map_or_else(|| Value::Number(n.as_f64().unwrap_or_default()), Value::Int),
         serde_json::Value::String(s) => Value::string(s),
         serde_json::Value::Array(items) => {
             Value::Array(items.into_iter().map(json_to_value).collect())
@@ -96,7 +98,12 @@ pub(super) fn run_time_shape(
             .unwrap_or_else(|| super::arg_types::declared_text(&declared.ty));
         return Ok(Some((shown, declared)));
     }
-    Ok(match parse_compat_type(text) {
+    let parsed = match parse_compat_type(text) {
+        CompatType::Int => CompatType::Ty(OirType::Integer),
+        CompatType::Float => CompatType::Ty(OirType::Number),
+        other => other,
+    };
+    Ok(match parsed {
         CompatType::Ty(OirType::Union { variants }) if variants.is_empty() => None,
         CompatType::Ty(declared) => Some((
             text.clone().into_inner(),
@@ -229,7 +236,7 @@ impl Operator for TreeIndexOp {
             let mut hit = ValueMap::new();
             hit.insert("path".into(), Value::string(path.to_string()));
             hit.insert("node".into(), node.clone());
-            hit.insert("at".into(), Value::Number(at as f64));
+            hit.insert("at".into(), super::util::int_of(at));
             Value::object(hit)
         };
         let mut visited = 0usize;

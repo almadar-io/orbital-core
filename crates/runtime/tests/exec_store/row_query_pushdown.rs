@@ -1795,3 +1795,25 @@ fn a_drivers_declared_index_realization_parses_and_an_absent_one_is_none() {
     unknown["indexes"] = json!("sometimes");
     assert!(serde_json::from_value::<QueryCapabilities>(unknown).is_err());
 }
+
+#[test]
+fn rows_order_an_int_between_the_numbers_either_side_of_it_and_a_whole_number_ties_with_the_int() {
+    use orbital_core_runtime::row_query::{compare_rows, RowDirection, RowOrder};
+    let row = |score: Value, id: &str| {
+        let mut fields = orbital_core_base::value::ValueMap::default();
+        fields.insert("id".into(), Value::string(id.to_string()));
+        fields.insert("score".into(), score);
+        Value::object(fields)
+    };
+    let order = RowOrder { field: "score".into(), direction: RowDirection::Asc };
+    let mut rows = vec![row(Value::Number(2.5), "c"), row(Value::Int(2), "b"), row(Value::Number(1.5), "a")];
+    rows.sort_by(|x, y| compare_rows(x, y, &order));
+    let ids: Vec<&str> = rows.iter().map(|r| r.get("id").and_then(Value::as_str).unwrap()).collect();
+    assert_eq!(ids, ["a", "b", "c"]);
+    let (int_two, number_two) = (row(Value::Int(2), "z"), row(Value::Number(2.0), "a"));
+    assert_eq!(
+        compare_rows(&int_two, &number_two, &order),
+        std::cmp::Ordering::Greater,
+        "control: Int(2) and Number(2.0) tie on the field, so the id decides"
+    );
+}

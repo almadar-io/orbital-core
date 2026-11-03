@@ -308,10 +308,10 @@ pub fn apply_orbital_overrides(value: &Value, overrides: &Value) -> Option<Value
     Some(Value::Object(out))
 }
 
-/// `behavior/apply` for every kind: a trait value, an orbital value or a whole behavior value.
+/// `behavior/apply` on a trait value or an orbital value; a whole behavior value takes no override.
 pub fn apply_behavior_overrides(value: &Value, overrides: &Value) -> Option<Value> {
     if is_behavior_ref_value(value) {
-        apply_behavior_ref_overrides(value, overrides)
+        None
     } else if is_orbital_value(value) {
         apply_orbital_overrides(value, overrides)
     } else {
@@ -559,47 +559,13 @@ pub fn behavior_ref(specifier: &str) -> Option<Value> {
     })
 }
 
-/// Structural guard for a behavior value: a specifier and, optionally, its
-/// declared `bridge` (a trait or orbital value also names a member).
+/// Structural guard for a behavior value: exactly its specifier.
 pub fn is_behavior_ref_value(value: &Value) -> bool {
     let Value::Object(map) = value else {
         return false;
     };
-    let spec_ok =
-        matches!(map.get("behavior"), Some(Value::String(spec)) if is_behavior_specifier(spec));
-    match map.len() {
-        1 => spec_ok,
-        2 => spec_ok && map.get("bridge").is_some_and(is_bridge),
-        _ => false,
-    }
-}
-
-/// A behavior value's bridge: `{ listens: [event], emits: [event] }`, nothing else.
-fn is_bridge(value: &Value) -> bool {
-    let Value::Object(map) = value else {
-        return false;
-    };
-    let events = |key: &str| matches!(map.get(key), Some(Value::Array(items)) if items.iter().all(|e| matches!(e, Value::String(s) if !s.is_empty())));
-    map.len() == 2 && events("listens") && events("emits")
-}
-
-/// `behavior/apply` on a whole behavior value: records (replaces) its bridge.
-/// Twin of `@almadar/core` `applyBehaviorRefOverrides`.
-pub fn apply_behavior_ref_overrides(value: &Value, overrides: &Value) -> Option<Value> {
-    let Value::Object(value_map) = value else {
-        return None;
-    };
-    let Value::Object(over) = overrides else {
-        return None;
-    };
-    let bridge = over.get("bridge")?;
-    if over.len() != 1 || !is_bridge(bridge) {
-        return None;
-    }
-    Some(Value::object(ValueMap::from_iter([
-        ("behavior".into(), value_map.get("behavior")?.clone()),
-        ("bridge".into(), bridge.clone()),
-    ])))
+    map.len() == 1
+        && matches!(map.get("behavior"), Some(Value::String(spec)) if is_behavior_specifier(spec))
 }
 
 /// Parse either literal form.

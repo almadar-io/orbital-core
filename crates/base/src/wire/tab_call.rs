@@ -6,10 +6,8 @@ use std::prelude::v1::*;
 
 use crate::agent_ports::find_input_by_address;
 use crate::external_inputs::ExternalInput;
-use crate::tab::{
-    is_match_pattern, TabAction, TabApply, TabDelivery, TabField, TabImageFormat, TabOp, TabStyle,
-};
-use crate::value::{Value, ValueMap};
+use crate::tab::{is_match_pattern, TabAction, TabApply, TabDelivery, TabField, TabImageFormat, TabOp, TabStyle};
+use crate::value::{Value, ValueMap, MAX_EXACT_INT};
 use url::Url;
 
 /// The visual treatments a program may ask for.
@@ -333,14 +331,7 @@ fn opt_flag(name: &str, map: &ValueMap, field: &str) -> Result<Option<bool>, Str
 }
 
 fn whole(value: &Value) -> Option<u64> {
-    match value {
-        Value::Number(n)
-            if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 && *n <= 9_007_199_254_740_991.0 =>
-        {
-            Some(*n as u64)
-        }
-        _ => None,
-    }
+    value.as_int().and_then(|n| u64::try_from(n).ok()).filter(|n| *n < MAX_EXACT_INT as u64)
 }
 
 fn tab_id(name: &str, map: &ValueMap, field: &str) -> Result<i64, String> {

@@ -70,6 +70,13 @@ fn core_null(text: &str) -> bool {
     matches!(text, "" | "~" | "null" | "Null" | "NULL")
 }
 
+fn whole_or_number(value: Value) -> Value {
+    match value {
+        Value::Number(n) => super::util::int_or_number(n),
+        other => other,
+    }
+}
+
 fn core_bool(text: &str) -> Option<bool> {
     match text {
         "true" | "True" | "TRUE" => Some(true),
@@ -86,7 +93,7 @@ fn resolve_plain(text: &str, tag: Option<&str>) -> Option<Value> {
         Some("str") => Some(Value::string(text.to_owned())),
         Some("null") => core_null(text).then_some(Value::Null),
         Some("bool") => core_bool(text).map(Value::Bool),
-        Some("int") => finite(core_integer(text)),
+        Some("int") => finite(core_integer(text)).map(whole_or_number),
         Some("float") => finite(core_float(text).or_else(|| core_integer(text))),
         Some(_) => None,
         None => {
@@ -94,7 +101,9 @@ fn resolve_plain(text: &str, tag: Option<&str>) -> Option<Value> {
                 Some(Value::Null)
             } else if let Some(b) = core_bool(text) {
                 Some(Value::Bool(b))
-            } else if let Some(n) = core_integer(text).or_else(|| core_float(text)) {
+            } else if let Some(n) = core_integer(text) {
+                finite(Some(n)).map(whole_or_number)
+            } else if let Some(n) = core_float(text) {
                 finite(Some(n))
             } else {
                 Some(Value::string(text.to_owned()))

@@ -250,7 +250,7 @@ fn only_the_children_the_firing_transition_composes_are_repainted() {
         "DEALS_LOADED",
         json!({ "data": [{ "status": "won" }, { "status": "lost" }, { "status": "won" }] }),
     );
-    assert_eq!(pattern(&loaded, "Won").unwrap()["value"], json!(2.0));
+    assert_eq!(pattern(&loaded, "Won").unwrap()["value"], json!(2));
 }
 
 fn pass_through() -> EmbeddedServer {

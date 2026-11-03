@@ -277,8 +277,10 @@ impl EffectExecutor {
         let Some(persistence) = self.persistence.clone() else {
             return EffectResult::noop(effect, "no persistence handler configured");
         };
-        let expr: SExpression = ops.clone().into();
-        let evaluated = match Evaluator::new().evaluate(&expr, ctx) {
+        let evaluated = match SExpression::try_from(ops.clone())
+            .map_err(Into::into)
+            .and_then(|expr| Evaluator::new().evaluate(&expr, ctx))
+        {
             Ok(v) => v,
             Err(err) => {
                 return EffectResult::failed(

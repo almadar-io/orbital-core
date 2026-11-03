@@ -1,6 +1,25 @@
 //! What a dispatch asks the host and how the host answers: requests, routes, call sites and answers.
 
 use super::*;
+use orbital_core_base::os_grants::OsGrants;
+
+/// The guest session kernel a guest ask runs in. It is live state in the asking process, so it rides beside the ask and
+/// is never serialized: a wire host receives the ask without it and can only refuse it. Two asks naming the same
+/// session are equal whatever kernel they carry.
+#[derive(Clone, Default)]
+pub struct GuestKernel(pub Option<crate::kernel::GuestSession>);
+
+impl std::fmt::Debug for GuestKernel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "GuestKernel(live)" } else { "GuestKernel(detached)" })
+    }
+}
+
+impl PartialEq for GuestKernel {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
 
 /// Names one request of one dispatch; an answer carries the id of the request it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +94,20 @@ pub enum IoRequest {
     Substrate {
         op: String,
         args: Vec<Value>,
+        key: Option<String>,
+        site: Option<CallSite>,
+    },
+    /// A `program/dispatch` into the guest session `guest` that the host runs (EXEC-CONC-7): `event` with `payload` (a copy)
+    /// to each of `targets` in the session `kernel`, its asks answered by a host holding only `grants`. Keyed, the host runs
+    /// it on a thread of its own and answers [`IoAnswer::ServiceDeferred`], the outcome arriving as the call site's keyed
+    /// completion event (EXEC-CONC-3); unkeyed, it answers the outcome in place.
+    Guest {
+        guest: String,
+        kernel: GuestKernel,
+        targets: Vec<String>,
+        event: String,
+        payload: Value,
+        grants: OsGrants,
         key: Option<String>,
         site: Option<CallSite>,
     },
@@ -403,6 +436,12 @@ impl IoAnswer {
         }
         if let (IoRequest::Substrate { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
             return key.is_some() && site.is_some();
+        }
+        if let (IoRequest::Guest { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+            return key.is_some() && site.is_some();
+        }
+        if let (IoRequest::Guest { .. }, IoAnswer::Substrate(_)) = (request, self) {
+            return true;
         }
         matches!(
             (request, self),

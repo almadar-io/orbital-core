@@ -424,7 +424,7 @@ fn tcp_connect_send_recv_round_trip_then_eof() {
         assert_eq!(field(&got, "eof"), Value::Bool(false));
         server.join().expect("server");
         let end = ask(host, OsOp::Recv, &[sock.clone(), n(16)]).expect("eof");
-        assert_eq!(field(&end, "data"), s(""));
+        assert_eq!(field(&end, "data"), bytes_value(b""));
         assert_eq!(field(&end, "eof"), Value::Bool(true));
         let zero = ask(host, OsOp::Recv, &[sock, n(0)]).expect("zero");
         assert_eq!(field(&zero, "eof"), Value::Bool(false));
@@ -867,7 +867,7 @@ fn stream_timeouts(handles: &OsHandles, sock: &Value) -> (Option<Duration>, Opti
         .expect("an open socket")
 }
 
-/// A read waits until data, a close or a deadline the program declares; the host picks no read timeout.
+/// A read waits until data, a close or a deadline the program declares; the host picks no read timeout (EXEC-HTTP-8).
 #[test]
 fn a_connected_stream_reads_with_no_host_chosen_timeout() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");

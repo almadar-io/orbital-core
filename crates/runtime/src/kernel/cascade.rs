@@ -413,7 +413,7 @@ impl RuntimeKernel {
     /// INIT seeds for the traits listed on the pages of every registered program, in program
     /// then page then trait order, each trait once. `keep` selects the pages.
     /// On a host, the listeners a browser runs itself are left to it (EXEC-ENDPOINT-3a): a `[client]` trait a route
-    /// page places. A `[client]` trait on no route (a `boot` or `stdio` endpoint) has no browser, so the host runs it.
+    /// page places or a route page trait embeds. A `[client]` trait on no route (a `boot` or `stdio` endpoint) has no browser, so the host runs it.
     pub(super) fn without_browser_listeners(&self, listeners: Vec<crate::listener::ListenerInfo>) -> Vec<crate::listener::ListenerInfo> {
         if self.effect_executor.environment().is_client() {
             return listeners;

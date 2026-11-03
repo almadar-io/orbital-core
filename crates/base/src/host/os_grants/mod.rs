@@ -61,6 +61,8 @@ pub enum SysKind {
     Network,
     PowerState,
     Identity,
+    /// `os/kill` of the host's own pid: a program ending or signalling its own process (P-022, a served program's restart).
+    SelfSignal,
 }
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -108,6 +110,30 @@ pub enum DevKind {
     Ack,
 }
 
+/// What a memory call does: make an arena (`create`), or release one and the blocks in it (`free`).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MemKind {
+    Create,
+    Free,
+    Atomic,
+}
+
+/// What a kernel call does: `call` an operator by computed name, `reorder` the worklist, `read` the kernel's own state,
+/// or `spawn` a guest kernel.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KernelKind {
+    Call,
+    Reorder,
+    Read,
+    Spawn,
+}
+
+named_kinds!(MemKind { Create => "create", Free => "free", Atomic => "atomic" });
+named_kinds!(KernelKind { Call => "call", Reorder => "reorder", Read => "read", Spawn => "spawn" });
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
 named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
@@ -121,6 +147,7 @@ named_kinds!(SysKind {
     Network => "network",
     PowerState => "power-state",
     Identity => "identity",
+    SelfSignal => "self-signal",
 });
 named_kinds!(DesktopKind {
     Notify => "notify",
@@ -163,26 +190,21 @@ pub enum OsGrantNeed {
         #[serde(default)]
         port: Option<usize>,
     },
-    Sys {
-        access: SysKind,
+    Sys { access: SysKind },
+    Desktop { access: DesktopKind },
+    Kv { access: KvMode, store: usize },
+    Mmio { access: DevKind, base: usize, offset: usize, width: usize },
+    Irq { access: DevKind, line: usize },
+    Mem {
+        access: MemKind,
+        #[serde(default)]
+        capacity: Option<usize>,
+        /// The argument holding the arena kind: a literal `"shared"` is checked against `shared:` targets.
+        #[serde(default, rename = "arenaKind")]
+        arena_kind: Option<usize>,
     },
-    Desktop {
-        access: DesktopKind,
-    },
-    Kv {
-        access: KvMode,
-        store: usize,
-    },
-    Mmio {
-        access: DevKind,
-        base: usize,
-        offset: usize,
-        width: usize,
-    },
-    Irq {
-        access: DevKind,
-        line: usize,
-    },
+    Kernel { access: KernelKind, #[serde(default)] operator: Option<usize> },
+    Ffi { library: usize, symbol: usize },
 }
 
 /// The needs the installed operator table declares for `op`; empty for a call on a handle, whose grant was checked
@@ -268,6 +290,104 @@ pub fn dev_target(target: &str) -> Option<DevTarget> {
             .and_then(dev_number)
             .map(|line| DevTarget::Irq { line })
     }
+}
+
+/// A memory resource and the kinds of access it grants: `arena:<maxBytes>`, an arena of at most that capacity.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemGrant {
+    pub target: String,
+    pub kinds: Vec<MemKind>,
+}
+
+/// What a `mem` grant's target names: an arena bounded by `max_bytes`, or a shared arena (also holding atomic cells)
+/// bounded by `max_bytes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemTarget {
+    Arena { max_bytes: u64 },
+    Shared { max_bytes: u64 },
+}
+
+/// The arena a `mem` grant target names; `None` for a target that is not `arena:<positive decimal>` or
+/// `shared:<positive decimal>`.
+pub fn mem_target(target: &str) -> Option<MemTarget> {
+    let (shared, digits) = match (target.strip_prefix("arena:"), target.strip_prefix("shared:")) {
+        (Some(digits), _) => (false, digits),
+        (_, Some(digits)) => (true, digits),
+        _ => return None,
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok().filter(|max| *max > 0).map(|max_bytes| {
+        if shared {
+            MemTarget::Shared { max_bytes }
+        } else {
+            MemTarget::Arena { max_bytes }
+        }
+    })
+}
+
+/// A kernel capability and the kinds of access it grants: `apply:<pattern>` (`call`), `queue` (`reorder`),
+/// `introspect` (`read`) or `guest` (`spawn`).
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KernelGrant {
+    pub target: String,
+    pub kinds: Vec<KernelKind>,
+}
+
+/// What a `kernel` grant's target names: the operators `kernel/apply` may call (an exact name, or `ns/*` for every
+/// operator of a namespace), the worklist, the kernel's own state, or guest kernels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KernelTarget {
+    Apply { pattern: String },
+    Queue,
+    Introspect,
+    Guest,
+}
+
+impl KernelTarget {
+    /// The one kind a target grants.
+    pub fn kind(&self) -> KernelKind {
+        match self {
+            KernelTarget::Apply { .. } => KernelKind::Call,
+            KernelTarget::Queue => KernelKind::Reorder,
+            KernelTarget::Introspect => KernelKind::Read,
+            KernelTarget::Guest => KernelKind::Spawn,
+        }
+    }
+
+    /// Whether an `apply` target covers the operator `name`; false for every other target.
+    pub fn covers(&self, name: &str) -> bool {
+        match self {
+            KernelTarget::Apply { pattern } => match pattern.strip_suffix("/*") {
+                Some(namespace) => name.strip_prefix(namespace).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1),
+                None => pattern == name,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// The capability a `kernel` grant target names; `None` for a target that is none of `apply:<pattern>`, `queue`,
+/// `introspect`, `guest`, or whose pattern is not an operator name or `<namespace>/*`.
+pub fn kernel_target(target: &str) -> Option<KernelTarget> {
+    match target {
+        "queue" => return Some(KernelTarget::Queue),
+        "introspect" => return Some(KernelTarget::Introspect),
+        "guest" => return Some(KernelTarget::Guest),
+        _ => {}
+    }
+    let pattern = target.strip_prefix("apply:")?;
+    let plain = |text: &str| !text.is_empty() && !text.contains(['*', ':']) && !text.chars().any(char::is_whitespace);
+    let well_formed = match pattern.strip_suffix("/*") {
+        Some(namespace) => plain(namespace) && !namespace.ends_with('/'),
+        None => plain(pattern) && !pattern.starts_with('/') && !pattern.ends_with('/'),
+    };
+    well_formed.then(|| KernelTarget::Apply { pattern: pattern.to_string() })
 }
 
 /// Where an anchored grant or path is rooted, resolved once when the host boots: the directory of the running
@@ -396,6 +516,15 @@ pub struct OsGrants {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<DevGrant>>"))]
     pub dev: Vec<DevGrant>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<MemGrant>>"))]
+    pub mem: Vec<MemGrant>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<KernelGrant>>"))]
+    pub kernel: Vec<KernelGrant>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<FfiGrant>>"))]
+    pub ffi: Vec<FfiGrant>,
     /// `credentials: [admin]`: the raw credential-store operators, closed unless declared.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<CredentialKind>>"))]
@@ -414,15 +543,18 @@ pub struct OsGrants {
 
 mod anchors;
 mod entries;
+mod ffi;
 mod matching;
 mod requirements;
 mod static_check;
 mod table;
-#[cfg(feature = "std")]
-pub use anchors::ToolPaths;
 use anchors::*;
 pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};
+#[cfg(feature = "std")]
+pub use anchors::ToolPaths;
+pub use ffi::{parse_ffi_signature, FfiGrant, FfiRet, FfiSignature, FfiType, FFI_MAX_PARAMS};
 use matching::*;
+pub use matching::covers;
 pub use requirements::{
     anchored_arg_positions, anchored_net_args, concat_static_prefix, os_requirements,
     os_requirements_deferring, requirement_target_positions, resolve_anchored_args, OsRequirement,

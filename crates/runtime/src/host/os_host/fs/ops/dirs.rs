@@ -17,14 +17,17 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        let created = fs::symlink_metadata(&at.real).is_err();
         let mut builder = fs::DirBuilder::new();
         builder.recursive(recursive);
+        #[cfg(unix)]
         if let Some(mode) = mode {
             builder.mode(mode);
         }
         builder
             .create(&at.real)
             .map_err(|e| self.io(&at.real, &e))?;
+        created_mode(&at.real, mode, created).map_err(|e| self.io(&at.real, &e))?;
         Ok(obj([]))
     }
 
@@ -128,15 +131,22 @@ impl<'a> Cx<'a> {
         let relative = found
             .into_iter()
             .filter_map(|p| {
-                let rel = Path::new(&p).strip_prefix(&root).ok()?.to_string_lossy().into_owned();
-                Some(Value::string(if rel.is_empty() { ".".to_string() } else { rel }))
+                let rel: Vec<String> = Path::new(&p)
+                    .strip_prefix(&root)
+                    .ok()?
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect();
+                Some(Value::string(if rel.is_empty() { ".".to_string() } else { rel.join("/") }))
             })
             .collect();
         Ok(obj([("paths", Value::Array(relative))]))
     }
 
     pub(super) fn expand(&self, pattern: &Path, check_prefix: bool) -> Result<Vec<String>, OsError> {
-        let mut prefix = PathBuf::from("/");
+        let mut prefix = root_of(pattern).ok_or_else(|| {
+            self.err(OsErrorKind::Denied, format!("{} is not a drive or `/`-rooted pattern", pattern.display()))
+        })?;
         let mut rest = 0usize;
         let mut wild = false;
         let mut deep = false;
@@ -155,7 +165,9 @@ impl<'a> Cx<'a> {
         if check_prefix {
             self.allow(&prefix, FsMode::Read)?;
         }
-        let matcher = OsGrants::read_matcher(&pattern.to_string_lossy());
+        let matcher = OsGrants::host_read_matcher(pattern).ok_or_else(|| {
+            self.err(OsErrorKind::Denied, format!("{} is not a drive or `/`-rooted pattern", pattern.display()))
+        })?;
         let mut found: Vec<String> = Vec::new();
         self.consider(&prefix, &matcher, &mut found);
         if wild {
@@ -218,7 +230,8 @@ impl<'a> Cx<'a> {
 
     pub(super) fn mktemp(&self, args: &[Value]) -> Result<Value, OsError> {
         let prefix = arg_str(args, 0, self.op)?;
-        if prefix.contains('/') || prefix.contains('\0') || prefix == ".." || prefix == "." {
+        let drive_mark = cfg!(windows) && prefix.contains(':');
+        if prefix.contains(std::path::is_separator) || prefix.contains('\0') || drive_mark || prefix == ".." || prefix == "." {
             return Err(self.err(
                 OsErrorKind::Invalid,
                 "prefix must be a plain file-name prefix",
@@ -242,12 +255,10 @@ impl<'a> Cx<'a> {
             x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             x ^= x >> 31;
             let candidate = at.real.join(format!("{prefix}{x:016x}"));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&candidate)
-            {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            open_mode(&mut options, Some(0o600));
+            match options.open(&candidate) {
                 Ok(_) => return Ok(obj([("path", text(&candidate))])),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(self.io(&candidate, &e)),

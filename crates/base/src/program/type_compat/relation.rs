@@ -59,7 +59,10 @@ impl Relation<'_> {
         if let Some(sealed) = crate::sealed::sealed_name(dst) {
             return (crate::sealed::sealed_name(src) == Some(sealed)).then_some(Coercion::Identity);
         }
-        if let Some(record) = crate::sealed::sealed_name(src).and_then(crate::sealed::sealed_record)
+        // A union target tries its variants first, so a sealed source meets its own variant before its record.
+        if let Some(record) = crate::sealed::sealed_name(src)
+            .filter(|_| !matches!(dst, OirType::Union { .. }))
+            .and_then(crate::sealed::sealed_record)
         {
             return self.sub(&record, dst, progress);
         }
@@ -83,13 +86,17 @@ impl Relation<'_> {
             return Some(Coercion::Erase { from: src.clone() });
         }
         let expanded_src = match (self.resolve, src) {
-            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name }) => {
+            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name })
+                if !crate::sealed::is_sealed_type(name) =>
+            {
                 resolve(name)
             }
             _ => None,
         };
         let expanded_dst = match (self.resolve, dst) {
-            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name }) => {
+            (Some(resolve), OirType::TypeRef { name } | OirType::Reference { entity: name })
+                if !crate::sealed::is_sealed_type(name) =>
+            {
                 resolve(name)
             }
             _ => None,
@@ -124,7 +131,8 @@ impl Relation<'_> {
             }
         }
         if self.checked
-            && (matches!(src, OirType::TypeRef { .. }) || matches!(dst, OirType::TypeRef { .. }))
+            && ((matches!(src, OirType::TypeRef { .. }) && crate::sealed::sealed_name(src).is_none())
+                || matches!(dst, OirType::TypeRef { .. }))
         {
             return None;
         }
@@ -369,11 +377,14 @@ impl Relation<'_> {
             OirType::Number => match src {
                 OirType::Integer => Some(Coercion::Widen(WidenKind::IntegerNumber)),
                 OirType::Money => Some(Coercion::Widen(WidenKind::MoneyNumber)),
+                _ if super::widens_by_width(src, dst) => Some(Coercion::Widen(WidenKind::Width)),
                 _ => None,
             },
             // Integer is the narrower numeric kind: Number/Money do not narrow
-            // back down to Integer (4.4); only Integer == Integer, caught above.
-            OirType::Integer => None,
+            // back down to Integer (4.4); a narrower width widens into it.
+            OirType::Integer | OirType::Sized { .. } => {
+                super::widens_by_width(src, dst).then_some(Coercion::Widen(WidenKind::Width))
+            }
             // Only the clock makes an instant (identity, caught above).
             OirType::Instant => None,
             OirType::Boolean => None,
@@ -394,7 +405,9 @@ impl Relation<'_> {
                 }
             }
             OirType::Money => match src {
-                OirType::Number | OirType::Integer => Some(Coercion::Widen(WidenKind::MoneyNumber)),
+                OirType::Number | OirType::Integer | OirType::Sized { .. } => {
+                    Some(Coercion::Widen(WidenKind::MoneyNumber))
+                }
                 _ => None,
             },
             // Bytes is an opaque base64 string at rest: only bytes (identity, caught above) fits.

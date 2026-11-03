@@ -300,7 +300,7 @@ pub(super) fn value_kind_of(value: &Value) -> Option<RowValueKind> {
     match value {
         Value::Null => Some(RowValueKind::Null),
         Value::String(_) => Some(RowValueKind::String),
-        Value::Number(_) => Some(RowValueKind::Number),
+        Value::Number(_) | Value::Int(_) => Some(RowValueKind::Number),
         Value::Bool(_) => Some(RowValueKind::Boolean),
         _ => None,
     }

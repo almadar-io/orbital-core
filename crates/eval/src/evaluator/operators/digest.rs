@@ -109,19 +109,14 @@ impl Operator for HashShaOp {
         require_arity!(args, OP, >= 3);
         require_at_most(args, OP, 4)?;
         let bits = eval_expr(&args[0], ctx)?.number().map_err(OrbitalError::Eval)?;
-        let s = string_arg(&args[1], ctx)?;
+        let message = eval_expr(&args[1], ctx)?;
         let encoding = string_arg(&args[2], ctx)?;
         let input = match args.get(3) {
             Some(arg) => string_arg(arg, ctx)?,
             None => "text".to_string(),
         };
-        let data = match input.as_str() {
-            "text" => s.into_bytes(),
-            "bytes" => match codec::base64_decode(&s) {
-                Ok(data) => data,
-                Err(_) => return Ok(Value::Null),
-            },
-            _ => return Ok(Value::Null),
+        let Some(data) = message_bytes(message, &input)? else {
+            return Ok(Value::Null);
         };
         if bits == 256.0 {
             digest_or_null(&codec::sha256(&data), &encoding)
@@ -138,12 +133,11 @@ pub struct HashMd5Op;
 impl Operator for HashMd5Op {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/md5", == 2);
-        let s = string_arg(&args[0], ctx)?;
-        let bytes = codec::base64_decode(&s);
+        let bytes = bytes_in(&args[0], ctx)?;
         let encoding = string_arg(&args[1], ctx)?;
         match bytes {
-            Ok(bytes) => digest_or_null(&codec::md5(&bytes), &encoding),
-            Err(_) => Ok(Value::Null),
+            Some(bytes) => digest_or_null(&codec::md5(&bytes), &encoding),
+            None => Ok(Value::Null),
         }
     }
 }
@@ -179,8 +173,7 @@ impl Operator for HashPbkdf2Op {
         let password = credential_value(&args[0], ctx)?;
         let salt = bytes_in(&args[1], ctx)?;
         let count = |arg: &SExpression| -> Result<Option<u32>, OrbitalError> {
-            let n = eval_expr(arg, ctx)?.number().map_err(OrbitalError::Eval)?;
-            Ok((n.fract() == 0.0 && (1.0..=f64::from(u32::MAX)).contains(&n)).then_some(n as u32))
+            whole_in(&eval_expr(arg, ctx)?, 1, i64::from(u32::MAX)).map(|n| n.map(|n| n as u32))
         };
         let iterations = count(&args[2])?;
         let length = count(&args[3])?;
@@ -190,7 +183,7 @@ impl Operator for HashPbkdf2Op {
             return Ok(Value::Null);
         };
         let key = codec::pbkdf2_hmac_sha256(password.as_bytes(), &salt, iterations, length as usize);
-        Ok(Value::string(codec::base64_encode(&key)))
+        Ok(Value::bytes(key))
     }
 }
 
@@ -240,14 +233,43 @@ impl Operator for CredentialByteLengthOp {
         };
         Ok(credential_value(&args[0], ctx)?.map_or(Value::Null, |value| {
             let length = encode.map_or(value.len(), |encode| encode.apply(value).len());
-            Value::Number(length as f64)
+            super::util::int_of(length)
         }))
     }
 }
 
+/// The bytes a bytes operand holds, or `None` when base64 text is not canonical; any other kind is a type mismatch.
 fn bytes_in(arg: &SExpression, ctx: &BindingContext) -> Result<Option<Vec<u8>>, OrbitalError> {
-    let s = string_arg(arg, ctx)?;
-    Ok(codec::base64_decode(&s).ok())
+    match eval_expr(arg, ctx)? {
+        Value::Bytes(b) => Ok(Some(b.into_inner())),
+        Value::String(s) => Ok(codec::base64_decode(&s).ok()),
+        other => Err(other.kind_error("bytes").into()),
+    }
+}
+
+/// The data a `text` or `bytes` message operand hashes: a string's UTF-8 for `text`, a bytes value (or its base64 text,
+/// `None` when not canonical) for `bytes`; an unknown input kind is `None`.
+fn message_bytes(message: Value, input: &str) -> Result<Option<Vec<u8>>, OrbitalError> {
+    match input {
+        "text" => match message {
+            Value::String(s) => Ok(Some(s.into_inner().into_bytes())),
+            other => Err(other.kind_error("string").into()),
+        },
+        "bytes" => match message {
+            Value::Bytes(b) => Ok(Some(b.into_inner())),
+            Value::String(s) => Ok(codec::base64_decode(&s).ok()),
+            other => Err(other.kind_error("bytes").into()),
+        },
+        _ => Ok(None),
+    }
+}
+
+/// A whole number within `min..=max`, `None` when it is another number; a non-number is a type mismatch.
+fn whole_in(value: &Value, min: i64, max: i64) -> Result<Option<i64>, OrbitalError> {
+    if !value.is_numeric() {
+        return Err(value.kind_error("number").into());
+    }
+    Ok(value.as_int().filter(|n| (min..=max).contains(n)))
 }
 
 fn codec_options(
@@ -287,8 +309,7 @@ fn codec_setting(
     let Some(value) = options.as_object().and_then(|fields| fields.get(key)) else {
         return Ok(Some(default));
     };
-    let n = value.number().map_err(OrbitalError::Eval)?;
-    Ok((n.fract() == 0.0 && n >= f64::from(min) && n <= f64::from(max)).then_some(n as u32))
+    Ok(whole_in(value, i64::from(min), i64::from(max))?.map(|n| n as u32))
 }
 
 fn codec_answer(
@@ -299,10 +320,10 @@ fn codec_answer(
         let (ok, data, crc, code) = match answer {
             Ok(decoded) => (
                 true,
-                Value::string(codec::base64_encode(&decoded.data)),
+                Value::bytes(decoded.data),
                 decoded
                     .crc
-                    .map(|crc| Value::Number(f64::from(crc)))
+                    .map(|crc| Value::Int(i64::from(crc)))
                     .unwrap_or(Value::Null),
                 Value::Null,
             ),
@@ -325,9 +346,7 @@ fn codec_answer(
             .collect(),
         ));
     }
-    Ok(answer.map_or(Value::Null, |decoded| {
-        Value::string(codec::base64_encode(&decoded.data))
-    }))
+    Ok(answer.map_or(Value::Null, |decoded| Value::bytes(decoded.data)))
 }
 
 fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
@@ -383,10 +402,7 @@ fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResul
         require_arity!(args, op, == 3);
     }
     let data = bytes_in(&args[0], ctx)?;
-    let n = eval_expr(&args[1], ctx)?
-        .number()
-        .map_err(OrbitalError::Eval)?;
-    let max = (n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64).then_some(n as usize);
+    let max = whole_in(&eval_expr(&args[1], ctx)?, 0, i64::from(u32::MAX))?.map(|n| n as usize);
     let options = codec_options(args, 2, ctx, op, &["result"])?;
     let (Some(data), Some(max), Some(options)) = (data, max, options) else {
         return Ok(Value::Null);
@@ -457,8 +473,7 @@ impl Operator for TarEntriesOp {
         require_arity!(args, OP, >= 2);
         require_at_most(args, OP, 3)?;
         let data = bytes_in(&args[0], ctx)?;
-        let n = eval_expr(&args[1], ctx)?.number().map_err(OrbitalError::Eval)?;
-        let max = (n.fract() == 0.0 && n >= 0.0 && n <= u32::MAX as f64).then_some(n as usize);
+        let max = whole_in(&eval_expr(&args[1], ctx)?, 0, i64::from(u32::MAX))?.map(|n| n as usize);
         let options = codec_options(args, 2, ctx, OP, &["result"])?;
         let (Some(data), Some(max), Some(options)) = (data, max, options) else {
             return Ok(Value::Null);
@@ -471,7 +486,7 @@ impl Operator for TarEntriesOp {
                         Value::Object(
                             [
                                 ("path", Value::string(file.path)),
-                                ("data", Value::string(codec::base64_encode(&file.data))),
+                                ("data", Value::bytes(file.data)),
                                 ("executable", Value::Bool(file.executable)),
                             ]
                             .into_iter()
@@ -556,7 +571,7 @@ impl Operator for HmacSha256Op {
 
 /// hmac/sha256-bytes (key, message, encoding, input?) - HMAC-SHA256 under a bytes key that is a program value (a derived key
 /// such as a SigV4 chain step). `input` "text" (default) signs the UTF-8 of the message, "bytes" decodes the message as
-/// standard padded base64 first (the hash/sha256 reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
+/// standard padded base64 first (the hash/sha reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
 pub struct HmacSha256BytesOp;
 impl Operator for HmacSha256BytesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -564,7 +579,7 @@ impl Operator for HmacSha256BytesOp {
         require_arity!(args, OP, >= 3);
         require_at_most(args, OP, 4)?;
         let key = bytes_in(&args[0], ctx)?;
-        let message = string_arg(&args[1], ctx)?;
+        let message = eval_expr(&args[1], ctx)?;
         let encoding = string_arg(&args[2], ctx)?;
         let input = match args.get(3) {
             Some(arg) => string_arg(arg, ctx)?,
@@ -573,13 +588,8 @@ impl Operator for HmacSha256BytesOp {
         let Some(key) = key else {
             return Ok(Value::Null);
         };
-        let data = match input.as_str() {
-            "text" => message.into_bytes(),
-            "bytes" => match codec::base64_decode(&message) {
-                Ok(data) => data,
-                Err(_) => return Ok(Value::Null),
-            },
-            _ => return Ok(Value::Null),
+        let Some(data) = message_bytes(message, &input)? else {
+            return Ok(Value::Null);
         };
         digest_text(&codec::hmac_sha256(&key, &data), &encoding, OP)
     }
@@ -596,7 +606,7 @@ impl Operator for EcdsaP256SignOp {
             return Ok(Value::Null);
         };
         Ok(codec::ecdsa_p256_sha256_sign(pem, message.as_bytes())
-            .map_or(Value::Null, |signature| Value::string(codec::base64_encode(&signature))))
+            .map_or(Value::Null, |signature| Value::bytes(signature.to_vec())))
     }
 }
 
@@ -614,7 +624,7 @@ impl Operator for RsaSignOp {
         };
         ctx.sealed("rsa/sign", &[Value::string(name.clone()), Value::string(message.clone())], |seed| {
             codec::rsa_pkcs1_sha256_sign(pem, message.as_bytes(), seed)
-                .map_or(Value::Null, |signature| Value::string(codec::base64_encode(&signature)))
+                .map_or(Value::Null, Value::bytes)
         })
     }
 }
@@ -633,8 +643,8 @@ impl Operator for EcdhP256EphemeralOp {
             codec::ecdh_p256_ephemeral(&peer, seed).map_or(Value::Null, |exchange| {
                 Value::Object(
                     [
-                        ("public", Value::string(codec::base64_encode(&exchange.public))),
-                        ("shared", Value::string(codec::base64_encode(&exchange.shared))),
+                        ("public", Value::bytes(exchange.public.to_vec())),
+                        ("shared", Value::bytes(exchange.shared.to_vec())),
                     ]
                     .into_iter()
                     .map(|(key, value)| (key.into(), value))
@@ -661,7 +671,7 @@ fn gcm(args: &[SExpression], ctx: &BindingContext, op: &str, seal: bool) -> Eval
     } else {
         codec::aes128_gcm_open(&key, &nonce, &data, &aad)
     };
-    Ok(out.map_or(Value::Null, |bytes| Value::string(codec::base64_encode(&bytes))))
+    Ok(out.map_or(Value::Null, Value::bytes))
 }
 
 /// aes-gcm/seal (key, nonce, plaintext, aad) - AES-128-GCM; ciphertext followed by the 16-byte tag. Null when the key is not
@@ -733,7 +743,7 @@ mod tests {
         ]);
         let ctx = held("PW", std::str::from_utf8(password).expect("text"));
         match eval_in(&ctx, form) {
-            Ok(Value::String(b64)) => codec::hex(&codec::base64_decode(&b64).expect("bytes")),
+            Ok(Value::Bytes(bytes)) => codec::hex(&bytes),
             other => panic!("expected bytes, got {other:?}"),
         }
     }
@@ -750,24 +760,25 @@ mod tests {
     #[test]
     fn sha256_bytes_input_hashes_the_decoded_bytes() {
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "YWJj", "hex", "bytes"])),
+            sha256(serde_json::json!(["hash/sha", 256, "YWJj", "hex", "bytes"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "abc", "hex"])),
+            sha256(serde_json::json!(["hash/sha", 256, "abc", "hex"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "abc", "hex", "text"])),
+            sha256(serde_json::json!(["hash/sha", 256, "abc", "hex", "text"])),
             ABC
         );
         assert_eq!(
-            sha256(serde_json::json!(["hash/sha256", "", "hex", "bytes"])),
+            sha256(serde_json::json!(["hash/sha", 256, "", "hex", "bytes"])),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(
             sha256(serde_json::json!([
-                "hash/sha256",
+                "hash/sha",
+                256,
                 "//4AgA==",
                 "hex",
                 "bytes"
@@ -776,7 +787,8 @@ mod tests {
         );
         assert_eq!(
             sha256(serde_json::json!([
-                "hash/sha256",
+                "hash/sha",
+                256,
                 "YWJj",
                 "base64",
                 "bytes"
@@ -788,20 +800,21 @@ mod tests {
     #[test]
     fn sha256_control_text_reading_and_refusals() {
         assert_ne!(
-            sha256(serde_json::json!(["hash/sha256", "YWJj", "hex"])),
+            sha256(serde_json::json!(["hash/sha", 256, "YWJj", "hex"])),
             ABC
         );
         for form in [
-            serde_json::json!(["hash/sha256", 42, "hex"]),
-            serde_json::json!(["hash/sha256", 42, "hex", "bytes"]),
+            serde_json::json!(["hash/sha", 256, 42, "hex"]),
         ] {
             let err = eval(form).expect_err("refused");
             assert!(err.to_string().contains("expected string, got number"), "{err}");
         }
+        let err = eval(serde_json::json!(["hash/sha", 256, 42, "hex", "bytes"])).expect_err("refused");
+        assert!(err.to_string().contains("expected bytes, got number"), "{err}");
         for form in [
-            serde_json::json!(["hash/sha256", "abc", "hex", "utf16"]),
-            serde_json::json!(["hash/sha256", "%%not base64", "hex", "bytes"]),
-            serde_json::json!(["hash/sha256", "abc", "octal"]),
+            serde_json::json!(["hash/sha", 256, "abc", "hex", "utf16"]),
+            serde_json::json!(["hash/sha", 256, "%%not base64", "hex", "bytes"]),
+            serde_json::json!(["hash/sha", 256, "abc", "octal"]),
         ] {
             assert_eq!(eval(form).unwrap(), Value::Null);
         }
@@ -813,7 +826,7 @@ mod tests {
 
     fn bytes_of(form: serde_json::Value) -> Vec<u8> {
         match eval(form) {
-            Ok(Value::String(b64)) => codec::base64_decode(&b64).expect("bytes"),
+            Ok(Value::Bytes(bytes)) => bytes.to_vec(),
             other => panic!("expected bytes, got {other:?}"),
         }
     }
@@ -1167,6 +1180,13 @@ mod tests {
         eval_expr(&expr, ctx)
     }
 
+    fn wire(result: EvalResult) -> String {
+        match result {
+            Ok(Value::Bytes(b)) => codec::base64_encode(&b),
+            other => panic!("expected bytes, got {other:?}"),
+        }
+    }
+
     fn text(result: EvalResult) -> String {
         match result {
             Ok(Value::String(s)) => s.into_inner(),
@@ -1246,7 +1266,7 @@ mod tests {
         let body = codec::base64_encode(&der);
         let (first, rest) = body.split_at(64);
         let pem = format!("-----BEGIN PRIVATE KEY-----\n{first}\n{rest}\n-----END PRIVATE KEY-----\n");
-        let signature = text(eval_in(&held("EC", &pem), serde_json::json!(["ecdsa/p256-sign", "EC", "sample"])));
+        let signature = wire(eval_in(&held("EC", &pem), serde_json::json!(["ecdsa/p256-sign", "EC", "sample"])));
         let raw = codec::base64_decode(&signature).expect("base64");
         assert_eq!(
             codec::hex(&raw),
@@ -1255,8 +1275,8 @@ mod tests {
         let public = codec::base64_decode(SIGN_EC_PUBLIC).expect("base64");
         let (x, y) = (codec::base64_encode(&public[1..33]), codec::base64_encode(&public[33..65]));
         let ctx = held("EC", SIGN_EC_PEM);
-        let first = text(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"])));
-        assert_eq!(first, text(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"]))), "RFC 6979 is deterministic");
+        let first = wire(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"])));
+        assert_eq!(first, wire(eval_in(&ctx, serde_json::json!(["ecdsa/p256-sign", "EC", "header.payload"]))), "RFC 6979 is deterministic");
         assert_eq!(verdict(serde_json::json!(["ecdsa/p256-verify", x, y, "header.payload", first])), "valid");
         assert_eq!(verdict(serde_json::json!(["ecdsa/p256-verify", x, y, "header.payloaD", first])), "mismatch");
     }
@@ -1273,11 +1293,11 @@ mod tests {
     #[test]
     fn rsa_sign_matches_openssl_and_verifies_under_the_public_key() {
         let ctx = held("RSA", SIGN_RSA_PEM);
-        let signature = text(eval_in(&ctx, serde_json::json!(["rsa/sign", "RSA", "sign me"])));
+        let signature = wire(eval_in(&ctx, serde_json::json!(["rsa/sign", "RSA", "sign me"])));
         assert_eq!(signature, SIGN_RSA_SIGNATURE, "PKCS#1 v1.5 is deterministic: blinding must not change the bytes");
         let mut other = held("RSA", SIGN_RSA_PEM);
         other.set_sealed_outputs(seeded(1));
-        assert_eq!(text(eval_in(&other, serde_json::json!(["rsa/sign", "RSA", "sign me"]))), SIGN_RSA_SIGNATURE);
+        assert_eq!(wire(eval_in(&other, serde_json::json!(["rsa/sign", "RSA", "sign me"]))), SIGN_RSA_SIGNATURE);
         assert_eq!(verdict(serde_json::json!(["rsa/verify", SIGN_RSA_N, "AQAB", "sign me", signature])), "valid");
         assert_eq!(verdict(serde_json::json!(["rsa/verify", SIGN_RSA_N, "AQAB", "sign mE", signature])), "mismatch");
     }
@@ -1298,7 +1318,7 @@ mod tests {
         let form = serde_json::json!(["ecdh/p256-ephemeral", SIGN_EC_PUBLIC]);
         let Ok(Value::Object(fields)) = eval_in(&ctx, form.clone()) else { panic!("expected an exchange") };
         let field = |name: &str| match fields.get(name) {
-            Some(Value::String(s)) => codec::base64_decode(s.as_str()).expect("base64"),
+            Some(Value::Bytes(b)) => b.to_vec(),
             other => panic!("{name}: {other:?}"),
         };
         let (public, shared) = (field("public"), field("shared"));
@@ -1326,12 +1346,12 @@ mod tests {
         let zero16 = codec::base64_encode(&[0u8; 16]);
         let zero12 = codec::base64_encode(&[0u8; 12]);
         let empty = codec::base64_encode(&[]);
-        let sealed = text(eval(serde_json::json!(["aes-gcm/seal", zero16, zero12, zero16, empty])));
+        let sealed = wire(eval(serde_json::json!(["aes-gcm/seal", zero16, zero12, zero16, empty])));
         assert_eq!(
             codec::hex(&codec::base64_decode(&sealed).expect("base64")),
             "0388dace60b6a392f328c2b971b2fe78ab6e47d42cec13bdf53a67b21257bddf"
         );
-        assert_eq!(text(eval(serde_json::json!(["aes-gcm/open", zero16, zero12, sealed, empty]))), zero16);
+        assert_eq!(wire(eval(serde_json::json!(["aes-gcm/open", zero16, zero12, sealed, empty]))), zero16);
         let mut forged = codec::base64_decode(&sealed).expect("base64");
         forged[0] ^= 1;
         assert_eq!(
@@ -1348,5 +1368,36 @@ mod tests {
             form[position] = serde_json::Value::Null;
             assert!(eval(form.clone()).is_err(), "{form}");
         }
+    }
+
+    #[test]
+    fn bytes_values_are_accepted_wherever_base64_text_is_and_results_are_bytes() {
+        let mut ctx = BindingContext::default();
+        ctx.set_local("b", Value::bytes(b"abc".to_vec()));
+        assert_eq!(
+            text(eval_in(&ctx, serde_json::json!(["hash/sha", 256, "@b", "hex", "bytes"]))),
+            ABC
+        );
+        assert_eq!(text(eval_in(&ctx, serde_json::json!(["hash/md5", "@b", "hex"]))), "900150983cd24fb0d6963f7d28e17f72");
+        let zero16 = Value::bytes(vec![0u8; 16]);
+        ctx.set_local("k", zero16.clone());
+        ctx.set_local("n", Value::bytes(vec![0u8; 12]));
+        ctx.set_local("e", Value::bytes(Vec::new()));
+        let sealed = eval_in(&ctx, serde_json::json!(["aes-gcm/seal", "@k", "@n", "@k", "@e"])).unwrap();
+        assert!(matches!(sealed, Value::Bytes(_)));
+        ctx.set_local("s", sealed);
+        assert_eq!(eval_in(&ctx, serde_json::json!(["aes-gcm/open", "@k", "@n", "@s", "@e"])).unwrap(), zero16);
+        assert!(
+            eval_in(&ctx, serde_json::json!(["hash/sha", 256, "@b", "hex"])).is_err(),
+            "control: bytes are not text input"
+        );
+    }
+
+    #[test]
+    fn codec_crc_is_an_int_and_tar_and_codec_data_are_bytes() {
+        let structured = eval(serde_json::json!(["gzip/compress", "aGVsbG8=", { "result": true }])).unwrap();
+        let fields = structured.as_object().unwrap();
+        assert!(matches!(fields.get("crc"), Some(Value::Int(_))));
+        assert!(matches!(fields.get("data"), Some(Value::Bytes(_))));
     }
 }

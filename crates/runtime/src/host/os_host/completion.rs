@@ -10,7 +10,7 @@ use crate::effects::executor::SubstrateFailure;
 use crate::resumable::{
     drive_blocking, CallRoutes, CallSite, DispatchError, DispatchOutcomes, IoAnswer, IoRequest, Progress,
 };
-use orbital_core_base::os::OsError;
+use orbital_core_base::os::{OsError, OsErrorKind};
 use orbital_core_base::secret::Secret;
 use orbital_core_base::value::Value;
 use orbital_core_base::sync::{Condvar, Mutex};
@@ -264,6 +264,37 @@ impl Completions {
         }
     }
 
+    /// Answer a keyed guest start (R-a) by running `work`, the guest kernel's whole life, on a thread of its own and
+    /// settling its completion through the sink: `{ result, text }`, or `{ error, kind }` for a failure.
+    pub fn defer_guest(
+        this: &Arc<Self>,
+        key: &str,
+        site: &CallSite,
+        work: impl FnOnce() -> Result<Value, SubstrateFailure> + Send + 'static,
+    ) -> IoAnswer {
+        let started = Self::spawn_later(
+            this,
+            key,
+            site,
+            move |_| {
+                work()
+                    .map(|value| crate::agent_ports::completion_result("program/dispatch", value))
+                    .map_err(|failure| crate::agent_ports::guest_failure_payload(&failure))
+            },
+            |completions, key, site, outcome| {
+                completions.deliver_with(key, |sink| sink.settle(site, key, outcome))
+            },
+        );
+        match started {
+            Ok(()) => IoAnswer::ServiceDeferred,
+            Err(RunLaterError::KeyPending) => IoAnswer::Substrate(Err(crate::agent_ports::guest_failure(
+                OsErrorKind::Invalid,
+                format!("key {key} already has a completion pending"),
+            ))),
+            Err(RunLaterError::Spawn(error)) => IoAnswer::Substrate(Err(crate::agent_ports::guest_failure(OsErrorKind::Io, error.to_string()))),
+        }
+    }
+
     pub(super) fn spawn_later<T: Send + 'static>(
         this: &Arc<Self>,
         key: &str,
@@ -403,7 +434,7 @@ impl DispatchScope {
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let (key, stream) = match request {
             IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
-            IoRequest::Substrate { key: Some(key), site: Some(_), .. } => (key, false),
+            IoRequest::Substrate { key: Some(key), site: Some(_), .. } | IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         self.owners.lock().insert(key.clone(), self.ended.clone());

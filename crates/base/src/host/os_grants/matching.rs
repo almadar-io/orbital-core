@@ -4,19 +4,30 @@ use super::*;
 
 #[cfg(feature = "std")]
 /// The absolute path as its `/`-separated segments with `.` dropped and `..` collapsed; `None` for a
-/// relative path, a non-UTF-8 segment, a platform prefix, or a `..` that climbs above the root.
+/// relative path, a non-UTF-8 segment, a `..` that climbs above the root, or a platform prefix other than a drive
+/// letter. A drive-rooted Windows path (`C:\x`, `\\?\C:\x`) is `/C:/x`: its drive is the first segment.
 pub(super) fn normalized_segments(path: &Path) -> Option<Vec<String>> {
     let mut segments: Vec<String> = Vec::new();
     let mut rooted = false;
+    let mut floor = 0;
     for component in path.components() {
         match component {
             Component::RootDir => rooted = true,
             Component::CurDir => {}
             Component::ParentDir => {
-                segments.pop()?;
+                if segments.len() == floor {
+                    return None;
+                }
+                segments.pop();
             }
             Component::Normal(part) => segments.push(part.to_str()?.to_string()),
-            Component::Prefix(_) => return None,
+            Component::Prefix(prefix) => match prefix.kind() {
+                std::path::Prefix::Disk(letter) | std::path::Prefix::VerbatimDisk(letter) if segments.is_empty() => {
+                    segments.push(format!("{}:", char::from(letter.to_ascii_uppercase())));
+                    floor = 1;
+                }
+                _ => return None,
+            },
         }
     }
     rooted.then_some(segments)
@@ -79,9 +90,11 @@ pub(super) fn anchor_of(text: &str) -> Option<(Anchor, &str)> {
 /// when a `..` climbs above it.
 pub(super) fn anchored_segments(path: &Path) -> Option<(Anchor, Vec<String>)> {
     let text = path.to_str()?;
-    match anchor_of(text)? {
-        (Anchor::Root, _) => Some((Anchor::Root, normalized_segments(path)?)),
-        (anchor, rest) => {
+    match anchor_of(text) {
+        None if path.is_absolute() => Some((Anchor::Root, normalized_segments(path)?)),
+        None => None,
+        Some((Anchor::Root, _)) => Some((Anchor::Root, normalized_segments(path)?)),
+        Some((anchor, rest)) => {
             let mut segments: Vec<String> = Vec::new();
             for component in Path::new(rest).components() {
                 match component {
@@ -234,6 +247,19 @@ impl OsGrants {
                 None => self.dev.push(grant.clone()),
             }
         }
+        for grant in &other.mem {
+            match self.mem.iter_mut().find(|g| g.target == grant.target) {
+                Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
+                None => self.mem.push(grant.clone()),
+            }
+        }
+        for grant in &other.kernel {
+            match self.kernel.iter_mut().find(|g| g.target == grant.target) {
+                Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
+                None => self.kernel.push(grant.clone()),
+            }
+        }
+        extend_missing(&mut self.ffi, &other.ffi);
         for grant in &other.anchored.fs {
             match self
                 .anchored
@@ -322,6 +348,13 @@ impl OsGrants {
             }],
             ..OsGrants::default()
         }
+    }
+
+    #[cfg(feature = "std")]
+    /// [`Self::read_matcher`] for a pattern the host holds as an absolute path (`C:\x\*` on Windows); `None` for a
+    /// form [`normalized_segments`] refuses.
+    pub fn host_read_matcher(pattern: &Path) -> Option<OsGrants> {
+        normalized_segments(pattern).map(|segments| Self::read_matcher(&super::anchors::rooted(&segments, None)))
     }
 
     pub fn exec_allows(&self, command: &str) -> bool {
@@ -414,6 +447,46 @@ impl OsGrants {
         })
     }
 
+    /// Whether an arena may be made (`create`, of `capacity` bytes), released (`free`) or its cells used atomically
+    /// (`atomic`): `create` needs a granted `arena:` target at least that large, `free` any granted target listing it,
+    /// `atomic` a granted `shared:` target listing it.
+    pub fn mem_allows(&self, kind: MemKind, capacity: Option<u64>) -> bool {
+        self.mem.iter().any(|g| {
+            g.kinds.contains(&kind)
+                && match (mem_target(&g.target), kind, capacity) {
+                    (Some(MemTarget::Arena { max_bytes }), MemKind::Create, Some(asked)) => asked <= max_bytes,
+                    (Some(MemTarget::Arena { .. }), MemKind::Create, None) => false,
+                    (Some(MemTarget::Arena { .. } | MemTarget::Shared { .. }), MemKind::Free, _) => true,
+                    (Some(MemTarget::Shared { .. }), MemKind::Atomic, _) => true,
+                    _ => false,
+                }
+        })
+    }
+
+    /// Whether a shared arena of `capacity` bytes may be made: a granted `shared:` target at least that large
+    /// listing `create`. An `arena:` target never admits it.
+    pub fn mem_shared_allows(&self, capacity: Option<u64>) -> bool {
+        self.mem.iter().any(|g| {
+            g.kinds.contains(&MemKind::Create)
+                && matches!((mem_target(&g.target), capacity), (Some(MemTarget::Shared { max_bytes }), Some(asked)) if asked <= max_bytes)
+        })
+    }
+
+    /// Whether a kernel call of `kind` is granted; `call` names the operator `kernel/apply` is asked to run.
+    pub fn kernel_allows(&self, kind: KernelKind, operator: Option<&str>) -> bool {
+        self.kernel.iter().any(|g| {
+            g.kinds.contains(&kind)
+                && kernel_target(&g.target).is_some_and(|target| {
+                    target.kind() == kind
+                        && match (&target, operator) {
+                            (KernelTarget::Apply { .. }, Some(name)) => target.covers(name),
+                            (KernelTarget::Apply { .. }, None) => false,
+                            _ => true,
+                        }
+                })
+        })
+    }
+
     /// Whether the kv `store` may be used in `mode`: an entry naming it exactly or by a one-segment glob.
     pub fn kv_allows(&self, store: &str, mode: KvMode) -> bool {
         let text: Vec<char> = store.chars().collect();
@@ -422,4 +495,160 @@ impl OsGrants {
             modes.contains(&mode) && segment_matches(&pattern, &text)
         })
     }
+}
+
+fn glob_segments(glob: &str) -> Option<(Option<Anchor>, Vec<&str>)> {
+    let segments: Vec<&str> = glob.split('/').filter(|s| !s.is_empty() && *s != ".").collect();
+    (!segments.contains(&"..")).then(|| (anchor_of(glob).map(|(anchor, _)| anchor), segments))
+}
+
+fn segment_within(outer: &str, inner: &str) -> bool {
+    outer == inner
+        || (inner != "**"
+            && (outer == "*"
+                || (!inner.contains(['*', '?']) && segment_matches(&outer.chars().collect::<Vec<_>>(), &inner.chars().collect::<Vec<_>>()))))
+}
+
+fn segments_within(outer: &[&str], inner: &[&str]) -> bool {
+    match outer.split_first() {
+        None => inner.is_empty(),
+        Some((&"**", rest)) => rest.is_empty() || (0..=inner.len()).any(|skip| segments_within(rest, &inner[skip..])),
+        Some((head, rest)) => inner
+            .split_first()
+            .is_some_and(|(first, tail)| segment_within(head, first) && segments_within(rest, tail)),
+    }
+}
+
+/// Whether every path `inner` matches, `outer` matches too. Sound, not complete: a pair it cannot prove is refused.
+fn glob_within(outer: &str, inner: &str) -> bool {
+    match (glob_segments(outer), glob_segments(inner)) {
+        (Some((outer_anchor, outer)), Some((inner_anchor, inner))) => outer_anchor == inner_anchor && segments_within(&outer, &inner),
+        _ => false,
+    }
+}
+
+fn missing_kinds<K: Copy + PartialEq>(held: &[K], asked: &[K], name: impl Fn(K) -> &'static str) -> Vec<&'static str> {
+    asked.iter().filter(|kind| !held.contains(kind)).map(|kind| name(*kind)).collect()
+}
+
+fn net_target_within(held: &str, asked: &str) -> bool {
+    match (split_target(held), split_target(asked)) {
+        (Some((held_host, held_port)), Some((asked_host, asked_port))) => {
+            held_port == asked_port
+                && (held_host.eq_ignore_ascii_case(asked_host)
+                    || (host_pattern_suffix(asked_host).is_none() && grant_host_covers(held_host, asked_host)))
+        }
+        _ => held == asked,
+    }
+}
+
+fn dev_target_within(held: &str, asked: &str) -> bool {
+    match (dev_target(held), dev_target(asked)) {
+        (Some(DevTarget::Mmio { base, length }), Some(DevTarget::Mmio { base: at, length: span })) => at >= base && at + span <= base + length,
+        (Some(DevTarget::Irq { line }), Some(DevTarget::Irq { line: at })) => line == at,
+        _ => held == asked,
+    }
+}
+
+fn mem_target_within(held: &str, asked: &str) -> bool {
+    match (mem_target(held), mem_target(asked)) {
+        (Some(MemTarget::Arena { max_bytes }), Some(MemTarget::Arena { max_bytes: at })) => at <= max_bytes,
+        (Some(MemTarget::Shared { max_bytes }), Some(MemTarget::Shared { max_bytes: at })) => at <= max_bytes,
+        _ => held == asked,
+    }
+}
+
+fn kernel_target_within(held: &str, asked: &str) -> bool {
+    match (kernel_target(held), kernel_target(asked)) {
+        (Some(KernelTarget::Apply { pattern }), Some(KernelTarget::Apply { pattern: at })) => {
+            pattern == at || pattern.strip_suffix("/*").is_some_and(|namespace| at.strip_prefix(namespace).is_some_and(|rest| rest.starts_with('/') && rest.len() > 1))
+        }
+        _ => held == asked,
+    }
+}
+
+/// Whether `asker`'s grants cover every grant `guest` names: what a kernel may hand a guest kernel it starts. `Err` names
+/// each guest grant the asker does not hold, as the program would declare it. Sound, not complete: a glob or pattern the
+/// check cannot show contained is refused, never admitted.
+pub fn covers(asker: &OsGrants, guest: &OsGrants) -> Result<(), Vec<String>> {
+    let mut missing: Vec<String> = Vec::new();
+    for grant in &guest.fs {
+        let held: Vec<FsMode> = asker.fs.iter().filter(|g| glob_within(&g.glob, &grant.glob)).flat_map(|g| g.modes.iter().copied()).collect();
+        for mode in missing_kinds(&held, &grant.modes, FsMode::name) {
+            missing.push(format!("fs {:?} [{mode}]", grant.glob));
+        }
+    }
+    for command in guest.exec.iter().filter(|command| !asker.exec.contains(command)) {
+        missing.push(format!("exec {command:?}"));
+    }
+    for grant in &guest.net {
+        let held: Vec<NetKind> = asker.net.iter().filter(|g| net_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, NetKind::name) {
+            missing.push(format!("net {:?} [{kind}]", grant.target));
+        }
+    }
+    for name in guest.env.iter().filter(|name| !asker.env.contains(name)) {
+        missing.push(format!("env {name:?}"));
+    }
+    for kind in missing_kinds(&asker.stdio, &guest.stdio, StdioKind::name) {
+        missing.push(format!("stdio [{kind}]"));
+    }
+    for kind in missing_kinds(&asker.sys, &guest.sys, SysKind::name) {
+        missing.push(format!("sys [{kind}]"));
+    }
+    for kind in missing_kinds(&asker.desktop, &guest.desktop, DesktopKind::name) {
+        missing.push(format!("desktop [{kind}]"));
+    }
+    for kind in missing_kinds(&asker.credentials, &guest.credentials, CredentialKind::name) {
+        missing.push(format!("credentials [{kind}]"));
+    }
+    for grant in &guest.dev {
+        let held: Vec<DevKind> = asker.dev.iter().filter(|g| dev_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, DevKind::name) {
+            missing.push(format!("dev {:?} [{kind}]", grant.target));
+        }
+    }
+    for grant in &guest.mem {
+        let held: Vec<MemKind> = asker.mem.iter().filter(|g| mem_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, MemKind::name) {
+            missing.push(format!("mem {:?} [{kind}]", grant.target));
+        }
+    }
+    for grant in &guest.kernel {
+        let held: Vec<KernelKind> = asker.kernel.iter().filter(|g| kernel_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, KernelKind::name) {
+            missing.push(format!("kernel {:?} [{kind}]", grant.target));
+        }
+    }
+    for grant in guest.ffi.iter().filter(|grant| !asker.ffi.contains(grant)) {
+        missing.push(format!("ffi {:?} {}", grant.library, grant.symbol));
+    }
+    for (store, modes) in &guest.kv {
+        let literal = !store.contains(['*', '?']);
+        let held: Vec<KvMode> = asker
+            .kv
+            .iter()
+            .filter(|(glob, _)| *glob == store || glob.as_str() == "*" || (literal && segment_matches(&glob.chars().collect::<Vec<_>>(), &store.chars().collect::<Vec<_>>())))
+            .flat_map(|(_, held)| held.iter().copied())
+            .collect();
+        for mode in missing_kinds(&held, modes, KvMode::name) {
+            missing.push(format!("kv {store:?} [{mode}]"));
+        }
+    }
+    for grant in &guest.anchored.fs {
+        let held: Vec<FsMode> = asker.anchored.fs.iter().filter(|g| g.anchor == grant.anchor && glob_within(&g.glob, &grant.glob)).flat_map(|g| g.modes.iter().copied()).collect();
+        for mode in missing_kinds(&held, &grant.modes, FsMode::name) {
+            missing.push(format!("fs {} {:?} [{mode}]", grant.anchor.label(), grant.glob));
+        }
+    }
+    for entry in guest.anchored.exec.iter().filter(|entry| !asker.anchored.exec.contains(entry)) {
+        missing.push(format!("exec {} {:?}", entry.anchor.label(), entry.path));
+    }
+    for grant in &guest.anchored.net {
+        let held: Vec<NetKind> = asker.anchored.net.iter().filter(|g| g.host == grant.host && g.port == grant.port).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, NetKind::name) {
+            missing.push(format!("net {} [{kind}]", grant.label()));
+        }
+    }
+    if missing.is_empty() { Ok(()) } else { Err(missing) }
 }

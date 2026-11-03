@@ -907,3 +907,23 @@ fn stdin_unkeyed_control_a_short_stdin_returns_everything() {
     let end = read_once(&mut short, 64).expect("read");
     assert_eq!(end, object(vec![("data", bytes_value(b"")), ("eof", Value::Bool(true))]), "edge: an empty read is eof");
 }
+
+
+#[test]
+fn a_program_signals_its_own_process_only_under_the_self_signal_grant() {
+    use orbital_core_base::os_grants::SysKind;
+    let none = grants();
+    let error = may_signal(42, 42, false, &none, OsOp::Kill).expect_err("own pid without the grant");
+    assert!(error.message.contains("self-signal"), "{error:?}");
+    let granted = OsGrants { sys: vec![SysKind::SelfSignal], ..grants() };
+    assert!(may_signal(42, 42, false, &granted, OsOp::Kill).is_ok());
+}
+
+#[test]
+fn control_a_spawned_child_needs_no_self_signal_grant_and_a_stranger_is_refused_even_with_it() {
+    use orbital_core_base::os_grants::SysKind;
+    assert!(may_signal(7, 42, true, &grants(), OsOp::Kill).is_ok(), "a child, as before");
+    let granted = OsGrants { sys: vec![SysKind::SelfSignal], ..grants() };
+    let error = may_signal(7, 42, false, &granted, OsOp::Kill).expect_err("another process");
+    assert!(error.message.contains("not a spawned process"), "{error:?}");
+}

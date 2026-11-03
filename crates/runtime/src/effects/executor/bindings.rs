@@ -49,9 +49,10 @@ impl EffectExecutor {
             None => Ok(None),
             Some(Value::String(raw)) => self.resolve_id(Some(raw), ctx).map(Some),
             Some(expr) => {
-                let sexpr: SExpression = expr.clone().into();
+                let sexpr = SExpression::try_from(expr.clone()).map_err(|e| e.to_string())?;
                 match Evaluator::new().evaluate(&sexpr, ctx).map_err(|e| e.to_string())? {
                     Value::String(s) => Ok(Some(s.into_inner())),
+                    Value::Int(i) => Ok(Some(i.to_string())),
                     Value::Number(n) if n.fract() == 0.0 => Ok(Some((n as i64).to_string())),
                     other => Err(format!(
                         "fetch id expression resolved to {other:?}, which is not a string or integer"
@@ -83,7 +84,7 @@ impl EffectExecutor {
             let expr = members
                 .get(name)
                 .ok_or_else(|| format!("nearest needs `{name}`"))?;
-            let sexpr: SExpression = expr.clone().into();
+            let sexpr = SExpression::try_from(expr.clone()).map_err(|e| e.to_string())?;
             Evaluator::new().evaluate(&sexpr, ctx).map_err(|e| e.to_string())
         };
         let Value::String(field) = member("field")? else {
@@ -94,16 +95,13 @@ impl EffectExecutor {
         };
         let vector = items
             .iter()
-            .map(|item| match item {
-                Value::Number(n) => Ok(*n),
-                _ => Err("nearest `vector` must be a [number]".to_string()),
-            })
+            .map(|item| item.as_number().ok_or_else(|| "nearest `vector` must be a [number]".to_string()))
             .collect::<Result<Vec<f64>, String>>()?;
-        let k = match member("k")? {
-            Value::Number(n) if n >= 1.0 && n.fract() == 0.0 => std::num::NonZeroUsize::new(n as usize),
-            _ => None,
-        }
-        .ok_or_else(|| "nearest `k` must be a positive integer".to_string())?;
+        let k = member("k")?
+            .as_int()
+            .and_then(|n| usize::try_from(n).ok())
+            .and_then(std::num::NonZeroUsize::new)
+            .ok_or_else(|| "nearest `k` must be a positive integer".to_string())?;
         Ok(Some(Box::new(RowNearest { field: field.into_inner(), vector, k })))
     }
 
@@ -137,7 +135,7 @@ impl EffectExecutor {
         what: &str,
     ) -> Result<Option<usize>, String> {
         let Some(value) = value else { return Ok(None) };
-        let sexpr: SExpression = value.clone().into();
+        let sexpr = SExpression::try_from(value.clone()).map_err(|e| e.to_string())?;
         let n = Evaluator::new()
             .evaluate(&sexpr, ctx)
             .map_err(|e| e.to_string())?
@@ -156,7 +154,7 @@ impl EffectExecutor {
         ctx: &BindingContext,
     ) -> Result<Option<RowOrder>, String> {
         let Some(value) = value else { return Ok(None) };
-        let sexpr: SExpression = value.clone().into();
+        let sexpr = SExpression::try_from(value.clone()).map_err(|e| e.to_string())?;
         match Evaluator::new()
             .evaluate(&sexpr, ctx)
             .map_err(|e| e.to_string())?
@@ -206,8 +204,7 @@ impl EffectExecutor {
         data: &'v Value,
         ctx: &BindingContext,
     ) -> std::borrow::Cow<'v, Value> {
-        let expr: SExpression = data.clone().into();
-        match Evaluator::new().evaluate(&expr, ctx) {
+        match SExpression::try_from(data.clone()).map_err(Into::into).and_then(|expr| Evaluator::new().evaluate(&expr, ctx)) {
             Ok(evaluated) => std::borrow::Cow::Owned(evaluated),
             Err(err) => {
                 warn!(error = %err, "persist data failed to evaluate; falling back to plain binding substitution");

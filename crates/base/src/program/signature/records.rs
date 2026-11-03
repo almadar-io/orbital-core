@@ -43,6 +43,7 @@ pub fn concrete_type(name: &str) -> Option<OirType> {
 pub(super) fn concrete(name: &str) -> Option<OirType> {
     Some(match name {
         "number" => OirType::Number,
+        "int" => OirType::Integer,
         "string" => OirType::String,
         "boolean" => OirType::Boolean,
         "date" => OirType::Date,
@@ -55,8 +56,9 @@ pub(super) fn concrete(name: &str) -> Option<OirType> {
         "orbital" => OirType::Orbital,
         "behavior" => OirType::Behavior,
         "void" => return None,
-        other => OirType::TypeRef {
-            name: other.to_string(),
+        other => match crate::num_width::NumWidth::from_name(other) {
+            Some(width) => width.oir_type(),
+            None => OirType::TypeRef { name: other.to_string() },
         },
     })
 }
@@ -66,12 +68,13 @@ pub(super) fn concrete(name: &str) -> Option<OirType> {
 pub(super) fn checkable(name: &str) -> Option<OirType> {
     match name {
         "number" => Some(OirType::Number),
+        "int" => Some(OirType::Integer),
         "string" => Some(OirType::String),
         "boolean" => Some(OirType::Boolean),
         "date" => Some(OirType::Date),
         "datetime" => Some(OirType::DateTime),
         "instant" => Some(OirType::Instant),
-        _ => None,
+        other => crate::num_width::NumWidth::from_name(other).map(|width| width.oir_type()),
     }
 }
 

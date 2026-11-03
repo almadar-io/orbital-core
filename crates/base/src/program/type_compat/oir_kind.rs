@@ -33,7 +33,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
     use crate::ir::types::OirType;
     match t {
         OirType::String => "string".to_string(),
-        OirType::Number | OirType::Integer => "number".to_string(),
+        OirType::Number | OirType::Integer | OirType::Sized { .. } => "number".to_string(),
         OirType::Boolean => "boolean".to_string(),
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),

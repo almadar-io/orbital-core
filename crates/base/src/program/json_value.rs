@@ -20,6 +20,8 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
                     .unwrap_or(serde_json::Value::Null)
             }
         }
+        Value::Int(i) => serde_json::Value::Number((*i).into()),
+        Value::Bytes(b) => serde_json::Value::String(crate::codec::base64_encode(b)),
         Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(items) => serde_json::Value::Array(items.iter().map(value_to_json).collect()),
         Value::Object(map) => serde_json::Value::Object(
@@ -79,9 +81,9 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
                 out.push_str("null");
             }
         }
-        Value::String(text) => {
-            out.push_str(&serde_json::to_string(text.as_str()).expect("a string always writes"))
-        }
+        Value::Int(i) => out.push_str(&i.to_string()),
+        Value::Bytes(b) => out.push_str(&serde_json::to_string(&crate::codec::base64_encode(b)).expect("a string always writes")),
+        Value::String(text) => out.push_str(&serde_json::to_string(text.as_str()).expect("a string always writes")),
         Value::Array(items) => {
             out.push('[');
             for (i, item) in items.iter().enumerate() {

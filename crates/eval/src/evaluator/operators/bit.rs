@@ -5,22 +5,21 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
-fn bounded(arg: &SExpression, ctx: &BindingContext, max: f64) -> Result<Option<u32>, OrbitalError> {
+fn bounded(arg: &SExpression, ctx: &BindingContext, max: i64) -> Result<Option<u32>, OrbitalError> {
     match eval_expr(arg, ctx)? {
-        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && (0.0..=max).contains(&n) => {
-            Ok(Some(n as u32))
+        value @ (Value::Number(_) | Value::Int(_)) => {
+            Ok(value.as_int().filter(|n| (0..=max).contains(n)).map(|n| n as u32))
         }
-        Value::Number(_) => Ok(None),
         other => Err(other.kind_error("number").into()),
     }
 }
 
 fn word(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
-    bounded(arg, ctx, u32::MAX as f64)
+    bounded(arg, ctx, i64::from(u32::MAX))
 }
 
 fn count(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
-    bounded(arg, ctx, 31.0)
+    bounded(arg, ctx, 31)
 }
 
 fn fold(
@@ -43,7 +42,7 @@ fn fold(
         };
         acc = f(acc, next);
     }
-    Ok(Value::Number(acc as f64))
+    Ok(Value::Int(i64::from(acc)))
 }
 
 fn shift(
@@ -56,7 +55,7 @@ fn shift(
     let (Some(a), Some(n)) = (word(&args[0], ctx)?, count(&args[1], ctx)?) else {
         return Ok(Value::Null);
     };
-    Ok(Value::Number(f(a, n) as f64))
+    Ok(Value::Int(i64::from(f(a, n))))
 }
 
 /// bit/xor (...words) - XOR folded left
@@ -89,7 +88,7 @@ impl Operator for BitNotOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bit/not", == 1);
         Ok(match word(&args[0], ctx)? {
-            Some(a) => Value::Number(!a as f64),
+            Some(a) => Value::Int(i64::from(!a)),
             None => Value::Null,
         })
     }
@@ -185,7 +184,7 @@ mod tests {
         ];
         for (form, expected) in cases {
             match eval(form) {
-                Ok(Value::Number(n)) => assert_eq!(n, *expected, "{form}"),
+                Ok(Value::Int(n)) => assert_eq!(n as f64, *expected, "{form}"),
                 other => panic!("{form}: expected {expected}, got {other:?}"),
             }
         }
@@ -198,9 +197,22 @@ mod tests {
         match eval(
             r#"["bit/xor", ["bit/rotr", 1779033703, 2], ["bit/rotr", 1779033703, 13], ["bit/rotr", 1779033703, 22]]"#,
         ) {
-            Ok(Value::Number(n)) => assert_eq!(n, sigma0 as f64),
+            Ok(Value::Int(n)) => assert_eq!(n, i64::from(sigma0)),
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_int_operand_works_and_the_result_is_an_int() {
+        let ctx = BindingContext::default();
+        let expr: SExpression = serde_json::from_str(r#"["bit/xor", 1, 3]"#).unwrap();
+        assert!(matches!(eval_expr(&expr, &ctx), Ok(Value::Int(2))));
+        let mut ctx = BindingContext::default();
+        ctx.set_local("w", Value::Int(4294967295));
+        let expr: SExpression = serde_json::from_str(r#"["bit/not", "@w"]"#).unwrap();
+        assert!(matches!(eval_expr(&expr, &ctx), Ok(Value::Int(0))));
+        ctx.set_local("w", Value::Int(4294967296));
+        assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::Null, "control: an int past 32 bits answers null");
     }
 
     #[test]

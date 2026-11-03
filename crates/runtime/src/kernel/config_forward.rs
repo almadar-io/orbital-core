@@ -43,7 +43,7 @@ pub(super) fn bind_user_forwards(config: Value, user: &Value) -> Value {
             continue;
         }
         *value = match user.get_path(path) {
-            Some(read @ (Value::String(_) | Value::Number(_) | Value::Bool(_))) => read.clone(),
+            Some(read @ (Value::String(_) | Value::Number(_) | Value::Int(_) | Value::Bytes(_) | Value::Bool(_))) => read.clone(),
             _ => Value::string(String::new()),
         };
     }

@@ -71,6 +71,7 @@ fn type_tag(ty: &OirType) -> String {
         OirType::String => "string".to_string(),
         OirType::Number => "number".to_string(),
         OirType::Integer => "integer".to_string(),
+        OirType::Sized { width } => width.name().to_string(),
         OirType::Boolean => "boolean".to_string(),
         OirType::Date => "date".to_string(),
         OirType::DateTime => "datetime".to_string(),
@@ -149,6 +150,11 @@ pub fn render_default<R: TargetLiteralRenderer>(
         }
         (OirType::Integer, OirValue::Number(n)) if n.fract() == 0.0 => {
             Ok(Some(r.integer(*n as i64)))
+        }
+        (OirType::Sized { width }, OirValue::Number(n))
+            if width.fits(&crate::value::Value::Number(*n)) =>
+        {
+            Ok(Some(if width.is_float() { r.number(*n) } else { r.integer(*n as i64) }))
         }
         (OirType::Boolean, OirValue::Bool(b)) => Ok(Some(r.bool(*b))),
 

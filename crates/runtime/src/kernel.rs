@@ -111,6 +111,10 @@ pub enum KernelError {
 }
 
 pub mod agent_ports;
+mod guests;
+pub use guests::GuestSession;
+pub(crate) use guests::run_session as run_guest_session;
+mod guest_controls;
 pub mod dispatch_run;
 pub(crate) mod envelope;
 pub mod inbound;
@@ -325,6 +329,12 @@ struct StepScope {
     /// The theme change the running step made (session key, bound key or `None` for cleared), settled with the step
     /// like `identity_change`.
     theme_change: RwLock<Option<(String, Option<Arc<str>>)>>,
+    /// The step's working copy of the `mem/*` table, cloned from the committed one on its first `mem/*` effect and
+    /// swapped in when the step commits (EXEC-METAL-4); shared with the reads the step's expressions make.
+    mem_change: Arc<RwLock<Option<mem_table::MemTable>>>,
+    /// The `kernel/queue-front|back` directives the running step staged (event, to the front): applied to the worklist
+    /// after the step, dropped when it does not commit.
+    queue_directives: RwLock<Vec<(String, bool)>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -463,6 +473,10 @@ pub struct RuntimeKernel {
     settled_rows: RwLock<Vec<(String, String)>>,
     /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
     removed_rows: RwLock<Vec<(Option<String>, String)>>,
+    /// The guest programs this kernel opened (`program/open`, EXEC-CONC-7), by handle.
+    guests: RwLock<HashMap<String, guests::GuestSession>>,
+    /// The last guest handle number this kernel issued.
+    guest_seq: std::sync::atomic::AtomicU64,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
@@ -470,6 +484,12 @@ pub struct RuntimeKernel {
     rows: Arc<EntitySourceHandler>,
     prob_entropy: EntropySource,
     sealed_outputs: SealedOutputs,
+    /// The committed `mem/*` arenas, blocks and borrows (EXEC-METAL-1); a step works on a staged copy (`StepScope::mem_change`).
+    mem: Arc<RwLock<mem_table::MemTable>>,
+    /// What a pure `mem/*` read sees: the committed table plus the running step's staged one.
+    mem_view: Arc<mem_table::StepMem>,
+    /// What a step's pure `kernel/*` reads see (EXEC-METAL-5/6).
+    introspect: Arc<kernel_introspect::StepKernel>,
     /// The one dispatch lane (EXEC-CONC-1): a dispatch holds it from entry to commit.
     lane: Arc<lane::DispatchLane>,
     /// Keys of the keyed calls whose asking dispatch is parked without the lane (EXEC-CONC-0/1).
@@ -690,6 +710,11 @@ impl RuntimeKernel {
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
         let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
         let themes: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
+        let mem: Arc<RwLock<mem_table::MemTable>> = Arc::default();
+        let mem_change: Arc<RwLock<Option<mem_table::MemTable>>> = Arc::default();
+        let mem_view = Arc::new(mem_table::StepMem::new(Arc::clone(&mem), Arc::clone(&mem_change)));
+        let os_grants: Arc<RwLock<OsGrantTable>> = Arc::new(RwLock::new(OsGrantTable::default()));
+        let introspect = Arc::new(kernel_introspect::StepKernel::new(Arc::clone(&io), Arc::clone(&os_grants)));
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
@@ -726,6 +751,9 @@ impl RuntimeKernel {
             rows: entity_handler,
             prob_entropy,
             sealed_outputs,
+            mem,
+            mem_view,
+            introspect,
             sessions: Sessions {
                 session_by_thread,
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
@@ -754,10 +782,12 @@ impl RuntimeKernel {
                 render_scopes: Arc::new(RwLock::new(Vec::new())),
                 identity_change: RwLock::new(None),
                 theme_change: RwLock::new(None),
+                mem_change,
+                queue_directives: RwLock::new(Vec::new()),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
-                os_grants: Arc::new(RwLock::new(OsGrantTable::default())),
+                os_grants,
                 managed_credentials: Arc::new(RwLock::new(Vec::new())),
             },
             deliveries: Arc::default(),
@@ -778,6 +808,8 @@ impl RuntimeKernel {
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
+            guests: RwLock::new(HashMap::new()),
+            guest_seq: std::sync::atomic::AtomicU64::new(0),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
     }
@@ -1094,6 +1126,10 @@ mod viewer_scope;
 mod session_life;
 mod identity_session;
 mod theme_session;
+mod mem_table;
+mod ffi_call;
+mod kernel_introspect;
+pub use mem_table::SharedArena;
 mod mount_ledger;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};

@@ -322,9 +322,9 @@ impl Operator for TimeDiffOp {
                     }
                 }
             };
-            Ok(Value::Number(result))
+            Ok(crate::evaluator::operators::util::int_or_number(result))
         } else {
-            Ok(Value::Number(diff_ms))
+            Ok(crate::evaluator::operators::util::int_or_number(diff_ms))
         }
     }
 }
@@ -472,7 +472,7 @@ macro_rules! calendar_part {
                 require_arity!(args, $op, 1);
                 let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
                 let $at = utc(m.ms)?;
-                Ok(Value::Number($body as f64))
+                Ok(Value::Int(i64::from($body)))
             }
         }
     };
@@ -487,7 +487,7 @@ macro_rules! time_of_day_part {
                 require_arity!(args, $op, 1);
                 let ms = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day($op)?;
                 let $at = utc(ms)?;
-                Ok(Value::Number($body as f64))
+                Ok(Value::Int(i64::from($body)))
             }
         }
     };

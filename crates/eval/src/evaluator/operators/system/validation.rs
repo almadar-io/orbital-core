@@ -15,6 +15,7 @@ impl Operator for ValidateRequiredOp {
         let is_valid = match &val {
             Value::Null => false,
             Value::String(s) => !s.is_empty(),
+            Value::Bytes(b) => !b.is_empty(),
             Value::Array(a) => !a.is_empty(),
             _ => true,
         };
@@ -490,9 +491,10 @@ pub(super) fn rule_holds(
         "required" => {
             !matches!(value, Value::Null)
                 && !matches!(value, Value::String(text) if text.is_empty())
+                && !matches!(value, Value::Bytes(data) if data.is_empty())
         }
         "string" => matches!(value, Value::String(_)),
-        "number" => matches!(value, Value::Number(n) if !n.is_nan()),
+        "number" => matches!(value, Value::Int(_)) || matches!(value, Value::Number(n) if !n.is_nan()),
         "boolean" => matches!(value, Value::Bool(_)),
         "email" => matches_semantic_pattern("validate/email", value.text()?)?,
         "minLength" => length_of(value)? as f64 >= number(0)?,

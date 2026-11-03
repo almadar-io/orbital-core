@@ -124,6 +124,31 @@ pub fn failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> 
     Value::object(payload)
 }
 
+/// A refused or failed guest dispatch: the message, and one typed issue `{ kind, message }` naming why (`invalid`,
+/// `denied`, `unsupported`, `io`), the `kind` the failure completion carries.
+pub fn guest_failure(kind: orbital_core_base::os::OsErrorKind, message: impl Into<String>) -> crate::effects::executor::SubstrateFailure {
+    let message = message.into();
+    let mut issue = ValueMap::default();
+    issue.insert("kind".into(), Value::string(kind.as_str().to_string()));
+    issue.insert("message".into(), Value::string(message.clone()));
+    crate::effects::executor::SubstrateFailure { message, errors: vec![Value::object(issue)] }
+}
+
+/// The `kind` a [`guest_failure`] names, from its typed issues.
+pub fn guest_failure_kind(errors: &[Value]) -> Option<Value> {
+    errors.first().and_then(|issue| issue.get("kind")).filter(|kind| kind.as_str().is_some()).cloned()
+}
+
+/// The failure payload of a guest dispatch's completion: `{ error, kind }`.
+pub fn guest_failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
+    let mut payload = ValueMap::default();
+    payload.insert("error".into(), Value::string(failure.message.clone()));
+    if let Some(kind) = guest_failure_kind(&failure.errors) {
+        payload.insert("kind".into(), kind);
+    }
+    Value::object(payload)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

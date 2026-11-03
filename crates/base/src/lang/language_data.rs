@@ -6,9 +6,10 @@
 //! One loader serves L1 (`orbital-lolo`) and L2 (`orbital-compiler`): the
 //! package is found with the §5 node-style walk (project `node_modules`
 //! ancestors first, the `~/.orb` user store last), its `package.json`
-//! top-level `orbLanguage` block names the data files, and `orbLanguage.compiler` is checked
-//! against this binary's version. There is no embedded fallback and no env
-//! override.
+//! top-level `orbLanguage` block names the data files and the language version
+//! (`orbLanguage.version`) it provides, which must be one this kernel reads
+//! ([`LANGUAGE_READS`]); every other package's `language` range is checked
+//! against that version. There is no embedded fallback and no env override.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -34,8 +35,18 @@ pub const CORE_PACKAGE: &str = "@almadar/core";
 /// (Phase 2). It ships the canonical operator table.
 pub const STD_PACKAGE: &str = "@almadar/std";
 
-pub fn compiler_satisfies(range: &str, running_version: &str) -> Result<bool, semver::Error> {
-    semver_satisfies(range, running_version)
+/// The language-data versions this kernel reads (`@almadar/core`'s `orbLanguage.version`). Every host embedding this
+/// crate reads the same range, and every package range names a language version, never a host release (P-022).
+pub const LANGUAGE_READS: &str = "^1";
+
+/// The `language` key every language-ranged block declares (`orb`, `orbLanguage` on std, `orbVocabulary`).
+pub const LANGUAGE_RANGE_FIELD: &str = "language";
+
+/// Whether `language` (the installed core's) satisfies `range` (a declared `language` range); `Err` names a range that
+/// is not semver.
+pub fn language_satisfies(range: &str, language: &str) -> Result<bool, String> {
+    semver_satisfies(range, language)
+        .map_err(|e| format!("`{LANGUAGE_RANGE_FIELD}` {range:?} is not a semver range: {e}"))
 }
 
 pub fn std_peer_satisfies(range: &str, std_version: &str) -> Result<bool, semver::Error> {
@@ -62,6 +73,8 @@ pub const CODE_STD_NOT_INSTALLED: &str = "ORB_BEHAVIOR_PACKAGE_NOT_INSTALLED";
 /// The raw text of the four language-data files plus where they came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LanguageData {
+    /// The language version core provides (`orbLanguage.version`), which every package range names.
+    pub language: String,
     pub core_version: String,
     pub root: PathBuf,
     pub patterns: String,
@@ -106,14 +119,24 @@ pub enum LanguageDataError {
     #[error("{}", not_installed_message(package))]
     NotInstalled { package: &'static str },
     #[error(
-        "installed {package}@{version} requires orb {range}, but this orb is {running} \
-         — install a {package} whose `orbLanguage.compiler` accepts {running}, or upgrade orb"
+        "installed {package}@{version} provides language {language}, but this orb reads language {reads} \
+         — run `orb update` for a matching orb and {package}"
+    )]
+    LanguageUnread {
+        package: &'static str,
+        version: String,
+        language: String,
+        reads: &'static str,
+    },
+    #[error(
+        "installed {package}@{version} needs language {range}, but the installed {CORE_PACKAGE} provides language \
+         {language} — run `orb update`"
     )]
     Incompatible {
         package: &'static str,
         version: String,
         range: String,
-        running: String,
+        language: String,
     },
     #[error(
         "installed {package}@{version} declares {} rust-target operator(s) this orb does not \
@@ -139,14 +162,14 @@ pub enum LanguageDataError {
     #[error("installed language data is invalid at {path:?}: {reason}")]
     Invalid { path: PathBuf, reason: String },
     #[error(
-        "installed language pack {package}@{version} requires orb {range}, but this orb is {running} \
-         — update the pack (`orb update`) or upgrade orb"
+        "installed language pack {package}@{version} needs language {range}, but the installed {CORE_PACKAGE} \
+         provides language {language} — run `orb update`"
     )]
     PackIncompatible {
         package: String,
         version: String,
         range: String,
-        running: String,
+        language: String,
     },
 }
 
@@ -158,6 +181,7 @@ impl LanguageDataError {
             }
             LanguageDataError::NotInstalled { .. } => CODE_NOT_INSTALLED,
             LanguageDataError::Incompatible { .. }
+            | LanguageDataError::LanguageUnread { .. }
             | LanguageDataError::Unimplemented { .. }
             | LanguageDataError::Unreadable { .. }
             | LanguageDataError::PackIncompatible { .. } => CODE_INCOMPATIBLE,
@@ -195,9 +219,8 @@ pub fn not_installed_message(package: &str) -> String {
 
 static HOST_RELEASE: OnceLock<&'static str> = OnceLock::new();
 
-/// A host names its own release version once, at start-up, before any discovery: package ranges (`orb.compiler`,
-/// `orbLanguage.compiler`) name the orb release, and orbital-core is embedded by hosts that each release on their own
-/// version (G-ORB-563). The first registration wins; a later one is refused with the version already registered.
+/// A host names its own release version once, at start-up: an operator option's `optionSince` names the release that
+/// added it, and orbital-core is embedded by hosts that each release on their own version (G-ORB-563). The first registration wins; a later one is refused with the version already registered.
 pub fn register_host_release(version: &'static str) -> Result<(), &'static str> {
     match HOST_RELEASE.set(version) {
         Ok(()) => Ok(()),
@@ -220,16 +243,12 @@ pub fn load_language_data(
     start_dir: &Path,
     user_store: &Path,
 ) -> Result<LanguageData, LanguageDataError> {
-    load_language_data_for(start_dir, user_store, running_version())
-}
-
-#[cfg(feature = "std")]
-pub fn load_language_data_for(
-    start_dir: &Path,
-    user_store: &Path,
-    running: &str,
-) -> Result<LanguageData, LanguageDataError> {
-    let block = read_language_block(CORE_PACKAGE, start_dir, user_store, running)?;
+    let block = read_language_block(CORE_PACKAGE, start_dir, user_store)?;
+    let path = block.package_json.clone();
+    let language = core_language(block.block.get("version").and_then(Value::as_str), &block.pkg.version, |reason| LanguageDataError::Invalid {
+        path: path.clone(),
+        reason,
+    })?;
     let program_types = block.read("programTypes")?;
     crate::language::program_types::parse(&program_types).map_err(|reason| {
         LanguageDataError::Invalid {
@@ -251,6 +270,7 @@ pub fn load_language_data_for(
         program_types,
         protocols,
         themes: block.read_json_dir("themes")?,
+        language,
         core_version: block.pkg.version,
         root: block.pkg.root,
     })
@@ -273,7 +293,13 @@ pub fn load_operator_data_for(
     user_store: &Path,
     running: &str,
 ) -> Result<OperatorData, LanguageDataError> {
-    let block = read_language_block(STD_PACKAGE, start_dir, user_store, running)?;
+    let block = read_language_block(STD_PACKAGE, start_dir, user_store)?;
+    let language = installed_language(start_dir, user_store)?;
+    let path = block.package_json.clone();
+    require_language(STD_PACKAGE, &block.pkg.version, &block.block, &language, |reason| LanguageDataError::Invalid {
+        path: path.clone(),
+        reason,
+    })?;
     let operators = block.read("operators")?;
     let data = OperatorData {
         running: running.to_string(),
@@ -502,12 +528,11 @@ impl LanguageBlock {
 }
 
 #[cfg(feature = "std")]
-/// Finds `package` and returns its range-checked top-level `orbLanguage` block.
+/// Finds `package` and returns its top-level `orbLanguage` block; the caller checks the block's language.
 pub fn read_language_block(
     package: &'static str,
     start_dir: &Path,
     user_store: &Path,
-    running: &str,
 ) -> Result<LanguageBlock, LanguageDataError> {
     let pkg = find_npm_package(package, start_dir, user_store)
         .ok_or(LanguageDataError::NotInstalled { package })?;
@@ -527,31 +552,66 @@ pub fn read_language_block(
         .and_then(Value::as_object)
         .cloned()
         .ok_or_else(|| invalid("missing `orbLanguage` block".to_string()))?;
-    let range = block
-        .get("compiler")
-        .and_then(Value::as_str)
-        .ok_or_else(|| invalid("missing `orbLanguage.compiler` range".to_string()))?;
-
-    match compiler_satisfies(range, running) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(LanguageDataError::Incompatible {
-                package,
-                version: pkg.version,
-                range: range.to_string(),
-                running: running.to_string(),
-            })
-        }
-        Err(e) => {
-            return Err(invalid(format!(
-                "`orbLanguage.compiler` {range:?} is not a semver range: {e}"
-            )))
-        }
-    }
     Ok(LanguageBlock {
         pkg,
         block,
         package_json,
+    })
+}
+
+/// `language`, the version `@almadar/core` (at `core_version`) provides, once it is one this kernel reads
+/// ([`LANGUAGE_READS`]).
+pub fn core_language(
+    language: Option<&str>,
+    core_version: &str,
+    invalid: impl Fn(String) -> LanguageDataError,
+) -> Result<String, LanguageDataError> {
+    let language = language.ok_or_else(|| invalid("missing the language version core provides".to_string()))?;
+    semver::Version::parse(language)
+        .map_err(|e| invalid(format!("language version {language:?} is not a semver version: {e}")))?;
+    match language_satisfies(LANGUAGE_READS, language) {
+        Ok(true) => Ok(language.to_string()),
+        Ok(false) => Err(LanguageDataError::LanguageUnread {
+            package: CORE_PACKAGE,
+            version: core_version.to_string(),
+            language: language.to_string(),
+            reads: LANGUAGE_READS,
+        }),
+        Err(reason) => Err(invalid(reason)),
+    }
+}
+
+/// `block`'s declared `language` range (`package` at `version`) against the installed core's `language`.
+pub fn require_language(
+    package: &'static str,
+    version: &str,
+    block: &serde_json::Map<String, Value>,
+    language: &str,
+    invalid: impl Fn(String) -> LanguageDataError,
+) -> Result<(), LanguageDataError> {
+    let range = block
+        .get(LANGUAGE_RANGE_FIELD)
+        .and_then(Value::as_str)
+        .ok_or_else(|| invalid(format!("missing `{LANGUAGE_RANGE_FIELD}` range")))?;
+    match language_satisfies(range, language) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(LanguageDataError::Incompatible {
+            package,
+            version: version.to_string(),
+            range: range.to_string(),
+            language: language.to_string(),
+        }),
+        Err(reason) => Err(invalid(reason)),
+    }
+}
+
+#[cfg(feature = "std")]
+/// The language the installed `@almadar/core` provides, checked against [`LANGUAGE_READS`].
+pub fn installed_language(start_dir: &Path, user_store: &Path) -> Result<String, LanguageDataError> {
+    let core = read_language_block(CORE_PACKAGE, start_dir, user_store)?;
+    let path = core.package_json.clone();
+    core_language(core.block.get("version").and_then(Value::as_str), &core.pkg.version, |reason| {
+        LanguageDataError::Invalid { path: path.clone(), reason }
     })
 }
 
@@ -631,11 +691,11 @@ pub fn preflight() -> Result<(), LanguageDataError> {
 /// Installs the language data for a host that cannot walk `node_modules`
 /// (wasm): the same data the native loaders read, handed over as one JSON
 /// bundle the host assembles from ITS installed packages —
-/// `{ core: { version, compiler, patterns, componentMapping, eventContracts,
-/// services, bindingRules, programTypes, protocols, themes: [ThemeDefinition…] }, std: { version, compiler,
-/// operators }, vocabularies: [{ package, version, compiler, vocabulary }] }`.
-/// The same checks apply: each `compiler` range must accept this binary and the
-/// language packs must be unambiguous; the evaluator crate's wrapper also
+/// `{ core: { version, language, patterns, componentMapping, eventContracts,
+/// services, bindingRules, programTypes, protocols, themes: [ThemeDefinition…] }, std: { version, language,
+/// operators }, vocabularies: [{ package, version, language, vocabulary }] }`.
+/// The same checks apply: core's `language` must be one this kernel reads, each other `language` range must accept
+/// it, and the language packs must be unambiguous; the evaluator crate's wrapper also
 /// certifies the operators. The first install wins; a later call leaves the installed data
 /// unchanged.
 pub fn install_language_bundle(bundle: &str) -> Result<(), LanguageDataError> {
@@ -647,8 +707,8 @@ pub fn install_language_bundle(bundle: &str) -> Result<(), LanguageDataError> {
 }
 
 /// The installed language as the bundle [`install_language_bundle`] takes: the Rust twin of `readLanguageBundle`, for a
-/// host with no `node_modules` (a generated Python app) that ships the language beside its program. Each `compiler`
-/// range is exactly this binary, since the data was just checked against it.
+/// host with no `node_modules` (a generated Python app) that ships the language beside its program. std's `language`
+/// range is exactly the language core provides, since the data was just checked against it.
 pub fn language_bundle_json() -> Result<String, LanguageDataError> {
     let language = language_data()?;
     let operators = operator_data()?;
@@ -666,7 +726,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
         .iter()
         .map(|theme| part("themes", theme))
         .collect::<Result<Vec<_>, _>>()?;
-    let compiler = format!("={}", running_version());
+    let exact = format!("={}", language.language);
     let vocabularies = packs
         .iter()
         .map(|pack| {
@@ -675,7 +735,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
                     serde_json::json!({
                         "package": pack.package,
                         "version": pack.version,
-                        "compiler": pack.compiler,
+                        "language": pack.language,
                         "vocabulary": vocabulary,
                     })
                 })
@@ -685,7 +745,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
     let bundle = serde_json::json!({
         "core": {
             "version": language.core_version,
-            "compiler": compiler,
+            "language": language.language,
             "patterns": part("patterns", &language.patterns)?,
             "componentMapping": part("componentMapping", &language.component_mapping)?,
             "eventContracts": part("eventContracts", &language.event_contracts)?,
@@ -697,7 +757,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
         },
         "std": {
             "version": operators.std_version,
-            "compiler": compiler,
+            "language": exact,
             "operators": part("operators", &operators.operators)?,
         },
         "vocabularies": vocabularies,
@@ -739,29 +799,13 @@ pub fn parse_language_bundle(
             .map(str::to_string)
             .ok_or_else(|| invalid(format!("missing `{part}.version`")))
     };
-    let check = |package: &'static str, obj: &serde_json::Map<String, Value>, part: &str| {
-        let range = obj
-            .get("compiler")
-            .and_then(Value::as_str)
-            .ok_or_else(|| invalid(format!("missing `{part}.compiler` range")))?;
-        match compiler_satisfies(range, running) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(LanguageDataError::Incompatible {
-                package,
-                version: version(obj, part)?,
-                range: range.to_string(),
-                running: running.to_string(),
-            }),
-            Err(e) => Err(invalid(format!(
-                "`{part}.compiler` {range:?} is not a semver range: {e}"
-            ))),
-        }
-    };
-
     let core = part("core")?;
     let std = part("std")?;
-    check(CORE_PACKAGE, core, "core")?;
-    check(STD_PACKAGE, std, "std")?;
+    let core_version = version(core, "core")?;
+    let language = core_language(core.get("language").and_then(Value::as_str), &core_version, |reason| {
+        invalid(format!("`core.language`: {reason}"))
+    })?;
+    require_language(STD_PACKAGE, &version(std, "std")?, std, &language, |reason| invalid(format!("`std`: {reason}")))?;
     let themes = core
         .get("themes")
         .and_then(Value::as_array)
@@ -778,7 +822,8 @@ pub fn parse_language_bundle(
     crate::protocols::parse(&protocols)
         .map_err(|reason| invalid(format!("`core.protocols`: {reason}")))?;
     let language = LanguageData {
-        core_version: version(core, "core")?,
+        language,
+        core_version,
         root: PathBuf::new(),
         patterns: text(core, "patterns", "core")?,
         component_mapping: text(core, "componentMapping", "core")?,
@@ -806,15 +851,12 @@ pub fn parse_language_bundle(
             )
         })?
         .iter()
-        .map(|entry| bundle_pack(entry, running).map_err(&invalid))
+        .map(|entry| bundle_pack(entry, &language.language).map_err(&invalid))
         .collect::<Result<Vec<_>, _>>()?;
     Ok((language, ops, packs))
 }
 
-pub fn bundle_pack(
-    entry: &Value,
-    running: &str,
-) -> Result<crate::i18n::packs::VocabularyPack, String> {
+pub fn bundle_pack(entry: &Value, language: &str) -> Result<crate::i18n::packs::VocabularyPack, String> {
     let text = |field: &str| {
         entry
             .get(field)
@@ -823,19 +865,15 @@ pub fn bundle_pack(
             .ok_or_else(|| format!("a `vocabularies` entry is missing `{field}`"))
     };
     let package = text("package")?;
-    let compiler = text("compiler")?;
-    match compiler_satisfies(&compiler, running) {
+    let range = text(LANGUAGE_RANGE_FIELD)?;
+    match language_satisfies(&range, language) {
         Ok(true) => {}
         Ok(false) => {
             return Err(format!(
-                "language pack {package} requires orb {compiler}, but this orb is {running}"
+                "language pack {package} needs language {range}, but the installed {CORE_PACKAGE} provides language {language}"
             ))
         }
-        Err(e) => {
-            return Err(format!(
-                "{package}: `compiler` {compiler:?} is not a semver range: {e}"
-            ))
-        }
+        Err(reason) => return Err(format!("{package}: {reason}")),
     }
     let definition = entry
         .get("vocabulary")
@@ -845,7 +883,7 @@ pub fn bundle_pack(
     Ok(crate::i18n::packs::VocabularyPack {
         package,
         version: text("version")?,
-        compiler,
+        language: range,
         definition,
     })
 }

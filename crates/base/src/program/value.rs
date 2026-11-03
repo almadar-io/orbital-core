@@ -227,15 +227,19 @@ impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
 }
 
 /// Runtime value resulting from S-expression evaluation
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub enum Value {
     /// Null/undefined value
     #[default]
     Null,
     /// Boolean value
     Bool(bool),
-    /// Numeric value (all numbers are f64 for simplicity)
+    /// A floating-point number
     Number(f64),
+    /// An exact 64-bit integer (EXEC-EVAL-11)
+    Int(i64),
+    /// A byte string; on the wire and at rest it is standard padded base64 text (EXEC-EVAL-11)
+    Bytes(Shared<Vec<u8>>),
     /// String value
     String(Shared<String>),
     /// Array of values
@@ -247,6 +251,59 @@ pub enum Value {
     /// A record only the kernel can make: readable like an object, never built from a literal, a parse, a cast or a
     /// wire payload (EXEC-IDENTITY-2).
     Sealed(Arc<Sealed>),
+}
+
+/// The largest magnitude below which every integer is exactly a float.
+pub const MAX_EXACT_INT: i64 = 1 << 53;
+
+/// `f` as the int it exactly is, if it is one.
+pub fn exact_int(f: f64) -> Option<i64> {
+    (f.fract() == 0.0 && f.abs() <= MAX_EXACT_INT as f64).then_some(f as i64)
+}
+
+/// `i` as the float it exactly is, if it is one.
+pub fn exact_float(i: i64) -> Option<f64> {
+    (i.unsigned_abs() <= MAX_EXACT_INT as u64).then_some(i as f64)
+}
+
+/// The numeric order of an int and a float, exact for every pair; `None` for NaN.
+fn cmp_int_float(i: i64, f: f64) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering;
+    if f.is_nan() {
+        return None;
+    }
+    if f >= 9_223_372_036_854_775_808.0 {
+        return Some(Ordering::Less);
+    }
+    if f < -9_223_372_036_854_775_808.0 {
+        return Some(Ordering::Greater);
+    }
+    let whole = f.trunc();
+    match i.cmp(&(whole as i64)) {
+        Ordering::Equal => 0.0f64.partial_cmp(&(f - whole)),
+        other => Some(other),
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Null, Value::Null) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Int(i), Value::Number(f)) | (Value::Number(f), Value::Int(i)) => {
+                cmp_int_float(*i, *f) == Some(std::cmp::Ordering::Equal)
+            }
+            (Value::Bytes(a), Value::Bytes(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            (Value::Array(a), Value::Array(b)) => a == b,
+            (Value::Object(a), Value::Object(b)) => a == b,
+            (Value::Lambda(a), Value::Lambda(b)) => a == b,
+            (Value::Sealed(a), Value::Sealed(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// The record of a [`Value::Sealed`] and the name of the sealed type it is (`Verified`).
@@ -283,13 +340,15 @@ impl Serialize for Value {
             Value::Null => serializer.serialize_none(),
             Value::Bool(b) => serializer.serialize_bool(*b),
             Value::Number(n) => serializer.serialize_f64(*n),
+            Value::Int(i) => serializer.serialize_i64(*i),
+            Value::Bytes(b) => serializer.serialize_str(&crate::codec::base64_encode(b)),
             Value::String(s) => serializer.serialize_str(s),
             Value::Array(arr) => arr.serialize(serializer),
             Value::Object(obj) => obj.serialize(serializer),
             Value::Sealed(sealed) => sealed.fields.serialize(serializer),
             Value::Lambda(_) => {
                 // Serialize lambda as ["fn", params, body]
-                let sexpr: SExpression = self.clone().into();
+                let sexpr = SExpression::try_from(self.clone()).map_err(serde::ser::Error::custom)?;
                 sexpr.serialize(serializer)
             }
         }
@@ -334,11 +393,11 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     }
 
     fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Value, E> {
-        Ok(Value::Number(value as f64))
+        Ok(Value::Int(value))
     }
 
     fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Value, E> {
-        Ok(Value::Number(value as f64))
+        Ok(i64::try_from(value).map_or(Value::Number(value as f64), Value::Int))
     }
 
     fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Value, E> {
@@ -435,6 +494,10 @@ impl Value {
         Value::String(text.into())
     }
 
+    pub fn bytes(data: impl Into<Shared<Vec<u8>>>) -> Value {
+        Value::Bytes(data.into())
+    }
+
     /// A sealed record of the type `kind`. Only a kernel operator calls this; no wire form, parse or cast reaches it.
     pub fn sealed(kind: &'static str, fields: ValueMap) -> Value {
         Value::Sealed(Arc::new(Sealed { kind, fields }))
@@ -458,10 +521,32 @@ impl Value {
         }
     }
 
-    /// Try to get as number
+    /// This value as a float: a number, or an int promoted to the nearest float (EXEC-EVAL-11).
     pub fn as_number(&self) -> Option<f64> {
         match self {
             Value::Number(n) => Some(*n),
+            Value::Int(i) => Some(*i as f64),
+            _ => None,
+        }
+    }
+
+    /// This value as an int: an int, or a number that is exactly one.
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            Value::Int(i) => Some(*i),
+            Value::Number(n) => exact_int(*n),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a number or an int.
+    pub fn is_numeric(&self) -> bool {
+        matches!(self, Value::Number(_) | Value::Int(_))
+    }
+
+    pub fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Value::Bytes(b) => Some(b.as_slice()),
             _ => None,
         }
     }
@@ -480,6 +565,8 @@ impl Value {
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => crate::str_utils::js_number_string(*n),
+            Value::Int(i) => i.to_string(),
+            Value::Bytes(b) => crate::codec::base64_encode(b),
             Value::String(s) => s.clone().into_inner(),
             Value::Array(_) | Value::Object(_) | Value::Sealed(_) => {
                 crate::json_value::js_json_string(self)
@@ -674,6 +761,8 @@ impl Value {
             Value::Null => "null",
             Value::Bool(_) => "boolean",
             Value::Number(_) => "number",
+            Value::Int(_) => "int",
+            Value::Bytes(_) => "bytes",
             Value::String(_) => "string",
             Value::Array(_) => "array",
             Value::Object(_) => "object",
@@ -712,6 +801,28 @@ impl Value {
         self.as_number().ok_or_else(|| self.kind_error("number"))
     }
 
+    /// This value as an int, or a type mismatch: a number reads as an int only when it is exactly one.
+    pub fn int(&self) -> Result<i64, crate::error::EvalError> {
+        self.as_int().ok_or_else(|| self.kind_error("int"))
+    }
+
+    /// This value as bytes, or a type mismatch: text is never bytes.
+    pub fn byte_string(&self) -> Result<&[u8], crate::error::EvalError> {
+        self.as_bytes().ok_or_else(|| self.kind_error("bytes"))
+    }
+
+    /// The bytes a `bytes`-typed argument holds: a bytes value, or the standard padded base64 text a `bytes`
+    /// literal, default or stored row is written in (EXEC-EVAL-11). Any other value is a type mismatch.
+    pub fn bytes_view(&self) -> Result<std::borrow::Cow<'_, [u8]>, crate::error::EvalError> {
+        match self {
+            Value::Bytes(b) => Ok(std::borrow::Cow::Borrowed(b.as_slice())),
+            Value::String(text) => crate::codec::base64_decode(text).map(std::borrow::Cow::Owned).map_err(|err| {
+                crate::error::EvalError::InvalidArgument(format!("bytes: not standard padded base64: {err}"))
+            }),
+            other => Err(other.kind_error("bytes")),
+        }
+    }
+
     /// This value as text, or a type mismatch: no other kind reads as text.
     pub fn text(&self) -> Result<&str, crate::error::EvalError> {
         self.as_str().ok_or_else(|| self.kind_error("string"))
@@ -725,9 +836,15 @@ impl Value {
     /// The order of two values of one orderable kind (number, string, boolean); any other pair is a type mismatch.
     pub fn compare(&self, other: &Value) -> Result<std::cmp::Ordering, crate::error::EvalError> {
         match (self, other) {
-            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b).ok_or_else(|| {
-                crate::error::EvalError::InvalidArgument("NaN has no order".to_string())
-            }),
+            (Value::Number(a), Value::Number(b)) => {
+                a.partial_cmp(b).ok_or_else(|| crate::error::EvalError::InvalidArgument("NaN has no order".to_string()))
+            }
+            (Value::Int(a), Value::Int(b)) => Ok(a.cmp(b)),
+            (Value::Int(i), Value::Number(f)) => cmp_int_float(*i, *f)
+                .ok_or_else(|| crate::error::EvalError::InvalidArgument("NaN has no order".to_string())),
+            (Value::Number(f), Value::Int(i)) => cmp_int_float(*i, *f)
+                .map(std::cmp::Ordering::reverse)
+                .ok_or_else(|| crate::error::EvalError::InvalidArgument("NaN has no order".to_string())),
             (Value::String(a), Value::String(b)) => Ok(a.cmp(b)),
             (Value::Bool(a), Value::Bool(b)) => Ok(a.cmp(b)),
             (a, b) => Err(a.kind_error(b.type_name())),
@@ -747,6 +864,8 @@ impl fmt::Display for Value {
                     write!(f, "{}", n)
                 }
             }
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Bytes(b) => write!(f, "{}", crate::codec::base64_encode(b)),
             Value::String(s) => write!(f, "{}", s),
             Value::Array(arr) => {
                 write!(f, "[")?;
@@ -797,25 +916,30 @@ impl From<SExpression> for Value {
     }
 }
 
-// Conversion from Value to SExpression
-impl From<Value> for SExpression {
-    fn from(value: Value) -> Self {
-        match value {
+// Conversion from Value to SExpression: an int becomes a literal only while it is exactly a float, so a value is
+// never rounded into code; bytes become their wire text, the form a `bytes` literal is written in.
+impl TryFrom<Value> for SExpression {
+    type Error = crate::error::EvalError;
+
+    fn try_from(value: Value) -> Result<Self, Self::Error> {
+        Ok(match value {
             Value::Null => SExpression::Null,
             Value::Bool(b) => SExpression::Bool(b),
             Value::Number(n) => SExpression::Number(n),
+            Value::Int(i) => SExpression::Number(exact_float(i).ok_or_else(|| {
+                crate::error::EvalError::InvalidArgument(format!("the int {i} is beyond 2^53 and has no exact literal"))
+            })?),
+            Value::Bytes(b) => SExpression::string(crate::codec::base64_encode(&b)),
             Value::String(s) => SExpression::string(s.into_inner()),
             Value::Array(arr) => {
-                SExpression::Array(arr.into_iter().map(SExpression::from).collect())
+                SExpression::Array(arr.into_iter().map(SExpression::try_from).collect::<Result<_, _>>()?)
             }
             Value::Object(obj) => SExpression::object(
                 obj.into_iter()
-                    .map(|(k, v)| (k.into(), SExpression::from(v)))
-                    .collect(),
+                    .map(|(k, v)| Ok((k.into(), SExpression::try_from(v)?)))
+                    .collect::<Result<_, Self::Error>>()?,
             ),
-            Value::Sealed(sealed) => {
-                SExpression::from(Value::object(Arc::unwrap_or_clone(sealed).fields))
-            }
+            Value::Sealed(sealed) => SExpression::try_from(Value::object(Arc::unwrap_or_clone(sealed).fields))?,
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
             Value::Lambda(l) => {
                 let Lambda { params, body } = Arc::unwrap_or_clone(l);
@@ -830,7 +954,7 @@ impl From<Value> for SExpression {
                 arr.push((*body).clone());
                 SExpression::Array(arr.into())
             }
-        }
+        })
     }
 }
 
@@ -894,13 +1018,13 @@ impl From<bool> for Value {
 
 impl From<i32> for Value {
     fn from(n: i32) -> Self {
-        Value::Number(n as f64)
+        Value::Int(n.into())
     }
 }
 
 impl From<i64> for Value {
     fn from(n: i64) -> Self {
-        Value::Number(n as f64)
+        Value::Int(n)
     }
 }
 
@@ -950,14 +1074,8 @@ mod tests {
         let a = Value::lambda(vec!["x".into()], body.clone());
         let b = Value::lambda(vec!["x".into()], body.clone());
         assert_eq!(a, b);
-        assert_ne!(
-            a,
-            Value::lambda(vec!["y".into()], body.clone()),
-            "control: params differ"
-        );
-        let SExpression::Array(arr) = SExpression::from(a) else {
-            panic!("fn form is an array")
-        };
+        assert_ne!(a, Value::lambda(vec!["y".into()], body.clone()), "control: params differ");
+        let Ok(SExpression::Array(arr)) = SExpression::try_from(a) else { panic!("fn form is an array") };
         assert_eq!(arr.len(), 3);
     }
 
@@ -1397,6 +1515,75 @@ mod tests {
             "the other holder still reads the old data"
         );
         assert_eq!(*held, vec![1, 2, 3, 4]);
+    }
+
+    // EXEC-EVAL-11
+    const BEYOND_EXACT: i64 = (1i64 << 53) + 1;
+
+    #[test]
+    fn an_int_equals_a_number_only_when_the_number_is_exactly_it() {
+        assert_eq!(Value::Int(5), Value::Number(5.0));
+        assert_eq!(Value::Number(5.0), Value::Int(5));
+        assert_ne!(Value::Int(5), Value::Number(5.5), "control: a fraction is a different number");
+        assert_ne!(Value::Int(BEYOND_EXACT), Value::Number(BEYOND_EXACT as f64), "the rounded float is not the int");
+        assert_ne!(Value::Int(1), Value::string("1"), "control: text is never a number");
+    }
+
+    #[test]
+    fn bytes_equal_bytewise_and_never_equal_their_text() {
+        assert_eq!(Value::bytes(vec![1, 2]), Value::bytes(vec![1, 2]));
+        assert_ne!(Value::bytes(vec![1, 2]), Value::bytes(vec![1, 3]), "control: one byte differs");
+        assert_ne!(Value::bytes(b"AQI=".to_vec()), Value::string("AQI="));
+        assert_ne!(Value::bytes(vec![1, 2]), Value::string("AQI="), "the wire text of bytes is not the bytes");
+    }
+
+    #[test]
+    fn ints_and_numbers_order_numerically() {
+        assert_eq!(Value::Int(3).compare(&Value::Number(3.5)).ok(), Some(std::cmp::Ordering::Less));
+        assert_eq!(Value::Number(3.0).compare(&Value::Int(3)).ok(), Some(std::cmp::Ordering::Equal));
+        assert_eq!(Value::Int(i64::MAX).compare(&Value::Number(9.2e18)).ok(), Some(std::cmp::Ordering::Greater));
+        assert_eq!(Value::Int(BEYOND_EXACT).compare(&Value::Number((1u64 << 53) as f64)).ok(), Some(std::cmp::Ordering::Greater));
+        assert!(Value::Int(1).compare(&Value::Number(f64::NAN)).is_err(), "NaN has no order");
+        assert!(Value::bytes(vec![1]).compare(&Value::bytes(vec![2])).is_err(), "control: bytes are not ordered");
+    }
+
+    #[test]
+    fn json_integers_read_as_ints_and_fractions_as_numbers() {
+        let v: Value = serde_json::from_str(r#"{"i": 5, "f": 5.5, "w": 5.0, "big": 1152921504606846976}"#).unwrap();
+        assert!(matches!(v["i"], Value::Int(5)));
+        assert!(matches!(v["f"], Value::Number(n) if n == 5.5));
+        assert!(matches!(v["w"], Value::Number(n) if n == 5.0), "a written fraction stays a number");
+        assert!(matches!(v["big"], Value::Int(1152921504606846976)), "beyond 2^53 the int is exact");
+    }
+
+    #[test]
+    fn ints_write_as_json_integers_and_bytes_as_base64_text() {
+        assert_eq!(serde_json::to_string(&Value::Int(1152921504606846977)).unwrap(), "1152921504606846977");
+        assert_eq!(serde_json::to_string(&Value::bytes(vec![1, 2])).unwrap(), r#""AQI=""#);
+        assert_eq!(Value::Int(-7).to_string_value(), "-7");
+        assert_eq!(Value::bytes(vec![1, 2]).to_string_value(), "AQI=");
+        assert_eq!(crate::json_value::value_json_string(&Value::Int(1152921504606846977), false), "1152921504606846977");
+    }
+
+    #[test]
+    fn an_int_reads_as_a_number_by_promotion_to_the_nearest_float() {
+        assert_eq!(Value::Int(42).as_number(), Some(42.0));
+        assert_eq!(Value::Int(BEYOND_EXACT).as_number(), Some(BEYOND_EXACT as f64));
+        assert!(SExpression::try_from(Value::Int(BEYOND_EXACT)).is_err(), "control: represented as code it is never rounded");
+        assert_eq!(Value::Number(42.0).as_int(), Some(42));
+        assert_eq!(Value::Number(42.5).as_int(), None, "control: a fraction is not an int");
+        assert_eq!(Value::Int(BEYOND_EXACT).as_int(), Some(BEYOND_EXACT));
+        assert_eq!(Value::bytes(vec![9]).as_bytes(), Some(&[9u8][..]));
+        assert_eq!(Value::string("CQ==").as_bytes(), None, "control: text is not bytes");
+        assert_eq!(Value::Int(1).type_name(), "int");
+        assert_eq!(Value::bytes(vec![]).type_name(), "bytes");
+    }
+
+    #[test]
+    fn an_int_becomes_code_only_when_exact_and_bytes_as_their_wire_text() {
+        assert_eq!(SExpression::try_from(Value::Int(5)).ok(), Some(SExpression::Number(5.0)));
+        assert!(SExpression::try_from(Value::Int(BEYOND_EXACT)).is_err(), "never rounded into a literal");
+        assert_eq!(SExpression::try_from(Value::bytes(vec![1, 2])).ok(), Some(SExpression::string("AQI=")));
     }
 
     #[test]

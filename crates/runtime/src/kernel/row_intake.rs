@@ -198,4 +198,15 @@ mod shape_tests {
         ]));
         assert!(entity_struct(&shaped).is_ok(), "control: a declared record has a shape");
     }
+
+    #[test]
+    fn a_width_field_refuses_a_row_outside_its_range() {
+        let pixel = entity(serde_json::json!([{ "name": "id", "type": "string" }, { "name": "r", "type": "u8" }]));
+        let shape = DeclaredShape { version: None, name: None, ty: entity_struct(&pixel).unwrap(), named: Default::default() };
+        let row = |r: i64| Value::object(orbital_core_base::value::ValueMap::from_iter([("id".into(), Value::string("p".to_string())), ("r".into(), Value::Int(r))]));
+        assert!(row_misfit_against("Pixel", &shape, &row(200)).is_none());
+        let misfit = row_misfit_against("Pixel", &shape, &row(300)).expect("300 is no u8");
+        assert!(misfit.contains("Pixel.r"), "{misfit}");
+        assert!(row_misfit_against("Pixel", &shape, &row(-1)).is_some(), "control: a negative is no u8");
+    }
 }

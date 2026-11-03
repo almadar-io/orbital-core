@@ -59,17 +59,17 @@ fn random_int_with_max_below_min_answers_null_not_a_panic() {
     for call in [r#"["math/randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#] {
         assert_eq!(eval(call), Value::Null, "{call}");
     }
-    assert!(eval_err(r#"["math/randomInt", 3, null]"#).contains("expected number, got null"));
+    assert!(eval_err(r#"["math/randomInt", 3, null]"#).contains("got null"));
 }
 
 #[test]
 fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
     assert_eq!(eval(r#"["math/randomInt", 3, 3]"#), Value::Number(3.0));
     for _ in 0..20 {
-        let Value::Number(n) = eval(r#"["math/randomInt", -2, 2]"#) else {
-            panic!("not a number")
+        let Value::Int(n) = eval(r#"["math/randomInt", -2, 2]"#) else {
+            panic!("not an int")
         };
-        assert!((-2.0..=2.0).contains(&n) && n.fract() == 0.0, "{n}");
+        assert!((-2..=2).contains(&n), "{n}");
     }
 }
 
@@ -392,6 +392,25 @@ fn as_call_key_is_the_identity_on_a_non_empty_string() {
         eval(r#"["as", "search", "CallKey"]"#),
         Value::string("search")
     );
+}
+
+#[test]
+fn exec_eval_12_as_a_width_answers_the_value_in_range_and_null_outside_it() {
+    assert_eq!(eval(r#"["as", 255, "u8"]"#), Value::Int(255));
+    assert_eq!(eval(r#"["as", 256, "u8"]"#), Value::Null);
+    assert_eq!(eval(r#"["as", -1, "u8"]"#), Value::Null);
+    assert_eq!(eval(r#"["as", -128, "i8"]"#), Value::Int(-128));
+    assert_eq!(eval(r#"["as", 1.5, "i32"]"#), Value::Null, "control: a fraction is no integer width");
+    assert_eq!(eval(r#"["as", 0.5, "f32"]"#), Value::Number(0.5));
+    assert_eq!(eval(r#"["as", 1e39, "f32"]"#), Value::Null);
+}
+
+#[test]
+fn as_int_and_float_narrow_like_any_declared_type() {
+    assert_eq!(eval(r#"["as", 3, "int"]"#), Value::Int(3));
+    assert_eq!(eval(r#"["as", 3.5, "int"]"#), Value::Null);
+    assert_eq!(eval(r#"["as", 3.5, "float"]"#), Value::Number(3.5));
+    assert_eq!(eval(r#"["as", "3", "int"]"#), Value::Null, "control: text is no int");
 }
 
 #[test]
@@ -2645,8 +2664,8 @@ fn test_math_random() {
 #[test]
 fn test_math_random_int() {
     let result = eval(r#"["math/randomInt", 1, 10]"#);
-    if let Value::Number(n) = result {
-        assert!((1.0..=10.0).contains(&n));
+    if let Value::Int(n) = result {
+        assert!((1..=10).contains(&n));
     }
 }
 
@@ -4008,4 +4027,88 @@ fn as_instant_datetime_date_validate_the_iso_forms_exactly() {
         assert_eq!(narrowed, expected, "{text} as {target}");
     }
     assert_eq!(eval(r#"["as", 5, "instant"]"#), Value::Null);
+}
+
+fn int_ctx(pairs: &[(&str, Value)]) -> BindingContext {
+    let mut builder = crate::evaluator::context::BindingContextBuilder::new();
+    for (name, value) in pairs {
+        builder = builder.local(*name, value.clone());
+    }
+    builder.build()
+}
+
+#[test]
+fn int_arithmetic_stays_int_and_an_overflow_is_an_error_never_a_wrap() {
+    let ctx = int_ctx(&[("a", Value::Int(1 << 60)), ("b", Value::Int(2)), ("max", Value::Int(i64::MAX)), ("f", Value::Number(0.5))]);
+    assert!(matches!(eval_with_ctx(r#"["+", "@a", "@b"]"#, &ctx), Value::Int(n) if n == (1 << 60) + 2));
+    assert!(matches!(eval_with_ctx(r#"["-", "@a", "@b"]"#, &ctx), Value::Int(n) if n == (1 << 60) - 2));
+    assert!(matches!(eval_with_ctx(r#"["*", "@b", "@b"]"#, &ctx), Value::Int(4)));
+    assert!(matches!(eval_with_ctx(r#"["%", "@b", 7]"#, &ctx), Value::Number(n) if n == 2.0), "control: an int with a number literal is a number");
+    assert!(matches!(eval_with_ctx(r#"["%", "@max", "@b"]"#, &ctx), Value::Int(1)));
+    assert!(matches!(eval_with_ctx(r#"["-", "@b"]"#, &ctx), Value::Int(-2)));
+    assert!(matches!(eval_with_ctx(r#"["math/abs", ["-", "@b"]]"#, &ctx), Value::Int(2)));
+    for overflow in [r#"["+", "@max", "@b"]"#, r#"["*", "@max", "@b"]"#] {
+        let expr: SExpression = serde_json::from_str(overflow).unwrap();
+        let outcome = Evaluator::new().evaluate(&expr, &ctx);
+        assert!(outcome.unwrap_err().to_string().contains("int overflow"), "{overflow}");
+    }
+    assert!(matches!(eval_with_ctx(r#"["/", "@b", "@b"]"#, &ctx), Value::Number(n) if n == 1.0), "division is always a number");
+    assert!(matches!(eval_with_ctx(r#"["+", "@b", "@f"]"#, &ctx), Value::Number(n) if n == 2.5), "int with number is a number");
+}
+
+#[test]
+fn an_int_beyond_two_to_the_fifty_third_mixed_with_a_number_is_promoted_to_a_number() {
+    let ctx = int_ctx(&[("big", Value::Int(1 << 60)), ("one", Value::Int(1)), ("f", Value::Number(0.5))]);
+    assert!(matches!(eval_with_ctx(r#"["*", "@big", "@f"]"#, &ctx), Value::Number(n) if n == (1u64 << 59) as f64));
+    assert!(
+        matches!(eval_with_ctx(r#"["+", "@big", "@one"]"#, &ctx), Value::Int(n) if n == (1 << 60) + 1),
+        "control: int with int stays exact"
+    );
+}
+
+#[test]
+fn integer_rounding_operators_answer_ints_and_a_fraction_control_stays_a_number() {
+    assert!(matches!(eval(r#"["math/floor", 3.7]"#), Value::Int(3)));
+    assert!(matches!(eval(r#"["math/ceil", 3.2]"#), Value::Int(4)));
+    assert!(matches!(eval(r#"["math/round", 3.5]"#), Value::Int(4)));
+    assert!(matches!(eval(r#"["math/round", 3.14159, 2]"#), Value::Number(_)), "control: decimals keep a number");
+    assert!(matches!(eval(r#"["math/floor", 1e300]"#), Value::Number(_)), "control: beyond i64 stays a number");
+    assert!(
+        matches!(eval(r#"["math/round", 6.848677059753935e18]"#), Value::Number(_)),
+        "a float beyond 2^53 is already whole but not exactly an int, so it stays a number"
+    );
+    assert!(matches!(eval(r#"["math/floor", 9007199254740992.0]"#), Value::Int(9_007_199_254_740_992)), "2^53 is exact");
+}
+
+#[test]
+fn min_max_and_sum_over_ints_stay_ints_and_mixed_are_numbers() {
+    let ctx = int_ctx(&[("a", Value::Int(3)), ("b", Value::Int(9))]);
+    assert!(matches!(eval_with_ctx(r#"["math/min", "@a", "@b"]"#, &ctx), Value::Int(3)));
+    assert!(matches!(eval_with_ctx(r#"["math/max", "@a", "@b"]"#, &ctx), Value::Int(9)));
+    assert!(matches!(eval_with_ctx(r#"["math/max", "@a", 4.5]"#, &ctx), Value::Number(n) if n == 4.5));
+    let ctx = int_ctx(&[("xs", Value::array(vec![Value::Int(1), Value::Int(2)]))]);
+    assert!(matches!(eval_with_ctx(r#"["array/sum", "@xs"]"#, &ctx), Value::Int(3)));
+    assert!(matches!(eval_with_ctx(r#"["array/max", "@xs"]"#, &ctx), Value::Int(2)));
+    assert!(matches!(eval_with_ctx(r#"["array/len", "@xs"]"#, &ctx), Value::Int(2)));
+    assert!(matches!(eval_with_ctx(r#"["array/sum", [1.5, 2]]"#, &ctx), Value::Number(n) if n == 3.5));
+}
+
+#[test]
+fn deep_equals_treats_an_int_and_an_equal_number_as_equal_and_bytes_bytewise() {
+    use crate::evaluator::operators::util::deep_equals;
+    assert!(deep_equals(&Value::Int(5), &Value::Number(5.0)));
+    assert!(!deep_equals(&Value::Int(5), &Value::Number(5.5)), "control: a fraction differs");
+    assert!(deep_equals(&Value::array(vec![Value::Int(1)]), &Value::array(vec![Value::Number(1.0)])));
+    assert!(deep_equals(&Value::bytes(vec![1, 2]), &Value::bytes(vec![1, 2])));
+    assert!(!deep_equals(&Value::bytes(vec![1, 2]), &Value::bytes(vec![1, 3])));
+    assert!(!deep_equals(&Value::bytes(vec![1, 2]), &Value::string("AQI=")), "control: the wire text is not the bytes");
+}
+
+#[test]
+fn json_integers_parse_to_ints_and_decimals_to_numbers() {
+    let parsed = eval(r#"["json/parse", "{\"a\":5,\"b\":5.5,\"c\":1152921504606846977}", "Row"]"#);
+    let fields = parsed.as_object().unwrap();
+    assert!(matches!(fields.get("a"), Some(Value::Int(5))));
+    assert!(matches!(fields.get("b"), Some(Value::Number(_))));
+    assert!(matches!(fields.get("c"), Some(Value::Int(1152921504606846977))));
 }

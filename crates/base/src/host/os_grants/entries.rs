@@ -111,6 +111,37 @@ impl OsGrants {
                 });
             }
         }
+        for (i, g) in self.mem.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("mem[{i}]"),
+                    label: format!("mem {:?} {}", g.target, kind.name()),
+                    grants: OsGrants {
+                        mem: vec![MemGrant { target: g.target.clone(), kinds: vec![*kind] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, g) in self.kernel.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("kernel[{i}]"),
+                    label: format!("kernel {:?} {}", g.target, kind.name()),
+                    grants: OsGrants {
+                        kernel: vec![KernelGrant { target: g.target.clone(), kinds: vec![*kind] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
+        for (i, g) in self.ffi.iter().enumerate() {
+            out.push(GrantAtom {
+                path: format!("ffi[{i}]"),
+                label: format!("ffi {:?} {}", g.library, g.symbol),
+                grants: OsGrants { ffi: vec![g.clone()], ..OsGrants::default() },
+            });
+        }
         for (store, modes) in &self.kv {
             for mode in modes {
                 out.push(GrantAtom {
@@ -253,6 +284,56 @@ impl OsGrants {
                     format!("dev[{i}]"),
                     format!("{:?} grants no kind", g.target),
                 );
+            }
+        }
+        for (i, g) in self.mem.iter().enumerate() {
+            if mem_target(&g.target).is_none() {
+                problem(
+                    format!("mem[{i}]"),
+                    format!("{:?} is not `arena:<maxBytes>` or `shared:<maxBytes>` with a positive decimal byte count", g.target),
+                );
+            }
+            if g.kinds.is_empty() {
+                problem(format!("mem[{i}]"), format!("{:?} grants no kind", g.target));
+            }
+            if matches!(mem_target(&g.target), Some(MemTarget::Arena { .. })) && g.kinds.contains(&MemKind::Atomic) {
+                problem(format!("mem[{i}]"), format!("{:?} is an `arena:` target: `atomic` needs a `shared:<maxBytes>` target", g.target));
+            }
+        }
+        for (i, g) in self.kernel.iter().enumerate() {
+            match kernel_target(&g.target) {
+                None => problem(
+                    format!("kernel[{i}]"),
+                    format!(
+                        "{:?} is not `apply:<operator or namespace/*>`, `queue`, `introspect` or `guest`",
+                        g.target
+                    ),
+                ),
+                Some(target) => {
+                    if let Some(kind) = g.kinds.iter().find(|k| **k != target.kind()) {
+                        problem(
+                            format!("kernel[{i}]"),
+                            format!("{:?} grants `{}`, not `{}`", g.target, target.kind().name(), kind.name()),
+                        );
+                    }
+                }
+            }
+            if g.kinds.is_empty() {
+                problem(format!("kernel[{i}]"), format!("{:?} grants no kind", g.target));
+            }
+        }
+        for (i, g) in self.ffi.iter().enumerate() {
+            if g.library.is_empty() {
+                problem(format!("ffi[{i}]"), format!("{:?} names no library", g.symbol));
+            }
+            if g.symbol.is_empty() || g.symbol.chars().any(char::is_whitespace) {
+                problem(format!("ffi[{i}]"), format!("{:?} is not a symbol name", g.symbol));
+            }
+            if let Err(reason) = parse_ffi_signature(&g.signature) {
+                problem(format!("ffi[{i}]"), format!("{} {}: {reason}", g.library, g.symbol));
+            }
+            if self.ffi[..i].iter().any(|other| other.library == g.library && other.symbol == g.symbol) {
+                problem(format!("ffi[{i}]"), format!("{:?} is granted twice for {:?}", g.symbol, g.library));
             }
         }
         for (i, name) in self.env.iter().enumerate() {
