@@ -5,7 +5,9 @@
 //! trailing separator, lets `..` run past the root of an absolute path into the root, and keeps leading `..`
 //! of a relative one; the empty path is `.`. `base` and `dir` strip trailing separators first (Node's `posix`
 //! `basename`/`dirname`); `ext` is the last `.` of the base to its end, none for a base that starts with its
-//! only dot. `relative` needs both paths absolute or both relative to one shared base.
+//! only dot. `relative` needs both paths absolute on one root or both relative to one shared base.
+//! A path that starts with a drive (`C:/` or `C:\`) is absolute on that drive: the drive is its root, rendered
+//! `C:/` with the letter uppercased, and `\` separates its components too. Every other path keeps `\` literal.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -22,14 +24,30 @@ fn path_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String,
     }
 }
 
-pub fn is_absolute(path: &str) -> bool {
-    path.starts_with('/')
+/// The path with `/` separators, and the length of its root: `/` (1), a drive `C:/` (3) or none (0).
+fn rooted(path: &str) -> (String, usize) {
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
+    {
+        let rest = path[3..].replace('\\', "/");
+        return (
+            format!("{}:/{rest}", char::from(bytes[0].to_ascii_uppercase())),
+            3,
+        );
+    }
+    (path.to_string(), usize::from(path.starts_with('/')))
 }
 
-fn components(path: &str) -> Vec<String> {
-    let absolute = is_absolute(path);
+pub fn is_absolute(path: &str) -> bool {
+    rooted(path).1 > 0
+}
+
+fn components_of(text: &str, root: usize) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for part in path.split('/') {
+    for part in text[root..].split('/') {
         match part {
             "" | "." => {}
             ".." => match out.last().map(String::as_str) {
@@ -37,7 +55,7 @@ fn components(path: &str) -> Vec<String> {
                 Some(_) => {
                     out.pop();
                 }
-                None if absolute => {}
+                None if root > 0 => {}
                 None => out.push("..".to_string()),
             },
             name => out.push(name.to_string()),
@@ -47,10 +65,10 @@ fn components(path: &str) -> Vec<String> {
 }
 
 pub fn normalize(path: &str) -> String {
-    let parts = components(path);
-    match (is_absolute(path), parts.is_empty()) {
-        (true, true) => "/".to_string(),
-        (true, false) => format!("/{}", parts.join("/")),
+    let (text, root) = rooted(path);
+    let parts = components_of(&text, root);
+    match (root > 0, parts.is_empty()) {
+        (true, _) => format!("{}{}", &text[..root], parts.join("/")),
         (false, true) => ".".to_string(),
         (false, false) => parts.join("/"),
     }
@@ -66,40 +84,32 @@ pub fn join(parts: &[String]) -> String {
     normalize(&joined)
 }
 
-fn trimmed(path: &str) -> &str {
-    let stripped = path.trim_end_matches('/');
-    if stripped.is_empty() && is_absolute(path) {
-        "/"
+fn trimmed(text: &str, root: usize) -> &str {
+    let stripped = text.trim_end_matches('/');
+    if stripped.len() < root {
+        &text[..root]
     } else {
         stripped
     }
 }
 
 pub fn base(path: &str) -> String {
-    let path = trimmed(path);
-    if path == "/" {
-        return String::new();
-    }
-    path.rsplit('/').next().unwrap_or_default().to_string()
+    let (text, root) = rooted(path);
+    let path = trimmed(&text, root);
+    path[root..]
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn dir(path: &str) -> String {
-    let path = trimmed(path);
-    match path.rfind('/') {
+    let (text, root) = rooted(path);
+    let path = trimmed(&text, root);
+    match path[root..].rfind('/') {
+        None if root > 0 => path[..root].to_string(),
         None => ".".to_string(),
-        Some(_) if path == "/" => "/".to_string(),
-        Some(i) => {
-            let parent = trimmed(&path[..i]);
-            if parent.is_empty() {
-                if is_absolute(path) {
-                    "/".to_string()
-                } else {
-                    ".".to_string()
-                }
-            } else {
-                parent.to_string()
-            }
-        }
+        Some(i) => trimmed(&path[..root + i], root).to_string(),
     }
 }
 
@@ -112,11 +122,16 @@ pub fn ext(path: &str) -> String {
 }
 
 pub fn relative(from: &str, to: &str) -> Result<String, String> {
-    if is_absolute(from) != is_absolute(to) {
+    let (from, from_root) = rooted(from);
+    let (to, to_root) = rooted(to);
+    if (from_root > 0) != (to_root > 0) {
         return Err("both paths must be absolute or both relative".to_string());
     }
-    let from = components(from);
-    let to = components(to);
+    if from[..from_root] != to[..to_root] {
+        return Err("the paths are on different roots".to_string());
+    }
+    let from = components_of(&from, from_root);
+    let to = components_of(&to, to_root);
     let shared = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
     if from[shared..].iter().any(|c| c == "..") {
         return Err(
@@ -359,6 +374,58 @@ mod tests {
     }
 
     #[test]
+    fn a_drive_rooted_path_is_absolute_on_its_drive_and_renders_with_slashes() {
+        assert!(is_absolute(r"C:\a\b"));
+        assert!(is_absolute("c:/a"));
+        assert!(is_absolute(r"D:\"));
+        assert!(!is_absolute("C:"));
+        assert!(!is_absolute("C:a"));
+        assert!(!is_absolute(r"\a"));
+        assert!(!is_absolute(r"1:\a"));
+        assert_eq!(normalize(r"c:\a\.\b\..\c\"), "C:/a/c");
+        assert_eq!(normalize(r"C:\"), "C:/");
+        assert_eq!(normalize("C:/a/../.."), "C:/");
+        assert_eq!(normalize(r"C:\..\..\x"), "C:/x");
+        assert_eq!(
+            join(&[r"C:\a\2".into(), "ui/x.orb".into()]),
+            "C:/a/2/ui/x.orb"
+        );
+        assert_eq!(
+            join(&[r"C:\a\2".into(), r"ui\x.orb".into()]),
+            "C:/a/2/ui/x.orb"
+        );
+    }
+
+    #[test]
+    fn a_backslash_outside_a_drive_rooted_path_is_an_ordinary_character() {
+        assert_eq!(join(&[r"a\b".into(), "c".into()]), r"a\b/c");
+        assert_eq!(normalize(r"/a\..\b"), r"/a\..\b");
+        assert_eq!(base(r"/x/a\b"), r"a\b");
+        assert_eq!(normalize("/a/C:/b"), "/a/C:/b");
+        assert_eq!(join(&["/srv".into(), r"C:\x".into()]), r"/srv/C:\x");
+    }
+
+    #[test]
+    fn base_dir_and_ext_of_a_drive_rooted_path() {
+        assert_eq!(base(r"C:\a\b.txt"), "b.txt");
+        assert_eq!(base(r"C:\"), "");
+        assert_eq!(dir(r"C:\a\b.txt"), "C:/a");
+        assert_eq!(dir(r"C:\a"), "C:/");
+        assert_eq!(dir(r"C:\"), "C:/");
+        assert_eq!(dir(r"C:\a\\b\"), "C:/a");
+        assert_eq!(ext(r"C:\a.d\b.tar.gz"), ".gz");
+    }
+
+    #[test]
+    fn relative_needs_one_root() {
+        assert_eq!(relative(r"C:\a\b", r"c:\a\c\d"), Ok("../c/d".to_string()));
+        assert_eq!(relative(r"C:\", r"C:\a"), Ok("a".to_string()));
+        assert!(relative(r"C:\a", r"D:\a").is_err());
+        assert!(relative(r"C:\a", "/a").is_err());
+        assert!(relative(r"C:\a", "a").is_err());
+    }
+
+    #[test]
     fn the_operators_are_wired_by_name() {
         assert_eq!(
             text(serde_json::json!(["os/path-join", "/a", "b", "../c"])),
@@ -385,6 +452,10 @@ mod tests {
         assert_eq!(
             eval(serde_json::json!(["os/path-is-absolute", "a"])).ok(),
             Some(Value::Bool(false))
+        );
+        assert_eq!(
+            eval(serde_json::json!(["os/path-is-absolute", "C:\\a"])).ok(),
+            Some(Value::Bool(true))
         );
     }
 
