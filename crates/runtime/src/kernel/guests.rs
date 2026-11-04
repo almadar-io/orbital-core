@@ -16,13 +16,13 @@ use crate::effects::response::{EventResponse, MountSeed};
 use crate::entity_source::InMemoryEntityCache;
 use crate::process_result::ProcessEventResult;
 use orbital_core_base::agent_ports::AgentPortFailure;
-use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::json_value::value_to_json;
+use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
 use orbital_core_base::protocols::ProtocolSide;
-use orbital_core_base::sync::RwLock;
 use orbital_core_base::schema::types::OrbitalSchema;
+use orbital_core_base::sync::RwLock;
 use orbital_core_base::value::{Value, ValueMap};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -66,8 +66,13 @@ impl LazySource for CarriedLazy {
     fn read(&self, file: &str) -> Result<LazyProgram, String> {
         self.0
             .get(file)
-            .map(|schema| LazyProgram { schema: schema.clone(), catalogs: Default::default() })
-            .ok_or_else(|| format!("the opened program carries no lazy program `{file}` in `lazyPrograms`"))
+            .map(|schema| LazyProgram {
+                schema: schema.clone(),
+                catalogs: Default::default(),
+            })
+            .ok_or_else(|| {
+                format!("the opened program carries no lazy program `{file}` in `lazyPrograms`")
+            })
     }
 }
 
@@ -79,7 +84,10 @@ fn failure(message: impl Into<String>) -> AgentPortFailure {
 }
 
 /// A guest refusal carrying its error kind, as the os and guest asks report one.
-fn guest_refusal(kind: orbital_core_base::os::OsErrorKind, message: impl Into<String>) -> AgentPortFailure {
+fn guest_refusal(
+    kind: orbital_core_base::os::OsErrorKind,
+    message: impl Into<String>,
+) -> AgentPortFailure {
     let refused = crate::agent_ports::guest_failure(kind, message);
     AgentPortFailure {
         error: refused.message,
@@ -115,7 +123,9 @@ pub(crate) fn run_session(
 /// written into the guest's store before its page mounts. An undeclared entity or a misfit row refuses the open.
 fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value, op: &str) -> Result<(), AgentPortFailure> {
     let Value::Array(sets) = rows else {
-        return Err(failure(format!("{op}: `rows` is a list of {{ entity, rows }}")));
+        return Err(failure(format!(
+            "{op}: `rows` is a list of {{ entity, rows }}"
+        )));
     };
     for set in sets.iter() {
         let entity = set
@@ -123,13 +133,24 @@ fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value, op: &str) -> Result<(), 
             .and_then(Value::as_str)
             .ok_or_else(|| failure(format!("{op}: each `rows` entry names its `entity`")))?;
         let Some(Value::Array(list)) = set.get("rows") else {
-            return Err(failure(format!("{op}: the `rows` of {entity} are a list of rows")));
+            return Err(failure(format!(
+                "{op}: the `rows` of {entity} are a list of rows"
+            )));
         };
-        if !guest.registry.entity_definitions.read().contains_key(entity) {
-            return Err(failure(format!("{op}: `rows` names {entity}, which the program does not declare")));
+        if !guest
+            .registry
+            .entity_definitions
+            .read()
+            .contains_key(entity)
+        {
+            return Err(failure(format!(
+                "{op}: `rows` names {entity}, which the program does not declare"
+            )));
         }
         if let Some(misfit) = guest.rows_misfit(entity, list.iter()) {
-            return Err(failure(format!("{op}: a seeded row does not fit: {misfit}")));
+            return Err(failure(format!(
+                "{op}: a seeded row does not fit: {misfit}"
+            )));
         }
         for row in list.iter() {
             let id = row
@@ -205,31 +226,40 @@ fn guest_answer(
     json_value(answer)
 }
 
-/// The mounts of the page `route` resolves to in `guest` (`page_circuit`: the `[initial]` or first route page for none) and
-/// the traits that page embeds without listing them.
+/// The page a guest route resolves to: the path it resolved to (none when no page matched), its mounts and every trait
+/// another trait on it embeds (`@trait.X`), listed on the page or not: those paint into the embedding trait, never a slot.
+struct RoutedPage {
+    route: Option<String>,
+    mounts: Vec<MountSeed>,
+    embedded: std::collections::HashSet<String>,
+}
+
+/// The page `route` resolves to in `guest` (`page_circuit`: the `[initial]` or first route page for none).
 fn routed_mounts(
     guest: &RuntimeKernel,
     route: Option<&str>,
     op: &str,
-) -> Result<(Vec<MountSeed>, std::collections::HashSet<String>), AgentPortFailure> {
-    let circuit = guest.page_circuit(None, route).map_err(|e| failure(format!("{op}: {e}")))?;
-    Ok((circuit.mounts, circuit.embedded.into_iter().collect()))
+) -> Result<RoutedPage, AgentPortFailure> {
+    let circuit = guest
+        .page_circuit(None, route)
+        .map_err(|e| failure(format!("{op}: {e}")))?;
+    Ok(RoutedPage {
+        route: circuit.page.as_ref().and(circuit.route),
+        mounts: circuit.mounts,
+        embedded: circuit.embedded_by.into_iter().collect(),
+    })
 }
 
-/// Run each seed's lifecycle event in `guest`, in order, and collect what moved.
+/// Mount `seeds` in `guest` as the route mount of `route` (EXEC-SEED-7: its `$MOUNT` listeners run first) and collect what moved.
 fn mount_seeds(
     guest: &RuntimeKernel,
+    route: Option<&str>,
     seeds: &[MountSeed],
     op: &str,
 ) -> Result<Vec<(String, ProcessEventResult)>, AgentPortFailure> {
-    let mut outcomes = Vec::new();
-    for seed in seeds {
-        let ran = guest
-            .dispatch(&seed.r#trait, None, seed.event.as_str(), Value::Null)
-            .map_err(|e| failure(format!("{op}: mounting {}: {e}", seed.r#trait)))?;
-        outcomes.extend(ran);
-    }
-    Ok(outcomes)
+    guest
+        .dispatch_route_mount(route, seeds, None, Value::Null)
+        .map_err(|e| failure(format!("{op}: mounting {}: {e}", route.unwrap_or_default())))
 }
 
 impl RuntimeKernel {
@@ -255,7 +285,12 @@ impl RuntimeKernel {
     /// The grants the calling orbital holds, after checking they let it give a guest its own lane or host ports.
     fn may_spawn_guest(&self, op: &str) -> Result<OsGrants, AgentPortFailure> {
         let (asker, _) = self.caller_position();
-        let held = self.grants.os_grants.read().for_orbital(asker.as_deref()).clone();
+        let held = self
+            .grants
+            .os_grants
+            .read()
+            .for_orbital(asker.as_deref())
+            .clone();
         if !held.kernel_allows(KernelKind::Spawn, None) {
             return Err(guest_refusal(
                 orbital_core_base::os::OsErrorKind::Denied,
@@ -313,8 +348,17 @@ impl RuntimeKernel {
         let mut granted: Option<OsGrants> = None;
         if asked_grants.is_some() || asked_arenas.is_some() {
             let held = self.may_spawn_guest("program/open")?;
-            let guest: OsGrants = serde_json::from_value(value_to_json(asked_grants.as_ref().unwrap_or(&Value::object(ValueMap::default()))))
-                .map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: the guest's grants are not os grants: {e}")))?;
+            let guest: OsGrants = serde_json::from_value(value_to_json(
+                asked_grants
+                    .as_ref()
+                    .unwrap_or(&Value::object(ValueMap::default())),
+            ))
+            .map_err(|e| {
+                guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    format!("program/open: the guest's grants are not os grants: {e}"),
+                )
+            })?;
             covers(&held, &guest).map_err(|missing| {
                 guest_refusal(
                     orbital_core_base::os::OsErrorKind::Denied,
@@ -356,8 +400,11 @@ impl RuntimeKernel {
                 })?,
             ),
         };
-        let mut schema: OrbitalSchema = serde_json::from_value(program_json)
-            .map_err(|e| failure(format!("program/open: the program is not a resolved program: {e}")))?;
+        let mut schema: OrbitalSchema = serde_json::from_value(program_json).map_err(|e| {
+            failure(format!(
+                "program/open: the program is not a resolved program: {e}"
+            ))
+        })?;
         if schema.orbitals.is_empty() {
             return Err(failure("program/open: the program has no orbitals"));
         }
@@ -366,7 +413,10 @@ impl RuntimeKernel {
         if let Some(grants) = &granted {
             for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
                 carried_schema.os_grants = Some(grants.clone());
-                carried_schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+                carried_schema
+                    .orbitals
+                    .iter_mut()
+                    .for_each(|orbital| orbital.os_grants = None);
             }
         }
         let source = Arc::new(InMemoryEntityCache::new());
@@ -400,13 +450,17 @@ impl RuntimeKernel {
             Some(_) => return Err(failure("program/open: `route` is a path string")),
         };
         let mut seeds = guest.boot_mounts(ProtocolSide::Server);
-        let (routed, embedded) = routed_mounts(&guest, route.as_deref(), "program/open")?;
+        let RoutedPage {
+            route: resolved,
+            mounts: routed,
+            embedded,
+        } = routed_mounts(&guest, route.as_deref(), "program/open")?;
         for seed in routed {
             if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
                 seeds.push(seed);
             }
         }
-        let outcomes = mount_seeds(&guest, &seeds, "program/open")?;
+        let outcomes = mount_seeds(&guest, resolved.as_deref(), &seeds, "program/open")?;
         let handle = format!(
             "guest-{}",
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
@@ -417,11 +471,20 @@ impl RuntimeKernel {
             source,
             grants: granted,
             arenas,
-            route: Arc::new(RwLock::new(GuestRoute { embedded: embedded.clone(), mounted })),
+            route: Arc::new(RwLock::new(GuestRoute {
+                embedded: embedded.clone(),
+                mounted,
+            })),
         };
         self.guests.write().insert(handle.clone(), session);
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
-        Ok(guest_answer(Some(&handle), &embedded, &outcomes, &seed_trait, "INIT"))
+        Ok(guest_answer(
+            Some(&handle),
+            &embedded,
+            &outcomes,
+            &seed_trait,
+            "INIT",
+        ))
     }
 
     /// `program/navigate { guest, route, rows? }`: load the lazy page `route` names, seed its `rows`, mount the traits of
@@ -441,15 +504,25 @@ impl RuntimeKernel {
         guest
             .ensure_route_loaded(route.as_str())
             .map_err(|e| failure(format!("program/navigate: {e}")))?;
-        if let Some(rows) = options.get("rows").filter(|rows| !matches!(rows, Value::Null)) {
+        if let Some(rows) = options
+            .get("rows")
+            .filter(|rows| !matches!(rows, Value::Null))
+        {
             seed_guest_rows(guest, rows, "program/navigate")?;
         }
-        let (routed, embedded) = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
+        let RoutedPage {
+            route: resolved,
+            mounts: routed,
+            embedded,
+        } = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
         let fresh: Vec<MountSeed> = {
             let held = session.route.read();
-            routed.into_iter().filter(|seed| !held.mounted.contains(&seed.r#trait)).collect()
+            routed
+                .into_iter()
+                .filter(|seed| !held.mounted.contains(&seed.r#trait))
+                .collect()
         };
-        let outcomes = mount_seeds(guest, &fresh, "program/navigate")?;
+        let outcomes = mount_seeds(guest, resolved.as_deref(), &fresh, "program/navigate")?;
         {
             let mut held = session.route.write();
             held.mounted.extend(fresh.iter().map(|s| s.r#trait.clone()));
@@ -460,7 +533,13 @@ impl RuntimeKernel {
             Value::String(name) => Some(name.as_str()),
             _ => None,
         };
-        Ok(guest_answer(name, &embedded, &outcomes, &seed_trait, "INIT"))
+        Ok(guest_answer(
+            name,
+            &embedded,
+            &outcomes,
+            &seed_trait,
+            "INIT",
+        ))
     }
 
     /// `program/close guest`: end the guest; `{ closed: true }`.
@@ -520,7 +599,9 @@ impl RuntimeKernel {
                 self.may_spawn_guest("program/dispatch")?;
             }
             let Value::String(name) = handle else {
-                return Err(failure("program/dispatch: guest must be the handle program/open answered"));
+                return Err(failure(
+                    "program/dispatch: guest must be the handle program/open answered",
+                ));
             };
             let grants = session.grants.clone().unwrap_or_default();
             return self
@@ -612,7 +693,17 @@ impl RuntimeKernel {
 #[cfg(test)]
 impl GuestSession {
     /// A session over `kernel` and its rows `source`, answered under `grants`, with no arenas handed over.
-    pub(crate) fn fresh(kernel: Arc<RuntimeKernel>, source: Arc<InMemoryEntityCache>, grants: Option<OsGrants>) -> Self {
-        Self { kernel, source, grants, arenas: Vec::new(), route: Arc::default() }
+    pub(crate) fn fresh(
+        kernel: Arc<RuntimeKernel>,
+        source: Arc<InMemoryEntityCache>,
+        grants: Option<OsGrants>,
+    ) -> Self {
+        Self {
+            kernel,
+            source,
+            grants,
+            arenas: Vec::new(),
+            route: Arc::default(),
+        }
     }
 }

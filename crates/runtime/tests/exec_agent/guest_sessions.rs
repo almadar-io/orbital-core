@@ -664,3 +664,105 @@ fn control_a_lazy_page_the_value_does_not_carry_refuses_the_navigate_naming_its_
         "a lazy page with no carried program is refused, not read from disk: {after}"
     );
 }
+
+/// `shop()` with a boot trait that hears each route mount's `$MOUNT` and stores a row named after the page.
+fn shop_with_mount_seeder(listens: bool) -> serde_json::Value {
+    let mut program = shop();
+    let mut seeder = json!({
+        "name": "Seeder",
+        "linkedEntity": "ShopItem",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "events": [{ "key": "SEED", "name": "SEED", "payload": [
+                { "name": "page", "type": "string", "required": true },
+                { "name": "route", "type": "string", "required": true },
+                { "name": "traits", "type": "array", "items": { "type": "string" }, "required": true },
+                { "name": "entities", "type": "array", "items": { "type": "string" }, "required": true }
+            ] }],
+            "transitions": [
+                { "from": "idle", "to": "idle", "event": "INIT", "effects": [] },
+                { "from": "idle", "to": "idle", "event": "SEED", "effects": [
+                    ["persist", "create", "ShopItem", { "name": ["str/concat", "@payload.page", " ", ["str/join", "@payload.entities", ","]] }]
+                ] }
+            ]
+        }
+    });
+    if listens {
+        seeder["listens"] = json!([{ "event": "$MOUNT", "triggers": "SEED" }]);
+    }
+    program["orbitals"][0]["traits"].as_array_mut().unwrap().push(seeder);
+    program["orbitals"][0]["pages"].as_array_mut().unwrap().iter_mut()
+        .find(|p| p["name"] == "Bg").unwrap()["traits"].as_array_mut().unwrap().push(json!({ "ref": "Seeder" }));
+    program
+}
+
+#[test]
+fn a_guest_route_open_announces_mount_before_the_page_mounts() {
+    let (_, after) = open_shop(shop_with_mount_seeder(true), json!({ "route": "/list" }));
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+    assert!(
+        painted(&after["got"]).contains(&"List ShopItem".to_string()),
+        "the $MOUNT listener stored its row before ListT's INIT fetch, with the page and its entities: {after}"
+    );
+}
+
+#[test]
+fn control_a_guest_without_a_mount_listener_mounts_its_page_on_an_empty_store() {
+    let (_, after) = open_shop(shop_with_mount_seeder(false), json!({ "route": "/list" }));
+    assert!(painted(&after["got"]).contains(&"none listed".to_string()), "{after}");
+}
+
+#[test]
+fn a_guest_navigate_announces_mount_for_the_new_route_before_mounting_it() {
+    let (kernel, _) = open_shop(shop_with_mount_seeder(true), json!({ "route": "/other" }));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    let texts = painted(&after["got"]);
+    assert!(texts.contains(&"Other ShopItem".to_string()), "the open's own route was announced first: {after}");
+}
+
+#[test]
+fn edge_an_open_naming_no_route_announces_the_page_it_resolves_to() {
+    let (kernel, _) = open_shop(shop_with_mount_seeder(true), json!({}));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert!(painted(&after["got"]).contains(&"Home ShopItem".to_string()), "{after}");
+}
+
+/// A page that lists both its layout trait and the trait the layout embeds (`@trait.Child`), as an inlined organism does.
+fn shop_with_listed_embed() -> serde_json::Value {
+    let mut program = shop();
+    let traits = program["orbitals"][0]["traits"].as_array_mut().unwrap();
+    traits.push(json!({
+        "name": "Shell",
+        "linkedEntity": "ShopItem",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                ["render-ui", "main", { "type": "stack", "children": ["@trait.Child"] }]
+            ] }]
+        }
+    }));
+    traits.push(paints("Child", "child ran"));
+    program["orbitals"][0]["pages"].as_array_mut().unwrap().push(
+        json!({ "name": "Portal", "path": "/portal", "traits": [{ "ref": "Child" }, { "ref": "Shell" }] }),
+    );
+    program
+}
+
+fn embedded_flag(answer: &serde_json::Value, trait_name: &str) -> Option<bool> {
+    answer["rendered"].as_array()?.iter().find(|p| p["trait"] == trait_name).and_then(|p| p["embedded"].as_bool())
+}
+
+#[test]
+fn a_trait_the_page_lists_and_another_trait_embeds_paints_as_embedded() {
+    let (_, after) = open_shop(shop_with_listed_embed(), json!({ "route": "/portal" }));
+    assert_eq!(embedded_flag(&after["got"], "Child"), Some(true), "Shell embeds Child, so Child is not a page root: {after}");
+    assert_eq!(embedded_flag(&after["got"], "Shell"), Some(false), "control: the layout nobody embeds is the page root: {after}");
+}
+
+#[test]
+fn edge_navigating_to_a_page_with_a_listed_embed_marks_it_embedded_too() {
+    let (kernel, _) = open_shop(shop_with_listed_embed(), json!({}));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/portal", "rows": [] }));
+    assert_eq!(embedded_flag(&after["got"], "Child"), Some(true), "{after}");
+    assert_eq!(embedded_flag(&after["got"], "Shell"), Some(false), "{after}");
+}

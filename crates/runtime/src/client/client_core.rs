@@ -279,10 +279,10 @@ impl ClientCore {
     /// Used by `GameApp` and the Layer-2 verifier.
     pub fn init_all_traits_blocking(&mut self) {
         let traits = self.current_orbital_traits();
-        self.mount_traits_blocking(&traits, Value::Null);
+        self.mount_traits_blocking(&traits, Value::Null, None);
     }
 
-    fn mount_traits_blocking(&mut self, traits: &[String], payload: Value) {
+    fn mount_traits_blocking(&mut self, traits: &[String], payload: Value, route: Option<String>) {
         if traits.is_empty() {
             self.drive_blocking("INIT", None, payload);
             return;
@@ -297,7 +297,7 @@ impl ClientCore {
                 })
                 .collect();
             let settled = client_kernel
-                .begin_mount(&seeds, payload)
+                .begin_route_mount(route.as_deref(), &seeds, payload)
                 .and_then(|begun| {
                     for (trait_name, local) in begun.locals() {
                         self.process_response("INIT", Some(trait_name.to_string()), local.clone());
@@ -356,7 +356,16 @@ impl ClientCore {
     pub fn mount_page_blocking(&mut self) {
         let traits = self.page_mount_traits();
         let payload = self.page_mount_payload();
-        self.mount_traits_blocking(&traits, payload);
+        let route = self.page_mount_route();
+        self.mount_traits_blocking(&traits, payload, route);
+    }
+
+    /// The path the current page is open at: its declared path with each `:param` segment filled from the route
+    /// params (`None` when the orbital declares no such page).
+    pub fn page_mount_route(&self) -> Option<String> {
+        let name = self.current_page.as_deref()?;
+        let page = pages_of(&self.schema, self.current_orbital_idx).find(|p| p.name == name)?;
+        Some(fill_route(&page.path, &self.route_params))
     }
 
     /// Run a page's local mount now; the caller settles its server flight off the UI thread.
@@ -384,7 +393,8 @@ impl ClientCore {
                 event: crate::effects::response::LifecycleEvent::Init,
             })
             .collect();
-        let begun = kernel.begin_mount(&seeds, payload)?;
+        let route = self.page_mount_route();
+        let begun = kernel.begin_route_mount(route.as_deref(), &seeds, payload)?;
         for (trait_name, local) in begun.locals() {
             self.process_response("INIT", Some(trait_name.to_string()), local.clone());
         }
@@ -1219,6 +1229,20 @@ struct PageVisit {
     orbital_idx: usize,
     page: Option<String>,
     params: ValueMap,
+}
+
+/// `pattern` with each `:param` segment replaced by that param's value (the inverse of [`route_params`]); a param
+/// with no value keeps its segment.
+fn fill_route(pattern: &str, params: &ValueMap) -> String {
+    pattern
+        .split('/')
+        .map(|segment| match segment.strip_prefix(':').and_then(|name| params.get(name)) {
+            Some(Value::String(value)) => value.to_string(),
+            Some(other) => other.to_string(),
+            None => segment.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A route pattern matched against a path segment by segment: a `:param` segment matches any

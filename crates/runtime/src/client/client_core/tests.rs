@@ -881,3 +881,23 @@ fn host_completion_returns_to_its_authored_trait() {
     );
     core.finish_control(&begun, kernel.settle(&begun));
 }
+
+/// A page mount opens the page's concrete path, so the host can announce that route's `$MOUNT` (EXEC-SEED-7).
+#[test]
+fn a_page_mount_opens_the_concrete_path_of_its_page() {
+    let schema = routed_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, Arc::clone(&kernel));
+    core.navigate_to("/notes/42", None);
+    assert_eq!(core.page_mount_route().as_deref(), Some("/notes/42"), "the :id segment is filled from the route");
+    let mut params = ValueMap::default();
+    params.insert("id".into(), Value::string("7"));
+    core.navigate_to("/notes/42", Some(&Value::object(params)));
+    assert_eq!(core.page_mount_route().as_deref(), Some("/notes/7"), "edge: an explicit navigate param fills it, as it wins the payload");
+}
+
+#[test]
+fn control_a_pattern_without_params_is_its_own_route() {
+    assert_eq!(fill_route("/notes", &ValueMap::default()), "/notes");
+    assert_eq!(fill_route("/notes/:id", &ValueMap::default()), "/notes/:id", "edge: an unbound param keeps its segment");
+}

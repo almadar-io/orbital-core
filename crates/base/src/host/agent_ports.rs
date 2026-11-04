@@ -665,9 +665,9 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
 }
 
 /// The event-request options of a `program/dispatch` (owner, 2026-10-21): what the HTTP dispatch routes carry.
-pub const DISPATCH_REQUEST_OPTIONS: [&str; 14] = [
-    "wire", "stream", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "clientId", "locale",
-    "delivery", "dispatchLog", "viewer",
+pub const DISPATCH_REQUEST_OPTIONS: [&str; 15] = [
+    "wire", "stream", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "route", "clientId",
+    "locale", "delivery", "dispatchLog", "viewer",
 ];
 
 /// The request options that name a dispatch's target (the operator table's `program/dispatch` `targetOptions`); a
@@ -707,7 +707,7 @@ fn request_option_error(key: &str, value: &Value) -> Option<String> {
     let ok = match key {
         "wire" | "stream" | "input" => matches!(value, Value::Bool(_)),
         "orbital" | "event" => value.as_str().is_some_and(|s| !s.is_empty()),
-        "targetTrait" | "entityId" | "clientId" | "locale" => value.as_str().is_some(),
+        "targetTrait" | "entityId" | "clientId" | "locale" | "route" => value.as_str().is_some(),
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
         "mount" => list_of_records(value, &["trait", "event"], &[]),
         "delivery" | "dispatchLog" | "viewer" | "entityByTrait" => matches!(value, Value::Object(_) | Value::Null),
@@ -1135,6 +1135,7 @@ mod tests {
             ("entityId", serde_json::json!("n1")),
             ("traits", serde_json::json!([{ "trait": "Chat", "from": "idle", "event": "ADD_NOTE" }])),
             ("mount", serde_json::json!([{ "trait": "Chat", "event": "INIT" }])),
+            ("route", serde_json::json!("/notes")),
             ("clientId", serde_json::json!("tab-1")),
             ("locale", serde_json::json!("ar")),
             ("delivery", serde_json::json!({ "event": "ADD_NOTE" })),
@@ -1168,6 +1169,7 @@ mod tests {
             (request(serde_json::json!({ "traits": [{ "trait": "Chat" }] })), "option \"traits\" has the wrong shape"),
             (request(serde_json::json!({ "mount": [{ "trait": "Chat", "event": "INIT", "extra": "x" }] })), "option \"mount\" has the wrong shape"),
             (request(serde_json::json!({ "clientId": false })), "option \"clientId\" has the wrong shape"),
+            (request(serde_json::json!({ "route": 1 })), "option \"route\" has the wrong shape"),
             (request(serde_json::json!({ "locale": [] })), "option \"locale\" has the wrong shape"),
             (request(serde_json::json!({ "delivery": "x" })), "option \"delivery\" has the wrong shape"),
             (request(serde_json::json!({ "dispatchLog": 1 })), "option \"dispatchLog\" has the wrong shape"),

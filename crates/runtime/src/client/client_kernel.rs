@@ -198,6 +198,8 @@ impl BegunDispatch {
 pub struct BegunMount {
     seeds: Vec<(crate::effects::response::MountSeed, BegunDispatch)>,
     flight: Option<Arc<Flight>>,
+    /// The route this mount opens: the first posted leg names it, so the server announces its `$MOUNT` once (EXEC-SEED-7).
+    route: Option<String>,
 }
 
 /// A frame's local tick and emit results, before any server leg is posted.
@@ -641,6 +643,16 @@ impl ClientKernel {
         seeds: &[crate::effects::response::MountSeed],
         payload: Value,
     ) -> Result<BegunMount, BridgeError> {
+        self.begin_route_mount(None, seeds, payload)
+    }
+
+    /// [`Self::begin_mount`] for a mount that opens `route` (JS twin: `dispatchMount`'s `route`).
+    pub fn begin_route_mount(
+        &self,
+        route: Option<&str>,
+        seeds: &[crate::effects::response::MountSeed],
+        payload: Value,
+    ) -> Result<BegunMount, BridgeError> {
         let _ordered = self.begin_order.lock();
         let seeds = seeds
             .iter()
@@ -660,7 +672,7 @@ impl ClientKernel {
             .iter()
             .any(|(_, begun)| begun.has_legs())
             .then(|| self.flights.open());
-        Ok(BegunMount { seeds, flight })
+        Ok(BegunMount { seeds, flight, route: route.map(str::to_string) })
     }
 
     /// The server half of a mount: the seeds with server work are posted as ONE `mount` leg per
@@ -704,8 +716,11 @@ impl ClientKernel {
             );
             return Ok(settled);
         };
-        for (orbital, _, group) in groups {
-            let request = mount_request(&group, self.embedded.client_id());
+        for (index, (orbital, _, group)) in groups.into_iter().enumerate() {
+            let mut request = mount_request(&group, self.embedded.client_id());
+            if index == 0 {
+                request.route = begun.route.clone();
+            }
             let rollback = || {
                 for (seed, b) in &group {
                     if let Some(snapshot) = b.dispatch.snapshot.clone() {

@@ -941,3 +941,20 @@ fn a_mount_group_answer_folds_when_every_flight_the_batch_opened_is_in_a_group()
     }
     assert!(stuck.is_empty(), "flights no group ends: {stuck:#?}");
 }
+
+#[test]
+fn a_route_mount_posts_its_route_on_the_leg_so_the_host_announces_mount() {
+    let mount = kernel()
+        .dispatch_route_mount(Some("/shop"), &[seed("Lister"), seed("Loader"), seed("Badge")], None, Value::Null)
+        .unwrap();
+    assert_eq!(mount.legs[0].leg.route.as_deref(), Some("/shop"));
+    assert_eq!(mount.stateful_legs[0].leg.route.as_deref(), Some("/shop"));
+}
+
+#[test]
+fn control_a_mount_that_opens_no_route_posts_none() {
+    let mount = kernel()
+        .dispatch_mount(&[seed("Lister"), seed("Loader")], None, Value::Null)
+        .unwrap();
+    assert!(mount.legs.iter().chain(&mount.stateful_legs).all(|l| l.leg.route.is_none()));
+}

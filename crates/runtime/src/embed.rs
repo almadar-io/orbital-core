@@ -332,6 +332,18 @@ impl EmbeddedKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<MountWire, String> {
+        self.dispatch_route_mount(None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::dispatch_mount`] for a mount that opens `route`: the host's first posted leg names it, so the host
+    /// delivers that route's `$MOUNT` once before the seeds it runs (EXEC-SEED-7).
+    pub fn dispatch_route_mount(
+        &self,
+        route: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<MountWire, String> {
         let mut dispatched: Vec<(&MountSeed, DispatchWire)> = Vec::new();
         let mut failed = None;
         for seed in seeds {
@@ -355,10 +367,12 @@ impl EmbeddedKernel {
         let (legs, stateful_legs) = if failed.is_some() {
             (Vec::new(), Vec::new())
         } else {
-            (
-                self.mount_legs(&dispatched, entity_id, false),
-                self.mount_legs(&dispatched, entity_id, true),
-            )
+            let mut legs = self.mount_legs(&dispatched, entity_id, false);
+            let mut stateful_legs = self.mount_legs(&dispatched, entity_id, true);
+            for posted in [legs.first_mut(), stateful_legs.first_mut()].into_iter().flatten() {
+                posted.leg.route = route.map(str::to_string);
+            }
+            (legs, stateful_legs)
         };
         Ok(MountWire {
             seeds: dispatched.into_iter().map(|(_, wire)| wire).collect(),
