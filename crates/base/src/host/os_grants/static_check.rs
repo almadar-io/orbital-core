@@ -4,7 +4,7 @@
 //! walks the program and answers typed findings, and the std lint words them.
 
 use super::{
-    anchored_sexpr, concat_static_prefix, os_requirements_deferring, DevResource, KernelKind, MemKind, OsGrants,
+    anchored_sexpr, concat_static_prefix, os_possible_uses, os_requirements_deferring, DevResource, KernelKind, MemKind, OsGrants,
     OsRequirement,
 };
 use crate::collections::IndexMap;
@@ -643,7 +643,7 @@ fn concat_roots(
 /// The findings of the finished program: a config-fed `os/` target is a literal once the program is composed, so
 /// every value it can take is checked against the orbital's grants like a written one; one the pass cannot resolve
 /// is not static.
-fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
+fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<OsRequirement>>) {
     let mut out = Vec::new();
     let mut needs_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
@@ -661,6 +661,7 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                     let as_written = os_requirements_deferring(op, positional, &knob_fed)
                         .unwrap_or_default();
                     needs.extend(as_written.iter().cloned());
+                    needs.extend(os_possible_uses(op, positional));
                     needs.extend(deferred_reach(op, positional));
                     for (at, arg) in positional.iter().enumerate() {
                         for (key, anchored) in anchored_slots(arg) {
@@ -806,14 +807,46 @@ fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
         }
     }
     if let Some(app) = &schema.os_grants {
-        let all: Vec<OsRequirement> = needs_by_orbital.into_iter().flatten().collect();
+        let all: Vec<OsRequirement> = needs_by_orbital.iter().flatten().cloned().collect();
         for atom in app.atoms() {
             if !used_by_any(&atom.grants, &all) {
                 out.push(unused(format!("osGrants.{}", atom.path), &atom.label, None));
             }
         }
     }
-    out
+    (out, needs_by_orbital)
+}
+
+fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
+    finished_with_needs(schema).0
+}
+
+/// Drops from each orbital the grants composition copied onto it that no `os/` call of that orbital uses (EXEC-GRANTS-2:
+/// a grant lands only on the orbital whose calls need it). `authored` holds, per orbital name, the grants the program
+/// itself wrote on that orbital: those stay (an unused one is still reported by the final pass). The use is the
+/// final pass's own: the same per-orbital needs that `ORB_OS_GRANT_UNUSED` reads.
+pub fn prune_composed_unused_grants(schema: &mut OrbitalSchema, authored: &IndexMap<String, OsGrants>) {
+    let (_, needs) = finished_with_needs(schema);
+    for (orbital, needs) in schema.orbitals.iter_mut().zip(needs) {
+        let Some(own) = orbital.os_grants.as_ref() else {
+            continue;
+        };
+        let written = authored.get(&orbital.name).map(OsGrants::atoms).unwrap_or_default();
+        let mut kept = OsGrants::default();
+        let mut dropped = false;
+        for atom in own.atoms() {
+            let stays = written.iter().any(|w| w.grants == atom.grants)
+                || used_by_any(&atom.grants, &needs);
+            if stays {
+                kept.union(&atom.grants);
+            } else {
+                dropped = true;
+            }
+        }
+        if dropped {
+            orbital.os_grants = (!kept.is_empty()).then_some(kept);
+        }
+    }
 }
 
 /// The typed findings of one pass of the static `os/` grant check over a lowered program.

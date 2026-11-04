@@ -589,7 +589,10 @@ pub fn requirement_target_positions(op: OsOp) -> Vec<usize> {
             OsGrantNeed::Mem { capacity, arena_kind, .. } => at.extend(capacity.iter().chain(arena_kind)),
             OsGrantNeed::Kernel { operator, .. } => at.extend(*operator),
             OsGrantNeed::Ffi { library, symbol } => at.extend([*library, *symbol]),
-            OsGrantNeed::Stdio { .. } | OsGrantNeed::Sys { .. } | OsGrantNeed::Desktop { .. } => {}
+            OsGrantNeed::Stdio { .. }
+            | OsGrantNeed::Sys { .. }
+            | OsGrantNeed::SelfSignal { .. }
+            | OsGrantNeed::Desktop { .. } => {}
         }
     }
     at.sort_unstable();
@@ -690,6 +693,24 @@ pub(super) fn kv_need(args: &[SExpression], store: usize, mode: KvMode, deferred
         .collect())
 }
 
+/// The grants a call may use without requiring them: `sys self-signal` for a call whose operator-table `self-signal`
+/// need has a pid that is not a literal number (a pid held in data may be the program's own, which a literal cannot be
+/// told to be). Read by the unused-grant analysis only; a requirement is never derived from it.
+pub fn os_possible_uses(op: OsOp, args: &[SExpression]) -> Vec<OsRequirement> {
+    let Ok(needs) = super::try_os_grant_needs(op) else {
+        return Vec::new();
+    };
+    needs
+        .iter()
+        .filter_map(|need| match need {
+            OsGrantNeed::SelfSignal { pid } if !matches!(args.get(*pid), Some(SExpression::Number(_)) | None) => {
+                Some(OsRequirement::Sys { kind: SysKind::SelfSignal })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 pub(super) fn requirements_of(
     op: OsOp,
     args: &[SExpression],
@@ -734,6 +755,7 @@ pub(super) fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferr
             .into_iter()
             .collect()),
         OsGrantNeed::Sys { access } => Ok(vec![OsRequirement::Sys { kind: *access }]),
+        OsGrantNeed::SelfSignal { .. } => Ok(Vec::new()),
         OsGrantNeed::Desktop { access } => Ok(vec![OsRequirement::Desktop { kind: *access }]),
         OsGrantNeed::Kv { access, store } => kv_need(args, *store, *access, deferred),
         OsGrantNeed::Mmio { access, base, offset, width } => mmio_need(args, (*base, *offset, *width), *access, deferred),

@@ -2113,6 +2113,7 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
                 OsGrantNeed::Irq { line, .. } => vec![*line],
                 OsGrantNeed::Mem { capacity, arena_kind, .. } => capacity.iter().chain(arena_kind).copied().collect(),
                 OsGrantNeed::Kernel { operator, .. } => operator.iter().copied().collect(),
+                OsGrantNeed::SelfSignal { pid } => vec![*pid],
                 OsGrantNeed::Ffi { library, symbol } => vec![*library, *symbol],
                 OsGrantNeed::Stdio { .. }
                 | OsGrantNeed::Sys { .. }
@@ -2137,7 +2138,6 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
         "os/fsync",
         "os/cwd",
         "os/wait",
-        "os/kill",
         "os/pid",
         "os/ppid",
         "os/current-exe",
@@ -3386,6 +3386,109 @@ mod static_check {
         assert_eq!(lost[0].code, OsGrantFindingCode::TargetNotStatic);
         assert_eq!(lost[0].via, Some(OsGrantVia::ConfigUnresolvable));
     }
+
+    fn stamped() -> serde_json::Value {
+        json!({ "net": [{ "target": "openrouter.ai:443", "kinds": ["tcp"] }], "env": ["FIREBASE_AUTH_EMULATOR_HOST"] })
+    }
+
+    fn pruned(orbitals: Vec<serde_json::Value>, authored: &[(&str, serde_json::Value)]) -> OrbitalSchema {
+        let mut schema = program(json!(null), orbitals);
+        let written = authored
+            .iter()
+            .map(|(name, grants)| (name.to_string(), serde_json::from_value(grants.clone()).expect("grants")))
+            .collect();
+        prune_composed_unused_grants(&mut schema, &written);
+        schema
+    }
+
+    fn grants_of<'a>(schema: &'a OrbitalSchema, name: &str) -> Option<&'a OsGrants> {
+        schema.orbitals.iter().find(|o| o.name == name).and_then(|o| o.os_grants.as_ref())
+    }
+
+    // EXEC-GRANTS-2: a grant composition copied onto an orbital stays only where a call of that orbital uses it.
+    #[test]
+    fn a_composed_grant_lands_only_on_the_orbital_whose_call_uses_it() {
+        let call = json!([["os/getenv", "FIREBASE_AUTH_EMULATOR_HOST"]]);
+        let schema = pruned(
+            vec![
+                orbital("Holder", stamped(), None, call, json!({})),
+                orbital("Bystander", stamped(), None, json!([]), json!({})),
+            ],
+            &[],
+        );
+        let holder = grants_of(&schema, "Holder").expect("the holder keeps its grant");
+        assert_eq!(holder.env, vec!["FIREBASE_AUTH_EMULATOR_HOST".to_string()], "control: the call's grant stays");
+        assert!(holder.net.is_empty(), "the holder's unused vendor grant goes");
+        assert!(grants_of(&schema, "Bystander").is_none(), "the bystander holds no grant");
+        assert!(
+            !has(&os_grant_findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused),
+            "the pruned program has no unused grant"
+        );
+    }
+
+    #[test]
+    fn two_orbitals_that_both_hold_calls_each_keep_their_own_grant() {
+        let env = json!([["os/getenv", "FIREBASE_AUTH_EMULATOR_HOST"]]);
+        let net = json!([["os/tcp-connect", "openrouter.ai", 443]]);
+        let schema = pruned(
+            vec![
+                orbital("A", stamped(), None, env, json!({})),
+                orbital("B", stamped(), None, net, json!({})),
+            ],
+            &[],
+        );
+        let (a, b) = (grants_of(&schema, "A").expect("A"), grants_of(&schema, "B").expect("B"));
+        assert_eq!((a.env.len(), a.net.len()), (1, 0));
+        assert_eq!((b.env.len(), b.net.len()), (0, 1));
+    }
+
+    #[test]
+    fn a_grant_the_program_wrote_on_an_orbital_stays_so_the_unused_finding_still_reports_it() {
+        let schema = pruned(
+            vec![orbital("Staff", stamped(), None, json!([]), json!({}))],
+            &[("Staff", json!({ "env": ["FIREBASE_AUTH_EMULATOR_HOST"] }))],
+        );
+        let staff = grants_of(&schema, "Staff").expect("authored entry kept");
+        assert_eq!(staff.env.len(), 1);
+        assert!(staff.net.is_empty(), "the composed vendor grant still goes");
+        assert!(has(&os_grant_findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused));
+    }
+
+    #[test]
+    fn a_composed_sys_grant_stays_only_where_a_call_may_use_it() {
+        let sys = || json!({ "sys": ["self-signal"] });
+        let kill = json!([["os/kill", "@entity.pid", "TERM"]]);
+        let used = pruned(vec![orbital("Restarter", sys(), None, kill, json!({}))], &[]);
+        assert_eq!(grants_of(&used, "Restarter").map(|g| g.sys.len()), Some(1));
+        let idle = pruned(vec![orbital("Restarter", sys(), None, json!([]), json!({}))], &[]);
+        assert!(grants_of(&idle, "Restarter").is_none());
+    }
+
+    // EXEC-CONC-6: `os/kill` of the program's own pid needs `sys: [self-signal]`; the pid is data, so the call may use it.
+    #[test]
+    fn os_kill_of_a_pid_held_in_data_uses_the_self_signal_grant() {
+        let sys = json!({ "sys": ["self-signal"] });
+        let restart = json!([["os/pid"], ["os/kill", "@entity.pid", "TERM"]]);
+        assert!(!unused_final(sys.clone(), restart.clone()));
+        assert!(!has(&final_of(sys, None, restart.clone(), json!({})), OsGrantFindingCode::Missing));
+        assert!(
+            final_of(json!(null), None, restart, json!({})).is_empty(),
+            "a kill of a spawned child needs no grant, so none is reported missing"
+        );
+    }
+
+    #[test]
+    fn a_self_signal_grant_with_no_os_kill_is_unused() {
+        let sys = json!({ "sys": ["self-signal"] });
+        assert!(unused_final(sys.clone(), json!([["os/pid"]])));
+        assert!(unused_final(sys, json!([])));
+    }
+
+    #[test]
+    fn os_kill_of_a_literal_pid_does_not_use_the_self_signal_grant() {
+        assert!(unused_final(json!({ "sys": ["self-signal"] }), json!([["os/kill", 4242, "TERM"]])));
+    }
+
 }
 
 #[test]

@@ -176,6 +176,10 @@ pub enum OsGrantNeed {
         port: Option<usize>,
     },
     Sys { access: SysKind },
+    /// A signal sent to the process at `pid`: it is the program's own process when that value is its own pid, which
+    /// the kernel allows only under `sys: [self-signal]`. Never a requirement (a spawned child needs no grant); the
+    /// grant is possibly used by any call whose `pid` is not a literal number.
+    SelfSignal { pid: usize },
     Desktop { access: DesktopKind },
     Kv { access: KvMode, store: usize },
     Mmio { access: DevKind, base: usize, offset: usize, width: usize },
@@ -524,7 +528,7 @@ mod static_check;
 mod table;
 pub use table::OsGrantTable;
 pub use ffi::{parse_ffi_signature, FfiGrant, FfiRet, FfiSignature, FfiType, FFI_MAX_PARAMS};
-pub use static_check::{os_grant_findings, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
+pub use static_check::{os_grant_findings, prune_composed_unused_grants, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
 use matching::*;
 pub use matching::covers;
 use anchors::*;
@@ -533,7 +537,7 @@ pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors}
 pub use anchors::ToolPaths;
 pub use requirements::{
     anchored_arg_positions, anchored_net_args, concat_static_prefix, os_requirements,
-    os_requirements_deferring, requirement_target_positions, resolve_anchored_args, OsRequirement,
+    os_possible_uses, os_requirements_deferring, requirement_target_positions, resolve_anchored_args, OsRequirement,
 };
 
 #[cfg(test)]

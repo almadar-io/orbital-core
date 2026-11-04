@@ -368,6 +368,9 @@ struct Registry {
     /// session's view record never holds their frames. Rebuilt with `trait_homes`.
     endpoint_traits: Arc<RwLock<HashSet<String>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
+    /// Each trait's embedded children (`@trait.X` in its config or state machine), read once when it registers;
+    /// a definition never changes after registration, so a dispatch never re-walks it.
+    embedded_trait_refs: Arc<RwLock<HashMap<String, Arc<Vec<String>>>>>,
     /// Every registered inline `EntityDefinition`, keyed by entity name —
     /// populated additively alongside `entity_policies` in `register_schema`
     /// (same loop, same inline-only/additive-across-registrations contract).
@@ -738,6 +741,7 @@ impl RuntimeKernel {
                 trait_homes: Arc::new(RwLock::new(HashMap::new())),
                 endpoint_traits: Arc::new(RwLock::new(HashSet::new())),
                 trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+                embedded_trait_refs: Arc::new(RwLock::new(HashMap::new())),
                 entity_definitions,
                 entity_defaults: Arc::new(RwLock::new(HashMap::new())),
                 entity_policies,

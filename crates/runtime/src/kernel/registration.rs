@@ -617,6 +617,7 @@ impl RuntimeKernel {
         *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
         *fork.registry.endpoint_traits.write() = self.registry.endpoint_traits.read().clone();
         *fork.registry.trait_definitions.write() = self.registry.trait_definitions.read().clone();
+        *fork.registry.embedded_trait_refs.write() = self.registry.embedded_trait_refs.read().clone();
         *fork.registry.sealed_emit_fields.write() = self.registry.sealed_emit_fields.read().clone();
         *fork.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
         *fork.registry.embed_index.write() = self.registry.embed_index.read().clone();
@@ -685,6 +686,8 @@ impl RuntimeKernel {
         debug!(trait_name = %trait_def.name, "Registering trait");
         self.state_manager.write().register_shared_trait(Arc::clone(&trait_def));
         self.register_sealed_emit_fields(&trait_def);
+        let refs = Arc::new(super::callsite_capture::embedded_trait_refs(&trait_def));
+        self.registry.embedded_trait_refs.write().insert(trait_def.name.clone(), refs);
         self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
         Ok(())
     }

@@ -277,19 +277,18 @@ fn a_null_env_entry_passes_the_host_value_only_when_granted() {
 }
 
 #[test]
-fn unknown_pids_are_closed_and_the_host_pid_is_never_killable() {
+fn unknown_pids_are_closed_and_the_host_pid_needs_the_self_signal_grant() {
     let (g, h) = (grants(), OsHandles::default());
     for op_args in [
         (OsOp::Wait, vec![Value::Number(999_999.0)]),
         (OsOp::Kill, vec![Value::Number(999_999.0), s("TERM")]),
-        (
-            OsOp::Kill,
-            vec![Value::Number(f64::from(std::process::id())), s("TERM")],
-        ),
     ] {
         let e = call(&g, &h, op_args.0, op_args.1).expect_err("closed");
         assert_eq!(e.kind, OsErrorKind::Closed);
     }
+    let own = vec![Value::Number(f64::from(std::process::id())), s("TERM")];
+    let e = call(&g, &h, OsOp::Kill, own).expect_err("denied");
+    assert_eq!(e.kind, OsErrorKind::Denied, "EXEC-CONC-6: the program's own pid without sys self-signal is refused, not unknown");
 }
 
 #[test]

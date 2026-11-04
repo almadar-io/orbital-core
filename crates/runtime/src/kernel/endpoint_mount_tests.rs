@@ -192,6 +192,17 @@ fn control_a_child_its_composer_has_composed_is_mounted_again() {
     assert_eq!(names(kernel.route_mounts("/")), ["Host", "Child"]);
 }
 
+#[test]
+fn a_traits_embedded_refs_are_read_once_at_registration_and_walked_from_the_registry() {
+    let kernel = composer_kernel(true);
+    let refs = kernel.registry.embedded_trait_refs.read();
+    assert_eq!(refs.get("Host").map(|r| r.as_slice()), Some(&["Child".to_string()][..]));
+    assert_eq!(refs.get("Child").map(|r| r.len()), Some(0), "control: a trait that embeds nothing has an empty entry");
+    drop(refs);
+    assert_eq!(kernel.trait_refs_from(&["Host".to_string()]), ["Child"]);
+    assert!(kernel.trait_refs_from(&["Missing".to_string()]).is_empty(), "edge: an unregistered root refers to nothing");
+}
+
 fn paged() -> RuntimeKernel {
     kernel(
         serde_json::json!([
