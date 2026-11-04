@@ -789,6 +789,18 @@ impl ClientCore {
             .map(|kernel| kernel.canvas_theme())
     }
 
+    pub fn resolved_theme(&self) -> Option<orbital_core_base::theme::ResolvedTheme> {
+        self.client_kernel
+            .as_ref()
+            .map(|kernel| kernel.resolved_theme())
+    }
+
+    pub fn set_theme_mode(&self, mode: orbital_core_base::theme::ThemeMode) {
+        if let Some(kernel) = &self.client_kernel {
+            kernel.set_theme_mode(mode);
+        }
+    }
+
     /// The compiler's predictions (`crate::ir::await_render_rows_from_resolved`); a
     /// portal slot never opens for a skeleton, as on the web.
     pub fn set_await_renders(&mut self, rows: Vec<orbital_core_base::ir::types::AwaitRenderRow>) {

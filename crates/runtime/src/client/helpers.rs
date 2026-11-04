@@ -5,8 +5,10 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
+use orbital_core_eval::evaluator::{BindingContextBuilder, Evaluator};
 use std::collections::HashMap;
 
 // Calendar derivation helpers ride the same glob import every generated renderer
@@ -361,14 +363,24 @@ pub fn resolve_row_set_markers(
     }
 }
 
+fn inline_entity_rows(entity: &Value) -> Option<Vec<Value>> {
+    match entity {
+        Value::Array(rows) => Some(rows.clone().into_inner()),
+        Value::Object(_) => Some(vec![entity.clone()]),
+        _ => None,
+    }
+}
+
 /// HashMap-backed variant of [`get_entity_rows`] for backends whose render view
 /// holds the entity cache as a plain map (the Dioxus backend's `DioxusView`).
-/// Identical precedence: inline `entity` array → cache lookup by type name →
+/// Identical precedence: inline `entity` row or array → cache lookup by type name →
 /// explicit `rows`/`items`/`data`.
 pub fn get_entity_rows_from(props: &Value, entities: &HashMap<String, Vec<Value>>) -> Vec<Value> {
     if let Some(obj) = props.as_object() {
+        if let Some(rows) = obj.get("entity").and_then(inline_entity_rows) {
+            return rows;
+        }
         match obj.get("entity") {
-            Some(Value::Array(rows)) => return rows.clone().into_inner(),
             Some(Value::String(entity)) if !entity.is_empty() => {
                 if let Some(cached) = entities.get(entity.as_str()) {
                     if !cached.is_empty() {
@@ -387,12 +399,15 @@ pub fn get_entity_rows_from(props: &Value, entities: &HashMap<String, Vec<Value>
 /// The `entity` prop is a resolved binding (the kernel runs every effect through
 /// `BindingContext::resolve_value`), so it arrives as: (a) an inline array — the loaded
 /// collection (`@payload.data`, `@entity.items`, …) → use it directly; or (b) a type-name
-/// string → read the fetch cache by type. Falls back to explicit `rows`/`items`/`data`.
+/// string → read the fetch cache by type. A single resolved row is one collection item.
+/// Falls back to explicit `rows`/`items`/`data`.
 /// One owner for "where do a table's rows come from", instead of inlining it per renderer.
 pub fn get_entity_rows(props: &Value, ctx: &RenderContext<'_>) -> Vec<Value> {
     if let Some(obj) = props.as_object() {
+        if let Some(rows) = obj.get("entity").and_then(inline_entity_rows) {
+            return rows;
+        }
         match obj.get("entity") {
-            Some(Value::Array(rows)) => return rows.clone().into_inner(),
             Some(Value::String(entity)) if !entity.is_empty() => {
                 if let Some(cached) = ctx.entity_data(entity) {
                     if !cached.is_empty() {
@@ -479,6 +494,108 @@ pub fn render_item_param_body(ri: &Value) -> Option<(String, &Value)> {
         return Some((p, &arr[2]));
     }
     None
+}
+
+/// Bind a row action's authored lambda to the same evaluator used by the kernel.
+pub fn evaluate_row_action_lambda(
+    lambda: &Value,
+    row: &Value,
+    user: Option<&Value>,
+    entity: Option<&Value>,
+    config: Option<&Value>,
+) -> Result<Value, String> {
+    let parts = lambda
+        .as_array()
+        .ok_or("row action must be a lambda array")?;
+    if parts.len() != 3 || parts[0].as_str() != Some("fn") {
+        return Err("row action must be a single-parameter fn".into());
+    }
+    let parameter = parts[1]
+        .as_str()
+        .or_else(|| {
+            let params = parts[1].as_array()?;
+            if params.len() == 1 {
+                params[0].as_str()
+            } else {
+                None
+            }
+        })
+        .ok_or("row action parameter must be a name")?
+        .trim_start_matches('@');
+    if parameter.is_empty() {
+        return Err("row action parameter must not be empty".into());
+    }
+    let anonymous = orbital_core_base::viewer::ANONYMOUS;
+    let default_user = Value::object(
+        [
+            ("id".into(), Value::string(anonymous)),
+            ("role".into(), Value::string(anonymous)),
+        ]
+        .into_iter()
+        .collect::<ValueMap>(),
+    );
+    let mut builder = BindingContextBuilder::new()
+        .local(parameter, row.clone())
+        .user(user.unwrap_or(&default_user).clone())
+        .state(Value::string("idle"));
+    if let Some(entity) = entity {
+        builder = builder.entity(entity.clone());
+    }
+    if let Some(config) = config {
+        builder = builder.config(config.clone());
+    }
+    let body = SExpression::try_from(parts[2].clone()).map_err(|error| error.to_string())?;
+    Evaluator::new()
+        .evaluate(&body, &builder.build())
+        .map_err(|error| error.to_string())
+}
+
+/// Resolve a row action destination through the same evaluator as its condition and payload.
+pub fn row_action_route(action: &Value, row: &Value, user: Option<&Value>) -> Result<Option<String>, String> {
+    let Some(destination) = action.get("navigatesTo") else {
+        return Ok(None);
+    };
+    if matches!(destination, Value::Null) {
+        return Ok(None);
+    }
+    let value = if let Some(route) = destination.as_str() {
+        Value::string(route)
+    } else {
+        evaluate_row_action_lambda(destination, row, user, None, None)?
+    };
+    value.as_str()
+        .map(|route| Some(route.to_string()))
+        .ok_or_else(|| "row action navigatesTo must evaluate to a string".to_string())
+}
+
+/// A malformed or failing authored condition is never treated as permission to show an action.
+pub fn row_action_is_shown(action: &Value, row: &Value, user: Option<&Value>) -> bool {
+    let Some(when) = action.get("when") else {
+        return true;
+    };
+    matches!(
+        evaluate_row_action_lambda(when, row, user, None, None),
+        Ok(Value::Bool(true))
+    )
+}
+
+/// The event payload every row action emits, including its authored payload fields.
+pub fn row_action_payload(action: &Value, row: &Value, user: Option<&Value>) -> Value {
+    let mut fields = ValueMap::default();
+    if let Some(id) = row.get("id") {
+        fields.insert("id".into(), id.clone());
+    }
+    fields.insert("row".into(), row.clone());
+    if let Some(declared) = action.get("payload") {
+        if let Ok(Value::Object(extra)) =
+            evaluate_row_action_lambda(declared, row, user, None, None)
+        {
+            for (key, value) in extra.iter() {
+                fields.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    Value::Object(fields.into())
 }
 
 /// Apply a `data-list` / `data-grid` `renderItem` lambda to every row: bind the
@@ -1156,5 +1273,45 @@ mod tests {
         assert_eq!(obj.get("name"), Some(&Value::string("Alice")));
         assert_eq!(obj.get("age"), Some(&Value::Number(30.0)));
         assert_eq!(obj.get("active"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn collection_display_keeps_a_single_resolved_entity_row() {
+        let row = json_value(r#"{"id":"todo-1","title":"Write tests"}"#);
+        let props = json_value(r#"{"entity":{"id":"todo-1","title":"Write tests"}}"#);
+        assert_eq!(get_entity_rows_from(&props, &HashMap::new()), vec![row]);
+    }
+
+    #[test]
+    fn row_action_conditions_and_payload_use_kernel_evaluator() {
+        let row = json_value(r#"{"id":"todo-1","done":false,"ownerId":"alice"}"#);
+        let action = json_value(
+            r#"{
+            "when":["fn","row",["=",["object/get","@row","ownerId"],"@user.id"]],
+            "payload":["fn","row",{"completed":["not",["object/get","@row","done"]],"rowId":"@row.id"}]
+        }"#,
+        );
+        let alice = json_value(r#"{"id":"alice","role":"member"}"#);
+        let bob = json_value(r#"{"id":"bob","role":"member"}"#);
+        assert!(row_action_is_shown(&action, &row, Some(&alice)));
+        assert!(!row_action_is_shown(&action, &row, Some(&bob)));
+        let payload = row_action_payload(&action, &row, Some(&alice));
+        assert_eq!(payload.get("id"), row.get("id"));
+        assert_eq!(payload.get("row"), Some(&row));
+        assert_eq!(payload.get("completed"), Some(&Value::Bool(true)));
+        assert_eq!(payload.get("rowId"), row.get("id"));
+    }
+
+    #[test]
+    fn row_action_routes_resolve_literal_and_row_lambda_without_emitting() {
+        let row = json_value(r#"{"id":"todo-1"}"#);
+        let literal = json_value(r#"{"navigatesTo":"/tasks"}"#);
+        let dynamic = json_value(r#"{"navigatesTo":["fn","row",["str/concat","/tasks/","@row.id"]]}"#);
+        assert_eq!(row_action_route(&literal, &row, None), Ok(Some("/tasks".into())));
+        assert_eq!(row_action_route(&dynamic, &row, None), Ok(Some("/tasks/todo-1".into())));
+        assert_eq!(row_action_route(&json_value("{}"), &row, None), Ok(None));
+        assert_eq!(row_action_route(&json_value(r#"{"navigatesTo":null}"#), &row, None), Ok(None));
+        let invalid = json_value(r#"{"navigatesTo":["fn","row",true]}"#);
+        assert!(row_action_route(&invalid, &row, None).is_err());
     }
 }

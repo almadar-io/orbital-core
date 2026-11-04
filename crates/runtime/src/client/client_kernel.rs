@@ -132,12 +132,19 @@ impl Drop for FlightLease {
     }
 }
 
-/// Monotonic per-process counter — good enough for a client id that only needs to
-/// be unique within one running client (no cross-process/cross-restart identity
-/// requirement), without pulling a UUID dependency into this wave.
 fn next_client_id() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    format!("client-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    #[cfg(feature = "std")]
+    {
+        let mut random = [0u8; 16];
+        getrandom::getrandom(&mut random).expect("client session id needs OS randomness");
+        format!("client-{:032x}-{sequence}", u128::from_be_bytes(random))
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        format!("client-{sequence}")
+    }
 }
 
 /// In-process client-role kernel: Client env, the one `ServerLegCollector`
@@ -301,6 +308,10 @@ impl ClientKernel {
     /// suffix win.
     pub fn set_theme_mode(&self, mode: orbital_core_base::theme::ThemeMode) {
         self.embedded.kernel().set_theme_mode(mode);
+    }
+
+    pub fn resolved_theme(&self) -> orbital_core_base::theme::ResolvedTheme {
+        self.embedded.kernel().resolved_theme()
     }
 
     /// The resolved theme's `canvasTheme` (orbital-core `canvas_theme`): what the Rust-drawn scenes
