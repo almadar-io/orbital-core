@@ -452,6 +452,61 @@ fn a_list_literal_of_unlike_tuples_is_a_list_of_one_element_type() {
 }
 
 #[test]
+fn records_that_differ_only_by_int_and_number_fields_are_one_list_type() {
+    // riya-level-accum's skateCurve: `{ x: -9.6, y: 1 }` beside `{ x: -8, y: 1.1 }`.
+    let map = op(json!([p("arr", list(var("T")))]), list(var("T")), Some(1));
+    let row = |x: OirType, y: OirType| OirType::Struct {
+        additional: None,
+        fields: vec![OirField::new("x", x), OirField::new("y", y)].into(),
+    };
+    let samples = OirType::Tuple { items: vec![row(OirType::Number, OirType::Integer), row(OirType::Integer, OirType::Number)] };
+    assert_eq!(
+        call(&map, &[ty(samples)], Mode::Static),
+        Ok(Some(OirType::array(row(OirType::Number, OirType::Number))))
+    );
+    let unlike = OirType::Tuple { items: vec![row(OirType::Number, OirType::Integer), row(OirType::String, OirType::Number)] };
+    assert!(call(&map, &[ty(unlike)], Mode::Static).is_err(), "control: a string and a number field do not join");
+    // ui-space-shmup-board's drawables: the flame record has no `animation`, the hero record has one.
+    let flame = OirType::Struct { additional: None, fields: vec![OirField::new("x", OirType::Integer)].into() };
+    let hero = OirType::Struct {
+        additional: None,
+        fields: vec![OirField::new("x", OirType::Number), OirField::new("animation", OirType::String)].into(),
+    };
+    let mut animation = OirField::new("animation", OirType::String);
+    animation.required = false;
+    assert_eq!(
+        call(&map, &[ty(OirType::Tuple { items: vec![flame, hero] })], Mode::Static),
+        Ok(Some(OirType::array(OirType::Struct {
+            additional: None,
+            fields: vec![OirField::new("x", OirType::Number), animation].into(),
+        })))
+    );
+}
+
+#[test]
+fn a_list_literal_after_an_argument_that_bound_its_element_is_checked_item_by_item() {
+    // std-tactics-board-2d: `(array/concat @baseStats @config.extraStats)`, `baseStats : [HudStat]`, `value : string | number`.
+    let concat = op(json!([p("a", list(var("T"))), p("b", list(var("T")))]), list(var("T")), Some(2));
+    let stat = |value: OirType| OirType::Struct {
+        additional: None,
+        fields: vec![OirField::new("label", OirType::String), OirField::new("value", value)].into(),
+    };
+    let declared = stat(OirType::Union {
+        variants: vec![OirField::new("string", OirType::String), OirField::new("number", OirType::Number)].into(),
+    });
+    let literal = OirType::Tuple { items: vec![stat(OirType::Integer), stat(OirType::String)] };
+    assert_eq!(
+        call(&concat, &[ty(OirType::array(declared.clone())), ty(literal)], Mode::Static),
+        Ok(Some(OirType::array(declared.clone())))
+    );
+    let stray = OirType::Tuple { items: vec![stat(OirType::Integer), stat(OirType::Boolean)] };
+    assert!(
+        call(&concat, &[ty(OirType::array(declared)), ty(stray)], Mode::Static).is_err(),
+        "control: an item the bound element does not admit"
+    );
+}
+
+#[test]
 fn a_list_of_unlike_items_fits_a_declared_union_element_item_by_item() {
     let call_c = op(json!([p("args", list(json!({ "kind": "union", "of": ["int", "number", "Borrow"] })))]), json!("void"), Some(1));
     let borrow = crate::sealed::sealed_type_ref("Borrow");

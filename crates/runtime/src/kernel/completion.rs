@@ -162,6 +162,15 @@ pub(super) fn error_payload(result: &EffectResult, errors: Option<Value>) -> Val
     Value::object(payload)
 }
 
+/// The `{ error, code? }` failure a persist or fetch delivers: `error` always, `code` only when the store coded it.
+fn failure_payload_with_code(result: &EffectResult) -> Value {
+    let mut payload = error_payload(result, None);
+    if let (Value::Object(fields), Some(c)) = (&mut payload, result.code) {
+        fields.insert("code".into(), Value::string(c.as_str().to_string()));
+    }
+    payload
+}
+
 pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult, key: Option<&str>) -> Option<EffectResult> {
     let (event, payload) = match &result.outcome {
         EffectOutcome::Executed => {
@@ -184,13 +193,7 @@ pub(super) fn fetch_completion_emit(emit: &FetchEmit, result: &EffectResult, key
             (event, Value::object(payload))
         }
         EffectOutcome::Failed => {
-            let mut payload = error_payload(result, None);
-            if let Value::Object(fields) = &mut payload {
-                if let Some(c) = result.code {
-                    fields.insert("code".into(), Value::string(c.as_str().to_string()));
-                }
-            }
-            (emit.failure.clone()?, payload)
+            (emit.failure.clone()?, failure_payload_with_code(result))
         }
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
@@ -212,24 +215,18 @@ pub(super) fn persist_completion_emit(
 ) -> Option<EffectResult> {
     let (event, payload) = match result.outcome {
         EffectOutcome::Failed => {
-            let mut payload = ValueMap::default();
-            if let Some(err) = &result.error {
-                payload.insert("error".into(), Value::string(err.clone()));
-            }
-            if let Some(c) = result.code {
-                payload.insert("code".into(), Value::string(c.as_str().to_string()));
-            }
-            if matches!(effect, Effect::PersistBatch { .. }) {
+            let mut payload = failure_payload_with_code(result);
+            if let (Value::Object(fields), true) = (&mut payload, matches!(effect, Effect::PersistBatch { .. })) {
                 let at = result.batch_failure;
                 if let Some(f) = at {
-                    payload.insert("index".into(), Value::Number(f.index as f64));
+                    fields.insert("index".into(), Value::Number(f.index as f64));
                 }
-                payload.insert(
+                fields.insert(
                     "completedCount".into(),
                     Value::Number(at.map_or(0, |f| f.completed_count) as f64),
                 );
             }
-            (emit.failure.clone()?, Value::object(payload))
+            (emit.failure.clone()?, payload)
         }
         EffectOutcome::Executed => {
             let event = emit.success.clone()?;
@@ -345,5 +342,21 @@ mod absent_not_null_tests {
             &emitted(persist_completion_emit(&routes(), &delete, &done, &ctx)),
             "persist delete without id",
         );
+    }
+
+    #[test]
+    fn a_persist_failure_without_a_message_still_delivers_error() {
+        let ctx = BindingContext::new();
+        for effect in [
+            persist(PersistOperation::Create, None),
+            Effect::PersistBatch { ops: Value::array(Vec::new()), emit: Some(routes()) },
+        ] {
+            let mut failed = EffectResult::failed(effect.clone(), "boom");
+            failed.error = None;
+            let payload = emitted(persist_completion_emit(&routes(), &effect, &failed, &ctx));
+            let fields = payload.as_object().expect("an object payload");
+            assert_eq!(fields.get("error"), Some(&Value::string(String::new())));
+            assert!(fields.get("code").is_none());
+        }
     }
 }

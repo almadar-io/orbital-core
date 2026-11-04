@@ -397,3 +397,47 @@ pub(super) fn unify_structs(all: &[OirType]) -> Option<OirType> {
     let joined = OirType::Struct { fields: merged.into(), additional };
     Some(if all.iter().any(OirType::is_optional) { OirType::optional(joined) } else { joined })
 }
+
+/// The one type list items share once each field is widened to the wider of its two types: `{ x: number, y: int }`
+/// and `{ x: int, y: number }` are both `{ x: number, y: number }`. `None` when a position has no wider type.
+pub(super) fn widened_items(entries: &[OirType]) -> Option<OirType> {
+    let (first, rest) = entries.split_first()?;
+    rest.iter().try_fold(first.clone(), |held, next| widened(&held, next))
+}
+
+fn widened(a: &OirType, b: &OirType) -> Option<OirType> {
+    if sub(a, b).is_some() {
+        return Some(b.clone());
+    }
+    if sub(b, a).is_some() {
+        return Some(a.clone());
+    }
+    match (a, b) {
+        // A field only one record has is optional in the shared record.
+        (OirType::Struct { fields: left, additional: None }, OirType::Struct { fields: right, additional: None }) => {
+            let mut fields = left
+                .iter()
+                .map(|l| {
+                    let mut field = l.clone();
+                    match right.iter().find(|r| r.name == l.name) {
+                        Some(r) => {
+                            field.field_type = widened(&l.field_type, &r.field_type)?;
+                            field.required = l.required && r.required;
+                        }
+                        None => field.required = false,
+                    }
+                    Some(field)
+                })
+                .collect::<Option<Vec<_>>>()?;
+            fields.extend(right.iter().filter(|r| !left.iter().any(|l| l.name == r.name)).map(|r| {
+                let mut field = r.clone();
+                field.required = false;
+                field
+            }));
+            Some(OirType::Struct { additional: None, fields: fields.into() })
+        }
+        (OirType::Array { inner: l }, OirType::Array { inner: r }) => Some(OirType::array(widened(l, r)?)),
+        (OirType::Optional { inner: l }, OirType::Optional { inner: r }) => Some(OirType::optional(widened(l, r)?)),
+        _ => None,
+    }
+}

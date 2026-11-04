@@ -244,6 +244,20 @@ impl CallBindings {
             || crate::type_compat::sub_with_named(b, a, &resolve).is_some()
     }
 
+    /// The type an earlier argument bound the list element `of` to, when `of` is a bare type variable.
+    fn bound_element(&self, of: &OperatorTypeRef) -> Option<OirType> {
+        match of {
+            OperatorTypeRef::Tagged(OperatorTypeRefKind::Var { name, .. }) => self.bound(name).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Whether `item` is admitted where `slot` is declared.
+    fn admits(&self, item: &OirType, slot: &OirType) -> bool {
+        let resolve = |name: &str| self.named_types.get(name).cloned();
+        crate::type_compat::sub_with_named(item, slot, &resolve).is_some()
+    }
+
     /// An empty list reached a list position whose element is `of`: the variables in it are typed by a sibling
     /// argument or not at all.
     fn note_empty_element(&mut self, of: &OperatorTypeRef) {

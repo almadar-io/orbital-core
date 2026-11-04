@@ -67,10 +67,16 @@ pub struct ShapeField {
     pub fields: &'static [ShapeField],
     /// The object may carry keys beyond `fields` (the table's `open`).
     pub open: bool,
+    /// The producer always sets this field; a consumer may read it as present.
+    pub required: bool,
 }
 
 const fn field(name: &'static str, field_type: &'static str) -> ShapeField {
-    ShapeField { name, field_type, fields: &[], open: false }
+    ShapeField { name, field_type, fields: &[], open: false, required: false }
+}
+
+const fn required_field(name: &'static str, field_type: &'static str) -> ShapeField {
+    ShapeField { name, field_type, fields: &[], open: false, required: true }
 }
 
 /// What distinguishes a call site within one operator's contract.
@@ -209,29 +215,29 @@ pub const KEYED_CALL_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), 
 
 /// A `persist` failure: the message and the store's code (`duplicate-id`, `not-found`, `no-row-key`; absent for
 /// any other cause, such as an access denial).
-pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+pub const PERSIST_FAILURE_SHAPE: &[ShapeField] = &[required_field("error", "string"), field("code", "string")];
 
 /// A `fetch` failure: the message and the code (`not-found` for a by-id miss; absent for any other cause, until
 /// the read contract gains a typed refusal, `G-ORB-334`).
-pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("code", "string")];
+pub const FETCH_FAILURE_SHAPE: &[ShapeField] = &[required_field("error", "string"), field("code", "string")];
 
 /// A keyed `fetch` failure: the unkeyed failure with the call's `key` beside it (EXEC-FETCH-3).
 pub const KEYED_FETCH_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("code", "string"), field("key", "string")];
+    &[required_field("error", "string"), field("code", "string"), field("key", "string")];
 
 /// An agent-port or program-host failure: the message, and a program's validator issues when it has any.
-pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("errors", "array")];
+pub const SUBSTRATE_FAILURE_SHAPE: &[ShapeField] = &[required_field("error", "string"), field("errors", "array")];
 
 /// A keyed agent-port or program op's failure: the substrate failure with the call's `key` beside it.
 pub const KEYED_SUBSTRATE_FAILURE_SHAPE: &[ShapeField] =
-    &[field("error", "string"), field("errors", "array"), field("key", "string")];
+    &[required_field("error", "string"), field("errors", "array"), field("key", "string")];
 
 /// A `persist batch` failure: the persist failure (message and the failing operation's store code, absent for a cause
 /// that has none), the failing operation's position in the batch (absent when no single operation is at fault, such
 /// as operations that do not evaluate) and the number of operations that completed before it (rolled back by a store
 /// that runs the batch atomically).
 pub const PERSIST_BATCH_FAILURE_SHAPE: &[ShapeField] = &[
-    field("error", "string"),
+    required_field("error", "string"),
     field("code", "string"),
     field("index", "number"),
     field("completedCount", "number"),
@@ -273,6 +279,7 @@ fn shape_of_fields(fields: &HashMap<String, OperatorTypeRef>) -> &'static [Shape
             field_type: Box::leak(fields[name].kind_name().to_string().into_boxed_str()),
             fields: nested_shape(&fields[name]),
             open: nested_open(&fields[name]),
+            required: false,
         })
         .collect();
     Box::leak(shape.into_boxed_slice())
@@ -783,4 +790,21 @@ mod tests {
         assert!(undeclared_reads(&["whatever"], &ProducedPayload::Opaque, &[]).is_empty());
     }
 
+    #[test]
+    fn only_failures_whose_kernel_builder_always_sets_error_mark_it_required() {
+        let required = |shape: &[ShapeField]| shape.iter().filter(|f| f.required).map(|f| f.name).collect::<Vec<_>>();
+        for shape in [
+            PERSIST_FAILURE_SHAPE,
+            PERSIST_BATCH_FAILURE_SHAPE,
+            FETCH_FAILURE_SHAPE,
+            KEYED_FETCH_FAILURE_SHAPE,
+            SUBSTRATE_FAILURE_SHAPE,
+            KEYED_SUBSTRATE_FAILURE_SHAPE,
+        ] {
+            assert_eq!(required(shape), vec!["error"]);
+        }
+        for shape in [HOST_FAILURE_SHAPE, KEYED_CALL_FAILURE_SHAPE, OS_FAILURE_SHAPE, TAB_FAILURE_SHAPE, MODEL_FAILURE_SHAPE] {
+            assert!(required(shape).is_empty(), "control: an unproven builder stays optional");
+        }
+    }
 }

@@ -185,6 +185,17 @@ pub(super) fn bind_type(
                             bind_type(of, &element(&OirType::Tuple { items: merged }), b, mode)?;
                             bind_literal_keys(of, actual, b, mode)
                         }
+                        // An earlier argument bound the element: each item is checked against it.
+                        Some(_)
+                            if b.bound_element(of).is_some_and(|bound| items.iter().all(|t| b.admits(t, &bound))) =>
+                        {
+                            bind_literal_keys(of, actual, b, mode)
+                        }
+                        Some(_) if widened_items(items).is_some() => {
+                            let joined = widened_items(items).unwrap_or_else(OirType::erased);
+                            bind_type(of, &element(&joined), b, mode)?;
+                            bind_literal_keys(of, actual, b, mode)
+                        }
                         // The empty list has no element to bind.
                         None => {
                             b.note_empty_element(of);
