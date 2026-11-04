@@ -112,6 +112,7 @@ pub enum KernelError {
 
 pub mod agent_ports;
 mod guests;
+pub mod guest_hosting;
 pub use guests::GuestSession;
 pub(crate) use guests::run_session as run_guest_session;
 mod guest_controls;
@@ -480,6 +481,8 @@ pub struct RuntimeKernel {
     guests: RwLock<HashMap<String, guests::GuestSession>>,
     /// The last guest handle number this kernel issued.
     guest_seq: std::sync::atomic::AtomicU64,
+    /// The host each guest this kernel opens runs under, when the kernel's own host offers one (EXEC-CONC-7).
+    guest_hosting: RwLock<Option<Arc<dyn guest_hosting::GuestHosting>>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
@@ -814,6 +817,7 @@ impl RuntimeKernel {
             removed_rows: RwLock::new(Vec::new()),
             guests: RwLock::new(HashMap::new()),
             guest_seq: std::sync::atomic::AtomicU64::new(0),
+            guest_hosting: RwLock::new(None),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
     }

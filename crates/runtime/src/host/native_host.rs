@@ -58,14 +58,21 @@ impl SecretSource for NoSecrets {
 
 /// One guest session dispatch on this host (EXEC-CONC-7): `event` with `payload` to each of `targets` in the session's
 /// kernel, its asks answered by a host over the session's own rows holding exactly `grants`, no credentials and no
-/// substrate host. A wire-detached session (no live kernel) is refused.
+/// substrate host, or by the guest's own host when it is hosted. A wire-detached session (no live kernel) is refused.
 fn run_guest(kernel: &GuestKernel, targets: &[String], event: &str, payload: &Value, grants: &OsGrants) -> Result<Value, SubstrateFailure> {
     let Some(session) = kernel.0.as_ref() else {
         return Err(guest_failure(OsErrorKind::Unsupported, "program/dispatch: the guest session is not live on this host"));
     };
-    let host = NativeHost::new(session.source.clone(), Arc::new(NoSecrets), grants.clone(), Arc::new(OsHandles::default()), Arc::new(|_: Option<&CallSite>, _: Value| {}));
-    crate::kernel::run_guest_session(session, targets, event, payload, &|request: &IoRequest| host.answer(request))
-        .map_err(|message| guest_failure(OsErrorKind::Io, message))
+    let ran = match &session.source {
+        Some(source) => {
+            let host = NativeHost::new(source.clone(), Arc::new(NoSecrets), grants.clone(), Arc::new(OsHandles::default()), Arc::new(|_: Option<&CallSite>, _: Value| {}));
+            crate::kernel::run_guest_session(session, targets, event, payload, &|request: &IoRequest| host.answer(request))
+        }
+        None => crate::kernel::run_guest_session(session, targets, event, payload, &|_: &IoRequest| {
+            IoAnswer::Service(Err("a hosted guest's asks are answered by its own host".to_string()))
+        }),
+    };
+    ran.map_err(|message| guest_failure(OsErrorKind::Io, message))
 }
 
 #[derive(Clone)]

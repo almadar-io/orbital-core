@@ -46,7 +46,10 @@ pub(super) fn guest_option<'a>(op: &str, args: &'a [Value]) -> Option<&'a Value>
 #[derive(Clone)]
 pub struct GuestSession {
     pub(crate) kernel: Arc<RuntimeKernel>,
-    pub(crate) source: Arc<InMemoryEntityCache>,
+    /// The rows of a guest the opener's kernel runs itself; a hosted guest's rows are its host's.
+    pub(crate) source: Option<Arc<InMemoryEntityCache>>,
+    /// The host a hosted guest runs under (EXEC-CONC-7): its dispatches and mounts go through it.
+    pub(crate) host: Option<Arc<dyn super::guest_hosting::GuestHost>>,
     pub(crate) grants: Option<OsGrants>,
     arenas: Vec<(i64, Value)>,
     route: Arc<RwLock<GuestRoute>>,
@@ -106,6 +109,10 @@ pub(crate) fn run_session(
 ) -> Result<Value, String> {
     let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
     for trait_name in targets {
+        if let Some(host) = &session.host {
+            outcomes.extend(host.dispatch(trait_name, event, payload.clone()).map_err(|e| format!("program/dispatch: {e}"))?);
+            continue;
+        }
         let progress = session
             .kernel
             .start_dispatch(trait_name, None, event, payload.clone(), None, None)
@@ -253,13 +260,16 @@ fn routed_mounts(
 /// Mount `seeds` in `guest` as the route mount of `route` (EXEC-SEED-7: its `$MOUNT` listeners run first) and collect what moved.
 fn mount_seeds(
     guest: &RuntimeKernel,
+    host: Option<&dyn super::guest_hosting::GuestHost>,
     route: Option<&str>,
     seeds: &[MountSeed],
     op: &str,
 ) -> Result<Vec<(String, ProcessEventResult)>, AgentPortFailure> {
-    guest
-        .dispatch_route_mount(route, seeds, None, Value::Null)
-        .map_err(|e| failure(format!("{op}: mounting {}: {e}", route.unwrap_or_default())))
+    let mounted = match host {
+        Some(host) => host.mount(route, seeds),
+        None => guest.dispatch_route_mount(route, seeds, None, Value::Null).map_err(|e| e.to_string()),
+    };
+    mounted.map_err(|e| failure(format!("{op}: mounting {}: {e}", route.unwrap_or_default())))
 }
 
 impl RuntimeKernel {
@@ -410,30 +420,41 @@ impl RuntimeKernel {
         }
         let carries_lazy = carried.is_some();
         let mut lazy_programs = carried.unwrap_or_default();
-        if let Some(grants) = &granted {
+        let host = self.guest_hosting().map(|hosting| hosting.open());
+        // A guest holds exactly the grants it was passed: none when none were, even under a host.
+        if granted.is_some() || host.is_some() {
             for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
-                carried_schema.os_grants = Some(grants.clone());
+                carried_schema.os_grants = granted.clone();
                 carried_schema
                     .orbitals
                     .iter_mut()
                     .for_each(|orbital| orbital.os_grants = None);
             }
         }
-        let source = Arc::new(InMemoryEntityCache::new());
-        let guest = RuntimeKernel::new(
-            RuntimeEnvironment::Server,
-            source.clone(),
-            KernelConfig {
-                runtime_rows_in_kernel: true,
-                ..KernelConfig::default()
-            },
-        );
+        let (guest, source) = match &host {
+            Some(host) => (host.kernel(), None),
+            None => {
+                let source = Arc::new(InMemoryEntityCache::new());
+                let guest = RuntimeKernel::new(
+                    RuntimeEnvironment::Server,
+                    source.clone(),
+                    KernelConfig {
+                        runtime_rows_in_kernel: true,
+                        ..KernelConfig::default()
+                    },
+                );
+                (Arc::new(guest), Some(source))
+            }
+        };
         if carries_lazy {
             guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));
         }
-        guest
-            .register_schema(schema)
-            .map_err(|e| failure(format!("program/open: {e}")))?;
+        match &host {
+            Some(host) => host.register(schema).map_err(|e| failure(format!("program/open: {e}")))?,
+            None => guest
+                .register_schema(schema)
+                .map_err(|e| failure(format!("program/open: {e}")))?,
+        }
         if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
             seed_guest_rows(&guest, rows, "program/open")?;
         }
@@ -460,15 +481,16 @@ impl RuntimeKernel {
                 seeds.push(seed);
             }
         }
-        let outcomes = mount_seeds(&guest, resolved.as_deref(), &seeds, "program/open")?;
+        let outcomes = mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?;
         let handle = format!(
             "guest-{}",
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
         );
         let mounted = seeds.iter().map(|s| s.r#trait.clone()).collect();
         let session = GuestSession {
-            kernel: Arc::new(guest),
+            kernel: guest,
             source,
+            host,
             grants: granted,
             arenas,
             route: Arc::new(RwLock::new(GuestRoute {
@@ -522,7 +544,7 @@ impl RuntimeKernel {
                 .filter(|seed| !held.mounted.contains(&seed.r#trait))
                 .collect()
         };
-        let outcomes = mount_seeds(guest, resolved.as_deref(), &fresh, "program/navigate")?;
+        let outcomes = mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?;
         {
             let mut held = session.route.write();
             held.mounted.extend(fresh.iter().map(|s| s.r#trait.clone()));
@@ -623,9 +645,11 @@ impl RuntimeKernel {
         }
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         for trait_name in &targets {
-            let ran = guest
-                .dispatch(trait_name, None, event, payload.clone())
-                .map_err(|e| failure(format!("program/dispatch: {e}")))?;
+            let ran = match &session.host {
+                Some(host) => host.dispatch(trait_name, event, payload.clone()),
+                None => guest.dispatch(trait_name, None, event, payload.clone()).map_err(|e| e.to_string()),
+            }
+            .map_err(|e| failure(format!("program/dispatch: {e}")))?;
             outcomes.extend(ran);
         }
         let seed_trait = targets.first().cloned().unwrap_or_default();
@@ -700,7 +724,8 @@ impl GuestSession {
     ) -> Self {
         Self {
             kernel,
-            source,
+            source: Some(source),
+            host: None,
             grants,
             arenas: Vec::new(),
             route: Arc::default(),
