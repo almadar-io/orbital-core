@@ -1962,6 +1962,18 @@ fn additional_records_branch_join_covers_both_extra_value_types() {
 }
 
 #[test]
+fn a_member_present_in_one_branch_and_optional_in_the_other_joins_as_the_optional() {
+    let branch = |ty: OirType| struct_of(&[("url", ty)]);
+    let joined = unify_structs(&[branch(OirType::String), branch(OirType::optional(OirType::String))]).unwrap();
+    assert_eq!(joined, struct_of(&[("url", OirType::optional(OirType::String))]));
+    let reversed = unify_structs(&[branch(OirType::optional(OirType::String)), branch(OirType::String)]).unwrap();
+    assert_eq!(reversed, struct_of(&[("url", OirType::optional(OirType::String))]));
+    let unlike = unify_structs(&[branch(OirType::String), branch(OirType::Number)]).unwrap();
+    let OirType::Struct { fields, .. } = unlike else { panic!("a struct") };
+    assert!(matches!(fields.iter().next().map(|f| &f.field_type), Some(OirType::Union { .. })), "control: unlike member types stay a union");
+}
+
+#[test]
 fn additional_records_merge_retains_typed_extras_and_right_known_fields() {
     let merge = op(json!([p("...objs", json!({ "kind": "var", "name": "R", "bound": { "kind": "record" }, "each": true }))]),
         json!({ "kind": "mergeOf", "of": "R" }), None);

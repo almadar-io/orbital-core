@@ -327,6 +327,11 @@ pub(super) fn join_struct_member_types(types: Vec<OirType>) -> Option<OirType> {
     if types.len() == 1 {
         return Some(first);
     }
+    // Types that differ only in being optional are one type, optional: a member read can be missing in one branch.
+    let inner = unwrap_optional(&first);
+    if types.iter().all(|ty| unwrap_optional(ty) == inner) {
+        return Some(if types.iter().any(OirType::is_optional) { OirType::optional(inner.clone()) } else { first });
+    }
     let list = types[1..].iter().try_fold(first, |prior, next| match (&prior, next) {
         (OirType::Array { inner: left }, OirType::Array { inner: right }) => {
             let records = [(**left).clone(), (**right).clone()];
