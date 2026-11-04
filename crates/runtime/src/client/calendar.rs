@@ -7,10 +7,10 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::value::ValueMap;
 use super::helpers::{get_array, get_number, get_string, get_string_array};
 use chrono::{Datelike, Duration, NaiveDate};
 use orbital_core_base::value::Value;
+use orbital_core_base::value::ValueMap;
 
 /// One day column of the grid.
 #[derive(Debug, Clone)]
@@ -21,15 +21,35 @@ pub struct CalendarDay {
     pub weekday: String,
     /// Short display label ("Jan 1").
     pub label: String,
+    /// Day of month for a day-cell numeral.
+    pub day_number: u32,
+}
+
+fn parse_calendar_date(value: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(value.get(..10)?, "%Y-%m-%d").ok()
+}
+
+fn format_calendar_day(date: NaiveDate) -> CalendarDay {
+    CalendarDay {
+        iso: date.format("%Y-%m-%d").to_string(),
+        weekday: date.format("%a").to_string(),
+        label: date.format("%b %-d").to_string(),
+        day_number: date.day(),
+    }
+}
+
+/// Resolve a day-cell date from an ISO date or datetime, falling back to today.
+pub fn calendar_day(date: Option<&str>) -> CalendarDay {
+    format_calendar_day(
+        date.and_then(parse_calendar_date)
+            .unwrap_or_else(|| chrono::Local::now().date_naive()),
+    )
 }
 
 /// Resolve `weekStart`: parse the prop's ISO date, else the Monday of the current
 /// week (mirrors `getStartOfWeek(new Date())` in the React reference).
 pub fn calendar_week_start(week_start: Option<&str>) -> NaiveDate {
-    let parsed = week_start.and_then(|s| {
-        let end = 10.min(s.len());
-        NaiveDate::parse_from_str(&s[..end], "%Y-%m-%d").ok()
-    });
+    let parsed = week_start.and_then(parse_calendar_date);
     match parsed {
         Some(d) => d,
         None => {
@@ -44,11 +64,7 @@ pub fn calendar_days(start: NaiveDate, window: usize) -> Vec<CalendarDay> {
     (0..window.max(1))
         .map(|i| {
             let d = start + Duration::days(i as i64);
-            CalendarDay {
-                iso: d.format("%Y-%m-%d").to_string(),
-                weekday: d.format("%a").to_string(),
-                label: d.format("%b %-d").to_string(),
-            }
+            format_calendar_day(d)
         })
         .collect()
 }
@@ -141,6 +157,23 @@ mod tests {
     }
 
     #[test]
+    fn test_calendar_day_uses_declared_date_and_today_fallback() {
+        let day = calendar_day(Some("2024-01-01T09:00:00Z"));
+        assert_eq!(day.iso, "2024-01-01");
+        assert_eq!(day.weekday, "Mon");
+        assert_eq!(day.label, "Jan 1");
+        assert_eq!(day.day_number, 1);
+
+        let today = chrono::Local::now()
+            .date_naive()
+            .format("%Y-%m-%d")
+            .to_string();
+        assert_eq!(calendar_day(None).iso, today);
+        assert_eq!(calendar_day(Some("invalid")).iso, today);
+        assert_eq!(calendar_day(Some("ééééééééééé")).iso, today);
+    }
+
+    #[test]
     fn test_day_window() {
         assert_eq!(calendar_day_window(&props(r#"{"dayWindow": 3}"#)), 3);
         assert_eq!(calendar_day_window(&props(r#"{"dayWindow": 99}"#)), 7);
@@ -151,7 +184,10 @@ mod tests {
     #[test]
     fn test_time_slots_default_and_explicit() {
         let slots = calendar_time_slots(&props(r#"{}"#));
-        assert_eq!(slots, vec!["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]);
+        assert_eq!(
+            slots,
+            vec!["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"]
+        );
         let slots = calendar_time_slots(&props(r#"{"timeSlots": ["08:00", "12:00"]}"#));
         assert_eq!(slots, vec!["08:00", "12:00"]);
     }
