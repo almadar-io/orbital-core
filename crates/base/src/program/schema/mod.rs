@@ -8,6 +8,7 @@ pub mod fingerprint;
 pub use fingerprint::{capture_trait_source_declaration, trait_execution_fingerprint};
 pub mod behavior_value;
 pub mod quote;
+pub mod row_route;
 pub mod sexpr;
 pub mod types;
 

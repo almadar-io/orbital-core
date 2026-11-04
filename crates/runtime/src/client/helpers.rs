@@ -5,6 +5,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use orbital_core_base::schema::row_route::{parse_route_literal, parse_row_lambda, RowLambda};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
@@ -504,27 +505,8 @@ pub fn evaluate_row_action_lambda(
     entity: Option<&Value>,
     config: Option<&Value>,
 ) -> Result<Value, String> {
-    let parts = lambda
-        .as_array()
-        .ok_or("row action must be a lambda array")?;
-    if parts.len() != 3 || parts[0].as_str() != Some("fn") {
-        return Err("row action must be a single-parameter fn".into());
-    }
-    let parameter = parts[1]
-        .as_str()
-        .or_else(|| {
-            let params = parts[1].as_array()?;
-            if params.len() == 1 {
-                params[0].as_str()
-            } else {
-                None
-            }
-        })
-        .ok_or("row action parameter must be a name")?
-        .trim_start_matches('@');
-    if parameter.is_empty() {
-        return Err("row action parameter must not be empty".into());
-    }
+    let lambda = SExpression::try_from(lambda.clone()).map_err(|error| error.to_string())?;
+    let RowLambda { param, body } = parse_row_lambda(&lambda).map_err(|error| error.to_string())?;
     let anonymous = orbital_core_base::viewer::ANONYMOUS;
     let default_user = Value::object(
         [
@@ -535,16 +517,14 @@ pub fn evaluate_row_action_lambda(
         .collect::<ValueMap>(),
     );
     let mut builder = BindingContextBuilder::new()
-        .local(parameter, row.clone())
-        .user(user.unwrap_or(&default_user).clone())
-        .state(Value::string("idle"));
+        .local(&param, row.clone())
+        .user(user.unwrap_or(&default_user).clone());
     if let Some(entity) = entity {
         builder = builder.entity(entity.clone());
     }
     if let Some(config) = config {
         builder = builder.config(config.clone());
     }
-    let body = SExpression::try_from(parts[2].clone()).map_err(|error| error.to_string())?;
     Evaluator::new()
         .evaluate(&body, &builder.build())
         .map_err(|error| error.to_string())
@@ -559,7 +539,7 @@ pub fn row_action_route(action: &Value, row: &Value, user: Option<&Value>) -> Re
         return Ok(None);
     }
     let value = if let Some(route) = destination.as_str() {
-        Value::string(route)
+        Value::string(parse_route_literal(route).map_err(|error| error.to_string())?)
     } else {
         evaluate_row_action_lambda(destination, row, user, None, None)?
     };
@@ -580,22 +560,23 @@ pub fn row_action_is_shown(action: &Value, row: &Value, user: Option<&Value>) ->
 }
 
 /// The event payload every row action emits, including its authored payload fields.
-pub fn row_action_payload(action: &Value, row: &Value, user: Option<&Value>) -> Value {
+pub fn row_action_payload(action: &Value, row: &Value, user: Option<&Value>) -> Result<Value, String> {
     let mut fields = ValueMap::default();
     if let Some(id) = row.get("id") {
         fields.insert("id".into(), id.clone());
     }
     fields.insert("row".into(), row.clone());
     if let Some(declared) = action.get("payload") {
-        if let Ok(Value::Object(extra)) =
-            evaluate_row_action_lambda(declared, row, user, None, None)
-        {
-            for (key, value) in extra.iter() {
-                fields.insert(key.clone(), value.clone());
-            }
+        let Value::Object(extra) = evaluate_row_action_lambda(declared, row, user, None, None)
+            .map_err(|error| format!("row action payload: {error}"))?
+        else {
+            return Err("row action payload must evaluate to an object".into());
+        };
+        for (key, value) in extra.iter() {
+            fields.insert(key.clone(), value.clone());
         }
     }
-    Value::Object(fields.into())
+    Ok(Value::Object(fields.into()))
 }
 
 /// Apply a `data-list` / `data-grid` `renderItem` lambda to every row: bind the
@@ -1295,11 +1276,21 @@ mod tests {
         let bob = json_value(r#"{"id":"bob","role":"member"}"#);
         assert!(row_action_is_shown(&action, &row, Some(&alice)));
         assert!(!row_action_is_shown(&action, &row, Some(&bob)));
-        let payload = row_action_payload(&action, &row, Some(&alice));
+        let payload = row_action_payload(&action, &row, Some(&alice)).unwrap();
         assert_eq!(payload.get("id"), row.get("id"));
         assert_eq!(payload.get("row"), Some(&row));
         assert_eq!(payload.get("completed"), Some(&Value::Bool(true)));
         assert_eq!(payload.get("rowId"), row.get("id"));
+    }
+
+    #[test]
+    fn row_action_payload_reports_a_failing_or_non_object_payload() {
+        let row = json_value(r#"{"id":"todo-1"}"#);
+        let two_params = json_value(r#"{"payload":["fn",["a","b"],{"x":1}]}"#);
+        assert!(row_action_payload(&two_params, &row, None).unwrap_err().starts_with("row action payload:"));
+        let scalar = json_value(r#"{"payload":["fn","row","@row.id"]}"#);
+        assert!(row_action_payload(&scalar, &row, None).is_err());
+        assert!(row_action_payload(&json_value("{}"), &row, None).is_ok());
     }
 
     #[test]
@@ -1313,5 +1304,7 @@ mod tests {
         assert_eq!(row_action_route(&json_value(r#"{"navigatesTo":null}"#), &row, None), Ok(None));
         let invalid = json_value(r#"{"navigatesTo":["fn","row",true]}"#);
         assert!(row_action_route(&invalid, &row, None).is_err());
+        let template = json_value(r#"{"navigatesTo":"/tasks/{{row.id}}"}"#);
+        assert!(row_action_route(&template, &row, None).is_err());
     }
 }
