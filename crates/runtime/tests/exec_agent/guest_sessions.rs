@@ -168,6 +168,10 @@ fn opening_a_guest_mounts_its_page_and_its_fetch_answers_from_the_guests_own_row
         "the guest's paint is answered: {after}"
     );
     assert!(
+        after["got"]["rendered"].as_array().is_some_and(|r| !r.is_empty() && r.iter().all(|p| p["embedded"] == false)),
+        "a paint of the page's own trait says it is not embedded: {after}"
+    );
+    assert!(
         after.get("refused").is_none_or(serde_json::Value::is_null),
         "control: nothing was refused: {after}"
     );
@@ -462,4 +466,201 @@ fn edge_rows_that_do_not_fit_or_name_an_undeclared_entity_refuse_the_open() {
         "rows for an entity the program does not declare are refused: {stranger}"
     );
     assert!(misfit["guest"].as_str().unwrap_or_default().is_empty(), "a refused open opens no guest: {misfit}");
+}
+
+fn paints(name: &str, content: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "linkedEntity": "ShopItem",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                ["render-ui", "main", { "type": "typography", "content": content }]
+            ] }]
+        }
+    })
+}
+
+fn lists(name: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "linkedEntity": "ShopItem",
+        "stateMachine": {
+            "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }],
+            "transitions": [
+                { "from": "loading", "to": "loading", "event": "INIT", "effects": [
+                    ["fetch", "ShopItem", { "emit": { "success": "LOADED", "failure": "FAILED" } }]
+                ] },
+                { "from": "loading", "to": "ready", "event": "LOADED", "effects": [
+                    ["render-ui", "main", { "type": "typography", "content":
+                        ["if", ["=", ["array/len", "@payload.data"], 0], "none listed", ["object/get", ["array/nth", "@payload.data", 0], "name"]] }]
+                ] },
+                { "from": "loading", "to": "loading", "event": "FAILED", "effects": [] }
+            ]
+        }
+    })
+}
+
+fn shop_orbital(name: &str, entity: &str, traits: serde_json::Value, pages: serde_json::Value) -> serde_json::Value {
+    json!({
+        "name": name,
+        "entity": { "name": entity, "persistence": "persistent", "collection": entity.to_lowercase(), "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+        "traits": traits,
+        "pages": pages
+    })
+}
+
+fn shop() -> serde_json::Value {
+    json!({
+        "name": "Shop",
+        "typeContractVersion": 1,
+        "orbitals": [shop_orbital("Main", "ShopItem",
+            json!([paints("Booter", "boot ran"), paints("HomeT", "home ran"), lists("ListT"), paints("OtherT", "other ran")]),
+            json!([
+                { "name": "Home", "path": "/", "traits": [{ "ref": "HomeT" }] },
+                { "name": "List", "path": "/list", "traits": [{ "ref": "ListT" }] },
+                { "name": "Other", "path": "/other", "traits": [{ "ref": "OtherT" }] },
+                { "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Booter" }] }
+            ]))]
+    })
+}
+
+fn late_orbital_ref() -> &'static str {
+    "lazy/Late.orb"
+}
+
+fn shop_with_lazy_page() -> serde_json::Value {
+    let mut program = shop();
+    program["lazyPages"] = json!([{
+        "path": "/late", "orbital": "Late", "orbRef": late_orbital_ref(),
+        "traits": [{ "name": "LateT", "dispatchMode": "persistedAwaited" }]
+    }]);
+    program["lazyPrograms"] = json!({
+        late_orbital_ref(): {
+            "name": "Late",
+            "typeContractVersion": 1,
+            "orbitals": [shop_orbital("Late", "LateItem",
+                json!([{
+                    "name": "LateT", "linkedEntity": "LateItem",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                            ["render-ui", "main", { "type": "typography", "content": "late ran" }]
+                        ] }]
+                    }
+                }]),
+                json!([{ "name": "LatePage", "path": "/late", "traits": [{ "ref": "LateT" }] }]))]
+        }
+    });
+    program
+}
+
+fn shop_opener() -> RuntimeKernel {
+    opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", "@payload.options", { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "NAV", "effects": [
+            ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route", "rows": "@payload.rows" }, { "emit": emit() }]
+        ] }
+    ]))
+}
+
+fn shop_event(kernel: &RuntimeKernel, event: &str, payload: serde_json::Value) -> serde_json::Value {
+    kernel.dispatch("Opener", None, event, serde_json::from_value(payload).unwrap()).unwrap();
+    entity(kernel)
+}
+
+fn open_shop(program: serde_json::Value, options: serde_json::Value) -> (RuntimeKernel, serde_json::Value) {
+    let kernel = shop_opener();
+    let after = shop_event(&kernel, "GO", json!({ "program": program, "options": options }));
+    (kernel, after)
+}
+
+fn mounted(answer: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = answer["states"].as_object().into_iter().flatten().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn open_mounts_the_boot_traits_and_the_default_routed_page_and_no_other_page() {
+    let (_, after) = open_shop(shop(), json!({}));
+    assert_eq!(mounted(&after["got"]), ["Booter", "HomeT"], "boot trait and the first route page mount: {after}");
+    let texts = painted(&after["got"]);
+    assert!(texts.contains(&"boot ran".to_string()) && texts.contains(&"home ran".to_string()), "{after}");
+    assert!(!texts.contains(&"other ran".to_string()), "a trait only on another page is not mounted: {after}");
+}
+
+#[test]
+fn open_with_a_route_mounts_that_page_and_the_boot_traits() {
+    let (_, after) = open_shop(shop(), json!({ "route": "/other" }));
+    assert_eq!(mounted(&after["got"]), ["Booter", "OtherT"], "{after}");
+    assert!(
+        !painted(&after["got"]).contains(&"home ran".to_string()),
+        "control: the default page is not mounted when a route is named: {after}"
+    );
+}
+
+#[test]
+fn navigate_mounts_the_new_route_after_seeding_its_rows() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let after = shop_event(
+        &kernel,
+        "NAV",
+        json!({ "route": "/list", "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "Seeded item" }] }] }),
+    );
+    assert_eq!(mounted(&after["got"]), ["ListT"], "only the new route's trait mounts: {after}");
+    assert!(painted(&after["got"]).contains(&"Seeded item".to_string()), "the INIT fetch saw the seeded row: {after}");
+}
+
+#[test]
+fn control_navigate_without_rows_fetches_an_empty_store() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert!(painted(&after["got"]).contains(&"none listed".to_string()), "{after}");
+}
+
+#[test]
+fn navigating_to_a_mounted_route_mounts_nothing_new() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    let again = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert!(mounted(&again["got"]).is_empty(), "{again}");
+    assert!(again["got"]["outcomes"].as_array().is_some_and(Vec::is_empty), "{again}");
+    let home = shop_event(&kernel, "NAV", json!({ "route": "/", "rows": [] }));
+    assert!(mounted(&home["got"]).is_empty(), "control: the route open at start is already mounted: {home}");
+}
+
+#[test]
+fn edge_navigate_refuses_an_unknown_guest_and_rows_for_an_undeclared_entity() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let ghost = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [{ "entity": "Ghost", "rows": [] }] }));
+    assert!(ghost["refused"]["error"].as_str().is_some_and(|e| e.contains("program/navigate") && e.contains("Ghost")), "{ghost}");
+    let stray = shop_opener();
+    let none = shop_event(&stray, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert!(none["refused"]["error"].as_str().is_some_and(|e| e.contains("program/navigate")), "{none}");
+}
+
+#[test]
+fn a_lazy_page_in_the_value_loads_only_when_navigated_to() {
+    let (kernel, opened) = open_shop(shop_with_lazy_page(), json!({}));
+    assert!(opened.get("refused").is_none_or(serde_json::Value::is_null), "{opened}");
+    assert_eq!(mounted(&opened["got"]), ["Booter", "HomeT"], "the lazy page is not loaded by the open: {opened}");
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/late", "rows": [] }));
+    assert_eq!(mounted(&after["got"]), ["LateT"], "{after}");
+    assert!(painted(&after["got"]).contains(&"late ran".to_string()), "{after}");
+}
+
+#[test]
+fn control_a_lazy_page_the_value_does_not_carry_refuses_the_navigate_naming_its_file() {
+    let mut program = shop_with_lazy_page();
+    program["lazyPrograms"] = json!({});
+    let (kernel, opened) = open_shop(program, json!({}));
+    assert!(opened.get("refused").is_none_or(serde_json::Value::is_null), "{opened}");
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/late", "rows": [] }));
+    assert!(
+        after["refused"]["error"].as_str().is_some_and(|e| e.contains("Late")),
+        "a lazy page with no carried program is refused, not read from disk: {after}"
+    );
 }

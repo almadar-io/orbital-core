@@ -2,7 +2,7 @@ use super::*;
 use crate::effects::response::MountSeed;
 use crate::trait_owners::TraitOwners;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The circuit a client mounts for one page: which page the kernel resolved, what mounts, and the owning
 /// orbital and linked entity of each trait the page binds (EXEC-ENDPOINT-3).
@@ -18,6 +18,11 @@ pub struct PageCircuit {
     pub embedded_by: Vec<String>,
     pub orbital_by_trait: BTreeMap<String, String>,
     pub linked_entity_by_trait: BTreeMap<String, String>,
+    /// The traits the page binds: its own, then the ones it embeds.
+    pub traits: Vec<String>,
+    /// The entities the page needs: each bound trait's linked entity and every entity reached through declared
+    /// relation fields of those, transitively, sorted (EXEC-SEED-7).
+    pub entities: Vec<String>,
 }
 
 struct RoutePage {
@@ -112,6 +117,8 @@ impl RuntimeKernel {
                 embedded_by: Vec::new(),
                 orbital_by_trait: BTreeMap::new(),
                 linked_entity_by_trait: BTreeMap::new(),
+                traits: Vec::new(),
+                entities: Vec::new(),
             });
         };
         let owners = TraitOwners::from_kernel(self);
@@ -134,6 +141,8 @@ impl RuntimeKernel {
             .iter()
             .filter_map(|t| self.linked_entity_of(t).map(|e| ((*t).clone(), e)))
             .collect();
+        let traits: Vec<String> = bound.iter().map(|t| (*t).clone()).collect();
+        let entities = self.entities_of(&traits);
         Ok(PageCircuit {
             route: Some(route.map_or_else(|| resolved.path.clone(), str::to_string)),
             page: Some(resolved.name.clone()),
@@ -143,6 +152,23 @@ impl RuntimeKernel {
             embedded_by,
             orbital_by_trait,
             linked_entity_by_trait,
+            traits,
+            entities,
         })
+    }
+
+    /// The entities `traits` need: each one's linked entity and every entity reached through the declared relation
+    /// fields of those, transitively (a cycle ends where it closes), sorted.
+    pub(super) fn entities_of(&self, traits: &[String]) -> Vec<String> {
+        let mut pending: Vec<String> = traits.iter().filter_map(|t| self.linked_entity_of(t)).collect();
+        let defs = self.registry.entity_definitions.read();
+        let mut reached: BTreeSet<String> = BTreeSet::new();
+        while let Some(entity) = pending.pop() {
+            if !reached.insert(entity.clone()) {
+                continue;
+            }
+            pending.extend(crate::relations::relation_target_entities(&defs, &entity));
+        }
+        reached.into_iter().collect()
     }
 }

@@ -120,6 +120,8 @@ struct SeedRun {
 pub(crate) struct DispatchRun {
     trace_seeds: Vec<crate::dispatch_trace::TraceSeed>,
     plans: VecDeque<SeedPlan>,
+    /// The `$MOUNT` deliveries of a route mount (EXEC-SEED-7): they settle, asks included, before the first seed begins its own step.
+    preamble: Option<Box<VecDeque<CascadeItem>>>,
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
     locale: Option<String>,

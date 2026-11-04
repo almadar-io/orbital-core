@@ -123,6 +123,10 @@ impl RuntimeKernel {
                 Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                 Err(failure) => failure_result(effect, failure),
             },
+            "program/navigate" => match self.navigate_guest(&resolved) {
+                Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                Err(failure) => failure_result(effect, failure),
+            },
             "program/close" => match self.close_guest(&resolved) {
                 Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                 Err(failure) => failure_result(effect, failure),

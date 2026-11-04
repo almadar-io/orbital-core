@@ -16,8 +16,15 @@ use crate::schema::types::{
 };
 use crate::value::{Value, ValueMap};
 
-pub const AGENT_PORT_OPERATORS: [&str; 6] =
-    ["program/inputs", "program/dispatch", "persist/read-named", "program/self", "program/open", "program/close"];
+pub const AGENT_PORT_OPERATORS: [&str; 7] = [
+    "program/inputs",
+    "program/dispatch",
+    "persist/read-named",
+    "program/self",
+    "program/open",
+    "program/navigate",
+    "program/close",
+];
 
 /// The `errors[].code` of a `persist/read-named` for a name the program does not persist.
 pub const UNKNOWN_ENTITY_CODE: &str = "unknown-entity";

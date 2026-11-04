@@ -9,9 +9,10 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use super::lazy::{LazyProgram, LazySource};
 use super::RuntimeKernel;
 use crate::config::KernelConfig;
-use crate::effects::response::EventResponse;
+use crate::effects::response::{EventResponse, MountSeed};
 use crate::entity_source::InMemoryEntityCache;
 use crate::process_result::ProcessEventResult;
 use orbital_core_base::agent_ports::AgentPortFailure;
@@ -19,6 +20,8 @@ use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::json_value::value_to_json;
+use orbital_core_base::protocols::ProtocolSide;
+use orbital_core_base::sync::RwLock;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::{Value, ValueMap};
 use std::sync::atomic::Ordering;
@@ -46,6 +49,26 @@ pub struct GuestSession {
     pub(crate) source: Arc<InMemoryEntityCache>,
     pub(crate) grants: Option<OsGrants>,
     arenas: Vec<(i64, Value)>,
+    route: Arc<RwLock<GuestRoute>>,
+}
+
+/// What a guest has mounted and which of those traits the routed page embeds, so a later route mounts only what is new.
+#[derive(Default)]
+struct GuestRoute {
+    embedded: std::collections::HashSet<String>,
+    mounted: std::collections::HashSet<String>,
+}
+
+/// The lazy programs an opened program value carries (`lazyPrograms`), by the file the kernel asks for.
+struct CarriedLazy(std::collections::HashMap<String, OrbitalSchema>);
+
+impl LazySource for CarriedLazy {
+    fn read(&self, file: &str) -> Result<LazyProgram, String> {
+        self.0
+            .get(file)
+            .map(|schema| LazyProgram { schema: schema.clone(), catalogs: Default::default() })
+            .ok_or_else(|| format!("the opened program carries no lazy program `{file}` in `lazyPrograms`"))
+    }
 }
 
 fn failure(message: impl Into<String>) -> AgentPortFailure {
@@ -84,38 +107,39 @@ pub(crate) fn run_session(
         outcomes.extend(ran);
     }
     let seed_trait = targets.first().cloned().unwrap_or_default();
-    Ok(guest_answer(None, &outcomes, &seed_trait, event))
+    let embedded = session.route.read().embedded.clone();
+    Ok(guest_answer(None, &embedded, &outcomes, &seed_trait, event))
 }
 
-/// `program/open`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
+/// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
 /// written into the guest's store before its page mounts. An undeclared entity or a misfit row refuses the open.
-fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value) -> Result<(), AgentPortFailure> {
+fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value, op: &str) -> Result<(), AgentPortFailure> {
     let Value::Array(sets) = rows else {
-        return Err(failure("program/open: `rows` is a list of { entity, rows }"));
+        return Err(failure(format!("{op}: `rows` is a list of {{ entity, rows }}")));
     };
     for set in sets.iter() {
         let entity = set
             .get("entity")
             .and_then(Value::as_str)
-            .ok_or_else(|| failure("program/open: each `rows` entry names its `entity`"))?;
+            .ok_or_else(|| failure(format!("{op}: each `rows` entry names its `entity`")))?;
         let Some(Value::Array(list)) = set.get("rows") else {
-            return Err(failure(format!("program/open: the `rows` of {entity} are a list of rows")));
+            return Err(failure(format!("{op}: the `rows` of {entity} are a list of rows")));
         };
         if !guest.registry.entity_definitions.read().contains_key(entity) {
-            return Err(failure(format!("program/open: `rows` names {entity}, which the program does not declare")));
+            return Err(failure(format!("{op}: `rows` names {entity}, which the program does not declare")));
         }
         if let Some(misfit) = guest.rows_misfit(entity, list.iter()) {
-            return Err(failure(format!("program/open: a seeded row does not fit: {misfit}")));
+            return Err(failure(format!("{op}: a seeded row does not fit: {misfit}")));
         }
         for row in list.iter() {
             let id = row
                 .get("id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| failure(format!("program/open: a seeded {entity} row has no string id")))?;
+                .ok_or_else(|| failure(format!("{op}: a seeded {entity} row has no string id")))?;
             guest
                 .entity_source
                 .write(entity, id, row)
-                .map_err(|e| failure(format!("program/open: seeding {entity}: {e}")))?;
+                .map_err(|e| failure(format!("{op}: seeding {entity}: {e}")))?;
         }
         guest.rows.note_write(entity);
     }
@@ -129,6 +153,7 @@ fn json_value(json: serde_json::Value) -> Value {
 /// What a guest's run answers: each trait's state, what it painted, what it emitted and every trait it moved.
 fn guest_answer(
     guest: Option<&str>,
+    embedded: &std::collections::HashSet<String>,
     outcomes: &[(String, ProcessEventResult)],
     seed_trait: &str,
     event: &str,
@@ -142,6 +167,7 @@ fn guest_answer(
             ClientEffect::RenderUi { slot, config } => Some(serde_json::json!({
                 "slot": slot,
                 "trait": paint.trait_name,
+                "embedded": embedded.contains(&paint.trait_name),
                 "content": config.as_ref().map(value_to_json).unwrap_or(serde_json::Value::Null),
             })),
             _ => None,
@@ -177,6 +203,33 @@ fn guest_answer(
         answer["rejections"] = serde_json::to_value(rejections).unwrap_or(serde_json::Value::Null);
     }
     json_value(answer)
+}
+
+/// The mounts of the page `route` resolves to in `guest` (`page_circuit`: the `[initial]` or first route page for none) and
+/// the traits that page embeds without listing them.
+fn routed_mounts(
+    guest: &RuntimeKernel,
+    route: Option<&str>,
+    op: &str,
+) -> Result<(Vec<MountSeed>, std::collections::HashSet<String>), AgentPortFailure> {
+    let circuit = guest.page_circuit(None, route).map_err(|e| failure(format!("{op}: {e}")))?;
+    Ok((circuit.mounts, circuit.embedded.into_iter().collect()))
+}
+
+/// Run each seed's lifecycle event in `guest`, in order, and collect what moved.
+fn mount_seeds(
+    guest: &RuntimeKernel,
+    seeds: &[MountSeed],
+    op: &str,
+) -> Result<Vec<(String, ProcessEventResult)>, AgentPortFailure> {
+    let mut outcomes = Vec::new();
+    for seed in seeds {
+        let ran = guest
+            .dispatch(&seed.r#trait, None, seed.event.as_str(), Value::Null)
+            .map_err(|e| failure(format!("{op}: mounting {}: {e}", seed.r#trait)))?;
+        outcomes.extend(ran);
+    }
+    Ok(outcomes)
 }
 
 impl RuntimeKernel {
@@ -245,7 +298,7 @@ impl RuntimeKernel {
         }
     }
 
-    /// `program/open program options`: register the program in a guest kernel, mount its first route page and answer
+    /// `program/open program options`: register the program in a guest kernel, mount its boot traits and its routed page and answer
     /// `{ guest, states, rendered, emitted, outcomes }`.
     pub(super) fn open_guest(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
         let program = args
@@ -294,18 +347,27 @@ impl RuntimeKernel {
                 ))
             }
         }
-        let mut schema: OrbitalSchema =
-            serde_json::from_value(value_to_json(program)).map_err(|e| {
-                failure(format!(
-                    "program/open: the program is not a resolved program: {e}"
-                ))
-            })?;
+        let mut program_json = value_to_json(program);
+        let carried = match program_json.as_object_mut().and_then(|object| object.remove("lazyPrograms")) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(carried) => Some(
+                serde_json::from_value::<std::collections::HashMap<String, OrbitalSchema>>(carried).map_err(|e| {
+                    failure(format!("program/open: `lazyPrograms` is a map of file to resolved program: {e}"))
+                })?,
+            ),
+        };
+        let mut schema: OrbitalSchema = serde_json::from_value(program_json)
+            .map_err(|e| failure(format!("program/open: the program is not a resolved program: {e}")))?;
         if schema.orbitals.is_empty() {
             return Err(failure("program/open: the program has no orbitals"));
         }
+        let carries_lazy = carried.is_some();
+        let mut lazy_programs = carried.unwrap_or_default();
         if let Some(grants) = &granted {
-            schema.os_grants = Some(grants.clone());
-            schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+            for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
+                carried_schema.os_grants = Some(grants.clone());
+                carried_schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+            }
         }
         let source = Arc::new(InMemoryEntityCache::new());
         let guest = RuntimeKernel::new(
@@ -316,11 +378,14 @@ impl RuntimeKernel {
                 ..KernelConfig::default()
             },
         );
+        if carries_lazy {
+            guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));
+        }
         guest
             .register_schema(schema)
             .map_err(|e| failure(format!("program/open: {e}")))?;
         if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
-            seed_guest_rows(&guest, rows)?;
+            seed_guest_rows(&guest, rows, "program/open")?;
         }
         let mut arenas = Vec::with_capacity(handed.len());
         for (id, shared) in handed {
@@ -329,28 +394,73 @@ impl RuntimeKernel {
                 .map_err(|e| guest_refusal(e.kind, e.message))?;
             arenas.push((id, handle));
         }
-        let first_page: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
-        let seeds = guest.mounts_of(|page| {
-            if !page.is_route() {
-                return false;
+        let route = match options.as_ref().and_then(|o| o.get("route")) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(route)) => Some(route.to_string()),
+            Some(_) => return Err(failure("program/open: `route` is a path string")),
+        };
+        let mut seeds = guest.boot_mounts(ProtocolSide::Server);
+        let (routed, embedded) = routed_mounts(&guest, route.as_deref(), "program/open")?;
+        for seed in routed {
+            if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
+                seeds.push(seed);
             }
-            let mut first = first_page.borrow_mut();
-            first.get_or_insert_with(|| page.path.clone()) == &page.path
-        });
-        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
-        for seed in &seeds {
-            let ran = guest
-                .dispatch(&seed.r#trait, None, seed.event.as_str(), Value::Null)
-                .map_err(|e| failure(format!("program/open: mounting {}: {e}", seed.r#trait)))?;
-            outcomes.extend(ran);
         }
+        let outcomes = mount_seeds(&guest, &seeds, "program/open")?;
         let handle = format!(
             "guest-{}",
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
         );
-        self.guests.write().insert(handle.clone(), GuestSession { kernel: Arc::new(guest), source, grants: granted, arenas });
+        let mounted = seeds.iter().map(|s| s.r#trait.clone()).collect();
+        let session = GuestSession {
+            kernel: Arc::new(guest),
+            source,
+            grants: granted,
+            arenas,
+            route: Arc::new(RwLock::new(GuestRoute { embedded: embedded.clone(), mounted })),
+        };
+        self.guests.write().insert(handle.clone(), session);
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
-        Ok(guest_answer(Some(&handle), &outcomes, &seed_trait, "INIT"))
+        Ok(guest_answer(Some(&handle), &embedded, &outcomes, &seed_trait, "INIT"))
+    }
+
+    /// `program/navigate { guest, route, rows? }`: load the lazy page `route` names, seed its `rows`, mount the traits of
+    /// the route the guest has not mounted yet and answer as `program/open` does.
+    pub(super) fn navigate_guest(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
+        let Some(Value::Object(options)) = args.first() else {
+            return Err(failure("program/navigate: name `{ guest, route }`"));
+        };
+        let handle = options
+            .get("guest")
+            .ok_or_else(|| failure("program/navigate: name the `guest` program/open answered"))?;
+        let Some(Value::String(route)) = options.get("route") else {
+            return Err(failure("program/navigate: `route` is a path string"));
+        };
+        let session = self.guest(handle, "program/navigate")?;
+        let guest = &session.kernel;
+        guest
+            .ensure_route_loaded(route.as_str())
+            .map_err(|e| failure(format!("program/navigate: {e}")))?;
+        if let Some(rows) = options.get("rows").filter(|rows| !matches!(rows, Value::Null)) {
+            seed_guest_rows(guest, rows, "program/navigate")?;
+        }
+        let (routed, embedded) = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
+        let fresh: Vec<MountSeed> = {
+            let held = session.route.read();
+            routed.into_iter().filter(|seed| !held.mounted.contains(&seed.r#trait)).collect()
+        };
+        let outcomes = mount_seeds(guest, &fresh, "program/navigate")?;
+        {
+            let mut held = session.route.write();
+            held.mounted.extend(fresh.iter().map(|s| s.r#trait.clone()));
+            held.embedded = embedded.clone();
+        }
+        let seed_trait = fresh.first().map(|s| s.r#trait.clone()).unwrap_or_default();
+        let name = match handle {
+            Value::String(name) => Some(name.as_str()),
+            _ => None,
+        };
+        Ok(guest_answer(name, &embedded, &outcomes, &seed_trait, "INIT"))
     }
 
     /// `program/close guest`: end the guest; `{ closed: true }`.
@@ -438,7 +548,8 @@ impl RuntimeKernel {
             outcomes.extend(ran);
         }
         let seed_trait = targets.first().cloned().unwrap_or_default();
-        Ok(guest_answer(None, &outcomes, &seed_trait, event))
+        let embedded = session.route.read().embedded.clone();
+        Ok(guest_answer(None, &embedded, &outcomes, &seed_trait, event))
     }
 
     /// The registered traits whose current state handles `event`, in name order.
@@ -502,6 +613,6 @@ impl RuntimeKernel {
 impl GuestSession {
     /// A session over `kernel` and its rows `source`, answered under `grants`, with no arenas handed over.
     pub(crate) fn fresh(kernel: Arc<RuntimeKernel>, source: Arc<InMemoryEntityCache>, grants: Option<OsGrants>) -> Self {
-        Self { kernel, source, grants, arenas: Vec::new() }
+        Self { kernel, source, grants, arenas: Vec::new(), route: Arc::default() }
     }
 }

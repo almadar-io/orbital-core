@@ -12,7 +12,7 @@ use crate::resumable::{
 };
 use orbital_core_base::os::{OsError, OsErrorKind};
 use orbital_core_base::secret::Secret;
-use orbital_core_base::value::Value;
+use orbital_core_base::value::{Value, ValueMap};
 use orbital_core_base::sync::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -617,7 +617,9 @@ impl KernelCompletionSink {
     }
 
     /// EXEC-QUEUE-10: the completion runs in the session that asked, so `@user` is that session's identity, and a key
-    /// it defers again keeps that requester.
+    /// it defers again keeps that requester. A success payload that breaks its route's declared payload contract is
+    /// refused at entry (G-CROSS-335) and the ask still ends: it fires the failure route as `{ error, kind: invalid, key }`,
+    /// never nothing (EXEC-QUEUE-10: a deferred ask's outcome reaches its caller).
     fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
         // A completion that outlives its kernel has nothing to dispatch into.
         let Some(kernel) = self.kernel.upgrade() else { return };
@@ -626,16 +628,29 @@ impl KernelCompletionSink {
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
-        let result = kernel
-            .start_dispatch(
-                &site.trait_name,
-                Some(site.entity_id.as_str()),
-                &event,
-                payload.clone(),
-                None,
-                None,
-            )
-            .and_then(|progress| drive_blocking(&kernel, progress, &answer));
+        let run = |event: &str, payload: &Value| {
+            kernel
+                .start_dispatch(&site.trait_name, Some(site.entity_id.as_str()), event, payload.clone(), None, None)
+                .and_then(|progress| drive_blocking(&kernel, progress, &answer))
+        };
+        let (mut event, mut payload) = (event, payload);
+        let mut result = run(&event, &payload);
+        if let Err(DispatchError::Kernel(crate::kernel::KernelError::PayloadInvalid(refusal))) = &result {
+            let failure = site.emit.failure.clone().filter(|failure| site.emit.success.as_deref() == Some(event.as_str()) && *failure != event);
+            tracing::warn!(
+                target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                trait_name = %site.trait_name, event = %event, refusal = %refusal, routed_to_failure = failure.is_some(),
+                "a completion payload broke its route's declared contract",
+            );
+            if let Some(failure) = failure {
+                let mut fields = ValueMap::default();
+                fields.insert("error".into(), Value::string(format!("{event} was refused: {refusal}")));
+                fields.insert("kind".into(), Value::string(OsErrorKind::Invalid.as_str().to_string()));
+                fields.insert("key".into(), Value::string(crate::resumable::program_call_key(key).to_string()));
+                (event, payload) = (failure, Value::object(fields));
+                result = run(&event, &payload);
+            }
+        }
         (self.done)(site, &event, &payload, requester.client_id.as_deref(), result);
     }
 }
@@ -815,6 +830,62 @@ mod tests {
         assert!(completions.claim_current("shared", second));
         assert!(!completions.is_live("shared"));
         assert!(completions.begin_lease("shared").is_some());
+    }
+
+    /// A sink over a kernel whose `Sup` trait declares `DONE { need : string! }` and `BAD`, reporting each completion's final event.
+    fn contract_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<(String, bool)>) {
+        let (sink, kernel, ran) = lone_sink();
+        drop(ran);
+        let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "Contract", "typeContractVersion": 1, "orbitals": [{
+                "name": "C",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Sup", "linkedEntity": "Cell",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [
+                            { "key": "DONE", "name": "Done", "payloadSchema": [{ "name": "need", "type": "string", "required": true }, { "name": "key", "type": "string" }] },
+                            { "key": "BAD", "name": "Bad" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "DONE" },
+                            { "from": "idle", "to": "idle", "event": "BAD" }]
+                    } }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        let answer: Arc<CompletionAnswerer> = Arc::new(|request| match request {
+            IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
+            _ => IoAnswer::Service(Err("no host".to_string())),
+        });
+        let (told, ran) = std::sync::mpsc::channel();
+        let told = Mutex::new(told);
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, _, result| {
+            let _ = told.lock().send((event.to_string(), result.is_ok()));
+        });
+        (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, ran)
+    }
+
+    #[test]
+    fn a_success_payload_that_breaks_its_routes_contract_fires_the_failure_route_and_is_not_dropped() {
+        let (sink, _kernel, ran) = contract_sink();
+        sink.complete(&site(Some("DONE"), Some("BAD")), "k", Ok(Value::object(ValueMap::default())));
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).expect("the ask ended"), ("BAD".to_string(), true));
+    }
+
+    #[test]
+    fn control_a_success_payload_that_keeps_its_routes_contract_fires_the_success_route() {
+        let (sink, _kernel, ran) = contract_sink();
+        let payload = Value::object(ValueMap::from_iter([("need".into(), Value::string("x".to_string()))]));
+        sink.complete(&site(Some("DONE"), Some("BAD")), "k", Ok(payload));
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).expect("the ask ended"), ("DONE".to_string(), true));
+    }
+
+    #[test]
+    fn edge_a_refused_success_with_no_failure_route_is_reported_refused_not_retried() {
+        let (sink, _kernel, ran) = contract_sink();
+        sink.complete(&site(Some("DONE"), None), "k", Ok(Value::object(ValueMap::default())));
+        assert_eq!(ran.recv_timeout(std::time::Duration::from_secs(5)).expect("reported"), ("DONE".to_string(), false));
     }
 
     #[test]

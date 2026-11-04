@@ -7,6 +7,7 @@ impl RuntimeKernel {
     pub(super) fn unit(&self, run: &mut DispatchRun) -> Result<Flow, Fault> {
         let DispatchRun {
             plans,
+            preamble,
             seed,
             outcomes,
             locale,
@@ -23,7 +24,19 @@ impl RuntimeKernel {
             }
             return match plans.pop_front() {
                 Some(plan) => {
-                    *seed = Some(self.begin_seed(plan));
+                    let mut begun = self.begin_seed(plan);
+                    if let Some(deliveries) = preamble.take() {
+                        begun.stage = match begun.stage {
+                            Stage::Released(mut released) => {
+                                for item in deliveries.into_iter().rev() {
+                                    released.queue.push_front(item);
+                                }
+                                Stage::Released(released)
+                            }
+                            _ => Stage::Released(Cascade::new(*deliveries)),
+                        };
+                    }
+                    *seed = Some(begun);
                     Ok(Flow::More)
                 }
                 None => Ok(Flow::Done),

@@ -150,12 +150,24 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.dispatch_route_mount(None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::dispatch_mount`] for a batch that opens `route`: the traits that listen for `$MOUNT` are delivered it, with the
+    /// page's `{ page, route, traits, entities }`, and settle before the first seed runs (EXEC-SEED-7).
+    pub fn dispatch_route_mount(
+        &self,
+        route: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
         let _lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
-        let run = self.run_of_mount(seeds, entity_id, payload);
+        let run = self.run_of_route_mount(route, seeds, entity_id, payload)?;
         self.run_straight_through(run)
     }
 
@@ -183,13 +195,41 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        self.start_dispatch_route_mount(None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::dispatch_route_mount`] as a resumable dispatch.
+    pub fn start_dispatch_route_mount(
+        &self,
+        route: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
-        let run = self.run_of_mount(seeds, entity_id, payload);
+        let run = self.run_of_route_mount(route, seeds, entity_id, payload)?;
         self.drive_entry(lane, Self::continuation_of(run))
+    }
+
+    fn run_of_route_mount(
+        &self,
+        route: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<DispatchRun, KernelError> {
+        let mut run = self.run_of_mount(seeds, entity_id, payload);
+        if let Some(route) = route {
+            let deliveries = self.route_mount_deliveries(route)?;
+            if !deliveries.is_empty() {
+                run.preamble = Some(Box::new(deliveries));
+            }
+        }
+        Ok(run)
     }
 
     /// Go on with a dispatch that returned [`Progress::Await`], given an answer to each of its requests.
@@ -434,6 +474,7 @@ impl RuntimeKernel {
                 })
                 .collect(),
             plans: plans.into(),
+            preamble: None,
             seed: None,
             outcomes: Vec::new(),
             locale: self.step.dispatch_locale.read().clone(),

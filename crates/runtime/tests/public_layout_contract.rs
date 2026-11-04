@@ -544,8 +544,9 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
 fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 408: `EventResponse.frames` (a delta, K5) replaces `entityByTrait`; the response is eight bytes smaller.
     // 424: plus `FrameDelta.identity` (`Option<FrameIdentity>`, 16 bytes, the client identity mirror, EXEC-IDENTITY-4).
-    assert_eq!(size_of::<ServerProgress>(), 424, "ServerProgress");
-    assert_eq!(size_of::<ServerProgressWire>(), 424, "ServerProgressWire");
+    // 448: a route mount names its route (`EventRequest.route`, EXEC-SEED-7).
+    assert_eq!(size_of::<ServerProgress>(), 448, "ServerProgress");
+    assert_eq!(size_of::<ServerProgressWire>(), 448, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) (its viewer, one `Arc`, is gone: `@user` is the session's bound identity, EXEC-IDENTITY-1). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
@@ -556,7 +557,8 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 848: plus the keyed-row drops a step owes (one `VecDeque`, 32 bytes, empty without allocating; G-ORBITAL-CORE-100):
     // each drop runs as its own unit, so a drop parked on the host replays alone under its own journal.
     // 840: the run no longer carries the viewer it was started as (`@user` is the session's bound identity, EXEC-IDENTITY-1).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 840, "Progress");
+    // 872: a route mount names its route (24 bytes) and queues its `$MOUNT` deliveries behind one `Box` (8 bytes, EXEC-SEED-7).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 872, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
     assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");
@@ -568,5 +570,6 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     assert_eq!(size_of::<EntityRef>(), 544, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");
     // 240: plus the installed protocol definitions (`protocols: String`, 24 bytes, P-010 37b0ccc).
-    assert_eq!(size_of::<LanguageData>(), 240, "LanguageData");
+    // 264: plus the language-data version it carries (`language: String`, 24 bytes, P-022 cd85fa1).
+    assert_eq!(size_of::<LanguageData>(), 264, "LanguageData");
 }

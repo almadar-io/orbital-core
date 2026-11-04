@@ -243,6 +243,33 @@ impl RuntimeKernel {
         })
     }
 
+    /// The `$MOUNT` a route mount opens with (EXEC-SEED-7): one delivery to each registered trait that listens for it, in
+    /// listener order, carrying `{ page, route, traits, entities }` from the route's [`PageCircuit`]. Empty when the route
+    /// resolves to no page or nobody listens.
+    pub(super) fn route_mount_deliveries(&self, route: &str) -> Result<VecDeque<CascadeItem>, KernelError> {
+        let circuit = self.page_circuit(None, Some(route)).map_err(KernelError::Internal)?;
+        let Some(page) = circuit.page else {
+            return Ok(VecDeque::new());
+        };
+        let names = |list: Vec<String>| Value::array(list.into_iter().map(Value::string).collect::<Vec<_>>());
+        let mut payload = ValueMap::default();
+        payload.insert("page".into(), Value::string(page));
+        payload.insert("route".into(), Value::string(circuit.route.unwrap_or_else(|| route.to_string())));
+        payload.insert("traits".into(), names(circuit.traits));
+        payload.insert("entities".into(), names(circuit.entities));
+        let payload = Value::object(payload);
+        let mut out = Vec::new();
+        self.collect_listener_targets(
+            &BusEventSource::default(),
+            "",
+            crate::effects::response::LifecycleEvent::Mount.as_str(),
+            &payload,
+            &[],
+            &mut out,
+        );
+        Ok(out.into())
+    }
+
     /// What mounts when a client opens `route_path`: the traits of the route pages whose path
     /// matches, and nothing from protocol endpoints.
     pub fn route_mounts(&self, route_path: &str) -> Vec<crate::effects::response::MountSeed> {

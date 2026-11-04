@@ -397,3 +397,164 @@ fn page_circuit_embedded_by_names_a_page_listed_trait_a_sibling_references() {
     assert_eq!(c.embedded_by, ["Child"]);
     assert!(c.embedded.is_empty());
 }
+
+fn relation_to(name: &str, entity: &str) -> serde_json::Value {
+    serde_json::json!({ "name": name, "type": "relation", "relation": { "entity": entity, "cardinality": "one" } })
+}
+
+fn entity_json(name: &str, relations: &[(&str, &str)]) -> serde_json::Value {
+    let mut fields = vec![serde_json::json!({ "name": "id", "type": "string" })];
+    fields.extend(relations.iter().map(|(field, to)| relation_to(field, to)));
+    serde_json::json!({ "name": name, "fields": fields })
+}
+
+fn linked_trait(name: &str, entity: &str, effects: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": name, "linkedEntity": entity,
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }]
+        }
+    })
+}
+
+/// One orbital per entity; the pages bind traits by name.
+fn entity_kernel(orbitals: serde_json::Value) -> RuntimeKernel {
+    let schema: OrbitalSchema =
+        serde_json::from_value(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+#[test]
+fn page_circuit_entities_are_the_linked_entities_and_their_declared_relations_transitively() {
+    let k = entity_kernel(serde_json::json!([
+        { "name": "Orders", "entity": entity_json("Order", &[("customerId", "Customer")]),
+          "traits": [linked_trait("OrderList", "Order", serde_json::json!([]))],
+          "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "OrderList" }] }] },
+        { "name": "Customers", "entity": entity_json("Customer", &[("regionId", "Region")]), "traits": [] },
+        { "name": "Regions", "entity": entity_json("Region", &[]), "traits": [] },
+        { "name": "Unrelated", "entity": entity_json("Audit", &[]), "traits": [] }
+    ]));
+    let c = k.page_circuit(None, Some("/")).unwrap();
+    assert_eq!(c.entities, ["Customer", "Order", "Region"]);
+    assert_eq!(c.traits, ["OrderList"]);
+}
+
+#[test]
+fn page_circuit_entities_include_the_embedded_traits_entities() {
+    let host = serde_json::json!({
+        "name": "Host", "linkedEntity": "Order",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                "effects": [["render-ui", "main", { "type": "stack", "children": ["@trait.Child"] }]] }] }
+    });
+    let k = entity_kernel(serde_json::json!([
+        { "name": "Orders", "entity": entity_json("Order", &[]), "traits": [host, linked_trait("Child", "Note", serde_json::json!([]))],
+          "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Host" }] }] },
+        { "name": "Notes", "entity": entity_json("Note", &[]), "traits": [] }
+    ]));
+    let c = k.page_circuit(None, Some("/")).unwrap();
+    assert_eq!(c.embedded, ["Child"]);
+    assert_eq!(c.traits, ["Host", "Child"]);
+    assert_eq!(c.entities, ["Note", "Order"]);
+}
+
+#[test]
+fn edge_a_relation_cycle_ends_where_it_closes_and_a_self_relation_is_listed_once() {
+    let k = entity_kernel(serde_json::json!([
+        { "name": "Teams", "entity": entity_json("Team", &[("leadId", "User"), ("parentId", "Team")]),
+          "traits": [linked_trait("TeamList", "Team", serde_json::json!([]))],
+          "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "TeamList" }] }] },
+        { "name": "Users", "entity": entity_json("User", &[("teamId", "Team")]), "traits": [] }
+    ]));
+    assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Team", "User"]);
+}
+
+#[test]
+fn control_an_entity_only_a_fetch_effect_names_is_not_a_page_entity() {
+    let k = entity_kernel(serde_json::json!([
+        { "name": "Orders", "entity": entity_json("Order", &[]),
+          "traits": [linked_trait("OrderList", "Order", serde_json::json!([["fetch", "Audit"]]))],
+          "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "OrderList" }] }] },
+        { "name": "Audits", "entity": entity_json("Audit", &[]), "traits": [] }
+    ]));
+    assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Order"]);
+}
+
+#[test]
+fn control_a_page_with_no_match_has_no_traits_or_entities() {
+    let c = app().page_circuit(None, Some("/nope")).unwrap();
+    assert!(c.traits.is_empty() && c.entities.is_empty());
+}
+
+/// Boot listens for `$MOUNT` and persists a Note when the page and route it announces are the ones asked for;
+/// Reader is a route trait whose INIT runs after it.
+fn mount_listener_kernel() -> RuntimeKernel {
+    let boot = serde_json::json!({
+        "name": "Boot", "linkedEntity": "Note",
+        "listens": [{ "event": "$MOUNT", "triggers": "SEED_PAGE" }],
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }, { "name": "seeded" }],
+            "transitions": [{
+                "from": "idle", "to": "seeded", "event": "SEED_PAGE",
+                "guard": ["and", ["=", "@payload.page", "Home"], ["=", "@payload.route", "/"]],
+                "effects": [["persist", "create", "Note", {}]]
+            }]
+        }
+    });
+    let bystander = serde_json::json!({
+        "name": "Bystander", "linkedEntity": "Note",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "SEED_PAGE" }]
+        }
+    });
+    entity_kernel(serde_json::json!([{
+        "name": "Main", "entity": entity_json("Note", &[]),
+        "traits": [boot, bystander, linked_trait("Reader", "Note", serde_json::json!([["fetch", "Note"]]))],
+        "pages": [
+            { "name": "Home", "path": "/", "traits": [{ "ref": "Reader" }] },
+            { "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Boot" }, { "ref": "Bystander" }] }
+        ]
+    }]))
+}
+
+fn ran(outcomes: &[(String, ProcessEventResult)]) -> Vec<String> {
+    outcomes
+        .iter()
+        .filter(|(_, r)| r.executed)
+        .map(|(t, r)| format!("{t}:{}", r.event.clone().unwrap_or_default()))
+        .collect()
+}
+
+#[test]
+fn a_route_mount_delivers_mount_with_the_page_payload_to_the_listening_trait_before_the_seeds() {
+    let k = mount_listener_kernel();
+    let outcomes = k.dispatch_route_mount(Some("/"), &k.route_mounts("/"), None, Value::Null).unwrap();
+    assert_eq!(ran(&outcomes), ["Boot:SEED_PAGE", "Reader:INIT"], "the listener settles before the route's own INIT");
+    assert_eq!(k.get_state("Boot", None).map(|s| s.current_state).as_deref(), Some("seeded"), "the payload named page and route");
+}
+
+#[test]
+fn control_a_trait_without_the_listen_gets_nothing_and_a_batch_naming_no_route_delivers_no_mount() {
+    let k = mount_listener_kernel();
+    let outcomes = k.dispatch_route_mount(Some("/"), &k.route_mounts("/"), None, Value::Null).unwrap();
+    assert!(!outcomes.iter().any(|(t, _)| t == "Bystander"));
+    let k = mount_listener_kernel();
+    let outcomes = k.dispatch_mount(&k.route_mounts("/"), None, Value::Null).unwrap();
+    assert_eq!(ran(&outcomes), ["Reader:INIT"]);
+    assert_eq!(k.get_state("Boot", None).map(|s| s.current_state), None, "Boot was never touched");
+}
+
+#[test]
+fn edge_a_route_no_page_matches_delivers_no_mount() {
+    let k = mount_listener_kernel();
+    let outcomes = k.dispatch_route_mount(Some("/nope"), &k.route_mounts("/"), None, Value::Null).unwrap();
+    assert_eq!(ran(&outcomes), ["Reader:INIT"]);
+}

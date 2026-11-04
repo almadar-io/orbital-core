@@ -223,6 +223,11 @@ fn relation_targets(defs: &EntityDefinitions, entity_type: &str) -> HashMap<Stri
         .collect()
 }
 
+/// The entities the declared relation fields of `entity_type` point at.
+pub fn relation_target_entities(defs: &EntityDefinitions, entity_type: &str) -> Vec<String> {
+    relation_targets(defs, entity_type).into_values().map(|target| target.entity).collect()
+}
+
 /// Walk a `render-ui` pattern tree: every node whose pattern declares a `@fieldsContract` and lists
 /// relation-typed fields among its `fields` / `columns` gets `relationsData: { <field>: [{ value, label }] }`
 /// read from the relation's target entity (label: the relation's declared `display` field, the record id when
