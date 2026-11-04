@@ -25,7 +25,7 @@ impl RuntimeKernel {
             return match plans.pop_front() {
                 Some(plan) => {
                     let mut begun = self.begin_seed(plan);
-                    if let Some(deliveries) = preamble.take() {
+                    if let Some(deliveries) = preamble.take().map(|preamble| preamble.deliveries) {
                         begun.stage = match begun.stage {
                             Stage::Released(mut released) => {
                                 for item in deliveries.into_iter().rev() {
@@ -33,13 +33,20 @@ impl RuntimeKernel {
                                 }
                                 Stage::Released(released)
                             }
-                            _ => Stage::Released(Cascade::new(*deliveries)),
+                            _ => Stage::Released(Cascade::new(deliveries)),
                         };
                     }
                     *seed = Some(begun);
                     Ok(Flow::More)
                 }
-                None => Ok(Flow::Done),
+                None => match preamble.take() {
+                    Some(preamble) => {
+                        let Preamble { row, deliveries } = *preamble;
+                        *seed = Some(self.begin_announce(row, deliveries));
+                        Ok(Flow::More)
+                    }
+                    None => Ok(Flow::Done),
+                },
             };
         };
         let _stamp = self.hold_stamp(in_flight.now);
@@ -162,6 +169,26 @@ impl RuntimeKernel {
             });
         }
         Ok(())
+    }
+
+    /// A run of `$MOUNT` deliveries alone, with no seed of its own to step after them.
+    fn begin_announce(&self, row: Option<String>, deliveries: VecDeque<CascadeItem>) -> SeedRun {
+        let now = self.step.dispatch_now.read().unwrap_or_else(|| self.clock_now());
+        let event_name = crate::effects::response::LifecycleEvent::Mount.as_str().to_string();
+        let span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, "deliver", event = %event_name);
+        SeedRun {
+            eid: row.unwrap_or_else(|| crate::process_result::RUNTIME_SINGLETON.to_string()),
+            seed_delivery: Arc::new(delivery_record_value(&event_name, &Value::Null, &BusEventSource::default())),
+            event_name,
+            payload: Arc::new(Value::Null),
+            now,
+            seed_scopes: Vec::new(),
+            visited: DispatchVisits::default(),
+            memory: DispatchMemory::default(),
+            stage: Stage::Released(Cascade::new(deliveries)),
+            tick: None,
+            span,
+        }
     }
 
     pub(super) fn begin_seed(&self, plan: SeedPlan) -> SeedRun {

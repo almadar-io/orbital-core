@@ -117,12 +117,18 @@ struct SeedRun {
     span: tracing::Span,
 }
 
+/// A route mount's `$MOUNT` deliveries and the row they step (EXEC-SEED-7). Boxed in [`DispatchRun`]: the layout pins
+/// hold its size.
+struct Preamble {
+    row: Option<String>,
+    deliveries: VecDeque<CascadeItem>,
+}
+
 pub(crate) struct DispatchRun {
     trace_seeds: Vec<crate::dispatch_trace::TraceSeed>,
     plans: VecDeque<SeedPlan>,
     /// The `$MOUNT` deliveries of a route mount (EXEC-SEED-7): they settle, asks included, before the first seed begins its own step.
-    #[allow(clippy::box_collection)] // one pointer, not a VecDeque, in every DispatchRun: the layout pins hold its size
-    preamble: Option<Box<VecDeque<CascadeItem>>>,
+    preamble: Option<Box<Preamble>>,
     seed: Option<SeedRun>,
     outcomes: DispatchOutcomes,
     locale: Option<String>,

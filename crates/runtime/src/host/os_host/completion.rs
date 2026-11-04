@@ -5,6 +5,7 @@
 use std::prelude::v1::*;
 
 use crate::kernel::RuntimeKernel;
+use crate::kernel::mount_barrier::LineageTicket;
 pub use crate::resumable::completion_event;
 use crate::effects::executor::SubstrateFailure;
 use crate::resumable::{
@@ -306,9 +307,11 @@ impl Completions {
             return Err(RunLaterError::KeyPending);
         };
         let (completions, key, site) = (this.clone(), key.to_string(), site.clone());
+        let lineage = crate::kernel::mount_barrier::thread_lineage();
         let started = std::thread::Builder::new().name(format!("os-later-{key}")).spawn({
             let (completions, key) = (completions.clone(), key.clone());
             move || {
+                let _lineage = crate::kernel::mount_barrier::enter_lineage(lineage);
                 #[cfg(test)]
                 completions.observe_test_phase(&key, lease, CompletionTestPhase::BeforeWork);
                 {
@@ -405,10 +408,13 @@ pub struct Requester {
     pub client_id: Option<String>,
     /// The frame session of the dispatch that deferred it (EXEC-DIST-9); `None` is the program session.
     pub session: Option<Arc<str>>,
+    /// The route mount whose `$MOUNT` work the dispatch is part of (EXEC-SEED-7): its deferred asks hold tickets.
+    pub lineage: Option<Arc<crate::kernel::mount_barrier::MountLineage>>,
 }
 
-/// Each deferred key's requester, and whether the key is a stream (kept until a new ask reuses the key).
-type Requesters = Arc<Mutex<HashMap<String, (Arc<Requester>, bool)>>>;
+/// Each deferred key's requester, whether the key is a stream (kept until a new ask reuses the key), and the lineage
+/// ticket a finite key holds until its completion has run.
+type Requesters = Arc<Mutex<HashMap<String, (Arc<Requester>, bool, Option<LineageTicket>)>>>;
 
 /// Whether a dispatch has ended, and the keys it deferred.
 #[derive(Default)]
@@ -446,7 +452,8 @@ impl DispatchScope {
             _ => false,
         };
         if open {
-            self.requesters.lock().insert(key.clone(), (self.requester.clone(), stream));
+            let ticket = if stream { None } else { self.requester.lineage.as_ref().map(|lineage| lineage.ticket()) };
+            self.requesters.lock().insert(key.clone(), (self.requester.clone(), stream, ticket));
         } else {
             self.release(key);
         }
@@ -498,6 +505,7 @@ impl KernelCompletionSink {
         self.scope(Arc::new(Requester {
             client_id: client_id.map(str::to_string),
             session: kernel.as_ref().and_then(|kernel| kernel.thread_session()),
+            lineage: crate::kernel::mount_barrier::thread_lineage(),
         }))
     }
 
@@ -516,16 +524,16 @@ impl KernelCompletionSink {
         self.requesters
             .lock()
             .iter()
-            .any(|(key, (requester, _))| requester.session.as_deref() == Some(session) && live.contains(key))
+            .any(|(key, (requester, _, _))| requester.session.as_deref() == Some(session) && live.contains(key))
     }
 
-    /// The requester of `key`: taken for a finite ask, kept for a stream's later items.
-    fn requester_of(&self, key: &str) -> Arc<Requester> {
+    /// The requester of `key`: taken for a finite ask, with its lineage ticket, kept for a stream's later items.
+    fn requester_of(&self, key: &str) -> (Arc<Requester>, Option<LineageTicket>) {
         let mut requesters = self.requesters.lock();
         match requesters.get(key) {
-            Some((requester, true)) => requester.clone(),
-            Some(_) => requesters.remove(key).map(|(requester, _)| requester).unwrap_or_default(),
-            None => Arc::default(),
+            Some((requester, true, _)) => (requester.clone(), None),
+            Some(_) => requesters.remove(key).map(|(requester, _, ticket)| (requester, ticket)).unwrap_or_default(),
+            None => (Arc::default(), None),
         }
     }
 
@@ -577,7 +585,7 @@ impl OsCompletionSink for KernelCompletionSink {
     fn ended(&self, site: &CallSite, key: &str) {
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
-        let requester = self.requesters.lock().remove(key).map(|(requester, _)| requester).unwrap_or_default();
+        let requester = self.requesters.lock().remove(key).map(|(requester, _, _)| requester).unwrap_or_default();
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         if let Err(error) = kernel.end_keyed_ask(&site.trait_name, &site.entity_id, key) {
             tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, key, error = %error, "the end of a stream could not settle its row");
@@ -624,7 +632,8 @@ impl KernelCompletionSink {
         // A completion that outlives its kernel has nothing to dispatch into.
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
-        let requester = self.requester_of(key);
+        let (requester, _ticket) = self.requester_of(key);
+        let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);

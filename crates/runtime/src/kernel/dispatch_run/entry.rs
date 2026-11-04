@@ -215,6 +215,50 @@ impl RuntimeKernel {
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
+    /// EXEC-SEED-7 for a host that settles deferred asks on threads of its own: the `$MOUNT` deliveries run as a
+    /// dispatch of their own, the kernel waits until every ask they deferred, and every ask those asks' completions
+    /// and dispatches deferred, has settled, and only then the seeds run. `drive` runs one started dispatch to its end.
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    pub fn run_route_mount<E>(
+        &self,
+        route: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+        mut drive: impl FnMut(Result<Progress<DispatchOutcomes>, DispatchError>) -> Result<DispatchOutcomes, E>,
+    ) -> Result<DispatchOutcomes, E> {
+        let announced = match self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload) {
+            Err(error) => return drive(Err(error.into())),
+            Ok(()) => match route.map(|route| self.route_mount_deliveries(route)).transpose() {
+                Err(error) => return drive(Err(error.into())),
+                Ok(deliveries) => deliveries.unwrap_or_default(),
+            },
+        };
+        if announced.is_empty() {
+            return drive(self.start_dispatch_mount(seeds, entity_id, payload));
+        }
+        let lineage = std::sync::Arc::new(super::mount_barrier::MountLineage::default());
+        let mut outcomes = {
+            let _lineage = super::mount_barrier::enter_lineage(Some(lineage.clone()));
+            drive(self.start_dispatch_announce(announced, entity_id))?
+        };
+        lineage.wait_settled();
+        outcomes.extend(drive(self.start_dispatch_mount(seeds, entity_id, payload))?);
+        Ok(outcomes)
+    }
+
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    fn start_dispatch_announce(
+        &self,
+        deliveries: VecDeque<CascadeItem>,
+        entity_id: Option<&str>,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter(None)?;
+        let mut run = self.run_of_mount(&[], entity_id, Value::Null);
+        run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries }));
+        self.drive_entry(lane, Self::continuation_of(run))
+    }
+
     fn run_of_route_mount(
         &self,
         route: Option<&str>,
@@ -226,7 +270,7 @@ impl RuntimeKernel {
         if let Some(route) = route {
             let deliveries = self.route_mount_deliveries(route)?;
             if !deliveries.is_empty() {
-                run.preamble = Some(Box::new(deliveries));
+                run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries }));
             }
         }
         Ok(run)

@@ -1117,6 +1117,8 @@ mod tls_sockets;
 #[cfg(feature = "wire-drivers")]
 pub use tls_sockets::TlsCompletion;
 pub mod lazy;
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub mod mount_barrier;
 mod dispatch;
 mod ticks;
 mod client_leg;
