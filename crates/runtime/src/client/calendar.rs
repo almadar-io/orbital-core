@@ -26,7 +26,11 @@ pub struct CalendarDay {
 }
 
 fn parse_calendar_date(value: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(value.get(..10)?, "%Y-%m-%d").ok()
+    let date = value.get(..10)?;
+    if value.len() != 10 && !value.get(10..)?.starts_with('T') {
+        return None;
+    }
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
 fn format_calendar_day(date: NaiveDate) -> CalendarDay {
@@ -171,6 +175,7 @@ mod tests {
         assert_eq!(calendar_day(None).iso, today);
         assert_eq!(calendar_day(Some("invalid")).iso, today);
         assert_eq!(calendar_day(Some("ééééééééééé")).iso, today);
+        assert_eq!(calendar_day(Some("2024-01-01bad")).iso, today);
     }
 
     #[test]

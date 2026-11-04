@@ -730,6 +730,7 @@ mod posix {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     pub(super) fn load_avg(op: OsOp) -> Result<[f64; 3], OsError> {
         let mut avg = [0f64; 3];
         let n = unsafe { libc::getloadavg(avg.as_mut_ptr(), 3) };
@@ -738,6 +739,25 @@ mod posix {
         } else {
             Err(unsupported(op, "the load averages are not available"))
         }
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    pub(super) fn parse_proc_loadavg(op: OsOp, contents: &str) -> Result<[f64; 3], OsError> {
+        let mut words = contents.split_whitespace();
+        let mut avg = [0.0; 3];
+        for value in &mut avg {
+            let word = words.next().ok_or_else(|| err(op, OsErrorKind::Io, "incomplete /proc/loadavg"))?;
+            *value = word.parse::<f64>().map_err(|_| err(op, OsErrorKind::Io, "invalid /proc/loadavg"))?;
+            if !value.is_finite() || *value < 0.0 {
+                return Err(err(op, OsErrorKind::Io, "invalid /proc/loadavg"));
+            }
+        }
+        Ok(avg)
+    }
+
+    #[cfg(target_os = "android")]
+    pub(super) fn load_avg(op: OsOp) -> Result<[f64; 3], OsError> {
+        parse_proc_loadavg(op, &read_small(op, "/proc/loadavg")?)
     }
 
     pub(super) fn hostname(op: OsOp) -> Result<String, OsError> {

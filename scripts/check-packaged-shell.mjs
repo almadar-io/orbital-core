@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 
 function args(argv) {
   const out = {};
@@ -64,6 +65,21 @@ const binary = path.join(packageCopy, 'bin', a.binary);
 const requestText = fs.readFileSync(a.request, 'utf8');
 const templates = templateDirs(packageCopy);
 if (templates.length === 0) throw new Error(`${a.package} ships no templates/<name> directory`);
+if (a.binary === 'orb-shell-android' || a.binary === 'orb-shell-android.exe') {
+  const nativeTemplate = path.join(packageCopy, 'templates/android-native-gpu/app/build.gradle.kts');
+  const bundle = path.join(packageCopy, 'native-gpu/android');
+  const contract = JSON.parse(fs.readFileSync(path.join(bundle, 'contract.json'), 'utf8'));
+  const manifest = JSON.parse(fs.readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
+  const library = fs.readFileSync(path.join(bundle, contract.abi, contract.library));
+  const packageVersion = JSON.parse(fs.readFileSync(path.join(packageCopy, 'package.json'), 'utf8')).version;
+  if (!fs.existsSync(nativeTemplate) || manifest.contractVersion !== contract.contractVersion || manifest.abi !== contract.abi
+    || manifest.shellVersion !== packageVersion || manifest.featureSet !== contract.productionFeatureSet
+    || library.toString('hex', 0, 6) !== '7f454c460201' || library.readUInt16LE(18) !== 183
+    || manifest.sha256 !== createHash('sha256').update(library).digest('hex')) {
+    throw new Error('packaged Android native GPU template, library, or manifest is invalid');
+  }
+  console.log('ok: packaged Android native GPU template and arm64 library verified');
+}
 
 let failure = null;
 withSourceAside(path.resolve(a.repo), () => {

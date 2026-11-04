@@ -23,7 +23,7 @@ use std::process::{Command, ExitCode, Stdio};
 
 /// The IR version this `orbital-core` emits. Bump it on any IR change that
 /// can break a shell built against the previous version.
-pub const IR_VERSION: u32 = 1;
+pub const IR_VERSION: u32 = 2;
 
 pub const CODE_IR_INCOMPATIBLE: &str = "ORB_SHELL_IR_INCOMPATIBLE";
 pub const CODE_BAD_REQUEST: &str = "ORB_SHELL_BAD_REQUEST";
@@ -125,7 +125,10 @@ pub struct ShellFailure {
 
 impl ShellFailure {
     pub fn new(code: &str, message: impl Into<String>) -> Self {
-        Self { code: code.to_string(), message: message.into() }
+        Self {
+            code: code.to_string(),
+            message: message.into(),
+        }
     }
 }
 
@@ -140,18 +143,28 @@ impl std::error::Error for ShellFailure {}
 impl From<crate::project::WriteError> for ShellFailure {
     fn from(error: crate::project::WriteError) -> Self {
         match error {
-            crate::project::WriteError::Backend(message) => ShellFailure::new(CODE_GENERATE_FAILED, message),
+            crate::project::WriteError::Backend(message) => {
+                ShellFailure::new(CODE_GENERATE_FAILED, message)
+            }
             other => ShellFailure::new(CODE_GENERATE_FAILED, other.to_string()),
         }
     }
 }
 
 /// A shell's description accepting exactly this core's [`IR_VERSION`].
-pub fn description(name: &str, version: &str, needs_resolved: bool, options: Vec<ShellOption>) -> ShellDescription {
+pub fn description(
+    name: &str,
+    version: &str,
+    needs_resolved: bool,
+    options: Vec<ShellOption>,
+) -> ShellDescription {
     ShellDescription {
         name: name.to_string(),
         version: version.to_string(),
-        ir_versions: IrVersions { min: IR_VERSION, max: IR_VERSION },
+        ir_versions: IrVersions {
+            min: IR_VERSION,
+            max: IR_VERSION,
+        },
         options,
         needs_resolved,
         needs_served: false,
@@ -188,10 +201,20 @@ pub trait ShellProgram {
     fn language_problem(&self) -> Option<ShellFailure> {
         None
     }
-    fn generate(&self, request: &GenerateRequest, output: &Path) -> Result<GenerateResponse, ShellFailure>;
+    fn generate(
+        &self,
+        request: &GenerateRequest,
+        output: &Path,
+    ) -> Result<GenerateResponse, ShellFailure>;
     /// The backend's files for `request.module`, written nowhere.
-    fn emit(&self, _request: &GenerateRequest) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
-        Err(ShellFailure::new(CODE_EMIT_UNSUPPORTED, format!("the {} shell does not emit files", self.describe().name)))
+    fn emit(
+        &self,
+        _request: &GenerateRequest,
+    ) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
+        Err(ShellFailure::new(
+            CODE_EMIT_UNSUPPORTED,
+            format!("the {} shell does not emit files", self.describe().name),
+        ))
     }
 }
 
@@ -243,7 +266,10 @@ pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T,
 }
 
 pub fn reply_exit<T: Serialize>(reply: &T, ok: bool) -> ExitCode {
-    println!("{}", serde_json::to_string(reply).expect("a reply serializes"));
+    println!(
+        "{}",
+        serde_json::to_string(reply).expect("a reply serializes")
+    );
     if ok {
         ExitCode::SUCCESS
     } else {
@@ -262,7 +288,10 @@ pub fn run(program: &dyn ShellProgram) -> ExitCode {
         [cmd] if cmd == "describe" => {
             let mut description = program.describe();
             description.language_problem = program.language_problem();
-            println!("{}", serde_json::to_string(&description).expect("a description serializes"));
+            println!(
+                "{}",
+                serde_json::to_string(&description).expect("a description serializes")
+            );
             ExitCode::SUCCESS
         }
         [cmd, flag, out] if cmd == "generate" && flag == "--out" => {
@@ -314,7 +343,12 @@ pub fn shell_package(name: &str) -> String {
 /// Find the `name` shell program: `ORB_SHELL_<NAME>`, else beside `beside`
 /// (orb's own executable), else the installed platform package resolved from
 /// `start_dir` (nearest `node_modules` first, then `user_store`).
-pub fn find_shell(name: &str, beside: Option<&Path>, start_dir: &Path, user_store: &Path) -> Result<PathBuf, ShellFailure> {
+pub fn find_shell(
+    name: &str,
+    beside: Option<&Path>,
+    start_dir: &Path,
+    user_store: &Path,
+) -> Result<PathBuf, ShellFailure> {
     let program = Program {
         binary: format!("orb-shell-{name}"),
         env_var: format!("ORB_SHELL_{}", name.to_uppercase().replace('-', "_")),
@@ -337,13 +371,25 @@ pub struct Program {
 /// Find `program`: its variable, else beside `beside`, else its installed
 /// platform package resolved from `start_dir` (nearest `node_modules` first,
 /// then `user_store`).
-pub fn find_program(program: &Program, beside: Option<&Path>, start_dir: &Path, user_store: &Path) -> Result<PathBuf, ShellFailure> {
+pub fn find_program(
+    program: &Program,
+    beside: Option<&Path>,
+    start_dir: &Path,
+    user_store: &Path,
+) -> Result<PathBuf, ShellFailure> {
     if let Ok(path) = std::env::var(&program.env_var) {
         let path = PathBuf::from(path);
         return if path.is_file() {
             Ok(path)
         } else {
-            Err(ShellFailure::new(CODE_NOT_INSTALLED, format!("{} points at {}, which is not a file", program.env_var, path.display())))
+            Err(ShellFailure::new(
+                CODE_NOT_INSTALLED,
+                format!(
+                    "{} points at {}, which is not a file",
+                    program.env_var,
+                    path.display()
+                ),
+            ))
         };
     }
     let file = format!("{}{}", program.binary, std::env::consts::EXE_SUFFIX);
@@ -358,16 +404,33 @@ pub fn find_program(program: &Program, beside: Option<&Path>, start_dir: &Path, 
     // package beside the meta package inside its store, not at the project's top level).
     let meta = crate::behavior_packages::find_npm_package(&program.package, start_dir, user_store);
     let platform_package = meta
-        .and_then(|meta| crate::behavior_packages::find_npm_package(&package, &meta.root, user_store))
+        .and_then(|meta| {
+            crate::behavior_packages::find_npm_package(&package, &meta.root, user_store)
+        })
         .or_else(|| crate::behavior_packages::find_npm_package(&package, start_dir, user_store));
     if let Some(installed) = platform_package {
-        return installed.bin.get(&program.binary).filter(|p| p.is_file()).cloned().ok_or_else(|| {
-            ShellFailure::new(CODE_NOT_INSTALLED, format!("{package} at {} declares no {} binary", installed.root.display(), program.binary))
-        });
+        return installed
+            .bin
+            .get(&program.binary)
+            .filter(|p| p.is_file())
+            .cloned()
+            .ok_or_else(|| {
+                ShellFailure::new(
+                    CODE_NOT_INSTALLED,
+                    format!(
+                        "{package} at {} declares no {} binary",
+                        installed.root.display(),
+                        program.binary
+                    ),
+                )
+            });
     }
     Err(ShellFailure::new(
         CODE_NOT_INSTALLED,
-        format!("{} is not installed (no {package}); run `orb add {}`", program.what, program.package),
+        format!(
+            "{} is not installed (no {package}); run `orb add {}`",
+            program.what, program.package
+        ),
     ))
 }
 
@@ -380,16 +443,30 @@ pub fn describe(binary: &Path) -> Result<ShellDescription, ShellFailure> {
     if !output.status.success() {
         return Err(ShellFailure::new(
             CODE_NOT_RUNNABLE,
-            format!("{} describe exited {}: {}", binary.display(), output.status, String::from_utf8_lossy(&output.stderr)),
+            format!(
+                "{} describe exited {}: {}",
+                binary.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ),
         ));
     }
-    serde_json::from_slice(&output.stdout)
-        .map_err(|e| ShellFailure::new(CODE_NOT_RUNNABLE, format!("{} describe printed no description: {e}", binary.display())))
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        ShellFailure::new(
+            CODE_NOT_RUNNABLE,
+            format!("{} describe printed no description: {e}", binary.display()),
+        )
+    })
 }
 
 /// Run `binary <args>` with `request` on stdin and parse its JSON reply.
-pub fn exchange<Q: Serialize, R: serde::de::DeserializeOwned>(binary: &Path, args: &[&std::ffi::OsStr], request: &Q) -> Result<R, ShellFailure> {
-    let payload = serde_json::to_vec(request).map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, e.to_string()))?;
+pub fn exchange<Q: Serialize, R: serde::de::DeserializeOwned>(
+    binary: &Path,
+    args: &[&std::ffi::OsStr],
+    request: &Q,
+) -> Result<R, ShellFailure> {
+    let payload = serde_json::to_vec(request)
+        .map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, e.to_string()))?;
     let mut child = Command::new(binary)
         .args(args)
         .stdin(Stdio::piped())
@@ -399,9 +476,12 @@ pub fn exchange<Q: Serialize, R: serde::de::DeserializeOwned>(binary: &Path, arg
         .map_err(|e| ShellFailure::new(CODE_NOT_RUNNABLE, format!("{}: {e}", binary.display())))?;
     {
         let mut stdin = child.stdin.take().expect("stdin is piped");
-        stdin
-            .write_all(&payload)
-            .map_err(|e| ShellFailure::new(CODE_NOT_RUNNABLE, format!("write request to {}: {e}", binary.display())))?;
+        stdin.write_all(&payload).map_err(|e| {
+            ShellFailure::new(
+                CODE_NOT_RUNNABLE,
+                format!("write request to {}: {e}", binary.display()),
+            )
+        })?;
     }
     let out = child
         .wait_with_output()
@@ -409,21 +489,36 @@ pub fn exchange<Q: Serialize, R: serde::de::DeserializeOwned>(binary: &Path, arg
     from_deep_json(&out.stdout).map_err(|e| {
         ShellFailure::new(
             CODE_NOT_RUNNABLE,
-            format!("{} exited {} without a reply: {e}", binary.display(), out.status),
+            format!(
+                "{} exited {} without a reply: {e}",
+                binary.display(),
+                out.status
+            ),
         )
     })
 }
 
 /// `orb`'s side: run `binary generate --out <output>` with `request` on stdin.
-pub fn invoke(binary: &Path, request: &GenerateRequest, output: &Path) -> Result<GenerateResponse, ShellFailure> {
-    match exchange(binary, &["generate".as_ref(), "--out".as_ref(), output.as_os_str()], request)? {
+pub fn invoke(
+    binary: &Path,
+    request: &GenerateRequest,
+    output: &Path,
+) -> Result<GenerateResponse, ShellFailure> {
+    match exchange(
+        binary,
+        &["generate".as_ref(), "--out".as_ref(), output.as_os_str()],
+        request,
+    )? {
         ShellReply::Ok(response) => Ok(response),
         ShellReply::Error(failure) => Err(failure),
     }
 }
 
 /// `orb`'s side: run `binary emit` with `request` on stdin.
-pub fn invoke_emit(binary: &Path, request: &GenerateRequest) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
+pub fn invoke_emit(
+    binary: &Path,
+    request: &GenerateRequest,
+) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
     match exchange(binary, &["emit".as_ref()], request)? {
         EmitReply::Ok(output) => Ok(output),
         EmitReply::Error(failure) => Err(failure),
@@ -433,18 +528,31 @@ pub fn invoke_emit(binary: &Path, request: &GenerateRequest) -> Result<crate::ge
 /// Copy the native kernel add-on `file` that ships beside the running shell program into `<output>/kernel/`, where a
 /// kernel-hosted project loads it. Its absence is the project's note (the app then needs it in `kernel/` or
 /// `ORBITAL_KERNEL_DIR`), not a failure.
-pub fn ship_kernel_beside_program(file: &str, output: &std::path::Path) -> Result<Option<String>, ShellFailure> {
-    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(file)));
+pub fn ship_kernel_beside_program(
+    file: &str,
+    output: &std::path::Path,
+) -> Result<Option<String>, ShellFailure> {
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(file)));
     let Some(source) = beside.filter(|path| path.exists()) else {
         return Ok(Some(format!(
             "{file} is not beside this shell program; put it in kernel/ or set ORBITAL_KERNEL_DIR before running the app"
         )));
     };
     let target = output.join("kernel");
-    std::fs::create_dir_all(&target)
-        .map_err(|e| ShellFailure::new(CODE_GENERATE_FAILED, format!("create {}: {e}", target.display())))?;
-    std::fs::copy(&source, target.join(file))
-        .map_err(|e| ShellFailure::new(CODE_GENERATE_FAILED, format!("copy {}: {e}", source.display())))?;
+    std::fs::create_dir_all(&target).map_err(|e| {
+        ShellFailure::new(
+            CODE_GENERATE_FAILED,
+            format!("create {}: {e}", target.display()),
+        )
+    })?;
+    std::fs::copy(&source, target.join(file)).map_err(|e| {
+        ShellFailure::new(
+            CODE_GENERATE_FAILED,
+            format!("copy {}: {e}", source.display()),
+        )
+    })?;
     Ok(None)
 }
 
@@ -490,7 +598,10 @@ mod tests {
             ShellDescription {
                 name: "fake".into(),
                 version: "1.0.0".into(),
-                ir_versions: IrVersions { min: 1, max: 1 },
+                ir_versions: IrVersions {
+                    min: IR_VERSION,
+                    max: IR_VERSION,
+                },
                 options: vec![],
                 needs_resolved: false,
                 needs_served: false,
@@ -498,8 +609,15 @@ mod tests {
                 language_problem: None,
             }
         }
-        fn generate(&self, request: &GenerateRequest, _output: &Path) -> Result<GenerateResponse, ShellFailure> {
-            Ok(GenerateResponse { files: vec![format!("{}.txt", request.module.name)], ..Default::default() })
+        fn generate(
+            &self,
+            request: &GenerateRequest,
+            _output: &Path,
+        ) -> Result<GenerateResponse, ShellFailure> {
+            Ok(GenerateResponse {
+                files: vec![format!("{}.txt", request.module.name)],
+                ..Default::default()
+            })
         }
     }
 
@@ -521,12 +639,22 @@ mod tests {
         fn describe(&self) -> ShellDescription {
             Fake.describe()
         }
-        fn generate(&self, request: &GenerateRequest, output: &Path) -> Result<GenerateResponse, ShellFailure> {
+        fn generate(
+            &self,
+            request: &GenerateRequest,
+            output: &Path,
+        ) -> Result<GenerateResponse, ShellFailure> {
             Fake.generate(request, output)
         }
-        fn emit(&self, request: &GenerateRequest) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
+        fn emit(
+            &self,
+            request: &GenerateRequest,
+        ) -> Result<crate::generate::GeneratedOutput, ShellFailure> {
             Ok(crate::generate::GeneratedOutput {
-                files: vec![crate::generate::GeneratedFile::new(format!("{}.txt", request.module.name), "hi")],
+                files: vec![crate::generate::GeneratedFile::new(
+                    format!("{}.txt", request.module.name),
+                    "hi",
+                )],
                 warnings: vec![],
             })
         }
@@ -535,15 +663,32 @@ mod tests {
     #[test]
     fn a_language_problem_rides_the_description_and_a_loading_install_omits_it() {
         let mut broken = Fake.describe();
-        broken.language_problem = Some(ShellFailure::new("ORB_LANGUAGE_DATA_INCOMPATIBLE", "@almadar/std@16.256.0 names csv/parse"));
+        broken.language_problem = Some(ShellFailure::new(
+            "ORB_LANGUAGE_DATA_INCOMPATIBLE",
+            "@almadar/std@16.256.0 names csv/parse",
+        ));
         let json = serde_json::to_value(&broken).unwrap();
-        assert_eq!(json["languageProblem"]["code"], "ORB_LANGUAGE_DATA_INCOMPATIBLE");
-        assert_eq!(serde_json::from_value::<ShellDescription>(json).unwrap(), broken);
+        assert_eq!(
+            json["languageProblem"]["code"],
+            "ORB_LANGUAGE_DATA_INCOMPATIBLE"
+        );
+        assert_eq!(
+            serde_json::from_value::<ShellDescription>(json).unwrap(),
+            broken
+        );
 
         let json = serde_json::to_value(Fake.describe()).unwrap();
-        assert!(json.get("languageProblem").is_none(), "control: nothing wrong reports nothing");
+        assert!(
+            json.get("languageProblem").is_none(),
+            "control: nothing wrong reports nothing"
+        );
         let older = serde_json::json!({"name": "old", "version": "1.0.0", "irVersions": {"min": 1, "max": 1}});
-        assert_eq!(serde_json::from_value::<ShellDescription>(older).unwrap().language_problem, None);
+        assert_eq!(
+            serde_json::from_value::<ShellDescription>(older)
+                .unwrap()
+                .language_problem,
+            None
+        );
     }
 
     #[test]
@@ -552,47 +697,107 @@ mod tests {
         shipping.web_client = Some(PathBuf::from("/opt/shell/templates/almadar-web-client"));
         let json = serde_json::to_value(&shipping).unwrap();
         assert_eq!(json["webClient"], "/opt/shell/templates/almadar-web-client");
-        assert_eq!(serde_json::from_value::<ShellDescription>(json).unwrap(), shipping);
+        assert_eq!(
+            serde_json::from_value::<ShellDescription>(json).unwrap(),
+            shipping
+        );
         let older = serde_json::json!({ "name": "fake", "version": "1.0.0", "irVersions": { "min": 1, "max": 1 } });
-        assert_eq!(serde_json::from_value::<ShellDescription>(older).unwrap().web_client, None);
-        assert!(serde_json::to_value(Fake.describe()).unwrap().get("webClient").is_none());
+        assert_eq!(
+            serde_json::from_value::<ShellDescription>(older)
+                .unwrap()
+                .web_client,
+            None
+        );
+        assert!(serde_json::to_value(Fake.describe())
+            .unwrap()
+            .get("webClient")
+            .is_none());
     }
 
     #[test]
     fn emit_returns_the_files_in_memory() {
-        let EmitReply::Ok(output) = handle_emit(&Emitter, &request(1)) else { panic!("expected files") };
-        assert_eq!(output.files, vec![crate::generate::GeneratedFile::new("App.txt", "hi")]);
+        let EmitReply::Ok(output) = handle_emit(&Emitter, &request(IR_VERSION)) else {
+            panic!("expected files")
+        };
+        assert_eq!(
+            output.files,
+            vec![crate::generate::GeneratedFile::new("App.txt", "hi")]
+        );
         let json = serde_json::to_string(&EmitReply::Ok(output)).unwrap();
-        assert!(matches!(serde_json::from_str::<EmitReply>(&json).unwrap(), EmitReply::Ok(o) if o.files[0].content == "hi"));
+        assert!(
+            matches!(serde_json::from_str::<EmitReply>(&json).unwrap(), EmitReply::Ok(o) if o.files[0].content == "hi")
+        );
     }
 
     #[test]
     fn control_a_shell_without_emit_refuses_it_by_code() {
-        let EmitReply::Error(failure) = handle_emit(&Fake, &request(1)) else { panic!("expected a refusal") };
+        let EmitReply::Error(failure) = handle_emit(&Fake, &request(IR_VERSION)) else {
+            panic!("expected a refusal")
+        };
         assert_eq!(failure.code, CODE_EMIT_UNSUPPORTED);
     }
 
     #[test]
     fn edge_emit_checks_the_ir_version_first() {
-        let EmitReply::Error(failure) = handle_emit(&Emitter, &request(2)) else { panic!("expected a refusal") };
+        let EmitReply::Error(failure) = handle_emit(&Emitter, &request(IR_VERSION + 1)) else {
+            panic!("expected a refusal")
+        };
         assert_eq!(failure.code, CODE_IR_INCOMPATIBLE);
     }
 
     #[test]
     fn a_request_in_the_accepted_range_reaches_the_shell() {
         assert_eq!(
-            handle(&Fake, &request(1), Path::new("/tmp")),
-            ShellReply::Ok(GenerateResponse { files: vec!["App.txt".into()], ..Default::default() })
+            handle(&Fake, &request(IR_VERSION), Path::new("/tmp")),
+            ShellReply::Ok(GenerateResponse {
+                files: vec!["App.txt".into()],
+                ..Default::default()
+            })
         );
     }
 
     #[test]
     fn control_a_request_outside_the_range_is_refused_before_the_shell_runs() {
-        let ShellReply::Error(failure) = handle(&Fake, &request(2), Path::new("/tmp")) else {
+        let ShellReply::Error(failure) = handle(&Fake, &request(IR_VERSION + 1), Path::new("/tmp"))
+        else {
             panic!("expected a refusal");
         };
         assert_eq!(failure.code, CODE_IR_INCOMPATIBLE);
-        assert!(failure.message.contains("accepts IR 1..=1"), "{}", failure.message);
+        assert!(
+            failure
+                .message
+                .contains(&format!("accepts IR {IR_VERSION}..={IR_VERSION}")),
+            "{}",
+            failure.message
+        );
+    }
+
+    #[test]
+    fn a_shell_built_for_the_previous_request_contract_is_rejected() {
+        struct PreviousShell;
+        impl ShellProgram for PreviousShell {
+            fn describe(&self) -> ShellDescription {
+                let mut description = Fake.describe();
+                description.ir_versions = IrVersions {
+                    min: IR_VERSION - 1,
+                    max: IR_VERSION - 1,
+                };
+                description
+            }
+            fn generate(
+                &self,
+                _request: &GenerateRequest,
+                _output: &Path,
+            ) -> Result<GenerateResponse, ShellFailure> {
+                panic!("old shell must not receive the new request")
+            }
+        }
+        let ShellReply::Error(failure) =
+            handle(&PreviousShell, &request(IR_VERSION), Path::new("/tmp"))
+        else {
+            panic!("expected a refusal");
+        };
+        assert_eq!(failure.code, CODE_IR_INCOMPATIBLE);
     }
 
     #[test]
@@ -602,7 +807,10 @@ mod tests {
         assert_eq!(back.ir_version, IR_VERSION);
         assert_eq!(back.module.name, "App");
         let reply = ShellReply::Error(ShellFailure::new(CODE_GENERATE_FAILED, "boom"));
-        assert_eq!(serde_json::from_str::<ShellReply>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+        assert_eq!(
+            serde_json::from_str::<ShellReply>(&serde_json::to_string(&reply).unwrap()).unwrap(),
+            reply
+        );
     }
 
     fn installed(root: &Path, name: &str) -> PathBuf {
@@ -624,7 +832,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let binary = installed(&root, "zzfixture");
         let found = find_shell("zzfixture", None, &root, &root.join("no-store")).unwrap();
-        assert_eq!(found.canonicalize().unwrap(), binary.canonicalize().unwrap());
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            binary.canonicalize().unwrap()
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -636,24 +847,37 @@ mod tests {
         let beside = root.join("bin");
         std::fs::create_dir_all(&beside).unwrap();
         std::fs::write(beside.join(shell_binary("zzbeside")), "").unwrap();
-        assert_eq!(find_shell("zzbeside", Some(&beside), &root, &root).unwrap(), beside.join(shell_binary("zzbeside")));
+        assert_eq!(
+            find_shell("zzbeside", Some(&beside), &root, &root).unwrap(),
+            beside.join(shell_binary("zzbeside"))
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(unix)]
     fn pnpm_project(root: &Path, name: &str, link_meta: bool) -> PathBuf {
-        let store = root.join("node_modules/.pnpm").join(format!("orb-shell-{name}@1.0.0"));
+        let store = root
+            .join("node_modules/.pnpm")
+            .join(format!("orb-shell-{name}@1.0.0"));
         let binary = installed(&store, name);
-        let meta = store.join("node_modules/@almadar").join(format!("orb-shell-{name}"));
+        let meta = store
+            .join("node_modules/@almadar")
+            .join(format!("orb-shell-{name}"));
         std::fs::create_dir_all(&meta).unwrap();
         std::fs::write(
             meta.join("package.json"),
-            serde_json::json!({"name": format!("@almadar/orb-shell-{name}"), "version": "1.0.0"}).to_string(),
+            serde_json::json!({"name": format!("@almadar/orb-shell-{name}"), "version": "1.0.0"})
+                .to_string(),
         )
         .unwrap();
         if link_meta {
             std::fs::create_dir_all(root.join("node_modules/@almadar")).unwrap();
-            std::os::unix::fs::symlink(&meta, root.join("node_modules/@almadar").join(format!("orb-shell-{name}"))).unwrap();
+            std::os::unix::fs::symlink(
+                &meta,
+                root.join("node_modules/@almadar")
+                    .join(format!("orb-shell-{name}")),
+            )
+            .unwrap();
         }
         binary
     }
@@ -665,7 +889,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let binary = pnpm_project(&root, "zzpnpm", true);
         let found = find_shell("zzpnpm", None, &root, &root.join("no-store")).unwrap();
-        assert_eq!(found.canonicalize().unwrap(), binary.canonicalize().unwrap());
+        assert_eq!(
+            found.canonicalize().unwrap(),
+            binary.canonicalize().unwrap()
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -685,18 +912,27 @@ mod tests {
         let root = std::env::temp_dir().join(format!("orb-find-none-{}", std::process::id()));
         let err = find_shell("zznone", None, &root, &root).unwrap_err();
         assert_eq!(err.code, CODE_NOT_INSTALLED);
-        assert!(err.message.contains("orb add @almadar/orb-shell-zznone"), "{}", err.message);
+        assert!(
+            err.message.contains("orb add @almadar/orb-shell-zznone"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
     fn a_backend_refusal_carries_the_backend_message_unwrapped() {
         let failure = ShellFailure::from(crate::project::WriteError::Backend("ORB_X: no".into()));
-        assert_eq!((failure.code.as_str(), failure.message.as_str()), (CODE_GENERATE_FAILED, "ORB_X: no"));
+        assert_eq!(
+            (failure.code.as_str(), failure.message.as_str()),
+            (CODE_GENERATE_FAILED, "ORB_X: no")
+        );
     }
 
     #[test]
     fn control_an_io_failure_keeps_its_kind() {
-        let failure = ShellFailure::from(crate::project::WriteError::Io(std::io::Error::other("disk")));
+        let failure = ShellFailure::from(crate::project::WriteError::Io(std::io::Error::other(
+            "disk",
+        )));
         assert_eq!(failure.message, "IO error: disk");
     }
 

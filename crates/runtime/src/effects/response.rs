@@ -599,6 +599,12 @@ impl HopEffect {
     }
 }
 
+fn append_optional_vec<T>(target: &mut Option<Vec<T>>, source: Option<Vec<T>>) {
+    if let Some(mut source) = source.filter(|items| !items.is_empty()) {
+        target.get_or_insert_with(Vec::new).append(&mut source);
+    }
+}
+
 impl EventResponse {
     /// The answer to a request that named no trait: the merged outcomes of the `handlers` it was
     /// delivered to, with `held` (the held state of every trait of the orbital) echoed under `states`.
@@ -952,6 +958,33 @@ impl EventResponse {
                 .extend(server.iter().cloned());
         }
         self
+    }
+
+    /// Append the ordered result of folding one server answer into the client kernel.
+    pub(crate) fn append_fold(&mut self, mut folded: EventResponse) {
+        self.success &= folded.success;
+        self.transitioned |= folded.transitioned;
+        self.states.extend(folded.states);
+        self.emitted_events.append(&mut folded.emitted_events);
+        if let Some(data) = folded.data {
+            for (entity, rows) in data {
+                self.data.get_or_insert_with(HashMap::new).entry(entity).or_default().extend(rows);
+            }
+        }
+        if let Some(data_refs) = folded.data_refs {
+            self.data_refs.get_or_insert_with(HashMap::new).extend(data_refs);
+        }
+        append_optional_vec(&mut self.client_effects_by_trait, folded.client_effects_by_trait);
+        append_optional_vec(&mut self.effect_results, folded.effect_results);
+        append_optional_vec(&mut self.rejections, folded.rejections);
+        append_optional_vec(&mut self.transitions, folded.transitions);
+        append_optional_vec(&mut self.cascade_truncated, folded.cascade_truncated);
+        if self.guard_failed.is_none() {
+            self.guard_failed = folded.guard_failed;
+        }
+        if folded.error.is_some() {
+            self.error = folded.error;
+        }
     }
 
     /// Build the canonical client-facing response from a single kernel

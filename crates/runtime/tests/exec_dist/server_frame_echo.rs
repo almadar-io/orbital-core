@@ -467,6 +467,60 @@ fn control_the_client_view_drops_a_server_only_emit_no_pattern_prop_names() {
     assert!(!emitted_names(&view).contains(&"QUIET".to_string()), "{:?}", emitted_names(&view));
 }
 
+#[test]
+fn a_server_fetch_mount_keeps_its_external_emit_for_a_client_listener() {
+    use orbital_core_runtime::embed::EmbeddedKernel;
+    use std::collections::HashSet;
+
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main", "id": "orb_todo",
+            "entity": { "name": "Todo", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" }, { "name": "title", "type": "string" }
+            ], "instances": [{ "id": "one", "title": "First" }] },
+            "auxiliaryEntities": [{ "name": "TodoScreen", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" }
+            ] }],
+            "traits": [
+                { "name": "TodoFetcher", "id": "trt_fetcher", "linkedEntity": "Todo",
+                  "emits": [{ "event": "TODOS_LOADED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                      "effects": [["fetch", "Todo", { "emit": { "success": "TODOS_LOADED" } }]] }] } },
+                { "name": "TodoView", "id": "trt_view", "linkedEntity": "TodoScreen", "dispatch": "client",
+                  "listens": [{ "event": "TODOS_LOADED", "triggers": "TODOS_LOADED",
+                    "source": { "kind": "trait", "trait": "TodoFetcher", "traitId": "trt_fetcher" } }],
+                  "stateMachine": { "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }],
+                    "transitions": [{ "from": "loading", "to": "ready", "event": "TODOS_LOADED",
+                      "effects": [["render-ui", "main", { "type": "data-list", "entity": "@payload.data",
+                        "fields": [{ "name": "title" }] }]] }] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "TodoFetcher" }, { "ref": "TodoView" }] }]
+        }]
+    })).unwrap();
+    let server = EmbeddedServer::new(schema.clone()).unwrap();
+    let full = start(&server, EventRequest {
+        event: "INIT".to_string(),
+        mount: Some(vec![MountSeed { r#trait: "TodoFetcher".to_string(), event: LifecycleEvent::Init }]),
+        ..Default::default()
+    });
+    assert!(full.effect_results.as_ref().is_some_and(|results| results.iter().any(|r|
+        r.effect == orbital_core_runtime::effects::response::ServerEffectKind::Emit
+            && r.target.as_deref() == Some("TODOS_LOADED"))));
+    assert_eq!(emitted_names(&full), ["TODOS_LOADED"]);
+
+    let mut projected = full.clone();
+    server.kernel().stamp_emitted_sources(&mut projected);
+    let projected = server.kernel().client_view(projected);
+    assert_eq!(emitted_names(&projected), ["TODOS_LOADED"], "{projected:?}");
+
+    let client = EmbeddedKernel::new(schema, "todo-tab").unwrap();
+    let folded = client.apply_server_response(&projected, &HashSet::new()).unwrap();
+    assert_eq!(folded.response.states.get("TodoView"), Some(&"ready".to_string()));
+    assert!(folded.response.client_effects_by_trait.as_ref().is_some_and(|effects|
+        effects.iter().any(|effect| effect.trait_name == "TodoView")));
+}
+
 fn mount_batch_schema(sibling_writes: bool) -> OrbitalSchema {
     let sibling_effects = if sibling_writes { json!([["set", "@entity.v", "fresh"]]) } else { json!([]) };
     serde_json::from_value(json!({

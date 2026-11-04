@@ -20,6 +20,7 @@ on:
       cargo-args: { required: true, type: string, description: "e.g. --bin orb-shell-python" }
       linux-libc: { required: false, type: string, default: "musl", description: "musl (static, headless programs) | gnu (needs the system GUI libraries, e.g. orb-desktop)" }
       prepare: { required: false, type: string, default: "", description: "A node script run before packaging that builds templates/ content, e.g. scripts/build-web-client.mjs" }
+      android-native-gpu-artifact: { required: false, type: string, default: "", description: "Caller artifact containing the Android arm64 native GPU library" }
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,13 +71,25 @@ jobs:
         name: Prepare templates
         shell: bash
         run: node ${{ inputs.prepare }}
+      - if: inputs.android-native-gpu-artifact != ''
+        uses: actions/download-artifact@v5
+        with:
+          name: ${{ inputs.android-native-gpu-artifact }}
+          path: dist/native-gpu
       - name: Package
         shell: bash
         run: |
+          extra=()
+          if [[ -n "${{ inputs.shell }}" ]]; then extra+=(--shell "${{ inputs.shell }}"); fi
+          if [[ -n "${{ inputs.android-native-gpu-artifact }}" ]]; then
+            library=$(node -p "JSON.parse(require('fs').readFileSync('renderers/native/contract.json', 'utf8')).library")
+            features=$(node -p "JSON.parse(require('fs').readFileSync('renderers/native/contract.json', 'utf8')).productionFeatureSet")
+            extra+=(--android-native-gpu "dist/native-gpu/$library" --android-native-gpu-features "$features")
+          fi
           node .orbital-core/scripts/package-program.mjs platform --name ${{ inputs.name }} \
             --binary "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" \
             --platform ${{ matrix.name }} --version "${GITHUB_REF_NAME#v}" --repo . --out dist/npm \
-            ${{ inputs.shell != '' && format('--shell {0}', inputs.shell) || '' }}
+            "${extra[@]}"
       - if: inputs.kind == 'shell'
         name: Generate from the packaged layout (G-ORB-240)
         shell: bash
