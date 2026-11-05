@@ -22,6 +22,25 @@ pub fn split_qualified_type_name(name: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// The target-language identifier of a program-wide type name: an unqualified name as written, a qualified
+/// `<behavior>::<Local>` as the behavior's `-`/`_` separated segments in PascalCase followed by `Local`.
+pub fn type_identifier(name: &str) -> String {
+    let (behavior, local) = split_qualified_type_name(name);
+    let Some(behavior) = behavior else {
+        return local.to_string();
+    };
+    let mut out = String::with_capacity(name.len());
+    for segment in behavior.split(['-', '_']).filter(|s| !s.is_empty()) {
+        let mut chars = segment.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out.push_str(local);
+    out
+}
+
 /// The name an author wrote: findings and printed `.lolo` use it.
 pub fn short_type_name(name: &str) -> &str {
     split_qualified_type_name(name).1
@@ -87,6 +106,16 @@ mod tests {
             (Some("std-orb-complete"), "CoreManifest")
         );
         assert_eq!(short_type_name(&name), "CoreManifest");
+    }
+
+    #[test]
+    fn a_qualified_type_is_one_pascal_case_identifier_and_an_unqualified_one_is_unchanged() {
+        assert_eq!(type_identifier("std-api-key-verifier::KeyClaim"), "StdApiKeyVerifierKeyClaim");
+        assert_eq!(type_identifier("std_bearer-verify::HttpHeader"), "StdBearerVerifyHttpHeader");
+        assert_eq!(type_identifier("std-http2--x::T"), "StdHttp2XT");
+        for name in ["KeyClaim", "::X", "B::", "", "my_type"] {
+            assert_eq!(type_identifier(name), name, "{name}");
+        }
     }
 
     #[test]
