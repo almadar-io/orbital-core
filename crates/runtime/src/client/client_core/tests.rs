@@ -890,15 +890,64 @@ fn a_page_mount_opens_the_concrete_path_of_its_page() {
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, Arc::clone(&kernel));
     core.navigate_to("/notes/42", None);
-    assert_eq!(core.page_mount_route().as_deref(), Some("/notes/42"), "the :id segment is filled from the route");
+    assert_eq!(
+        core.page_mount_route().as_deref(),
+        Some("/notes/42"),
+        "the :id segment is filled from the route"
+    );
     let mut params = ValueMap::default();
     params.insert("id".into(), Value::string("7"));
     core.navigate_to("/notes/42", Some(&Value::object(params)));
-    assert_eq!(core.page_mount_route().as_deref(), Some("/notes/7"), "edge: an explicit navigate param fills it, as it wins the payload");
+    assert_eq!(
+        core.page_mount_route().as_deref(),
+        Some("/notes/7"),
+        "edge: an explicit navigate param fills it, as it wins the payload"
+    );
 }
 
 #[test]
 fn control_a_pattern_without_params_is_its_own_route() {
     assert_eq!(fill_route("/notes", &ValueMap::default()), "/notes");
-    assert_eq!(fill_route("/notes/:id", &ValueMap::default()), "/notes/:id", "edge: an unbound param keeps its segment");
+    assert_eq!(
+        fill_route("/notes/:id", &ValueMap::default()),
+        "/notes/:id",
+        "edge: an unbound param keeps its segment"
+    );
+}
+
+/// A page mount runs the traits the page lists AND the ones they embed through `@trait.X`
+/// (EXEC-EVAL-9), as the web's route mount does; a trait no page trait embeds stays unmounted.
+#[test]
+fn a_page_mount_also_inits_the_traits_its_traits_embed() {
+    let init = |title: &str, extra: serde_json::Value| {
+        serde_json::json!([{ "from": "idle", "to": "idle", "event": "INIT",
+            "effects": [["render-ui", "main", { "type": "stack", "children": extra, "title": title }]] }])
+    };
+    let machine = |transitions: serde_json::Value| serde_json::json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions });
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Host", "dispatch": "client", "stateMachine": machine(init("host", serde_json::json!(["@trait.Child"]))) },
+                { "name": "Child", "dispatch": "client", "stateMachine": machine(init("child", serde_json::json!([]))) },
+                { "name": "Stray", "dispatch": "client", "stateMachine": machine(init("stray", serde_json::json!([]))) }
+            ],
+            "pages": [{ "name": "HostPage", "path": "/host", "traits": [{ "ref": "Host" }] }]
+        }]
+    }))
+    .unwrap();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.mount_page_blocking();
+    assert!(core.trait_content.contains_key("Host"));
+    assert!(
+        core.trait_content.contains_key("Child"),
+        "the embedded trait is mounted with its page"
+    );
+    assert!(
+        !core.trait_content.contains_key("Stray"),
+        "control: a trait no page trait embeds is not mounted"
+    );
 }

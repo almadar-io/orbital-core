@@ -9,7 +9,8 @@ use orbital_core_base::schema::row_route::{parse_route_literal, parse_row_lambda
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use orbital_core_eval::evaluator::{BindingContextBuilder, Evaluator};
+use orbital_core_eval::evaluator::{BindingContext, BindingContextBuilder, Evaluator};
+use orbital_core_eval::lower::recognized_call_head;
 use std::collections::HashMap;
 
 // Calendar derivation helpers ride the same glob import every generated renderer
@@ -465,17 +466,133 @@ pub fn substitute_row_bindings(spec: &Value, param: &str, row: &Value) -> Value 
     }
 }
 
-/// Extract `(param_name, body)` from a renderItem lambda carried by the
-/// render-ui spec as the array literal `["fn", "<param>", <body>]`. `None` for
-/// any other shape (the caller then falls back to its field-dump rendering).
-/// Shared by every backend's data-list/data-grid implementation.
-pub fn render_item_param_body(ri: &Value) -> Option<(String, &Value)> {
-    let arr = ri.as_array()?;
-    if arr.len() >= 3 && arr.first().and_then(|v| v.as_str()) == Some("fn") {
-        let p = arr.get(1)?.as_str()?.to_string();
-        return Some((p, &arr[2]));
+/// A childless `stack`/`vstack`/`hstack` with no `className` and no `style` is the authors'
+/// "render nothing" idiom: painted, it would still consume the parent's gap. Stacks that
+/// carry a class or style stay (they can be spacers). Every host skips such a child.
+pub fn is_empty_layout_node(spec: &Value) -> bool {
+    let Some(node) = spec.as_object() else {
+        return false;
+    };
+    if !matches!(
+        node.get("type").and_then(|v| v.as_str()),
+        Some("stack" | "vstack" | "hstack")
+    ) {
+        return false;
     }
-    None
+    let props = node
+        .get("props")
+        .and_then(|v| v.as_object())
+        .unwrap_or(node);
+    let children = if node.get("props").is_some_and(|p| p.as_object().is_some()) {
+        props.get("children")
+    } else {
+        node.get("children")
+    };
+    !props.contains_key("className")
+        && !props.contains_key("style")
+        && match children {
+            None | Some(Value::Null) => true,
+            Some(Value::Array(items)) => items.is_empty(),
+            Some(_) => false,
+        }
+}
+
+/// A `renderItem` lambda `["fn", "<param>" | ["<param>", "<indexParam>"], <body>]`.
+pub struct RenderItemLambda<'a> {
+    params: Vec<String>,
+    body: &'a Value,
+}
+
+/// Parse a renderItem lambda carried by the render-ui spec. `None` for any other shape
+/// (the caller then falls back to its field-dump rendering). Shared by every backend.
+pub fn render_item_lambda(ri: &Value) -> Option<RenderItemLambda<'_>> {
+    let arr = ri.as_array()?;
+    if arr.len() < 3 || arr.first().and_then(|v| v.as_str()) != Some("fn") {
+        return None;
+    }
+    let params: Vec<String> = match &arr[1] {
+        Value::String(s) => vec![s.to_string()],
+        Value::Array(list) => list
+            .iter()
+            .map(|p| p.as_str().map(str::to_string))
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+    if params.is_empty() || params.len() > 2 {
+        return None;
+    }
+    Some(RenderItemLambda {
+        params,
+        body: &arr[2],
+    })
+}
+
+impl RenderItemLambda<'_> {
+    /// The lambda body for `item` at `index`: param bindings are substituted and every operator
+    /// call is evaluated by the kernel evaluator. A call the evaluator rejects (it needs an
+    /// ambient binding the renderer resolves later) keeps the structural substitution.
+    pub fn apply(&self, item: &Value, index: usize) -> Value {
+        let index_value = Value::Int(index as i64);
+        let mut builder = BindingContextBuilder::new().local(&self.params[0], item.clone());
+        if let Some(index_param) = self.params.get(1) {
+            builder = builder.local(index_param, index_value.clone());
+        }
+        let ctx = builder.build();
+        self.eval_node(self.body, &ctx, item, &index_value)
+    }
+
+    fn mentions_param(&self, s: &str) -> bool {
+        let Some(rest) = s.strip_prefix('@') else {
+            return false;
+        };
+        let name = rest.split(['.', '[']).next().unwrap_or(rest);
+        self.params.iter().any(|p| p == name)
+    }
+
+    fn structural(&self, node: &Value, item: &Value, index: &Value) -> Value {
+        let out = substitute_row_bindings(node, &self.params[0], item);
+        match self.params.get(1) {
+            Some(index_param) => substitute_row_bindings(&out, index_param, index),
+            None => out,
+        }
+    }
+
+    fn eval_node(&self, node: &Value, ctx: &BindingContext, item: &Value, index: &Value) -> Value {
+        match node {
+            Value::String(s) if self.mentions_param(s) => self.eval_expr(node, ctx, item, index),
+            Value::Array(items) => {
+                let is_call = SExpression::try_from(node.clone())
+                    .ok()
+                    .and_then(|e| recognized_call_head(&e).map(|head| head != "fn"))
+                    .unwrap_or(false);
+                if is_call {
+                    self.eval_expr(node, ctx, item, index)
+                } else {
+                    Value::Array(
+                        items
+                            .iter()
+                            .map(|v| self.eval_node(v, ctx, item, index))
+                            .collect(),
+                    )
+                }
+            }
+            Value::Object(obj) => {
+                let mut out = ValueMap::with_capacity_and_hasher(obj.len(), Default::default());
+                for (k, v) in obj {
+                    out.insert(k.clone(), self.eval_node(v, ctx, item, index));
+                }
+                Value::object(out)
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn eval_expr(&self, node: &Value, ctx: &BindingContext, item: &Value, index: &Value) -> Value {
+        SExpression::try_from(node.clone())
+            .ok()
+            .and_then(|expr| Evaluator::new().evaluate(&expr, ctx).ok())
+            .unwrap_or_else(|| self.structural(node, item, index))
+    }
 }
 
 /// Bind a row action's authored lambda to the same evaluator used by the kernel.
@@ -512,7 +629,11 @@ pub fn evaluate_row_action_lambda(
 }
 
 /// Resolve a row action destination through the same evaluator as its condition and payload.
-pub fn row_action_route(action: &Value, row: &Value, user: Option<&Value>) -> Result<Option<String>, String> {
+pub fn row_action_route(
+    action: &Value,
+    row: &Value,
+    user: Option<&Value>,
+) -> Result<Option<String>, String> {
     let Some(destination) = action.get("navigatesTo") else {
         return Ok(None);
     };
@@ -524,7 +645,8 @@ pub fn row_action_route(action: &Value, row: &Value, user: Option<&Value>) -> Re
     } else {
         evaluate_row_action_lambda(destination, row, user, None, None)?
     };
-    value.as_str()
+    value
+        .as_str()
         .map(|route| Some(route.to_string()))
         .ok_or_else(|| "row action navigatesTo must evaluate to a string".to_string())
 }
@@ -541,7 +663,11 @@ pub fn row_action_is_shown(action: &Value, row: &Value, user: Option<&Value>) ->
 }
 
 /// The event payload every row action emits, including its authored payload fields.
-pub fn row_action_payload(action: &Value, row: &Value, user: Option<&Value>) -> Result<Value, String> {
+pub fn row_action_payload(
+    action: &Value,
+    row: &Value,
+    user: Option<&Value>,
+) -> Result<Value, String> {
     let mut fields = ValueMap::default();
     if let Some(id) = row.get("id") {
         fields.insert("id".into(), id.clone());
@@ -577,11 +703,11 @@ pub fn render_item_children(
     let Some(ri) = props.as_object().and_then(|o| o.get("renderItem")) else {
         return false;
     };
-    let Some((param, body)) = render_item_param_body(ri) else {
+    let Some(lambda) = render_item_lambda(ri) else {
         return false;
     };
-    for row in rows {
-        let child = substitute_row_bindings(body, &param, row);
+    for (index, row) in rows.iter().enumerate() {
+        let child = lambda.apply(row, index);
         render(ui_ptr, &child, ctx);
     }
     true
@@ -1049,6 +1175,60 @@ mod tests {
     }
 
     #[test]
+    fn empty_layout_node_matches_only_bare_childless_stacks() {
+        for spec in [
+            r#"{"type":"stack","children":[],"gap":"none"}"#,
+            r#"{"type":"vstack"}"#,
+            r#"{"type":"hstack","children":null}"#,
+            r#"{"type":"stack","props":{"children":[]}}"#,
+        ] {
+            assert!(is_empty_layout_node(&json_value(spec)), "{spec}");
+        }
+        for spec in [
+            r#"{"type":"stack","children":[],"className":"h-4"}"#,
+            r#"{"type":"stack","children":[],"style":{"height":4}}"#,
+            r#"{"type":"stack","children":[{"type":"icon"}]}"#,
+            r#"{"type":"stack","props":{"children":[],"className":"x"}}"#,
+            r#"{"type":"typography","children":[]}"#,
+            r#""stack""#,
+        ] {
+            assert!(!is_empty_layout_node(&json_value(spec)), "{spec}");
+        }
+    }
+
+    #[test]
+    fn render_item_lambda_evaluates_two_param_body_with_kernel_operators() {
+        let ri = json_value(
+            r#"["fn",["col","colIndex"],{"type":"typography","content":["if",["==",["array/len",[]],0],"@col.label",["array/nth",[],"@colIndex"]],"badge":"@col.count"}]"#,
+        );
+        let lambda = render_item_lambda(&ri).expect("two-param lambda parses");
+        let col = json_value(r#"{"label":"Todo","count":3}"#);
+        let out = lambda.apply(&col, 1);
+        assert_eq!(out.get("content").and_then(|v| v.as_str()), Some("Todo"));
+        assert_eq!(out.get("badge").and_then(|v| v.as_int()), Some(3));
+    }
+
+    #[test]
+    fn render_item_lambda_binds_the_index_param_and_single_param_form() {
+        let labels = json_value(
+            r#"["fn",["col","colIndex"],{"first":["==","@colIndex",0],"second":["==","@colIndex",1]}]"#,
+        );
+        let out = render_item_lambda(&labels)
+            .unwrap()
+            .apply(&json_value("{}"), 1);
+        assert_eq!(out.get("first"), Some(&Value::Bool(false)));
+        assert_eq!(out.get("second"), Some(&Value::Bool(true)));
+
+        let single = json_value(r#"["fn","item",{"type":"typography","content":"@item.name"}]"#);
+        let out = render_item_lambda(&single)
+            .unwrap()
+            .apply(&json_value(r#"{"name":"x"}"#), 0);
+        assert_eq!(out.get("content").and_then(|v| v.as_str()), Some("x"));
+        assert!(render_item_lambda(&json_value(r#"["fn",[],{"type":"x"}]"#)).is_none());
+        assert!(render_item_lambda(&json_value(r#"["not-fn","item",{}]"#)).is_none());
+    }
+
+    #[test]
     fn json_conversion_keeps_integral_schema_fields_as_json_integers() {
         let value = json_value(r#"{"typeContractVersion":1,"cursor":2,"zoom":1.5}"#);
         let json = to_json(&value);
@@ -1121,7 +1301,7 @@ mod tests {
         assert_eq!(fields, vec!["name", "email", "status"]);
     }
 
-        #[test]
+    #[test]
     fn test_action_button() {
         let action = json_value(r#"{"label": "Save", "event": "SAVE", "primary": true}"#);
 
@@ -1251,7 +1431,9 @@ mod tests {
     fn row_action_payload_reports_a_failing_or_non_object_payload() {
         let row = json_value(r#"{"id":"todo-1"}"#);
         let two_params = json_value(r#"{"payload":["fn",["a","b"],{"x":1}]}"#);
-        assert!(row_action_payload(&two_params, &row, None).unwrap_err().starts_with("row action payload:"));
+        assert!(row_action_payload(&two_params, &row, None)
+            .unwrap_err()
+            .starts_with("row action payload:"));
         let scalar = json_value(r#"{"payload":["fn","row","@row.id"]}"#);
         assert!(row_action_payload(&scalar, &row, None).is_err());
         assert!(row_action_payload(&json_value("{}"), &row, None).is_ok());
@@ -1261,11 +1443,21 @@ mod tests {
     fn row_action_routes_resolve_literal_and_row_lambda_without_emitting() {
         let row = json_value(r#"{"id":"todo-1"}"#);
         let literal = json_value(r#"{"navigatesTo":"/tasks"}"#);
-        let dynamic = json_value(r#"{"navigatesTo":["fn","row",["str/concat","/tasks/","@row.id"]]}"#);
-        assert_eq!(row_action_route(&literal, &row, None), Ok(Some("/tasks".into())));
-        assert_eq!(row_action_route(&dynamic, &row, None), Ok(Some("/tasks/todo-1".into())));
+        let dynamic =
+            json_value(r#"{"navigatesTo":["fn","row",["str/concat","/tasks/","@row.id"]]}"#);
+        assert_eq!(
+            row_action_route(&literal, &row, None),
+            Ok(Some("/tasks".into()))
+        );
+        assert_eq!(
+            row_action_route(&dynamic, &row, None),
+            Ok(Some("/tasks/todo-1".into()))
+        );
         assert_eq!(row_action_route(&json_value("{}"), &row, None), Ok(None));
-        assert_eq!(row_action_route(&json_value(r#"{"navigatesTo":null}"#), &row, None), Ok(None));
+        assert_eq!(
+            row_action_route(&json_value(r#"{"navigatesTo":null}"#), &row, None),
+            Ok(None)
+        );
         let invalid = json_value(r#"{"navigatesTo":["fn","row",true]}"#);
         assert!(row_action_route(&invalid, &row, None).is_err());
         let template = json_value(r#"{"navigatesTo":"/tasks/{{row.id}}"}"#);

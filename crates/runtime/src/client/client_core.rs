@@ -278,24 +278,22 @@ impl ClientCore {
     /// Fire `INIT` for every trait of the active orbital, synchronously (no thread).
     /// Used by `GameApp` and the Layer-2 verifier.
     pub fn init_all_traits_blocking(&mut self) {
-        let traits = self.current_orbital_traits();
-        self.mount_traits_blocking(&traits, Value::Null, None);
+        let seeds = init_seeds(&self.current_orbital_traits());
+        self.mount_seeds_blocking(&seeds, Value::Null, None);
     }
 
-    fn mount_traits_blocking(&mut self, traits: &[String], payload: Value, route: Option<String>) {
-        if traits.is_empty() {
+    fn mount_seeds_blocking(
+        &mut self,
+        seeds: &[crate::effects::response::MountSeed],
+        payload: Value,
+        route: Option<String>,
+    ) {
+        if seeds.is_empty() {
             self.drive_blocking("INIT", None, payload);
             return;
         }
         if let Some(client_kernel) = self.client_kernel.clone() {
-            client_kernel.remount(traits.iter().cloned());
-            let seeds: Vec<crate::effects::response::MountSeed> = traits
-                .iter()
-                .map(|t| crate::effects::response::MountSeed {
-                    r#trait: t.clone(),
-                    event: crate::effects::response::LifecycleEvent::Init,
-                })
-                .collect();
+            client_kernel.remount(seeds.iter().map(|seed| seed.r#trait.clone()));
             let settled = client_kernel
                 .begin_route_mount(route.as_deref(), &seeds, payload)
                 .and_then(|begun| {
@@ -314,8 +312,8 @@ impl ClientCore {
             self.mount_entered_page();
             return;
         }
-        for trait_name in traits {
-            self.drive_blocking("INIT", Some(trait_name), payload.clone());
+        for seed in seeds {
+            self.drive_blocking("INIT", Some(&seed.r#trait), payload.clone());
         }
     }
 
@@ -324,6 +322,18 @@ impl ClientCore {
         if std::mem::take(&mut self.page_entered) {
             self.mount_page_blocking();
         }
+    }
+
+    /// The seeds a page mount runs: the kernel's mounts of the current page (its traits, then the
+    /// traits they embed); the orbital's traits' INITs when it declares no pages.
+    pub fn page_mount_seeds(&self) -> Vec<crate::effects::response::MountSeed> {
+        let mounts = self
+            .client_kernel
+            .as_ref()
+            .zip(self.current_page.as_deref())
+            .and_then(|(kernel, page)| kernel.page_mounts(page).ok())
+            .filter(|seeds| !seeds.is_empty());
+        mounts.unwrap_or_else(|| init_seeds(&self.page_mount_traits()))
     }
 
     /// The traits a page mount runs: the current page's, in its declared order (the orbital's
@@ -354,10 +364,10 @@ impl ClientCore {
 
     /// Mount the current page: its traits' INIT in one round trip, with the route params.
     pub fn mount_page_blocking(&mut self) {
-        let traits = self.page_mount_traits();
+        let seeds = self.page_mount_seeds();
         let payload = self.page_mount_payload();
         let route = self.page_mount_route();
-        self.mount_traits_blocking(&traits, payload, route);
+        self.mount_seeds_blocking(&seeds, payload, route);
     }
 
     /// The path the current page is open at: its declared path with each `:param` segment filled from the route
@@ -373,10 +383,10 @@ impl ClientCore {
         let kernel = self.client_kernel.clone().ok_or_else(|| {
             BridgeError::InvalidRequest("split page mount needs a client kernel".into())
         })?;
-        let traits = self.page_mount_traits();
+        let seeds = self.page_mount_seeds();
         let payload = self.page_mount_payload();
         self.page_entered = false;
-        if traits.is_empty() {
+        if seeds.is_empty() {
             let begun = kernel.begin(&self.current_trait_name, None, "INIT", payload)?;
             self.process_response(
                 "INIT",
@@ -385,14 +395,7 @@ impl ClientCore {
             );
             return Ok(PendingPageMount::Single(begun));
         }
-        kernel.remount(traits.iter().cloned());
-        let seeds: Vec<crate::effects::response::MountSeed> = traits
-            .iter()
-            .map(|name| crate::effects::response::MountSeed {
-                r#trait: name.clone(),
-                event: crate::effects::response::LifecycleEvent::Init,
-            })
-            .collect();
+        kernel.remount(seeds.iter().map(|seed| seed.r#trait.clone()));
         let route = self.page_mount_route();
         let begun = kernel.begin_route_mount(route.as_deref(), &seeds, payload)?;
         for (trait_name, local) in begun.locals() {
@@ -1236,11 +1239,13 @@ struct PageVisit {
 fn fill_route(pattern: &str, params: &ValueMap) -> String {
     pattern
         .split('/')
-        .map(|segment| match segment.strip_prefix(':').and_then(|name| params.get(name)) {
-            Some(Value::String(value)) => value.to_string(),
-            Some(other) => other.to_string(),
-            None => segment.to_string(),
-        })
+        .map(
+            |segment| match segment.strip_prefix(':').and_then(|name| params.get(name)) {
+                Some(Value::String(value)) => value.to_string(),
+                Some(other) => other.to_string(),
+                None => segment.to_string(),
+            },
+        )
         .collect::<Vec<_>>()
         .join("/")
 }
@@ -1270,6 +1275,16 @@ fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
         }
     }
     Some(params)
+}
+
+fn init_seeds(traits: &[String]) -> Vec<crate::effects::response::MountSeed> {
+    traits
+        .iter()
+        .map(|t| crate::effects::response::MountSeed {
+            r#trait: t.clone(),
+            event: crate::effects::response::LifecycleEvent::Init,
+        })
+        .collect()
 }
 
 /// Every trait some host embeds (orbital-core [`EmbedIndex`] over the schema's inline traits).

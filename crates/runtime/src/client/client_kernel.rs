@@ -483,6 +483,14 @@ impl ClientKernel {
         Ok(responses)
     }
 
+    /// The seeds that mount `page`: its own traits, then every trait they embed through `@trait.X` (EXEC-EVAL-9).
+    pub fn page_mounts(&self, page: &str) -> Result<Vec<crate::effects::response::MountSeed>, BridgeError> {
+        self.embedded
+            .page_circuit(Some(page), None)
+            .map(|circuit| circuit.mounts)
+            .map_err(BridgeError::Server)
+    }
+
     /// How many `(trait, tick)` pairs the schema declares.
     pub fn tick_count(&self) -> usize {
         self.embedded.tick_count()
