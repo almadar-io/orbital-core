@@ -123,7 +123,7 @@ pub(crate) fn run_session(
     }
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
-    Ok(guest_answer(None, &embedded, &outcomes, &seed_trait, event))
+    Ok(guest_answer(None, None, &embedded, &outcomes, &seed_trait, event))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -181,6 +181,7 @@ fn json_value(json: serde_json::Value) -> Value {
 /// What a guest's run answers: each trait's state, what it painted, what it emitted and every trait it moved.
 fn guest_answer(
     guest: Option<&str>,
+    page: Option<(&[String], Option<&str>)>,
     embedded: &std::collections::HashSet<String>,
     outcomes: &[(String, ProcessEventResult)],
     seed_trait: &str,
@@ -226,6 +227,12 @@ fn guest_answer(
     });
     if let Some(guest) = guest {
         answer["guest"] = serde_json::Value::String(guest.to_string());
+    }
+    if let Some((page, route)) = page {
+        answer["page"] = serde_json::json!(page);
+        if let Some(route) = route {
+            answer["route"] = serde_json::Value::String(route.to_string());
+        }
     }
     if let Some(rejections) = response.rejections.as_ref().filter(|r| !r.is_empty()) {
         answer["rejections"] = serde_json::to_value(rejections).unwrap_or(serde_json::Value::Null);
@@ -476,6 +483,7 @@ impl RuntimeKernel {
             mounts: routed,
             embedded,
         } = routed_mounts(&guest, route.as_deref(), "program/open")?;
+        let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         for seed in routed {
             if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
                 seeds.push(seed);
@@ -502,6 +510,7 @@ impl RuntimeKernel {
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
         Ok(guest_answer(
             Some(&handle),
+            Some((&page, resolved.as_deref())),
             &embedded,
             &outcomes,
             &seed_trait,
@@ -537,6 +546,7 @@ impl RuntimeKernel {
             mounts: routed,
             embedded,
         } = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
+        let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         let fresh: Vec<MountSeed> = {
             let held = session.route.read();
             routed
@@ -557,6 +567,7 @@ impl RuntimeKernel {
         };
         Ok(guest_answer(
             name,
+            Some((&page, resolved.as_deref())),
             &embedded,
             &outcomes,
             &seed_trait,
@@ -654,7 +665,7 @@ impl RuntimeKernel {
         }
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
-        Ok(guest_answer(None, &embedded, &outcomes, &seed_trait, event))
+        Ok(guest_answer(None, None, &embedded, &outcomes, &seed_trait, event))
     }
 
     /// The registered traits whose current state handles `event`, in name order.

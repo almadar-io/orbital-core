@@ -621,6 +621,24 @@ fn control_navigate_without_rows_fetches_an_empty_store() {
     assert!(painted(&after["got"]).contains(&"none listed".to_string()), "{after}");
 }
 
+fn page(answer: &serde_json::Value) -> Vec<String> {
+    answer["page"].as_array().into_iter().flatten().filter_map(|t| t.as_str().map(str::to_string)).collect()
+}
+
+#[test]
+fn open_and_navigate_answer_the_routed_page_traits_and_a_revisit_still_names_its_page() {
+    let (kernel, opened) = open_shop(shop(), json!({}));
+    assert_eq!(page(&opened["got"]), ["HomeT"], "the open names the routed page, not the boot traits: {opened}");
+    let listed = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert_eq!(page(&listed["got"]), ["ListT"], "{listed}");
+    let home = shop_event(&kernel, "NAV", json!({ "route": "/", "rows": [] }));
+    assert!(mounted(&home["got"]).is_empty(), "nothing new mounts on a revisit: {home}");
+    assert_eq!(page(&home["got"]), ["HomeT"], "a revisit still names the page it shows: {home}");
+    assert_eq!(opened["got"]["route"], "/", "the open answers the route it resolved: {opened}");
+    assert_eq!(listed["got"]["route"], "/list", "{listed}");
+    assert_eq!(home["got"]["route"], "/", "{home}");
+}
+
 #[test]
 fn navigating_to_a_mounted_route_mounts_nothing_new() {
     let (kernel, _) = open_shop(shop(), json!({}));
