@@ -52,7 +52,7 @@ pub fn sealed_record(name: &str) -> Option<OirType> {
                     OirType::array(OirType::Struct {
                         fields: vec![
                             OirField::new("name", OirType::String),
-                            OirField::new("value", OirType::TypeRef { name: "JsonValue".to_string() }),
+                            OirField::new("value", claim_value_type()),
                         ]
                         .into(),
                         additional: None,
@@ -80,6 +80,19 @@ pub fn sealed_record(name: &str) -> Option<OirType> {
             OirField::new("mode", OirType::String),
         ])),
         _ => None,
+    }
+}
+
+/// The closed type of a `Verified` claim's value: `string | number | boolean | [string]`.
+pub fn claim_value_type() -> OirType {
+    OirType::Union {
+        variants: vec![
+            OirField::new("string", OirType::String),
+            OirField::new("number", OirType::Number),
+            OirField::new("boolean", OirType::Boolean),
+            OirField::new("array", OirType::array(OirType::String)),
+        ]
+        .into(),
     }
 }
 
@@ -116,5 +129,26 @@ mod tests {
         assert!(sealed_record("Viewer").is_none());
         assert_eq!(sealed_name(&sealed_type_ref("Verified")), Some("Verified"));
         assert_eq!(sealed_name(&OirType::String), None);
+    }
+
+    #[test]
+    fn a_verified_claim_value_is_the_closed_claim_union() {
+        let Some(OirType::Struct { fields, .. }) = sealed_record("Verified") else { panic!("Verified has a record") };
+        let claims = fields.iter().find(|f| f.name == "claims").expect("claims");
+        let OirType::Array { inner: items } = &claims.field_type else { panic!("claims is a list: {:?}", claims.field_type) };
+        let OirType::Struct { fields: claim, .. } = items.as_ref() else { panic!("a claim is a record") };
+        let value = claim.iter().find(|f| f.name == "value").expect("value");
+        let OirType::Union { variants } = &value.field_type else { panic!("value is a union: {:?}", value.field_type) };
+        let arms: Vec<(&str, &OirType)> = variants.iter().map(|v| (v.name.as_str(), &v.field_type)).collect();
+        assert_eq!(
+            arms,
+            vec![
+                ("string", &OirType::String),
+                ("number", &OirType::Number),
+                ("boolean", &OirType::Boolean),
+                ("array", &OirType::array(OirType::String)),
+            ]
+        );
+        assert!(!format!("{:?}", sealed_record("Verified")).contains("TypeRef"), "control: no undeclared type is named");
     }
 }

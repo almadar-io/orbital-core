@@ -133,6 +133,28 @@ fn seconds(claims: &Json, name: &str) -> Result<Option<f64>, ()> {
     }
 }
 
+/// Spreads a claim into `Verified` leaves: an object becomes one claim per leaf named by its dotted path; a leaf is a
+/// string, number, boolean or list of strings, else `Err` names its path.
+fn spread_claim<'a>(path: String, value: &'a serde_json::Value, out: &mut Vec<(String, &'a serde_json::Value)>) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(members) => {
+            for (name, member) in members {
+                spread_claim(format!("{path}.{name}"), member, out)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::String(_) | serde_json::Value::Number(_) | serde_json::Value::Bool(_) => {
+            out.push((path, value));
+            Ok(())
+        }
+        serde_json::Value::Array(items) if items.iter().all(serde_json::Value::is_string) => {
+            out.push((path, value));
+            Ok(())
+        }
+        serde_json::Value::Array(_) | serde_json::Value::Null => Err(path),
+    }
+}
+
 fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalResult {
     let parts: Vec<&str> = token.split('.').collect();
     let [header_segment, payload_segment, signature_segment] = parts.as_slice() else {
@@ -195,8 +217,14 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
     let Some(subject) = claims.get("sub").and_then(serde_json::Value::as_str).filter(|sub| !sub.is_empty()) else {
         return refusal("malformed", "the token has no sub");
     };
-    let mut list = Vec::with_capacity(claims.len());
+    let mut leaves = Vec::with_capacity(claims.len());
     for (name, value) in &claims {
+        if let Err(path) = spread_claim(name.clone(), value, &mut leaves) {
+            return refusal("claim", &format!("the claim {path} is not a string, number, boolean or list of strings"));
+        }
+    }
+    let mut list = Vec::with_capacity(leaves.len());
+    for (name, value) in leaves {
         let value = serde_json::from_value::<Value>(value.clone()).map_err(|error| invalid(error.to_string()))?;
         list.push(Value::Object(
             [("name", Value::string(name.as_str())), ("value", value)]
@@ -221,7 +249,7 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
 /// jws/verify - `(jws/verify token keys { issuer, audience, clockSkewMs?, allowUnsigned? })`: a sealed `Verified` when the
 /// token is a compact JWS (RS256 or ES256) whose signature verifies under a key of `keys` (JWK records, base64url members;
 /// the `kid` header picks the key, none tries each key of the right type) and whose `exp`, `nbf`, `iss` and `aud` hold at
-/// the dispatch clock; otherwise `{ error, kind }`, kind one of malformed, algorithm, key, signature, expired,
+/// the dispatch clock; otherwise `{ error, kind }`, kind one of malformed, algorithm, key, signature, claim, expired,
 /// not-yet-valid, issuer, audience.
 pub struct JwsVerifyOp;
 impl Operator for JwsVerifyOp {
@@ -390,6 +418,45 @@ mod tests {
         assert_eq!(kind(&call(&format!("{header}.{expired_claims}."), allow.clone())), "audience", "control: other claim checks still run");
         let with_signature = format!("{}x", dev);
         assert_eq!(kind(&call(&with_signature, allow)), "malformed");
+    }
+
+    fn unsigned_with(extra: &str) -> (String, serde_json::Value) {
+        let issuer = "securetoken.google.com/demo";
+        let header = codec::base64url_encode(br#"{"alg":"none","typ":"JWT"}"#);
+        let claims = format!(r#"{{"iss":"{issuer}","aud":"app-1","sub":"dev-1","exp":2000000000{extra}}}"#);
+        let options = serde_json::json!({ "issuer": issuer, "audience": "app-1", "allowUnsigned": true });
+        (format!("{header}.{}.", codec::base64url_encode(claims.as_bytes())), options)
+    }
+
+    fn claim<'a>(answer: &'a Value, name: &str) -> Option<&'a Value> {
+        let claims = answer.get_path("claims").and_then(Value::as_array).expect("claims");
+        claims.iter().find(|c| c.get("name").and_then(Value::as_str) == Some(name)).and_then(|c| c.get("value"))
+    }
+
+    #[test]
+    fn a_nested_object_claim_is_spread_into_one_claim_per_leaf_named_by_its_path() {
+        let (t, options) = unsigned_with(
+            r#","roles":["a"],"firebase":{"tenant":"t1","sign_in_provider":"password","identities":{"email":["a@b.c"]},"inner":{}}"#,
+        );
+        let answer = call(&t, options);
+        assert!(answer.is_sealed_as("Verified"), "{answer:?}");
+        assert_eq!(claim(&answer, "firebase.tenant"), Some(&Value::string("t1")));
+        assert_eq!(claim(&answer, "firebase.sign_in_provider"), Some(&Value::string("password")));
+        assert_eq!(claim(&answer, "firebase.identities.email"), Some(&Value::array(vec![Value::string("a@b.c")])));
+        assert_eq!(claim(&answer, "roles"), Some(&Value::array(vec![Value::string("a")])), "control: a flat list stays");
+        assert_eq!(claim(&answer, "firebase"), None, "the object itself is not a claim");
+        assert_eq!(claim(&answer, "firebase.inner"), None, "an empty object has no leaves");
+        assert_eq!(claim(&answer, "exp"), Some(&Value::Number(2_000_000_000.0)));
+    }
+
+    #[test]
+    fn a_claim_outside_the_closed_claim_type_refuses_the_token() {
+        for extra in [r#","scores":[1,2]"#, r#","groups":[{"id":"g"}]"#, r#","nick":null"#, r#","mixed":["a",1]"#, r#","deep":{"n":[true]}"#] {
+            let (t, options) = unsigned_with(extra);
+            assert_eq!(kind(&call(&t, options)), "claim", "{extra}");
+        }
+        let (t, options) = unsigned_with(r#","admin":true,"level":3,"tags":[]"#);
+        assert!(call(&t, options).is_sealed_as("Verified"), "control: booleans, numbers and an empty list fit");
     }
 
     #[test]
