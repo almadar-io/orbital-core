@@ -229,19 +229,25 @@ pub fn is_trace_subscription(operator: &str, args: &[crate::value::Value]) -> bo
         && args.first().and_then(|o| o.get_path("kind")).and_then(crate::value::Value::as_str) == Some("trace")
 }
 
-/// A `program/self` whose options name `mounted: true`: the kernel the step runs on answers it from its session's page
-/// (EXEC-DIST-15), so its site is either.
+/// A `program/self` whose options name `mounted: true` and no `guest`: the kernel the step runs on answers it from its
+/// session's page (EXEC-DIST-15), so its site is either. A guest's tree is the server's, where guests are opened.
 pub fn is_mounted_reflection_sexpr(operator: &str, args: &[crate::schema::sexpr::SExpression]) -> bool {
     use crate::schema::sexpr::SExpression;
     operator == "program/self"
         && matches!(args.first(), Some(SExpression::Object(options))
-            if options.iter().any(|(k, v)| k.as_str() == "mounted" && matches!(v, SExpression::Bool(true))))
+            if options.iter().any(|(k, v)| k.as_str() == "mounted" && matches!(v, SExpression::Bool(true)))
+                && !options.iter().any(|(k, _)| k.as_str() == "guest"))
 }
 
-/// [`is_mounted_reflection_sexpr`] for an effect whose arguments are evaluated.
+/// A `program/self` whose evaluated options name `mounted: true`, a guest's included.
 pub fn is_mounted_reflection(operator: &str, args: &[crate::value::Value]) -> bool {
     operator == "program/self"
         && args.first().and_then(|o| o.get_path("mounted")).and_then(crate::value::Value::as_bool) == Some(true)
+}
+
+/// [`is_mounted_reflection_sexpr`] for an effect whose arguments are evaluated: answered by the kernel the step runs on.
+pub fn is_local_mounted_reflection(operator: &str, args: &[crate::value::Value]) -> bool {
+    is_mounted_reflection(operator, args) && args.first().and_then(|o| o.get_path("guest")).is_none()
 }
 
 /// Where an IR effect runs: [`effect_site`] for the IR's typed data effects.
@@ -736,7 +742,17 @@ mod tests {
         assert_eq!(effect_site("program/live", &[options(serde_json::json!(true))], &Residence::none()), RunsOn::Server, "control: only program/self");
         let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "mounted": true })).expect("value");
         assert!(is_mounted_reflection("program/self", &[evaluated.clone()]));
+        assert!(is_local_mounted_reflection("program/self", &[evaluated.clone()]));
         assert!(!is_mounted_reflection("program/inputs", &[evaluated]));
+        let guest = |v: serde_json::Value| -> SExpression { serde_json::from_value(v).expect("sexpr") };
+        assert_eq!(
+            effect_site("program/self", &[guest(serde_json::json!({ "mounted": true, "guest": "@entity.guest" }))], &Residence::none()),
+            RunsOn::Server,
+            "a guest's tree is read where the guest was opened"
+        );
+        let guest_value: crate::value::Value = serde_json::from_value(serde_json::json!({ "mounted": true, "guest": "g1" })).expect("value");
+        assert!(is_mounted_reflection("program/self", &[guest_value.clone()]));
+        assert!(!is_local_mounted_reflection("program/self", &[guest_value]));
     }
 
     #[test]

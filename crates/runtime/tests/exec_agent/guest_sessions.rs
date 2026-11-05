@@ -123,6 +123,12 @@ fn opened() -> (RuntimeKernel, String, serde_json::Value) {
         ] },
         { "from": "idle", "to": "idle", "event": "STRAY", "effects": [
             ["program/dispatch", "Diary.DiaryList.ADD", { "text": "x" }, { "guest": "no-such-guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "READ_TREE", "effects": [
+            ["program/self", { "mounted": true, "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "STRAY_TREE", "effects": [
+            ["program/self", { "mounted": true, "guest": "no-such-guest", "emit": emit() }]
         ] }
     ]));
     let after = run(&kernel, "GO");
@@ -209,6 +215,24 @@ fn a_guest_keeps_its_state_between_dispatches_and_inputs_reads_it() {
         Some("ready"),
         "{after}"
     );
+}
+
+#[test]
+fn the_mounted_tree_of_a_guest_is_the_page_the_guest_opened_from_its_own_states() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "READ_TREE");
+    assert_eq!(after["got"]["page"], "DiaryPage", "{after}");
+    let list = &after["got"]["traits"][0];
+    assert_eq!(list["trait"], "DiaryList", "{after}");
+    assert_eq!(list["instances"][0]["state"], "ready", "the guest's own state, not the opener's: {after}");
+    assert_eq!(list["observer"], false, "nothing in the guest asked: {after}");
+}
+
+#[test]
+fn control_the_mounted_tree_of_an_unknown_guest_is_refused_by_name() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "STRAY_TREE");
+    assert!(after["refused"].to_string().contains("no-such-guest"), "{after}");
 }
 
 #[test]

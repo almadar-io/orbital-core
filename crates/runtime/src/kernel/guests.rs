@@ -28,11 +28,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// The guest handle `op`'s options record names (`{ guest }`), if any: `program/dispatch address payload options` and
-/// `program/inputs options`. A payload is never read for it.
+/// `program/inputs options` and `program/self options`. A payload is never read for it.
 pub(super) fn guest_option<'a>(op: &str, args: &'a [Value]) -> Option<&'a Value> {
     let options = match op {
         "program/dispatch" => args.get(2),
-        "program/inputs" => args.first(),
+        "program/inputs" | "program/self" => args.first(),
         _ => None,
     };
     match options {
@@ -704,6 +704,13 @@ impl RuntimeKernel {
             .collect();
         out.sort();
         out
+    }
+
+    /// `program/self { mounted: true, guest }`: the guest's mounted orbital, answered by the guest's own kernel from the
+    /// page its route mount opened (EXEC-DIST-15).
+    pub(super) fn mounted_of_guest(&self, handle: &Value) -> Result<Value, AgentPortFailure> {
+        let guest = self.guest(handle, "program/self")?.kernel;
+        guest.mounted_tree().map_err(AgentPortFailure::plain)
     }
 
     /// `program/inputs { guest, … }`: the guest's own inputs and runtime reads.

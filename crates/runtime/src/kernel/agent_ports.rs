@@ -164,6 +164,16 @@ impl RuntimeKernel {
                 }
             }
             "persist/read-named" => self.run_read_named(effect, &resolved, ctx),
+            "program/self"
+                if orbital_core_base::runs_on::is_mounted_reflection(name, &resolved)
+                    && super::guests::guest_option(name.as_str(), &resolved).is_some() =>
+            {
+                let handle = super::guests::guest_option(name.as_str(), &resolved).cloned().unwrap_or(Value::Null);
+                match self.mounted_of_guest(&handle) {
+                    Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                    Err(failure) => failure_result(effect, failure),
+                }
+            }
             "program/self" if orbital_core_base::runs_on::is_mounted_reflection(name, &resolved) => {
                 match self.mounted_tree() {
                     Ok(tree) => EffectResult::executed_with_value(effect.clone(), tree),
