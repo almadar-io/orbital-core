@@ -768,14 +768,17 @@ impl ClientKernel {
             .apply_server_response(answer, already)
             .map_err(BridgeError::Server)?;
         owed.extend(applied.server_legs);
+        settled.append_fold(server_own(answer, already));
         settled.append_fold(applied.response);
         while let Some(routed) = owed.pop_front() {
             let next = bridge.send_request(&routed.orbital, &routed.leg)?;
+            let none = std::collections::HashSet::new();
             let applied = self
                 .embedded
-                .apply_server_response(&next, &std::collections::HashSet::new())
+                .apply_server_response(&next, &none)
                 .map_err(BridgeError::Server)?;
             owed.extend(applied.server_legs);
+            settled.append_fold(server_own(&next, &none));
             settled.append_fold(applied.response);
         }
         Ok(settled)
@@ -855,6 +858,26 @@ impl ClientKernel {
             }
         }
         Ok(settled)
+    }
+}
+
+/// What a server answer carries for the host beyond the fold: the kernel reconciles the server's states and rows but
+/// hands back only the cascade it ran, so the server's own renders and the emits this client has not already delivered
+/// ride along, before the fold's own (the same rule the browser host applies to the answers it posts).
+fn server_own(answer: &EventResponse, already: &std::collections::HashSet<(String, String)>) -> EventResponse {
+    EventResponse {
+        success: true,
+        client_effects_by_trait: answer.client_effects_by_trait.clone(),
+        emitted_events: answer
+            .emitted_events
+            .iter()
+            .filter(|e| {
+                let source = e.source.as_ref().and_then(|s| s.r#trait.clone()).unwrap_or_default();
+                !already.contains(&(source, e.event.clone()))
+            })
+            .cloned()
+            .collect(),
+        ..Default::default()
     }
 }
 

@@ -1296,3 +1296,41 @@ fn control_an_event_nobody_listens_to_delivers_nothing() {
         .iter()
         .all(|(t, s)| t != "RouteCreate" || s == "closed"));
 }
+
+/// The server's own render of a trait and an emit the client never ran reach the settled response (the host paints
+/// them); an echo of an emit the client already delivered does not.
+#[test]
+fn a_settled_answer_carries_the_servers_own_renders_and_undelivered_emits() {
+    let render = crate::effects::response::ClientEffectByTrait {
+        trait_name: "Persistor".to_string(),
+        effect: serde_json::from_value(serde_json::json!(["render-ui", "main", { "type": "typography", "content": "From server" }])).unwrap(),
+        event: None,
+        from_state: None,
+        callsite_payload: None,
+        repaint: None,
+    };
+    let server_response = EventResponse {
+        success: true,
+        client_effects_by_trait: Some(vec![render]),
+        emitted_events: vec![
+            EmittedEvent { event: "CREATED".to_string(), payload: None, source: Some(BusEventSource::from_trait("Persistor")) },
+            EmittedEvent { event: "SERVER_ONLY".to_string(), payload: None, source: Some(BusEventSource::from_trait("Persistor")) },
+        ],
+        ..Default::default()
+    };
+    let bridge: Arc<dyn ServerBridge> = Arc::new(ScriptedBridge::new(vec![Ok(server_response)]));
+    let kernel = ClientKernel::new(persisted_awaited_with_watcher_schema(), Some(bridge)).unwrap();
+    let response = kernel.dispatch("Persistor", None, "CREATE", Value::Null).unwrap();
+    let rendered: Vec<String> = response
+        .client_effects_by_trait
+        .iter()
+        .flatten()
+        .filter(|e| e.trait_name == "Persistor")
+        .filter_map(|e| e.effect.render_ui_value())
+        .filter_map(|v| v.as_object().and_then(|o| o.get("content")).and_then(|c| c.as_str()).map(str::to_string))
+        .collect();
+    assert!(rendered.contains(&"From server".to_string()), "{rendered:?}");
+    let emitted: Vec<&str> = response.emitted_events.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(emitted.iter().filter(|e| **e == "SERVER_ONLY").count(), 1, "{emitted:?}");
+    assert!(!emitted.contains(&"CREATED"), "an echo of the CREATED this client delivered is not carried: {emitted:?}");
+}

@@ -366,6 +366,47 @@ pub fn serves_only_protocol_pages(orbital: &serde_json::Value) -> bool {
         .is_some_and(|pages| !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some()))
 }
 
+/// Program keys no client reads.
+const CLIENT_UNREAD_PROGRAM_KEYS: [&str; 2] = ["_metadata", "ledger"];
+
+/// Per-trait keys no client reads (the kernel's schema types carry them; no client path reads them).
+const CLIENT_UNREAD_TRAIT_KEYS: [&str; 2] = ["effectRow", "sourceEntityDefinition"];
+
+/// The resolved program as a client-role kernel runs it (EXEC-ENDPOINT-5): route pages only — an orbital whose every
+/// page is a protocol endpoint is the server's and is left out, and protocol pages are dropped — without the keys no
+/// client reads, carrying the `_metadata` a kernel without an operator table needs. Every client host (the browser,
+/// the native desktop) runs this one projection.
+pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
+    let mut projected = program.clone();
+    let Some(root) = projected.as_object_mut() else {
+        return projected;
+    };
+    for key in CLIENT_UNREAD_PROGRAM_KEYS {
+        root.remove(key);
+    }
+    if let Some(orbitals) = root.get_mut("orbitals").and_then(serde_json::Value::as_array_mut) {
+        orbitals.retain(|orbital| !serves_only_protocol_pages(orbital));
+        for orbital in orbitals {
+            if let Some(pages) = orbital.get_mut("pages").and_then(serde_json::Value::as_array_mut) {
+                pages.retain(|page| page.get("protocol").is_none());
+            }
+            let traits = orbital.get_mut("traits").and_then(serde_json::Value::as_array_mut);
+            for trait_def in traits.into_iter().flatten() {
+                if let Some(trait_def) = trait_def.as_object_mut() {
+                    for key in CLIENT_UNREAD_TRAIT_KEYS {
+                        trait_def.remove(key);
+                    }
+                }
+            }
+        }
+    }
+    let metadata = client_program_metadata(root.get("orbitals").unwrap_or(&serde_json::Value::Null));
+    if !metadata.is_empty() {
+        root.insert("_metadata".to_string(), serde_json::Value::Object(metadata));
+    }
+    projected
+}
+
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
 /// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
 pub fn client_program_metadata(orbitals: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
