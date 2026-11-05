@@ -91,6 +91,10 @@ pub struct GenerateRequest {
     /// The resolved program, sent when the shell declares `needsResolved`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved: Option<OrbitalSchema>,
+    /// The `uses lazy` behaviors of `resolved`, each resolved on its own (EXEC-LOAD-2), flattened: `orbRef` is relative to
+    /// the folder of the program that boots them. Sent with `resolved`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lazy: Vec<LazyProgram>,
     /// The resolved program composed with `std-http-server`, sent when the shell declares `needsServed` and the mode
     /// generates a server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,6 +107,14 @@ pub struct GenerateRequest {
     /// Shell options by name (as the shell's description declares them).
     #[serde(default)]
     pub options: BTreeMap<String, serde_json::Value>,
+}
+
+/// One lazily-used behavior of a generated program: its resolved program, at `orb_ref` beside the booting program.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LazyProgram {
+    pub orb_ref: String,
+    pub program: OrbitalSchema,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -626,6 +638,7 @@ mod tests {
             ir_version,
             module: OirModule::new("App", "1.0.0"),
             resolved: None,
+            lazy: Vec::new(),
             served: None,
             source_path: None,
             write: WriteOptions::default(),
