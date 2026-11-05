@@ -106,6 +106,13 @@ impl ThemePresets {
         self.definitions.is_empty()
     }
 
+    /// Every definition, ordered by name.
+    pub fn definitions(&self) -> Vec<&ThemeDefinition> {
+        let mut all: Vec<&ThemeDefinition> = self.definitions.values().collect();
+        all.sort_by(|a, b| a.name.cmp(&b.name));
+        all
+    }
+
     /// Every `[data-theme]` key the presets define ([`theme_keys`]), sorted.
     pub fn theme_keys(&self) -> Vec<String> {
         let mut keys: Vec<String> = self.definitions.values().flat_map(theme_keys).collect();
