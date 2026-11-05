@@ -372,6 +372,9 @@ fn empty_tokens() -> ThemeTokens {
     }
 }
 
+pub mod stylesheet;
+pub use stylesheet::{client_themes, generate_theme_css, theme_font_imports, ClientTheme};
+
 mod css;
 pub use css::{css_vars, CssVars};
 
