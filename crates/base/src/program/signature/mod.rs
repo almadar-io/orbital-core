@@ -188,8 +188,9 @@ pub struct CallBindings {
     /// the record's fields, each now possibly dropped.
     records: SmallMap<OirType>,
     /// The key arguments that name no field of the record their variable is bound to: the argument position and
-    /// the path. Reading such a field is an error only when the call supplies no default (see [`Signature::finish`]).
-    absent: SmallMap<(usize, String)>,
+    /// the path, and whether no value of the type could have it (a default never excuses that). Reading such a field
+    /// is an error only when the call supplies no default, or the segment is impossible (see [`Signature::finish`]).
+    absent: SmallMap<(usize, String, bool)>,
     /// The type of the default supplied for a `field-of` parameter whose field the record does not declare.
     defaults: SmallMap<OirType>,
     /// The `field-of` variables the call supplies a never-null default for: a read through a record that may be
@@ -584,7 +585,7 @@ impl<'a> Signature<'a> {
             }
         }
         let reads = |var: &str| matches!(self.returns, OperatorTypeRef::Tagged(OperatorTypeRefKind::FieldOf { of }) if of == var);
-        for (var, (index, path)) in &bindings.absent {
+        for (var, (index, path, impossible)) in &bindings.absent {
             if !reads(var) {
                 continue;
             }
@@ -592,7 +593,7 @@ impl<'a> Signature<'a> {
                 i < supplied
                     && matches!(&p.ty, OperatorTypeRef::Tagged(OperatorTypeRefKind::FieldOf { of }) if of == var)
             });
-            if !default_supplied {
+            if !default_supplied || *impossible {
                 let record = bindings
                     .last(var)
                     .map(oir_type_kind)

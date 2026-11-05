@@ -175,7 +175,7 @@ pub fn resolve(ty: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
                         Some(OirType::optional(found))
                     }
                     Path::Found(found) => Some(found),
-                    Path::Missing => b.defaults.get(of).cloned(),
+                    Path::Missing | Path::Impossible => b.defaults.get(of).cloned(),
                     Path::Opaque => None,
                 }
             }

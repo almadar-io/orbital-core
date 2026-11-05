@@ -191,6 +191,8 @@ operator_dispatch! {
         "json/valid" => K::JsonValidOp,
         "json/nodes" => K::JsonNodesOp,
         "tree/index" => K::TreeIndexOp,
+        "value/key" => K::ValueKeyOp,
+        "value/depth" => K::ValueDepthOp,
 
         // Structural fold over a recursive type; the kernel's one row predicate evaluator
         "tree/fold" => K::TreeFoldOp,

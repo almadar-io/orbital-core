@@ -1495,6 +1495,77 @@ fn a_default_stands_in_for_a_field_the_record_does_not_declare() {
     );
 }
 
+fn map_of(value: OirType) -> OirType {
+    OirType::Map { key: Box::new(OirType::String), value: Box::new(value) }
+}
+
+#[test]
+fn a_literal_path_over_declared_segments_stays_valid() {
+    let hit = struct_of(&[("name", OirType::String), ("tags", s_arr(OirType::String))]);
+    let row = struct_of(&[("hit", hit.clone()), ("hits", s_arr(hit))]);
+    assert_eq!(call(&get(), &[ty(row.clone()), text("hit.name")], Mode::Static), Ok(Some(OirType::String)));
+    assert_eq!(call(&get(), &[ty(row.clone()), text("hits.0.name")], Mode::Static), Ok(Some(OirType::String)));
+    assert_eq!(call(&get(), &[ty(row), text("hit.tags.1")], Mode::Static), Ok(Some(OirType::String)));
+}
+
+#[test]
+fn a_map_takes_any_non_empty_key_segment() {
+    let hits = struct_of(&[("name", OirType::String)]);
+    let by_key = map_of(s_arr(hits));
+    for key in ["@trait", "a-b", "@trait.0", "@trait.0.name"] {
+        assert!(call(&get(), &[ty(by_key.clone()), text(key)], Mode::Static).is_ok(), "{key}");
+    }
+}
+
+#[test]
+fn a_map_key_with_a_trailing_dot_is_an_undeclared_path_even_with_a_default() {
+    let by_key = map_of(s_arr(struct_of(&[("name", OirType::String)])));
+    let impossible = |args: &[Actual<'_>]| matches!(call(&get(), args, Mode::Static), Err(Mismatch::NoField { .. }));
+    assert!(impossible(&[ty(by_key.clone()), text("@trait.")]));
+    assert!(impossible(&[ty(by_key.clone()), text("@trait."), ty(s_arr(OirType::String))]), "a default does not excuse it");
+    assert!(impossible(&[ty(by_key), text(".x")]), "an empty first segment");
+}
+
+#[test]
+fn the_empty_key_reads_a_map_entry_whole() {
+    let by_prefix = map_of(s_arr(struct_of(&[("node", OirType::String)])));
+    let hits = s_arr(struct_of(&[("node", OirType::String)]));
+    let read = call(&get(), &[ty(by_prefix.clone()), text(""), ty(hits)], Mode::Static);
+    assert!(read.is_ok(), "{read:?}");
+    assert!(matches!(
+        call(&get(), &[ty(struct_of(&[("count", OirType::Number)])), text("")], Mode::Static),
+        Err(Mismatch::NoField { .. })
+    ));
+}
+
+#[test]
+fn a_missing_record_field_is_an_error_without_a_default() {
+    let row = struct_of(&[("count", OirType::Number)]);
+    assert!(matches!(
+        call(&get(), &[ty(row.clone()), text("roles")], Mode::Static),
+        Err(Mismatch::NoField { .. })
+    ));
+    assert!(matches!(
+        call(&get(), &[ty(row), text("a..b")], Mode::Static),
+        Err(Mismatch::NoField { .. })
+    ));
+}
+
+#[test]
+fn a_name_on_a_list_or_a_segment_past_a_scalar_is_an_error_even_with_a_default() {
+    let row = struct_of(&[("items", s_arr(OirType::String)), ("count", OirType::Number)]);
+    for key in ["items.first", "items.0.deep", "count.x"] {
+        assert!(
+            matches!(
+                call(&get(), &[ty(row.clone()), text(key), ty(OirType::String)], Mode::Static),
+                Err(Mismatch::NoField { .. })
+            ),
+            "{key}"
+        );
+    }
+    assert!(call(&get(), &[ty(row), text("items.0")], Mode::Static).is_ok(), "control: a numeric index on a list");
+}
+
 #[test]
 fn a_default_must_have_the_fields_type() {
     let row = struct_of(&[("count", OirType::Number)]);

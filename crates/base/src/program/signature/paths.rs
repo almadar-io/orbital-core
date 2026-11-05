@@ -5,7 +5,11 @@ use super::*;
 pub(super) enum Path {
     Found(OirType),
     Opaque,
+    /// A record field, union member or tuple slot the type does not declare: a default may stand in for it.
     Missing,
+    /// A segment no value of the type can have: empty, a name on a list or tuple, anything past a scalar. A default
+    /// never stands in for it.
+    Impossible,
 }
 
 /// The type at a dot path through `ty`.
@@ -18,8 +22,12 @@ pub(super) fn walk_path(ty: &OirType, path: &str) -> Path {
 pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolve: &dyn Fn(&str) -> Option<OirType>) -> Path {
     let mut current = ty.clone();
     let mut may_be_absent = false;
-    let segments = crate::value::split_path(path);
+    let whole_empty_key = path.is_empty();
+    let segments = if whole_empty_key { vec![std::borrow::Cow::Borrowed("")] } else { crate::value::split_path(path) };
     for segment in segments.iter().map(|s| s.as_ref()) {
+        if segment.is_empty() && !whole_empty_key {
+            return Path::Impossible;
+        }
         let mut here = language_value(unwrap_optional(&current)).clone();
         let mut hops = 0;
         while let OirType::TypeRef { name } | OirType::Reference { entity: name } = &here {
@@ -52,12 +60,13 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             OirType::Array { inner } if segment.parse::<usize>().is_ok() => {
                 current = (**inner).clone();
             }
-            OirType::Tuple { items } => {
-                match segment.parse::<usize>().ok().and_then(|i| items.get(i)) {
+            OirType::Tuple { items } => match segment.parse::<usize>() {
+                Ok(index) => match items.get(index) {
                     Some(item) => current = item.clone(),
                     None => return Path::Missing,
-                }
-            }
+                },
+                Err(_) => return Path::Impossible,
+            },
             // A tagged union's member read: the field of every variant that declares it. One type when they
             // agree; otherwise the union of the distinct types, so a read as one of them needs a guard.
             OirType::Union { variants } => {
@@ -97,6 +106,23 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             | OirType::Orbital
             | OirType::Behavior
             | OirType::Reference { .. } => return Path::Opaque,
+            OirType::String
+            | OirType::Number
+            | OirType::Integer
+            | OirType::Sized { .. }
+            | OirType::Boolean
+            | OirType::Date
+            | OirType::DateTime
+            | OirType::Instant
+            | OirType::Email
+            | OirType::Url
+            | OirType::Phone
+            | OirType::Uuid
+            | OirType::Bytes
+            | OirType::CallKey
+            | OirType::Enum { .. }
+            | OirType::FieldRef { .. }
+            | OirType::Array { .. } => return Path::Impossible,
             _ => return Path::Missing,
         }
     }
@@ -115,7 +141,7 @@ pub fn type_at_path(ty: &OirType, segments: &[String]) -> Option<OirType> {
     }
     match walk_path(ty, &segments.join(".")) {
         Path::Found(found) => Some(found),
-        Path::Opaque | Path::Missing => None,
+        Path::Opaque | Path::Missing | Path::Impossible => None,
     }
 }
 

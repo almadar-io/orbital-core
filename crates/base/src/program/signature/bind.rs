@@ -835,9 +835,11 @@ pub(super) fn bind_key(
     for path in paths {
         if mode != Mode::Runtime {
             let walked = walk_path_in(&record, path, true, &|name| b.named_types.get(name).cloned());
-            if let Path::Missing = walked {
-                b.absent
-                    .insert(record_var.to_string(), (b.index, path.clone()));
+            if matches!(walked, Path::Missing | Path::Impossible) {
+                b.absent.insert(
+                    record_var.to_string(),
+                    (b.index, path.clone(), matches!(walked, Path::Impossible)),
+                );
             }
         }
         b.keys.entry_or_default(record_var).push(path.clone());

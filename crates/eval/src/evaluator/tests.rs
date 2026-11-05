@@ -3752,6 +3752,133 @@ fn tree_index_refuses_options_that_are_not_a_record_with_prefixes_a_list_of_stri
 }
 
 #[test]
+fn tree_index_objects_group_carriers_by_key_with_path_and_at() {
+    let got = eval(
+        r#"["tree/index", ["quote", "{\"a\":{\"name\":1,\"x\":{\"name\":2}},\"b\":[{\"id\":3,\"name\":4}]}"], ["list"], {"objects": ["quote", "[\"name\",\"id\",\"none\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "name": [
+            { "path": "a", "node": { "name": 1, "x": { "name": 2 } }, "at": 1 },
+            { "path": "a.x", "node": { "name": 2 }, "at": 3 },
+            { "path": "b[0]", "node": { "id": 3, "name": 4 }, "at": 6 }
+        ],
+        "id": [{ "path": "b[0]", "node": { "id": 3, "name": 4 }, "at": 6 }],
+        "none": []
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn tree_index_objects_share_one_walk_with_heads_and_prefixes() {
+    let got = eval(
+        r#"["tree/index", ["quote", "[[\"emit\",{\"k\":\"@entity.x\"}]]"], ["list", "emit"], {"objects": ["quote", "[\"k\"]"], "prefixes": ["quote", "[\"@entity.\"]"]}]"#,
+    );
+    let want: Value = serde_json::from_value(serde_json::json!({
+        "emit": [{ "path": "[0]", "node": ["emit", { "k": "@entity.x" }], "at": 1 }],
+        "@entity.": [{ "path": "[0][1].k", "node": "@entity.x", "at": 4 }],
+        "k": [{ "path": "[0][1]", "node": { "k": "@entity.x" }, "at": 3 }]
+    }))
+    .unwrap();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn tree_index_objects_control_absent_option_leaves_result_unchanged() {
+    let plain = eval(r#"["tree/index", ["quote", "[{\"k\":1}]"], ["list", "emit"]]"#);
+    let empty = eval(r#"["tree/index", ["quote", "[{\"k\":1}]"], ["list", "emit"], {"objects": ["list"]}]"#);
+    assert_eq!(plain, empty);
+}
+
+#[test]
+fn tree_index_refuses_objects_that_are_not_a_list_of_strings() {
+    for expr in [
+        r#"["tree/index", ["list"], ["list"], {"objects": "k"}]"#,
+        r#"["tree/index", ["list"], ["list"], {"objects": ["list", 1]}]"#,
+    ] {
+        let err = eval_err(expr);
+        assert!(err.contains("options.objects"), "{expr}: {err}");
+    }
+}
+
+fn value_key(quoted_json: &str) -> String {
+    match eval(&format!(r#"["value/key", ["quote", {}]]"#, serde_json::to_string(quoted_json).unwrap())) {
+        Value::String(text) => text.as_str().to_string(),
+        other => panic!("value/key returned {other:?}"),
+    }
+}
+
+fn value_depth(quoted_json: &str) -> Value {
+    eval(&format!(r#"["value/depth", ["quote", {}]]"#, serde_json::to_string(quoted_json).unwrap()))
+}
+
+#[test]
+fn value_depth_scalars_are_zero_and_each_container_level_adds_one() {
+    for scalar in ["1", "1.5", "\"x\"", "true", "null"] {
+        assert_eq!(value_depth(scalar), Value::Int(0), "{scalar}");
+    }
+    assert_eq!(value_depth("[1,2]"), Value::Int(1));
+    assert_eq!(value_depth(r#"{"a":1}"#), Value::Int(1));
+    assert_eq!(value_depth(r#"[[1],[[2]]]"#), Value::Int(3));
+    assert_eq!(value_depth(r#"{"a":{"b":[1,{"c":2}]},"d":3}"#), Value::Int(4));
+}
+
+#[test]
+fn value_depth_an_empty_container_is_one_and_takes_the_deepest_branch() {
+    assert_eq!(value_depth("[]"), Value::Int(1));
+    assert_eq!(value_depth("{}"), Value::Int(1));
+    assert_eq!(value_depth(r#"[[],[[]]]"#), Value::Int(3));
+    assert_eq!(value_depth(r#"{"shallow":[],"deep":{"x":{}}}"#), Value::Int(3));
+}
+
+#[test]
+fn value_depth_refuses_a_wrong_argument_count() {
+    assert!(eval_err(r#"["value/depth"]"#).contains("value/depth"));
+    assert!(eval_err(r#"["value/depth", 1, 2]"#).contains("value/depth"));
+}
+
+#[test]
+fn value_key_equal_values_give_equal_keys_and_unequal_values_differ() {
+    assert_eq!(value_key(r#"{"a":[1,"x",null,true]}"#), value_key(r#"{"a":[1,"x",null,true]}"#));
+    let distinct = [
+        "null", "true", "false", "0", "1", "\"1\"", "\"\"", "[]", "{}", "[[]]", "[\"\"]", "[1,2]", "[12]", "[\"1\",\"2\"]",
+        "[\"1,2\"]", "\"s1:a\"", "{\"a\":1}", "{\"a\":\"1\"}", "{\"a\":1,\"b\":2}", "{\"ab\":1}", "1.5", "-1",
+    ];
+    let keys: Vec<String> = distinct.iter().map(|v| value_key(v)).collect();
+    for (i, a) in keys.iter().enumerate() {
+        for (j, b) in keys.iter().enumerate() {
+            assert_eq!(a == b, i == j, "{} vs {}", distinct[i], distinct[j]);
+        }
+    }
+}
+
+#[test]
+fn value_key_ignores_object_key_order_at_every_depth() {
+    assert_eq!(
+        value_key(r#"{"a":1,"b":{"x":[{"p":1,"q":2}],"y":null}}"#),
+        value_key(r#"{"b":{"y":null,"x":[{"q":2,"p":1}]},"a":1}"#)
+    );
+    assert_ne!(value_key(r#"[1,2]"#), value_key(r#"[2,1]"#), "list order matters");
+}
+
+#[test]
+fn value_key_separates_lists_from_objects_and_nesting_from_flat() {
+    assert_ne!(value_key("[]"), value_key("{}"));
+    assert_ne!(value_key(r#"[["a"]]"#), value_key(r#"["a"]"#));
+    assert_ne!(value_key(r#"{"a":[]}"#), value_key(r#"{"a":{}}"#));
+    assert_ne!(value_key(r#"[{"a":1}]"#), value_key(r#"[["a",1]]"#));
+}
+
+#[test]
+fn value_key_an_int_and_the_equal_float_share_a_key_and_a_lambda_has_none() {
+    assert_eq!(value_key("1"), value_key("1.0"));
+    assert_eq!(value_key("0"), value_key("-0.0"));
+    assert!(eval_err(r#"["value/key", ["fn", "x", ["+", "@x", 1]]]"#).contains("value/key"));
+    assert!(eval_err(r#"["value/key"]"#).contains("value/key"));
+    assert!(eval_err(r#"["value/key", 1, 2]"#).contains("value/key"));
+}
+
+#[test]
 fn dispatched_names_are_exactly_the_table_operators_the_kernel_evaluates() {
     use crate::evaluator::operators::{get_operator, DISPATCHED_NAMES};
     use orbital_core_base::ir::effects::is_substrate_operator;

@@ -166,6 +166,8 @@ operator_kind! {
     JsonValidOp => JsonValidOp,
     JsonNodesOp => JsonNodesOp,
     TreeIndexOp => TreeIndexOp,
+    ValueKeyOp => ValueKeyOp,
+    ValueDepthOp => ValueDepthOp,
     CsvParseOp => CsvParseOp,
     XmlParseOp => XmlParseOp,
     XmlValidOp => XmlValidOp,

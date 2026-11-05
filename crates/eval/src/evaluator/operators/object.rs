@@ -27,6 +27,17 @@ impl Operator for PathOp {
     }
 }
 
+/// The path an `object/get` / `object/has` / `object/set` key operand names. A literal string (anything not starting with `@`)
+/// is a dotted path, `\.` escaping a dot; any computed operand (a binding or a call) is ONE whole key, so a Map key
+/// that contains a dot is read as written. The kernel cannot tell a Map from a record at run time (both are objects), so the
+/// operand's form decides.
+fn key_path(operand: &SExpression, key: String) -> String {
+    match operand {
+        SExpression::String(text) if !text.starts_with('@') => key,
+        _ => key.replace('\\', "\\\\").replace('.', "\\."),
+    }
+}
+
 // ============================================================================
 // Phase 2.3: Object Operations
 // ============================================================================
@@ -59,7 +70,7 @@ impl Operator for ObjectSetOp {
         require_arity!(args, "object/set", >= 3);
 
         let obj = eval_expr(&args[0], ctx)?;
-        let path = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let path = key_path(&args[1], eval_expr(&args[1], ctx)?.text()?.to_string());
         let value = eval_expr(&args[2], ctx)?;
 
         let mut result = match obj {
@@ -82,7 +93,7 @@ impl Operator for ObjectHasOp {
         require_arity!(args, "object/has", >= 2);
 
         super::with_operand(&args[0], ctx, |obj| {
-            let path = eval_expr(&args[1], ctx)?.text()?.to_string();
+            let path = key_path(&args[1], eval_expr(&args[1], ctx)?.text()?.to_string());
             match obj {
                 Value::Object(_) | Value::Sealed(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
                 _ => Err(obj.kind_error("object").into()),
@@ -501,7 +512,7 @@ impl Operator for ObjectGetOp {
                 (Value::Number(_) | Value::Int(_), Value::Array(_)) => {
                     super::array::whole_count(&key, "object/get", "index")?.to_string()
                 }
-                _ => key.text()?.to_string(),
+                _ => key_path(&args[1], key.text()?.to_string()),
             };
             Ok(obj.get_path(&path).cloned())
         })?;
@@ -550,6 +561,52 @@ mod strict_tests {
         assert_eq!(sealed_run(json!(["object/get", "@payload.v", "subject"])).unwrap(), json!("user-1"));
         assert_eq!(sealed_run(json!(["object/get", "@payload.v", "kind", "none"])).unwrap(), json!("none"));
         assert_eq!(sealed_run(json!("@payload.v.subject")).unwrap(), json!("user-1"));
+    }
+
+    fn map_run(expr: serde_json::Value) -> Result<serde_json::Value, String> {
+        let mut inner = ValueMap::default();
+        inner.insert("c.d".into(), Value::Int(7));
+        let mut b = ValueMap::default();
+        b.insert("c".into(), Value::Int(2));
+        let mut root = ValueMap::default();
+        root.insert("a.b".into(), Value::Int(1));
+        root.insert("rec".into(), Value::object(b));
+        root.insert("nested".into(), Value::object(inner));
+        let mut payload = ValueMap::default();
+        payload.insert("m".into(), Value::object(root));
+        payload.insert("dotted".into(), Value::string("a.b"));
+        payload.insert("path".into(), Value::string("rec.c"));
+        let mut ctx = BindingContextBuilder::new().build();
+        ctx.set_payload(Value::object(payload));
+        let sexpr = serde_json::from_value(expr).unwrap();
+        Evaluator::new().evaluate(&sexpr, &ctx).map(|v| serde_json::to_value(v).unwrap()).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_computed_key_with_a_dot_reads_one_whole_map_key() {
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "@payload.dotted"])).unwrap(), json!(1));
+        assert_eq!(map_run(json!(["object/has", "@payload.m", "@payload.dotted"])).unwrap(), json!(true));
+        assert_eq!(map_run(json!(["object/get", "@payload.m", ["str/concat", "a", ".", "b"]])).unwrap(), json!(1));
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "@payload.path"])).unwrap(), json!(null), "a computed dotted path does not descend");
+        assert_eq!(map_run(json!(["object/has", "@payload.m", "@payload.path"])).unwrap(), json!(false));
+    }
+
+    #[test]
+    fn a_literal_key_stays_a_dotted_path_and_an_escaped_dot_is_one_key() {
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "rec.c"])).unwrap(), json!(2));
+        assert_eq!(map_run(json!(["object/has", "@payload.m", "rec.c"])).unwrap(), json!(true));
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "nested.c\\.d"])).unwrap(), json!(7), "a literal path into a nested map");
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "a\\.b"])).unwrap(), json!(1));
+        assert_eq!(map_run(json!(["object/get", "@payload.m", "a.b"])).unwrap(), json!(null), "control: the plain literal is a path");
+    }
+
+    #[test]
+    fn a_computed_key_is_written_whole_by_object_set() {
+        let set = map_run(json!(["object/set", "@payload.m", "@payload.dotted", 9])).unwrap();
+        assert_eq!(set["a.b"], json!(9.0));
+        assert!(set.get("a").is_none());
+        let literal = map_run(json!(["object/set", "@payload.m", "x.y", 9])).unwrap();
+        assert_eq!(literal["x"]["y"], json!(9.0));
     }
 
     #[test]

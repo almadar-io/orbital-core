@@ -160,10 +160,118 @@ impl Operator for JsonNodesOp {
     }
 }
 
+/// Appends the structural key of `value` to `out`. Strings, keys and byte strings are length-prefixed and containers are
+/// bracketed, so the key is prefix-free: equal values (`Value`'s own equality, so `1` and `1.0` alike) give equal keys,
+/// unequal values give different keys, and a record's key order never matters (fields are written in sorted order).
+fn structural_key(value: &Value, out: &mut String) -> Result<(), OrbitalError> {
+    use std::fmt::Write;
+    match value {
+        Value::Null => out.push('n'),
+        Value::Bool(true) => out.push('t'),
+        Value::Bool(false) => out.push('f'),
+        Value::Int(i) => {
+            let _ = write!(out, "i{i};");
+        }
+        Value::Number(f) => {
+            if f.fract() == 0.0 && *f >= -9.223_372_036_854_775_808e18 && *f < 9.223_372_036_854_775_808e18 {
+                let _ = write!(out, "i{};", *f as i64);
+            } else {
+                let _ = write!(out, "d{f:?};");
+            }
+        }
+        Value::Bytes(bytes) => {
+            let _ = write!(out, "b{}:", bytes.len());
+            for byte in bytes.iter() {
+                let _ = write!(out, "{byte:02x}");
+            }
+        }
+        Value::String(text) => {
+            let _ = write!(out, "s{}:{}", text.len(), text.as_str());
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for item in items.iter() {
+                structural_key(item, out)?;
+            }
+            out.push(']');
+        }
+        Value::Object(map) => structural_record_key(map, "{", out)?,
+        Value::Sealed(sealed) => {
+            let open = format!("S{}:{}{{", sealed.kind().len(), sealed.kind());
+            structural_record_key(sealed.fields(), &open, out)?
+        }
+        Value::Lambda(_) => {
+            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
+                "value/key: a lambda has no structural key".to_string(),
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn structural_record_key(map: &ValueMap, open: &str, out: &mut String) -> Result<(), OrbitalError> {
+    use std::fmt::Write;
+    let mut fields: Vec<(&str, &Value)> = map.iter().map(|(key, item)| (key.as_str(), item)).collect();
+    fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    out.push_str(open);
+    for (key, item) in fields {
+        let _ = write!(out, "{}:{}", key.len(), key);
+        structural_key(item, out)?;
+    }
+    out.push('}');
+    Ok(())
+}
+
+/// `(value/key v)`: a deterministic string that is equal for equal values and different for unequal ones, in one walk of
+/// `v` (O(size)). A record's field order does not change it; a list and a record never share a key. A NaN has one key
+/// though it is unequal to itself; a lambda has none (an error).
+pub struct ValueKeyOp;
+impl Operator for ValueKeyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "value/key", == 1);
+        let value = eval_expr(&args[0], ctx)?;
+        let mut key = String::new();
+        structural_key(&value, &mut key)?;
+        Ok(Value::string(key))
+    }
+}
+
+/// `(value/depth v)`: the deepest nesting of `v`, as an int. A scalar (a lambda included) is 0; a list or a record is
+/// 1 + the greatest depth among its items, so an empty one is 1. One iterative walk, O(size).
+pub struct ValueDepthOp;
+impl Operator for ValueDepthOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "value/depth", == 1);
+        let value = eval_expr(&args[0], ctx)?;
+        let mut deepest = 0usize;
+        let mut stack = vec![(&value, 0usize)];
+        while let Some((node, depth)) = stack.pop() {
+            match node {
+                Value::Array(items) => {
+                    deepest = deepest.max(depth + 1);
+                    stack.extend(items.iter().map(|item| (item, depth + 1)));
+                }
+                Value::Object(map) => {
+                    deepest = deepest.max(depth + 1);
+                    stack.extend(map.values().map(|item| (item, depth + 1)));
+                }
+                Value::Sealed(sealed) => {
+                    deepest = deepest.max(depth + 1);
+                    stack.extend(sealed.fields().values().map(|item| (item, depth + 1)));
+                }
+                _ => {}
+            }
+        }
+        Ok(super::util::int_of(deepest))
+    }
+}
+
 /// `(tree/index value heads [options])`: every call form in `value` whose head is listed in `heads`, grouped by head in
 /// `heads` order, each with its path from `value` and its position `at` in the walk; one pre-order walk that continues
 /// inside a hit. `options.prefixes` also collects every string leaf starting with a listed prefix, under the first
-/// listed prefix that matches, including a string that heads a list (its path ends `[0]`).
+/// listed prefix that matches, including a string that heads a list (its path ends `[0]`). `options.objects` also
+/// collects every object that carries a listed key, under that key (an object carrying several listed keys is a hit
+/// under each), as `{path, node, at}` in the same result map; a key that is also a head or prefix shares its list.
 pub struct TreeIndexOp;
 impl Operator for TreeIndexOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
@@ -195,6 +303,7 @@ impl Operator for TreeIndexOp {
         }
         let head_count = found.len();
         let mut prefixes: Vec<String> = Vec::new();
+        let mut object_keys: Vec<String> = Vec::new();
         if let Some(options) = args.get(2) {
             let option_error = |what: String| {
                 OrbitalError::Eval(EvalError::InvalidArgument(format!("tree/index: {what}")))
@@ -206,6 +315,31 @@ impl Operator for TreeIndexOp {
                     options.type_name()
                 )));
             };
+            match map.get("objects") {
+                None | Some(Value::Null) => {}
+                Some(Value::Array(items)) => {
+                    for item in items.iter() {
+                        let Value::String(key) = item else {
+                            return Err(option_error(format!(
+                                "options.objects must be a list of strings, found {}",
+                                item.type_name()
+                            )));
+                        };
+                        if !object_keys.iter().any(|listed| listed == key.as_str()) {
+                            object_keys.push(key.to_string());
+                            if !found.iter().any(|(listed, _)| listed == key.as_str()) {
+                                found.push((key.to_string(), Vec::new()));
+                            }
+                        }
+                    }
+                }
+                Some(other) => {
+                    return Err(option_error(format!(
+                        "options.objects must be a list of strings, not {}",
+                        other.type_name()
+                    )))
+                }
+            }
             match map.get("prefixes") {
                 None | Some(Value::Null) => {}
                 Some(Value::Array(items)) => {
@@ -259,6 +393,15 @@ impl Operator for TreeIndexOp {
                     }
                 }
                 Value::Object(map) => {
+                    for key in object_keys.iter() {
+                        if map.contains_key(key.as_str()) {
+                            if let Some((_, list)) =
+                                found.iter_mut().find(|(listed, _)| listed == key)
+                            {
+                                list.push(hit(&path, &node, at));
+                            }
+                        }
+                    }
                     for (key, item) in map.iter().rev() {
                         let child = if path.is_empty() {
                             key.to_string()
