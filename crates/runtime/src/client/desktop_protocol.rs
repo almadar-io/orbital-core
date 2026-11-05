@@ -36,8 +36,16 @@ pub enum DesktopRequest {
     Coverage { renderer: String },
     /// Paint one game-canvas pattern headlessly (Layer 2 `game_canvas_renders`).
     PaintCanvas { renderer: String, pattern: String, props: orbital_core_base::value::Value },
-    /// One image per orbital under `out_dir`.
-    Screenshot { renderer: String, item: String, schema: Box<OrbitalSchema>, out_dir: PathBuf },
+    /// One image per orbital under `out_dir`; with `route`, one image of that route as a route mount opens it
+    /// (EXEC-SEED-7, the mount the web client makes), named `<item>.png`.
+    Screenshot {
+        renderer: String,
+        item: String,
+        schema: Box<OrbitalSchema>,
+        out_dir: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        route: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
