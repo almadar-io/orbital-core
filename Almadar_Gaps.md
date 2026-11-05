@@ -47,7 +47,11 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-125** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
 
-Next code: `G-ORBITAL-CORE-131`
+Next code: `G-ORBITAL-CORE-133`
+
+- **G-ORBITAL-CORE-131** [architectural] — EXEC-DATA-2 says a mock host seeds `[runtime]` rows "from the one canonical seeder", but core has no such seeder: the Dioxus shell carried its own (`seed_singletons`, null for fields without defaults — removed 2026-11-05 because strict row intake refused it), and the web relies on std's `std-mock-page-seed` composed into the program. Decide the owner (std-mock-page-seed, made explicit in the spec) and fix the spec text. Rung (2): validate could flag a mock host program that composes no seeder. Root cause: K3.
+
+- **G-ORBITAL-CORE-132** [architectural] — Three token→CSS-variable implementations: `theme::css_vars` (no caller outside tests), `theme::stylesheet::generate_theme_css` (moved here from the typescript shell 2026-11-05; what both the web and the desktop paint) and std's `std-theme-resolve`/`theme-css-vars` spec twin. Converge on one (the std atom per Lolo-native, with the Rust generator as its runtime twin or retired). Rung: none (duplicate mechanism). Root cause: H3.
 
 - **G-ORBITAL-CORE-129** — `dispatch_alloc_count::resumable_replay_of_a_list_answer_allocation_count_is_pinned` fails: 8981 allocations against the pinned 8972 (2026-11-04), already red before the EXEC-SEED-7 / program/navigate work and unchanged by it; the rise came from a commit between 2026-11-03 (pin, 04f12ef) and 2026-11-04 (candidates: 13d399b list joins, 7122c7a registry refs, b70145a host-ask completions). Owners: orbital-core runtime (find the commit by building each candidate and running the test; fix the allocation or re-pin with the reason). [mechanical] — rung: (3) the alloc gate caught it. Root cause: one-off.
 
