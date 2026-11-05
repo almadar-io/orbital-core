@@ -383,8 +383,8 @@ impl RuntimeKernel {
     }
 }
 
-/// An agent-port effect's declared completion: `emit.success` carries `{ result, text }` (`text` is `result` as
-/// JSON text, the one writing both paths share), `emit.failure` `{ error, errors? }`.
+/// An agent-port effect's declared completion: `emit.success` carries `{ result }` (the one writing both paths share),
+/// `emit.failure` `{ error, errors? }`.
 pub(super) fn agent_port_completion_emit(
     emit: &FetchEmit,
     result: &EffectResult,

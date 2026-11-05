@@ -5,7 +5,8 @@
   },
   "schema": {
     "name": "AgentPortsApp",
-    "typeContractVersion": 1, "orbitals": [
+    "typeContractVersion": 1,
+    "orbitals": [
       {
         "name": "Desk",
         "entity": {
@@ -1418,8 +1419,7 @@
             }
           ]
         }
-      },
-      "text": "{\"entity\":\"Note\",\"count\":3,\"rows\":[{\"id\":\"n1\",\"title\":\"a\",\"createdAt\":1},{\"id\":\"n2\",\"title\":\"b\",\"createdAt\":2},{\"id\":\"n3\",\"title\":\"c\"}]}"
+      }
     },
     {
       "name": "read-named reads an auxiliary entity too",
@@ -1435,8 +1435,7 @@
           "count": 0,
           "rows": []
         }
-      },
-      "text": "{\"entity\":\"Tag\",\"count\":0,\"rows\":[]}"
+      }
     },
     {
       "name": "control: a runtime entity is not readable by name",
@@ -1545,8 +1544,7 @@
             }
           ]
         }
-      },
-      "text": "{\"ok\":true,\"emitted\":[{\"event\":\"NOTE_ADDED\",\"payload\":{\"id\":\"n9\"}},{\"event\":\"TICK\"}]}"
+      }
     },
     {
       "name": "dispatch by Trait.EVENT resolves against the calling trait's orbital",
@@ -1703,8 +1701,7 @@
           "ok": false,
           "error": "no transition"
         }
-      },
-      "text": "{\"ok\":false,\"error\":\"no transition\"}"
+      }
     },
     {
       "name": "control: an event that is not a declared external input is refused and never dispatched",
@@ -1720,8 +1717,7 @@
           "ok": false,
           "error": "'Desk.Chat.SECRET' is not a declared external input"
         }
-      },
-      "text": "{\"ok\":false,\"error\":\"'Desk.Chat.SECRET' is not a declared external input\"}"
+      }
     },
     {
       "name": "control: an unknown address is refused and never dispatched",
@@ -1816,8 +1812,7 @@
             }
           ]
         }
-      },
-      "text": "{\"ok\":false,\"error\":\"the arguments do not match the tool\",\"issues\":[{\"path\":\"title\",\"reason\":\"missing\"}]}"
+      }
     },
     {
       "name": "a stated schema reports what a wrong-type argument actually was",
@@ -1855,8 +1850,7 @@
             }
           ]
         }
-      },
-      "text": "{\"ok\":false,\"error\":\"the arguments do not match the tool\",\"issues\":[{\"path\":\"title\",\"reason\":\"wrong-type\",\"expected\":\"string\",\"received\":\"number\"},{\"path\":\"extra\",\"reason\":\"unknown\",\"expected\":\"title\"}]}"
+      }
     },
     {
       "name": "a stated schema checks nested objects, lists and closed value sets",

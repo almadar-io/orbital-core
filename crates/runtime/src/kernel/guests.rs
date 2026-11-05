@@ -188,56 +188,67 @@ fn guest_answer(
     event: &str,
 ) -> Value {
     let response = EventResponse::from_process_results(outcomes, seed_trait, event);
-    let rendered: Vec<serde_json::Value> = response
+    let record = |pairs: Vec<(&str, Value)>| {
+        let mut fields = ValueMap::default();
+        for (key, value) in pairs {
+            fields.insert(key.into(), value);
+        }
+        Value::object(fields)
+    };
+    let rendered: Vec<Value> = response
         .client_effects_by_trait
         .iter()
         .flatten()
         .filter_map(|paint| match &paint.effect {
-            ClientEffect::RenderUi { slot, config } => Some(serde_json::json!({
-                "slot": slot,
-                "trait": paint.trait_name,
-                "embedded": embedded.contains(&paint.trait_name),
-                "content": config.as_ref().map(value_to_json).unwrap_or(serde_json::Value::Null),
-            })),
+            ClientEffect::RenderUi { slot, config } => Some(record(vec![
+                ("slot", Value::string(slot.to_string())),
+                ("trait", Value::string(paint.trait_name.clone())),
+                ("embedded", Value::Bool(embedded.contains(&paint.trait_name))),
+                ("content", config.clone().unwrap_or(Value::Null)),
+            ])),
             _ => None,
         })
         .collect();
-    let emitted: Vec<serde_json::Value> = response
+    let emitted: Vec<Value> = response
         .emitted_events
         .iter()
-        .map(|e| serde_json::json!({ "event": e.event, "payload": e.payload.as_ref().map(value_to_json).unwrap_or(serde_json::Value::Null) }))
+        .map(|e| record(vec![("event", Value::string(e.event.clone())), ("payload", e.payload.clone().unwrap_or(Value::Null))]))
         .collect();
-    let moved: Vec<serde_json::Value> = outcomes
+    let moved: Vec<Value> = outcomes
         .iter()
         .map(|(trait_name, result)| {
-            serde_json::json!({
-                "trait": trait_name,
-                "event": result.event,
-                "from": result.previous_state,
-                "to": result.new_state,
-                "fired": result.executed,
-            })
+            record(vec![
+                ("trait", Value::string(trait_name.clone())),
+                ("event", result.event.clone().map(Value::string).unwrap_or(Value::Null)),
+                ("from", Value::string(result.previous_state.clone())),
+                ("to", Value::string(result.new_state.clone())),
+                ("fired", Value::Bool(result.executed)),
+            ])
         })
         .collect();
-    let mut answer = serde_json::json!({
-        "states": response.states,
-        "rendered": rendered,
-        "emitted": emitted,
-        "outcomes": moved,
-    });
+    let mut states = ValueMap::default();
+    for (name, state) in &response.states {
+        states.insert(name.as_str().into(), Value::string(state.clone()));
+    }
+    let mut answer = vec![
+        ("states", Value::object(states)),
+        ("rendered", Value::array(rendered)),
+        ("emitted", Value::array(emitted)),
+        ("outcomes", Value::array(moved)),
+    ];
     if let Some(guest) = guest {
-        answer["guest"] = serde_json::Value::String(guest.to_string());
+        answer.push(("guest", Value::string(guest.to_string())));
     }
     if let Some((page, route)) = page {
-        answer["page"] = serde_json::json!(page);
+        answer.push(("page", Value::array(page.iter().cloned().map(Value::string).collect::<Vec<Value>>())));
         if let Some(route) = route {
-            answer["route"] = serde_json::Value::String(route.to_string());
+            answer.push(("route", Value::string(route.to_string())));
         }
     }
     if let Some(rejections) = response.rejections.as_ref().filter(|r| !r.is_empty()) {
-        answer["rejections"] = serde_json::to_value(rejections).unwrap_or(serde_json::Value::Null);
+        answer.push(("rejections", serde_json::to_value(rejections).map(json_value).unwrap_or(Value::Null)));
     }
-    json_value(answer)
+    record(answer)
 }
 
 /// The page a guest route resolves to: the path it resolved to (none when no page matched), its mounts and every trait

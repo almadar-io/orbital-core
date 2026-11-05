@@ -101,16 +101,11 @@ pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, 
     Ok(dispatch_outcome(&response))
 }
 
-/// The success payload of a substrate or program op's completion, in place or deferred: `{ result }`, plus `text` (the
-/// result as JSON text) for an agent-port op.
-pub fn completion_result(op: &str, value: Value) -> Value {
-    let text = orbital_core_base::agent_ports::is_agent_port_operator(op)
-        .then(|| serde_json::to_string(&orbital_core_base::json_value::value_to_json(&value)).unwrap_or_default());
+/// The success payload of a substrate or program op's completion, in place or deferred: `{ result }`. No text copy rides
+/// with it: a caller that hands the result on as text (to a model) writes `json/stringify` where it does.
+pub fn completion_result(_op: &str, value: Value) -> Value {
     let mut payload = ValueMap::default();
     payload.insert("result".into(), value);
-    if let Some(text) = text {
-        payload.insert("text".into(), Value::string(text));
-    }
     Value::object(payload)
 }
 

@@ -390,7 +390,7 @@ pub(crate) mod tests {
         assert!(matches!(host.answer(&ask), IoAnswer::ServiceDeferred));
         let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(2)).expect("the deferred op settles");
         let answer = Value::string("program/dispatch/1");
-        assert_eq!(outcome, Ok(object(&[("result", answer), ("text", Value::string("\"program/dispatch/1\""))])));
+        assert_eq!(outcome, Ok(object(&[("result", answer)])), "the result once, with no text copy");
     }
 
     fn guest_session(program: serde_json::Value) -> GuestKernel {
@@ -450,7 +450,7 @@ pub(crate) mod tests {
         assert_eq!(key, "g1");
         let outcome = outcome.expect("the guest dispatch succeeded");
         assert_eq!(moved_to(outcome.get("result").expect("a result")), Some(Value::string("done")));
-        assert!(matches!(outcome.get("text"), Some(Value::String(_))), "the result also arrives as JSON text");
+        assert!(outcome.get("text").is_none(), "the result arrives once, with no text copy");
         let Some(live) = session.0.as_ref() else { unreachable!() };
         assert_eq!(live.kernel.get_state("Work", None).map(|state| state.current_state), Some("done".to_string()), "the session kept the move");
     }

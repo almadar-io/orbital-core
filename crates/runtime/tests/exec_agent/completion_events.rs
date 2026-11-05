@@ -305,24 +305,8 @@ mod agent_ports {
             if expect["ok"] == true {
                 assert_eq!(state, "done", "{name}");
                 assert_eq!(got["result"], norm(expect["result"].clone()), "{name}");
-                let text = got["text"].as_str().unwrap_or_default();
-                let reparsed: Json = serde_json::from_str(text).unwrap_or(Json::Null);
-                assert_eq!(
-                    norm(reparsed),
-                    got["result"],
-                    "{name}: text is the result as JSON text"
-                );
-                if let Some(exact) = case["text"].as_str() {
-                    assert_eq!(
-                        text, exact,
-                        "{name}: the exact text, as the JS twin writes it"
-                    );
-                }
-                assert_eq!(
-                    got.as_object().map(|o| o.len()),
-                    Some(2),
-                    "{name}: result and text only"
-                );
+                assert!(got.get("text").is_none(), "{name}: the answer carries the result once, no text copy: {got}");
+                assert_eq!(got.as_object().map(|o| o.len()), Some(1), "{name}: the result only");
             } else {
                 assert_eq!(state, "failed", "{name}");
                 let mut failure = expect.clone();
@@ -778,10 +762,7 @@ mod agent_ports {
             read["result"],
             json!({ "entity": "Ticket", "count": 0, "rows": [] })
         );
-        assert_eq!(
-            read["text"],
-            json!("{\"entity\":\"Ticket\",\"count\":0,\"rows\":[]}")
-        );
+        assert!(read.get("text").is_none(), "no text copy of the result: {read}");
     }
 
     /// A host that records every ask and answers each with what `answer` gives.
