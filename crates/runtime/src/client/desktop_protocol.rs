@@ -37,7 +37,9 @@ pub enum DesktopRequest {
     /// Paint one game-canvas pattern headlessly (Layer 2 `game_canvas_renders`).
     PaintCanvas { renderer: String, pattern: String, props: orbital_core_base::value::Value },
     /// One image per orbital under `out_dir`; with `route`, one image of that route as a route mount opens it
-    /// (EXEC-SEED-7, the mount the web client makes), named `<item>.png`.
+    /// (EXEC-SEED-7, the mount the web client makes), named `<item>.png`. With `server` the app's server legs go to
+    /// that running server (as `window --server`), so the capture reads the rows and boot endpoints the web client
+    /// reads; without it an in-process kernel answers them.
     Screenshot {
         renderer: String,
         item: String,
@@ -45,6 +47,8 @@ pub enum DesktopRequest {
         out_dir: PathBuf,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         route: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        server: Option<String>,
     },
 }
 

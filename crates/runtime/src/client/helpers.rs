@@ -250,25 +250,6 @@ pub fn get_string_or(props: &Value, key: &str, default: &str) -> String {
     get_string(props, key).unwrap_or_else(|| default.to_string())
 }
 
-/// Merge a renderer's base class with the optional `className` pattern prop.
-///
-/// `className` is a first-class pattern prop in `@almadar/core`
-/// (pattern-types: `className?: string | SExpr`) carrying utility classes
-/// (Tailwind) that the React substrate spreads onto the root element. Web
-/// renderers (dioxus) honor the same contract: the prop appends to the
-/// renderer's base class so utilities participate in the cascade. Non-web
-/// backends (egui/terminal) never call this — they have no CSS.
-pub fn merge_class_name(base: &str, props: &Value) -> String {
-    let extra = get_string_or(props, "className", "");
-    let extra = extra.trim();
-    match (base.is_empty(), extra.is_empty()) {
-        (true, true) => String::new(),
-        (true, false) => extra.to_string(),
-        (false, true) => base.to_string(),
-        (false, false) => format!("{base} {extra}"),
-    }
-}
-
 /// Extract a boolean property
 pub fn get_bool(props: &Value, key: &str) -> Option<bool> {
     props
@@ -1140,24 +1121,7 @@ mod tests {
         assert_eq!(fields, vec!["name", "email", "status"]);
     }
 
-    #[test]
-    fn test_merge_class_name() {
-        let with_cn = json_value(r#"{"className": "flex-1 hover:shadow-lg"}"#);
-        let without_cn = json_value(r#"{"label": "x"}"#);
-
-        assert_eq!(
-            merge_class_name("almadar-card", &with_cn),
-            "almadar-card flex-1 hover:shadow-lg"
-        );
-        assert_eq!(
-            merge_class_name("almadar-card", &without_cn),
-            "almadar-card"
-        );
-        assert_eq!(merge_class_name("", &with_cn), "flex-1 hover:shadow-lg");
-        assert_eq!(merge_class_name("", &without_cn), "");
-    }
-
-    #[test]
+        #[test]
     fn test_action_button() {
         let action = json_value(r#"{"label": "Save", "event": "SAVE", "primary": true}"#);
 
