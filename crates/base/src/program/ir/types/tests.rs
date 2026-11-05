@@ -943,6 +943,20 @@ fn effective_type_unwraps_exactly_one_optional_layer() {
 }
 
 #[test]
+fn an_optional_field_over_an_already_nullable_type_wraps_once() {
+    let field = OirField::optional("v", OirType::optional(OirType::Number));
+    assert_eq!(field.field_type, OirType::optional(OirType::Number));
+    assert_eq!(field.effective_type(), (&OirType::Number, true));
+}
+
+#[test]
+fn control_an_optional_field_over_a_plain_type_wraps_once() {
+    let field = OirField::optional("v", OirType::Number);
+    assert_eq!(field.field_type, OirType::optional(OirType::Number));
+    assert_eq!(field.effective_type(), (&OirType::Number, true));
+}
+
+#[test]
 fn a_sealed_type_name_in_a_payload_is_that_nominal_type_never_an_entity_reference() {
     assert_eq!(payload_type_shape("Verified").unwrap(), OirType::TypeRef { name: "Verified".to_string() });
     assert_eq!(payload_type_shape("[Verified]").unwrap(), OirType::array(OirType::TypeRef { name: "Verified".to_string() }));

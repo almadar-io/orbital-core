@@ -234,9 +234,7 @@ impl OirField {
     pub fn optional(name: impl Into<String>, field_type: OirType) -> Self {
         Self {
             name: name.into(),
-            field_type: OirType::Optional {
-                inner: Box::new(field_type),
-            },
+            field_type: OirType::optional(field_type),
             description: None,
             required: false,
             default: None,
