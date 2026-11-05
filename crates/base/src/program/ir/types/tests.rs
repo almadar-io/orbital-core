@@ -962,3 +962,38 @@ fn a_sealed_type_name_in_a_payload_is_that_nominal_type_never_an_entity_referenc
     assert_eq!(payload_type_shape("[Verified]").unwrap(), OirType::array(OirType::TypeRef { name: "Verified".to_string() }));
     assert_eq!(payload_type_shape("Note").unwrap(), OirType::Reference { entity: "Note".to_string() }, "control: another name is an entity");
 }
+
+#[test]
+fn config_fields_carry_each_knobs_type_and_declared_default_sorted_by_name() {
+    let mut t = OirTrait::new("Game");
+    assert!(t.config_fields().is_empty(), "control: a trait with no config has no config fields");
+    let schema: OirConfigSchema = [
+        ("running", OirType::Boolean),
+        ("pointsPerKill", OirType::Number),
+        ("label", OirType::String),
+        ("forwarded", OirType::String),
+    ]
+    .into_iter()
+    .map(|(k, ty)| (k.to_string(), OirConfigFieldType { field_type: ty, values: None }))
+    .collect();
+    t.declared_config_schema = Some(schema);
+    t.declared_config_defaults = Some(
+        [
+            ("running", OirValue::Bool(true)),
+            ("pointsPerKill", OirValue::Number(10.0)),
+            ("forwarded", OirValue::String("@config.title".to_string())),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect(),
+    );
+    let fields = t.config_fields();
+    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["forwarded", "label", "pointsPerKill", "running"]);
+    let by = |n: &str| fields.iter().find(|f| f.name == n).expect(n);
+    assert_eq!(by("running").default, Some(OirValue::Bool(true)));
+    assert_eq!(by("pointsPerKill").default, Some(OirValue::Number(10.0)));
+    assert!(by("running").required);
+    assert!(by("label").default.is_none() && !by("label").required, "no default: optional");
+    assert!(by("forwarded").default.is_none() && !by("forwarded").required, "a forward is not a default");
+}

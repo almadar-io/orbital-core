@@ -123,6 +123,31 @@ pub struct OirTrait {
 pub type OirDispatchMode = crate::dispatch_mode::DispatchMode;
 
 impl OirTrait {
+    /// One field per declared config knob, sorted by name: the knob's type and enum values with its declared
+    /// default, or optional when it declares none (or only forwards another knob with `@config.<key>`).
+    pub fn config_fields(&self) -> Vec<OirField> {
+        let Some(schema) = self.declared_config_schema.as_ref() else {
+            return Vec::new();
+        };
+        let mut fields: Vec<OirField> = schema
+            .iter()
+            .map(|(name, knob)| {
+                let mut field = OirField::new(name.clone(), knob.field_type.clone());
+                field.enum_values = knob.values.clone();
+                let declared = self.declared_config_defaults.as_ref().and_then(|d| d.get(name)).filter(|v| {
+                    !matches!(v, OirValue::Null) && !matches!(v, OirValue::String(s) if s.starts_with("@config."))
+                });
+                match declared {
+                    Some(value) => field.default = Some(value.clone()),
+                    None => field.required = false,
+                }
+                field
+            })
+            .collect();
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+        fields
+    }
+
     /// Create a new trait
     pub fn new(name: impl Into<String>) -> Self {
         Self {
