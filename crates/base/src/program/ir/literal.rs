@@ -27,6 +27,10 @@ pub trait TargetLiteralRenderer {
     fn object(&self) -> Option<Self::Out> {
         None
     }
+    /// A union default: `inner` is the value rendered at the union arm `arm` it fits. Untagged targets keep `inner`.
+    fn union_arm(&self, _arm: &str, inner: Self::Out) -> Self::Out {
+        inner
+    }
 }
 
 /// A declared default's `OirValue` doesn't fit the field's `OirType` — e.g. a
@@ -179,6 +183,16 @@ pub fn render_default<R: TargetLiteralRenderer>(
         // validator owns rejecting a `Null` default on a required field.
         (_, OirValue::Null) => Ok(None),
 
+        // A union default renders at the first arm, in declaration order, whose type the value fits.
+        (OirType::Union { variants }, v) => match variants
+            .iter()
+            .find_map(|arm| render_default(r, v, &arm.field_type, None).ok().map(|out| (arm, out)))
+        {
+            Some((arm, Some(out))) => Ok(Some(r.union_arm(&arm.name, out))),
+            Some((_, None)) => Ok(None),
+            None => Err(LiteralMismatch { expected: type_tag(ty), found: value_kind(value) }),
+        },
+
         (expected, found) => Err(LiteralMismatch {
             expected: type_tag(expected),
             found: value_kind(found),
@@ -189,6 +203,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::types::OirField;
 
     struct StringRenderer;
 
@@ -251,6 +266,59 @@ mod tests {
 
     fn r() -> StringRenderer {
         StringRenderer
+    }
+
+    struct TaggedRenderer;
+
+    impl TargetLiteralRenderer for TaggedRenderer {
+        type Out = String;
+        fn null(&self) -> String {
+            "null".to_string()
+        }
+        fn bool(&self, b: bool) -> String {
+            b.to_string()
+        }
+        fn integer(&self, i: i64) -> String {
+            i.to_string()
+        }
+        fn number(&self, n: f64) -> String {
+            n.to_string()
+        }
+        fn string(&self, s: &str) -> String {
+            format!("\"{s}\"")
+        }
+        fn enum_member(&self, enum_name: &str, member: &str) -> String {
+            format!("{enum_name}.{member}")
+        }
+        fn array(&self, items: Vec<String>) -> String {
+            format!("[{}]", items.join(","))
+        }
+        fn union_arm(&self, arm: &str, inner: String) -> String {
+            format!("{arm}({inner})")
+        }
+    }
+
+    fn host_union() -> OirType {
+        OirType::Union {
+            variants: vec![
+                OirField::new("string", OirType::String),
+                OirField::new("Env", OirType::Struct { fields: vec![OirField::new("anchor", OirType::String)].into(), additional: None }),
+            ]
+            .into(),
+        }
+    }
+
+    #[test]
+    fn a_union_default_renders_at_the_first_arm_its_value_fits() {
+        let host = OirValue::String("api.example.test".to_string());
+        assert_eq!(render_default(&r(), &host, &host_union(), None), Ok(Some("\"api.example.test\"".to_string())));
+        assert_eq!(render_default(&TaggedRenderer, &host, &host_union(), None), Ok(Some("string(\"api.example.test\")".to_string())));
+        assert_eq!(
+            render_default(&TaggedRenderer, &OirValue::Number(1.0), &host_union(), None),
+            Err(LiteralMismatch { expected: "union".to_string(), found: "number" }),
+            "control: a value no arm fits is a mismatch"
+        );
+        assert_eq!(render_default(&TaggedRenderer, &OirValue::Null, &host_union(), None), Ok(None), "control: null has no default");
     }
 
     #[test]
