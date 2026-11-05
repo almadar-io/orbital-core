@@ -1,12 +1,17 @@
 //! `program/self { mounted: true }`: the mounted orbital as a tree (EXEC-DIST-15). The kernel the step runs on answers
 //! it from the page its session's last route mount opened: that kernel's `boot` endpoint traits first, then the page's
 //! own traits that no mounted trait embeds, each followed by the traits it embeds (`@trait.X`), depth first in the order
-//! first met. A trait embedded in several places sits at the first. `observer` marks the asking trait and every trait that
-//! listens to an observer, transitively: a view of the page that traced them would trace its own work.
+//! first met. A trait embedded in several places sits at the first. Then the `linked` traits: those of another orbital the
+//! page talks to by events (an imported orbital it never mounts), found by the delivery rule's wire table: one wire away
+//! from a mounted trait into an orbital no mounted trait belongs to, then every wire inside that orbital. `observer` marks
+//! the asking trait and every trait that listens to an observer, transitively: a view of the page that traced them would
+//! trace its own work. `wires` lists every delivery between two listed traits (`{ from, to, event, triggers }`), the
+//! same table, so a view draws the deliveries the kernel makes and never reads them out of listen strings.
 
 use super::callsite_capture::{embedding_states, renders};
 use super::*;
 use crate::trait_owners::TraitOwners;
+use orbital_core_base::event_wires::EventWire;
 use orbital_core_base::schema::types::{ListenSource, StringOrArray, TraitDefinition};
 
 /// The session key of the program session (ticks, boot, hooks).
@@ -163,8 +168,60 @@ impl RuntimeKernel {
         )
     }
 
+    /// Traits of other orbitals the mounted traits talk to: one wire from a mounted trait into an orbital that owns no
+    /// mounted trait, then every wire inside that orbital, in the order first met.
+    fn linked_traits(
+        &self,
+        mounted: &[String],
+        owners: &TraitOwners,
+        wires: &[EventWire],
+    ) -> Vec<String> {
+        let page_orbitals: Vec<&str> = mounted
+            .iter()
+            .filter_map(|t| owners.owning_orbital(t).ok())
+            .collect();
+        let mut linked: Vec<String> = Vec::new();
+        for wire in wires {
+            let (other, orbital) = if mounted.contains(&wire.emitter_trait) {
+                (&wire.listener_trait, &wire.listener_orbital)
+            } else if mounted.contains(&wire.listener_trait) {
+                (&wire.emitter_trait, &wire.emitter_orbital)
+            } else {
+                continue;
+            };
+            if !mounted.contains(other)
+                && !linked.contains(other)
+                && !page_orbitals.contains(&orbital.as_str())
+            {
+                linked.push(other.clone());
+            }
+        }
+        let mut at = 0;
+        while at < linked.len() {
+            let name = linked[at].clone();
+            for wire in wires {
+                let other = if wire.emitter_trait == name
+                    && wire.listener_orbital == wire.emitter_orbital
+                {
+                    &wire.listener_trait
+                } else if wire.listener_trait == name
+                    && wire.emitter_orbital == wire.listener_orbital
+                {
+                    &wire.emitter_trait
+                } else {
+                    continue;
+                };
+                if !mounted.contains(other) && !linked.contains(other) {
+                    linked.push(other.clone());
+                }
+            }
+            at += 1;
+        }
+        linked
+    }
+
     /// The mounted orbital of this thread's session as `{ page, traits }`, each trait
-    /// `{ trait, orbital, parent, depth, embeddedIn, renders, observer, stepsIn, linkedEntity, instances, states, transitions, emits, listens }`.
+    /// `{ trait, orbital, parent, depth, embeddedIn, renders, linked, observer, stepsIn, linkedEntity, instances, states, transitions, emits, listens }`.
     pub(super) fn mounted_tree(&self) -> Result<Value, String> {
         let page = self.session_page().ok_or(
             "program/self mounted: this session has opened no page; a route mount opens one",
@@ -178,6 +235,15 @@ impl RuntimeKernel {
                 mounted.push(name.clone());
             }
         }
+        let owners = TraitOwners::from_kernel(self);
+        let wires: Vec<EventWire> = self
+            .registry
+            .schemas
+            .read()
+            .values()
+            .flat_map(|schema| orbital_core_base::event_wires::event_wires(schema))
+            .collect();
+        let linked = self.linked_traits(&mounted, &owners, &wires);
         let defs = self.registry.trait_definitions.read();
         let refs = self.registry.embedded_trait_refs.read();
         let children = |name: &str| -> Vec<String> {
@@ -212,6 +278,7 @@ impl RuntimeKernel {
         loop {
             let reached: Vec<String> = mounted
                 .iter()
+                .chain(&linked)
                 .filter(|t| !observers.contains(t))
                 .filter(|t| {
                     defs.get(t.as_str())
@@ -224,11 +291,14 @@ impl RuntimeKernel {
             }
             observers.extend(reached);
         }
-        let owners = TraitOwners::from_kernel(self);
         let mut placed: Vec<String> = Vec::new();
         let mut out: Vec<Value> = Vec::new();
-        let mut stack: Vec<(String, Option<String>, u64)> =
-            roots.into_iter().rev().map(|r| (r, None, 0)).collect();
+        let mut stack: Vec<(String, Option<String>, u64)> = linked
+            .iter()
+            .rev()
+            .chain(roots.iter().rev())
+            .map(|r| (r.clone(), None, 0))
+            .collect();
         while let Some((name, parent, depth)) = stack.pop() {
             if placed.contains(&name) {
                 continue;
@@ -253,6 +323,7 @@ impl RuntimeKernel {
             entry.insert("depth".into(), Value::from(depth as i64));
             entry.insert("embeddedIn".into(), names(embedded_in));
             entry.insert("renders".into(), Value::Bool(renders(def)));
+            entry.insert("linked".into(), Value::Bool(linked.contains(&name)));
             entry.insert("observer".into(), Value::Bool(observers.contains(&name)));
             let browser = def
                 .dispatch_mode(None, &orbital_core_base::runs_on::Residence::none())
@@ -286,7 +357,11 @@ impl RuntimeKernel {
                 .collect::<Vec<_>>();
             entry.insert("listens".into(), Value::array(listens));
             out.push(Value::object(entry));
-            for child in children(&name).into_iter().rev() {
+            for child in children(&name)
+                .into_iter()
+                .rev()
+                .filter(|_| !linked.contains(&name))
+            {
                 if !placed.contains(&child) {
                     stack.push((child, Some(name.clone()), depth + 1));
                 }
@@ -295,6 +370,33 @@ impl RuntimeKernel {
         let mut answer = ValueMap::default();
         answer.insert("page".into(), Value::string(page.to_string()));
         answer.insert("traits".into(), Value::array(out));
+        let mut drawn: Vec<(&str, &str, &str, Option<&str>)> = Vec::new();
+        for w in &wires {
+            let key = (
+                w.emitter_trait.as_str(),
+                w.listener_trait.as_str(),
+                w.event.as_str(),
+                w.triggers.as_deref(),
+            );
+            if placed.contains(&w.emitter_trait)
+                && placed.contains(&w.listener_trait)
+                && !drawn.contains(&key)
+            {
+                drawn.push(key);
+            }
+        }
+        let wire_values = drawn
+            .into_iter()
+            .map(|(from, to, event, triggers)| {
+                let mut item = ValueMap::default();
+                item.insert("from".into(), Value::string(from.to_string()));
+                item.insert("to".into(), Value::string(to.to_string()));
+                item.insert("event".into(), Value::string(event.to_string()));
+                item.insert("triggers".into(), opt_string(triggers.map(str::to_string)));
+                Value::object(item)
+            })
+            .collect::<Vec<_>>();
+        answer.insert("wires".into(), Value::array(wire_values));
         Ok(Value::object(answer))
     }
 }

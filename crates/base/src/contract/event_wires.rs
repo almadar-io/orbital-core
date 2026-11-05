@@ -17,6 +17,8 @@ pub struct EventWire {
     pub listener_orbital: String,
     pub listener_trait: String,
     pub event: String,
+    /// The listener's event this delivery steps (`listens[].triggers`); none when the listen names none.
+    pub triggers: Option<String>,
 }
 
 struct Instance<'a> {
@@ -57,15 +59,22 @@ pub fn event_wires(schema: &OrbitalSchema) -> Vec<EventWire> {
             }
         }
     }
-    let mut by_event: HashMap<String, Vec<(usize, Option<crate::schema::types::ListenSource>)>> =
-        HashMap::new();
+    type Listen = (
+        usize,
+        Option<crate::schema::types::ListenSource>,
+        Option<String>,
+    );
+    let mut by_event: HashMap<String, Vec<Listen>> = HashMap::new();
     for (index, listener) in instances.iter().enumerate() {
         for listen in listener.def.listens.iter().flat_map(|l| l.iter()) {
             let (event, source) = match &listen.source {
                 Some(source) => (listen.event.clone(), Some(source.clone())),
                 None => split_event_address(&listen.event),
             };
-            by_event.entry(event).or_default().push((index, source));
+            by_event
+                .entry(event)
+                .or_default()
+                .push((index, source, listen.triggers.clone()));
         }
     }
     let mut wires = Vec::new();
@@ -78,7 +87,9 @@ pub fn event_wires(schema: &OrbitalSchema) -> Vec<EventWire> {
             ..Default::default()
         };
         for emit in emitter.def.emits.iter().flat_map(|e| e.iter()) {
-            for (listener_index, declared) in by_event.get(&emit.event).into_iter().flatten() {
+            for (listener_index, declared, triggers) in
+                by_event.get(&emit.event).into_iter().flatten()
+            {
                 if *listener_index == emitter_index {
                     continue;
                 }
@@ -92,6 +103,7 @@ pub fn event_wires(schema: &OrbitalSchema) -> Vec<EventWire> {
                     listener_orbital: listener.orbital.to_string(),
                     listener_trait: listener.def.name.clone(),
                     event: emit.event.clone(),
+                    triggers: triggers.clone(),
                 });
             }
         }

@@ -238,6 +238,103 @@ fn a_browser_embed_route_mount_records_its_page_for_the_mounted_tree() {
     );
 }
 
+/// `program()` plus an imported-style `Assistant` orbital the Home page only talks to by events, and two traits that
+/// hear it from elsewhere: `OtherDock` in a third orbital and `Lister` on another page of the page's own orbital.
+fn linked_program() -> serde_json::Value {
+    let mut p = program();
+    p["orbitals"][0]["traits"][4]["emits"] = serde_json::json!([{ "event": "ASK_AI" }]);
+    let plain = |name: &str, event: Option<&str>, listens: serde_json::Value, emits: serde_json::Value| {
+        let transitions = match event {
+            Some(e) => serde_json::json!([{ "from": "idle", "to": "idle", "event": e }]),
+            None => serde_json::json!([]),
+        };
+        serde_json::json!({ "name": name, "linkedEntity": "Chat", "listens": listens, "emits": emits,
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions } })
+    };
+    let any = serde_json::json!({ "kind": "any" });
+    let mut lister = plain("Lister", Some("LISTED"), serde_json::json!([{ "event": "ASK_AI", "triggers": "LISTED", "source": any }]), serde_json::json!([]));
+    lister["linkedEntity"] = serde_json::json!("Shell");
+    p["orbitals"][0]["traits"].as_array_mut().unwrap().push(lister);
+    p["orbitals"][0]["pages"].as_array_mut().unwrap().push(serde_json::json!({ "name": "Elsewhere", "path": "/elsewhere", "traits": [{ "ref": "Lister" }] }));
+    let chat = serde_json::json!({ "name": "Chat", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] });
+    p["orbitals"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "Assistant",
+        "entity": chat,
+        "traits": [
+            plain("Thread", Some("ASKED"), serde_json::json!([{ "event": "ASK_AI", "triggers": "ASKED", "source": any }]), serde_json::json!([{ "event": "CALL" }, { "event": "REPLIED" }])),
+            plain("Llm", Some("CALLED"), serde_json::json!([{ "event": "CALL", "triggers": "CALLED", "source": { "kind": "trait", "trait": "Thread" } }]), serde_json::json!([])),
+            plain("Unwired", None, serde_json::json!([]), serde_json::json!([]))
+        ],
+        "pages": [{ "name": "AssistantPage", "path": "/assistant", "traits": [{ "ref": "Thread" }, { "ref": "Llm" }, { "ref": "Unwired" }] }]
+    }));
+    let mut dock_entity = chat.clone();
+    dock_entity["name"] = serde_json::json!("Dock");
+    let mut dock = plain("OtherDock", Some("HEARD"), serde_json::json!([{ "event": "REPLIED", "triggers": "HEARD", "source": any }]), serde_json::json!([]));
+    dock["linkedEntity"] = serde_json::json!("Dock");
+    p["orbitals"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "Docks",
+        "entity": dock_entity,
+        "traits": [dock],
+        "pages": [{ "name": "DockPage", "path": "/dock", "traits": [{ "ref": "OtherDock" }] }]
+    }));
+    p
+}
+
+fn linked_names(tree: &Value) -> Vec<(String, String)> {
+    let json: serde_json::Value = serde_json::to_value(tree).unwrap();
+    json["traits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["linked"] == true)
+        .map(|t| (t["trait"].as_str().unwrap().to_string(), t["orbital"].as_str().unwrap().to_string()))
+        .collect()
+}
+
+#[test]
+fn traits_of_another_orbital_the_page_talks_to_follow_the_page_marked_linked() {
+    let t = crate::support::TestKernel::server();
+    let kernel = t.build(linked_program());
+    let tree = mounted(&kernel, "/");
+    assert_eq!(
+        linked_names(&tree),
+        vec![("Thread".to_string(), "Assistant".to_string()), ("Llm".to_string(), "Assistant".to_string())],
+        "Thread hears the page's ASK_AI by a wildcard listen and Llm hears Thread inside Assistant; control: Unwired, \
+         OtherDock (a third orbital hearing Thread) and Lister (another page of the page's own orbital) stay out"
+    );
+    let json: serde_json::Value = serde_json::to_value(&tree).unwrap();
+    let names: Vec<&str> = json["traits"].as_array().unwrap().iter().map(|t| t["trait"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["Frame", "Header", "Theme", "Board", "Fetcher", "Probe", "Viewer", "Relay", "Thread", "Llm"]);
+    let thread = &json["traits"][8];
+    assert_eq!(thread["parent"], serde_json::Value::Null);
+    assert_eq!(thread["depth"], 0);
+    assert_eq!(json["traits"][0]["linked"], false, "control: a mounted trait is not linked");
+    let wires: Vec<(&str, &str, &str, Option<&str>)> = json["wires"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| (w["from"].as_str().unwrap(), w["to"].as_str().unwrap(), w["event"].as_str().unwrap(), w["triggers"].as_str()))
+        .collect();
+    assert_eq!(
+        wires,
+        vec![
+            ("Fetcher", "Thread", "ASK_AI", Some("ASKED")),
+            ("Thread", "Llm", "CALL", Some("CALLED")),
+        ],
+        "the deliveries between listed traits, a wildcard listen included; control: Probe's KNOWN and Viewer's \
+         SEEN_AGAIN are declared by no emits, Thread's REPLIED reaches only OtherDock, which is not listed"
+    );
+}
+
+#[test]
+fn control_a_page_that_talks_to_no_other_orbital_lists_no_linked_trait() {
+    let t = crate::support::TestKernel::server();
+    let kernel = t.build(linked_program());
+    let tree = mounted(&kernel, "/other");
+    assert_eq!(rows(&tree), vec![row("Probe", None, 0, &[], false)]);
+    assert!(linked_names(&tree).is_empty());
+}
+
 #[test]
 fn control_a_browser_embed_mount_with_no_route_records_no_page() {
     let schema: orbital_core_base::schema::types::OrbitalSchema =
