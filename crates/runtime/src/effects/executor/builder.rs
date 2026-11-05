@@ -19,7 +19,15 @@ impl EffectExecutor {
             game_handler: None,
             delegate: None,
             entity_policies: None,
+            trait_modes: None,
+            host_streams: Arc::default(),
         }
+    }
+
+    /// Set where a trait name's dispatch mode is read, which places a trace subscription (EXEC-DIST-14).
+    pub fn with_trait_modes(mut self, modes: Arc<TraitModes>) -> Self {
+        self.trait_modes = Some(modes);
+        self
     }
 
     /// Create a server-side executor

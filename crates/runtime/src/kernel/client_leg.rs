@@ -931,9 +931,17 @@ impl RuntimeKernel {
     /// The browser's view of `response` (EXEC-DIST-8): the one projection a response takes on its way to a browser. An
     /// emit stays when the browser can use it: a client-run trait (client or optimistic) listens to it, its emitter is
     /// client-run, its contract is `external`, it carries a persist success, or a pattern prop of some `render-ui`
-    /// names it. An emit only server traits hear is dropped. In-process consumers keep the full response; call this after
-    /// [`stamp_emitted_sources`](Self::stamp_emitted_sources).
+    /// names it. An emit only server traits hear is dropped. A render of a `client` trait is dropped: the browser runs
+    /// that trait and paints it itself (EXEC-DIST-4), so a host's paint of it is stale. In-process consumers keep the
+    /// full response; call this after [`stamp_emitted_sources`](Self::stamp_emitted_sources).
     pub fn client_view(&self, mut response: EventResponse) -> EventResponse {
+        if let Some(effects) = response.client_effects_by_trait.as_mut() {
+            let defs = self.registry.trait_definitions.read();
+            effects.retain(|e| {
+                defs.get(&e.trait_name)
+                    .is_none_or(|d| self.dispatch_mode_of(d) != DispatchMode::HybridClientOnly)
+            });
+        }
         if response.emitted_events.is_empty() {
             return response;
         }

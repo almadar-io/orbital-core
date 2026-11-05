@@ -214,6 +214,7 @@ fn a_host_ask_that_declares_emit_routes_carries_its_return_address() {
             key: Some("login-1".into()),
             success: Some("SIGNED_IN".into()),
             failure: Some("SIGN_IN_FAILED".into()),
+            on_message: None,
         })
     );
     assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
@@ -293,6 +294,7 @@ fn an_auth_consent_ask_hands_the_authorize_url_to_the_host_with_its_return_addre
             key: Some("consent-1".into()),
             success: Some("CONSENT_GRANTED".into()),
             failure: Some("CONSENT_FAILED".into()),
+            on_message: None,
         })
     );
     assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
@@ -306,4 +308,75 @@ fn control_a_server_kernel_lists_no_host_ask_for_a_routed_auth_consent() {
     place_consent_on_the_client();
     let routes = serde_json::json!({ "emit": { "success": "CONSENT_GRANTED", "failure": "CONSENT_FAILED" } });
     assert!(host_asks(&host_ask_kernel(false, consent(routes)), the_authorize_url()).0.is_empty());
+}
+
+// EXEC-DIST-14: a trace subscription runs on the site of the traits it observes.
+fn trace_kernel(env_client: bool, watched: serde_json::Value) -> orbital_core_runtime::kernel::RuntimeKernel {
+    let subscribe = serde_json::json!(["program/live", { "kind": "trace", "traits": watched }, { "key": "watch", "emit": { "onMessage": "MOVED", "failure": "WATCH_FAILED" } }]);
+    let machine = |name: &str, dispatch: Option<&str>, effects: serde_json::Value| {
+        let mut t = serde_json::json!({ "name": name, "linkedEntity": "Shell",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": effects }] } });
+        if let Some(d) = dispatch { t["dispatch"] = serde_json::json!(d); }
+        t
+    };
+    let schema = serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                machine("Watcher", env_client.then_some("client"), serde_json::json!([subscribe, ["cancel-call", "watch"]])),
+                machine("Board", Some("client"), serde_json::json!([])),
+                machine("Fetcher", None, serde_json::json!([]))
+            ]
+        }]
+    });
+    let t = if env_client { crate::support::TestKernel::client() } else { crate::support::TestKernel::server() };
+    t.build(schema)
+}
+
+fn watch(kernel: &orbital_core_runtime::kernel::RuntimeKernel) -> (Vec<orbital_core_base::client_effect::ClientEffect>, Vec<Option<String>>) {
+    let outcomes = kernel.dispatch("Watcher", None, "GO", Value::Null).unwrap();
+    let response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, "Watcher", "GO");
+    let errors = outcomes.iter().flat_map(|(_, r)| r.effect_runs.iter().map(|run| run.error.clone())).collect();
+    (response.client_effects().into_iter().cloned().collect(), errors)
+}
+
+#[test]
+fn a_client_trace_of_client_traits_streams_from_its_host_and_its_cancel_reaches_the_host() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let (asks, errors) = watch(&trace_kernel(true, serde_json::json!(["Board"])));
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let ClientEffect::HostAsk { op, completion: Some(completion), .. } = &asks[0] else { panic!("a streamed host ask: {asks:?}") };
+    assert_eq!(op, "program/live");
+    assert_eq!((completion.key.as_deref(), completion.on_message.as_deref()), (Some("watch"), Some("MOVED")));
+    let wire = serde_json::to_value(&asks[0]).unwrap();
+    assert_eq!(wire[3]["onMessage"], "MOVED");
+    let ClientEffect::HostAsk { op, args, completion: None } = &asks[1] else { panic!("a host-asked cancel: {asks:?}") };
+    assert_eq!((op.as_str(), args.clone()), ("cancel-call", vec![Value::String("watch".to_string().into())]));
+}
+
+#[test]
+fn control_a_client_trace_of_server_traits_goes_to_the_server_as_a_leg() {
+    let (asks, errors) = watch(&trace_kernel(true, serde_json::json!(["Fetcher"])));
+    assert!(asks.is_empty(), "no host ask: {asks:?}");
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+}
+
+#[test]
+fn a_trace_of_traits_on_both_sites_or_of_no_trait_is_refused_by_name() {
+    let (_, mixed) = watch(&trace_kernel(true, serde_json::json!(["Board", "Fetcher"])));
+    assert!(mixed.iter().flatten().any(|e| e.contains("Board run in the browser and Fetcher on the server")), "{mixed:?}");
+    let (_, unknown) = watch(&trace_kernel(true, serde_json::json!(["Nope"])));
+    assert!(unknown.iter().flatten().any(|e| e.contains("`Nope` is not a registered trait")), "{unknown:?}");
+    let (_, empty) = watch(&trace_kernel(true, serde_json::json!([])));
+    assert!(empty.iter().flatten().any(|e| e.contains("name the traits")), "{empty:?}");
+}
+
+#[test]
+fn a_server_trace_of_browser_traits_is_refused_and_lists_no_host_ask() {
+    let (asks, errors) = watch(&trace_kernel(false, serde_json::json!(["Board"])));
+    assert!(asks.is_empty(), "{asks:?}");
+    assert!(errors.iter().flatten().any(|e| e.contains("run in the browser")), "{errors:?}");
 }

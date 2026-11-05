@@ -829,6 +829,7 @@ fn host_asks_preserve_order_args_and_kernel_completion_for_the_client_host() {
         key: Some("audio".into()),
         success: Some("PLAYED".into()),
         failure: Some("FAILED".into()),
+        on_message: None,
     };
     core.execute_client_effect(
         ClientEffect::HostAsk {

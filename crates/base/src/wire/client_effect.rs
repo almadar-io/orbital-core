@@ -55,9 +55,10 @@ pub enum ClientEffect {
 }
 
 /// The return address of a `host-ask` that declared `emit` routes (EXEC-DIST-13): the trait that asked, the row it
-/// asked on when its frame is a row, the call's `key`, and the events its two outcomes fire. The host answers once
-/// by dispatching the event of the outcome it reached to `trait_name`; a route the ask did not declare is absent and
-/// that outcome fires nothing.
+/// asked on when its frame is a row, the call's `key`, and the events its outcomes fire. The host answers once
+/// by dispatching the event of the outcome it reached to `trait_name`, or, for a stream ask (`on_message`, a trace
+/// subscription the client kernel runs, EXEC-DIST-14), each item it yields until `cancel-call` names the key; a route
+/// the ask did not declare is absent and that outcome fires nothing.
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct HostAskCompletion {
@@ -71,6 +72,8 @@ pub struct HostAskCompletion {
     pub success: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    #[serde(default, rename = "onMessage", skip_serializing_if = "Option::is_none")]
+    pub on_message: Option<String>,
 }
 
 impl HostAskCompletion {
@@ -83,7 +86,8 @@ impl HostAskCompletion {
         let key = key.as_ref().and_then(Value::as_str).map(str::to_string);
         let success = emit.as_ref().and_then(|e| e.success.clone());
         let failure = emit.as_ref().and_then(|e| e.failure.clone());
-        if success.is_none() && failure.is_none() {
+        let on_message = emit.as_ref().and_then(|e| e.on_message.clone());
+        if success.is_none() && failure.is_none() && on_message.is_none() {
             return None;
         }
         Some(Self {
@@ -92,6 +96,7 @@ impl HostAskCompletion {
             key,
             success,
             failure,
+            on_message,
         })
     }
 
@@ -113,6 +118,7 @@ impl HostAskCompletion {
             key: text("key")?,
             success: text("success")?,
             failure: text("failure")?,
+            on_message: text("onMessage")?,
         })
     }
 }
@@ -148,6 +154,11 @@ impl ClientEffect {
                 op: name.clone(),
                 args: args.clone(),
                 completion: site.and_then(|(trait_name, entity)| HostAskCompletion::of(&result.effect, trait_name, entity)),
+            }),
+            (EffectOutcome::HostAsked, Effect::CancelCall { key }) => Some(ClientEffect::HostAsk {
+                op: "cancel-call".to_string(),
+                args: vec![key.clone()],
+                completion: None,
             }),
             _ => Self::from_effect(&result.effect),
         }
@@ -552,6 +563,7 @@ mod tests {
                 key: Some("k".to_string()),
                 success: Some("SIGNED_IN".to_string()),
                 failure: Some("SIGN_IN_FAILED".to_string()),
+                on_message: None,
             }),
         };
         roundtrip(
@@ -586,6 +598,7 @@ mod tests {
                     key: Some("k".to_string()),
                     success: Some("OK".to_string()),
                     failure: Some("BAD".to_string()),
+                    on_message: None,
                 }),
             })
         );

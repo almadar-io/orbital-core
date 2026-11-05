@@ -497,3 +497,21 @@ fn edge_a_trait_both_listed_and_embedded_is_seeded_once() {
     let seeds = browser.route_mounts("/");
     assert_eq!(seeds.iter().filter(|s| s.r#trait == "Stage").count(), 1, "{seeds:?}");
 }
+
+// EXEC-DIST-4/8: the browser runs a client-only trait and paints it itself; a host's paint of it never reaches the browser.
+#[test]
+fn the_browser_view_carries_no_render_of_a_client_only_trait_and_keeps_the_others() {
+    let server = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    server.register_schema(embedded_stage_schema()).unwrap();
+    let mut outcomes = server.dispatch("Frame", None, "INIT", Value::Null).unwrap();
+    outcomes.extend(server.dispatch("Stage", None, "PAINTED", serde_json::from_value(json!({ "guest": "g" })).unwrap()).unwrap());
+    let full = EventResponse::from_process_results(&outcomes, "Frame", "INIT");
+    let painted = |r: &EventResponse| r.client_effects_by_trait.iter().flatten().map(|e| e.trait_name.clone()).collect::<Vec<_>>();
+    assert!(painted(&full).iter().any(|t| t == "Frame"), "control: the host painted the client trait in process: {:?}", painted(&full));
+    let view = server.client_view(full);
+    assert!(painted(&view).iter().all(|t| t != "Frame" && t != "Stage"), "{:?}", painted(&view));
+}

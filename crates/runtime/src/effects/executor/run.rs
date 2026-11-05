@@ -6,6 +6,30 @@ impl EffectExecutor {
     /// Execute an effect
     pub fn execute(&self, effect: &Effect, ctx: &BindingContext) -> EffectResult {
         let _span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = effect.operator()).entered();
+        if let Effect::Custom { name, args, .. } = effect {
+            if orbital_core_base::runs_on::is_trace_subscription(name, args) {
+                let client = self.environment.is_client();
+                match self.trace_site(args) {
+                    Err(reason) => return EffectResult::failed(effect.clone(), &reason),
+                    Ok(RunsOn::Client) if client => return self.ask_client_host(effect.clone()),
+                    Ok(RunsOn::Client) => {
+                        return EffectResult::failed(
+                            effect.clone(),
+                            "program/live trace: the traits it observes run in the browser; open it from a client-run trait (EXEC-DIST-14)",
+                        )
+                    }
+                    Ok(_) if client => return self.delegate_to_server(effect.clone()),
+                    Ok(_) => {}
+                }
+            }
+        }
+        if self.environment.is_client() {
+            if let Effect::CancelCall { key } = effect {
+                if let Some(held) = self.host_held_streams(key) {
+                    return held;
+                }
+            }
+        }
         if self.environment.is_client() && !matches!(effect, Effect::Custom { .. }) && runs_on(effect.operator()) == RunsOn::Server {
             return self.delegate_to_server(effect.clone());
         }
@@ -131,11 +155,81 @@ impl EffectExecutor {
         EffectResult::noop(effect, &reason)
     }
 
+    /// Where a trace subscription runs (EXEC-DIST-14): on the client when every trait it names is client-run, on the
+    /// server when every one is server-awaited; a mix, an empty list or a name no trait has is refused by name.
+    fn trace_site(&self, args: &[Value]) -> Result<RunsOn, String> {
+        use orbital_core_base::dispatch_mode::DispatchMode;
+        let modes = self
+            .trait_modes
+            .as_ref()
+            .ok_or("program/live trace: this kernel has no trait table to place it by")?;
+        let names: Vec<&str> = match args.first().and_then(|o| o.get_path("traits")) {
+            Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+            _ => Vec::new(),
+        };
+        if names.is_empty() {
+            return Err("program/live trace: name the traits it observes in `traits`".to_string());
+        }
+        let mut client = Vec::new();
+        let mut server = Vec::new();
+        for name in &names {
+            match modes(name) {
+                None => return Err(format!("program/live trace: `{name}` is not a registered trait")),
+                Some(DispatchMode::HybridClientOnly) => client.push(*name),
+                Some(DispatchMode::RuntimeOptimistic) if self.environment.is_client() => client.push(*name),
+                Some(_) => server.push(*name),
+            }
+        }
+        match (client.is_empty(), server.is_empty()) {
+            (false, true) => Ok(RunsOn::Client),
+            (true, false) => Ok(RunsOn::Server),
+            _ => Err(format!(
+                "program/live trace: {} run in the browser and {} on the server; one subscription observes one site",
+                client.join(", "),
+                server.join(", ")
+            )),
+        }
+    }
+
+    /// A `cancel-call` on a client of the trace streams its host holds: handed to the host as a `host-ask`. `None`
+    /// when the key names none of them (the call is the server's); a mix of held and server keys is refused.
+    fn host_held_streams(&self, key: &Value) -> Option<EffectResult> {
+        let keys: Vec<&str> = match key {
+            Value::String(only) => vec![only.as_str()],
+            Value::Array(named) => named.iter().filter_map(Value::as_str).collect(),
+            _ => return None,
+        };
+        let mut held = self.host_streams.lock();
+        let ours = keys.iter().filter(|k| held.contains(**k)).count();
+        if ours == 0 {
+            return None;
+        }
+        let effect = Effect::CancelCall { key: key.clone() };
+        if ours != keys.len() {
+            return Some(EffectResult::failed(effect, "cancel-call: these keys mix trace streams the browser holds with calls the server holds; cancel them apart"));
+        }
+        for k in keys {
+            held.remove(k);
+        }
+        Some(EffectResult::host_asked(effect))
+    }
+
     /// A `runsOn: client` host-port effect on a client: the dispatch hands it to the client host as a `host-ask`
     /// client effect, which answers it. The host's answer is no part of this dispatch, so an effect that routes a
     /// completion (`emit`, a key) has nowhere to deliver it and fails by name.
     pub(super) fn ask_client_host(&self, effect: Effect) -> EffectResult {
-        if let Effect::Custom { name, key, emit, .. } = &effect {
+        if let Effect::Custom { name, args, key, emit } = &effect {
+            if orbital_core_base::runs_on::is_trace_subscription(name, args) {
+                let key = key.as_ref().and_then(Value::as_str).filter(|k| !k.is_empty());
+                let streamed = emit.as_ref().is_some_and(|e| e.on_message.is_some());
+                return match key {
+                    Some(key) if streamed => {
+                        self.host_streams.lock().insert(key.to_string());
+                        EffectResult::host_asked(effect)
+                    }
+                    _ => EffectResult::failed(effect, "program/live trace streams to its onMessage route: give it a key and an onMessage route"),
+                };
+            }
             let routed = emit.as_ref().is_some_and(|e| e.success.is_some() || e.failure.is_some());
             let reason = if emit.as_ref().is_some_and(|e| e.cancelled.is_some() || e.on_message.is_some()) {
                 Some(format!("{name} runs on the client host, which answers a host ask once and cannot cancel or stream it: declare only emit.success and emit.failure"))

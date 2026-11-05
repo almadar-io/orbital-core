@@ -185,6 +185,9 @@ pub fn effect_site(
     if site != RunsOn::Server {
         return site;
     }
+    if is_trace_subscription_sexpr(operator, args) || operator == "cancel-call" {
+        return RunsOn::Any;
+    }
     if operator == "call-service" {
         return match args.first().and_then(|a| a.as_str()) {
             Some(service) if !service.starts_with('@') && residence.is_browser_service(service) => {
@@ -208,6 +211,22 @@ pub fn effect_site(
         Some(entity) if !entity.starts_with('@') && residence.is_client(entity) => RunsOn::Client,
         _ => RunsOn::Server,
     }
+}
+
+/// A `program/live` whose options name `kind: "trace"`: a trace subscription, which runs on the site of the traits it
+/// observes (EXEC-DIST-14), so the kernel places it when it runs and its declared site is either. So is `cancel-call`'s:
+/// a client kernel hands a key its host streams to the host and any other to the server.
+pub fn is_trace_subscription_sexpr(operator: &str, args: &[crate::schema::sexpr::SExpression]) -> bool {
+    use crate::schema::sexpr::SExpression;
+    operator == "program/live"
+        && matches!(args.first(), Some(SExpression::Object(options))
+            if options.iter().any(|(k, v)| k.as_str() == "kind" && v.as_str() == Some("trace")))
+}
+
+/// [`is_trace_subscription_sexpr`] for an effect whose arguments are evaluated.
+pub fn is_trace_subscription(operator: &str, args: &[crate::value::Value]) -> bool {
+    operator == "program/live"
+        && args.first().and_then(|o| o.get_path("kind")).and_then(crate::value::Value::as_str) == Some("trace")
 }
 
 /// Where an IR effect runs: [`effect_site`] for the IR's typed data effects.
@@ -676,6 +695,20 @@ mod tests {
         );
         assert!(!OirExpr::effect(webhook_call).runs_browser_data_effect(&residence));
         assert!(!OirExpr::effect(page_call).runs_browser_data_effect(&Residence::none()));
+    }
+
+    #[test]
+    fn a_trace_subscription_is_placed_at_run_time_and_any_other_live_feed_stays_on_the_server() {
+        use crate::schema::sexpr::SExpression;
+        let options = |kind: &str| -> SExpression { serde_json::from_value(serde_json::json!({ "kind": kind, "traits": ["Board"] })).expect("sexpr") };
+        assert_eq!(effect_site("program/live", &[options("trace")], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/live", &[options("bus")], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("program/live", &[], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("cancel-call", &[], &Residence::none()), RunsOn::Any, "placed by the keys a client host holds");
+        assert_eq!(runs_on("cancel-call"), RunsOn::Server, "control: the table keeps it a server call");
+        let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "kind": "trace" })).expect("value");
+        assert!(is_trace_subscription("program/live", &[evaluated.clone()]));
+        assert!(!is_trace_subscription("program/dispatch", &[evaluated]));
     }
 
     #[test]

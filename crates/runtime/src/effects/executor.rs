@@ -329,7 +329,15 @@ pub struct EffectExecutor {
     /// un-bypassable twin of the read-side policy `FetchHandler`s apply via
     /// `apply_read_access`. `None` when no kernel has wired a schema yet.
     entity_policies: Option<Arc<RwLock<EntityAccessTable>>>,
+
+    /// The dispatch mode of a registered trait by name: what places a trace subscription (EXEC-DIST-14).
+    trait_modes: Option<Arc<TraitModes>>,
+    /// The keys of the trace streams this client kernel handed its host, which a `cancel-call` of them reaches.
+    host_streams: Arc<orbital_core_base::sync::Mutex<std::collections::HashSet<String>>>,
 }
+
+/// The dispatch mode of the registered trait a name names; `None` when no such trait is registered.
+pub type TraitModes = dyn Fn(&str) -> Option<orbital_core_base::dispatch_mode::DispatchMode> + Send + Sync;
 
 impl Default for EffectExecutor {
     fn default() -> Self {

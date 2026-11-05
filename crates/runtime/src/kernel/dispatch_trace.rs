@@ -148,6 +148,76 @@ pub struct DispatchObserver {
     pub completed: Box<dyn Fn(DispatchTraceRecord) + Send + Sync>,
 }
 
+impl DispatchTraceRecord {
+    /// What started the dispatch: its seeds as `Trait.EVENT` joined by `+`, the first seed's row (`singleton` when it
+    /// has none) and the seed traits.
+    pub fn seed_summary(&self) -> (String, String, Vec<String>) {
+        let seed = self
+            .seeds
+            .iter()
+            .map(|s| format!("{}.{}", s.trait_name, s.event))
+            .collect::<Vec<_>>()
+            .join("+");
+        let entity = self
+            .seeds
+            .first()
+            .and_then(|s| s.entity_id.clone())
+            .unwrap_or_else(|| "singleton".into());
+        (seed, entity, self.seeds.iter().map(|s| s.trait_name.clone()).collect())
+    }
+}
+
+/// The trace a kernel keeps for a host with no journal of its own (the browser): each dispatch, once on, as the
+/// item a `program/live { kind: "trace" }` stream yields (EXEC-DIST-14), until the host takes them.
+#[derive(Default)]
+pub struct TraceFeed {
+    on: core::sync::atomic::AtomicBool,
+    seq: core::sync::atomic::AtomicU64,
+    items: orbital_core_base::sync::Mutex<Vec<serde_json::Value>>,
+}
+
+impl TraceFeed {
+    /// The observer that records into this feed while it is on.
+    pub fn observer(self: &std::sync::Arc<Self>) -> DispatchObserver {
+        let enabled = std::sync::Arc::clone(self);
+        let completed = std::sync::Arc::clone(self);
+        DispatchObserver {
+            enabled: Box::new(move || enabled.on.load(core::sync::atomic::Ordering::SeqCst)),
+            completed: Box::new(move |record| completed.record(&record)),
+        }
+    }
+
+    /// Start or stop recording; stopping drops what the host has not taken.
+    pub fn set_on(&self, on: bool) {
+        self.on.store(on, core::sync::atomic::Ordering::SeqCst);
+        if !on {
+            self.items.lock().clear();
+        }
+    }
+
+    /// The items recorded since the last take, in dispatch order.
+    pub fn take(&self) -> Vec<serde_json::Value> {
+        core::mem::take(&mut *self.items.lock())
+    }
+
+    fn record(&self, record: &DispatchTraceRecord) {
+        let (seed, seed_entity_id, seed_traits) = record.seed_summary();
+        let item = serde_json::json!({
+            "type": "trace",
+            "dispatch": {
+                "seq": self.seq.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
+                "dispatchId": record.dispatch_id,
+                "seed": seed,
+                "seedEntityId": seed_entity_id,
+                "seedTraits": seed_traits,
+                "outcomes": record.outcomes,
+                "error": record.error,
+            }
+        });
+        self.items.lock().push(item);
+    }
+}
+
 orbital_core_base::kernel_local! {
     static ANSWER_DISPATCH: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
@@ -175,6 +245,35 @@ mod tests {
     use super::*;
     use crate::resumable::{answer_batch, IoAnswer, IoRequest, PendingRequest};
     use orbital_core_base::value::Value;
+
+    fn record(trait_name: &str, event: &str) -> DispatchTraceRecord {
+        DispatchTraceRecord {
+            dispatch_id: 3,
+            seeds: vec![TraceSeed { trait_name: trait_name.into(), entity_id: None, event: event.into() }],
+            outcomes: vec![],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn dispatch_trace_feed_records_only_while_on_and_hands_each_item_once_in_order() {
+        let feed = std::sync::Arc::new(TraceFeed::default());
+        let observer = feed.observer();
+        assert!(!(observer.enabled)(), "off until a host turns it on");
+        feed.set_on(true);
+        assert!((observer.enabled)());
+        (observer.completed)(record("Board", "OPEN"));
+        (observer.completed)(record("Board", "CLOSE"));
+        let items = feed.take();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0]["type"], "trace");
+        assert_eq!((items[0]["dispatch"]["seq"].clone(), items[0]["dispatch"]["seed"].clone()), (serde_json::json!(0), serde_json::json!("Board.OPEN")));
+        assert_eq!((items[1]["dispatch"]["seq"].clone(), items[1]["dispatch"]["seedEntityId"].clone()), (serde_json::json!(1), serde_json::json!("singleton")));
+        assert!(feed.take().is_empty(), "each item is handed once");
+        (observer.completed)(record("Board", "OPEN"));
+        feed.set_on(false);
+        assert!(feed.take().is_empty(), "stopping drops what was not taken");
+    }
 
     #[test]
     fn dispatch_trace_answer_context_restores_the_outer_dispatch_after_nested_answers() {

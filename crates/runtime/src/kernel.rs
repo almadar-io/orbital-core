@@ -689,7 +689,15 @@ impl RuntimeKernel {
             entity_definitions: entity_definitions.clone(),
             written: Arc::default(),
         });
+        let trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>> = Arc::new(RwLock::new(HashMap::new()));
+        let mode_table = Arc::clone(&trait_definitions);
         let mut executor = EffectExecutor::new(environment)
+            .with_trait_modes(Arc::new(move |name: &str| {
+                mode_table
+                    .read()
+                    .get(name)
+                    .map(|def| def.dispatch_mode(None, &orbital_core_base::runs_on::Residence::none()))
+            }))
             .with_fetch_handler(entity_handler.clone())
             .with_persistence(entity_handler.clone())
             .with_entity_policies(entity_policies.clone());
@@ -743,7 +751,7 @@ impl RuntimeKernel {
                 schemas: Arc::new(RwLock::new(HashMap::new())),
                 trait_homes: Arc::new(RwLock::new(HashMap::new())),
                 endpoint_traits: Arc::new(RwLock::new(HashSet::new())),
-                trait_definitions: Arc::new(RwLock::new(HashMap::new())),
+                trait_definitions,
                 embedded_trait_refs: Arc::new(RwLock::new(HashMap::new())),
                 entity_definitions,
                 entity_defaults: Arc::new(RwLock::new(HashMap::new())),
