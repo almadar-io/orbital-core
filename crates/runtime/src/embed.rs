@@ -344,6 +344,9 @@ impl EmbeddedKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<MountWire, String> {
+        if let Some(route) = route {
+            self.kernel.record_route_page(route)?;
+        }
         let mut dispatched: Vec<(&MountSeed, DispatchWire)> = Vec::new();
         let mut failed = None;
         for seed in seeds {

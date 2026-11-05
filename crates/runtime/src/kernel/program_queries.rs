@@ -251,6 +251,7 @@ impl RuntimeKernel {
         let Some(page) = circuit.page else {
             return Ok(VecDeque::new());
         };
+        self.record_session_page(&page);
         let names = |list: Vec<String>| Value::array(list.into_iter().map(Value::string).collect::<Vec<_>>());
         let mut payload = ValueMap::default();
         payload.insert("page".into(), Value::string(page));

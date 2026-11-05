@@ -33,6 +33,7 @@ pub(super) struct SessionLives {
     ended: Arc<RwLock<HashMap<String, EndedSession>>>,
     identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
     themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
+    pages: Arc<RwLock<HashMap<String, Arc<str>>>>,
 }
 
 impl SessionLives {
@@ -45,8 +46,9 @@ impl SessionLives {
         ended: Arc<RwLock<HashMap<String, EndedSession>>>,
         identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
         themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
+        pages: Arc<RwLock<HashMap<String, Arc<str>>>>,
     ) -> Self {
-        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended, identities, themes }
+        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended, identities, themes, pages }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
@@ -55,6 +57,7 @@ impl SessionLives {
         self.views.drop_session(session);
         self.identities.write().remove(session);
         self.themes.write().remove(session);
+        self.pages.write().remove(session);
         self.mounts.write().release(session);
         self.ended.write().insert(session.to_string(), held.into_iter().map(String::into_boxed_str).collect());
     }

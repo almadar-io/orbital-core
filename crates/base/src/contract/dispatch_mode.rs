@@ -35,12 +35,32 @@ pub fn compute(declared: Option<Declared>) -> DispatchMode {
     }
 }
 
+impl DispatchMode {
+    /// Whether a trait of this mode runs its steps in the browser on a kernel of that role: a `[client]` trait
+    /// everywhere, an `[optimistic]` one on the client kernel (EXEC-DIST-14).
+    pub fn steps_in_browser(self, client_kernel: bool) -> bool {
+        match self {
+            DispatchMode::HybridClientOnly => true,
+            DispatchMode::RuntimeOptimistic => client_kernel,
+            DispatchMode::PersistedAwaited => false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use {crate::ir::types::{OirEntity, OirPersistence, OirTrait}};
     use crate::runs_on::Residence;
     use crate::schema::types::{EntityDefinition, TraitDefinition};
+
+    #[test]
+    fn an_optimistic_trait_steps_in_the_browser_only_on_the_client_kernel() {
+        assert!(DispatchMode::HybridClientOnly.steps_in_browser(false));
+        assert!(DispatchMode::RuntimeOptimistic.steps_in_browser(true));
+        assert!(!DispatchMode::RuntimeOptimistic.steps_in_browser(false));
+        assert!(!DispatchMode::PersistedAwaited.steps_in_browser(true));
+    }
 
     #[test]
     fn dispatch_mode_rule_table() {

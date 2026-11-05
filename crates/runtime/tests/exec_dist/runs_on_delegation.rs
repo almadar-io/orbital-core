@@ -380,3 +380,28 @@ fn a_server_trace_of_browser_traits_is_refused_and_lists_no_host_ask() {
     assert!(asks.is_empty(), "{asks:?}");
     assert!(errors.iter().flatten().any(|e| e.contains("run in the browser")), "{errors:?}");
 }
+
+#[test]
+fn a_client_trace_opened_inside_an_if_still_streams_to_its_on_message_route() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let subscribe = serde_json::json!(["program/live", { "kind": "trace", "traits": ["Board"] }, { "key": "watch", "emit": { "onMessage": "MOVED", "failure": "WATCH_FAILED" } }]);
+    let schema = serde_json::json!({
+        "name": "App", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Watcher", "linkedEntity": "Shell", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["if", [">", 1, 0], subscribe, null]] }] } },
+                { "name": "Board", "linkedEntity": "Shell", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [] }] } }
+            ]
+        }]
+    });
+    let kernel = crate::support::TestKernel::client().build(schema);
+    let (asks, errors) = watch(&kernel);
+    assert!(errors.iter().all(Option::is_none), "{errors:?}");
+    let Some(ClientEffect::HostAsk { op, completion: Some(completion), .. }) = asks.first() else { panic!("a streamed host ask: {asks:?}") };
+    assert_eq!(op, "program/live");
+    assert_eq!((completion.key.as_deref(), completion.on_message.as_deref()), (Some("watch"), Some("MOVED")));
+}

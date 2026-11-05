@@ -98,6 +98,45 @@ pub(super) fn embedded_trait_refs(def: &TraitDefinition) -> Names {
     refs
 }
 
+/// The states `def` shows `child` in: the target of each transition whose effects embed it (`@trait.<child>`, or
+/// `@config.<k>` whose config value names it), in declaration order. Empty when only config names it.
+pub(super) fn embedding_states(def: &TraitDefinition, child: &str) -> Names {
+    let mut via_config = Names::new();
+    for (key, field) in def.config.iter().flatten() {
+        let mut refs = Names::new();
+        trait_refs(&as_json(field), &mut refs);
+        if refs.iter().any(|r| r == child) {
+            add(&mut via_config, key);
+        }
+    }
+    let mut states = Names::new();
+    for transition in &def.state_machine.transitions {
+        let effects = as_json(&transition.effects);
+        let mut refs = Names::new();
+        trait_refs(&effects, &mut refs);
+        let mut keys = Names::new();
+        config_keys(&effects, &mut keys);
+        if refs.iter().any(|r| r == child) || keys.iter().any(|k| via_config.contains(k)) {
+            add(&mut states, &transition.to);
+        }
+    }
+    states
+}
+
+/// Whether any transition of `def` paints a slot (`render-ui`).
+pub(super) fn renders(def: &TraitDefinition) -> bool {
+    fn paints(value: &serde_json::Value) -> bool {
+        match value {
+            serde_json::Value::Array(items) => {
+                items.first().and_then(serde_json::Value::as_str) == Some("render-ui") || items.iter().any(paints)
+            }
+            serde_json::Value::Object(map) => map.values().any(paints),
+            _ => false,
+        }
+    }
+    def.state_machine.transitions.iter().any(|t| paints(&as_json(&t.effects)))
+}
+
 /// Referrer trait -> the embedded children (`@trait.X` in its config or state machine) whose subtree
 /// needs a re-render under the referrer's payload: a child that reads `@callsitePayload`, or is a
 /// pass-through to a descendant that does. One orbital's traits, so same-named traits of sibling

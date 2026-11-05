@@ -199,6 +199,8 @@ struct Sessions {
     /// Each session's theme key bound by `theme/set` (G-CROSS-395); the program session is the empty key. Freed with
     /// the session.
     themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
+    /// Each session's page, opened by its last route mount (EXEC-DIST-15). Freed with the session.
+    pages: Arc<RwLock<HashMap<String, Arc<str>>>>,
     /// Sessions whose states and frames were freed (EXEC-DIST-9); a request but a mount to one is refused. Never pruned.
     ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>>,
 }
@@ -724,6 +726,7 @@ impl RuntimeKernel {
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
         let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
         let themes: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
+        let pages: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
         let mem: Arc<RwLock<mem_table::MemTable>> = Arc::default();
         let mem_change: Arc<RwLock<Option<mem_table::MemTable>>> = Arc::default();
         let mem_view = Arc::new(mem_table::StepMem::new(Arc::clone(&mem), Arc::clone(&mem_change)));
@@ -740,6 +743,7 @@ impl RuntimeKernel {
             Arc::clone(&ended_sessions),
             Arc::clone(&identities),
             Arc::clone(&themes),
+            Arc::clone(&pages),
         ));
         Self {
             config,
@@ -775,6 +779,7 @@ impl RuntimeKernel {
                 anonymous: identity_session::anonymous_user(),
                 identities,
                 themes,
+                pages,
                 ended_sessions,
             },
             session_lives,
@@ -1149,6 +1154,7 @@ mod ffi_call;
 mod kernel_introspect;
 pub use mem_table::SharedArena;
 mod mount_ledger;
+mod mounted_tree;
 mod view_record;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use client_leg::MountPlan;

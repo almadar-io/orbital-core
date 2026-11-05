@@ -571,7 +571,9 @@ impl RuntimeKernel {
         };
         self.io
             .set_substrate_call(self.call_site_of(emit.as_ref()), key.clone());
-        let mut result = if self.effect_executor.environment().is_client() {
+        let kernel_answers = matches!(effect, Effect::Custom { name, args, .. }
+            if orbital_core_base::runs_on::is_mounted_reflection(name, args));
+        let mut result = if self.effect_executor.environment().is_client() && !kernel_answers {
             self.effect_executor.execute(effect, ctx)
         } else {
             self.run_agent_port(effect, ctx)

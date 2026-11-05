@@ -13,6 +13,7 @@ mod embed_fold_follow_on;
 mod embed_host_posting;
 mod fold_host_ran_listeners;
 mod frame_versions;
+mod mounted_reflection;
 mod runs_on_delegation;
 mod server_emit_stamp;
 mod server_frame_echo;

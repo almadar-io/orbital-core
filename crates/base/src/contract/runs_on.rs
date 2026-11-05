@@ -185,7 +185,7 @@ pub fn effect_site(
     if site != RunsOn::Server {
         return site;
     }
-    if is_trace_subscription_sexpr(operator, args) || operator == "cancel-call" {
+    if is_trace_subscription_sexpr(operator, args) || is_mounted_reflection_sexpr(operator, args) || operator == "cancel-call" {
         return RunsOn::Any;
     }
     if operator == "call-service" {
@@ -227,6 +227,21 @@ pub fn is_trace_subscription_sexpr(operator: &str, args: &[crate::schema::sexpr:
 pub fn is_trace_subscription(operator: &str, args: &[crate::value::Value]) -> bool {
     operator == "program/live"
         && args.first().and_then(|o| o.get_path("kind")).and_then(crate::value::Value::as_str) == Some("trace")
+}
+
+/// A `program/self` whose options name `mounted: true`: the kernel the step runs on answers it from its session's page
+/// (EXEC-DIST-15), so its site is either.
+pub fn is_mounted_reflection_sexpr(operator: &str, args: &[crate::schema::sexpr::SExpression]) -> bool {
+    use crate::schema::sexpr::SExpression;
+    operator == "program/self"
+        && matches!(args.first(), Some(SExpression::Object(options))
+            if options.iter().any(|(k, v)| k.as_str() == "mounted" && matches!(v, SExpression::Bool(true))))
+}
+
+/// [`is_mounted_reflection_sexpr`] for an effect whose arguments are evaluated.
+pub fn is_mounted_reflection(operator: &str, args: &[crate::value::Value]) -> bool {
+    operator == "program/self"
+        && args.first().and_then(|o| o.get_path("mounted")).and_then(crate::value::Value::as_bool) == Some(true)
 }
 
 /// Where an IR effect runs: [`effect_site`] for the IR's typed data effects.
@@ -709,6 +724,19 @@ mod tests {
         let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "kind": "trace" })).expect("value");
         assert!(is_trace_subscription("program/live", &[evaluated.clone()]));
         assert!(!is_trace_subscription("program/dispatch", &[evaluated]));
+    }
+
+    #[test]
+    fn a_mounted_reflection_is_answered_where_it_runs_and_the_whole_program_stays_on_the_server() {
+        use crate::schema::sexpr::SExpression;
+        let options = |mounted: serde_json::Value| -> SExpression { serde_json::from_value(serde_json::json!({ "mounted": mounted })).expect("sexpr") };
+        assert_eq!(effect_site("program/self", &[options(serde_json::json!(true))], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/self", &[options(serde_json::json!(false))], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("program/self", &[], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("program/live", &[options(serde_json::json!(true))], &Residence::none()), RunsOn::Server, "control: only program/self");
+        let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "mounted": true })).expect("value");
+        assert!(is_mounted_reflection("program/self", &[evaluated.clone()]));
+        assert!(!is_mounted_reflection("program/inputs", &[evaluated]));
     }
 
     #[test]

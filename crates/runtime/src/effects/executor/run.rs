@@ -158,7 +158,6 @@ impl EffectExecutor {
     /// Where a trace subscription runs (EXEC-DIST-14): on the client when every trait it names is client-run, on the
     /// server when every one is server-awaited; a mix, an empty list or a name no trait has is refused by name.
     fn trace_site(&self, args: &[Value]) -> Result<RunsOn, String> {
-        use orbital_core_base::dispatch_mode::DispatchMode;
         let modes = self
             .trait_modes
             .as_ref()
@@ -175,8 +174,7 @@ impl EffectExecutor {
         for name in &names {
             match modes(name) {
                 None => return Err(format!("program/live trace: `{name}` is not a registered trait")),
-                Some(DispatchMode::HybridClientOnly) => client.push(*name),
-                Some(DispatchMode::RuntimeOptimistic) if self.environment.is_client() => client.push(*name),
+                Some(mode) if mode.steps_in_browser(self.environment.is_client()) => client.push(*name),
                 Some(_) => server.push(*name),
             }
         }

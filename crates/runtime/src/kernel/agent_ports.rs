@@ -164,6 +164,12 @@ impl RuntimeKernel {
                 }
             }
             "persist/read-named" => self.run_read_named(effect, &resolved, ctx),
+            "program/self" if orbital_core_base::runs_on::is_mounted_reflection(name, &resolved) => {
+                match self.mounted_tree() {
+                    Ok(tree) => EffectResult::executed_with_value(effect.clone(), tree),
+                    Err(error) => EffectResult::failed(effect.clone(), &error),
+                }
+            }
             "program/self" => match self.running_program() {
                 Ok(program) => EffectResult::executed_with_value(effect.clone(), program),
                 Err(error) => EffectResult::failed(effect.clone(), &error),
