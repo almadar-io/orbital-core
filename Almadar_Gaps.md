@@ -47,7 +47,11 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-125** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
 
-Next code: `G-ORBITAL-CORE-133`
+Next code: `G-ORBITAL-CORE-135`
+
+- **G-ORBITAL-CORE-133** [mechanical] — `orb validate` accepts an entity field default that does not fit the declared type: `birthDate : datetime = ""` and `age : number = "abc"` validate 0/0, then a served client kernel refuses the singleton row built from those defaults ("store row … does not fit its declaration: FormEntry.birthDate is string"), so the trait fails to start on the web and desktop (std-form-advanced, fixed in std 2026-11-06). Owner: orbital-core shared field/value type check (used by both orbital-lolo and orbital-compiler). Prevention rung: (1)/(2) the type check on declared defaults. Root cause: A2.
+
+- **G-ORBITAL-CORE-134** [architectural] — The guest path (std-guest-session `program/open`, one kernel) never applies a server response to a client kernel, so the client leg's row-intake check (`client_leg.rs`, `view_record.rs`) runs only for served programs: a row the declaration refuses fails a served app but passes the launchpad catalog (found 2026-11-06 with std-form-advanced). One program, two paths, two verdicts. Owner: orbital-core (the intake check belongs to the kernel step both paths share). Prevention rung: (3) a twin test of guest vs served intake. Root cause: H3.
 
 - **G-ORBITAL-CORE-131** [architectural] — EXEC-DATA-2 says a mock host seeds `[runtime]` rows "from the one canonical seeder", but core has no such seeder: the Dioxus shell carried its own (`seed_singletons`, null for fields without defaults — removed 2026-11-05 because strict row intake refused it), and the web relies on std's `std-mock-page-seed` composed into the program. Decide the owner (std-mock-page-seed, made explicit in the spec) and fix the spec text. Rung (2): validate could flag a mock host program that composes no seeder. Root cause: K3.
 

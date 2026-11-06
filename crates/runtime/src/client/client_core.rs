@@ -307,8 +307,17 @@ impl ClientCore {
         self.mounting_traits = traits;
     }
 
-    /// Record that the mount in flight failed with `message`.
+    /// Record that the mount in flight failed with `message`, rolling back what its traits painted (the web's `slotFlush.rollback`).
     pub fn fail_mount(&mut self, message: String) {
+        let mounting = &self.mounting_traits;
+        for contents in self.ui_slots.values_mut() {
+            contents.retain(|content| {
+                content
+                    .source_trait
+                    .as_ref()
+                    .is_none_or(|source| !mounting.contains(source))
+            });
+        }
         self.mount_fault = Some(MountFault {
             trait_name: self.mounting_traits.join(", "),
             message,

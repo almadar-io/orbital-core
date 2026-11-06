@@ -42,6 +42,31 @@ fn format_calendar_day(date: NaiveDate) -> CalendarDay {
     }
 }
 
+/// An instant as the viewer's local wall clock, the way JS `new Date(text)` then
+/// `getHours()` reads it: an offset/`Z` datetime and a date-only value (UTC midnight)
+/// convert to local time, an offset-less datetime is already local.
+/// Returns the local `(YYYY-MM-DD, seconds since local midnight)`; `None` when
+/// the text is not an ISO date or datetime.
+pub fn calendar_local_moment(text: &str) -> Option<(String, u32)> {
+    use chrono::{DateTime, NaiveDateTime, TimeZone, Timelike};
+    let local = if let Ok(dt) = DateTime::parse_from_rfc3339(text) {
+        dt.with_timezone(&chrono::Local).naive_local()
+    } else if let Ok(naive) = NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M"))
+    {
+        naive
+    } else {
+        let date = NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?;
+        chrono::Local
+            .from_utc_datetime(&date.and_hms_opt(0, 0, 0)?)
+            .naive_local()
+    };
+    Some((
+        local.date().format("%Y-%m-%d").to_string(),
+        local.time().num_seconds_from_midnight(),
+    ))
+}
+
 /// Resolve a day-cell date from an ISO date or datetime, falling back to today.
 pub fn calendar_day(date: Option<&str>) -> CalendarDay {
     format_calendar_day(
