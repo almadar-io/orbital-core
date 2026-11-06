@@ -306,7 +306,7 @@ fn a_deferred_wait_returns_null_with_the_deferred_verdict_and_a_plain_answer_lea
 #[test]
 fn the_native_answerer_is_reached_through_the_one_dispatch_point() {
     let ask = os_ask(OsOp::ReadFile, "/a");
-    assert!(matches!(answer_ports(None, &ask), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Denied, .. }))));
+    assert!(matches!(answer_ports(None, &ask), IoAnswer::Os(Err(OsError { kind: OsErrorKind::Unsupported, .. }))));
     assert!(!matches!(answer_ports(None, &IoRequest::CancelCall { key: "k".into() }), IoAnswer::Os(_)));
 }
 

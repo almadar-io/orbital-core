@@ -481,8 +481,11 @@ impl RuntimeKernel {
             return;
         };
         let key = resolved.call_key().map(str::to_string);
+        let delegated = shape.client_executes
+            && self.effect_executor.environment().is_client()
+            && !(shape.runs_any_host_op_here && orbital_core_base::runs_on::runs_on(resolved.operator()) == orbital_core_base::runs_on::RunsOn::Any);
         let (mut result, verdict) =
-            if shape.client_executes && self.effect_executor.environment().is_client() {
+            if delegated {
                 (self.effect_executor.execute(&resolved, ctx), None)
             } else {
                 if shape.at_call_site {
@@ -689,8 +692,11 @@ impl RuntimeKernel {
 /// How a call-shaped effect runs around its runner.
 #[derive(Clone, Copy)]
 struct CallShape {
-    /// The client role executes the effect in place instead of running it.
+    /// The client role hands the effect to its executor (which delegates a server-site one to the leg) instead of
+    /// running it.
     client_executes: bool,
+    /// Even in the client role, a call whose operator runs on any host runs here (EXEC-METAL-1, EXEC-GPU-1).
+    runs_any_host_op_here: bool,
     /// The call records its call site while it runs.
     at_call_site: bool,
     /// When set, the call's verdict is read, and these verdicts leave the effect executed with no answer.
@@ -702,24 +708,28 @@ struct CallShape {
 impl CallShape {
     const OS: CallShape = CallShape {
         client_executes: true,
+        runs_any_host_op_here: true,
         at_call_site: true,
         settles: Some(&[CallVerdict::Cancelled]),
         echoes_key: true,
     };
     const BROWSER: CallShape = CallShape {
         client_executes: false,
+        runs_any_host_op_here: false,
         at_call_site: false,
         settles: Some(&[CallVerdict::Cancelled]),
         echoes_key: true,
     };
     const HOST: CallShape = CallShape {
         client_executes: true,
+        runs_any_host_op_here: false,
         at_call_site: false,
         settles: None,
         echoes_key: false,
     };
     const PAGE_FACTS: CallShape = CallShape {
         client_executes: false,
+        runs_any_host_op_here: false,
         at_call_site: false,
         settles: None,
         echoes_key: false,

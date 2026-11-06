@@ -228,7 +228,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
         return IoAnswer::Service(Err("not an os request".to_string()));
     };
     let Some(host) = host else {
-        return IoAnswer::Os(Err(args::denied(*op, "no os host configured")));
+        return IoAnswer::Os(Err(OsError::new(OsErrorKind::Unsupported, format!("{}: no os host configured", op.name()))));
     };
     let _span = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_OS, "os ask", op = ?op, keyed = key.is_some()).entered();
     let resolved = match resolve_anchored_args(*op, args, &host.handles.anchors) {
@@ -849,11 +849,11 @@ mod tests {
     }
 
     #[test]
-    fn with_no_host_every_op_is_denied() {
+    fn with_no_host_every_op_is_unsupported() {
         for op in OsOp::ALL {
             match answer_os(None, &ask(*op)) {
                 IoAnswer::Os(Err(error)) => {
-                    assert_eq!(error.kind, OsErrorKind::Denied, "{}", op.name());
+                    assert_eq!(error.kind, OsErrorKind::Unsupported, "G-CROSS-469: no host cannot answer, which is not a grant refusal: {}", op.name());
                     assert!(error.message.contains("no os host configured"));
                     assert!(error.message.starts_with(op.name()));
                 }
@@ -947,8 +947,9 @@ mod tests {
             }
         });
         let request = IoRequest::Os { op: OsOp::IrqWait, args: vec![Value::Number(33.0)], key: None, site: None, principal: None, orbital: None };
-        let IoAnswer::Os(Err(error)) = answer_os(None, &request) else { panic!("no host must deny") };
-        assert_eq!(error.kind, OsErrorKind::Denied, "control: no host denies before any device question");
+        let IoAnswer::Os(Err(error)) = answer_os(None, &request) else { panic!("no host must refuse") };
+        assert_eq!(error.kind, OsErrorKind::Unsupported, "control: no host answers before any device question");
+        assert!(error.message.contains("no os host configured"), "control: the hostless answer, not the device one: {}", error.message);
     }
 
     #[test]

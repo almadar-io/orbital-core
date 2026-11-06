@@ -2053,7 +2053,7 @@ mod os_twin {
             "os/mkdir", "os/rmdir", "os/list-dir", "os/glob", "os/mktemp", "os/realpath", "os/chdir", "os/stat",
             "os/lstat", "os/access", "os/exists", "os/chmod", "os/chown", "os/utimes",
         ];
-        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait", "ffi/call"];
+        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait", "ffi/call", "gpu/device-open", "gpu/submit", "gpu/read"];
         assert_eq!(names, finite_fs.iter().chain(rest.iter()).copied().collect::<Vec<_>>());
         assert!(!names.iter().any(|n| n == "os/cwd"), "control: os/cwd answers inline");
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
