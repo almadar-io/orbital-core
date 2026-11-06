@@ -997,3 +997,23 @@ fn config_fields_carry_each_knobs_type_and_declared_default_sorted_by_name() {
     assert!(by("label").default.is_none() && !by("label").required, "no default: optional");
     assert!(by("forwarded").default.is_none() && !by("forwarded").required, "a forward is not a default");
 }
+
+#[test]
+fn payload_fields_are_required_only_where_the_author_marked_them_sorted_by_name() {
+    let mut e = OirEvent::new("UNITS_CHANGED");
+    assert!(e.payload_fields().is_empty(), "control: an event with no payload has no payload fields");
+    let mut schema = OirTypeMap::new();
+    schema.insert("playersAlive".to_string(), OirType::Number);
+    schema.insert("enemiesAlive".to_string(), OirType::Number);
+    schema.insert("label".to_string(), OirType::String);
+    e.payload_schema = Some(schema);
+    e.payload_required_fields.insert("label".to_string());
+    let fields = e.payload_fields();
+    let shape: Vec<(&str, bool, &OirType)> = fields.iter().map(|f| (f.name.as_str(), f.required, &f.field_type)).collect();
+    assert_eq!(
+        shape,
+        [("enemiesAlive", false, &OirType::Number), ("label", true, &OirType::String), ("playersAlive", false, &OirType::Number)]
+    );
+    assert_eq!(fields[0].effective_type(), (&OirType::Number, true), "an unmarked key reads as optional");
+    assert_eq!(fields[1].effective_type(), (&OirType::String, false), "control: a `!` key stays required");
+}
