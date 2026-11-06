@@ -210,6 +210,17 @@ pub fn split_to_camel_case(s: &str) -> String {
     out
 }
 
+/// [`split_to_pascal_case`] with its first character lowercased: `"MatchedText"` → `"matchedText"`,
+/// `"env_part"` → `"envPart"`. Swift's case spelling, so a case never shadows the type it carries.
+pub fn split_to_lower_camel_case(s: &str) -> String {
+    let pascal = split_to_pascal_case(s);
+    let mut chars = pascal.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// Splits on `-`, `_`, and ` `, uppercases the first char of every word, and
 /// joins with a single space.  `"my-app"` → `"My App"`, `"task_list"` →
 /// `"Task List"`.
@@ -625,5 +636,13 @@ mod tests {
         let swift_kws = &["let", "var", "func", "class", "struct"];
         assert_eq!(sanitize_identifier("let", swift_kws), "let_");
         assert_eq!(sanitize_identifier("let", kotlin_kws), "let");
+    }
+
+    #[test]
+    fn split_to_lower_camel_case_lowers_only_the_first_character() {
+        assert_eq!(split_to_lower_camel_case("MatchedText"), "matchedText");
+        assert_eq!(split_to_lower_camel_case("env_part"), "envPart");
+        assert_eq!(split_to_lower_camel_case("Env"), "env");
+        assert_eq!(split_to_lower_camel_case(""), "", "control: empty stays empty");
     }
 }

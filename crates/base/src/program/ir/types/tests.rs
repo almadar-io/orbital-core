@@ -997,3 +997,73 @@ fn config_fields_carry_each_knobs_type_and_declared_default_sorted_by_name() {
     assert!(by("label").default.is_none() && !by("label").required, "no default: optional");
     assert!(by("forwarded").default.is_none() && !by("forwarded").required, "a forward is not a default");
 }
+
+#[test]
+fn payload_fields_are_required_only_where_the_author_marked_them_sorted_by_name() {
+    let mut e = OirEvent::new("UNITS_CHANGED");
+    assert!(e.payload_fields().is_empty(), "control: an event with no payload has no payload fields");
+    let mut schema = OirTypeMap::new();
+    schema.insert("playersAlive".to_string(), OirType::Number);
+    schema.insert("enemiesAlive".to_string(), OirType::Number);
+    schema.insert("label".to_string(), OirType::String);
+    e.payload_schema = Some(schema);
+    e.payload_required_fields.insert("label".to_string());
+    let fields = e.payload_fields();
+    let shape: Vec<(&str, bool, &OirType)> = fields.iter().map(|f| (f.name.as_str(), f.required, &f.field_type)).collect();
+    assert_eq!(
+        shape,
+        [("enemiesAlive", false, &OirType::Number), ("label", true, &OirType::String), ("playersAlive", false, &OirType::Number)]
+    );
+    assert_eq!(fields[0].effective_type(), (&OirType::Number, true), "an unmarked key reads as optional");
+    assert_eq!(fields[1].effective_type(), (&OirType::String, false), "control: a `!` key stays required");
+}
+
+#[test]
+fn a_named_payload_shape_references_declared_aliases_by_name_and_the_structural_shape_is_unchanged() {
+    let matched: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({
+        "name": "matched", "type": "union", "required": true, "projectedFrom": { "type": "Matched" },
+        "properties": [
+            { "name": "MatchedText", "type": "object", "projectedFrom": { "type": "MatchedText" },
+              "properties": [{ "name": "text", "type": "string", "required": true }] },
+            { "name": "MatchedIndex", "type": "object", "projectedFrom": { "type": "MatchedIndex" },
+              "properties": [{ "name": "index", "type": "int", "required": true }] }
+        ]
+    }))
+    .unwrap();
+    let declared = |n: &str| ["Matched", "MatchedText", "MatchedIndex"].contains(&n);
+    assert_eq!(
+        payload_field_shape_named(&matched, &|_| false, &declared).unwrap(),
+        OirType::TypeRef { name: "Matched".to_string() }
+    );
+    let OirType::Union { variants } = declared_alias_shape_named(std::slice::from_ref(&{
+        let mut body = matched.clone();
+        body.name = String::new();
+        body
+    }), &declared)
+    .unwrap() else {
+        panic!("the alias body is the union itself")
+    };
+    let arms: Vec<(&str, &OirType)> = variants.iter().map(|v| (v.name.as_str(), &v.field_type)).collect();
+    assert_eq!(
+        arms,
+        [
+            ("MatchedText", &OirType::TypeRef { name: "MatchedText".to_string() }),
+            ("MatchedIndex", &OirType::TypeRef { name: "MatchedIndex".to_string() })
+        ]
+    );
+    assert!(
+        matches!(payload_field_shape_named(&matched, &|_| false, &|_| false).unwrap(), OirType::Union { .. }),
+        "control: a name that is not a declared alias stays structural"
+    );
+    assert!(
+        matches!(payload_field_shape(&matched).unwrap(), OirType::Union { .. }),
+        "control: the structural shape the kernel checks with is unchanged"
+    );
+    let mut list = matched.clone();
+    list.field_type = "[union]".to_string();
+    assert_eq!(
+        payload_field_shape_named(&list, &|_| false, &declared).unwrap(),
+        OirType::array(OirType::TypeRef { name: "Matched".to_string() }),
+        "a list of a declared alias is a list of its name"
+    );
+}

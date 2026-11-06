@@ -1,11 +1,10 @@
-// The server role evaluates `i18n/t` against the program's declared locales and merged catalogs, as the
+// The server role evaluates `i18n/t` against the messages the program carries, in its declared locales, as the
 // viewer's locale (`EventRequest.locale`). JS twin: `almadar-runtime/test/i18n-viewer-locale.test.ts`.
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::json;
-use std::collections::HashMap;
 
 fn schema() -> OrbitalSchema {
     serde_json::from_value(json!({
@@ -31,35 +30,18 @@ fn schema() -> OrbitalSchema {
     .unwrap()
 }
 
-fn catalogs() -> HashMap<String, HashMap<String, String>> {
-    let entry = |pairs: &[(&str, &str)]| {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect::<HashMap<_, _>>()
-    };
-    HashMap::from([
-        (
-            "en".to_string(),
-            entry(&[
-                ("site:hero.title", "Hello"),
-                ("site:posts.count", "{{n}} posts"),
-            ]),
-        ),
-        (
-            "ar".to_string(),
-            entry(&[
-                ("site:hero.title", "مرحبا"),
-                ("site:posts.count", "{{n}} منشورات"),
-            ]),
-        ),
-    ])
+fn with_messages() -> OrbitalSchema {
+    let mut program = schema();
+    program.messages = Some(serde_json::from_value(json!({
+        "en": { "site:hero.title": "Hello", "site:posts.count": "{{n}} posts" },
+        "ar": { "site:hero.title": "مرحبا", "site:posts.count": "{{n}} منشورات" }
+    }))
+    .unwrap());
+    program
 }
 
 fn server() -> EmbeddedServer {
-    let server = EmbeddedServer::new(schema()).unwrap();
-    server.set_messages(vec!["en".into(), "ar".into()], catalogs());
-    server
+    EmbeddedServer::new(with_messages()).unwrap()
 }
 
 fn init(server: &EmbeddedServer, locale: Option<&str>) -> Result<EventResponse, String> {
@@ -123,7 +105,9 @@ fn edge_a_locale_the_program_does_not_declare_is_refused() {
 
 #[test]
 fn control_a_program_declaring_no_locales_admits_any_locale() {
-    let bare = EmbeddedServer::new(schema()).unwrap();
+    let mut program = with_messages();
+    program.locales = None;
+    let bare = EmbeddedServer::new(program).unwrap();
     assert!(init(&bare, Some("fr")).unwrap().success);
 }
 
@@ -135,7 +119,7 @@ fn painted_children(response: &EventResponse) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn control_without_installed_messages_the_message_paints_null_not_the_key() {
+fn control_a_program_without_messages_paints_null_not_the_key() {
     let bare = EmbeddedServer::new(schema()).unwrap();
     let response = init(&bare, Some("ar")).unwrap();
     let children = painted_children(&response);
@@ -147,23 +131,22 @@ fn control_without_installed_messages_the_message_paints_null_not_the_key() {
     assert!(response.rejections.as_ref().is_none_or(|r| r.is_empty()), "{:?}", response.rejections);
 }
 
-// The client role paints the same `i18n/t` locally, from the catalogs its host installs (a browser kernel has no
-// program files to read them from).
+// The client role paints the same `i18n/t` locally from the same program, in the page's locale.
 fn client_init(kernel: &orbital_core_runtime::embed::EmbeddedKernel) -> EventResponse {
     kernel.dispatch("HomePage", None, "INIT", orbital_core_base::value::Value::Null).unwrap().response
 }
 
 #[test]
-fn the_client_role_paints_the_catalogs_its_host_installs() {
-    let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
-    kernel.set_messages(vec!["ar".into()], catalogs());
+fn the_client_role_paints_the_programs_messages_in_the_page_locale() {
+    let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(with_messages(), "c1").unwrap();
+    kernel.set_viewer_locale(Some("ar".into())).unwrap();
     let page = serde_json::to_string(&client_init(&kernel).client_effects()).unwrap();
     assert!(page.contains("مرحبا"), "{page}");
     assert!(page.contains("\"content\":\"ar\""), "{page}");
 }
 
 #[test]
-fn control_a_client_role_without_installed_messages_paints_null_not_the_key() {
+fn control_a_client_role_on_a_program_without_messages_paints_null_not_the_key() {
     let kernel = orbital_core_runtime::embed::EmbeddedKernel::new(schema(), "c1").unwrap();
     let response = client_init(&kernel);
     let children = painted_children(&response);

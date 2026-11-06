@@ -236,6 +236,59 @@ fn dispatch_checks_orbital_aliases_and_entity_rows_through_named_definitions() {
         .is_none());
 }
 
+// A payload field typed by an entity (`data : @entity!`) carries that entity's working row (EXEC-EVAL-10): a create form's
+// row has no id yet (the store mints it, EXEC-STEP-8), so the entity's own `!` fields are not enforced at the entry
+// check, as at every row check; a present field must still fit its declared kind.
+fn entity_row_kernel() -> orbital_core_runtime::kernel::RuntimeKernel {
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_runtime::{entity_source::InMemoryEntityCache, kernel::RuntimeKernel};
+    use std::sync::Arc;
+    let mut program = serde_json::to_value(schema()).unwrap();
+    let orbital = &mut program["orbitals"][0];
+    orbital["entity"]["fields"] = json!([
+        {"name": "id", "type": "string", "required": true},
+        {"name": "body", "type": "string"}
+    ]);
+    // A program alias sharing the entity's name (project-friday's `type Budget`) never stands in for the entity's row.
+    orbital["types"] = json!({"Message": [
+        {"name": "id", "type": "string", "required": true},
+        {"name": "body", "type": "string", "required": true}
+    ]});
+    orbital["traits"][0]["stateMachine"]["events"][0]["payloadSchema"] = json!([
+        {"name": "data", "type": "object", "entity": "Message", "required": true, "properties": [
+            {"name": "id", "type": "string", "required": true},
+            {"name": "body", "type": "string"}
+        ]}
+    ]);
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), Default::default());
+    kernel.register_schema(serde_json::from_value(program).unwrap()).unwrap();
+    kernel
+}
+
+#[test]
+fn an_entity_typed_payload_is_its_working_row_so_a_create_without_an_id_is_admitted() {
+    let kernel = entity_row_kernel();
+    let rejection = kernel.payload_rejection(
+        [("ChatComposer", "SEND")],
+        &serde_json::from_value(json!({"data": {"body": "hello"}})).unwrap(),
+    );
+    assert!(rejection.is_none(), "{rejection:?}");
+}
+
+#[test]
+fn control_an_entity_typed_payload_still_refuses_a_field_of_the_wrong_kind() {
+    let kernel = entity_row_kernel();
+    let rejection = kernel.payload_rejection(
+        [("ChatComposer", "SEND")],
+        &serde_json::from_value(json!({"data": {"body": 7}})).unwrap(),
+    );
+    assert!(rejection.as_deref().is_some_and(|error| error.contains("data.body")), "{rejection:?}");
+    assert!(
+        kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({})).unwrap()).is_some(),
+        "control: the required `data` itself must be present"
+    );
+}
+
 mod native_record_event_admission {
     use super::*;
     use orbital_core_base::effect_types::RuntimeEnvironment;

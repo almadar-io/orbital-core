@@ -318,26 +318,62 @@ pub fn payload_field_shape_with_entity(
     field: &crate::schema::types::PayloadField,
     is_entity: &impl Fn(&str) -> bool,
 ) -> Result<OirType, ShapeError> {
-    let shape = payload_field_shape_inner(field, is_entity)?;
+    payload_shape(field, &PayloadNames { entity: is_entity, alias: &|_| false })
+}
+
+/// [`payload_field_shape_with_entity`] for codegen: a field projected from a declared alias (`projectedFrom.type`,
+/// whole type, `is_alias` true) is the `TypeRef` naming that alias, so a shell hoists one model per declared name.
+pub fn payload_field_shape_named(
+    field: &crate::schema::types::PayloadField,
+    is_entity: &impl Fn(&str) -> bool,
+    is_alias: &impl Fn(&str) -> bool,
+) -> Result<OirType, ShapeError> {
+    payload_shape(field, &PayloadNames { entity: is_entity, alias: is_alias })
+}
+
+/// [`declared_alias_shape`] whose members reference other declared aliases by name (see
+/// [`payload_field_shape_named`]); the alias's own top-level projection is its definition, not a reference.
+pub fn declared_alias_shape_named(
+    members: &[crate::schema::types::PayloadField],
+    is_alias: &impl Fn(&str) -> bool,
+) -> Result<OirType, ShapeError> {
+    let names = PayloadNames { entity: &|_| false, alias: is_alias };
+    match members {
+        [only] if only.name.is_empty() => {
+            let mut body = only.clone();
+            body.projected_from = None;
+            payload_shape(&body, &names)
+        }
+        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &names)?.into() }),
+    }
+}
+
+struct PayloadNames<'a> {
+    entity: &'a dyn Fn(&str) -> bool,
+    alias: &'a dyn Fn(&str) -> bool,
+}
+
+fn payload_shape(field: &crate::schema::types::PayloadField, names: &PayloadNames<'_>) -> Result<OirType, ShapeError> {
+    let shape = payload_field_shape_inner(field, names)?;
     Ok(if field.nullable == Some(true) { OirType::optional(shape) } else { shape })
 }
 
 fn payload_member(
     field: &crate::schema::types::PayloadField,
-    is_entity: &impl Fn(&str) -> bool,
+    names: &PayloadNames<'_>,
     segment: impl Into<String>,
 ) -> Result<OirType, ShapeError> {
-    payload_field_shape_with_entity(field, is_entity).map_err(|e| e.within(segment))
+    payload_shape(field, names).map_err(|e| e.within(segment))
 }
 
 fn payload_members(
     props: &[crate::schema::types::PayloadField],
-    is_entity: &impl Fn(&str) -> bool,
+    names: &PayloadNames<'_>,
 ) -> Result<Vec<OirField>, ShapeError> {
     props
         .iter()
         .map(|p| {
-            let mut f = OirField::new(p.name.clone(), payload_member(p, is_entity, p.name.clone())?);
+            let mut f = OirField::new(p.name.clone(), payload_member(p, names, p.name.clone())?);
             f.required = p.required.unwrap_or(false);
             f.description = p.description.clone();
             Ok(f)
@@ -345,10 +381,15 @@ fn payload_members(
         .collect()
 }
 
-pub(super) fn payload_field_shape_inner(
+fn payload_field_shape_inner(
     field: &crate::schema::types::PayloadField,
-    is_entity: &impl Fn(&str) -> bool,
+    names: &PayloadNames<'_>,
 ) -> Result<OirType, ShapeError> {
+    let is_entity = names.entity;
+    if let Some(alias) = field.projected_from.as_ref().filter(|p| p.field.is_none()).map(|p| p.type_name.as_str()).filter(|n| (names.alias)(n)) {
+        let named = OirType::TypeRef { name: alias.to_string() };
+        return Ok(if field.field_type.trim_start().starts_with('[') { OirType::array(named) } else { named });
+    }
     if field.field_type != "union" {
         // A payload field typed by an entity carries that entity's row; a relation field of a row carries its id.
         if let Some(entity) = field.entity.as_deref().filter(|entity| is_entity(entity)) {
@@ -365,28 +406,28 @@ pub(super) fn payload_field_shape_inner(
             items: slots
                 .into_iter()
                 .enumerate()
-                .map(|(index, field)| payload_member(field, is_entity, index.to_string()))
+                .map(|(index, field)| payload_member(field, names, index.to_string()))
                 .collect::<Result<_, _>>()?,
         });
     }
     if let Some(item) = field.items.as_deref() {
         if matches!(field.field_type.trim(), "array" | "list") {
-            return Ok(OirType::array(payload_member(item, is_entity, "[]")?));
+            return Ok(OirType::array(payload_member(item, names, "[]")?));
         }
         match payload_type_shape(&field.field_type) {
-            Ok(OirType::Array { .. }) => return Ok(OirType::array(payload_member(item, is_entity, "[]")?)),
-            Ok(OirType::Map { key, .. }) => return Ok(OirType::map(*key, payload_member(item, is_entity, "[]")?)),
+            Ok(OirType::Array { .. }) => return Ok(OirType::array(payload_member(item, names, "[]")?)),
+            Ok(OirType::Map { key, .. }) => return Ok(OirType::map(*key, payload_member(item, names, "[]")?)),
             _ => {}
         }
     }
     if let (true, None, Some(item)) = (field.field_type == "object" && field.additional_properties.is_none(), &field.properties, field.items.as_deref()) {
-        return Ok(OirType::map(OirType::String, payload_member(item, is_entity, "[]")?));
+        return Ok(OirType::map(OirType::String, payload_member(item, names, "[]")?));
     }
     let additional = || -> Result<Option<Box<OirType>>, ShapeError> {
         field
             .additional_properties
             .as_deref()
-            .map(|extra| payload_member(extra, is_entity, "[]").map(Box::new))
+            .map(|extra| payload_member(extra, names, "[]").map(Box::new))
             .transpose()
     };
     if field.field_type == "object" && field.properties.as_ref().is_none_or(Vec::is_empty) && field.additional_properties.is_some() {
@@ -401,7 +442,7 @@ pub(super) fn payload_field_shape_inner(
             Ok(if list { OirType::array(named) } else { named })
         }
         Some(props) => {
-            let fields = payload_members(props, is_entity)?;
+            let fields = payload_members(props, names)?;
             if field.field_type == "union" {
                 return Ok(OirType::Union { variants: fields.into() });
             }
@@ -530,6 +571,6 @@ pub fn names_in(ty: &OirType, out: &mut Vec<String>) {
 pub fn declared_alias_shape(members: &[crate::schema::types::PayloadField]) -> Result<OirType, ShapeError> {
     match members {
         [only] if only.name.is_empty() => payload_field_shape(only),
-        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &|_| false)?.into() }),
+        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &PayloadNames { entity: &|_| false, alias: &|_| false })?.into() }),
     }
 }

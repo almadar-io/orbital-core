@@ -71,7 +71,6 @@ impl LazySource for CarriedLazy {
             .get(file)
             .map(|schema| LazyProgram {
                 schema: schema.clone(),
-                catalogs: Default::default(),
             })
             .ok_or_else(|| {
                 format!("the opened program carries no lazy program `{file}` in `lazyPrograms`")
@@ -123,7 +122,8 @@ pub(crate) fn run_session(
     }
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
-    Ok(guest_answer(None, None, &embedded, &outcomes, &seed_trait, event))
+    let orbitals = painter_orbitals(&session.kernel, &outcomes);
+    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -178,8 +178,21 @@ fn json_value(json: serde_json::Value) -> Value {
     serde_json::from_value(json).unwrap_or(Value::Null)
 }
 
-/// What a guest's run answers: each trait's state, what it painted, what it emitted and every trait it moved.
+/// The orbital declaring each trait that painted in `outcomes`: a paint names its orbital, so a host scopes the paint's
+/// controls to the trait that drew them, as it scopes its own.
+fn painter_orbitals(kernel: &RuntimeKernel, outcomes: &[(String, ProcessEventResult)]) -> std::collections::HashMap<String, String> {
+    EventResponse::from_process_results(outcomes, "", "")
+        .client_effects_by_trait
+        .iter()
+        .flatten()
+        .filter_map(|paint| kernel.orbital_of_trait(&paint.trait_name).map(|orbital| (paint.trait_name.clone(), orbital)))
+        .collect()
+}
+
+/// What a guest's run answers: each trait's state, what it painted (with its trait's orbital), what it emitted and every
+/// trait it moved.
 fn guest_answer(
+    orbitals: &std::collections::HashMap<String, String>,
     guest: Option<&str>,
     page: Option<(&[String], Option<&str>)>,
     embedded: &std::collections::HashSet<String>,
@@ -203,6 +216,7 @@ fn guest_answer(
             ClientEffect::RenderUi { slot, config } => Some(record(vec![
                 ("slot", Value::string(slot.to_string())),
                 ("trait", Value::string(paint.trait_name.clone())),
+                ("orbital", orbitals.get(&paint.trait_name).map_or(Value::Null, |o| Value::string(o.clone()))),
                 ("embedded", Value::Bool(embedded.contains(&paint.trait_name))),
                 ("content", config.clone().unwrap_or(Value::Null)),
             ])),
@@ -501,6 +515,7 @@ impl RuntimeKernel {
             }
         }
         let outcomes = mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?;
+        let orbitals = painter_orbitals(&guest, &outcomes);
         let handle = format!(
             "guest-{}",
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
@@ -520,6 +535,7 @@ impl RuntimeKernel {
         self.guests.write().insert(handle.clone(), session);
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
         Ok(guest_answer(
+            &orbitals,
             Some(&handle),
             Some((&page, resolved.as_deref())),
             &embedded,
@@ -566,6 +582,7 @@ impl RuntimeKernel {
                 .collect()
         };
         let outcomes = mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?;
+        let orbitals = painter_orbitals(guest, &outcomes);
         {
             let mut held = session.route.write();
             held.mounted.extend(fresh.iter().map(|s| s.r#trait.clone()));
@@ -577,6 +594,7 @@ impl RuntimeKernel {
             _ => None,
         };
         Ok(guest_answer(
+            &orbitals,
             name,
             Some((&page, resolved.as_deref())),
             &embedded,
@@ -676,7 +694,8 @@ impl RuntimeKernel {
         }
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
-        Ok(guest_answer(None, None, &embedded, &outcomes, &seed_trait, event))
+        let orbitals = painter_orbitals(guest, &outcomes);
+        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event))
     }
 
     /// The registered traits whose current state handles `event`, in name order.

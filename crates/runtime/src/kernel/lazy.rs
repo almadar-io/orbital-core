@@ -3,10 +3,9 @@
 use super::*;
 use orbital_core_base::schema::types::LazyPage;
 
-/// A lazy orbital's program as its host read it: the resolved schema and the message catalogs written beside it.
+/// A lazy orbital's program as its host read it: the resolved schema, which carries its own messages.
 pub struct LazyProgram {
     pub schema: OrbitalSchema,
-    pub catalogs: HashMap<String, HashMap<String, String>>,
 }
 
 /// Where a lazy orbital's file is read from. A host installs one to declare that it loads lazy orbitals through the kernel;
@@ -231,7 +230,7 @@ impl RuntimeKernel {
         Ok(())
     }
 
-    /// Load the lazy orbital `orbital` if it is still pending: read its file, register it as any program, merge its catalogs.
+    /// Load the lazy orbital `orbital` if it is still pending: read its file and register it as any program.
     pub fn ensure_orbital_loaded(&self, orbital: &str) -> Result<(), KernelError> {
         if !self
             .lazy
@@ -287,12 +286,6 @@ impl RuntimeKernel {
         let observer = self.lazy.observer.read().clone();
         if let (Some(observer), Some(schema)) = (observer, self.registered_schema(&schema_name)) {
             observer(self, &schema);
-        }
-        {
-            let mut i18n = self.i18n.write();
-            for (locale, catalog) in program.catalogs {
-                i18n.catalogs.entry(locale).or_default().extend(catalog);
-            }
         }
         info!(orbital = %stub.orbital, file = %stub.file, "loaded lazy orbital");
         Ok(())
@@ -427,7 +420,6 @@ mod tests {
             assert_eq!(file, "lazy/Late.orb");
             Ok(LazyProgram {
                 schema: late_program(self.ticks),
-                catalogs: HashMap::new(),
             })
         }
     }

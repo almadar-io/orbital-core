@@ -35,7 +35,7 @@ where
 // =============================================================================
 
 /// The type contract version this build reads and writes.
-pub const TYPE_CONTRACT_VERSION: u32 = 1;
+pub const TYPE_CONTRACT_VERSION: u32 = 2;
 
 /// Who resolved a program and under which type contract (`OrbitalSchema.resolved`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +107,11 @@ pub struct OrbitalSchema {
     /// `(i18n/t …)` key must exist in the catalog of each one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locales: Option<Vec<String>>,
+
+    /// Locale → qualified key (`<behavior>:<key>`) → message: every catalog of the behaviors this program holds,
+    /// written by resolution and never authored, so the program carries its own text wherever it is opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<std::collections::BTreeMap<String, std::collections::BTreeMap<String, String>>>,
 
     /// `public "./public"` — a folder beside the program copied verbatim to
     /// the built site's root (logos, favicons, downloads).

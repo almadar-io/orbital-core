@@ -321,8 +321,8 @@ pub use page::{
 };
 pub(crate) use shape::deserialize_type_contract_version;
 pub use shape::{
-    declared_alias_shape, field_shape, names_in, payload_array_item_type, payload_field_shape,
-    payload_field_shape_with_entity, payload_tuple_slots, payload_type_shape, record_shape,
+    declared_alias_shape, declared_alias_shape_named, field_shape, names_in, payload_array_item_type, payload_field_shape,
+    payload_field_shape_named, payload_field_shape_with_entity, payload_tuple_slots, payload_type_shape, record_shape,
     DeclaredShape, ShapeError, ShapeGap,
 };
 pub use traits::{OirDispatchMode, OirEvent, OirState, OirTrait, OirTraitSource};

@@ -419,4 +419,21 @@ impl OirEvent {
             external: None,
         }
     }
+
+    /// One field per declared payload key, sorted by name; a key the author did not mark `!` is optional.
+    pub fn payload_fields(&self) -> Vec<OirField> {
+        let Some(schema) = self.payload_schema.as_ref() else {
+            return Vec::new();
+        };
+        let mut fields: Vec<OirField> = schema
+            .iter()
+            .map(|(name, ty)| {
+                let mut field = OirField::new(name.clone(), ty.clone());
+                field.required = self.payload_required_fields.contains(name);
+                field
+            })
+            .collect();
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+        fields
+    }
 }

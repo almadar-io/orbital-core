@@ -287,12 +287,13 @@ fn edge_a_guest_given_grants_needs_the_openers_kernel_spawn_grant() {
 }
 
 /// An opener that paints the guest's last screen inside a `guest-view` and turns its control clicks into guest dispatches.
+/// A host scopes each guest paint to its painter, so a click reaches the opener as `<Painter>.<EVENT>`.
 fn painting_opener() -> RuntimeKernel {
     opener(json!([
         open_transition(),
         { "from": "idle", "to": "idle", "event": "PAINT", "effects": [
             ["set", "@entity.view", ["object/get", ["array/last", "@entity.got.rendered"], "content"]],
-            ["render-ui", "main", { "type": "guest-view", "guest": "@entity.guest", "deliver": "GUEST_CONTROL", "source": "DiaryList", "children": ["@entity.view"] }]
+            ["render-ui", "main", { "type": "guest-view", "guest": "@entity.guest", "deliver": "GUEST_CONTROL", "paints": "@entity.got.rendered", "children": ["@entity.view"] }]
         ] },
         { "from": "idle", "to": "idle", "event": "GUEST_CONTROL", "effects": [
             ["set", "@entity.clicked", "@payload"],
@@ -306,7 +307,7 @@ fn a_click_on_a_painted_guest_control_reaches_the_guest_through_the_openers_decl
     let kernel = painting_opener();
     run(&kernel, "GO");
     run(&kernel, "PAINT");
-    kernel.dispatch("Opener", None, "ADD", serde_json::from_value(json!({ "text": "clicked" })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "DiaryList.ADD", serde_json::from_value(json!({ "text": "clicked" })).unwrap()).unwrap();
     let after = entity(&kernel);
     assert_eq!(after["clicked"]["address"], "DiaryList.ADD", "{after}");
     assert_eq!(after["clicked"]["event"], "ADD", "{after}");
@@ -317,20 +318,37 @@ fn a_click_on_a_painted_guest_control_reaches_the_guest_through_the_openers_decl
 }
 
 #[test]
-fn control_an_event_no_painted_guest_control_carries_is_not_delivered() {
+fn control_a_click_naming_a_trait_the_view_does_not_paint_is_not_delivered() {
     let kernel = painting_opener();
     run(&kernel, "GO");
     run(&kernel, "PAINT");
-    kernel.dispatch("Opener", None, "NOPE", Value::Null).unwrap();
+    kernel.dispatch("Opener", None, "Ghost.ADD", Value::Null).unwrap();
     let after = entity(&kernel);
     assert!(after.get("clicked").is_none_or(serde_json::Value::is_null), "{after}");
+}
+
+#[test]
+fn control_an_event_naming_no_painter_is_the_openers_own_and_never_a_guest_click() {
+    let kernel = painting_opener();
+    run(&kernel, "GO");
+    run(&kernel, "PAINT");
+    kernel.dispatch("Opener", None, "ADD", Value::Null).unwrap();
+    let after = entity(&kernel);
+    assert!(after.get("clicked").is_none_or(serde_json::Value::is_null), "{after}");
+}
+
+#[test]
+fn guest_paints_name_the_orbital_of_the_trait_that_drew_them() {
+    let (_kernel, _, after) = opened();
+    let rendered = after["got"]["rendered"].as_array().expect("paints");
+    assert!(!rendered.is_empty() && rendered.iter().all(|p| p["orbital"] == "Diary"), "{after}");
 }
 
 #[test]
 fn control_before_the_guest_view_is_painted_a_guest_event_is_not_delivered() {
     let kernel = painting_opener();
     run(&kernel, "GO");
-    kernel.dispatch("Opener", None, "ADD", Value::Null).unwrap();
+    kernel.dispatch("Opener", None, "DiaryList.ADD", Value::Null).unwrap();
     let after = entity(&kernel);
     assert!(after.get("clicked").is_none_or(serde_json::Value::is_null), "{after}");
 }
@@ -340,7 +358,7 @@ fn a_guest_control_naming_its_event_through_a_callback_prop_is_routed_too() {
     let kernel = painting_opener();
     run(&kernel, "GO");
     run(&kernel, "PAINT");
-    kernel.dispatch("Opener", None, "PICK_RANGE", serde_json::from_value(json!({ "value": "1M" })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "DiaryList.PICK_RANGE", serde_json::from_value(json!({ "value": "1M" })).unwrap()).unwrap();
     let after = entity(&kernel);
     assert_eq!(after["clicked"]["address"], "DiaryList.PICK_RANGE", "{after}");
     assert_eq!(after["clicked"]["payload"]["value"], "1M", "{after}");
@@ -404,7 +422,7 @@ fn server_painted_guest_view() -> orbital_core_runtime::effects::response::Event
         "clientEffectsByTrait": [{
             "traitName": "Stage",
             "effect": ["render-ui", "main", { "type": "stack", "children": [
-                { "type": "guest-view", "guest": "guest-7", "source": "DiaryList", "deliver": "GUEST_CONTROL", "children": [
+                { "type": "guest-view", "guest": "guest-7", "deliver": "GUEST_CONTROL", "paints": [{ "slot": "main", "trait": "DiaryList", "orbital": "Diary", "embedded": false, "content": null }], "children": [
                     { "type": "button", "label": "Add", "action": "ADD" }
                 ] }
             ] }]
@@ -423,7 +441,7 @@ fn a_guest_view_the_server_painted_for_a_browser_trait_routes_its_clicks() {
     kernel
         .apply_server_response(&server_painted_guest_view(), &std::collections::HashSet::new())
         .unwrap();
-    kernel.dispatch("Stage", None, "ADD", serde_json::from_value(json!({ "text": "x" })).unwrap()).unwrap();
+    kernel.dispatch("Stage", None, "DiaryList.ADD", serde_json::from_value(json!({ "text": "x" })).unwrap()).unwrap();
     let after = stage_entity(&kernel);
     assert_eq!(after["clicked"]["guest"], "guest-7", "{after}");
     assert_eq!(after["clicked"]["address"], "DiaryList.ADD", "{after}");
@@ -436,7 +454,7 @@ fn control_once_the_browser_trait_paints_the_slot_itself_the_servers_guest_view_
         .apply_server_response(&server_painted_guest_view(), &std::collections::HashSet::new())
         .unwrap();
     kernel.dispatch("Stage", None, "LOCAL", Value::Null).unwrap();
-    kernel.dispatch("Stage", None, "ADD", Value::Null).unwrap();
+    kernel.dispatch("Stage", None, "DiaryList.ADD", Value::Null).unwrap();
     let after = stage_entity(&kernel);
     assert!(after.get("clicked").is_none_or(serde_json::Value::is_null), "{after}");
 }
@@ -807,4 +825,76 @@ fn edge_navigating_to_a_page_with_a_listed_embed_marks_it_embedded_too() {
     let after = shop_event(&kernel, "NAV", json!({ "route": "/portal", "rows": [] }));
     assert_eq!(embedded_flag(&after["got"], "Child"), Some(true), "{after}");
     assert_eq!(embedded_flag(&after["got"], "Shell"), Some(false), "{after}");
+}
+
+fn translated_guest(messages: bool) -> serde_json::Value {
+    let mut program = json!({
+        "name": "Greeter",
+        "typeContractVersion": 1,
+        "locales": ["en", "ar"],
+        "orbitals": [{
+            "name": "Greeter",
+            "entity": { "name": "Greeting", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Greet",
+                "linkedEntity": "Greeting",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                        ["render-ui", "main", { "type": "typography", "content": ["i18n/t", "greeter:hello"] }]
+                    ] }]
+                }
+            }],
+            "pages": [{ "name": "GreetPage", "path": "/", "traits": [{ "ref": "Greet" }] }]
+        }]
+    });
+    if messages {
+        program["messages"] = json!({ "en": { "greeter:hello": "Hello" }, "ar": { "greeter:hello": "مرحبا" } });
+    }
+    program
+}
+
+fn open_value(program: serde_json::Value) -> serde_json::Value {
+    let kernel = opener(json!([open_transition()]));
+    kernel
+        .dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": program })).unwrap())
+        .unwrap();
+    entity(&kernel)
+}
+
+#[test]
+fn a_guest_paints_the_messages_its_program_carries() {
+    let after = open_value(translated_guest(true));
+    assert!(painted(&after["got"]).contains(&"Hello".to_string()), "{after}");
+}
+
+#[test]
+fn control_a_guest_whose_program_carries_no_messages_paints_no_key() {
+    let after = open_value(translated_guest(false));
+    let texts = painted(&after["got"]);
+    assert!(!texts.iter().any(|t| t.contains("greeter:hello") || t == "Hello"), "{after}");
+}
+
+#[test]
+fn a_guest_create_form_save_without_an_id_is_admitted() {
+    let mut program = guest();
+    program["orbitals"][0]["entity"]["fields"] = json!([{ "name": "id", "type": "string", "required": true }, { "name": "text", "type": "string" }]);
+    program["orbitals"][0]["traits"][0]["stateMachine"]["events"] = json!([{ "key": "SAVE", "name": "Save", "payloadSchema": [
+        { "name": "data", "type": "object", "entity": "DiaryNote", "required": true, "properties": [
+            { "name": "id", "type": "string", "required": true }, { "name": "text", "type": "string" }
+        ] }
+    ] }]);
+    program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap().push(json!(
+        { "from": "ready", "to": "ready", "event": "SAVE", "effects": [["render-ui", "main", { "type": "typography", "content": "saved" }]] }
+    ));
+    let kernel = opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "SAVE", "effects": [
+            ["program/dispatch", "Diary.DiaryList.SAVE", { "data": { "text": "new" } }, { "guest": "@entity.guest", "emit": emit() }]
+        ] }
+    ]));
+    kernel.dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": program })).unwrap()).unwrap();
+    let after = run(&kernel, "SAVE");
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+    assert!(painted(&after["got"]).contains(&"saved".to_string()), "{after}");
 }

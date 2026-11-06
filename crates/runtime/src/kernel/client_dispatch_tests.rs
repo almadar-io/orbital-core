@@ -660,35 +660,12 @@ fn i18n_schema(locales: bool) -> OrbitalSchema {
     });
     if locales {
         schema["locales"] = serde_json::json!(["en", "ar"]);
+        schema["messages"] = serde_json::json!({
+            "en": { "site:hero.title": "Hello", "site:posts.count": "{{n}} posts", "site:cta": "Start" },
+            "ar": { "site:hero.title": "مرحبا", "site:posts.count": "{{n}} منشورات", "site:cta": "ابدأ" }
+        });
     }
     serde_json::from_value(schema).unwrap()
-}
-
-fn i18n_catalogs() -> HashMap<String, HashMap<String, String>> {
-    let catalog = |pairs: &[(&str, &str)]| {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    };
-    HashMap::from([
-        (
-            "en".to_string(),
-            catalog(&[
-                ("site:hero.title", "Hello"),
-                ("site:posts.count", "{{n}} posts"),
-                ("site:cta", "Start"),
-            ]),
-        ),
-        (
-            "ar".to_string(),
-            catalog(&[
-                ("site:hero.title", "مرحبا"),
-                ("site:posts.count", "{{n}} منشورات"),
-                ("site:cta", "ابدأ"),
-            ]),
-        ),
-    ])
 }
 
 fn field(config: &Value, key: &str) -> Value {
@@ -717,7 +694,6 @@ fn rendered_config(kernel: &RuntimeKernel) -> Value {
 #[test]
 fn i18n_t_renders_the_dispatch_viewers_locale() {
     let kernel = server_kernel_with(i18n_schema(true));
-    kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
     let _locale = kernel.enter_locale(Some("ar")).unwrap();
     let config = rendered_config(&kernel);
     assert_eq!(field(&config, "title"), Value::string("مرحبا"));
@@ -729,7 +705,6 @@ fn i18n_t_renders_the_dispatch_viewers_locale() {
 #[test]
 fn control_i18n_t_without_a_viewer_locale_renders_the_first_declared() {
     let kernel = server_kernel_with(i18n_schema(true));
-    kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
     let config = rendered_config(&kernel);
     assert_eq!(field(&config, "title"), Value::string("Hello"));
     assert_eq!(field(&config, "lang"), Value::string("en"));
@@ -738,12 +713,29 @@ fn control_i18n_t_without_a_viewer_locale_renders_the_first_declared() {
 #[test]
 fn edge_a_locale_the_program_does_not_declare_is_refused() {
     let kernel = server_kernel_with(i18n_schema(true));
-    kernel.set_messages(vec!["en".into(), "ar".into()], i18n_catalogs());
     let err = kernel
         .enter_locale(Some("fr"))
         .err()
         .expect("undeclared locale");
     assert!(err.to_string().contains("\"fr\""), "{err}");
+}
+
+#[test]
+fn the_viewer_locale_paints_a_dispatch_that_names_none() {
+    let kernel = server_kernel_with(i18n_schema(true));
+    kernel.set_viewer_locale(Some("ar".into())).unwrap();
+    let config = rendered_config(&kernel);
+    assert_eq!(field(&config, "title"), Value::string("مرحبا"));
+    assert_eq!(field(&config, "lang"), Value::string("ar"));
+    let _locale = kernel.enter_locale(Some("en")).unwrap();
+    assert_eq!(field(&rendered_config(&kernel), "title"), Value::string("Hello"), "a dispatch's own locale wins");
+}
+
+#[test]
+fn edge_an_undeclared_viewer_locale_is_refused() {
+    let kernel = server_kernel_with(i18n_schema(true));
+    assert!(kernel.set_viewer_locale(Some("fr".into())).is_err());
+    assert_eq!(field(&rendered_config(&kernel), "lang"), Value::string("en"), "control: the refused locale is not kept");
 }
 
 #[test]

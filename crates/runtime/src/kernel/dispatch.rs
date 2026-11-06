@@ -440,7 +440,8 @@ impl RuntimeKernel {
                 None => entities.get(name).map(|def| super::row_intake::entity_struct(def)).transpose(),
             }
         };
-        crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve)
+        let entity_row = |name: &str| entities.get(name).map(|def| super::row_intake::entity_struct(def));
+        crate::payload_validation::validate_event_payload_with_context(event, payload, schema, &resolve, &entity_row)
     }
 
     /// The entry check of an external event, a client's UI event included: a payload that does not satisfy its

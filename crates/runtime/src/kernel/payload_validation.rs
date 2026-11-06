@@ -2,7 +2,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::ir::types::{payload_field_shape, DeclaredShape, OirType, ShapeError};
+use orbital_core_base::ir::types::{payload_field_shape_with_entity, DeclaredShape, OirType, ShapeError};
 use orbital_core_base::schema::types::PayloadField;
 use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::operators::arg_types::misfit_detail_of_shape;
@@ -57,14 +57,34 @@ pub fn validate_event_payload_with_types(
         payload,
         schema,
         &|name| Ok(named.get(name).cloned()),
+        &|_| None,
     )
 }
 
+/// `ty` with each entity row it holds (as a list or an optional too) replaced by that entity's row shape.
+fn rows_inlined(
+    ty: OirType,
+    entity_row: &dyn Fn(&str) -> Option<Result<OirType, ShapeError>>,
+) -> Result<OirType, ShapeError> {
+    Ok(match ty {
+        OirType::Row { entity } => match entity_row(&entity) {
+            Some(row) => row?,
+            None => OirType::Row { entity },
+        },
+        OirType::Array { inner } => OirType::array(rows_inlined(*inner, entity_row)?),
+        OirType::Optional { inner } => OirType::optional(rows_inlined(*inner, entity_row)?),
+        other => other,
+    })
+}
+
+/// `entity_row` answers a registered entity's row shape: a field typed by that entity is its row, checked as every row
+/// is (EXEC-EVAL-10), and never through a program alias that happens to share the entity's name.
 pub(crate) fn validate_event_payload_with_context(
     event: &str,
     payload: &Value,
     schema: &[PayloadField],
     resolve: &dyn Fn(&str) -> Result<Option<OirType>, ShapeError>,
+    entity_row: &dyn Fn(&str) -> Option<Result<OirType, ShapeError>>,
 ) -> Vec<PayloadFailure> {
     let mut failures = Vec::new();
     for field in schema {
@@ -84,7 +104,8 @@ pub(crate) fn validate_event_payload_with_context(
                 }
             }
             Some(value) => {
-                let declared = payload_field_shape(field)
+                let declared = payload_field_shape_with_entity(field, &|name| entity_row(name).is_some())
+                    .and_then(|shape| rows_inlined(shape, entity_row))
                     .and_then(|shape| DeclaredShape::with_resolver(None, shape, resolve));
                 let declared = match declared {
                     Ok(declared) => declared,
@@ -256,7 +277,7 @@ mod tests {
            {"name": "tag", "type": "string", "required": false, "nullable": true}]))
         .unwrap();
         let versioned = |value| {
-            validate_event_payload_with_context("E", &payload(value), &schema, &|_| Ok(None))
+            validate_event_payload_with_context("E", &payload(value), &schema, &|_| Ok(None), &|_| None)
         };
         for ok in [
             json!({"viewer": {"id": "u"}}),
