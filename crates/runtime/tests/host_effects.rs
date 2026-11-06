@@ -2053,7 +2053,7 @@ mod os_twin {
             "os/mkdir", "os/rmdir", "os/list-dir", "os/glob", "os/mktemp", "os/realpath", "os/chdir", "os/stat",
             "os/lstat", "os/access", "os/exists", "os/chmod", "os/chown", "os/utimes",
         ];
-        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait", "ffi/call", "gpu/device-open", "gpu/submit", "gpu/read"];
+        let rest = ["os/wait", "os/stdin-read", "os/send", "os/recv", "os/recvfrom", "os/irq-wait", "ffi/call", "gpu/device-open", "gpu/submit"];
         assert_eq!(names, finite_fs.iter().chain(rest.iter()).copied().collect::<Vec<_>>());
         assert!(!names.iter().any(|n| n == "os/cwd"), "control: os/cwd answers inline");
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
@@ -3511,9 +3511,9 @@ mod gpu_effects {
             ("SHADER", json!(["gpu/shader-create", "@payload.device", "@payload.wgsl"])),
             ("PIPE", json!(["gpu/pipeline-create", "@payload.device", "@payload.desc"])),
             ("BIND", json!(["gpu/bind-group-create", "@payload.pipeline", "@payload.group", "@payload.entries"])),
-            ("WRITE", json!(["gpu/write", "@payload.buffer", "@payload.offset", "@payload.data"])),
+            ("WRITE", json!(["gpu/submit", "@payload.device", [{ "write": { "buffer": "@payload.buffer", "offset": "@payload.offset", "data": "@payload.data" } }]])),
             ("SUBMIT", json!(["gpu/submit", "@payload.device", "@payload.commands"])),
-            ("READ", json!(["gpu/read", "@payload.buffer", "@payload.offset", "@payload.length"])),
+            ("READ", json!(["gpu/submit", "@payload.device", [{ "read": { "buffer": "@payload.buffer", "offset": "@payload.offset", "length": "@payload.length" } }]])),
             ("RELEASE", json!(["gpu/release", "@payload.handle"])),
         ]
     }
@@ -3584,7 +3584,10 @@ mod gpu_effects {
                 OsOp::GpuShaderCreate => vec![("shader", id)],
                 OsOp::GpuPipelineCreate => vec![("pipeline", id)],
                 OsOp::GpuBindGroupCreate => vec![("bindGroup", id)],
-                OsOp::GpuRead => vec![("data", Value::bytes(vec![1, 2, 3]))],
+                OsOp::GpuSubmit => {
+                    let reads = args[1].as_array().map_or(0, |commands| commands.iter().filter(|c| c.get("read").is_some()).count());
+                    vec![("reads", Value::array(vec![Value::bytes(vec![1, 2, 3]); reads]))]
+                }
                 _ => vec![],
             };
             IoAnswer::Os(Ok(record(fields).into()))
@@ -4017,9 +4020,80 @@ mod gpu_effects {
         granted.put("offset", Value::Int(0));
         granted.put("length", Value::Int(8));
         granted.ok("READ");
-        assert_eq!(granted.held("data").as_bytes(), Some(&[1u8, 2, 3][..]));
+        assert_eq!(granted.held("reads").as_array().map(|r| r[0].as_bytes()), Some(Some(&[1u8, 2, 3][..])));
+        let (op, args) = granted.fake.asked.last().unwrap();
+        assert_eq!(*op, OsOp::GpuSubmit);
+        assert_eq!(args[1].as_array().unwrap()[0].get("read").and_then(|r| r.get("buffer")).and_then(Value::as_int), Some(2), "the host gets the plain buffer id");
         granted.put("length", Value::Int(9));
         granted.fails_with("READ", "invalid");
+        granted.put("offset", Value::Int(4));
+        granted.put("length", Value::Int(5));
+        granted.fails_with("READ", "invalid");
+    }
+
+    #[test]
+    fn a_read_without_offset_or_length_reads_the_whole_buffer_and_the_kernel_says_so() {
+        let mut session = Session::new(64, &["open", "readback"]);
+        session.open();
+        session.ok_buffer(16);
+        let read = record(vec![("read", record(vec![("buffer", session.held("buffer"))]))]);
+        assert!(matches!(session.command(read), Answer::Ok(_)));
+        let (_, args) = session.fake.asked.last().unwrap();
+        let sent = args[1].as_array().unwrap()[0].get("read").cloned().unwrap();
+        assert_eq!(sent.get("offset").and_then(Value::as_int), Some(0), "the host picks no default");
+        assert_eq!(sent.get("length").and_then(Value::as_int), Some(16));
+        let past = record(vec![("read", record(vec![("buffer", session.held("buffer")), ("offset", Value::Int(17))]))]);
+        assert_eq!(kind_of(session.command(past)), "invalid", "an offset past the end has no rest to read");
+    }
+
+    #[test]
+    fn a_write_names_exactly_one_target_and_a_texture_write_takes_no_offset() {
+        let mut session = Session::new(1 << 20, &["open"]);
+        session.open();
+        session.ok_buffer(8);
+        assert!(matches!(session.texture(4, 4, 1), Answer::Ok(_)));
+        let data = Value::bytes(vec![0; 4]);
+        let write = |fields: Vec<(&str, Value)>| record(vec![("write", record(fields))]);
+        let both = write(vec![("buffer", session.held("buffer")), ("texture", session.held("texture")), ("data", data.clone())]);
+        assert_eq!(kind_of(session.command(both)), "invalid");
+        assert_eq!(kind_of(session.command(write(vec![("data", data.clone())]))), "invalid", "a write with no target");
+        let offset = write(vec![("texture", session.held("texture")), ("offset", Value::Int(0)), ("data", data.clone())]);
+        assert_eq!(kind_of(session.command(offset)), "invalid");
+        let swapped = write(vec![("buffer", session.held("texture")), ("data", data.clone())]);
+        assert_eq!(kind_of(session.command(swapped)), "invalid", "a texture handed as the buffer");
+        let texture = write(vec![("texture", session.held("texture")), ("data", data.clone())]);
+        assert!(matches!(session.command(texture), Answer::Ok(_)), "control: a texture write");
+        let buffer = write(vec![("buffer", session.held("buffer")), ("data", data)]);
+        assert!(matches!(session.command(buffer), Answer::Ok(_)), "control: a buffer write at the default offset");
+        let (_, args) = session.fake.asked.last().unwrap();
+        assert_eq!(args[1].as_array().unwrap()[0].get("write").and_then(|w| w.get("offset")).and_then(Value::as_int), Some(0));
+    }
+
+    #[test]
+    fn one_submit_carries_writes_a_dispatch_and_reads_in_order_and_needs_readback_only_for_reads() {
+        let mut session = Session::new(1 << 20, &["open", "compute"]);
+        session.open();
+        session.ok_buffer(8);
+        session.pipelines();
+        let write = record(vec![("write", record(vec![("buffer", session.held("buffer")), ("data", Value::bytes(vec![1; 8]))]))]);
+        let read = record(vec![("read", record(vec![("buffer", session.held("buffer"))]))]);
+        session.put("commands", Value::array(vec![write.clone(), session.compute_command()]));
+        assert!(matches!(session.call("SUBMIT"), Answer::Ok(_)), "control: no read, no readback grant needed");
+        session.put("commands", Value::array(vec![write.clone(), session.compute_command(), read.clone()]));
+        assert_eq!(kind_of(session.call("SUBMIT")), "denied", "a read needs the readback kind");
+
+        let mut granted = Session::new(1 << 20, &["open", "compute", "readback"]);
+        granted.open();
+        granted.ok_buffer(8);
+        granted.pipelines();
+        let write = record(vec![("write", record(vec![("buffer", granted.held("buffer")), ("data", Value::bytes(vec![1; 8]))]))]);
+        let read = record(vec![("read", record(vec![("buffer", granted.held("buffer"))]))]);
+        granted.put("commands", Value::array(vec![write, granted.compute_command(), read.clone(), read]));
+        let Answer::Ok(payload) = granted.call("SUBMIT") else { panic!("the job runs") };
+        assert_eq!(payload.get("reads").and_then(Value::as_array).map(Vec::len), Some(2), "one bytes per read, in order");
+        let (_, args) = granted.fake.asked.last().unwrap();
+        let kinds: Vec<String> = args[1].as_array().unwrap().iter().map(|c| c.as_object().unwrap().keys().next().unwrap().to_string()).collect();
+        assert_eq!(kinds, ["write", "compute", "read", "read"], "the host gets the list in the order written");
     }
 
     #[test]
@@ -4034,19 +4108,22 @@ mod gpu_effects {
         session.fails_with("WRITE", "invalid");
         session.put("data", Value::bytes(vec![7]));
         session.ok("WRITE");
+        let data_of = |args: &Vec<Value>| args[1].as_array().unwrap()[0].get("write").and_then(|w| w.get("data")).cloned().unwrap();
         let (op, args) = session.fake.asked.last().unwrap();
-        assert_eq!(*op, OsOp::GpuWrite);
-        assert_eq!(args[2].as_bytes(), Some(&[7u8][..]));
-        let big = Value::bytes(vec![5u8; 1 << 20]);
+        assert_eq!(*op, OsOp::GpuSubmit);
+        assert_eq!(data_of(args).as_bytes(), Some(&[7u8][..]));
+        session.put("data", Value::bytes(vec![7; 9]));
+        session.fails_with("WRITE", "invalid");
+        let big = Value::bytes(vec![5u8; 8]);
         let sent = big.as_bytes().map(<[u8]>::as_ptr);
         session.put("data", big);
         session.ok("WRITE");
         let (_, args) = session.fake.asked.last().unwrap();
-        assert_eq!(args[2].as_bytes().map(<[u8]>::as_ptr), sent, "a bytes payload reaches the host as the same buffer, never a copy");
+        assert_eq!(data_of(args).as_bytes().map(<[u8]>::as_ptr), sent, "a bytes payload reaches the host as the same buffer, never a copy");
         session.put("data", Value::string("CAk="));
         session.ok("WRITE");
         let (_, args) = session.fake.asked.last().unwrap();
-        assert_eq!(args[2].as_bytes(), Some(&[8u8, 9][..]), "base64 text is bytes on the wire (EXEC-EVAL-11) and reaches the host as bytes");
+        assert_eq!(data_of(args).as_bytes(), Some(&[8u8, 9][..]), "base64 text is bytes on the wire (EXEC-EVAL-11) and reaches the host as bytes");
     }
 
     #[test]
@@ -4075,6 +4152,63 @@ mod gpu_effects {
 
         let other = session.server.kernel().gpu_complete("someone-else", Ok(record(vec![("device", Value::Int(6))])));
         assert_eq!(other.unwrap().get("device").and_then(Value::as_int), Some(6), "control: an unknown key is returned as it stands");
+    }
+
+    fn wire_of(json: String) -> Json {
+        serde_json::from_str(&json).expect("wire json")
+    }
+
+    fn device_answer() -> Value {
+        record(vec![("device", Value::Int(1)), ("features", j(json!([]))), ("limits", j(json!({})))])
+    }
+
+    #[test]
+    fn a_server_holding_gpu_asks_hands_the_host_a_ticket_and_takes_the_held_answer_back() {
+        let server = server_with(grants(1 << 20, &["open"]), false);
+        let request = json!({ "event": "OPEN", "targetTrait": "Host", "payload": { "desc": {} } }).to_string();
+        let control = wire_of(server.start_json("Main", &request).unwrap());
+        assert_eq!(control["requests"][0]["request"]["kind"], "os", "control: without hold_gpu the ask crosses whole: {control}");
+
+        let server = server_with(grants(1 << 20, &["open"]), false);
+        server.hold_gpu();
+        let started = wire_of(server.start_json("Main", &request).unwrap());
+        let pending = &started["requests"][0];
+        assert_eq!(pending["request"]["kind"], "gpu", "{started}");
+        assert!(pending["request"].get("args").is_none(), "the host never sees the arguments: {started}");
+        let ticket = pending["request"]["ticket"].as_u64().unwrap();
+        let ask = server.take_gpu_ask(ticket).expect("held");
+        assert_eq!(ask.op, OsOp::GpuDeviceOpen);
+        assert!(server.take_gpu_ask(ticket).is_none(), "a held ask is taken once");
+        let held = server.hold_gpu_answer(Ok(device_answer()));
+        let replies = json!([{ "id": pending["id"], "answer": { "kind": "gpuHeld", "ticket": held } }]).to_string();
+        let done = wire_of(server.resume_json(started["flight"].as_u64().unwrap(), &replies).unwrap());
+        let ok = done["response"]["emittedEvents"].as_array().unwrap().iter().find(|e| e["event"] == "OK").cloned();
+        assert!(ok.is_some_and(|ok| ok["payload"]["device"]["id"] == 1), "the held answer reached the kernel, which minted the device: {done}");
+    }
+
+    #[test]
+    fn a_held_deferred_completion_starts_as_a_request_naming_its_held_payload_once() {
+        let server = server_with_extra(grants(1 << 20, &["open"]), false, vec![
+            json!({ "from": "idle", "to": "idle", "event": "OPEN_HELD", "effects": [
+                ["gpu/device-open", "@payload.desc", { "key": "h", "emit": { "success": "GOT", "failure": "BAD" } }]
+            ] }),
+            json!({ "from": "idle", "to": "idle", "event": "GOT", "effects": [["emit", "ECHO", { "device": "@payload.device" }]] }),
+        ]);
+        server.hold_gpu();
+        let request = json!({ "event": "OPEN_HELD", "targetTrait": "Host", "payload": { "desc": {} } }).to_string();
+        let started = wire_of(server.start_json("Main", &request).unwrap());
+        let pending = &started["requests"][0];
+        let ask = server.take_gpu_ask(pending["request"]["ticket"].as_u64().unwrap()).expect("held");
+        assert!(ask.key.is_some() && ask.site.is_some(), "a keyed ask under a route defers");
+        let replies = json!([{ "id": pending["id"], "answer": { "kind": "serviceDeferred" } }]).to_string();
+        wire_of(server.resume_json(started["flight"].as_u64().unwrap(), &replies).unwrap());
+        let completion = server.gpu_completion(&ask, Ok(device_answer())).expect("the success route");
+        assert_eq!((completion.event.as_str(), completion.trait_name.as_str()), ("GOT", "Host"));
+        let held = json!({ "event": completion.event, "targetTrait": completion.trait_name, "heldPayload": completion.held_payload }).to_string();
+        let done = wire_of(server.start_json("Main", &held).unwrap());
+        let echo = done["response"]["emittedEvents"].as_array().unwrap().iter().find(|e| e["event"] == "ECHO").cloned().expect("ECHO");
+        assert_eq!(echo["payload"]["device"]["maxBytes"], 1 << 20, "the kernel minted the device from the held payload: {done}");
+        assert!(server.start_json("Main", &held).unwrap_err().contains("no completion payload is held"), "a held payload is taken once");
     }
 
     #[test]

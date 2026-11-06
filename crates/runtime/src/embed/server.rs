@@ -144,6 +144,42 @@ pub struct EmbeddedServer {
     /// Where the host places the program's anchored grants and arguments; none until it says.
     #[cfg(feature = "std")]
     os_anchors: Mutex<OsAnchors>,
+    /// The `gpu/` asks, answers and completion payloads the server holds for a host that installed a GPU answerer in
+    /// it ([`Self::hold_gpu`]): their bytes never cross the host boundary.
+    held: Mutex<HeldGpu>,
+}
+
+/// A `gpu/` ask the server holds for the host's installed answerer, as the kernel asked it.
+#[derive(Debug, Clone)]
+pub struct HeldGpuAsk {
+    pub op: OsOp,
+    pub args: Vec<Value>,
+    pub key: Option<String>,
+    pub site: Option<CallSiteWire>,
+    pub orbital: Option<String>,
+}
+
+/// A held ask's deferred completion: the route event the kernel fires and the ticket its payload is held under. The
+/// host starts it as an ordinary request naming `heldPayload`.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeldGpuCompletion {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orbital: Option<String>,
+    pub trait_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    pub event: String,
+    pub held_payload: u64,
+}
+
+#[derive(Debug, Default)]
+struct HeldGpu {
+    on: bool,
+    asks: HashMap<u64, HeldGpuAsk>,
+    answers: HashMap<u64, Result<Value, OsError>>,
+    payloads: HashMap<u64, Value>,
 }
 
 #[cfg(feature = "std")]
@@ -226,6 +262,7 @@ impl EmbeddedServer {
             dispatch_stream: Mutex::new(Vec::new()),
             #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
+            held: Mutex::new(HeldGpu::default()),
         })
     }
 
@@ -247,6 +284,7 @@ impl EmbeddedServer {
             dispatch_stream: Mutex::new(Vec::new()),
             #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
+            held: Mutex::new(HeldGpu::default()),
         })
     }
 
@@ -287,6 +325,7 @@ impl EmbeddedServer {
             dispatch_stream: Mutex::new(Vec::new()),
             #[cfg(feature = "std")]
             os_anchors: Mutex::new(OsAnchors::default()),
+            held: Mutex::new(HeldGpu::default()),
         })
     }
 
@@ -541,7 +580,11 @@ impl EmbeddedServer {
     ///
     /// While a parked dispatch holds the lane, or earlier requests still wait for it, the request is queued behind
     /// them and answered `Queued`; the host starts nothing itself (EXEC-CONC-2).
-    pub fn start(&self, orbital: &str, request: EventRequest) -> Result<ServerProgress, String> {
+    pub fn start(&self, orbital: &str, mut request: EventRequest) -> Result<ServerProgress, String> {
+        if let Some(ticket) = request.held_payload.take() {
+            let payload = self.held.lock().payloads.remove(&ticket);
+            request.payload = Some(payload.ok_or_else(|| format!("no completion payload is held as {ticket}"))?);
+        }
         if let Some(refused) = self.kernel.refusal(&request) {
             return Ok(ServerProgress::Done(refused));
         }
@@ -933,7 +976,24 @@ impl EmbeddedServer {
         flight: u64,
         replies: Vec<IoReplyWire>,
     ) -> Result<ServerProgress, String> {
-        self.resume(flight, replies.into_iter().map(IoReply::from).collect())
+        let replies = replies
+            .into_iter()
+            .map(|reply| match reply.answer {
+                super::wire::IoAnswerWire::GpuHeld { ticket } => {
+                    let held = self.held.lock().answers.remove(&ticket);
+                    let result = held.unwrap_or_else(|| {
+                        Err(OsError::new(
+                            orbital_core_base::os::OsErrorKind::Invalid,
+                            format!("no gpu answer is held as {ticket}"),
+                        ))
+                    });
+                    IoReplyWire { id: reply.id, answer: super::wire::IoAnswerWire::Os { result: result.into() } }
+                }
+                _ => reply,
+            })
+            .map(IoReply::from)
+            .collect();
+        self.resume(flight, replies)
     }
 
     /// Finish a TLS operation the kernel parked on a deferred raw ask (EXEC-HTTP-7): `outcome_json` is the host's
@@ -1053,7 +1113,77 @@ impl EmbeddedServer {
 
     /// The wire form of a dispatch that just started.
     fn started_wire(&self, progress: &ServerProgress) -> ServerProgressWire {
-        ServerProgressWire::from(progress)
+        self.held_wire(ServerProgressWire::from(progress))
+    }
+
+    /// Hold every `gpu/` ask of `wire` when the host installed a GPU answerer: the host gets a ticket in its place.
+    fn held_wire(&self, mut wire: ServerProgressWire) -> ServerProgressWire {
+        let ServerProgressWire::Await { requests, .. } = &mut wire else {
+            return wire;
+        };
+        if !self.held.lock().on {
+            return wire;
+        }
+        for pending in requests.iter_mut() {
+            let op = match &pending.request {
+                super::wire::IoRequestWire::Os { op, .. } => *op,
+                _ => continue,
+            };
+            if orbital_core_base::os::family_of(op) != orbital_core_base::os::OsFamily::Gpu {
+                continue;
+            }
+            let ticket = self.next_id();
+            let held = core::mem::replace(
+                &mut pending.request,
+                super::wire::IoRequestWire::Gpu { ticket, op, key: None },
+            );
+            if let super::wire::IoRequestWire::Os { op, args, key, site, orbital, .. } = held {
+                pending.request = super::wire::IoRequestWire::Gpu { ticket, op, key: key.clone() };
+                self.held.lock().asks.insert(ticket, HeldGpuAsk { op, args, key, site, orbital });
+            }
+        }
+        wire
+    }
+
+    /// The host installed a GPU answerer in this server (orbital-wasm's `installGpu`): from now on every `gpu/` ask is
+    /// held here, and the host answers it by ticket.
+    pub fn hold_gpu(&self) {
+        self.held.lock().on = true;
+    }
+
+    /// The held ask `ticket`, taken once.
+    pub fn take_gpu_ask(&self, ticket: u64) -> Option<HeldGpuAsk> {
+        self.held.lock().asks.remove(&ticket)
+    }
+
+    /// Hold the answerer's answer to a held ask; the host replies with `GpuHeld { ticket }`.
+    pub fn hold_gpu_answer(&self, answer: Result<Value, OsError>) -> u64 {
+        let ticket = self.next_id();
+        self.held.lock().answers.insert(ticket, answer);
+        ticket
+    }
+
+    /// Drop a held completion payload no request will start (its call was cancelled); whether one was held.
+    pub fn drop_held_payload(&self, ticket: u64) -> bool {
+        self.held.lock().payloads.remove(&ticket).is_some()
+    }
+
+    /// A held deferring ask finished: the route event its outcome fires, its payload held for the request the host
+    /// starts. `None` when the ask has no route for this outcome (EXEC-QUEUE-10).
+    pub fn gpu_completion(&self, ask: &HeldGpuAsk, outcome: Result<Value, OsError>) -> Option<HeldGpuCompletion> {
+        let (wire, key) = (ask.site.clone()?, ask.key.as_deref()?);
+        let entity_id = wire.entity_id.clone();
+        let site = CallSite::from(wire);
+        let (event, payload, _) = self.kernel.completion_route(&site, key, outcome)?;
+        let held_payload = self.next_id();
+        self.held.lock().payloads.insert(held_payload, payload);
+        Some(HeldGpuCompletion {
+            orbital: site.orbital.clone().or_else(|| ask.orbital.clone()),
+            trait_name: site.trait_name,
+            entity_id,
+            event,
+            held_payload,
+        })
     }
 
     /// [`Self::resume`] over JSON: the answers (`IoReplyWire[]`) in, a `ServerProgressWire` out.
@@ -1061,7 +1191,7 @@ impl EmbeddedServer {
         let replies: Vec<IoReplyWire> =
             serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
         let progress = self.resume_wire(flight, replies)?;
-        to_js_readable_json(&ServerProgressWire::from(&progress))
+        to_js_readable_json(&self.held_wire(ServerProgressWire::from(&progress)))
     }
 
     /// The whole orbital's held states under `states`, the dispatched traits' new ones over them (the

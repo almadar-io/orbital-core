@@ -1034,10 +1034,10 @@ mod tests {
     #[test]
     fn an_answer_no_ask_takes_refuses_the_step() {
         let error = play_on(GPU, serde_json::json!([
-            { "trait": "Host", "event": "OPEN", "answers": [open_answer(), buffer_answer(), { "operator": "gpu/read", "ok": { "data": "" } }] }
+            { "trait": "Host", "event": "OPEN", "answers": [open_answer(), buffer_answer(), { "operator": "gpu/submit", "ok": { "reads": [] } }] }
         ]))
         .unwrap_err();
-        assert!(error.contains("no ask took answers[2] (gpu/read)"), "{error}");
+        assert!(error.contains("no ask took answers[2] (gpu/submit)"), "{error}");
     }
 
     #[test]

@@ -476,7 +476,12 @@ fn gpu_needs_come_from_the_literal_command_list() {
         commands(json!([{"compute": {"pipeline": "@p"}}, {"render": {"pipeline": "@q"}}, {"copy": {}}, {"compute": {}}])),
         vec![compute(), render()]
     );
-    assert_eq!(commands(json!([{"copy": {}}, {"clear": {}}, {"timestamp": {}}])), Vec::new(), "other commands need nothing");
+    assert_eq!(commands(json!([{"copy": {}}, {"clear": {}}, {"timestamp": {}}, {"write": {}}])), Vec::new(), "other commands need nothing");
+    assert_eq!(
+        commands(json!([{"write": {}}, {"compute": {}}, {"read": {}}, {"read": {}}])),
+        vec![compute(), OsRequirement::Gpu { kind: GpuKind::Readback }],
+        "a read needs readback, once"
+    );
     assert_eq!(commands(json!([])), Vec::new());
     assert_eq!(commands(json!([{"compute": {}, "render": {}}])), Vec::new(), "an entry with two keys is not a command");
     assert_eq!(commands(json!("@entity.commands")), Vec::new(), "control: a non-literal list gives no requirement");
@@ -2253,7 +2258,6 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
         "gpu/shader-create",
         "gpu/pipeline-create",
         "gpu/bind-group-create",
-        "gpu/write",
         "gpu/release",
     ];
     expected.sort_unstable();

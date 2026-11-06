@@ -231,6 +231,8 @@ pub(super) fn gpu_need(args: &[SExpression], access: GpuKind, commands: Option<u
             GpuKind::Compute
         } else if object.keys().any(|k| k == "render") {
             GpuKind::Render
+        } else if object.keys().any(|k| k == "read") {
+            GpuKind::Readback
         } else {
             continue;
         };

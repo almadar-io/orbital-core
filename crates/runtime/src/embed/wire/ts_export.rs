@@ -137,6 +137,7 @@ fn collect_all(cfg: &Config) -> Collect<'_> {
     collect.visit::<FoldedNextWire>();
     collect.visit::<ResolveProgressWire>();
     collect.visit::<IoReplyWire>();
+    collect.visit::<crate::embed::HeldGpuCompletion>();
     collect.visit::<EventRequest>();
     collect.visit::<EventResponse>();
     collect.visit::<QueryCapabilities>();
@@ -1050,6 +1051,8 @@ const GUARDED: &[&str] = &[
     "FoldedNextWire",
     "ResolveProgressWire",
     "IoReplyWire",
+    "IoAnswerWire",
+    "HeldGpuCompletion",
     "EventRequest",
     "EventResponse",
     "IoRequestWire",
@@ -1166,6 +1169,7 @@ fn every_wire_type_is_declared() {
         "IoRequestWire",
         "IoReplyWire",
         "IoAnswerWire",
+        "HeldGpuCompletion",
         "CallerWire",
         "CallSiteWire",
         "Envelope",

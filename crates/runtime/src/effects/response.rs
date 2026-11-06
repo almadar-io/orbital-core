@@ -233,6 +233,10 @@ pub struct EventRequest {
     /// is a response carrying only `frames`, a snapshot unless the client is current (EXEC-DIST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames_since: Option<u64>,
+    /// The payload is one the server holds under this ticket: a deferred `gpu/` completion whose bytes never left the
+    /// kernel's memory (`answerGpu`). The server puts it in place of `payload` when the request starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_payload: Option<u64>,
 }
 
 /// The option keys of a `program/dispatch` event request that become request fields as they are named.

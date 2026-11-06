@@ -631,7 +631,7 @@ impl RuntimeKernel {
         self.mem_view.clone()
     }
 
-    /// The bytes of the block a live Borrow lends, as the running step sees them, for an `ffi/call` pointer argument or a `gpu/write` payload;
+    /// The bytes of the block a live Borrow lends, as the running step sees them, for an `ffi/call` pointer argument or a `gpu/submit` write's data;
     /// `exclusive` demands an exclusive borrow (a `mutptr`).
     pub(super) fn borrow_bytes(&self, borrow: &Value, exclusive: bool) -> Result<Vec<u8>, OsError> {
         let id = handle(Some(borrow), BORROW)?;

@@ -424,6 +424,14 @@ fn text_list(map: &ValueMap, key: &str) -> Result<(), OsError> {
     }
 }
 
+/// `length` bytes at `offset` fit in `total`.
+fn within(offset: u64, length: u64, total: u64) -> Result<(), OsError> {
+    match offset.checked_add(length) {
+        Some(end) if end <= total => Ok(()),
+        _ => Err(invalid(format!("the range goes beyond the buffer's {total} bytes"))),
+    }
+}
+
 fn natural(map: &ValueMap, key: &str) -> Result<u64, OsError> {
     non_negative(map.get(key), key)
 }
@@ -470,6 +478,7 @@ fn texture_bytes(width: u64, height: u64, depth: u64, mips: u64, texel: u64) -> 
 
 /// The handle arguments of one device, each checked live and on that device.
 struct Scope<'a> {
+    kernel: &'a RuntimeKernel,
     table: &'a GpuTable,
     device: i64,
 }
@@ -484,6 +493,32 @@ impl Scope<'_> {
             )));
         }
         Ok(Value::Int(id))
+    }
+
+    fn owned(&self, id: i64, entry: &HandleEntry) -> Result<(), OsError> {
+        if entry.device != self.device {
+            return Err(invalid(format!(
+                "the {} handle {id} belongs to another device",
+                entry.kind
+            )));
+        }
+        Ok(())
+    }
+
+    /// A write's bytes: bytes pass through as they are, a Borrow lends its block's bytes, base64 text is decoded.
+    fn data(&self, value: Option<&Value>) -> Result<Value, OsError> {
+        Ok(match value {
+            Some(bytes @ Value::Bytes(_)) => bytes.clone(),
+            Some(borrow) if borrow.is_sealed_as("Borrow") => {
+                Value::bytes(self.kernel.borrow_bytes(borrow, false)?)
+            }
+            Some(data) => Value::bytes(
+                data.bytes_view()
+                    .map_err(|e| invalid(format!("the data must be bytes or a Borrow: {e}")))?
+                    .into_owned(),
+            ),
+            None => return Err(invalid("a write command needs `data`")),
+        })
     }
 
     fn ids(&self, value: Option<&Value>, what: &str, kind: &'static str) -> Result<Value, OsError> {
@@ -505,12 +540,63 @@ impl Scope<'_> {
         let mut entries = map.iter();
         let (Some((name, body)), None) = (entries.next(), entries.next()) else {
             return Err(invalid(
-                "a gpu command holds exactly one of compute, render, copy, clear or timestamp",
+                "a gpu command holds exactly one of write, compute, render, copy, clear, timestamp or read",
             ));
         };
         let buffer_or_texture = [GPU_BUFFER, GPU_TEXTURE];
         let (need, inner) =
             match name.as_str() {
+                "write" => {
+                    let body = record(
+                        Some(body),
+                        "a write command",
+                        &["data"],
+                        &["buffer", "texture", "offset"],
+                    )?;
+                    let data = self.data(body.get("data"))?;
+                    let length = data.as_bytes().map_or(0, <[u8]>::len) as u64;
+                    let mut fields = ValueMap::default();
+                    match (body.get("buffer"), body.get("texture")) {
+                        (Some(buffer), None) => {
+                            let (id, entry) = self.table.handle(Some(buffer), GPU_BUFFER)?;
+                            self.owned(id, entry)?;
+                            let offset = optional_natural(body, "offset")?.unwrap_or(0);
+                            within(offset, length, entry.bytes)?;
+                            fields.insert("buffer".into(), Value::Int(id));
+                            fields.insert("offset".into(), Value::Int(as_int64(offset)?));
+                        }
+                        (None, Some(texture)) => {
+                            if body.get("offset").is_some() {
+                                return Err(invalid("a texture write carries the whole texture and takes no `offset`"));
+                            }
+                            fields.insert("texture".into(), self.id(Some(texture), &[GPU_TEXTURE])?);
+                        }
+                        _ => return Err(invalid("a write command names exactly one of `buffer` or `texture`")),
+                    }
+                    fields.insert("data".into(), data);
+                    (None, fields)
+                }
+                "read" => {
+                    let body = record(Some(body), "a read command", &["buffer"], &["offset", "length"])?;
+                    let (id, entry) = self.table.handle(body.get("buffer"), GPU_BUFFER)?;
+                    self.owned(id, entry)?;
+                    let offset = optional_natural(body, "offset")?.unwrap_or(0);
+                    let length = match optional_natural(body, "length")? {
+                        Some(length) => length,
+                        None => entry.bytes.checked_sub(offset).ok_or_else(|| {
+                            invalid(format!("the offset is past the buffer's {} bytes", entry.bytes))
+                        })?,
+                    };
+                    within(offset, length, entry.bytes)?;
+                    let fields: ValueMap = [
+                        ("buffer".into(), Value::Int(id)),
+                        ("offset".into(), Value::Int(as_int64(offset)?)),
+                        ("length".into(), Value::Int(as_int64(length)?)),
+                    ]
+                    .into_iter()
+                    .collect();
+                    (Some(GpuKind::Readback), fields)
+                }
                 "compute" => {
                     let body = record(
                         Some(body),
@@ -646,7 +732,7 @@ impl Scope<'_> {
                     (None, fields)
                 }
                 _ => return Err(invalid(
-                    "a gpu command holds exactly one of compute, render, copy, clear or timestamp",
+                    "a gpu command holds exactly one of write, compute, render, copy, clear, timestamp or read",
                 )),
             };
         let command: ValueMap = [(name.as_str().into(), Value::object(inner))]
@@ -799,7 +885,7 @@ impl RuntimeKernel {
             | OsOp::GpuShaderCreate
             | OsOp::GpuPipelineCreate
             | OsOp::GpuSubmit => 2,
-            OsOp::GpuBindGroupCreate | OsOp::GpuWrite | OsOp::GpuRead => 3,
+            OsOp::GpuBindGroupCreate => 3,
             _ => return Err(refuse(OsErrorKind::Unsupported, "not a gpu op")),
         };
         if args.len() != max {
@@ -983,7 +1069,7 @@ impl RuntimeKernel {
                 text(desc, "entry")?;
                 optional_text(desc, "fragment", &[])?;
                 text_list(desc, "targets")?;
-                let shader = Scope { table, device }.id(desc.get("shader"), &[GPU_SHADER])?;
+                let shader = Scope { kernel: self, table, device }.id(desc.get("shader"), &[GPU_SHADER])?;
                 let mut ask: ValueMap = desc.clone();
                 ask.insert("shader".into(), shader);
                 let minted = Minted::Pipeline {
@@ -1001,7 +1087,7 @@ impl RuntimeKernel {
                 let (pipeline, entry) = table.handle(args.first(), GPU_PIPELINE)?;
                 let device = entry.device;
                 let group = natural_value(args.get(1), "the group")?;
-                let scope = Scope { table, device };
+                let scope = Scope { kernel: self, table, device };
                 let entries = args[2]
                     .as_array()
                     .ok_or_else(|| invalid("the entries must be a list"))?;
@@ -1052,30 +1138,12 @@ impl RuntimeKernel {
                     Minted::BindGroup,
                 ))
             }
-            OsOp::GpuWrite => {
-                let (target, _) = table.handle_of_any(args.first(), &[GPU_BUFFER, GPU_TEXTURE])?;
-                let offset = natural_value(args.get(1), "the offset")?;
-                let data = match &args[2] {
-                    bytes @ Value::Bytes(_) => bytes.clone(),
-                    borrow if borrow.is_sealed_as("Borrow") => {
-                        Value::bytes(self.borrow_bytes(borrow, false)?)
-                    }
-                    data => Value::bytes(
-                        data.bytes_view()
-                            .map_err(|e| {
-                                invalid(format!("the data must be bytes or a Borrow: {e}"))
-                            })?
-                            .into_owned(),
-                    ),
-                };
-                Ok(plain(vec![Value::Int(target), offset, data]))
-            }
             OsOp::GpuSubmit => {
                 let (device, _) = table.device_handle(args.first())?;
                 let commands = args[1]
                     .as_array()
                     .ok_or_else(|| invalid("the commands must be a list"))?;
-                let scope = Scope { table, device };
+                let scope = Scope { kernel: self, table, device };
                 let mut resolved = Vec::with_capacity(commands.len());
                 let mut needs: Vec<GpuKind> = Vec::new();
                 for command in commands {
@@ -1089,26 +1157,6 @@ impl RuntimeKernel {
                     self.gpu_granted(orbital, need)?;
                 }
                 Ok(plain(vec![Value::Int(device), Value::array(resolved)]))
-            }
-            OsOp::GpuRead => {
-                self.gpu_granted(orbital, GpuKind::Readback)?;
-                let (buffer, entry) = table.handle(args.first(), GPU_BUFFER)?;
-                let offset = non_negative(args.get(1), "the offset")?;
-                let length = non_negative(args.get(2), "the length")?;
-                match offset.checked_add(length) {
-                    Some(end) if end <= entry.bytes => {}
-                    _ => {
-                        return Err(invalid(format!(
-                            "the range goes beyond the buffer's {} bytes",
-                            entry.bytes
-                        )))
-                    }
-                }
-                Ok(plain(vec![
-                    Value::Int(buffer),
-                    Value::Int(as_int64(offset)?),
-                    Value::Int(as_int64(length)?),
-                ]))
             }
             _ => Err(refuse(OsErrorKind::Unsupported, "not a gpu op")),
         }

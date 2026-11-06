@@ -208,7 +208,7 @@ fn defer(
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         OsOp::StdinRead => process::stdin_later(args, key, site, host),
         OsOp::FfiCall => ffi::later(op, args, key, site, host),
-        OsOp::GpuDeviceOpen | OsOp::GpuSubmit | OsOp::GpuRead => gpu::later(op, args, key, site, host),
+        OsOp::GpuDeviceOpen | OsOp::GpuSubmit => gpu::later(op, args, key, site, host),
         _ if family_of(op) == OsFamily::Fs => fs::later(op, args, key, site, host),
         _ => return None,
     })
@@ -337,9 +337,7 @@ mod tests {
         ("gpu/shader-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("gpu/pipeline-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("gpu/bind-group-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
-        ("gpu/write", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("gpu/submit", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
-        ("gpu/read", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("gpu/release", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("os/watch-files", "a stream the host does not implement (G-ORB-307)"),
         ("os/watch-process", "a stream the host does not implement (G-ORB-307)"),
@@ -888,7 +886,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 31, 5, 4, 12, 2, 1, 13]);
+        assert_eq!(counts, [32, 18, 12, 31, 5, 4, 12, 2, 1, 11]);
     }
 
     #[test]

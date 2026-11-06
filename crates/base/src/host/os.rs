@@ -54,7 +54,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         QueueFront | QueueBack => OsFamily::Kernel,
         FfiCall => OsFamily::Ffi,
         GpuDeviceOpen | GpuDeviceClose | GpuBufferCreate | GpuTextureCreate | GpuSamplerCreate | GpuQueryCreate
-        | GpuShaderCreate | GpuPipelineCreate | GpuBindGroupCreate | GpuWrite | GpuSubmit | GpuRead | GpuRelease => OsFamily::Gpu,
+        | GpuShaderCreate | GpuPipelineCreate | GpuBindGroupCreate | GpuSubmit | GpuRelease => OsFamily::Gpu,
     }
 }
 
@@ -216,9 +216,7 @@ os_ops! {
     GpuShaderCreate => ("gpu/shader-create", Single),
     GpuPipelineCreate => ("gpu/pipeline-create", Single),
     GpuBindGroupCreate => ("gpu/bind-group-create", Single),
-    GpuWrite => ("gpu/write", Single),
     GpuSubmit => ("gpu/submit", Single),
-    GpuRead => ("gpu/read", Single),
     GpuRelease => ("gpu/release", Single),
 }
 
@@ -289,7 +287,6 @@ impl OsOp {
                     | OsOp::FfiCall
                     | OsOp::GpuDeviceOpen
                     | OsOp::GpuSubmit
-                    | OsOp::GpuRead
             )
     }
 }
@@ -557,7 +554,7 @@ mod tests {
             );
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 130);
+        assert_eq!(OsOp::ALL.len(), 128);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -648,8 +645,7 @@ mod tests {
                 OsOp::IrqWait,
                 OsOp::FfiCall,
                 OsOp::GpuDeviceOpen,
-                OsOp::GpuSubmit,
-                OsOp::GpuRead
+                OsOp::GpuSubmit
             ]
         );
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
@@ -704,7 +700,7 @@ mod tests {
     }
 
     #[test]
-    fn the_gpu_family_is_exactly_the_thirteen_host_answered_ops() {
+    fn the_gpu_family_is_exactly_the_eleven_host_answered_ops() {
         let gpu: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Gpu).map(|op| op.name()).collect();
         assert_eq!(
             gpu,
@@ -718,16 +714,14 @@ mod tests {
                 "gpu/shader-create",
                 "gpu/pipeline-create",
                 "gpu/bind-group-create",
-                "gpu/write",
                 "gpu/submit",
-                "gpu/read",
                 "gpu/release"
             ]
         );
-        for op in [OsOp::GpuDeviceOpen, OsOp::GpuSubmit, OsOp::GpuRead] {
+        for op in [OsOp::GpuDeviceOpen, OsOp::GpuSubmit] {
             assert!(op.defers_completion(), "{}", op.name());
         }
-        for op in [OsOp::GpuDeviceClose, OsOp::GpuBufferCreate, OsOp::GpuWrite, OsOp::GpuRelease] {
+        for op in [OsOp::GpuDeviceClose, OsOp::GpuBufferCreate, OsOp::GpuRelease] {
             assert!(!op.defers_completion(), "{}", op.name());
         }
         assert!(OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Gpu).all(|op| {

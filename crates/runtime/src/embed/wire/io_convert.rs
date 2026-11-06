@@ -120,6 +120,14 @@ impl From<IoRequestWire> for IoRequest {
             IoRequestWire::Random { bytes } => Self::Random { bytes },
             IoRequestWire::Clock => Self::Clock,
             IoRequestWire::Sealed { op, args } => Self::Sealed { op, args },
+            IoRequestWire::Gpu { op, key, .. } => Self::Os {
+                op,
+                args: Vec::new(),
+                key,
+                site: None,
+                principal: None,
+                orbital: None,
+            },
             IoRequestWire::Os { op, args, key, site, principal, orbital } => Self::Os {
                 op,
                 args,
@@ -500,6 +508,10 @@ impl From<IoAnswerWire> for IoAnswer {
                 let result: Result<Value, OsError> = result.into();
                 Self::Os(result.map(Secret::new))
             }
+            IoAnswerWire::GpuHeld { ticket } => Self::Os(Err(OsError::new(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                format!("gpu answer {ticket} reached a kernel that does not hold it"),
+            ))),
             IoAnswerWire::CredentialStatus { result } => Self::CredentialStatus(result.into()),
             IoAnswerWire::CredentialForget { result } => Self::CredentialForget(result.into()),
             IoAnswerWire::CredentialConnect { result } => Self::CredentialConnect(result.into()),

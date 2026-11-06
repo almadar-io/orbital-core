@@ -125,6 +125,15 @@ pub enum IoRequestWire {
     /// Answered by the kernel itself; a host never receives it.
     #[serde(rename_all = "camelCase")]
     Sealed { op: String, args: Vec<Value> },
+    /// A `gpu/` ask the server holds, arguments and all, for the GPU answerer the host installed in it: the host answers
+    /// it with `answerGpu(ticket)` and never sees its bytes.
+    #[serde(rename_all = "camelCase")]
+    Gpu {
+        ticket: u64,
+        op: OsOp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     #[serde(rename_all = "camelCase")]
     Os {
         op: OsOp,
@@ -417,6 +426,10 @@ pub enum IoAnswerWire {
     },
     Os {
         result: Settled<Value, OsError>,
+    },
+    /// The answer to a held `gpu/` ask, which the server holds under `ticket` (`answerGpu`).
+    GpuHeld {
+        ticket: u64,
     },
     CredentialStatus {
         result: Settled<CredentialStanding, String>,
