@@ -1056,6 +1056,7 @@ impl RuntimeKernel {
                 let (target, _) = table.handle_of_any(args.first(), &[GPU_BUFFER, GPU_TEXTURE])?;
                 let offset = natural_value(args.get(1), "the offset")?;
                 let data = match &args[2] {
+                    bytes @ Value::Bytes(_) => bytes.clone(),
                     borrow if borrow.is_sealed_as("Borrow") => {
                         Value::bytes(self.borrow_bytes(borrow, false)?)
                     }

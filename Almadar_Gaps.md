@@ -48,7 +48,9 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-125** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
 
-Next code: `G-ORBITAL-CORE-137`
+Next code: `G-ORBITAL-CORE-138`
+
+- **G-ORBITAL-CORE-137** [mechanical] — An `orb` that knows an os operator the installed std operator table lacks panics instead of failing with a typed language-data error: `OsOp::min_args`/`max_args` (`base/src/host/os.rs` `table_entry`) `panic!("the operator table declares no `gpu/device-open`")`. Seen 2026-11-06 running a gpu program from a directory whose resolved std predates P-024 (the worktree orb with the main checkout's std). `try_table_entry` already returns `LanguageDataError`; the arity callers should use it, and the language-data range check should refuse a std whose table is older than the binary's operator set. Repro: run any `gpu/*` program with an orb newer than the std it resolves. Prevention rung: (3) the verifiers (a twin test of a binary against an older table). Root cause: one-off.
 
 - **G-ORBITAL-CORE-133** [mechanical] — `orb validate` accepts an entity field default that does not fit the declared type: `birthDate : datetime = ""` and `age : number = "abc"` validate 0/0, then a served client kernel refuses the singleton row built from those defaults ("store row … does not fit its declaration: FormEntry.birthDate is string"), so the trait fails to start on the web and desktop (std-form-advanced, fixed in std 2026-11-06). Owner: orbital-core shared field/value type check (used by both orbital-lolo and orbital-compiler). Prevention rung: (1)/(2) the type check on declared defaults. Root cause: A2.
 

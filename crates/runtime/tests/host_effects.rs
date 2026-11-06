@@ -4037,6 +4037,12 @@ mod gpu_effects {
         let (op, args) = session.fake.asked.last().unwrap();
         assert_eq!(*op, OsOp::GpuWrite);
         assert_eq!(args[2].as_bytes(), Some(&[7u8][..]));
+        let big = Value::bytes(vec![5u8; 1 << 20]);
+        let sent = big.as_bytes().map(<[u8]>::as_ptr);
+        session.put("data", big);
+        session.ok("WRITE");
+        let (_, args) = session.fake.asked.last().unwrap();
+        assert_eq!(args[2].as_bytes().map(<[u8]>::as_ptr), sent, "a bytes payload reaches the host as the same buffer, never a copy");
         session.put("data", Value::string("CAk="));
         session.ok("WRITE");
         let (_, args) = session.fake.asked.last().unwrap();
