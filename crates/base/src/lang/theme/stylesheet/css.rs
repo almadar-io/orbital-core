@@ -79,25 +79,27 @@ pub fn theme_font_imports(themes: &[ThemeDefinition]) -> Vec<String> {
     urls
 }
 
-/// A program's `themes.css`: the declared themes, or the installed default preset when it declares none,
-/// with their font imports first. Every host paints this one stylesheet.
+/// The themes a program paints: the declared ones, or the installed default preset when it declares none.
+/// Its `themes.css` and the client's theme list are both these, so the client applies a theme the sheet defines.
+pub fn program_themes(declared: &[ThemeDefinition]) -> Vec<ThemeDefinition> {
+    if !declared.is_empty() {
+        return declared.to_vec();
+    }
+    crate::theme::ThemePresets::installed()
+        .get(crate::theme::DEFAULT_THEME_BASE)
+        .cloned()
+        .into_iter()
+        .collect()
+}
+
+/// A program's `themes.css`: [`program_themes`] with their font imports first. Every host paints this one stylesheet.
 pub fn program_themes_css(declared: &[ThemeDefinition]) -> String {
-    let default_preset;
-    let styled: &[ThemeDefinition] = if declared.is_empty() {
-        default_preset = crate::theme::ThemePresets::installed()
-            .get(crate::theme::DEFAULT_THEME_BASE)
-            .cloned()
-            .into_iter()
-            .collect::<Vec<_>>();
-        &default_preset
-    } else {
-        declared
-    };
+    let styled = program_themes(declared);
     let mut css = String::new();
-    for url in theme_font_imports(styled) {
+    for url in theme_font_imports(&styled) {
         css.push_str(&format!("@import url(\"{url}\");\n"));
     }
-    for theme in styled {
+    for theme in &styled {
         css.push_str(&generate_theme_css(theme));
         css.push('\n');
     }

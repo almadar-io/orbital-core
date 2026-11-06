@@ -21,7 +21,7 @@ mod emitters;
 mod tokens;
 
 pub use config::{client_themes, ClientTheme};
-pub use css::{generate_theme_css, program_themes_css, theme_font_imports};
+pub use css::{generate_theme_css, program_themes, program_themes_css, theme_font_imports};
 
 #[cfg(test)]
 mod tests {
