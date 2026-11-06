@@ -90,6 +90,12 @@ jobs:
             --binary "target/${{ matrix.target }}/release/${{ inputs.name }}${{ matrix.ext }}" \
             --platform ${{ matrix.name }} --version "${GITHUB_REF_NAME#v}" --repo . --out dist/npm \
             "${extra[@]}"
+      # A shell reads the language data (@almadar/core) and std from what is installed (node_modules, then the ~/.orb store); the release
+      # set's packages are the ones under next until the release smoke promotes the set.
+      - if: inputs.kind == 'shell'
+        name: Install the release set's language data
+        shell: bash
+        run: npm install --prefix "$HOME/.orb" --no-save --no-package-lock @almadar/core@next @almadar/std@next
       - if: inputs.kind == 'shell'
         name: Generate from the packaged layout (G-ORB-240)
         shell: bash

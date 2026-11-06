@@ -50,7 +50,8 @@ function write(file, value) {
 function copyDir(from, to) {
   fs.cpSync(from, to, {
     recursive: true,
-    filter: (p) => !['node_modules', '.git', 'target', '.turbo'].includes(path.basename(p)),
+    // Repo-only dev entries never ship; the scaffold generator skips them too (base/src/backend/shell.rs).
+    filter: (p) => !['node_modules', '.git', 'target', '.turbo', '.gitmodules', '.github', '.githooks', '.vscode', '.idea', '.npmignore'].includes(path.basename(p)),
   });
 }
 
