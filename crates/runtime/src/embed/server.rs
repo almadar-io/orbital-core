@@ -174,6 +174,28 @@ pub struct HeldGpuCompletion {
     pub held_payload: u64,
 }
 
+/// The completion of the held ask `ask`: the route event `outcome` fires on its call site, its payload kept by `hold`
+/// under the ticket it returns, so the payload never crosses to the host. `None` when the ask has no route for this
+/// outcome (EXEC-QUEUE-10). The server and the client role hold their gpu asks through it.
+pub(crate) fn held_completion(
+    kernel: &RuntimeKernel,
+    ask: &HeldGpuAsk,
+    outcome: Result<Value, OsError>,
+    hold: impl FnOnce(Value) -> u64,
+) -> Option<HeldGpuCompletion> {
+    let (wire, key) = (ask.site.clone()?, ask.key.as_deref()?);
+    let entity_id = wire.entity_id.clone();
+    let site = CallSite::from(wire);
+    let (event, payload, _) = kernel.completion_route(&site, key, outcome)?;
+    Some(HeldGpuCompletion {
+        orbital: site.orbital.clone().or_else(|| ask.orbital.clone()),
+        trait_name: site.trait_name,
+        entity_id,
+        event,
+        held_payload: hold(payload),
+    })
+}
+
 #[derive(Debug, Default)]
 struct HeldGpu {
     on: bool,
@@ -1171,18 +1193,10 @@ impl EmbeddedServer {
     /// A held deferring ask finished: the route event its outcome fires, its payload held for the request the host
     /// starts. `None` when the ask has no route for this outcome (EXEC-QUEUE-10).
     pub fn gpu_completion(&self, ask: &HeldGpuAsk, outcome: Result<Value, OsError>) -> Option<HeldGpuCompletion> {
-        let (wire, key) = (ask.site.clone()?, ask.key.as_deref()?);
-        let entity_id = wire.entity_id.clone();
-        let site = CallSite::from(wire);
-        let (event, payload, _) = self.kernel.completion_route(&site, key, outcome)?;
-        let held_payload = self.next_id();
-        self.held.lock().payloads.insert(held_payload, payload);
-        Some(HeldGpuCompletion {
-            orbital: site.orbital.clone().or_else(|| ask.orbital.clone()),
-            trait_name: site.trait_name,
-            entity_id,
-            event,
-            held_payload,
+        held_completion(&self.kernel, ask, outcome, |payload| {
+            let held_payload = self.next_id();
+            self.held.lock().payloads.insert(held_payload, payload);
+            held_payload
         })
     }
 

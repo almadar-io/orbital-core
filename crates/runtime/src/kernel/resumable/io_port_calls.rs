@@ -351,28 +351,39 @@ impl IoPort {
     /// One `os/<op>` ask, journaled. A streaming op, and a keyed op that defers its completion under a declared
     /// route, carries the call site its events dispatch to; the host may answer the latter `ServiceDeferred`.
     pub(crate) fn os(&self, op: OsOp, args: &[Value], key: Option<&str>, principal: Option<&str>, orbital: Option<&str>) -> Result<Value, OsError> {
-        match self.ask(|| IoRequest::Os {
+        let request = || IoRequest::Os {
             op,
             args: args.to_vec(),
             key: key.map(str::to_string),
             site: self.os_site(op, key),
             principal: principal.map(str::to_string),
             orbital: orbital.map(str::to_string),
-        }) {
-            Asked::Direct => Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
-            Asked::Answer(IoAnswer::Os(out)) => out
+        };
+        let answer = match self.ask(request) {
+            Asked::Direct => {
+                let direct = self.direct_os.read().clone();
+                match direct.and_then(|direct| direct.ask(request(), self.site.lock().clone())) {
+                    Some(answer) => answer,
+                    None => return Err(OsError::new(OsErrorKind::Unsupported, NO_PORT_HOST)),
+                }
+            }
+            Asked::Answer(answer) => answer,
+            Asked::Withheld => return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
+        };
+        match answer {
+            IoAnswer::Os(out) => out
                 .map(Secret::into_inner)
                 .and_then(|answer| orbital_core_base::os::answer_with_declared_bytes(op, answer)),
-            Asked::Answer(IoAnswer::ServiceDeferred) => {
+            IoAnswer::ServiceDeferred => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
                 *self.deferred_call.lock() = Some(DeferredCall { operator: op.name().to_string(), args: args.to_vec() });
                 Ok(Value::Null)
             }
-            Asked::Answer(IoAnswer::ServiceCancelled) => {
+            IoAnswer::ServiceCancelled => {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(OsError::new(OsErrorKind::Closed, CALL_CANCELLED))
             }
-            Asked::Answer(_) | Asked::Withheld => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
+            _ => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
         }
     }
 

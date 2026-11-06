@@ -9,6 +9,13 @@ pub(crate) struct DeferredCall {
     pub(crate) args: Vec<Value>,
 }
 
+/// Answers an `os/` ask a kernel makes with no journal in flight (a client-role kernel, whose dispatch never awaits its
+/// host), given the call site of the effect making it. `None` leaves the ask unanswered: the kernel reports that no host
+/// answers it.
+pub trait DirectOs: Send + Sync {
+    fn ask(&self, request: IoRequest, site: Option<CallSite>) -> Option<IoAnswer>;
+}
+
 /// The one door the kernel's I/O goes through.
 pub(crate) struct IoPort {
     pub(super) source: Arc<dyn EntitySource>,
@@ -47,6 +54,8 @@ pub(crate) struct IoPort {
     pub(super) entropy: Arc<dyn Fn() -> Result<[u8; 32], String> + Send + Sync>,
     /// Who the step in flight asks for, read when a keyed ask is handed to the host ([`Self::host_key`]).
     pub(super) call_scope: Option<CallScope>,
+    /// Answers the `os/` asks made with no journal in flight ([`DirectOs`]).
+    pub(super) direct_os: RwLock<Option<Arc<dyn DirectOs>>>,
 }
 
 /// The kernel's view of the step in flight a keyed ask belongs to: the session this thread entered and the trait and
@@ -97,7 +106,13 @@ impl IoPort {
             store_seq: std::sync::atomic::AtomicU64::new(0),
             entropy: Arc::new(fresh_entropy),
             call_scope: None,
+            direct_os: RwLock::new(None),
         }
+    }
+
+    /// Answer the `os/` asks made with no journal in flight through `direct`; `None` leaves them unanswered.
+    pub(crate) fn set_direct_os(&self, direct: Option<Arc<dyn DirectOs>>) {
+        *self.direct_os.write() = direct;
     }
 
     /// Keyed asks name the kernel's step in flight to the host.

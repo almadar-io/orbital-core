@@ -186,8 +186,9 @@ impl GpuTable {
 struct GpuInner {
     committed: GpuTable,
     staged: Option<GpuTable>,
-    /// A keyed `gpu/device-open` the host deferred: the `maxBytes` its grant gave, until the completion mints the device.
-    pending: BTreeMap<String, u64>,
+    /// A keyed ask the host deferred, by host key: its op and what its answer does to the table once the completion
+    /// brings it (a device-open mints the device, a create mints its handle, a release or close takes hold).
+    pending: BTreeMap<String, (OsOp, After)>,
 }
 
 /// The kernel's gpu state: the committed table, the running step's staged copy and the deferred opens, behind one lock
@@ -217,26 +218,27 @@ impl GpuState {
         }
     }
 
-    fn defer_open(&self, key: &str, max_bytes: u64) {
-        self.inner.lock().pending.insert(key.to_string(), max_bytes);
+    fn defer(&self, key: &str, op: OsOp, after: After) {
+        self.inner.lock().pending.insert(key.to_string(), (op, after));
     }
 
-    fn take_open(&self, key: &str) -> Option<u64> {
+    fn take_deferred(&self, key: &str) -> Option<(OsOp, After)> {
         self.inner.lock().pending.remove(key)
     }
 
-    /// Register a device a completion opened, in the committed table and in the running step's staged one.
-    fn register_device(&self, id: i64, max_bytes: u64) -> Result<(), OsError> {
+    /// Apply a completion's change in the committed table and in the running step's staged one.
+    fn completed(&self, change: impl Fn(&mut GpuTable) -> Result<(), OsError>) -> Result<(), OsError> {
         let mut inner = self.inner.lock();
-        inner.committed.add_device(id, max_bytes)?;
+        change(&mut inner.committed)?;
         if let Some(staged) = inner.staged.as_mut() {
-            staged.add_device(id, max_bytes)?;
+            change(staged)?;
         }
         Ok(())
     }
 }
 
 /// What to do with the host's answer, decided before the ask.
+#[derive(Debug)]
 enum After {
     Nothing,
     Open {
@@ -256,6 +258,7 @@ enum After {
     },
 }
 
+#[derive(Debug)]
 enum Minted {
     Buffer {
         size: i64,
@@ -792,7 +795,7 @@ impl RuntimeKernel {
             let answer = self.io.os(op, &plan.ask, host_key, principal, orbital)?;
             let deferred =
                 answer.is_null() && self.io.peek_call_verdict() == Some(CallVerdict::Deferred);
-            self.gpu_answered(plan.after, answer, deferred, host_key)
+            self.gpu_answered(op, plan.after, answer, deferred, host_key)
         };
         Some(
             run().map_err(|error| {
@@ -803,14 +806,15 @@ impl RuntimeKernel {
 
     fn gpu_answered(
         &self,
+        op: OsOp,
         after: After,
         answer: Value,
         deferred: bool,
         host_key: Option<&str>,
     ) -> Result<Value, OsError> {
         if deferred {
-            if let (After::Open { max_bytes }, Some(key)) = (&after, host_key) {
-                self.gpu.defer_open(key, *max_bytes);
+            if let Some(key) = host_key {
+                self.gpu.defer(key, op, after);
             }
             return Ok(answer);
         }
@@ -843,25 +847,48 @@ impl RuntimeKernel {
         }
     }
 
-    /// The completion of a deferred `gpu/device-open` under host key `key`: the device is minted and registered. Any other
-    /// key's outcome is returned as it stands.
+    /// The completion of a deferred gpu ask under host key `key`: what its answer does to the table takes hold now (a
+    /// device-open mints and registers the device, a create mints its handle). Any other key's outcome is returned as it
+    /// stands.
     pub fn gpu_complete(
         &self,
         key: &str,
         outcome: Result<Value, OsError>,
     ) -> Result<Value, OsError> {
-        let Some(max_bytes) = self.gpu.take_open(key) else {
+        let Some((op, after)) = self.gpu.take_deferred(key) else {
             return outcome;
         };
-        let prefixed = |error: OsError| {
-            OsError::new(
-                error.kind,
-                format!("{}: {}", OsOp::GpuDeviceOpen.name(), error.message),
-            )
-        };
-        let (id, minted) = mint_device(&outcome?, max_bytes).map_err(prefixed)?;
-        self.gpu.register_device(id, max_bytes).map_err(prefixed)?;
-        Ok(minted)
+        let prefixed = |error: OsError| OsError::new(error.kind, format!("{}: {}", op.name(), error.message));
+        let answer = outcome?;
+        match after {
+            After::Nothing => Ok(answer),
+            After::Open { max_bytes } => {
+                let (id, minted) = mint_device(&answer, max_bytes).map_err(prefixed)?;
+                self.gpu.completed(|table| table.add_device(id, max_bytes)).map_err(prefixed)?;
+                Ok(minted)
+            }
+            After::Close { device } => {
+                self.gpu.completed(|table| {
+                    table.close_device(device);
+                    Ok(())
+                })?;
+                Ok(answer)
+            }
+            After::Release { id } => {
+                self.gpu.completed(|table| {
+                    table.release(id);
+                    Ok(())
+                })?;
+                Ok(answer)
+            }
+            After::Mint { field, device, bytes, minted } => {
+                let id = answered_id(&answer, field).map_err(prefixed)?;
+                self.gpu
+                    .completed(|table| table.add_handle(id, minted.kind(), device, bytes))
+                    .map_err(prefixed)?;
+                with_field(&answer, field, minted.value(id, device)).map_err(prefixed)
+            }
+        }
     }
 
     /// End the step: its gpu table changes take hold when `committed`, and are dropped otherwise.

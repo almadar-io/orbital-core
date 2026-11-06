@@ -4227,4 +4227,81 @@ mod gpu_effects {
         let failed = session.server.kernel().gpu_complete(key, Err(OsError::new(OsErrorKind::Io, "no adapter")));
         assert_eq!(failed.unwrap_err().kind, OsErrorKind::Io);
     }
+
+    fn client_with(grants: Json) -> orbital_core_runtime::embed::EmbeddedKernel {
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "osGrants": grants,
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                        { "from": "idle", "to": "idle", "event": "OPEN", "effects": [
+                            ["gpu/device-open", "@payload.desc", { "key": "h", "emit": { "success": "GOT", "failure": "BAD" } }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "GOT", "effects": [
+                            ["gpu/buffer-create", "@payload.device", { "size": 16, "usage": ["storage"] }, { "key": "b", "emit": { "success": "MADE", "failure": "BAD" } }]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "MADE", "effects": [["emit", "ECHO", { "buffer": "@payload.buffer" }]] },
+                        { "from": "idle", "to": "idle", "event": "BARE", "effects": [["gpu/device-open", "@payload.desc"]] },
+                        { "from": "idle", "to": "idle", "event": "BAD" }
+                    ] } }]
+            }]
+        }))
+        .unwrap();
+        orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap()
+    }
+
+    fn wire_emit(wire: &impl serde::Serialize, event: &str) -> Option<Json> {
+        let wire = serde_json::to_value(wire).unwrap();
+        wire["response"]["emittedEvents"].as_array()?.iter().find(|e| e["event"] == event).cloned()
+    }
+
+    #[test]
+    fn a_client_holding_gpu_asks_defers_each_in_order_and_dispatches_its_held_completion() {
+        let open = j(json!({ "desc": {} }));
+        let control = client_with(grants(1 << 20, &["open"]));
+        let unanswered = control.dispatch("Host", None, "OPEN", open.clone()).unwrap();
+        let bad = wire_emit(&unanswered, "BAD").expect("control: a client with no gpu answerer fails the ask now");
+        assert_eq!(bad["payload"]["kind"], "unsupported", "{bad}");
+        assert!(control.take_gpu_ask().is_none());
+
+        let client = client_with(grants(1 << 20, &["open"]));
+        client.hold_gpu();
+        let asked = client.dispatch("Host", None, "OPEN", open.clone()).unwrap();
+        assert!(wire_emit(&asked, "BAD").is_none() && wire_emit(&asked, "GOT").is_none(), "the ask is held, not answered");
+        let ask = client.take_gpu_ask().expect("held");
+        assert_eq!(ask.op, OsOp::GpuDeviceOpen);
+        assert!(client.take_gpu_ask().is_none(), "a held ask is taken once");
+
+        let opened = client.gpu_completion(&ask, Ok(device_answer())).expect("the success route");
+        assert_eq!((opened.event.as_str(), opened.trait_name.as_str()), ("GOT", "Host"));
+        client.dispatch_held("Host", opened.entity_id.as_deref(), &opened.event, opened.held_payload).unwrap();
+        let create = client.take_gpu_ask().expect("an op the native host answers inline is held as well");
+        assert_eq!(create.op, OsOp::GpuBufferCreate);
+        assert_eq!(create.args[0], Value::Int(1), "the host is asked with the device's plain id");
+
+        let made = client.gpu_completion(&create, Ok(record(vec![("buffer", Value::Int(2))]))).expect("the success route");
+        let echoed = client.dispatch_held("Host", made.entity_id.as_deref(), &made.event, made.held_payload).unwrap();
+        let echo = wire_emit(&echoed, "ECHO").expect("ECHO");
+        assert_eq!((echo["payload"]["buffer"]["id"].clone(), echo["payload"]["buffer"]["size"].clone()), (json!(2), json!(16)), "the completion minted the buffer: {echo}");
+        let again = client.dispatch_held("Host", made.entity_id.as_deref(), &made.event, made.held_payload);
+        assert!(again.unwrap_err().contains("no completion payload is held"), "a held payload is taken once");
+    }
+
+    #[test]
+    fn a_client_refuses_a_gpu_call_with_no_route_and_a_failed_completion_mints_nothing() {
+        let client = client_with(grants(1 << 20, &["open"]));
+        client.hold_gpu();
+        client.dispatch("Host", None, "BARE", j(json!({ "desc": {} }))).unwrap();
+        assert!(client.take_gpu_ask().is_none(), "an unrouted call has no completion to deliver, so it is refused, not held");
+
+        client.dispatch("Host", None, "OPEN", j(json!({ "desc": {} }))).unwrap();
+        let ask = client.take_gpu_ask().expect("held");
+        let failed = client.gpu_completion(&ask, Err(OsError::new(OsErrorKind::Io, "no adapter"))).expect("the failure route");
+        assert_eq!(failed.event, "BAD");
+        assert!(client.drop_held_payload(failed.held_payload));
+        assert!(!client.drop_held_payload(failed.held_payload), "a dropped payload is gone");
+    }
 }

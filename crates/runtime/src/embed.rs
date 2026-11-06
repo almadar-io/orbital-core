@@ -6,6 +6,7 @@
 use std::prelude::v1::*;
 
 pub mod eval_wire;
+mod client_gpu;
 mod fold_order;
 mod tick_relay;
 pub(crate) mod ticket_queue;
@@ -132,6 +133,8 @@ pub struct EmbeddedKernel {
     /// The page the host just left and the traits it had entered: a re-enter under the same key before any other page is
     /// that mount continuing (a strict-mode remount), not a new one.
     departed: Mutex<Option<(String, std::collections::BTreeMap<String, String>)>>,
+    /// The `gpu/` asks held for a host that installed a GPU answerer ([`Self::hold_gpu`]).
+    gpu: std::sync::Arc<client_gpu::ClientGpu>,
 }
 
 /// Parse the host's light/dark toggle.
@@ -168,6 +171,8 @@ impl EmbeddedKernel {
             .register_schema(schema)
             .map_err(EntryError::Register)?;
         let trait_owners = TraitOwners::from_kernel(&kernel);
+        let gpu = std::sync::Arc::new(client_gpu::ClientGpu::default());
+        kernel.set_direct_os(Some(gpu.clone() as std::sync::Arc<dyn crate::resumable::DirectOs>));
         Ok(Self {
             kernel,
             entities,
@@ -180,6 +185,7 @@ impl EmbeddedKernel {
             entered: Mutex::new(std::collections::BTreeMap::new()),
             mount_key: Mutex::new(None),
             departed: Mutex::new(None),
+            gpu,
         })
     }
 
@@ -301,6 +307,48 @@ impl EmbeddedKernel {
             )
             .map_err(|e| e.to_string())?;
         self.dispatch_wire(orbital, dispatch)
+    }
+
+    /// The host installed a GPU answerer: from now on every `gpu/` ask is held here in ask order and answered
+    /// `ServiceDeferred`; the host takes each ([`Self::take_gpu_ask`]), answers it, and dispatches its completion
+    /// ([`Self::gpu_completion`], [`Self::dispatch_held`]).
+    pub fn hold_gpu(&self) {
+        self.gpu.hold();
+    }
+
+    /// The oldest held `gpu/` ask, taken once.
+    pub fn take_gpu_ask(&self) -> Option<server::HeldGpuAsk> {
+        self.gpu.take_ask()
+    }
+
+    /// The route event a held ask's `outcome` fires, its payload held under the returned ticket; `None` when the ask
+    /// has no route for this outcome.
+    pub fn gpu_completion(
+        &self,
+        ask: &server::HeldGpuAsk,
+        outcome: Result<Value, orbital_core_base::os::OsError>,
+    ) -> Option<server::HeldGpuCompletion> {
+        self.gpu.completion(&self.kernel, ask, outcome)
+    }
+
+    /// [`Self::dispatch`] with the payload held under `ticket`, taken once.
+    pub fn dispatch_held(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event: &str,
+        ticket: u64,
+    ) -> Result<DispatchWire, String> {
+        let payload = self
+            .gpu
+            .take_payload(ticket)
+            .ok_or_else(|| format!("no completion payload is held as {ticket}"))?;
+        self.dispatch(trait_name, entity_id, event, payload)
+    }
+
+    /// Drop a held completion payload no dispatch will take; whether one was held.
+    pub fn drop_held_payload(&self, ticket: u64) -> bool {
+        self.gpu.take_payload(ticket).is_some()
     }
 
     /// The kernel's mounts for a host start on `side` (EXEC-ENDPOINT-3).

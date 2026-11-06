@@ -899,6 +899,12 @@ impl RuntimeKernel {
         &self.event_bus
     }
 
+    /// Answer the `os/` asks this kernel makes with no journal in flight (a client role's) through `direct`
+    /// ([`super::resumable::DirectOs`]); `None` leaves them unanswered.
+    pub fn set_direct_os(&self, direct: Option<Arc<dyn super::resumable::DirectOs>>) {
+        self.io.set_direct_os(direct);
+    }
+
     /// Declare what the host's query push-down honours for `entity_type`. A host that declares nothing is
     /// never sent a query: the kernel lists the table and runs the query itself.
     pub fn set_query_capabilities(&self, entity_type: &str, capabilities: QueryCapabilities) {

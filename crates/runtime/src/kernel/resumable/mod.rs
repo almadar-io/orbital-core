@@ -57,6 +57,7 @@ pub use continuation::{
 };
 pub use hosts::{BlockingHost, HostAnswered, PortHost};
 pub(crate) use io_port::{CallScope, DeferredCall, IoPort};
+pub use io_port::DirectOs;
 pub(crate) use io_port_calls::DeliverAsk;
 pub(crate) use ledger::{
     number_requests, Asks, EnsureIndexes, Exchange, ReadCache, StepEnd, StoreAsk, AWAITING_HOST,
