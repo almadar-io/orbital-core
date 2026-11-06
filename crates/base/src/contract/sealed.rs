@@ -19,8 +19,33 @@ pub const BLOCK: &str = "Block";
 /// A live hold `mem/borrow` took on a block: its id, the block's id and the mode (`shared` or `exclusive`).
 pub const BORROW: &str = "Borrow";
 
+/// A gpu device `gpu/device-open` opened: its id and the most bytes the grant lets it hold.
+pub const GPU_DEVICE: &str = "GpuDevice";
+
+/// A buffer `gpu/buffer-create` made: its id, the device's id and its size in bytes.
+pub const GPU_BUFFER: &str = "GpuBuffer";
+
+/// A texture `gpu/texture-create` made: its id, the device's id, its extent and format.
+pub const GPU_TEXTURE: &str = "GpuTexture";
+
+/// A sampler `gpu/sampler-create` made: its id and the device's id.
+pub const GPU_SAMPLER: &str = "GpuSampler";
+
+/// A shader module `gpu/shader-create` made: its id and the device's id.
+pub const GPU_SHADER: &str = "GpuShader";
+
+/// A pipeline `gpu/pipeline-create` made: its id, the device's id and its kind (`compute` or `render`).
+pub const GPU_PIPELINE: &str = "GpuPipeline";
+
+/// A bind group `gpu/bind-group-create` made: its id and the device's id.
+pub const GPU_BIND_GROUP: &str = "GpuBindGroup";
+
+/// A timestamp query set `gpu/query-create` made: its id, the device's id and its query count.
+pub const GPU_QUERY_SET: &str = "GpuQuerySet";
+
 /// Every sealed type name.
-pub const SEALED_TYPES: [&str; 4] = [VERIFIED, ARENA, BLOCK, BORROW];
+pub const SEALED_TYPES: [&str; 12] =
+    [VERIFIED, ARENA, BLOCK, BORROW, GPU_DEVICE, GPU_BUFFER, GPU_TEXTURE, GPU_SAMPLER, GPU_SHADER, GPU_PIPELINE, GPU_BIND_GROUP, GPU_QUERY_SET];
 
 pub fn is_sealed_type(name: &str) -> bool {
     SEALED_TYPES.contains(&name)
@@ -79,6 +104,36 @@ pub fn sealed_record(name: &str) -> Option<OirType> {
             OirField::new("block", OirType::Integer),
             OirField::new("mode", OirType::String),
         ])),
+        GPU_DEVICE => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("maxBytes", OirType::Integer),
+        ])),
+        GPU_BUFFER => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("device", OirType::Integer),
+            OirField::new("size", OirType::Integer),
+        ])),
+        GPU_TEXTURE => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("device", OirType::Integer),
+            OirField::new("width", OirType::Integer),
+            OirField::new("height", OirType::Integer),
+            OirField::new("format", OirType::String),
+        ])),
+        GPU_SAMPLER | GPU_SHADER | GPU_BIND_GROUP => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("device", OirType::Integer),
+        ])),
+        GPU_PIPELINE => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("device", OirType::Integer),
+            OirField::new("kind", OirType::String),
+        ])),
+        GPU_QUERY_SET => Some(sealed_struct(vec![
+            OirField::new("id", OirType::Integer),
+            OirField::new("device", OirType::Integer),
+            OirField::new("count", OirType::Integer),
+        ])),
         _ => None,
     }
 }
@@ -119,6 +174,29 @@ mod tests {
         }
         assert!(!is_sealed_type("Arenas"), "control: a near name is not sealed");
         assert!(sealed_record("Arenas").is_none());
+    }
+
+    #[test]
+    fn the_gpu_handles_are_sealed_with_their_records() {
+        for (name, fields) in [
+            ("GpuDevice", &["id", "maxBytes"][..]),
+            ("GpuBuffer", &["id", "device", "size"][..]),
+            ("GpuTexture", &["id", "device", "width", "height", "format"][..]),
+            ("GpuSampler", &["id", "device"][..]),
+            ("GpuShader", &["id", "device"][..]),
+            ("GpuPipeline", &["id", "device", "kind"][..]),
+            ("GpuBindGroup", &["id", "device"][..]),
+            ("GpuQuerySet", &["id", "device", "count"][..]),
+        ] {
+            assert!(is_sealed_type(name), "{name}");
+            assert_eq!(sealed_name(&sealed_type_ref(name)), Some(name));
+            let Some(OirType::Struct { fields: found, .. }) = sealed_record(name) else { panic!("{name} has a record") };
+            let names: Vec<&str> = found.iter().map(|f| f.name.as_str()).collect();
+            assert_eq!(names, fields, "{name}");
+        }
+        assert!(!is_sealed_type("GpuBuffers"), "control: a near name is not sealed");
+        assert!(sealed_record("GpuBuffers").is_none());
+        assert_eq!(SEALED_TYPES.len(), 12);
     }
 
     #[test]

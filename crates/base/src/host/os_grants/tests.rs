@@ -1,5 +1,5 @@
 use super::*;
-use super::requirements::{ffi_need, kernel_need, mem_need};
+use super::requirements::{ffi_need, gpu_need, kernel_need, mem_need, need_of};
 use serde_json::json;
 use crate::num_width::NumWidth;
 
@@ -441,6 +441,89 @@ fn arena_new_of_kind_shared_needs_a_shared_target() {
     assert_eq!(grant, OsGrantNeed::Mem { access: MemKind::Create, capacity: Some(1), arena_kind: Some(0) });
     let atomic = mem_need(&exprs(json!(["@x", 0])), MemKind::Atomic, (None, None), &never);
     assert_eq!(atomic, Ok(vec![OsRequirement::Mem { kind: MemKind::Atomic, capacity: None }]));
+}
+
+fn gpu_grants(target: &str, kinds: Vec<GpuKind>) -> OsGrants {
+    OsGrants { gpu: vec![GpuGrant { target: target.into(), kinds }], ..OsGrants::default() }
+}
+
+#[test]
+fn a_gpu_target_parses_a_positive_decimal_device_bound() {
+    assert_eq!(gpu_target("device:1024"), Some(GpuTarget { max_bytes: 1024 }));
+    for target in ["device:0", "device:", "device:-1", "device:0x10", "device:1k", "device:99999999999999999999999", "gpu:64", "arena:64"] {
+        assert_eq!(gpu_target(target), None, "{target}");
+    }
+}
+
+#[test]
+fn a_gpu_grant_allows_only_the_kinds_it_lists() {
+    let need = |kind| OsRequirement::Gpu { kind };
+    let g = gpu_grants("device:4096", vec![GpuKind::Open, GpuKind::Compute]);
+    assert!(g.allows(&need(GpuKind::Open)) && g.allows(&need(GpuKind::Compute)));
+    assert!(!g.allows(&need(GpuKind::Render)) && !g.allows(&need(GpuKind::Readback)), "control: each kind is its own");
+    assert!(!OsGrants::default().allows(&need(GpuKind::Open)), "control: closed by default");
+    let both: OsGrants = serde_json::from_value(json!({"gpu": [{"target": "device:64", "kinds": ["render", "readback"]}]})).expect("gpu");
+    assert!(both.allows(&need(GpuKind::Render)) && both.allows(&need(GpuKind::Readback)) && !both.allows(&need(GpuKind::Open)));
+    assert!(g.entry_problems().is_empty());
+}
+
+#[test]
+fn gpu_needs_come_from_the_literal_command_list() {
+    let compute = || OsRequirement::Gpu { kind: GpuKind::Compute };
+    let render = || OsRequirement::Gpu { kind: GpuKind::Render };
+    let commands = |list: serde_json::Value| gpu_need(&exprs(json!(["@device", list])), GpuKind::Compute, Some(1));
+    assert_eq!(
+        commands(json!([{"compute": {"pipeline": "@p"}}, {"render": {"pipeline": "@q"}}, {"copy": {}}, {"compute": {}}])),
+        vec![compute(), render()]
+    );
+    assert_eq!(commands(json!([{"copy": {}}, {"clear": {}}, {"timestamp": {}}])), Vec::new(), "other commands need nothing");
+    assert_eq!(commands(json!([])), Vec::new());
+    assert_eq!(commands(json!([{"compute": {}, "render": {}}])), Vec::new(), "an entry with two keys is not a command");
+    assert_eq!(commands(json!("@entity.commands")), Vec::new(), "control: a non-literal list gives no requirement");
+    assert_eq!(gpu_need(&exprs(json!(["@device"])), GpuKind::Open, None), vec![OsRequirement::Gpu { kind: GpuKind::Open }]);
+    let grant: OsGrantNeed = serde_json::from_value(json!({"kind": "gpu", "access": "open", "commands": 1})).expect("need");
+    assert_eq!(grant, OsGrantNeed::Gpu { access: GpuKind::Open, commands: Some(1) });
+    let bare: OsGrantNeed = serde_json::from_value(json!({"kind": "gpu", "access": "readback"})).expect("need");
+    assert_eq!(bare, OsGrantNeed::Gpu { access: GpuKind::Readback, commands: None });
+    let deferred = |_: &SExpression| false;
+    assert_eq!(need_of(&grant, &exprs(json!(["@d", [{"render": {}}]])), &deferred), Ok(vec![render()]));
+}
+
+#[test]
+fn a_malformed_gpu_grant_is_an_entry_problem() {
+    for target in ["device:0", "device:", "device:1k", "arena:8", "device"] {
+        let paths: Vec<String> = gpu_grants(target, vec![GpuKind::Open]).entry_problems().into_iter().map(|p| p.path).collect();
+        assert_eq!(paths, vec!["gpu[0]"], "{target}");
+    }
+    let paths: Vec<String> = gpu_grants("device:8", vec![]).entry_problems().into_iter().map(|p| p.path).collect();
+    assert_eq!(paths, vec!["gpu[0]"], "no kind");
+    let twice = OsGrants {
+        gpu: vec![
+            GpuGrant { target: "device:8".into(), kinds: vec![GpuKind::Open] },
+            GpuGrant { target: "device:8".into(), kinds: vec![GpuKind::Compute] },
+        ],
+        ..OsGrants::default()
+    };
+    let paths: Vec<String> = twice.entry_problems().into_iter().map(|p| p.path).collect();
+    assert_eq!(paths, vec!["gpu[1]"], "the same target twice");
+}
+
+#[test]
+fn gpu_atoms_union_and_covers() {
+    let a = gpu_grants("device:64", vec![GpuKind::Open, GpuKind::Compute]);
+    let atoms: Vec<String> = a.atoms().into_iter().map(|atom| atom.label).collect();
+    assert_eq!(atoms, vec!["gpu \"device:64\" open".to_string(), "gpu \"device:64\" compute".to_string()]);
+    let mut merged = gpu_grants("device:64", vec![GpuKind::Open]);
+    merged.union(&gpu_grants("device:64", vec![GpuKind::Render, GpuKind::Open]));
+    merged.union(&gpu_grants("device:8", vec![GpuKind::Readback]));
+    assert_eq!(merged.gpu.len(), 2);
+    assert_eq!(merged.gpu[0].kinds, vec![GpuKind::Open, GpuKind::Render]);
+    assert_eq!(covers(&a, &gpu_grants("device:32", vec![GpuKind::Compute])), Ok(()));
+    assert_eq!(
+        covers(&a, &gpu_grants("device:128", vec![GpuKind::Compute, GpuKind::Render])),
+        Err(vec!["gpu \"device:128\" [compute]".to_string(), "gpu \"device:128\" [render]".to_string()]),
+        "a larger device is not covered"
+    );
 }
 
 fn kernel_grants(entries: &[(&str, &[KernelKind])]) -> OsGrants {
@@ -2115,6 +2198,7 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
                 OsGrantNeed::Kernel { operator, .. } => operator.iter().copied().collect(),
                 OsGrantNeed::SelfSignal { pid } => vec![*pid],
                 OsGrantNeed::Ffi { library, symbol } => vec![*library, *symbol],
+                OsGrantNeed::Gpu { commands, .. } => commands.iter().copied().collect(),
                 OsGrantNeed::Stdio { .. }
                 | OsGrantNeed::Sys { .. }
                 | OsGrantNeed::Desktop { .. } => Vec::new(),
@@ -2161,6 +2245,16 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
         "mem/release",
         "mem/write",
         "mem/freeze",
+        "gpu/device-close",
+        "gpu/buffer-create",
+        "gpu/texture-create",
+        "gpu/sampler-create",
+        "gpu/query-create",
+        "gpu/shader-create",
+        "gpu/pipeline-create",
+        "gpu/bind-group-create",
+        "gpu/write",
+        "gpu/release",
     ];
     expected.sort_unstable();
     assert_eq!(
@@ -2629,6 +2723,147 @@ mod static_check {
 
     fn has(found: &[OsGrantFinding], code: OsGrantFindingCode) -> bool {
         found.iter().any(|f| f.code == code)
+    }
+
+    #[cfg(feature = "wgsl")]
+    fn shader(source: serde_json::Value) -> Vec<OsGrantFinding> {
+        one(json!(null), json!([["gpu/shader-create", "@entity.device", source]]))
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_valid_literal_wgsl_has_no_shader_finding() {
+        let found = shader(json!("// k\n@compute @workgroup_size(1) fn main() {}"));
+        assert!(!has(&found, OsGrantFindingCode::ShaderInvalid), "{found:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn an_invalid_literal_wgsl_is_shader_invalid_with_nagas_message() {
+        let found = shader(json!("// k\n@compute @workgroup_size(1) fn main() { let x: u32 = 1.5; }"));
+        let f = found.iter().find(|f| f.code == OsGrantFindingCode::ShaderInvalid).expect("shader-invalid");
+        assert_eq!(f.call.as_deref(), Some("gpu/shader-create"));
+        assert_eq!(f.argument, Some(2));
+        assert!(f.entry.as_deref().is_some_and(|m| m.contains("error")), "{f:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_config_fed_wgsl_is_checked_in_the_finished_program_once() {
+        let effects = json!([["gpu/shader-create", "@entity.device", "@config.wgsl"]]);
+        let knob = |source: &str| json!({ "wgsl": { "type": "string", "default": source } });
+        let bad = final_of(json!(null), None, effects.clone(), knob("fn main( {"));
+        assert_eq!(bad.iter().filter(|f| f.code == OsGrantFindingCode::ShaderInvalid).count(), 1, "{bad:?}");
+        let good = final_of(json!(null), None, effects.clone(), knob("// k\n@compute @workgroup_size(1) fn main() {}"));
+        assert!(!has(&good, OsGrantFindingCode::ShaderInvalid), "control: {good:?}");
+        let written = one(json!(null), effects);
+        assert!(!has(&written, OsGrantFindingCode::ShaderInvalid), "the written pass leaves a knob to the finished one");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_wgsl_source_opening_with_an_attribute_is_a_binding_and_is_not_checked() {
+        let found = shader(json!("@compute @workgroup_size(1) fn main( {"));
+        assert!(!has(&found, OsGrantFindingCode::ShaderInvalid), "G-ORB-392: a leading @ reads as a binding: {found:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_computed_wgsl_source_is_not_checked() {
+        let found = shader(json!("@entity.source"));
+        assert!(!has(&found, OsGrantFindingCode::ShaderInvalid), "{found:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    const BOUND_WGSL: &str = "// k\n@group(0) @binding(0) var<storage, read> a: array<f32>;\n@group(0) @binding(1) var<storage, read_write> out: array<f32>;\n@group(0) @binding(2) var t: texture_2d<f32>;\n@compute @workgroup_size(1) fn main() { out[0] = a[0]; }\n@compute @workgroup_size(1) fn other() { let d = textureDimensions(t); out[0] = f32(d.x); }";
+
+    #[cfg(feature = "wgsl")]
+    fn emit_to(success: &str) -> serde_json::Value {
+        json!({ "emit": { "success": success, "failure": "FAILED" } })
+    }
+
+    /// A trait that builds a shader, a pipeline (entry `entry`) and then a bind group of `entries` on `pipeline`.
+    #[cfg(feature = "wgsl")]
+    fn bound(entry: serde_json::Value, pipeline: &str, entries: serde_json::Value, config: serde_json::Value, extra: serde_json::Value) -> Vec<OsGrantFinding> {
+        let mut transitions = vec![
+            json!({ "from": "idle", "to": "idle", "event": "SHADE", "effects": [["gpu/shader-create", "@entity.device", BOUND_WGSL, emit_to("SHADER")]] }),
+            json!({ "from": "idle", "to": "idle", "event": "SHADER", "effects": [["gpu/pipeline-create", "@entity.device", { "kind": "compute", "shader": "@payload.shader", "entry": entry }, emit_to("PIPE")]] }),
+            json!({ "from": "idle", "to": "idle", "event": "PIPE", "effects": [["set", "@entity.pipeline", "@payload.pipeline"], ["gpu/bind-group-create", pipeline, 0, entries.clone(), emit_to("BOUND")]] }),
+            json!({ "from": "idle", "to": "idle", "event": "BIND", "effects": [["gpu/bind-group-create", "@entity.pipeline", 0, entries, emit_to("BOUND")]] }),
+            json!({ "from": "idle", "to": "idle", "event": "DROP", "effects": [["set", "@entity.pipeline", null]] }),
+        ];
+        if let serde_json::Value::Array(more) = extra {
+            transitions.extend(more);
+        }
+        let schema = json!({ "name": "fixture", "version": "1.0.0", "orbitals": [{
+            "name": "Gpu",
+            "entity": { "name": "GpuRow", "persistence": "runtime", "fields": [{ "name": "id", "type": "string", "required": true }] },
+            "traits": [{ "name": "GpuRunner", "linkedEntity": "GpuRow", "config": config,
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions } }],
+            "pages": []
+        }] });
+        let schema: OrbitalSchema = serde_json::from_value(schema).expect("schema");
+        let written = os_grant_findings(&schema, OsGrantPass::Written);
+        assert!(!has(&written, OsGrantFindingCode::BindingMismatch), "the finished pass alone checks bindings: {written:?}");
+        os_grant_findings(&schema, OsGrantPass::Final).into_iter().filter(|f| f.code == OsGrantFindingCode::BindingMismatch).collect()
+    }
+
+    #[cfg(feature = "wgsl")]
+    fn buffers(bindings: &[u32]) -> serde_json::Value {
+        json!(bindings.iter().map(|b| json!({ "binding": b, "buffer": "@entity.buf" })).collect::<Vec<_>>())
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_bind_group_that_fits_its_traced_pipeline_has_no_finding() {
+        let found = bound(json!("main"), "@payload.pipeline", buffers(&[0, 1]), json!({}), json!(null));
+        assert!(found.is_empty(), "{found:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_binding_the_entry_point_uses_but_the_entries_leave_out_is_a_mismatch_at_both_sites() {
+        let found = bound(json!("main"), "@payload.pipeline", buffers(&[0]), json!({}), json!(null));
+        assert_eq!(found.len(), 2, "the @payload site and the @entity site: {found:?}");
+        for f in &found {
+            assert_eq!(f.call.as_deref(), Some("gpu/bind-group-create"));
+            assert_eq!(f.argument, Some(3));
+            assert!(f.entry.as_deref().is_some_and(|m| m.contains("uses binding 1 (buffer)")), "{f:?}");
+        }
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_binding_the_entry_point_does_not_use_is_a_mismatch() {
+        let mut entries = buffers(&[0, 1]);
+        entries.as_array_mut().unwrap().push(json!({ "binding": 2, "texture": "@entity.tex" }));
+        let found = bound(json!("main"), "@entity.pipeline", entries, json!({}), json!(null));
+        assert!(found.iter().any(|f| f.entry.as_deref().is_some_and(|m| m.contains("binding 2 is not used by group 0 of entry point main"))), "{found:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_config_chosen_entry_point_is_checked_with_the_resource_kind() {
+        let knob = json!({ "entry": { "type": "string", "default": "other" } });
+        let found = bound(json!("@config.entry"), "@entity.pipeline", buffers(&[1, 2]), knob.clone(), json!(null));
+        assert!(found.iter().any(|f| f.entry.as_deref().is_some_and(|m| m.contains("binding 2 of group 0 is a texture in the WGSL, given a buffer"))), "{found:?}");
+        let mut fits = buffers(&[1]);
+        fits.as_array_mut().unwrap().push(json!({ "binding": 2, "texture": "@entity.tex" }));
+        let control = bound(json!("@config.entry"), "@entity.pipeline", fits, knob, json!(null));
+        assert!(control.is_empty(), "control: {control:?}");
+    }
+
+    #[cfg(feature = "wgsl")]
+    #[test]
+    fn a_pipeline_the_trace_cannot_follow_is_left_to_the_run_time_check() {
+        let listened = bound(json!("main"), "@payload.pipeline", buffers(&[0]), json!({}), json!([
+            { "from": "idle", "to": "idle", "event": "OUTSIDE", "effects": [["emit", "PIPE", { "pipeline": "@payload.p" }]] }
+        ]));
+        assert!(listened.iter().all(|f| !f.site.contains("transitions[2]")), "PIPE can also arrive by an emit: {listened:?}");
+        let computed = bound(json!("main"), "@payload.pipeline", buffers(&[0]), json!({}), json!([
+            { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["set", "@entity.pipeline", ["object/get", "@payload", "p"]]] }
+        ]));
+        assert!(computed.iter().all(|f| !f.site.contains("transitions[3]")), "a computed set makes @entity.pipeline untraceable: {computed:?}");
     }
 
     fn read_data() -> serde_json::Value {

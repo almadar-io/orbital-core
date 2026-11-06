@@ -64,6 +64,8 @@ async = ["std", "orbital-core-eval/async"]
 client-http = ["std", "dep:ureq", "ureq/tls"]
 # The native `ffi/call` answerer (dlopen + a bundled static libffi, so static musl builds link): a native host capability the other builds leave out.
 ffi = ["std", "dep:libloading", "dep:libffi"]
+# The static WGSL check behind `gpu/shader-create` findings (naga).
+wgsl = ["std", "orbital-core-base/wgsl"]
 
 [dev-dependencies]
 tempfile = "3.10"

@@ -115,6 +115,18 @@ impl OsGrants {
                 grants: OsGrants { ffi: vec![g.clone()], ..OsGrants::default() },
             });
         }
+        for (i, g) in self.gpu.iter().enumerate() {
+            for kind in &g.kinds {
+                out.push(GrantAtom {
+                    path: format!("gpu[{i}]"),
+                    label: format!("gpu {:?} {}", g.target, kind.name()),
+                    grants: OsGrants {
+                        gpu: vec![GpuGrant { target: g.target.clone(), kinds: vec![*kind] }],
+                        ..OsGrants::default()
+                    },
+                });
+            }
+        }
         for (store, modes) in &self.kv {
             for mode in modes {
                 out.push(GrantAtom {
@@ -229,6 +241,17 @@ impl OsGrants {
             }
             if matches!(mem_target(&g.target), Some(MemTarget::Arena { .. })) && g.kinds.contains(&MemKind::Atomic) {
                 problem(format!("mem[{i}]"), format!("{:?} is an `arena:` target: `atomic` needs a `shared:<maxBytes>` target", g.target));
+            }
+        }
+        for (i, g) in self.gpu.iter().enumerate() {
+            if gpu_target(&g.target).is_none() {
+                problem(format!("gpu[{i}]"), format!("{:?} is not `device:<maxBytes>` with a positive decimal byte count", g.target));
+            }
+            if g.kinds.is_empty() {
+                problem(format!("gpu[{i}]"), format!("{:?} grants no kind", g.target));
+            }
+            if self.gpu[..i].iter().any(|other| other.target == g.target) {
+                problem(format!("gpu[{i}]"), format!("{:?} is granted twice", g.target));
             }
         }
         for (i, g) in self.kernel.iter().enumerate() {

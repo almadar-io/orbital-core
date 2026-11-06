@@ -58,6 +58,7 @@ impl RuntimeKernel {
         self.settle_identity(stepped.is_ok());
         self.settle_theme(stepped.is_ok());
         self.settle_mem(stepped.is_ok());
+        self.settle_gpu(stepped.is_ok());
         self.settle_kernel_step();
         self.release_origin(origin, committed_from, stepped.is_ok());
         match stepped? {

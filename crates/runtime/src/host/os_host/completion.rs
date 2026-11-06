@@ -13,7 +13,7 @@ use crate::resumable::{
 };
 use orbital_core_base::os::{OsError, OsErrorKind};
 use orbital_core_base::secret::Secret;
-use orbital_core_base::value::{Value, ValueMap};
+use orbital_core_base::value::Value;
 use orbital_core_base::sync::{Condvar, Mutex};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -571,14 +571,16 @@ impl OsCompletionSink for KernelCompletionSink {
             self.wait_for_owner(&kernel, key);
         }
         let outcome = self.finish_tls(key, outcome);
-        if let Some((event, payload)) = completion_event(site, key, outcome) {
-            self.dispatch_completion(site, key, event, payload);
+        let Some(kernel) = self.kernel.upgrade() else { return };
+        if let Some((event, payload, failed)) = kernel.completion_route(site, key, outcome) {
+            self.dispatch_completion(site, key, event, payload, failed);
         }
     }
 
     fn settle(&self, site: &CallSite, key: &str, outcome: Result<Value, Value>) {
+        let failed = outcome.is_err();
         if let Some((event, payload)) = crate::resumable::substrate_completion_event(site, key, outcome) {
-            self.dispatch_completion(site, key, event, payload);
+            self.dispatch_completion(site, key, event, payload, failed);
         }
     }
 
@@ -625,10 +627,8 @@ impl KernelCompletionSink {
     }
 
     /// EXEC-QUEUE-10: the completion runs in the session that asked, so `@user` is that session's identity, and a key
-    /// it defers again keeps that requester. A success payload that breaks its route's declared payload contract is
-    /// refused at entry (G-CROSS-335) and the ask still ends: it fires the failure route as `{ error, kind: invalid, key }`,
-    /// never nothing (EXEC-QUEUE-10: a deferred ask's outcome reaches its caller).
-    fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value) {
+    /// it defers again keeps that requester. The route itself runs through [`RuntimeKernel::dispatch_route`].
+    fn dispatch_completion(&self, site: &CallSite, key: &str, event: String, payload: Value, failed: bool) {
         // A completion that outlives its kernel has nothing to dispatch into.
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
@@ -637,30 +637,8 @@ impl KernelCompletionSink {
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
-        let run = |event: &str, payload: &Value| {
-            kernel
-                .start_dispatch(&site.trait_name, Some(site.entity_id.as_str()), event, payload.clone(), None, None)
-                .and_then(|progress| drive_blocking(&kernel, progress, &answer))
-        };
-        let (mut event, mut payload) = (event, payload);
-        let mut result = run(&event, &payload);
-        if let Err(DispatchError::Kernel(crate::kernel::KernelError::PayloadInvalid(refusal))) = &result {
-            let failure = site.emit.failure.clone().filter(|failure| site.emit.success.as_deref() == Some(event.as_str()) && *failure != event);
-            tracing::warn!(
-                target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
-                trait_name = %site.trait_name, event = %event, refusal = %refusal, routed_to_failure = failure.is_some(),
-                "a completion payload broke its route's declared contract",
-            );
-            if let Some(failure) = failure {
-                let mut fields = ValueMap::default();
-                fields.insert("error".into(), Value::string(format!("{event} was refused: {refusal}")));
-                fields.insert("kind".into(), Value::string(OsErrorKind::Invalid.as_str().to_string()));
-                fields.insert("key".into(), Value::string(crate::resumable::program_call_key(key).to_string()));
-                (event, payload) = (failure, Value::object(fields));
-                result = run(&event, &payload);
-            }
-        }
-        (self.done)(site, &event, &payload, requester.client_id.as_deref(), result);
+        let delivered = kernel.dispatch_route(site, key, event, payload, failed, &answer);
+        (self.done)(site, &delivered.event, &delivered.payload, requester.client_id.as_deref(), delivered.result);
     }
 }
 

@@ -8,6 +8,7 @@ pub mod args;
 pub mod completion;
 pub mod ffi;
 pub mod fs;
+pub mod gpu;
 pub mod net;
 pub mod process;
 pub mod sys;
@@ -77,6 +78,8 @@ pub struct OsHandles {
     pub process: process::ProcTable,
     pub net: net::NetTable,
     pub ffi: ffi::FfiTable,
+    /// The `gpu/` answerer the embedding host installed; `None` answers every `gpu/` ask `unsupported`.
+    pub gpu: orbital_core_base::sync::RwLock<Option<Arc<dyn orbital_core_base::gpu::GpuAnswerer>>>,
     pub completions: Arc<completion::Completions>,
     /// Where `~/` and `./` paths and grants are anchored: the user's home and the directory the program started in.
     pub anchors: OsAnchors,
@@ -92,6 +95,7 @@ impl Default for OsHandles {
             process: process::ProcTable::default(),
             net: net::NetTable::new(ids),
             ffi: ffi::FfiTable::default(),
+            gpu: orbital_core_base::sync::RwLock::new(None),
             completions: Arc::default(),
             anchors: OsAnchors::of_process(),
             kv: crate::kv_host::KvStores::default(),
@@ -100,6 +104,15 @@ impl Default for OsHandles {
 }
 
 impl OsHandles {
+    /// Install the `gpu/` answerer; until one is installed every `gpu/` ask answers `unsupported`.
+    pub fn install_gpu(&self, answerer: Arc<dyn orbital_core_base::gpu::GpuAnswerer>) {
+        *self.gpu.write() = Some(answerer);
+    }
+
+    pub(crate) fn gpu_answerer(&self) -> Option<Arc<dyn orbital_core_base::gpu::GpuAnswerer>> {
+        self.gpu.read().clone()
+    }
+
     /// Drop the pending completion of a deferred keyed call, as `cancel-call` of its key does: the operation is
     /// not stopped, its outcome is never delivered. `false` when the key has none pending.
     pub fn cancel_completion(&self, key: &str) -> bool {
@@ -112,6 +125,9 @@ impl OsHandles {
         self.fs.clear();
         self.net.clear();
         self.ffi.clear();
+        if let Some(gpu) = self.gpu.read().as_ref() {
+            gpu.close_all();
+        }
     }
 }
 
@@ -138,6 +154,7 @@ fn dispatch(
         OsFamily::Net => net::answer(op, args, key, site, host),
         OsFamily::Sys => sys::answer(op, args, key, site, host),
         OsFamily::Ffi => ffi::answer(op, args, key, site, host),
+        OsFamily::Gpu => Some(gpu::answer(op, args, host)),
         OsFamily::Kv => Some(crate::kv_host::answer(op, args, host)),
         OsFamily::Dev => Some(Err(OsError::new(OsErrorKind::Unsupported, format!("{}: this host has no devices", op.name())))),
         OsFamily::Mem | OsFamily::Kernel => {
@@ -191,6 +208,7 @@ fn defer(
         OsOp::Recvfrom => net::recvfrom_later(args, key, site, host),
         OsOp::StdinRead => process::stdin_later(args, key, site, host),
         OsOp::FfiCall => ffi::later(op, args, key, site, host),
+        OsOp::GpuDeviceOpen | OsOp::GpuSubmit | OsOp::GpuRead => gpu::later(op, args, key, site, host),
         _ if family_of(op) == OsFamily::Fs => fs::later(op, args, key, site, host),
         _ => return None,
     })
@@ -310,6 +328,19 @@ mod tests {
         ("kernel/queue-front", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("kernel/queue-back", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("ffi/call", "needs a foreign library; answered by the native host's ffi feature, exercised in its own tests"),
+        ("gpu/device-open", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/device-close", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/buffer-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/texture-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/sampler-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/query-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/shader-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/pipeline-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/bind-group-create", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/write", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/submit", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/read", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
+        ("gpu/release", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("os/watch-files", "a stream the host does not implement (G-ORB-307)"),
         ("os/watch-process", "a stream the host does not implement (G-ORB-307)"),
         ("os/watch-signal", "a stream the host does not implement (G-ORB-307)"),
@@ -840,7 +871,7 @@ mod tests {
 
     #[test]
     fn every_op_belongs_to_exactly_one_family_in_contract_order() {
-        let mut counts = [0usize; 9];
+        let mut counts = [0usize; 10];
         for op in OsOp::ALL {
             let slot = match family_of(*op) {
                 OsFamily::Fs => 0,
@@ -852,11 +883,12 @@ mod tests {
                 OsFamily::Mem => 6,
                 OsFamily::Kernel => 7,
                 OsFamily::Ffi => 8,
+                OsFamily::Gpu => 9,
             };
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 31, 5, 4, 12, 2, 1]);
+        assert_eq!(counts, [32, 18, 12, 31, 5, 4, 12, 2, 1, 13]);
     }
 
     #[test]

@@ -40,6 +40,8 @@ pub enum OsRequirement {
     Kernel { kind: KernelKind, operator: Option<String> },
     /// A foreign function called: the literal library and symbol `ffi/call` is asked to run.
     Ffi { library: String, symbol: String },
+    /// A gpu call: a device opened, work of `kind` submitted, or a buffer read back.
+    Gpu { kind: GpuKind },
 }
 
 impl OsRequirement {
@@ -100,6 +102,7 @@ impl OsGrants {
             OsRequirement::MemShared { capacity } => self.mem_shared_allows(*capacity),
             OsRequirement::Kernel { kind, operator } => self.kernel_allows(*kind, operator.as_deref()),
             OsRequirement::Ffi { library, symbol } => self.ffi_allows(library, symbol),
+            OsRequirement::Gpu { kind } => self.gpu_allows(*kind),
         }
     }
 }
@@ -209,6 +212,34 @@ pub(super) fn ffi_need(args: &[SExpression], library: usize, symbol: usize, defe
         (Some(library), Some(symbol)) => vec![OsRequirement::Ffi { library: library.to_string(), symbol: symbol.to_string() }],
         _ => Vec::new(),
     })
+}
+
+pub(super) fn gpu_need(args: &[SExpression], access: GpuKind, commands: Option<usize>) -> Vec<OsRequirement> {
+    let Some(at) = commands else {
+        return vec![OsRequirement::Gpu { kind: access }];
+    };
+    let Some(SExpression::Array(list)) = args.get(at) else {
+        return Vec::new();
+    };
+    let mut needs: Vec<OsRequirement> = Vec::new();
+    for entry in list.iter() {
+        let SExpression::Object(object) = entry else { continue };
+        if object.len() != 1 {
+            continue;
+        }
+        let kind = if object.keys().any(|k| k == "compute") {
+            GpuKind::Compute
+        } else if object.keys().any(|k| k == "render") {
+            GpuKind::Render
+        } else {
+            continue;
+        };
+        let need = OsRequirement::Gpu { kind };
+        if !needs.contains(&need) {
+            needs.push(need);
+        }
+    }
+    needs
 }
 
 /// The leading pieces of a `str/concat` target that are known before the call runs, cut after the last
@@ -589,6 +620,7 @@ pub fn requirement_target_positions(op: OsOp) -> Vec<usize> {
             OsGrantNeed::Mem { capacity, arena_kind, .. } => at.extend(capacity.iter().chain(arena_kind)),
             OsGrantNeed::Kernel { operator, .. } => at.extend(*operator),
             OsGrantNeed::Ffi { library, symbol } => at.extend([*library, *symbol]),
+            OsGrantNeed::Gpu { commands, .. } => at.extend(*commands),
             OsGrantNeed::Stdio { .. }
             | OsGrantNeed::Sys { .. }
             | OsGrantNeed::SelfSignal { .. }
@@ -763,5 +795,6 @@ pub(super) fn need_of(need: &OsGrantNeed, args: &[SExpression], deferred: Deferr
         OsGrantNeed::Mem { access, capacity, arena_kind } => mem_need(args, *access, (*capacity, *arena_kind), deferred),
         OsGrantNeed::Kernel { access, operator } => kernel_need(args, *access, *operator, deferred),
         OsGrantNeed::Ffi { library, symbol } => ffi_need(args, *library, *symbol, deferred),
+        OsGrantNeed::Gpu { access, commands } => Ok(gpu_need(args, *access, *commands)),
     }
 }

@@ -99,7 +99,7 @@ impl RuntimeKernel {
                 }
                 FfiType::Ptr | FfiType::MutPtr => {
                     let exclusive = matches!(ty, FfiType::MutPtr);
-                    let bytes = self.ffi_borrow_bytes(value, exclusive).map_err(|error| invalid(format!("argument {place}: {}", error.message)))?;
+                    let bytes = self.borrow_bytes(value, exclusive).map_err(|error| invalid(format!("argument {place}: {}", error.message)))?;
                     if exclusive {
                         mutptrs.push(value.clone());
                     }

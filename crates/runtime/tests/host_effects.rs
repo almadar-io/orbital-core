@@ -2751,6 +2751,21 @@ mod mem_effects {
     }
 
     #[test]
+    fn a_write_takes_base64_text_as_bytes_and_refuses_text_that_is_not_base64() {
+        let mut session = setup();
+        session.ok("BORROW_X", Some("xborrow"));
+        session.held.insert("data".into(), Value::string("not base64"));
+        session.fails_with("WRITE", "invalid");
+        session.held.insert("data".into(), Value::string("d3h5eg=="));
+        session.ok("WRITE", None);
+        session.ok("RELEASE_X", None);
+        session.ok("BORROW_S", Some("sborrow"));
+        let (response, _) = drive(&session.server, session.request("READ"), |request| panic!("asked the host: {request:?}"));
+        let Answer::Ok(read) = Session::answer(&response) else { panic!("read answered") };
+        assert_eq!(read.get("data").and_then(Value::as_bytes), Some(&b"wxyz"[..]));
+    }
+
+    #[test]
     fn a_shared_borrow_cannot_write() {
         let mut session = setup();
         session.ok("BORROW_S", Some("xborrow"));
@@ -3476,5 +3491,600 @@ mod kernel_effects {
     fn a_seed_step_reorder_naming_nothing_keeps_own_emits_ahead_of_listeners() {
         let events = order(FULL(), "GO_OWN");
         assert!(at(&events, "OWNED") < at(&events, "R1"), "{events:?}");
+    }
+}
+
+mod gpu_effects {
+    use super::*;
+    use orbital_core_base::gpu::GpuAnswerer;
+    use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
+    use orbital_core_base::value::ValueMap;
+    use orbital_core_runtime::os_host::{answer_os, OsHandles, OsHost};
+    use std::sync::{Arc, Mutex};
+
+    fn ops() -> Vec<(&'static str, Json)> {
+        vec![
+            ("OPEN", json!(["gpu/device-open", "@payload.desc"])),
+            ("CLOSE", json!(["gpu/device-close", "@payload.device"])),
+            ("BUF", json!(["gpu/buffer-create", "@payload.device", "@payload.desc"])),
+            ("TEX", json!(["gpu/texture-create", "@payload.device", "@payload.desc"])),
+            ("SHADER", json!(["gpu/shader-create", "@payload.device", "@payload.wgsl"])),
+            ("PIPE", json!(["gpu/pipeline-create", "@payload.device", "@payload.desc"])),
+            ("BIND", json!(["gpu/bind-group-create", "@payload.pipeline", "@payload.group", "@payload.entries"])),
+            ("WRITE", json!(["gpu/write", "@payload.buffer", "@payload.offset", "@payload.data"])),
+            ("SUBMIT", json!(["gpu/submit", "@payload.device", "@payload.commands"])),
+            ("READ", json!(["gpu/read", "@payload.buffer", "@payload.offset", "@payload.length"])),
+            ("RELEASE", json!(["gpu/release", "@payload.handle"])),
+        ]
+    }
+
+    fn server_with(grants: Json, keyed_open: bool) -> EmbeddedServer {
+        server_with_extra(grants, keyed_open, Vec::new())
+    }
+
+    fn server_with_extra(grants: Json, keyed_open: bool, extra: Vec<Json>) -> EmbeddedServer {
+        let mut transitions: Vec<Json> = ops()
+            .into_iter()
+            .map(|(event, mut effect)| {
+                effect.as_array_mut().unwrap().push(routes());
+                json!({ "from": "idle", "to": "idle", "event": event, "effects": [effect] })
+            })
+            .collect();
+        if keyed_open {
+            transitions.push(json!({ "from": "idle", "to": "idle", "event": "OPEN_KEYED", "effects": [
+                ["gpu/device-open", "@payload.desc", { "key": "k", "emit": { "success": "OK", "failure": "BAD" } }]
+            ] }));
+        }
+        transitions.extend(extra);
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "OK" }));
+        transitions.push(json!({ "from": "idle", "to": "idle", "event": "BAD" }));
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "osGrants": grants,
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Host", "linkedEntity": "Job",
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions } }]
+            }]
+        }))
+        .unwrap();
+        EmbeddedServer::new(schema).unwrap()
+    }
+
+    fn grants(max: u64, kinds: &[&str]) -> Json {
+        json!({ "gpu": [{ "target": format!("device:{max}"), "kinds": kinds }] })
+    }
+
+    fn j(value: Json) -> Value {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn record(fields: Vec<(&str, Value)>) -> Value {
+        Value::object(fields.into_iter().map(|(key, value)| (key.into(), value)).collect::<ValueMap>())
+    }
+
+    /// The host: answers plain ids, one counter for every kind, and records what it was asked.
+    #[derive(Default)]
+    struct Fake {
+        next: i64,
+        asked: Vec<(OsOp, Vec<Value>)>,
+    }
+
+    impl Fake {
+        fn answer(&mut self, request: &IoRequest) -> IoAnswer {
+            let IoRequest::Os { op, args, .. } = request else { panic!("a gpu op asked {request:?}") };
+            self.asked.push((*op, args.clone()));
+            self.next += 1;
+            let id = Value::Int(self.next);
+            let fields = match op {
+                OsOp::GpuDeviceOpen => vec![("device", id), ("features", j(json!([]))), ("limits", j(json!({})))],
+                OsOp::GpuBufferCreate => vec![("buffer", id)],
+                OsOp::GpuTextureCreate => vec![("texture", id)],
+                OsOp::GpuShaderCreate => vec![("shader", id)],
+                OsOp::GpuPipelineCreate => vec![("pipeline", id)],
+                OsOp::GpuBindGroupCreate => vec![("bindGroup", id)],
+                OsOp::GpuRead => vec![("data", Value::bytes(vec![1, 2, 3]))],
+                _ => vec![],
+            };
+            IoAnswer::Os(Ok(record(fields).into()))
+        }
+    }
+
+    #[derive(Debug)]
+    enum Answer {
+        Ok(Value),
+        Failed(String),
+    }
+
+    struct Session {
+        server: EmbeddedServer,
+        held: ValueMap,
+        fake: Fake,
+    }
+
+    impl Session {
+        fn new(max: u64, kinds: &[&str]) -> Self {
+            Self::on(server_with(grants(max, kinds), false))
+        }
+
+        fn on(server: EmbeddedServer) -> Self {
+            Self { server, held: ValueMap::default(), fake: Fake::default() }
+        }
+
+        fn put(&mut self, key: &str, value: Value) {
+            self.held.insert(key.into(), value);
+        }
+
+        fn held(&self, key: &str) -> Value {
+            self.held.get(key).cloned().unwrap_or_else(|| panic!("nothing held as {key}"))
+        }
+
+        fn call(&mut self, event: &str) -> Answer {
+            let request = EventRequest {
+                event: event.to_string(),
+                target_trait: Some("Host".to_string()),
+                payload: Some(Value::object(self.held.clone())),
+                ..Default::default()
+            };
+            let fake = &mut self.fake;
+            let (response, _) = drive(&self.server, request, |request| fake.answer(request));
+            let find = |name: &str| response.emitted_events.iter().find(|e| e.event == name);
+            if let Some(ok) = find("OK") {
+                let payload = ok.payload.clone().expect("an answer carries a payload");
+                if let Value::Object(fields) = &payload {
+                    for (key, value) in fields.iter() {
+                        self.held.insert(key.clone(), value.clone());
+                    }
+                }
+                return Answer::Ok(payload);
+            }
+            let bad = find("BAD").unwrap_or_else(|| panic!("neither OK nor BAD: {:?}", response.emitted_events));
+            match bad.payload.as_ref().and_then(|p| p.get("kind")) {
+                Some(Value::String(kind)) => Answer::Failed(kind.to_string()),
+                other => panic!("a failure names its kind: {other:?}"),
+            }
+        }
+
+        fn ok(&mut self, event: &str) {
+            match self.call(event) {
+                Answer::Ok(_) => {}
+                other => panic!("{event} should succeed: {other:?}"),
+            }
+        }
+
+        fn fails_with(&mut self, event: &str, kind: &str) {
+            let before = self.fake.asked.len();
+            match self.call(event) {
+                Answer::Failed(found) => assert_eq!(found, kind, "{event}"),
+                other => panic!("{event} should fail with {kind}: {other:?}"),
+            }
+            assert_eq!(self.fake.asked.len(), before, "{event} must not reach the host");
+        }
+
+        fn open(&mut self) {
+            self.put("desc", j(json!({})));
+            self.ok("OPEN");
+        }
+
+        fn buffer(&mut self, size: i64) -> Answer {
+            self.put("desc", j(json!({ "size": size, "usage": ["storage"] })));
+            self.call("BUF")
+        }
+
+        fn texture(&mut self, width: i64, height: i64, mips: i64) -> Answer {
+            self.put("desc", j(json!({ "width": width, "height": height, "format": "rgba8unorm", "usage": ["render"], "mips": mips })));
+            self.call("TEX")
+        }
+
+        /// A compute pipeline, a bind group over the held buffer, and a render pipeline, all on the held device.
+        fn pipelines(&mut self) {
+            self.put("wgsl", Value::string("fn main() {}"));
+            self.ok("SHADER");
+            let shader = self.held("shader");
+            self.put("desc", record(vec![("kind", Value::string("compute")), ("shader", shader.clone()), ("entry", Value::string("main"))]));
+            self.ok("PIPE");
+            let compute = self.held("pipeline");
+            self.put("compute", compute.clone());
+            self.put("pipeline", compute);
+            self.put("group", Value::Int(0));
+            self.put("entries", Value::array(vec![record(vec![("binding", Value::Int(0)), ("buffer", self.held("buffer"))])]));
+            self.ok("BIND");
+            self.put("desc", record(vec![("kind", Value::string("render")), ("shader", shader), ("entry", Value::string("vs"))]));
+            self.ok("PIPE");
+            let render = self.held("pipeline");
+            self.put("render", render);
+        }
+
+        fn command(&mut self, command: Value) -> Answer {
+            self.put("commands", Value::array(vec![command]));
+            self.call("SUBMIT")
+        }
+
+        fn compute_command(&self) -> Value {
+            let body = record(vec![
+                ("pipeline", self.held("compute")),
+                ("bindGroups", Value::array(vec![self.held("bindGroup")])),
+                ("dispatch", j(json!([1, 1, 1]))),
+            ]);
+            record(vec![("compute", body)])
+        }
+    }
+
+    fn kind_of(answer: Answer) -> String {
+        match answer {
+            Answer::Failed(kind) => kind,
+            Answer::Ok(payload) => panic!("expected a failure, got {payload:?}"),
+        }
+    }
+
+    /// EXEC-GPU-4: a step that makes two gpu asks parks on the first and re-runs on its journal, so the first answer is
+    /// replayed, never asked again, and the handle it mints and the bytes it books are counted once.
+    #[test]
+    fn a_step_replayed_on_its_journal_asks_each_gpu_op_once_and_books_its_bytes_once() {
+        let two = json!({ "from": "idle", "to": "idle", "event": "TWO", "effects": [
+            ["gpu/buffer-create", "@payload.device", "@payload.desc", { "emit": { "success": "FIRST", "failure": "BAD" } }],
+            ["gpu/buffer-create", "@payload.device", "@payload.desc", { "emit": { "success": "SECOND", "failure": "BAD" } }]
+        ] });
+        let routes = vec![
+            json!({ "from": "idle", "to": "idle", "event": "FIRST" }),
+            json!({ "from": "idle", "to": "idle", "event": "SECOND" }),
+        ];
+        let run = || {
+            let mut session = Session::on(server_with_extra(grants(32, &["open"]), false, [vec![two.clone()], routes.clone()].concat()));
+            session.open();
+            session.put("desc", j(json!({ "size": 16, "usage": ["storage"] })));
+            let request = EventRequest {
+                event: "TWO".to_string(),
+                target_trait: Some("Host".to_string()),
+                payload: Some(Value::object(session.held.clone())),
+                ..Default::default()
+            };
+            let fake = &mut session.fake;
+            let (response, _) = drive(&session.server, request, |request| fake.answer(request));
+            let minted: Vec<Value> = ["FIRST", "SECOND"]
+                .iter()
+                .map(|name| {
+                    let event = response.emitted_events.iter().find(|e| e.event == *name).unwrap_or_else(|| panic!("{name}: {:?}", response.emitted_events));
+                    event.payload.as_ref().and_then(|p| p.get("buffer")).cloned().expect("a minted buffer")
+                })
+                .collect();
+            let creates = session.fake.asked.iter().filter(|(op, _)| *op == OsOp::GpuBufferCreate).count();
+            (session, minted, creates)
+        };
+        let (mut session, minted, creates) = run();
+        assert_eq!(creates, 2, "the replayed first ask is answered from the journal, not asked again");
+        assert_ne!(minted[0], minted[1], "each ask mints its own handle");
+        assert!(minted.iter().all(|b| b.is_sealed_as("GpuBuffer")), "{minted:?}");
+        assert_eq!(kind_of(session.buffer(1)), "invalid", "the two 16-byte buffers fill the 32-byte grant: booked once each");
+        let (_, again, _) = run();
+        assert_eq!(serde_json::to_string(&minted).unwrap(), serde_json::to_string(&again).unwrap(), "the same answers mint byte-identical handles");
+    }
+
+    #[test]
+    fn a_device_open_without_a_gpu_grant_is_denied_without_asking_the_host() {
+        let mut session = Session::on(server_with(json!({}), false));
+        session.put("desc", j(json!({})));
+        session.fails_with("OPEN", "denied");
+        let mut control = Session::new(64, &["open"]);
+        control.open();
+        assert_eq!(control.fake.asked.len(), 1);
+    }
+
+    #[test]
+    fn a_grant_without_open_denies_the_open_and_one_with_it_mints_a_device_carrying_the_max_bytes() {
+        let mut session = Session::new(64, &["compute"]);
+        session.put("desc", j(json!({})));
+        session.fails_with("OPEN", "denied");
+        let mut granted = Session::new(1024, &["open"]);
+        granted.open();
+        let device = granted.held("device");
+        assert!(device.is_sealed_as("GpuDevice"));
+        assert_eq!(device.get("maxBytes").and_then(Value::as_int), Some(1024));
+        assert_eq!(device.get("id").and_then(Value::as_int), Some(1));
+        assert!(granted.held("features").is_array(), "the rest of the answer is kept");
+    }
+
+    #[test]
+    fn a_host_with_no_answerer_answers_unsupported_and_one_with_an_answerer_is_asked() {
+        struct Recording(Mutex<Vec<(OsOp, Vec<Value>)>>);
+        impl GpuAnswerer for Recording {
+            fn answer(&self, op: OsOp, args: &[Value]) -> Result<Value, OsError> {
+                self.0.lock().unwrap().push((op, args.to_vec()));
+                Ok(record(vec![("device", Value::Int(9)), ("features", j(json!([]))), ("limits", j(json!({})))]))
+            }
+            fn close_all(&self) {}
+        }
+        let on_event = |_: Option<&orbital_core_runtime::resumable::CallSite>, _: Value| {};
+        let attempt = |handles: &OsHandles| {
+            let server = server_with(grants(64, &["open"]), false);
+            let os_grants = server.kernel().os_grants();
+            let mut session = Session::on(server);
+            session.put("desc", j(json!({})));
+            let request = EventRequest {
+                event: "OPEN".to_string(),
+                target_trait: Some("Host".to_string()),
+                payload: Some(Value::object(session.held.clone())),
+                ..Default::default()
+            };
+            let (response, _) = drive(&session.server, request, |request| {
+                answer_os(Some(&OsHost { grants: &os_grants, handles, on_event: &on_event, secrets: None }), request)
+            });
+            response
+        };
+        let bare = OsHandles::default();
+        assert_eq!(payload_of(&attempt(&bare), "BAD")["kind"], json!("unsupported"));
+        let installed = OsHandles::default();
+        let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+        installed.install_gpu(recording.clone());
+        let response = attempt(&installed);
+        assert!(emitted(&response).iter().any(|(event, _)| *event == "OK"), "{:?}", emitted(&response));
+        let asked = recording.0.lock().unwrap();
+        assert_eq!(asked.len(), 1);
+        assert_eq!(asked[0].0, OsOp::GpuDeviceOpen);
+    }
+
+    #[test]
+    fn handles_reach_the_host_as_plain_ids_and_come_back_as_sealed_values() {
+        let mut session = Session::new(1 << 20, &["open", "compute"]);
+        session.open();
+        assert!(matches!(session.buffer(16), Answer::Ok(_)));
+        let buffer = session.held("buffer");
+        assert!(buffer.is_sealed_as("GpuBuffer"));
+        assert_eq!(
+            (buffer.get("id").and_then(Value::as_int), buffer.get("device").and_then(Value::as_int), buffer.get("size").and_then(Value::as_int)),
+            (Some(2), Some(1), Some(16))
+        );
+        let (op, args) = &session.fake.asked[1];
+        assert_eq!(*op, OsOp::GpuBufferCreate);
+        assert_eq!(args[0].as_int(), Some(1), "the device went as its id");
+        assert!(args.iter().all(|arg| !matches!(arg, Value::Sealed(_))));
+        session.pipelines();
+        let asked = &session.fake.asked;
+        let pipe = &asked.iter().find(|(op, _)| *op == OsOp::GpuPipelineCreate).unwrap().1;
+        assert_eq!(pipe[1].get("shader").and_then(Value::as_int), Some(3), "a nested shader went as its id");
+        let bind = &asked.iter().find(|(op, _)| *op == OsOp::GpuBindGroupCreate).unwrap().1;
+        assert_eq!(bind[0].as_int(), Some(4));
+        let entries = bind[2].as_array().unwrap();
+        assert_eq!(entries[0].get("buffer").and_then(Value::as_int), Some(2));
+        let compute = session.compute_command();
+        assert!(matches!(session.command(compute), Answer::Ok(_)));
+        let (op, args) = session.fake.asked.last().unwrap();
+        assert_eq!(*op, OsOp::GpuSubmit);
+        let command = args[1].as_array().unwrap()[0].get("compute").unwrap().clone();
+        assert_eq!(command.get("pipeline").and_then(Value::as_int), Some(4));
+        assert_eq!(command.get("bindGroups").and_then(Value::as_array).unwrap()[0].as_int(), Some(5));
+    }
+
+    #[test]
+    fn a_forged_number_where_a_handle_is_expected_is_invalid_and_a_real_handle_is_not() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        let device = session.held("device");
+        session.put("device", Value::Int(1));
+        session.put("desc", j(json!({ "size": 4, "usage": [] })));
+        session.fails_with("BUF", "invalid");
+        session.put("device", device.clone());
+        session.ok("BUF");
+        session.put("handle", Value::Int(2));
+        session.fails_with("RELEASE", "invalid");
+        session.put("handle", session.held("buffer"));
+        session.ok("RELEASE");
+        session.put("handle", device);
+        session.fails_with("RELEASE", "invalid");
+    }
+
+    #[test]
+    fn a_handle_of_the_wrong_kind_is_invalid() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        session.ok_buffer(4);
+        session.put("device", session.held("buffer"));
+        session.fails_with("BUF", "invalid");
+    }
+
+    impl Session {
+        fn ok_buffer(&mut self, size: i64) {
+            assert!(matches!(self.buffer(size), Answer::Ok(_)));
+        }
+    }
+
+    #[test]
+    fn use_after_release_answers_closed_without_asking_the_host() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        session.ok_buffer(8);
+        session.put("handle", session.held("buffer"));
+        session.put("offset", Value::Int(0));
+        session.put("data", Value::bytes(vec![1, 2]));
+        session.ok("WRITE");
+        session.ok("RELEASE");
+        assert_eq!(session.fake.asked.last().map(|(op, _)| *op), Some(OsOp::GpuRelease));
+        session.fails_with("RELEASE", "closed");
+        session.fails_with("WRITE", "closed");
+    }
+
+    #[test]
+    fn closing_a_device_closes_its_handles() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        session.ok_buffer(8);
+        session.put("handle", session.held("buffer"));
+        session.ok("CLOSE");
+        session.fails_with("RELEASE", "closed");
+        session.fails_with("BUF", "closed");
+    }
+
+    #[test]
+    fn a_buffer_beyond_the_granted_max_bytes_is_invalid_without_asking_the_host_and_release_frees_the_bytes() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        session.ok_buffer(64);
+        let first = session.held("buffer");
+        assert_eq!(kind_of(session.buffer(1)), "invalid");
+        assert_eq!(session.fake.asked.len(), 2, "the refused buffer never reached the host");
+        session.put("handle", first);
+        session.ok("RELEASE");
+        session.ok_buffer(64);
+    }
+
+    #[test]
+    fn a_texture_is_counted_over_its_mip_levels() {
+        let total = 4 * 4 * 4 + 2 * 2 * 4 + 4;
+        let mut exact = Session::new(total, &["open"]);
+        exact.open();
+        assert!(matches!(exact.texture(4, 4, 3), Answer::Ok(_)));
+        assert_eq!(kind_of(exact.buffer(1)), "invalid", "the mips used every granted byte");
+        let mut short = Session::new(total - 1, &["open"]);
+        short.open();
+        assert_eq!(kind_of(short.texture(4, 4, 3)), "invalid");
+        assert_eq!(short.fake.asked.len(), 1);
+        let mut one_level = Session::new(4 * 4 * 4 + 1, &["open"]);
+        one_level.open();
+        assert!(matches!(one_level.texture(4, 4, 1), Answer::Ok(_)));
+        one_level.ok_buffer(1);
+    }
+
+    #[test]
+    fn a_malformed_command_list_is_invalid_and_a_well_formed_one_is_asked() {
+        let mut session = Session::new(1 << 20, &["open", "compute"]);
+        session.open();
+        session.ok_buffer(16);
+        session.pipelines();
+        let compute = session.compute_command();
+        let before = session.fake.asked.len();
+        assert_eq!(kind_of(session.command(record(vec![]))), "invalid", "zero of the five");
+        let both = record(vec![
+            ("compute", compute.get("compute").unwrap().clone()),
+            ("clear", record(vec![("buffer", session.held("buffer"))])),
+        ]);
+        assert_eq!(kind_of(session.command(both)), "invalid", "two of the five");
+        assert_eq!(kind_of(session.command(record(vec![("compute", Value::Int(1))]))), "invalid");
+        let plain = record(vec![("compute", record(vec![
+            ("pipeline", Value::Int(4)), ("bindGroups", j(json!([]))), ("dispatch", j(json!([1, 1, 1]))),
+        ]))]);
+        assert_eq!(kind_of(session.command(plain)), "invalid", "a forged pipeline number");
+        assert_eq!(session.fake.asked.len(), before);
+        assert!(matches!(session.command(compute), Answer::Ok(_)));
+        assert_eq!(session.fake.asked.len(), before + 1);
+    }
+
+    #[test]
+    fn a_render_command_under_a_compute_only_grant_is_denied() {
+        let mut session = Session::new(1 << 20, &["open", "compute"]);
+        session.open();
+        session.ok_buffer(16);
+        session.pipelines();
+        assert!(matches!(session.texture(2, 2, 1), Answer::Ok(_)));
+        let render = record(vec![("render", record(vec![
+            ("pipeline", session.held("render")),
+            ("bindGroups", j(json!([]))),
+            ("target", session.held("texture")),
+            ("vertices", Value::Int(3)),
+        ]))]);
+        let before = session.fake.asked.len();
+        assert_eq!(kind_of(session.command(render.clone())), "denied");
+        assert_eq!(session.fake.asked.len(), before);
+        let compute = session.compute_command();
+        assert!(matches!(session.command(compute), Answer::Ok(_)));
+
+        let mut rendering = Session::new(1 << 20, &["open", "render"]);
+        rendering.open();
+        rendering.ok_buffer(16);
+        rendering.pipelines();
+        assert!(matches!(rendering.texture(2, 2, 1), Answer::Ok(_)));
+        let render = record(vec![("render", record(vec![
+            ("pipeline", rendering.held("render")),
+            ("bindGroups", j(json!([]))),
+            ("target", rendering.held("texture")),
+            ("vertices", Value::Int(3)),
+        ]))]);
+        assert!(matches!(rendering.command(render), Answer::Ok(_)));
+    }
+
+    #[test]
+    fn a_readback_needs_the_readback_kind_and_stays_inside_the_buffer() {
+        let mut denied = Session::new(64, &["open"]);
+        denied.open();
+        denied.ok_buffer(8);
+        denied.put("offset", Value::Int(0));
+        denied.put("length", Value::Int(8));
+        denied.fails_with("READ", "denied");
+
+        let mut granted = Session::new(64, &["open", "readback"]);
+        granted.open();
+        granted.ok_buffer(8);
+        granted.put("offset", Value::Int(0));
+        granted.put("length", Value::Int(8));
+        granted.ok("READ");
+        assert_eq!(granted.held("data").as_bytes(), Some(&[1u8, 2, 3][..]));
+        granted.put("length", Value::Int(9));
+        granted.fails_with("READ", "invalid");
+    }
+
+    #[test]
+    fn a_write_takes_bytes_or_their_base64_text_and_refuses_anything_else() {
+        let mut session = Session::new(64, &["open"]);
+        session.open();
+        session.ok_buffer(8);
+        session.put("offset", Value::Int(0));
+        session.put("data", Value::string("abc"));
+        session.fails_with("WRITE", "invalid");
+        session.put("data", Value::Int(7));
+        session.fails_with("WRITE", "invalid");
+        session.put("data", Value::bytes(vec![7]));
+        session.ok("WRITE");
+        let (op, args) = session.fake.asked.last().unwrap();
+        assert_eq!(*op, OsOp::GpuWrite);
+        assert_eq!(args[2].as_bytes(), Some(&[7u8][..]));
+        session.put("data", Value::string("CAk="));
+        session.ok("WRITE");
+        let (_, args) = session.fake.asked.last().unwrap();
+        assert_eq!(args[2].as_bytes(), Some(&[8u8, 9][..]), "base64 text is bytes on the wire (EXEC-EVAL-11) and reaches the host as bytes");
+    }
+
+    #[test]
+    fn a_deferred_device_open_completes_with_a_sealed_device_the_kernel_then_accepts() {
+        let server = server_with(grants(256, &["open"]), true);
+        let mut session = Session::on(server);
+        session.put("desc", j(json!({})));
+        let request = EventRequest {
+            event: "OPEN_KEYED".to_string(),
+            target_trait: Some("Host".to_string()),
+            payload: Some(Value::object(session.held.clone())),
+            ..Default::default()
+        };
+        let (response, seen) = drive(&session.server, request, |_| IoAnswer::ServiceDeferred);
+        assert!(emitted(&response).iter().all(|(event, _)| *event != "OK" && *event != "BAD"));
+        let IoRequest::Os { key: Some(key), .. } = &seen[0] else { panic!("a keyed os ask") };
+        let outcome = Ok(record(vec![("device", Value::Int(5)), ("features", j(json!([]))), ("limits", j(json!({})))]));
+        let completed = session.server.kernel().gpu_complete(key, outcome).expect("the open completes");
+        let device = completed.get("device").cloned().unwrap();
+        assert!(device.is_sealed_as("GpuDevice"));
+        assert_eq!(device.get("maxBytes").and_then(Value::as_int), Some(256));
+        assert_eq!(device.get("id").and_then(Value::as_int), Some(5));
+        session.put("device", device);
+        session.fake.next = 5;
+        session.ok_buffer(8);
+
+        let other = session.server.kernel().gpu_complete("someone-else", Ok(record(vec![("device", Value::Int(6))])));
+        assert_eq!(other.unwrap().get("device").and_then(Value::as_int), Some(6), "control: an unknown key is returned as it stands");
+    }
+
+    #[test]
+    fn a_deferred_open_that_failed_mints_nothing() {
+        let server = server_with(grants(256, &["open"]), true);
+        let mut session = Session::on(server);
+        session.put("desc", j(json!({})));
+        let request = EventRequest {
+            event: "OPEN_KEYED".to_string(),
+            target_trait: Some("Host".to_string()),
+            payload: Some(Value::object(session.held.clone())),
+            ..Default::default()
+        };
+        let (_, seen) = drive(&session.server, request, |_| IoAnswer::ServiceDeferred);
+        let IoRequest::Os { key: Some(key), .. } = &seen[0] else { panic!("a keyed os ask") };
+        let failed = session.server.kernel().gpu_complete(key, Err(OsError::new(OsErrorKind::Io, "no adapter")));
+        assert_eq!(failed.unwrap_err().kind, OsErrorKind::Io);
     }
 }

@@ -26,6 +26,7 @@ pub enum OsFamily {
     Mem,
     Kernel,
     Ffi,
+    Gpu,
 }
 
 /// The one family that answers `op`.
@@ -52,6 +53,8 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | AtomicAdd | AtomicCas => OsFamily::Mem,
         QueueFront | QueueBack => OsFamily::Kernel,
         FfiCall => OsFamily::Ffi,
+        GpuDeviceOpen | GpuDeviceClose | GpuBufferCreate | GpuTextureCreate | GpuSamplerCreate | GpuQueryCreate
+        | GpuShaderCreate | GpuPipelineCreate | GpuBindGroupCreate | GpuWrite | GpuSubmit | GpuRead | GpuRelease => OsFamily::Gpu,
     }
 }
 
@@ -204,6 +207,19 @@ os_ops! {
     QueueFront => ("kernel/queue-front", Single),
     QueueBack => ("kernel/queue-back", Single),
     FfiCall => ("ffi/call", Single),
+    GpuDeviceOpen => ("gpu/device-open", Single),
+    GpuDeviceClose => ("gpu/device-close", Single),
+    GpuBufferCreate => ("gpu/buffer-create", Single),
+    GpuTextureCreate => ("gpu/texture-create", Single),
+    GpuSamplerCreate => ("gpu/sampler-create", Single),
+    GpuQueryCreate => ("gpu/query-create", Single),
+    GpuShaderCreate => ("gpu/shader-create", Single),
+    GpuPipelineCreate => ("gpu/pipeline-create", Single),
+    GpuBindGroupCreate => ("gpu/bind-group-create", Single),
+    GpuWrite => ("gpu/write", Single),
+    GpuSubmit => ("gpu/submit", Single),
+    GpuRead => ("gpu/read", Single),
+    GpuRelease => ("gpu/release", Single),
 }
 
 impl OsOp {
@@ -234,9 +250,10 @@ impl OsOp {
 
     /// Whether the operation is answered by the host on either side: `os/fetch` is the browser host's only ask, and
     /// `os/recv` and `os/close` read and release the handle of a streamed fetch there (a native host's sockets); the
-    /// `mem/` and `kernel/` families are the kernel's own, so every kernel runs them.
+    /// `mem/` and `kernel/` families are the kernel's own, so every kernel runs them; the `gpu/` family is answered by a
+    /// host of any kind.
     pub fn runs_on_any_host(self) -> bool {
-        matches!(self, OsOp::Fetch | OsOp::Recv | OsOp::Close) || matches!(family_of(self), OsFamily::Mem | OsFamily::Kernel)
+        matches!(self, OsOp::Fetch | OsOp::Recv | OsOp::Close) || matches!(family_of(self), OsFamily::Mem | OsFamily::Kernel | OsFamily::Gpu)
     }
 
     /// Whether the operation is one of the `kv/` row-store asks (the host picks the medium; runs on every host).
@@ -270,6 +287,9 @@ impl OsOp {
                     | OsOp::StdinRead
                     | OsOp::IrqWait
                     | OsOp::FfiCall
+                    | OsOp::GpuDeviceOpen
+                    | OsOp::GpuSubmit
+                    | OsOp::GpuRead
             )
     }
 }
@@ -526,16 +546,18 @@ mod tests {
             assert_eq!(op.name().starts_with("mem/"), family_of(*op) == OsFamily::Mem);
             assert_eq!(op.name().starts_with("kernel/"), family_of(*op) == OsFamily::Kernel);
             assert_eq!(op.name().starts_with("ffi/"), family_of(*op) == OsFamily::Ffi);
+            assert_eq!(op.name().starts_with("gpu/"), family_of(*op) == OsFamily::Gpu);
             assert!(
                 op.name().starts_with("os/")
                     || op.name().starts_with("mem/")
                     || op.name().starts_with("kernel/")
                     || op.name().starts_with("ffi/")
+                    || op.name().starts_with("gpu/")
                     || op.is_kv()
             );
             assert!(op.min_args() <= op.max_args());
         }
-        assert_eq!(OsOp::ALL.len(), 117);
+        assert_eq!(OsOp::ALL.len(), 130);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -624,7 +646,10 @@ mod tests {
                 OsOp::Recv,
                 OsOp::Recvfrom,
                 OsOp::IrqWait,
-                OsOp::FfiCall
+                OsOp::FfiCall,
+                OsOp::GpuDeviceOpen,
+                OsOp::GpuSubmit,
+                OsOp::GpuRead
             ]
         );
         assert!(!OsOp::Wait.is_stream() && !OsOp::Recv.is_stream());
@@ -676,6 +701,38 @@ mod tests {
         assert!(OsOp::FfiCall.defers_completion() && !OsOp::FfiCall.is_stream());
         assert!(!OsOp::FfiCall.is_kernel_owned() && !OsOp::FfiCall.runs_on_any_host(), "a host answers it");
         assert!(!OsOp::Pid.defers_completion(), "control: an answer that never defers");
+    }
+
+    #[test]
+    fn the_gpu_family_is_exactly_the_thirteen_host_answered_ops() {
+        let gpu: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Gpu).map(|op| op.name()).collect();
+        assert_eq!(
+            gpu,
+            vec![
+                "gpu/device-open",
+                "gpu/device-close",
+                "gpu/buffer-create",
+                "gpu/texture-create",
+                "gpu/sampler-create",
+                "gpu/query-create",
+                "gpu/shader-create",
+                "gpu/pipeline-create",
+                "gpu/bind-group-create",
+                "gpu/write",
+                "gpu/submit",
+                "gpu/read",
+                "gpu/release"
+            ]
+        );
+        for op in [OsOp::GpuDeviceOpen, OsOp::GpuSubmit, OsOp::GpuRead] {
+            assert!(op.defers_completion(), "{}", op.name());
+        }
+        for op in [OsOp::GpuDeviceClose, OsOp::GpuBufferCreate, OsOp::GpuWrite, OsOp::GpuRelease] {
+            assert!(!op.defers_completion(), "{}", op.name());
+        }
+        assert!(OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Gpu).all(|op| {
+            op.runs_on_any_host() && !op.is_kernel_owned() && !op.is_stream()
+        }));
     }
 
     #[test]

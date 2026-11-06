@@ -494,6 +494,8 @@ pub struct RuntimeKernel {
     sealed_outputs: SealedOutputs,
     /// The committed `mem/*` arenas, blocks and borrows (EXEC-METAL-1); a step works on a staged copy (`StepScope::mem_change`).
     mem: Arc<RwLock<mem_table::MemTable>>,
+    /// The `gpu/*` handles and per-device byte budgets the kernel holds; a step works on a staged copy.
+    gpu: Arc<gpu_call::GpuState>,
     /// What a pure `mem/*` read sees: the committed table plus the running step's staged one.
     mem_view: Arc<mem_table::StepMem>,
     /// What a step's pure `kernel/*` reads see (EXEC-METAL-5/6).
@@ -772,6 +774,7 @@ impl RuntimeKernel {
             sealed_outputs,
             mem,
             mem_view,
+            gpu: Arc::default(),
             introspect,
             sessions: Sessions {
                 session_by_thread,
@@ -1151,6 +1154,9 @@ mod identity_session;
 mod theme_session;
 mod mem_table;
 mod ffi_call;
+mod gpu_call;
+mod completion_route;
+pub use completion_route::DeliveredCompletion;
 mod kernel_introspect;
 pub use mem_table::SharedArena;
 mod mount_ledger;

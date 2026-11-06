@@ -111,6 +111,12 @@ impl NativeHost {
         }
     }
 
+    /// Answer the `gpu/` family through `answerer`; without one every `gpu/` ask is `unsupported`.
+    pub fn with_gpu(self, answerer: Arc<dyn orbital_core_base::gpu::GpuAnswerer>) -> Self {
+        self.handles.install_gpu(answerer);
+        self
+    }
+
     /// Answer the substrate operators (`program/*`, `behavior/*`) through `handler`; without one they fail.
     pub fn with_substrate(mut self, handler: Option<Arc<dyn SubstrateHandler>>) -> Self {
         self.substrate = handler;

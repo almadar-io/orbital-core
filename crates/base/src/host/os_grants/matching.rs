@@ -241,6 +241,12 @@ impl OsGrants {
             }
         }
         extend_missing(&mut self.ffi, &other.ffi);
+        for grant in &other.gpu {
+            match self.gpu.iter_mut().find(|g| g.target == grant.target) {
+                Some(held) => extend_missing(&mut held.kinds, &grant.kinds),
+                None => self.gpu.push(grant.clone()),
+            }
+        }
         for grant in &other.anchored.fs {
             match self
                 .anchored
@@ -517,6 +523,13 @@ fn mem_target_within(held: &str, asked: &str) -> bool {
     }
 }
 
+fn gpu_target_within(held: &str, asked: &str) -> bool {
+    match (gpu_target(held), gpu_target(asked)) {
+        (Some(GpuTarget { max_bytes }), Some(GpuTarget { max_bytes: at })) => at <= max_bytes,
+        _ => held == asked,
+    }
+}
+
 fn kernel_target_within(held: &str, asked: &str) -> bool {
     match (kernel_target(held), kernel_target(asked)) {
         (Some(KernelTarget::Apply { pattern }), Some(KernelTarget::Apply { pattern: at })) => {
@@ -577,6 +590,12 @@ pub fn covers(asker: &OsGrants, guest: &OsGrants) -> Result<(), Vec<String>> {
         let held: Vec<KernelKind> = asker.kernel.iter().filter(|g| kernel_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
         for kind in missing_kinds(&held, &grant.kinds, KernelKind::name) {
             missing.push(format!("kernel {:?} [{kind}]", grant.target));
+        }
+    }
+    for grant in &guest.gpu {
+        let held: Vec<GpuKind> = asker.gpu.iter().filter(|g| gpu_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()).collect();
+        for kind in missing_kinds(&held, &grant.kinds, GpuKind::name) {
+            missing.push(format!("gpu {:?} [{kind}]", grant.target));
         }
     }
     for grant in guest.ffi.iter().filter(|grant| !asker.ffi.contains(grant)) {

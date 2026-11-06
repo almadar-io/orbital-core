@@ -231,11 +231,11 @@ pub(super) struct MemTable {
     next_id: i64,
 }
 
-fn refuse(kind: OsErrorKind, message: impl Into<String>) -> OsError {
+pub(super) fn refuse(kind: OsErrorKind, message: impl Into<String>) -> OsError {
     OsError::new(kind, message)
 }
 
-fn closed(what: &str, id: i64) -> OsError {
+pub(super) fn closed(what: &str, id: i64) -> OsError {
     refuse(OsErrorKind::Closed, format!("the {what} {id} is not live"))
 }
 
@@ -243,7 +243,7 @@ fn record<const N: usize>(fields: [(&str, Value); N]) -> Value {
     Value::object(fields.into_iter().map(|(key, value)| (key.into(), value)).collect::<ValueMap>())
 }
 
-fn sealed<const N: usize>(kind: &'static str, fields: [(&str, Value); N]) -> Value {
+pub(super) fn sealed<const N: usize>(kind: &'static str, fields: [(&str, Value); N]) -> Value {
     Value::sealed(kind, fields.into_iter().map(|(key, value)| (key.into(), value)).collect::<ValueMap>())
 }
 
@@ -255,15 +255,15 @@ fn handle(value: Option<&Value>, kind: &str) -> Result<i64, OsError> {
         .ok_or_else(|| refuse(OsErrorKind::Invalid, format!("expects a live {kind} handle")))
 }
 
-fn int(value: Option<&Value>, what: &str) -> Result<i64, OsError> {
+pub(super) fn int(value: Option<&Value>, what: &str) -> Result<i64, OsError> {
     value.and_then(Value::as_int).ok_or_else(|| refuse(OsErrorKind::Invalid, format!("{what} must be an int")))
 }
 
-fn non_negative(value: Option<&Value>, what: &str) -> Result<u64, OsError> {
+pub(super) fn non_negative(value: Option<&Value>, what: &str) -> Result<u64, OsError> {
     u64::try_from(int(value, what)?).map_err(|_| refuse(OsErrorKind::Invalid, format!("{what} must not be negative")))
 }
 
-fn as_int64(value: u64) -> Result<i64, OsError> {
+pub(super) fn as_int64(value: u64) -> Result<i64, OsError> {
     i64::try_from(value).map_err(|_| refuse(OsErrorKind::Invalid, "the size exceeds the int range"))
 }
 
@@ -631,9 +631,9 @@ impl RuntimeKernel {
         self.mem_view.clone()
     }
 
-    /// The bytes of the block a live Borrow lends, as the running step sees them, for an `ffi/call` pointer argument;
+    /// The bytes of the block a live Borrow lends, as the running step sees them, for an `ffi/call` pointer argument or a `gpu/write` payload;
     /// `exclusive` demands an exclusive borrow (a `mutptr`).
-    pub(super) fn ffi_borrow_bytes(&self, borrow: &Value, exclusive: bool) -> Result<Vec<u8>, OsError> {
+    pub(super) fn borrow_bytes(&self, borrow: &Value, exclusive: bool) -> Result<Vec<u8>, OsError> {
         let id = handle(Some(borrow), BORROW)?;
         self.mem_seen(|table| {
             let entry = table.borrows.get(&id).ok_or_else(|| closed("borrow", id))?;
@@ -804,9 +804,10 @@ impl RuntimeKernel {
                 let offset = non_negative(args.get(1), "the offset")?;
                 let data = args
                     .get(2)
-                    .and_then(Value::as_bytes)
-                    .ok_or_else(|| refuse(OsErrorKind::Invalid, "the data must be bytes"))?;
-                self.with_staged_mem(|table| table.write(borrow, offset, data))
+                    .ok_or_else(|| refuse(OsErrorKind::Invalid, "the data must be bytes"))?
+                    .bytes_view()
+                    .map_err(|e| refuse(OsErrorKind::Invalid, format!("the data must be bytes: {e}")))?;
+                self.with_staged_mem(|table| table.write(borrow, offset, &data))
             }
             OsOp::Freeze => {
                 let block = handle(args.first(), BLOCK)?;

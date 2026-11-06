@@ -13,8 +13,9 @@ use crate::program_machine::{
     PlayedEnsures, PlayedGuard, PlayedOutcome, PlayedResult, PlayedState, PlayedStep,
 };
 use crate::resumable::{
-    drive_blocking, BlockingHost, DispatchOutcomes, IoAnswer, IoRequest, PortHost,
+    drive_blocking, BlockingHost, CallSite, DispatchOutcomes, IoAnswer, IoRequest, PortHost,
 };
+use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use crate::secret_source::SecretSource;
 use orbital_core_base::dispatch_mode::DispatchMode;
 use orbital_core_base::effect_types::Effect;
@@ -64,6 +65,79 @@ impl SecretSource for StepCredentials {
     fn secret(&self, name: &str) -> Result<Option<String>, String> {
         Ok(self.0.lock().get(name).cloned())
     }
+}
+
+/// The host answers a replayed step scripts in its `answers` (G-CROSS-468): each is one `os/` ask's answer as a host gives
+/// it, plain ids and all, so the kernel unwraps, mints, budgets and routes exactly as it does live. An ask takes the first
+/// unused answer naming its operator; one no answer names stays pending, as without answers. A deferring op's answer is
+/// delivered as its completion once the dispatch that asked has ended, through [`RuntimeKernel::dispatch_route`].
+#[derive(Default)]
+pub struct StepAnswers {
+    scripted: Mutex<Vec<(OsOp, Option<Result<Value, OsError>>)>>,
+    deferred: Mutex<Vec<(CallSite, String, Result<Value, OsError>)>>,
+}
+
+impl StepAnswers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn hold(&self, scripted: Vec<(OsOp, Result<Value, OsError>)>) {
+        *self.scripted.lock() = scripted.into_iter().map(|(op, outcome)| (op, Some(outcome))).collect();
+        self.deferred.lock().clear();
+    }
+
+    fn take(&self, op: OsOp) -> Option<Result<Value, OsError>> {
+        self.scripted.lock().iter_mut().find(|(named, outcome)| *named == op && outcome.is_some()).and_then(|(_, outcome)| outcome.take())
+    }
+
+    fn unused(&self) -> Vec<String> {
+        self.scripted
+            .lock()
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, outcome))| outcome.is_some())
+            .map(|(n, (op, _))| format!("answers[{n}] ({})", op.name()))
+            .collect()
+    }
+
+    fn take_deferred(&self) -> Vec<(CallSite, String, Result<Value, OsError>)> {
+        std::mem::take(&mut *self.deferred.lock())
+    }
+}
+
+fn scripted_answers(i: usize, answers: &serde_json::Value, live: bool) -> Result<Vec<(OsOp, Result<Value, OsError>)>, String> {
+    let list = match answers {
+        serde_json::Value::Null => return Ok(Vec::new()),
+        serde_json::Value::Array(_) if live => return Err(format!("step {i}: `answers` apply to a replay with no live host only")),
+        serde_json::Value::Array(list) => list,
+        _ => return Err(format!("step {i}: `answers` must be a list of host answers")),
+    };
+    list.iter()
+        .enumerate()
+        .map(|(n, answer)| {
+            let at = format!("step {i}: answers[{n}]");
+            let fields = answer.as_object().ok_or_else(|| format!("{at} must be an object"))?;
+            if let Some(extra) = fields.keys().find(|k| !["operator", "ok", "error"].contains(&k.as_str())) {
+                return Err(format!("{at}: unknown key `{extra}`"));
+            }
+            let name = fields.get("operator").and_then(serde_json::Value::as_str).ok_or_else(|| format!("{at}: `operator` must be an os operator name"))?;
+            let op = OsOp::from_name(name).ok_or_else(|| format!("{at}: `{name}` is not an os operator"))?;
+            let outcome = match (fields.get("ok"), fields.get("error")) {
+                (Some(ok), None) => Ok(to_value(ok).map_err(|e| format!("{at}: {e}"))?),
+                (None, Some(error)) => {
+                    let kind = error.get("kind").and_then(serde_json::Value::as_str).and_then(OsErrorKind::from_name);
+                    let message = error.get("message").and_then(serde_json::Value::as_str);
+                    match (kind, message) {
+                        (Some(kind), Some(message)) => Err(OsError::new(kind, message)),
+                        _ => return Err(format!("{at}: `error` must be {{ kind: <an os error kind>, message: <string> }}")),
+                    }
+                }
+                _ => return Err(format!("{at}: give exactly one of `ok` or `error`")),
+            };
+            Ok((op, outcome))
+        })
+        .collect()
 }
 
 /// The inline trait definitions of a resolved program, by trait name.
@@ -401,14 +475,27 @@ pub fn with_step_config(
         .map_err(|e| e.to_string())
 }
 
-/// A replayed step's host answer: a keyed os/* ask is left pending (its answer event is a later step's to
-/// play, G-ORB-459); a credential ask is answered from the step's `credentials`; every other ask is answered as a
-/// kernel with no host answers it.
+/// A replayed step's host answer: an os/* ask the step's `answers` script is answered from them (a deferring op's
+/// answer waits for the dispatch to end and arrives as its completion); any other keyed os/* ask is left pending (its
+/// answer event is a later step's to play, G-ORB-459); a credential ask is answered from the step's `credentials`; every
+/// other ask is answered as a kernel with no host answers it.
 pub fn step_answer(
     kernel: &RuntimeKernel,
     credentials: &StepCredentials,
+    answers: &StepAnswers,
     request: &IoRequest,
 ) -> IoAnswer {
+    if let IoRequest::Os { op, key, site, .. } = request {
+        if let Some(outcome) = answers.take(*op) {
+            return match (key, site) {
+                (Some(key), Some(site)) if op.defers_completion() => {
+                    answers.deferred.lock().push((site.clone(), key.clone(), outcome));
+                    IoAnswer::ServiceDeferred
+                }
+                _ => IoAnswer::Os(outcome.map(Into::into)),
+            };
+        }
+    }
     match request {
         IoRequest::Os { key: Some(_), .. }
         | IoRequest::Guest { .. }
@@ -440,22 +527,39 @@ pub fn step_answer(
     }
 }
 
-/// The dispatch of a replay with no live host: asks answered by [`step_answer`].
+/// The dispatch of a replay with no live host: asks answered by [`step_answer`], then each scripted deferring answer
+/// delivered as its completion, in the order the asks were made, until none is left.
 pub fn replay_dispatch(
     kernel: &RuntimeKernel,
     credentials: &StepCredentials,
+    answers: &StepAnswers,
     trait_name: &str,
     event: &str,
     payload: Value,
 ) -> Result<DispatchOutcomes, String> {
-    kernel
+    let answer = |request: &IoRequest| step_answer(kernel, credentials, answers, request);
+    let dispatched = kernel
         .start_dispatch(trait_name, None, event, payload, None, None)
-        .and_then(|progress| {
-            drive_blocking(kernel, progress, &|request| {
-                step_answer(kernel, credentials, request)
-            })
-        })
-        .map_err(|e| e.to_string())
+        .and_then(|progress| drive_blocking(kernel, progress, &answer))
+        .map_err(|e| e.to_string())?;
+    let mut completions = Vec::new();
+    loop {
+        let deferred = answers.take_deferred();
+        if deferred.is_empty() {
+            break;
+        }
+        for (site, key, outcome) in deferred {
+            let Some((event, payload, failed)) = kernel.completion_route(&site, &key, outcome) else { continue };
+            let delivered = kernel.dispatch_route(&site, &key, event, payload, failed, &answer);
+            completions.push(StepCompletion {
+                event: delivered.event,
+                payload: delivered.payload,
+                failed: delivered.failed,
+                outcomes: delivered.result.map_err(|e| e.to_string()),
+            });
+        }
+    }
+    with_completions(dispatched, completions)
 }
 
 /// One deferred ask's completion as a live host delivered it (EXEC-QUEUE-10): the route event it fired, its payload (the
@@ -537,6 +641,7 @@ fn play_step(
     kernel: &RuntimeKernel,
     clock: &StepClock,
     credentials: &StepCredentials,
+    answers: &StepAnswers,
     trait_defs: &BTreeMap<String, Arc<TraitDefinition>>,
     known: &BTreeMap<String, (String, DispatchMode)>,
     i: usize,
@@ -603,6 +708,7 @@ fn play_step(
             ))
         }
     };
+    let scripted = scripted_answers(i, &step["answers"], live)?;
     let now = match &step["now"] {
         serde_json::Value::Null => None,
         serde_json::Value::Number(n) => n.as_f64(),
@@ -626,11 +732,17 @@ fn play_step(
         .transpose()
         .map_err(|e| format!("step {i}: {e}"))?;
     credentials.hold(held);
+    answers.hold(scripted);
     let outcomes = dispatch(trait_name, event, payload, settle_ms);
+    let unused = answers.unused();
+    answers.hold(Vec::new());
     credentials.hold(BTreeMap::new());
     drop(viewing);
     clock.pin(None);
     let outcomes = outcomes.map_err(|e| format!("step {i} dispatch failed: {e}"))?;
+    if !unused.is_empty() {
+        return Err(format!("step {i}: no ask took {}", unused.join(", ")));
+    }
     let entity_after = serde_json::to_value(kernel.snapshot_trait(trait_name, None).entity)
         .unwrap_or(serde_json::Value::Null);
     let entities: serde_json::Map<String, serde_json::Value> = outcomes
@@ -671,13 +783,14 @@ fn play_step(
     })
 }
 
-/// Plays `steps` on `kernel`. A step's `credentials` are held in `credentials` while it runs. `live` is true when `dispatch` runs them on a live host (only then does a step take
+/// Plays `steps` on `kernel`. A step's `credentials` are held in `credentials` and its `answers` in `answers` while it runs. `live` is true when `dispatch` runs them on a live host (only then does a step take
 /// `settleMs`, which `dispatch` receives); `dispatch` returns the outcomes of the cascade one event started.
 /// The report is a [`StepReport`].
 pub fn play_steps(
     kernel: &RuntimeKernel,
     clock: &StepClock,
     credentials: &StepCredentials,
+    answers: &StepAnswers,
     trait_defs: &BTreeMap<String, Arc<TraitDefinition>>,
     steps: &[serde_json::Value],
     live: bool,
@@ -692,6 +805,7 @@ pub fn play_steps(
             kernel,
             clock,
             credentials,
+            answers,
             trait_defs,
             &known,
             i,
@@ -773,14 +887,16 @@ mod tests {
         kernel.register_schema(schema).unwrap();
         let steps = steps.as_array().unwrap().clone();
         let credentials = StepCredentials::new();
+        let answers = StepAnswers::new();
         play_steps(
             &kernel,
             &clock,
             &credentials,
+            &answers,
             &defs,
             &steps,
             false,
-            &mut |t, e, p, _| replay_dispatch(&kernel, &credentials, t, e, p),
+            &mut |t, e, p, _| replay_dispatch(&kernel, &credentials, &answers, t, e, p),
         )
         .map(|report| serde_json::to_value(report).unwrap())
     }
@@ -854,6 +970,88 @@ mod tests {
         let (effect, lines) = logged("LOUD");
         assert_eq!(effect["status"], "skipped", "{effect}");
         assert!(lines.is_empty());
+    }
+
+    const GPU: &str = r#"{"name":"GpuApp","typeContractVersion":1,"osGrants":{"gpu":[{"target":"device:1024","kinds":["open"]}]},"orbitals":[{"name":"Gpu","entity":{"name":"Job","persistence":"runtime","fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Host","linkedEntity":"Job","stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"opening"},{"name":"opened"},{"name":"made"},{"name":"failed"}],"transitions":[
+        {"from":"idle","to":"opening","event":"OPEN","effects":[["gpu/device-open",{},{"key":"dev","emit":{"success":"OPENED","failure":"FAILED"}}]]},
+        {"from":"opening","to":"opened","event":"OPENED","effects":[["gpu/buffer-create","@payload.device",{"size":16,"usage":["storage"]},{"key":"buf","emit":{"success":"MADE","failure":"FAILED"}}]]},
+        {"from":"opened","to":"made","event":"MADE"},
+        {"from":"opening","to":"failed","event":"FAILED"},
+        {"from":"opened","to":"failed","event":"FAILED"}
+    ]}}]}]}"#;
+
+    fn last_state(report: &serde_json::Value) -> serde_json::Value {
+        report["steps"][0]["outcomes"].as_array().and_then(|o| o.last()).map(|o| o["newState"].clone()).unwrap_or_default()
+    }
+
+    fn open_answer() -> serde_json::Value {
+        serde_json::json!({ "operator": "gpu/device-open", "ok": { "device": 1, "features": [], "limits": {} } })
+    }
+
+    fn buffer_answer() -> serde_json::Value {
+        serde_json::json!({ "operator": "gpu/buffer-create", "ok": { "buffer": 7 } })
+    }
+
+    #[test]
+    fn a_scripted_deferred_answer_is_completed_by_the_kernel_which_mints_the_handle_the_next_ask_uses() {
+        let report = play_on(GPU, serde_json::json!([
+            { "trait": "Host", "event": "OPEN", "answers": [open_answer(), buffer_answer()] }
+        ]))
+        .unwrap();
+        let step = &report["steps"][0];
+        assert_eq!(last_state(&report), "made", "the minted device took the buffer ask to MADE: {report}");
+        let events: Vec<_> = step["outcomes"].as_array().unwrap().iter().map(|o| o["event"].clone()).collect();
+        assert_eq!(events, [serde_json::json!("OPEN"), serde_json::json!("OPENED"), serde_json::json!("MADE")], "{report}");
+        assert_eq!(step["pendingAsks"], serde_json::json!([]), "both asks ended: {report}");
+    }
+
+    #[test]
+    fn control_a_device_fed_as_a_payload_is_a_forged_number_and_the_kernel_refuses_it() {
+        let report = play_on(GPU, serde_json::json!([
+            { "trait": "Host", "from": "opening", "event": "OPENED", "payload": { "device": 1, "key": "dev" }, "answers": [] }
+        ]))
+        .unwrap();
+        assert_eq!(last_state(&report), "failed", "{report}");
+    }
+
+    #[test]
+    fn a_scripted_error_answer_takes_the_failure_route() {
+        let report = play_on(GPU, serde_json::json!([
+            { "trait": "Host", "event": "OPEN", "answers": [{ "operator": "gpu/device-open", "error": { "kind": "denied", "message": "no adapter" } }] }
+        ]))
+        .unwrap();
+        assert_eq!(last_state(&report), "failed", "{report}");
+    }
+
+    #[test]
+    fn without_answers_a_keyed_ask_stays_pending() {
+        let report = play_on(GPU, serde_json::json!([{ "trait": "Host", "event": "OPEN" }])).unwrap();
+        let step = &report["steps"][0];
+        assert_eq!(last_state(&report), "opening", "{report}");
+        assert_eq!(step["pendingAsks"][0]["operator"], "gpu/device-open", "{report}");
+    }
+
+    #[test]
+    fn an_answer_no_ask_takes_refuses_the_step() {
+        let error = play_on(GPU, serde_json::json!([
+            { "trait": "Host", "event": "OPEN", "answers": [open_answer(), buffer_answer(), { "operator": "gpu/read", "ok": { "data": "" } }] }
+        ]))
+        .unwrap_err();
+        assert!(error.contains("no ask took answers[2] (gpu/read)"), "{error}");
+    }
+
+    #[test]
+    fn a_malformed_answer_refuses_the_step() {
+        for (answer, says) in [
+            (serde_json::json!({ "operator": "gpu/nope", "ok": {} }), "is not an os operator"),
+            (serde_json::json!({ "operator": "gpu/device-open" }), "exactly one of `ok` or `error`"),
+            (serde_json::json!({ "operator": "gpu/device-open", "ok": {}, "error": { "kind": "io", "message": "x" } }), "exactly one of `ok` or `error`"),
+            (serde_json::json!({ "operator": "gpu/device-open", "error": { "kind": "nope", "message": "x" } }), "`error` must be"),
+            (serde_json::json!({ "operator": "gpu/device-open", "ok": {}, "extra": 1 }), "unknown key `extra`"),
+        ] {
+            let error = play_on(GPU, serde_json::json!([{ "trait": "Host", "event": "OPEN", "answers": [answer] }])).unwrap_err();
+            assert!(error.contains(says), "{error}");
+        }
     }
 
     #[test]

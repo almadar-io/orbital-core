@@ -131,6 +131,11 @@ pub mod events;
 pub mod os;
 #[path = "host/os_grants/mod.rs"]
 pub mod os_grants;
+#[path = "host/gpu.rs"]
+pub mod gpu;
+#[cfg(feature = "wgsl")]
+#[path = "host/gpu_wgsl.rs"]
+pub mod gpu_wgsl;
 #[path = "host/agent_ports.rs"]
 pub mod agent_ports;
 #[path = "host/drawable.rs"]

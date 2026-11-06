@@ -194,6 +194,13 @@ pub enum OsGrantNeed {
     },
     Kernel { access: KernelKind, #[serde(default)] operator: Option<usize> },
     Ffi { library: usize, symbol: usize },
+    /// A gpu call: `commands` is the argument holding a literal command list, each entry of which names the kind of
+    /// work it needs (`compute` or `render`).
+    Gpu {
+        access: GpuKind,
+        #[serde(default)]
+        commands: Option<usize>,
+    },
 }
 
 /// The needs the installed operator table declares for `op`; empty for a call on a handle, whose grant was checked
@@ -506,6 +513,9 @@ pub struct OsGrants {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<FfiGrant>>"))]
     pub ffi: Vec<FfiGrant>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<GpuGrant>>"))]
+    pub gpu: Vec<GpuGrant>,
     /// `credentials: [admin]`: the raw credential-store operators, closed unless declared.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[cfg_attr(feature = "ts-export", ts(as = "Option<Vec<CredentialKind>>"))]
@@ -523,10 +533,14 @@ mod matching;
 mod anchors;
 mod entries;
 mod ffi;
+mod gpu;
 mod requirements;
 mod static_check;
+#[cfg(feature = "wgsl")]
+mod gpu_bindings;
 mod table;
 pub use table::OsGrantTable;
+pub use gpu::{gpu_target, GpuGrant, GpuKind, GpuTarget};
 pub use ffi::{parse_ffi_signature, FfiGrant, FfiRet, FfiSignature, FfiType, FFI_MAX_PARAMS};
 pub use static_check::{os_grant_findings, prune_composed_unused_grants, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
 use matching::*;

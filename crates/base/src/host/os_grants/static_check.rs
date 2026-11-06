@@ -23,6 +23,8 @@ pub enum OsGrantFindingCode {
     Unused,
     EntryInvalid,
     TargetNotStatic,
+    ShaderInvalid,
+    BindingMismatch,
 }
 
 /// One finding. `entry` is what the call needs (`missing`), the granted entry (`unused`) or the problem
@@ -303,6 +305,7 @@ fn describe(need: &OsRequirement) -> String {
         OsRequirement::Kernel { kind, operator: None } => format!("kernel {}", kind.name()),
         OsRequirement::Kernel { kind, operator: Some(name) } => format!("kernel {} {name:?}", kind.name()),
         OsRequirement::Ffi { library, symbol } => format!("ffi {library:?} {symbol}"),
+        OsRequirement::Gpu { kind } => format!("gpu device {}", kind.name()),
     }
 }
 
@@ -385,6 +388,7 @@ fn grant_entry(need: &OsRequirement) -> (String, bool) {
             true,
         ),
         OsRequirement::Ffi { library, symbol } => (format!("ffi: {{ {library:?}: {{ {symbol}: \"<signature>\" }} }}"), true),
+        OsRequirement::Gpu { kind } => (format!("gpu: {{ \"device:<maxBytes>\": [{}] }}", kind.name()), true),
         OsRequirement::Mem { kind: MemKind::Atomic, .. } => ("mem: { \"shared:<maxBytes>\": [atomic] }".to_string(), true),
         OsRequirement::Mem { kind, capacity } => (
             match capacity {
@@ -501,6 +505,32 @@ fn check_entries(
     }
 }
 
+/// A `gpu/shader-create` WGSL source naga refuses.
+#[cfg(feature = "wgsl")]
+fn shader_invalid(orbital: &str, source: &str, site: &str) -> Option<OsGrantFinding> {
+    let message = crate::gpu_wgsl::check_wgsl(source).err()?;
+    Some(OsGrantFinding {
+        code: OsGrantFindingCode::ShaderInvalid,
+        orbital: Some(orbital.to_string()),
+        call: Some(OsOp::GpuShaderCreate.name().to_string()),
+        entry: Some(message),
+        site: site.to_string(),
+        grant: None,
+        app: None,
+        argument: Some(2),
+        via: None,
+    })
+}
+
+/// The WGSL argument of a `gpu/shader-create` when it is written as a literal; the as-written pass checks it.
+#[cfg(feature = "wgsl")]
+fn literal_wgsl(op: OsOp, positional: &[SExpression]) -> Option<&str> {
+    match (op, positional.get(1)?) {
+        (OsOp::GpuShaderCreate, SExpression::String(source)) if !source.starts_with('@') => Some(source),
+        _ => None,
+    }
+}
+
 /// The findings of the program as written: an `os/` call not covered by the grants of its orbital, a computed
 /// target, a malformed entry, an entry no call uses.
 fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
@@ -527,6 +557,10 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
                     let (positional, _) = split_envelope(op, args);
+                    #[cfg(feature = "wgsl")]
+                    if let Some(source) = literal_wgsl(op, positional) {
+                        out.extend(shader_invalid(&orbital.name, source, &site));
+                    }
                     match os_requirements_deferring(op, positional, &knob_fed) {
                         Err(arg) => out.push(not_static(&orbital.name, op, arg + 1, &site, None)),
                         Ok(found) => {
@@ -548,7 +582,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
 /// defaults. `@config.k.p` reads a knob and a path into it; `array/nth` with a literal index takes that element and
 /// with any other index every element; `object/get` with a literal key takes that field of each object. `None` for
 /// anything else; a knob with no value yields no candidate.
-fn config_values(
+pub(super) fn config_values(
     expr: &SExpression,
     config: &IndexMap<String, ConfigField>,
 ) -> Option<Vec<SExpression>> {
@@ -663,6 +697,14 @@ fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<
                     needs.extend(as_written.iter().cloned());
                     needs.extend(os_possible_uses(op, positional));
                     needs.extend(deferred_reach(op, positional));
+                    #[cfg(feature = "wgsl")]
+                    if op == OsOp::GpuShaderCreate && literal_wgsl(op, positional).is_none() {
+                        for value in positional.get(1).and_then(|arg| config_values(arg, &config)).unwrap_or_default() {
+                            if let SExpression::String(source) = value {
+                                out.extend(shader_invalid(&orbital.name, &source, &site));
+                            }
+                        }
+                    }
                     for (at, arg) in positional.iter().enumerate() {
                         for (key, anchored) in anchored_slots(arg) {
                             let Some(path) = deferred_anchored_path(anchored) else {
@@ -853,6 +895,13 @@ pub fn prune_composed_unused_grants(schema: &mut OrbitalSchema, authored: &Index
 pub fn os_grant_findings(schema: &OrbitalSchema, pass: OsGrantPass) -> Vec<OsGrantFinding> {
     match pass {
         OsGrantPass::Written => written(schema),
+        #[cfg(feature = "wgsl")]
+        OsGrantPass::Final => {
+            let mut found = finished(schema);
+            found.extend(super::gpu_bindings::binding_mismatches(schema));
+            found
+        }
+        #[cfg(not(feature = "wgsl"))]
         OsGrantPass::Final => finished(schema),
     }
 }

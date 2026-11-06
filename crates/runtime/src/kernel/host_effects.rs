@@ -301,6 +301,7 @@ impl RuntimeKernel {
             .mem_os(*op, args, orbital.as_deref())
             .or_else(|| self.kernel_os(*op, args, orbital.as_deref()))
             .or_else(|| self.ffi_os(*op, args, host_key, principal, orbital.as_deref()))
+            .or_else(|| self.gpu_os(*op, args, host_key, principal, orbital.as_deref()))
             .or_else(|| self.tls_os(*op, args, host_key, principal, orbital.as_deref()))
             .unwrap_or_else(|| self.io.os(*op, args, host_key, principal, orbital.as_deref()));
         #[cfg(not(feature = "wire-drivers"))]
@@ -309,6 +310,8 @@ impl RuntimeKernel {
         } else if let Some(outcome) = self.kernel_os(*op, args, orbital.as_deref()) {
             outcome
         } else if let Some(outcome) = self.ffi_os(*op, args, host_key, principal, orbital.as_deref()) {
+            outcome
+        } else if let Some(outcome) = self.gpu_os(*op, args, host_key, principal, orbital.as_deref()) {
             outcome
         } else if op.is_kernel_owned() {
             Err(OsError::new(OsErrorKind::Unsupported, format!("{}: TLS is not built into this kernel", op.name())))
