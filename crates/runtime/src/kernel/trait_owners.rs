@@ -27,6 +27,11 @@ impl TraitOwners {
         Self(owners)
     }
 
+    /// Whether any orbital of this program declares `trait_name`.
+    pub fn declares(&self, trait_name: &str) -> bool {
+        self.0.contains_key(trait_name)
+    }
+
     /// The single orbital declaring `trait_name`; unknown and ambiguous traits are errors (an
     /// ambiguous one names every candidate, none is picked).
     pub fn owning_orbital(&self, trait_name: &str) -> Result<&str, String> {

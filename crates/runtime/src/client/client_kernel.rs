@@ -502,6 +502,12 @@ impl ClientKernel {
             .map_err(BridgeError::Server)
     }
 
+    /// Whether this client's program declares `trait_name`; the traits of orbitals the client projection leaves out
+    /// (EXEC-ENDPOINT-5) are the server's.
+    pub fn declares_trait(&self, trait_name: &str) -> bool {
+        self.embedded.trait_owners().declares(trait_name)
+    }
+
     /// How many `(trait, tick)` pairs the schema declares.
     pub fn tick_count(&self) -> usize {
         self.embedded.tick_count()

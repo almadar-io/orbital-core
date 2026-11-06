@@ -1033,3 +1033,103 @@ fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
     assert_eq!(title_with(true), ["Hello"]);
     assert_eq!(title_with(false), [""], "control: no catalogs, no message");
 }
+
+fn init_response(rejections: serde_json::Value) -> EventResponse {
+    serde_json::from_value(serde_json::json!({ "success": true, "rejections": rejections }))
+        .unwrap()
+}
+
+/// A trait whose INIT effect fails is named on the page, as the web names it.
+#[test]
+fn a_trait_whose_init_fails_to_start_paints_the_mount_error() {
+    let schema = peer_buttons_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.process_response(
+        "INIT",
+        Some("First".to_string()),
+        init_response(serde_json::json!([
+            { "code": "effect-failed", "trait": "First", "event": "INIT", "error": "set refused" }
+        ])),
+    );
+    let fault = core.mount_fault.clone().expect("the failure is kept");
+    assert_eq!(fault.trait_name, "First");
+    assert_eq!(fault.message, "set refused");
+    let content = core.mount_fault_content().expect("painted as error-state");
+    assert_eq!(content.pattern, "error-state");
+    assert_eq!(
+        get_string(&content.props, "title").as_deref(),
+        Some("First failed to start")
+    );
+    assert_eq!(
+        get_string(&content.props, "message").as_deref(),
+        Some("set refused")
+    );
+    assert_eq!(
+        get_string(&content.props, "data-testid").as_deref(),
+        Some(TRAIT_MOUNT_ERROR_TESTID)
+    );
+    core.begin_mount(vec!["First".to_string()]);
+    assert!(core.mount_fault.is_none(), "a new mount clears the failure");
+}
+
+/// Control: an INIT with no failed effect, and a failed later event, keep no mount error.
+#[test]
+fn a_clean_init_and_a_failed_later_event_keep_no_mount_error() {
+    let schema = peer_buttons_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.process_response(
+        "INIT",
+        Some("First".to_string()),
+        init_response(serde_json::json!([])),
+    );
+    assert!(core.mount_fault.is_none());
+    core.process_response(
+        "CLICK",
+        Some("First".to_string()),
+        init_response(serde_json::json!([
+            { "code": "effect-failed", "trait": "First", "error": "later" }
+        ])),
+    );
+    assert!(core.mount_fault.is_none());
+}
+
+/// A server answer's emit from a trait the client program leaves to the server is not re-dispatched to that trait
+/// (the client kernel does not own it); the same emit from a trait the client declares is queued.
+#[test]
+fn a_server_only_emitters_continuation_is_not_requeued_for_the_client() {
+    let schema = peer_buttons_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    let answer = |emitter: &str| -> EventResponse {
+        serde_json::from_value(serde_json::json!({
+            "success": true,
+            "emittedEvents": [{ "event": "DONE", "source": { "trait": emitter } }]
+        }))
+        .unwrap()
+    };
+    core.process_response("INIT", None, answer("MockDataMockSeed"));
+    assert!(core.pending_events.is_empty());
+    assert!(core.status_message.is_none());
+    core.process_response("INIT", None, answer("First"));
+    assert_eq!(
+        core.pending_events.len(),
+        1,
+        "control: a declared emitter queues"
+    );
+    assert_eq!(core.pending_events[0].1.as_deref(), Some("First"));
+}
+
+/// A refused mount round trip names the entering traits and keeps the message.
+#[test]
+fn a_refused_mount_names_the_entering_traits() {
+    let schema = peer_buttons_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.begin_mount(vec!["First".to_string(), "Second".to_string()]);
+    core.finish_mount_page(Err(BridgeError::Server("unknown trait: X".into())));
+    let fault = core.mount_fault.clone().expect("kept");
+    assert_eq!(fault.trait_name, "First, Second");
+    assert_eq!(fault.message, "Server error: unknown trait: X");
+}

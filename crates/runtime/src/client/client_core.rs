@@ -63,6 +63,20 @@ pub fn host_ask_failure_payload(completion: &HostAskCompletion, error: &str, kin
     Value::object(payload)
 }
 
+/// A page mount whose trait failed to start (the web paints it as the `error-state` named by `TRAIT_MOUNT_ERROR_TESTID`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MountFault {
+    /// The failing trait, or the entering traits joined by `, ` when the failure names none.
+    pub trait_name: String,
+    /// The kernel's message.
+    pub message: String,
+}
+
+/// The test id the web's trait-mount error panel carries.
+pub const TRAIT_MOUNT_ERROR_TESTID: &str = "trait-mount-error";
+/// The source the web's trait-mount error panel is written under.
+pub const MOUNT_ERROR_SOURCE: &str = "$mount";
+
 pub struct ClientCore {
     /// Orbital schema (resolved).
     pub schema: OrbitalSchema,
@@ -94,6 +108,10 @@ pub struct ClientCore {
     pub entities: HashMap<String, Vec<Value>>,
     /// Status message (text, is_error).
     pub status_message: Option<(String, bool)>,
+    /// The last page mount's failure; a new mount clears it.
+    pub mount_fault: Option<MountFault>,
+    /// The traits the current mount is entering.
+    mounting_traits: Vec<String>,
     /// Events queued during rendering, fired on the next frame.
     /// Events queued during a frame to be re-fired afterward. Each carries its
     /// **origin trait** (`Some` for an effect-emitted follow-up, which must be
@@ -190,6 +208,8 @@ impl ClientCore {
             form_data: HashMap::new(),
             entities: HashMap::new(),
             status_message: None,
+            mount_fault: None,
+            mounting_traits: Vec::new(),
             pending_events: Vec::new(),
             pending_host_asks: Vec::new(),
             editing_entity: None,
@@ -282,12 +302,53 @@ impl ClientCore {
         self.mount_seeds_blocking(&seeds, Value::Null, None);
     }
 
+    fn begin_mount(&mut self, traits: Vec<String>) {
+        self.mount_fault = None;
+        self.mounting_traits = traits;
+    }
+
+    /// Record that the mount in flight failed with `message`.
+    pub fn fail_mount(&mut self, message: String) {
+        self.mount_fault = Some(MountFault {
+            trait_name: self.mounting_traits.join(", "),
+            message,
+        });
+    }
+
+    /// The mount failure as the `main` slot entry the web paints: an `error-state` naming the trait and the kernel message.
+    pub fn mount_fault_content(&self) -> Option<SlotContent> {
+        let fault = self.mount_fault.as_ref()?;
+        let mut fields = ValueMap::new();
+        fields.insert("type".into(), Value::string("error-state"));
+        fields.insert(
+            "title".into(),
+            Value::string(format!("{} failed to start", fault.trait_name)),
+        );
+        fields.insert("message".into(), Value::string(fault.message.as_str()));
+        fields.insert(
+            "data-testid".into(),
+            Value::string(TRAIT_MOUNT_ERROR_TESTID),
+        );
+        let props = Value::object(fields);
+        Some(SlotContent {
+            pattern: "error-state".to_string(),
+            props,
+            entity: None,
+            source_trait: Some(MOUNT_ERROR_SOURCE.to_string()),
+        })
+    }
+
     fn mount_seeds_blocking(
         &mut self,
         seeds: &[crate::effects::response::MountSeed],
         payload: Value,
         route: Option<String>,
     ) {
+        self.begin_mount(if seeds.is_empty() {
+            vec![self.current_trait_name.clone()]
+        } else {
+            seeds.iter().map(|seed| seed.r#trait.clone()).collect()
+        });
         if seeds.is_empty() {
             self.drive_blocking("INIT", None, payload);
             return;
@@ -306,6 +367,7 @@ impl ClientCore {
                 Ok(response) => self.process_response("INIT", None, response),
                 Err(e) => {
                     tracing::error!(target: "almadar::client", error = %e, "mount refused");
+                    self.fail_mount(e.to_string());
                     self.status_message = Some((format!("Error: {e}"), true));
                 }
             }
@@ -385,6 +447,11 @@ impl ClientCore {
         })?;
         let seeds = self.page_mount_seeds();
         let payload = self.page_mount_payload();
+        self.begin_mount(if seeds.is_empty() {
+            vec![self.current_trait_name.clone()]
+        } else {
+            seeds.iter().map(|seed| seed.r#trait.clone()).collect()
+        });
         self.page_entered = false;
         if seeds.is_empty() {
             let begun = kernel.begin(&self.current_trait_name, None, "INIT", payload)?;
@@ -407,7 +474,10 @@ impl ClientCore {
     pub fn finish_mount_page(&mut self, result: Result<EventResponse, BridgeError>) {
         match result {
             Ok(response) => self.process_response("INIT", None, response),
-            Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+            Err(error) => {
+                self.fail_mount(error.to_string());
+                self.status_message = Some((format!("Error: {error}"), true));
+            }
         }
     }
 
@@ -1142,11 +1212,41 @@ impl ClientCore {
                 .source
                 .and_then(|s| s.r#trait)
                 .unwrap_or_else(|| effective_trait.clone());
+            if self
+                .client_kernel
+                .as_ref()
+                .is_some_and(|kernel| !kernel.declares_trait(&origin))
+            {
+                debug!(
+                    target: "almadar::client",
+                    event = %emitted.event, origin = %origin,
+                    "emit from a trait this client's program leaves to the server: its continuation ran there"
+                );
+                continue;
+            }
             self.pending_events.push((
                 emitted.event,
                 Some(origin),
                 emitted.payload.unwrap_or(Value::Null),
             ));
+        }
+
+        if event == "INIT" {
+            let failure = response.rejections.iter().flatten().find(|r| {
+                r.code == crate::effects::response::TransitionRejectionCode::EffectFailed
+            });
+            if let Some(failure) = failure {
+                self.mount_fault = Some(MountFault {
+                    trait_name: failure
+                        .trait_name
+                        .clone()
+                        .unwrap_or_else(|| self.mounting_traits.join(", ")),
+                    message: failure
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "effect-failed".to_string()),
+                });
+            }
         }
 
         self.status_message = None;
