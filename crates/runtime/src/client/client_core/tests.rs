@@ -1016,17 +1016,15 @@ fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
     }))
     .unwrap();
     let title_with = |messages: bool| {
-        let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+        let mut schema = schema.clone();
         if messages {
-            kernel.set_messages(
-                vec!["en".into()],
-                HashMap::from([(
-                    "en".to_string(),
-                    HashMap::from([("site:hero.title".to_string(), "Hello".to_string())]),
-                )]),
-            );
+            schema.messages = Some(std::collections::BTreeMap::from([(
+                "en".to_string(),
+                std::collections::BTreeMap::from([("site:hero.title".to_string(), "Hello".to_string())]),
+            )]));
         }
-        let mut core = ClientCore::with_client_kernel(schema.clone(), kernel);
+        let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+        let mut core = ClientCore::with_client_kernel(schema, kernel);
         core.mount_page_blocking();
         main_prop(&core, "title")
     };

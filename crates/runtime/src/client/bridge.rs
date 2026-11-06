@@ -175,15 +175,6 @@ impl KernelBridge {
         })
     }
 
-    /// Install the viewer's locales and catalogs in this bridge's kernel, so the legs it runs render `i18n/t` as the
-    /// served program does ([`crate::kernel::RuntimeKernel::set_messages`]).
-    pub fn set_messages(
-        &self,
-        locales: Vec<String>,
-        catalogs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
-    ) {
-        self.kernel.set_messages(locales, catalogs);
-    }
 
     /// Answer this bridge's asks in process through a [`NativeHost`](crate::native_host::NativeHost) built over the
     /// bridge's own rows, with the registered program's egress and `os/` grants, so a standalone binary runs a
