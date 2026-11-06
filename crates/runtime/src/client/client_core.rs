@@ -1190,8 +1190,21 @@ impl ClientCore {
         }
     }
 
-    /// Parse a render-ui pattern into a [`SlotContent`] (registry provides a fallback).
+    /// Parse a render-ui pattern into a [`SlotContent`] (registry provides a fallback). A bare `@trait.X` string
+    /// (`(render-ui main "@trait.X")`) is a whole-slot embed: its content keeps the string as `props`, as the web's
+    /// `SlotContent` does, and the host paints that trait's content there.
     pub fn parse_pattern(&self, pattern: &Value) -> Option<SlotContent> {
+        if let Some(reference) = pattern
+            .as_str()
+            .filter(|text| crate::client::recurse::trait_ref_name(text).is_some())
+        {
+            return Some(SlotContent {
+                pattern: "trait-frame".to_string(),
+                props: Value::string(reference),
+                entity: None,
+                source_trait: None,
+            });
+        }
         let pattern_type = get_string(pattern, "type")?;
         Some(SlotContent {
             pattern: pattern_type,

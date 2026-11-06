@@ -49,6 +49,11 @@ pub enum DesktopRequest {
         route: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server: Option<String>,
+        /// The resolved `.orb` the schema came from. A program that declares `locales` has its catalogs read
+        /// from beside this file (`<stem>.<locale>.json`, as the served host reads them) and installed in the
+        /// kernel before the first INIT; such a program with no path is refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        program_path: Option<PathBuf>,
     },
 }
 

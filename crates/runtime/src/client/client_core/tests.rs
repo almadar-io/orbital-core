@@ -951,3 +951,85 @@ fn a_page_mount_also_inits_the_traits_its_traits_embed() {
         "control: a trait no page trait embeds is not mounted"
     );
 }
+
+/// A page whose only trait renders a bare `(render-ui main "@trait.Child")` shows the embedded trait's content: the
+/// host's `main` entry is the embed reference, and the embedded trait (mounted with the page) is spliceable.
+#[test]
+fn a_bare_trait_embed_render_is_a_main_entry_that_names_the_embedded_trait() {
+    let machine = |effect: serde_json::Value| {
+        serde_json::json!({ "states": [{ "name": "idle", "isInitial": true }],
+        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [effect] }] })
+    };
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Host", "dispatch": "client", "stateMachine": machine(serde_json::json!(["render-ui", "main", "@trait.Child"])) },
+                { "name": "Child", "dispatch": "client", "stateMachine": machine(serde_json::json!(["render-ui", "main", { "type": "page-header", "title": "child" }])) }
+            ],
+            "pages": [{ "name": "HostPage", "path": "/host", "traits": [{ "ref": "Host" }] }]
+        }]
+    }))
+    .unwrap();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.mount_page_blocking();
+    let main = core.page_main_contents();
+    assert_eq!(
+        main.len(),
+        1,
+        "the embed reference is the host's main entry"
+    );
+    assert_eq!(main[0].props.as_str(), Some("@trait.Child"));
+    assert_eq!(main[0].source_trait.as_deref(), Some("Host"));
+    assert!(
+        core.trait_content.contains_key("Child"),
+        "the embedded trait's content is there to splice"
+    );
+    // control: an object pattern still parses by its type, and a non-reference string is no pattern.
+    assert!(core
+        .parse_pattern(&serde_json::from_str("{\"type\":\"page-header\"}").unwrap())
+        .is_some());
+    assert!(core.parse_pattern(&Value::string("plain text")).is_none());
+}
+
+/// A client-role core paints `i18n/t` from the catalogs installed in its kernel before the first INIT; without them
+/// the same page paints no message (the control).
+#[test]
+fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "Site",
+        "typeContractVersion": 1,
+        "locales": ["en"],
+        "orbitals": [{
+            "name": "Home",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "HomePage", "dispatch": "client", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "INIT",
+                    "effects": [["render-ui", "main", { "type": "page-header", "title": ["i18n/t", "site:hero.title"] }]] }]
+            } }],
+            "pages": [{ "name": "HomePage", "path": "/", "traits": [{ "ref": "HomePage" }] }]
+        }]
+    }))
+    .unwrap();
+    let title_with = |messages: bool| {
+        let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+        if messages {
+            kernel.set_messages(
+                vec!["en".into()],
+                HashMap::from([(
+                    "en".to_string(),
+                    HashMap::from([("site:hero.title".to_string(), "Hello".to_string())]),
+                )]),
+            );
+        }
+        let mut core = ClientCore::with_client_kernel(schema.clone(), kernel);
+        core.mount_page_blocking();
+        main_prop(&core, "title")
+    };
+    assert_eq!(title_with(true), ["Hello"]);
+    assert_eq!(title_with(false), [""], "control: no catalogs, no message");
+}

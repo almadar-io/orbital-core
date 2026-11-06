@@ -312,6 +312,17 @@ impl ClientKernel {
         self.embedded.kernel().set_theme_mode(mode);
     }
 
+    /// Install the viewer's locales and their catalogs (locale, then qualified key, to message) before the first
+    /// INIT, so the client role paints `i18n/t` locally as the server role renders it
+    /// ([`EmbeddedKernel::set_messages`]).
+    pub fn set_messages(
+        &self,
+        locales: Vec<String>,
+        catalogs: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        self.embedded.set_messages(locales, catalogs);
+    }
+
     pub fn resolved_theme(&self) -> orbital_core_base::theme::ResolvedTheme {
         self.embedded.kernel().resolved_theme()
     }
