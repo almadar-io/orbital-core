@@ -75,6 +75,9 @@ pub struct MountFault {
 /// The test id the web's trait-mount error panel carries.
 pub const TRAIT_MOUNT_ERROR_TESTID: &str = "trait-mount-error";
 /// The source the web's trait-mount error panel is written under.
+/// The `data-testid` the web paints on a client circuit the kernel refused.
+pub const PAGE_CIRCUIT_ERROR_TESTID: &str = "page-circuit-error";
+
 pub const MOUNT_ERROR_SOURCE: &str = "$mount";
 
 pub struct ClientCore {
@@ -110,6 +113,8 @@ pub struct ClientCore {
     pub status_message: Option<(String, bool)>,
     /// The last page mount's failure; a new mount clears it.
     pub mount_fault: Option<MountFault>,
+    /// Why the client circuit could not start (the kernel refused the program); the host paints it.
+    pub circuit_fault: Option<String>,
     /// The traits the current mount is entering.
     mounting_traits: Vec<String>,
     /// Events queued during rendering, fired on the next frame.
@@ -209,6 +214,7 @@ impl ClientCore {
             entities: HashMap::new(),
             status_message: None,
             mount_fault: None,
+            circuit_fault: None,
             mounting_traits: Vec::new(),
             pending_events: Vec::new(),
             pending_host_asks: Vec::new(),
@@ -322,6 +328,29 @@ impl ClientCore {
             trait_name: self.mounting_traits.join(", "),
             message,
         });
+    }
+
+    /// Record that the kernel refused the client program, so there is no circuit to run.
+    pub fn refuse_circuit(&mut self, message: String) {
+        self.circuit_fault = Some(message);
+    }
+
+    /// The circuit refusal as the `error-state` the web's `OrbPreview` paints (default title, the kernel message).
+    pub fn circuit_fault_content(&self) -> Option<SlotContent> {
+        let message = self.circuit_fault.as_ref()?;
+        let mut fields = ValueMap::new();
+        fields.insert("type".into(), Value::string("error-state"));
+        fields.insert("message".into(), Value::string(message.as_str()));
+        fields.insert(
+            "data-testid".into(),
+            Value::string(PAGE_CIRCUIT_ERROR_TESTID),
+        );
+        Some(SlotContent {
+            pattern: "error-state".to_string(),
+            props: Value::object(fields),
+            entity: None,
+            source_trait: None,
+        })
     }
 
     /// The mount failure as the `main` slot entry the web paints: an `error-state` naming the trait and the kernel message.
