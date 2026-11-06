@@ -300,16 +300,6 @@ impl EmbeddedServer {
         self.kernel.set_managed_program(program);
     }
 
-    /// Install the program's declared locales (the first is the default) and merged message catalogs,
-    /// keyed locale then message key; a lazy page's behavior contributes its own namespaced keys.
-    pub fn set_messages(
-        &self,
-        locales: Vec<String>,
-        catalogs: HashMap<String, HashMap<String, String>>,
-    ) {
-        self.kernel.set_messages(locales, catalogs);
-    }
-
     /// Declare what the host's row store honours for `entity_type`, as JSON: `query` is a
     /// `QueryCapabilities`, `write` a `WriteCapabilities`; either may be `null` to declare nothing.
     pub fn set_capabilities_json(

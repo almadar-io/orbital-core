@@ -26,7 +26,6 @@ impl LazySource for Files {
         .unwrap();
         Ok(LazyProgram {
             schema,
-            catalogs: Default::default(),
         })
     }
 }

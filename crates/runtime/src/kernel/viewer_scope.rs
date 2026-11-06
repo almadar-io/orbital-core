@@ -84,13 +84,30 @@ impl RuntimeKernel {
         }
     }
 
-    /// Install the program's declared locales and merged catalogs (`orb resolve`'s `<stem>.<locale>.json`).
-    pub fn set_messages(
-        &self,
-        locales: Vec<String>,
-        catalogs: HashMap<String, HashMap<String, String>>,
-    ) {
-        *self.i18n.write() = KernelI18n { locales, catalogs };
+    /// Add a registered program's declared locales (the first registered stays the default) and its messages.
+    pub(super) fn install_messages(&self, schema: &OrbitalSchema) {
+        let mut i18n = self.i18n.write();
+        for locale in schema.locales.iter().flatten() {
+            if !i18n.locales.contains(locale) {
+                i18n.locales.push(locale.clone());
+            }
+        }
+        for (locale, messages) in schema.messages.iter().flatten() {
+            i18n.catalogs
+                .entry(locale.clone())
+                .or_default()
+                .extend(messages.iter().map(|(key, text)| (key.clone(), text.clone())));
+        }
+    }
+
+    /// The viewer's locale for a dispatch that names none (a client kernel paints its page's language); `None` is the
+    /// first declared. A locale the program does not declare is refused, as at admission (EXEC-DIST-12).
+    pub fn set_viewer_locale(&self, locale: Option<String>) -> Result<(), KernelError> {
+        if let Some(message) = self.locale_refusal(locale.as_deref()) {
+            return Err(KernelError::Internal(message));
+        }
+        self.i18n.write().viewer = locale;
+        Ok(())
     }
 
     /// Run the next dispatches as the viewer's `locale` until the guard drops. A program
@@ -149,13 +166,14 @@ impl RuntimeKernel {
         })
     }
 
-    /// `@locale` and its catalog for `i18n/t`: the dispatch's viewer locale, else the first declared.
+    /// `@locale` and its catalog for `i18n/t`: the dispatch's locale, else the viewer's, else the first declared.
     pub(super) fn with_viewer_i18n(&self, builder: BindingContextBuilder) -> BindingContextBuilder {
         let i18n = self.i18n.read();
         let locale = self
             .step.dispatch_locale
             .read()
             .clone()
+            .or_else(|| i18n.viewer.clone())
             .or_else(|| i18n.locales.first().cloned());
         match locale {
             Some(locale) => {

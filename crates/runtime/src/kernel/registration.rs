@@ -231,6 +231,7 @@ impl RuntimeKernel {
             }
         }
         self.grants.os_grants.write().register(&schema);
+        self.install_messages(&schema);
         self.note_kernel_grants(&schema);
         self.register_placement(&schema);
         let schema_name = schema.name.clone();

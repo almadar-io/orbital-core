@@ -94,6 +94,7 @@ fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> Orbita
         site: None,
         public_dir: None,
         locales: None,
+        messages: None,
         lazy_pages: None,
         name: "TestApp".to_string(),
         version: None,

@@ -420,6 +420,7 @@
     "mergedFrom": "mergedFrom",
     "projectedFrom": "projectedFrom",
     "messageSources": "messageSources",
+    "messages": "messages",
     "min": "min",
     "mock": "mock",
     "modes": "modes",

@@ -12,6 +12,7 @@ pub(super) struct DispatchStamp {
 pub(super) struct KernelI18n {
     pub(super) locales: Vec<String>,
     pub(super) catalogs: HashMap<String, HashMap<String, String>>,
+    pub(super) viewer: Option<String>,
 }
 
 /// A `prob/*` seed source asking the kernel's host for four journaled random bytes.
