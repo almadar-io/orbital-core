@@ -324,12 +324,18 @@ mod tests {
     }
 
     fn table(op: &str, category_targets: &str) -> String {
-        format!(
+        let mut doc: Value = serde_json::from_str(&format!(
             r#"{{"categories":{{"arithmetic":{{"description":"","target":["rust","ts"]}},"other":{{"description":"","target":{category_targets}}},"effect":{{"description":"","target":[]}}}},
                 "operators":{{"+":{{"category":"arithmetic","minArity":2,"returnType":"number"}},"{op}":{{"category":"other","minArity":0,"returnType":"number"}},
                 "emit":{{"category":"effect","minArity":1,"returnType":"void","busExcluded":["INIT","LOAD","$MOUNT"]}},
                 "program/dispatch":{{"category":"effect","minArity":1,"returnType":"void","targetOptions":["orbital","targetTrait","event"]}}}}}}"#
-        )
+        ))
+        .unwrap();
+        let operators = doc["operators"].as_object_mut().unwrap();
+        for os in orbital_core_base::os::OsOp::ALL {
+            operators.insert(os.name().to_string(), json!({"category": "effect", "minArity": 0, "maxArity": 1, "returnType": "void", "hasSideEffects": true}));
+        }
+        doc.to_string()
     }
 
     #[test]

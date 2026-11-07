@@ -1136,7 +1136,6 @@
     "time/valid": "time/valid",
     "time/weekday": "time/weekday",
     "time/year": "time/year",
-    "trace/emit": "trace/emit",
     "tree/fold": "tree/fold",
     "tree/index": "tree/index",
     "unquote": "unquote",

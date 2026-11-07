@@ -1086,3 +1086,41 @@ fn a_named_record_lists_its_fields_in_name_order_and_a_union_keeps_its_arm_order
     let OirType::Union { variants } = declared_alias_shape_named(std::slice::from_ref(&union), &|_| false).unwrap() else { panic!("a union") };
     assert_eq!(variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Zed", "Alpha"], "union arms keep declared order");
 }
+
+#[test]
+fn config_fields_give_an_evaluated_knob_default_no_static_value() {
+    let mut t = OirTrait::new("Chrome");
+    let schema: OirConfigSchema = [
+        ("path", OirType::String),
+        ("viewer", OirType::String),
+        ("tags", OirType::Array { inner: Box::new(OirType::String) }),
+        ("links", OirType::Array { inner: Box::new(OirType::Node) }),
+        ("content", OirType::SExpr),
+    ]
+    .into_iter()
+    .map(|(k, ty)| (k.to_string(), OirConfigFieldType { field_type: ty, values: None }))
+    .collect();
+    t.declared_config_schema = Some(schema);
+    let s = |v: &str| OirValue::String(v.to_string());
+    let link = |href: OirValue| {
+        OirValue::Object([("href".to_string(), href)].into_iter().collect())
+    };
+    t.declared_config_defaults = Some(
+        [
+            ("path", OirValue::Array(vec![s("str/concat"), s("a"), s("b")])),
+            ("viewer", s("@user.name")),
+            ("tags", OirValue::Array(vec![s("a"), s("b")])),
+            ("links", OirValue::Array(vec![link(OirValue::Array(vec![s("str/concat"), s("/"), s("x")]))])),
+            ("content", OirValue::Object([("type".to_string(), s("typography"))].into_iter().collect())),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect(),
+    );
+    let fields = t.config_fields();
+    let by = |n: &str| fields.iter().find(|f| f.name == n).expect(n);
+    for evaluated in ["path", "viewer", "links", "content"] {
+        assert!(by(evaluated).default.is_none() && !by(evaluated).required, "{evaluated}");
+    }
+    assert_eq!(by("tags").default, Some(OirValue::Array(vec![s("a"), s("b")])), "control: a list literal stays");
+}

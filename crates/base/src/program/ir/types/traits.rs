@@ -122,6 +122,20 @@ pub struct OirTrait {
 /// downstream consumer (`orbital-shell-typescript`) compiles unchanged.
 pub type OirDispatchMode = crate::dispatch_mode::DispatchMode;
 
+/// A knob default the kernel evaluates (a `@` binding or an operator call, at any depth) is no
+/// static value: a target shell has no literal for it.
+fn is_static_value(value: &OirValue) -> bool {
+    match value {
+        OirValue::String(s) => !s.starts_with('@'),
+        OirValue::Array(items) => {
+            !matches!(items.first(), Some(OirValue::String(op)) if crate::language::registry::is_known_operator(op))
+                && items.iter().all(is_static_value)
+        }
+        OirValue::Object(fields) => fields.values().all(is_static_value),
+        OirValue::Null | OirValue::Bool(_) | OirValue::Number(_) => true,
+    }
+}
+
 impl OirTrait {
     /// One field per declared config knob, sorted by name: the knob's type and enum values with its declared
     /// default, or optional when it declares none (or only forwards another knob with `@config.<key>`).
@@ -134,9 +148,11 @@ impl OirTrait {
             .map(|(name, knob)| {
                 let mut field = OirField::new(name.clone(), knob.field_type.clone());
                 field.enum_values = knob.values.clone();
-                let declared = self.declared_config_defaults.as_ref().and_then(|d| d.get(name)).filter(|v| {
-                    !matches!(v, OirValue::Null) && !matches!(v, OirValue::String(s) if s.starts_with("@config."))
-                });
+                let declared = self
+                    .declared_config_defaults
+                    .as_ref()
+                    .and_then(|d| d.get(name))
+                    .filter(|v| !matches!(v, OirValue::Null) && knob.field_type != OirType::SExpr && is_static_value(v));
                 match declared {
                     Some(value) => field.default = Some(value.clone()),
                     None => field.required = false,

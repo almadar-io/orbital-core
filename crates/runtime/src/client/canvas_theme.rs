@@ -83,6 +83,21 @@ pub struct CanvasLabel {
     pub uppercase: bool,
 }
 
+/// The 3D scene axis: materials and lights (`--material-*`, `--light-*`, `--scene-fog`), with the web resolver's
+/// fallbacks for a theme that declares none.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasScene {
+    pub roughness: f64,
+    pub metalness: f64,
+    pub flat: bool,
+    pub outline: f64,
+    pub ambient: f64,
+    pub key: f64,
+    pub key_color: String,
+    pub fog: f64,
+}
+
 /// The subset of `@almadar/core` `CanvasTheme` the native renderer consumes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -102,6 +117,7 @@ pub struct CanvasTheme {
     pub label: CanvasLabel,
     pub text: BTreeMap<String, f64>,
     pub corner: f64,
+    pub scene: CanvasScene,
 }
 
 /// Resolve the canvas theme from `@currentTheme`'s merged tokens.
@@ -204,6 +220,26 @@ pub fn canvas_theme(tokens: &ThemeTokens) -> CanvasTheme {
     }
 
     let radii = tokens.radii.clone().unwrap_or_default();
+    let scene_tokens = tokens.scene.clone().unwrap_or_default();
+    let number = |v: &Option<String>, fallback: f64| {
+        v.as_deref()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .unwrap_or(fallback)
+    };
+    let scene = CanvasScene {
+        roughness: number(&scene_tokens.material_roughness, 0.6),
+        metalness: number(&scene_tokens.material_metalness, 0.0),
+        flat: number(&scene_tokens.material_flat, 0.0) >= 1.0,
+        outline: number(&scene_tokens.material_outline, 0.0),
+        ambient: number(&scene_tokens.light_ambient, 0.55),
+        key: number(&scene_tokens.light_key, 1.0),
+        key_color: scene_tokens
+            .light_key_color
+            .as_deref()
+            .and_then(parse_color)
+            .map_or_else(|| "#ffffff".to_string(), |c| c.css()),
+        fog: number(&scene_tokens.fog, 0.0),
+    };
     CanvasTheme {
         ground,
         surfaces,
@@ -257,6 +293,7 @@ pub fn canvas_theme(tokens: &ThemeTokens) -> CanvasTheme {
             .and_then(parse_px)
             .or_else(|| radii.get("sm").and_then(|v| parse_px(v)))
             .unwrap_or(4.0),
+        scene,
     }
 }
 
@@ -488,6 +525,13 @@ mod tests {
             for (k, w) in want[group].as_object().unwrap() {
                 pairs.push((format!("{group}.{k}"), w.clone(), got[group][k].clone()));
             }
+        }
+        for k in ["roughness", "metalness", "flat", "outline", "ambient", "key", "keyColor", "fog"] {
+            pairs.push((
+                format!("scene.{k}"),
+                want["scene"][k].clone(),
+                got["scene"][k].clone(),
+            ));
         }
         for k in ["size", "weight", "uppercase"] {
             pairs.push((
