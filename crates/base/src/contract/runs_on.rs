@@ -385,20 +385,7 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
         root.remove(key);
     }
     if let Some(orbitals) = root.get_mut("orbitals").and_then(serde_json::Value::as_array_mut) {
-        let linked = client_linked_entities(orbitals);
-        orbitals.retain_mut(|orbital| {
-            if !serves_only_protocol_pages(orbital) {
-                return true;
-            }
-            let keep = entity_name(orbital).is_some_and(|name| linked.contains(name));
-            if keep {
-                if let Some(orbital) = orbital.as_object_mut() {
-                    orbital.insert("traits".to_string(), serde_json::Value::Array(Vec::new()));
-                    orbital.insert("pages".to_string(), serde_json::Value::Array(Vec::new()));
-                }
-            }
-            keep
-        });
+        orbitals.retain(|orbital| !serves_only_protocol_pages(orbital));
         for orbital in orbitals {
             if let Some(pages) = orbital.get_mut("pages").and_then(serde_json::Value::as_array_mut) {
                 pages.retain(|page| page.get("protocol").is_none());
@@ -418,22 +405,6 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
         root.insert("_metadata".to_string(), serde_json::Value::Object(metadata));
     }
     projected
-}
-
-fn entity_name(orbital: &serde_json::Value) -> Option<&str> {
-    let entity = orbital.get("entity")?;
-    entity.as_str().or_else(|| entity.get("name").and_then(serde_json::Value::as_str))
-}
-
-/// The entities the client's own orbitals' traits are linked to: a server orbital that declares one stays in the
-/// client program as that entity alone.
-fn client_linked_entities(orbitals: &[serde_json::Value]) -> std::collections::BTreeSet<String> {
-    orbitals
-        .iter()
-        .filter(|orbital| !serves_only_protocol_pages(orbital))
-        .flat_map(|orbital| orbital.get("traits").and_then(serde_json::Value::as_array).into_iter().flatten())
-        .filter_map(|trait_def| trait_def.get("linkedEntity").and_then(serde_json::Value::as_str).map(str::to_string))
-        .collect()
 }
 
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
@@ -657,25 +628,6 @@ mod tests {
         assert!(!serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })), "control: one route page keeps it the client's");
         assert!(!serves_only_protocol_pages(&json!({ "pages": [] })), "control: no pages is not an endpoint orbital");
         assert!(!serves_only_protocol_pages(&json!({ "name": "Rows" })), "control: an orbital with no pages field is not one either");
-    }
-
-    #[test]
-    fn a_server_orbital_whose_entity_a_client_trait_links_stays_as_that_entity_alone() {
-        use serde_json::json;
-        let api = json!([{ "name": "Api", "protocol": "http" }]);
-        let program = json!({ "orbitals": [
-            { "name": "Data", "entity": { "name": "Article", "fields": [{ "name": "total", "type": "number" }] }, "traits": [{ "name": "Serve" }], "pages": api },
-            { "name": "Other", "entity": { "name": "Secret" }, "traits": [{ "name": "Hidden" }], "pages": api },
-            { "name": "Feed", "entity": { "name": "Visit" }, "traits": [{ "name": "List", "linkedEntity": "Article" }], "pages": [{ "name": "Home", "path": "/" }] }
-        ] });
-        let projected = client_program(&program);
-        let orbitals = projected["orbitals"].as_array().expect("orbitals");
-        let names: Vec<&str> = orbitals.iter().filter_map(|o| o["name"].as_str()).collect();
-        assert_eq!(names, ["Data", "Feed"], "control: a server orbital no client trait links is still left out");
-        assert_eq!(orbitals[0]["entity"]["fields"][0]["name"], "total");
-        assert_eq!(orbitals[0]["traits"], json!([]), "the server's traits never reach the client");
-        assert_eq!(orbitals[0]["pages"], json!([]), "nor its endpoint pages");
-        assert_eq!(orbitals[1]["traits"][0]["name"], "List", "control: the client's own orbital is unchanged");
     }
 
     #[test]
