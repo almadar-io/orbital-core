@@ -148,5 +148,7 @@ pub fn oir_type_accepts_kind(declared: &OirType, actual_kind: &str) -> bool {
 /// [`CompatType::witness_type`] stand-in; a spelling nothing declares is the erased
 /// variable, which every check treats as unknowable.
 pub fn compat_kind_oir(kind: &str) -> OirType {
-    parse_compat_type(kind).witness_type().unwrap_or_else(OirType::erased)
+    parse_compat_type(kind)
+        .witness_type()
+        .unwrap_or_else(OirType::erased)
 }

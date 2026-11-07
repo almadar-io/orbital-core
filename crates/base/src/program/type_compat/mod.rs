@@ -65,7 +65,9 @@ pub enum Coercion {
     /// T → Optional<T> (Phase 4.3), wrapping the inner witness.
     Wrap(Box<Coercion>),
     /// Optional<T> → T, unwrapping the inner witness: legal only through the run-time-checked `as` cast.
-    Unwrap { inner: Box<Coercion> },
+    Unwrap {
+        inner: Box<Coercion>,
+    },
     /// Lift through Array value (structural since Phase 4.2 — the inner
     /// coercion is the element witness).
     Element(Box<Coercion>),
@@ -90,7 +92,9 @@ impl Coercion {
     pub fn is_explicit(&self) -> bool {
         match self {
             Coercion::Explicit => true,
-            Coercion::Wrap(inner) | Coercion::Element(inner) | Coercion::Unwrap { inner } => inner.is_explicit(),
+            Coercion::Wrap(inner) | Coercion::Element(inner) | Coercion::Unwrap { inner } => {
+                inner.is_explicit()
+            }
             _ => false,
         }
     }
@@ -100,7 +104,10 @@ impl Coercion {
         match self {
             Coercion::Identity | Coercion::Widen(_) | Coercion::Erase { .. } => true,
             Coercion::Wrap(inner) | Coercion::Element(inner) => inner.is_static(),
-            Coercion::Unwrap { .. } | Coercion::Row { .. } | Coercion::Refine(_) | Coercion::Explicit => false,
+            Coercion::Unwrap { .. }
+            | Coercion::Row { .. }
+            | Coercion::Refine(_)
+            | Coercion::Explicit => false,
         }
     }
 
@@ -169,7 +176,10 @@ pub fn is_string_kind(t: &OirType) -> bool {
 
 /// Kinds erased to `"number"`: Number, Integer, and Money (numeric at rest).
 pub fn is_number_kind(t: &OirType) -> bool {
-    matches!(t, OirType::Number | OirType::Integer | OirType::Money | OirType::Sized { .. })
+    matches!(
+        t,
+        OirType::Number | OirType::Integer | OirType::Money | OirType::Sized { .. }
+    )
 }
 
 /// The width a numeric type declares: `int` is `i64`, `number` is `f64`.
@@ -260,13 +270,11 @@ pub fn sub(src: &OirType, dst: &OirType) -> Option<Coercion> {
     .sub(src, dst, 0)
 }
 
-mod relation;
 mod compat_type;
 mod oir_kind;
-mod record_binding;
 mod qualified;
-use relation::*;
-pub use qualified::{describe_type_name, qualified_type_name, rename_type_names, short_type_name, split_qualified_type_name, type_identifier, TYPE_QUALIFIER};
+mod record_binding;
+mod relation;
 pub use compat_type::{
     decode_literal_union, literal_union_members, literal_union_text, parse_compat_type,
     set_value_type_compatible, sub_compat, tuple_type_slots, CompatType,
@@ -276,10 +284,15 @@ pub use oir_kind::{
     oir_type_satisfies, oir_type_satisfies_field, oir_type_satisfies_with_named,
     semantic_string_kind,
 };
-pub use record_binding::{
-    bound_shape_of_payload_field, bound_shape_of_type_str, prop_admits_scalar, record_prop_binding_mismatch,
-    BoundShape, RecordBindingMismatch,
+pub use qualified::{
+    describe_type_name, qualified_type_name, rename_type_names, short_type_name,
+    split_qualified_type_name, type_identifier, TYPE_QUALIFIER,
 };
+pub use record_binding::{
+    bound_shape_of_payload_field, bound_shape_of_type_str, prop_admits_scalar,
+    record_prop_binding_mismatch, BoundShape, RecordBindingMismatch,
+};
+use relation::*;
 
 #[cfg(test)]
 mod tests;

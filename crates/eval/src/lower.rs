@@ -7,7 +7,7 @@ use std::prelude::v1::*;
 use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
 use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr};
 use orbital_core_base::ir::types::{OirPattern, OirValue};
-use orbital_core_base::schema::sexpr::SExpression;
+use orbital_core_base::schema::sexpr::{SExpression, SObject};
 use thiserror::Error;
 use std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc};
 
@@ -52,17 +52,79 @@ fn lower_raw_callback(op: &str, args: &[SExpression], resolved: &mut [OirExpr]) 
     let (Some(raw), Some(body)) = (args.get(pos), resolved.get_mut(pos)) else {
         return;
     };
-    let is_lambda_form = matches!(raw, SExpression::Array(form)
-        if matches!(form.first(), Some(SExpression::String(head)) if head == "fn"));
-    let binds_element = body
-        .collect_bindings()
-        .iter()
-        .any(|b| matches!(&b.root, OirBindingRoot::Local(name) if params.contains(&name.as_str())));
-    if is_lambda_form || !binds_element {
+    if is_lambda_form(raw) || !binds_element(body, params) {
         return;
     }
     let raw_body = std::mem::replace(body, OirExpr::Null);
     *body = OirExpr::lambda(params.iter().map(|p| p.to_string()).collect(), raw_body);
+}
+
+fn is_lambda_form(raw: &SExpression) -> bool {
+    matches!(raw, SExpression::Array(form)
+        if matches!(form.first(), Some(SExpression::String(head)) if head == "fn"))
+}
+
+/// Whether a lowered raw callback body reads one of its operator's element names.
+fn binds_element(body: &OirExpr, params: &[&str]) -> bool {
+    body.collect_bindings()
+        .iter()
+        .any(|b| matches!(&b.root, OirBindingRoot::Local(name) if params.contains(&name.as_str())))
+}
+
+/// [`lower_raw_callback`] on the S-expression form: each raw callback body in `expr` that reads its operator's
+/// element names becomes `["fn", [names], body]`, so a resolved program carries the lambda the compiler lowers to
+/// and the evaluator, which takes only real functions, runs it. A quoted form is data and is left as written.
+pub fn raw_callbacks_as_lambdas(expr: &mut SExpression) {
+    if let Some(rewritten) = with_lambdas(expr) {
+        *expr = rewritten;
+    }
+}
+
+/// `expr` with its raw callback bodies wrapped, or `None` when it has none (so unchanged nodes stay shared).
+fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
+    match expr {
+        SExpression::Array(items) => {
+            if matches!(items.first(), Some(SExpression::String(head)) if head.as_str() == "quote") {
+                return None;
+            }
+            let wrap_at = match items.first() {
+                Some(SExpression::String(op)) => {
+                    let params = crate::evaluator::operators::raw_callback_params(op.as_str());
+                    let pos = orbital_core_base::language::registry::get_operator(op.as_str())
+                        .and_then(|m| m.lambda_arg_position);
+                    params.zip(pos).map(|(params, pos)| (params, pos as usize + 1))
+                }
+                _ => None,
+            };
+            let mut out: Option<Vec<SExpression>> = None;
+            for (i, item) in items.iter().enumerate() {
+                let mut next = with_lambdas(item);
+                if let Some((params, at)) = wrap_at.filter(|(_, at)| *at == i) {
+                    let body = next.as_ref().unwrap_or(item);
+                    if !is_lambda_form(body) && lower_sexpr(body).is_ok_and(|lowered| binds_element(&lowered, params)) {
+                        let names = params.iter().map(|p| SExpression::string(*p)).collect::<Vec<_>>();
+                        next = Some(SExpression::Array(
+                            vec![SExpression::string("fn"), SExpression::Array(names.into()), body.clone()].into(),
+                        ));
+                    }
+                }
+                if let Some(changed) = next {
+                    out.get_or_insert_with(|| items.iter().cloned().collect())[i] = changed;
+                }
+            }
+            out.map(|items| SExpression::Array(items.into()))
+        }
+        SExpression::Object(fields) => {
+            let mut out: Option<SObject> = None;
+            for (key, value) in fields.iter() {
+                if let Some(changed) = with_lambdas(value) {
+                    out.get_or_insert_with(|| (**fields).clone()).insert(key.clone(), changed);
+                }
+            }
+            out.map(|fields| SExpression::Object(fields.into()))
+        }
+        _ => None,
+    }
 }
 
 pub struct ExprLowerer;

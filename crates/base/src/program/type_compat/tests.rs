@@ -7,7 +7,8 @@ fn a_member_left_optional_either_way_is_the_same_member() {
             let mut x = OirField::new("x", OirType::Number);
             x.required = true;
             x
-        }].into(),
+        }]
+        .into(),
     };
     let plain = {
         let mut id = OirField::new("id", OirType::String);
@@ -15,12 +16,21 @@ fn a_member_left_optional_either_way_is_the_same_member() {
         id
     };
     let wrapped = OirField::optional("id", OirType::String);
-    assert!(super::assignable(&record(wrapped.clone()), &record(plain.clone())), "an optional member read as T? fits the same member read as T");
-    assert!(super::assignable(&record(plain), &record(wrapped)), "and the other way");
+    assert!(
+        super::assignable(&record(wrapped.clone()), &record(plain.clone())),
+        "an optional member read as T? fits the same member read as T"
+    );
+    assert!(
+        super::assignable(&record(plain), &record(wrapped)),
+        "and the other way"
+    );
     let mut required = OirField::new("id", OirType::String);
     required.required = true;
     assert!(
-        !super::assignable(&record(OirField::optional("id", OirType::String)), &record(required)),
+        !super::assignable(
+            &record(OirField::optional("id", OirType::String)),
+            &record(required)
+        ),
         "control: a required member does not take one that may be missing"
     );
 }
@@ -44,7 +54,10 @@ fn a_field_ref_is_string_kind_at_run_time() {
     assert!(super::assignable(&field_ref, &any));
     assert!(!super::assignable(&any, &field_ref));
     // control: fields of different records are different types.
-    assert!(!super::assignable(&field_ref, &of("Other", Some(OirType::String))));
+    assert!(!super::assignable(
+        &field_ref,
+        &of("Other", Some(OirType::String))
+    ));
 }
 
 #[test]
@@ -64,9 +77,17 @@ fn an_int_entity_field_fits_an_int_slot_widens_to_number_and_a_number_field_does
 
 #[test]
 fn known_closed_enum_assignments_reject_members_outside_the_declared_set() {
-    let closed = |values: &[&str]| crate::ir::types::OirType::enum_type(
-        super::literal_union_text(&values.iter().map(|value| value.to_string()).collect::<Vec<_>>()).unwrap()
-    );
+    let closed = |values: &[&str]| {
+        crate::ir::types::OirType::enum_type(
+            super::literal_union_text(
+                &values
+                    .iter()
+                    .map(|value| value.to_string())
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap(),
+        )
+    };
     let target = closed(&["ready", "done"]);
     let wrong = closed(&["wrong"]);
     assert!(!super::assignable(&wrong, &target));
@@ -74,25 +95,67 @@ fn known_closed_enum_assignments_reject_members_outside_the_declared_set() {
     assert!(super::assignable(&closed(&["ready"]), &target));
     assert!(super::assignable(&target, &target));
     assert!(!super::assignable(&target, &closed(&["ready"])));
-    assert!(!super::assignable(&record(&[("kind", wrong)]), &record(&[("kind", target)])));
-    assert!(super::assignable(&crate::ir::types::OirType::String, &crate::ir::types::OirType::enum_type("Status")), "unresolved legacy nominal enums retain their contract");
+    assert!(!super::assignable(
+        &record(&[("kind", wrong)]),
+        &record(&[("kind", target)])
+    ));
+    assert!(
+        super::assignable(
+            &crate::ir::types::OirType::String,
+            &crate::ir::types::OirType::enum_type("Status")
+        ),
+        "unresolved legacy nominal enums retain their contract"
+    );
 }
 
 #[test]
 fn literal_union_codec_preserves_every_authored_string_member() {
     let values = vec![
-        "ready".to_string(), "say \"ready\"".to_string(), r"C:\store\value".to_string(),
-        "ready | done".to_string(), "line1\nline2".to_string(), "موجود".to_string(), String::new(),
+        "ready".to_string(),
+        "say \"ready\"".to_string(),
+        r"C:\store\value".to_string(),
+        "ready | done".to_string(),
+        "line1\nline2".to_string(),
+        "موجود".to_string(),
+        String::new(),
     ];
-    let encoded = super::literal_union_text(&values).expect("all source strings remain representable");
+    let encoded =
+        super::literal_union_text(&values).expect("all source strings remain representable");
     let decoded = super::literal_union_members(&encoded).expect("canonical quoted members decode");
-    assert_eq!(super::decode_literal_union(&encoded), Ok(Some(values.clone())));
-    assert_eq!(decoded.iter().map(|value| value.to_string()).collect::<Vec<_>>(), values);
-    let old = super::literal_union_members("\"line1\nline2\" | \"ready\"").expect("legacy raw newline remains readable");
-    assert_eq!(old.iter().map(|value| value.to_string()).collect::<Vec<_>>(), vec!["line1\nline2", "ready"]);
-    for malformed in [r#""unterminated"#, r#""a" |"#, r#""a" , "b""#, r#""a" trailing"#, r#""bad\q""#] {
-        assert!(super::literal_union_members(malformed).is_none(), "{malformed}");
-        assert!(super::decode_literal_union(malformed).is_err(), "{malformed}");
+    assert_eq!(
+        super::decode_literal_union(&encoded),
+        Ok(Some(values.clone()))
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        values
+    );
+    let old = super::literal_union_members("\"line1\nline2\" | \"ready\"")
+        .expect("legacy raw newline remains readable");
+    assert_eq!(
+        old.iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>(),
+        vec!["line1\nline2", "ready"]
+    );
+    for malformed in [
+        r#""unterminated"#,
+        r#""a" |"#,
+        r#""a" , "b""#,
+        r#""a" trailing"#,
+        r#""bad\q""#,
+    ] {
+        assert!(
+            super::literal_union_members(malformed).is_none(),
+            "{malformed}"
+        );
+        assert!(
+            super::decode_literal_union(malformed).is_err(),
+            "{malformed}"
+        );
     }
     assert!(super::literal_union_members("Status").is_none());
     assert_eq!(super::decode_literal_union("Status"), Ok(None));
@@ -101,8 +164,14 @@ fn literal_union_codec_preserves_every_authored_string_member() {
 
 #[test]
 fn typed_additional_values_do_not_prove_an_opaque_empty_record() {
-    let unknown = crate::ir::types::OirType::Struct { fields: Default::default(), additional: None };
-    let target = crate::ir::types::OirType::Struct { fields: Default::default(), additional: Some(Box::new(crate::ir::types::OirType::Number)) };
+    let unknown = crate::ir::types::OirType::Struct {
+        fields: Default::default(),
+        additional: None,
+    };
+    let target = crate::ir::types::OirType::Struct {
+        fields: Default::default(),
+        additional: Some(Box::new(crate::ir::types::OirType::Number)),
+    };
     assert!(super::checked_sub_with_named(&unknown, &target, &|_| None).is_none());
     assert!(super::checked_sub_with_named(&target, &target, &|_| None).is_some());
     assert!(super::checked_sub_with_named(&unknown, &unknown, &|_| None).is_some());
@@ -111,10 +180,19 @@ fn typed_additional_values_do_not_prove_an_opaque_empty_record() {
 #[test]
 fn nullable_assignment_requires_a_guard_or_explicit_unwrap() {
     let nullable = crate::ir::types::OirType::optional(crate::ir::types::OirType::String);
-    assert!(!super::assignable(&nullable, &crate::ir::types::OirType::String));
-    assert!(super::castable(&nullable, &crate::ir::types::OirType::String));
+    assert!(!super::assignable(
+        &nullable,
+        &crate::ir::types::OirType::String
+    ));
+    assert!(super::castable(
+        &nullable,
+        &crate::ir::types::OirType::String
+    ));
     assert!(super::assignable(&nullable, &nullable));
-    assert!(super::assignable(&crate::ir::types::OirType::String, &nullable));
+    assert!(super::assignable(
+        &crate::ir::types::OirType::String,
+        &nullable
+    ));
 }
 
 #[test]
@@ -123,17 +201,26 @@ fn record_contract_checks_additional_values_and_required_nullable_presence() {
     let target = ty(serde_json::json!({"kind":"struct","fields":[
         {"name":"id","fieldType":{"kind":"string"},"required":false}
     ],"additional":{"kind":"number"}}));
-    let record = |field: &str, kind: &str| ty(serde_json::json!({"kind":"struct","fields":[
-        {"name":field,"fieldType":{"kind":kind},"required":true}
-    ]}));
-    assert!(super::checked_sub_with_named(&record("extra", "string"), &target, &|_| None).is_none());
-    assert!(super::checked_sub_with_named(&record("extra", "number"), &target, &|_| None).is_some());
+    let record = |field: &str, kind: &str| {
+        ty(serde_json::json!({"kind":"struct","fields":[
+            {"name":field,"fieldType":{"kind":kind},"required":true}
+        ]}))
+    };
+    assert!(
+        super::checked_sub_with_named(&record("extra", "string"), &target, &|_| None).is_none()
+    );
+    assert!(
+        super::checked_sub_with_named(&record("extra", "number"), &target, &|_| None).is_some()
+    );
     assert!(super::checked_sub_with_named(&record("id", "string"), &target, &|_| None).is_some());
     assert!(super::checked_sub_with_named(&record("id", "number"), &target, &|_| None).is_none());
     let required_nullable = ty(serde_json::json!({"kind":"struct","fields":[
         {"name":"token","fieldType":{"kind":"optional","inner":{"kind":"string"}},"required":true}
     ]}));
-    assert!(super::checked_sub_with_named(&record("other", "number"), &required_nullable, &|_| None).is_none());
+    assert!(
+        super::checked_sub_with_named(&record("other", "number"), &required_nullable, &|_| None)
+            .is_none()
+    );
     let source = ty(serde_json::json!({"kind":"struct","fields":[
         {"name":"token","fieldType":{"kind":"optional","inner":{"kind":"string"}},"required":true}
     ]}));
@@ -141,12 +228,17 @@ fn record_contract_checks_additional_values_and_required_nullable_presence() {
     let ordinary = ty(serde_json::json!({"kind":"struct","fields":[
         {"name":"id","fieldType":{"kind":"string"},"required":false}
     ]}));
-    assert!(super::checked_sub_with_named(&record("extra", "number"), &ordinary, &|_| None).is_some());
-    let map = ty(serde_json::json!({"kind":"map","key":{"kind":"string"},"value":{"kind":"string"}}));
+    assert!(
+        super::checked_sub_with_named(&record("extra", "number"), &ordinary, &|_| None).is_some()
+    );
+    let map =
+        ty(serde_json::json!({"kind":"map","key":{"kind":"string"},"value":{"kind":"string"}}));
     assert!(super::checked_sub_with_named(&map, &target, &|_| None).is_none());
-    let extra_source = ty(serde_json::json!({"kind":"struct","fields":[],"additional":{"kind":"string"}}));
+    let extra_source =
+        ty(serde_json::json!({"kind":"struct","fields":[],"additional":{"kind":"string"}}));
     assert!(super::checked_sub_with_named(&extra_source, &target, &|_| None).is_none());
-    let call_keys = ty(serde_json::json!({"kind":"struct","fields":[],"additional":{"kind":"callkey"}}));
+    let call_keys =
+        ty(serde_json::json!({"kind":"struct","fields":[],"additional":{"kind":"callkey"}}));
     assert!(!super::assignable(&record("extra", "string"), &call_keys));
     assert!(super::castable(&record("extra", "string"), &call_keys));
 }
@@ -160,15 +252,25 @@ fn a_list_of_an_alias_satisfies_the_same_list_spelled_through_its_expansion() {
     let resolve = |name: &str| (name == "M").then(|| member.clone());
     let by_name = OirType::array(OirType::TypeRef { name: "M".into() });
     let expanded = OirType::array(member.clone());
-    assert!(super::oir_type_satisfies_with_named(&by_name, &expanded, &resolve));
-    assert!(super::oir_type_satisfies_with_named(&expanded, &by_name, &resolve));
-    assert!(super::oir_type_satisfies_with_named(&by_name, &by_name, &resolve));
+    assert!(super::oir_type_satisfies_with_named(
+        &by_name, &expanded, &resolve
+    ));
+    assert!(super::oir_type_satisfies_with_named(
+        &expanded, &by_name, &resolve
+    ));
+    assert!(super::oir_type_satisfies_with_named(
+        &by_name, &by_name, &resolve
+    ));
     let other = OirType::array(OirType::Struct {
         additional: None,
         fields: vec![OirField::new("content", OirType::Number)].into(),
     });
-    assert!(!super::oir_type_satisfies_with_named(&by_name, &other, &resolve));
-    assert!(!super::oir_type_satisfies_with_named(&other, &by_name, &resolve));
+    assert!(!super::oir_type_satisfies_with_named(
+        &by_name, &other, &resolve
+    ));
+    assert!(!super::oir_type_satisfies_with_named(
+        &other, &by_name, &resolve
+    ));
 }
 #[test]
 fn checked_assignment_requires_known_identity_preserving_evidence() {
@@ -181,7 +283,13 @@ fn checked_assignment_requires_known_identity_preserving_evidence() {
         value: Box::new(OirType::Number),
     };
     for (source, target) in [
-        (OirType::Struct { fields: Default::default(), additional: None }, map.clone()),
+        (
+            OirType::Struct {
+                fields: Default::default(),
+                additional: None,
+            },
+            map.clone(),
+        ),
         (
             OirType::array(OirType::erased()),
             OirType::array(OirType::Number),
@@ -256,15 +364,17 @@ fn named_relation_resolves_recursive_lists_maps_and_known_record_fields() {
         (
             "Cell",
             OirType::Struct {
-                fields: vec![crate::ir::types::OirField::new("kind", OirType::String), next].into(),
+                fields: vec![
+                    crate::ir::types::OirField::new("kind", OirType::String),
+                    next,
+                ]
+                .into(),
                 additional: None,
             },
         ),
     ]);
     let resolve = |name: &str| names.get(name).cloned();
-    assert!(
-        super::sub_with_named(&OirType::array(OirType::String), &value, &resolve).is_some()
-    );
+    assert!(super::sub_with_named(&OirType::array(OirType::String), &value, &resolve).is_some());
     assert!(super::sub_with_named(
         &OirType::map(OirType::String, OirType::array(OirType::String)),
         &OirType::map(OirType::String, OirType::optional(value)),
@@ -524,7 +634,10 @@ fn unknown_list_elements_do_not_erase_the_known_outer_kind() {
             items: vec![OirType::String, OirType::Number]
         }
     ));
-    assert!(super::oir_type_satisfies(&OirType::erased(), &OirType::String));
+    assert!(super::oir_type_satisfies(
+        &OirType::erased(),
+        &OirType::String
+    ));
     assert!(super::set_value_type_compatible("[string]", "array"));
     assert!(!super::set_value_type_compatible(
         "[string]",
@@ -571,7 +684,8 @@ fn structural_unknown_nullable_and_recursive_shapes_remain_compatible() {
         fields: vec![
             crate::ir::types::OirField::new("kind", OirType::String),
             optional_field,
-        ].into(),
+        ]
+        .into(),
     };
     assert!(super::assignable(&string_record, &optional_record));
     assert!(!super::assignable(
@@ -623,7 +737,10 @@ fn a_type_variable_is_opaque() {
     for concrete in [
         OirType::String,
         OirType::Number,
-        OirType::Struct { fields: Default::default(), additional: None },
+        OirType::Struct {
+            fields: Default::default(),
+            additional: None,
+        },
         OirType::Node,
     ] {
         assert!(
@@ -769,14 +886,18 @@ fn oir_type_unknowable_never_rejects() {
 
 #[test]
 fn the_erased_slot_is_one_shared_name_not_one_per_use() {
-    let (OirType::Var { name: a }, OirType::Var { name: b }) = (OirType::erased(), OirType::erased()) else {
+    let (OirType::Var { name: a }, OirType::Var { name: b }) =
+        (OirType::erased(), OirType::erased())
+    else {
         panic!("the erased slot is a type variable");
     };
     assert!(crate::value::Shared::ptr_eq(&a, &b));
     assert!(OirType::erased().is_erased());
     let own = OirType::Var { name: "t".into() };
     assert!(!own.is_erased());
-    let OirType::Var { name: own_name } = own else { unreachable!() };
+    let OirType::Var { name: own_name } = own else {
+        unreachable!()
+    };
     assert!(!crate::value::Shared::ptr_eq(&a, &own_name));
 }
 
@@ -787,17 +908,30 @@ mod same_shape_named_types {
     fn tag(kind: &str) -> OirType {
         OirType::Struct {
             additional: None,
-            fields: vec![OirField::new("kind", OirType::Enum { name: format!("\"{kind}\"") })].into(),
+            fields: vec![OirField::new(
+                "kind",
+                OirType::Enum {
+                    name: format!("\"{kind}\""),
+                },
+            )]
+            .into(),
         }
     }
 
     fn record(fields: Vec<OirField>) -> OirType {
-        OirType::Struct { additional: None, fields: fields.into() }
+        OirType::Struct {
+            additional: None,
+            fields: fields.into(),
+        }
     }
 
     fn union_of(members: Vec<OirType>) -> OirType {
         OirType::Union {
-            variants: members.into_iter().enumerate().map(|(i, t)| OirField::new(i.to_string(), t)).collect(),
+            variants: members
+                .into_iter()
+                .enumerate()
+                .map(|(i, t)| OirField::new(i.to_string(), t))
+                .collect(),
         }
     }
 
@@ -805,14 +939,27 @@ mod same_shape_named_types {
         OirType::TypeRef { name: name.into() }
     }
 
-    fn table(behavior: &str, failed_message: OirType, tail: Option<OirType>) -> BTreeMap<String, OirType> {
+    fn table(
+        behavior: &str,
+        failed_message: OirType,
+        tail: Option<OirType>,
+    ) -> BTreeMap<String, OirType> {
         let q = |n: &str| format!("{behavior}::{n}");
         let mut failed = OirField::new("message", failed_message);
         failed.required = true;
         let mut members = vec![named(&q("Created")), named(&q("Failed"))];
         let mut types = BTreeMap::new();
-        types.insert(q("Created"), record(vec![OirField::new("kind", OirType::String), OirField::new("row", OirType::String)]));
-        types.insert(q("Failed"), record(vec![OirField::new("kind", OirType::String), failed]));
+        types.insert(
+            q("Created"),
+            record(vec![
+                OirField::new("kind", OirType::String),
+                OirField::new("row", OirType::String),
+            ]),
+        );
+        types.insert(
+            q("Failed"),
+            record(vec![OirField::new("kind", OirType::String), failed]),
+        );
         if let Some(tail) = tail {
             types.insert(q("Tail"), tail);
             members.push(named(&q("Tail")));
@@ -821,7 +968,10 @@ mod same_shape_named_types {
         types
     }
 
-    fn both(a: BTreeMap<String, OirType>, b: BTreeMap<String, OirType>) -> BTreeMap<String, OirType> {
+    fn both(
+        a: BTreeMap<String, OirType>,
+        b: BTreeMap<String, OirType>,
+    ) -> BTreeMap<String, OirType> {
         a.into_iter().chain(b).collect()
     }
 
@@ -832,7 +982,10 @@ mod same_shape_named_types {
 
     #[test]
     fn identical_shapes_declared_by_two_behaviors_are_assignable_both_ways() {
-        let types = both(table("A", OirType::String, None), table("B", OirType::String, None));
+        let types = both(
+            table("A", OirType::String, None),
+            table("B", OirType::String, None),
+        );
         let (a, b) = (named("A::Outcome"), named("B::Outcome"));
         assert!(agrees(&types, &a, &b) && agrees(&types, &b, &a));
         assert!(agrees(&types, &OirType::array(a), &OirType::array(b)));
@@ -840,14 +993,20 @@ mod same_shape_named_types {
 
     #[test]
     fn control_a_member_of_a_different_type_is_refused() {
-        let types = both(table("A", OirType::String, None), table("B", OirType::Number, None));
+        let types = both(
+            table("A", OirType::String, None),
+            table("B", OirType::Number, None),
+        );
         assert!(!agrees(&types, &named("A::Outcome"), &named("B::Outcome")));
         assert!(!agrees(&types, &named("B::Outcome"), &named("A::Outcome")));
     }
 
     #[test]
     fn control_a_union_member_that_differs_is_refused_in_the_direction_it_widens_the_value() {
-        let types = both(table("A", OirType::String, None), table("B", OirType::String, Some(tag("lost"))));
+        let types = both(
+            table("A", OirType::String, None),
+            table("B", OirType::String, Some(tag("lost"))),
+        );
         assert!(!agrees(&types, &named("B::Outcome"), &named("A::Outcome")));
     }
 }
@@ -856,9 +1015,18 @@ mod same_shape_named_types {
 fn a_type_qualified_by_a_lowercase_behavior_name_is_a_named_type_like_its_short_name() {
     use super::{parse_compat_type, qualified_type_name, set_value_type_compatible, CompatType};
     let qualified = qualified_type_name("std-row-store-postgres", "RowWriteOutcome");
-    assert!(matches!(parse_compat_type(&qualified), CompatType::Named(_)));
-    assert!(set_value_type_compatible(&qualified, "object"), "an object literal fits a declared record type");
-    assert!(set_value_type_compatible(&format!("[{qualified}]"), "array"));
+    assert!(matches!(
+        parse_compat_type(&qualified),
+        CompatType::Named(_)
+    ));
+    assert!(
+        set_value_type_compatible(&qualified, "object"),
+        "an object literal fits a declared record type"
+    );
+    assert!(set_value_type_compatible(
+        &format!("[{qualified}]"),
+        "array"
+    ));
     assert_eq!(
         set_value_type_compatible("RowWriteOutcome", "object"),
         set_value_type_compatible(&qualified, "object"),
@@ -869,7 +1037,10 @@ fn a_type_qualified_by_a_lowercase_behavior_name_is_a_named_type_like_its_short_
         set_value_type_compatible(&qualified, "string"),
         "control: a scalar fits the qualified name exactly as it fits the short one"
     );
-    assert!(matches!(parse_compat_type("rowWriteOutcome"), CompatType::Unknown(_)), "control: a lowercase short name stays unknown");
+    assert!(
+        matches!(parse_compat_type("rowWriteOutcome"), CompatType::Unknown(_)),
+        "control: a lowercase short name stays unknown"
+    );
 }
 
 mod sealed_types {
@@ -887,16 +1058,28 @@ mod sealed_types {
         assert!(checked_sub_with_named(&verified(), &verified(), &named).is_some());
         assert!(sub(&verified(), &verified()).is_some());
         let record = sealed_record("Verified").expect("record");
-        assert!(checked_sub_with_named(&record, &verified(), &named).is_none(), "a literal of its own shape never fits");
-        assert!(sub(&record, &verified()).is_none(), "nor in the unchecked relation");
+        assert!(
+            checked_sub_with_named(&record, &verified(), &named).is_none(),
+            "a literal of its own shape never fits"
+        );
+        assert!(
+            sub(&record, &verified()).is_none(),
+            "nor in the unchecked relation"
+        );
         let literal = OirType::Struct {
             fields: vec![OirField::new("subject", OirType::String)].into(),
             additional: None,
         };
         assert!(checked_sub_with_named(&literal, &verified(), &named).is_none());
         assert!(checked_sub_with_named(&OirType::String, &verified(), &named).is_none());
-        assert!(checked_sub_with_named(&OirType::erased(), &verified(), &named).is_none(), "a json-typed value never fits");
-        assert!(checked_sub_with_named(&OirType::optional(verified()), &verified(), &named).is_none(), "control: nullable is not present");
+        assert!(
+            checked_sub_with_named(&OirType::erased(), &verified(), &named).is_none(),
+            "a json-typed value never fits"
+        );
+        assert!(
+            checked_sub_with_named(&OirType::optional(verified()), &verified(), &named).is_none(),
+            "control: nullable is not present"
+        );
     }
 
     #[test]
@@ -904,17 +1087,37 @@ mod sealed_types {
         let named = |_: &str| None;
         let borrow = sealed_type_ref("Borrow");
         let union = OirType::Union {
-            variants: vec![OirField::new("number", OirType::Number), OirField::new("Borrow", borrow.clone())].into(),
+            variants: vec![
+                OirField::new("number", OirType::Number),
+                OirField::new("Borrow", borrow.clone()),
+            ]
+            .into(),
         };
         assert!(checked_sub_with_named(&borrow, &union, &named).is_some());
-        assert!(checked_sub_with_named(&union, &union, &named).is_some(), "the union is its own subtype");
-        assert!(checked_sub_with_named(&verified(), &union, &named).is_none(), "control: another seal does not fit");
+        assert!(
+            checked_sub_with_named(&union, &union, &named).is_some(),
+            "the union is its own subtype"
+        );
+        assert!(
+            checked_sub_with_named(&verified(), &union, &named).is_none(),
+            "control: another seal does not fit"
+        );
         let records = OirType::Union {
-            variants: vec![OirField::new("number", OirType::Number), OirField::new("record", sealed_record("Borrow").expect("record"))].into(),
+            variants: vec![
+                OirField::new("number", OirType::Number),
+                OirField::new("record", sealed_record("Borrow").expect("record")),
+            ]
+            .into(),
         };
-        assert!(sub(&borrow, &records).is_some(), "a sealed value still reads as its record inside a union");
+        assert!(
+            sub(&borrow, &records).is_some(),
+            "a sealed value still reads as its record inside a union"
+        );
         let opens = |name: &str| sealed_record(name);
-        assert!(checked_sub_with_named(&borrow, &union, &opens).is_some(), "a resolver that knows the record does not open the seal");
+        assert!(
+            checked_sub_with_named(&borrow, &union, &opens).is_some(),
+            "a resolver that knows the record does not open the seal"
+        );
     }
 
     #[test]
@@ -922,12 +1125,31 @@ mod sealed_types {
         use crate::num_width::NumWidth::*;
         let w = |width| OirType::Sized { width };
         let named = |_: &str| None;
-        for (src, dst) in [(w(U8), w(I16)), (w(U8), OirType::Integer), (w(U32), OirType::Integer), (w(I8), OirType::Number), (w(F32), OirType::Number)] {
-            assert!(checked_sub_with_named(&src, &dst, &named).is_some(), "{src:?} into {dst:?}");
+        for (src, dst) in [
+            (w(U8), w(I16)),
+            (w(U8), OirType::Integer),
+            (w(U32), OirType::Integer),
+            (w(I8), OirType::Number),
+            (w(F32), OirType::Number),
+        ] {
+            assert!(
+                checked_sub_with_named(&src, &dst, &named).is_some(),
+                "{src:?} into {dst:?}"
+            );
         }
         assert!(checked_sub_with_named(&w(U8), &w(U8), &named).is_some());
-        for (src, dst) in [(OirType::Integer, w(U8)), (w(I8), w(U16)), (w(U16), w(I16)), (OirType::Number, w(F32)), (w(I32), w(F32)), (OirType::Number, OirType::Integer)] {
-            assert!(checked_sub_with_named(&src, &dst, &named).is_none(), "control: {src:?} does not narrow into {dst:?}");
+        for (src, dst) in [
+            (OirType::Integer, w(U8)),
+            (w(I8), w(U16)),
+            (w(U16), w(I16)),
+            (OirType::Number, w(F32)),
+            (w(I32), w(F32)),
+            (OirType::Number, OirType::Integer),
+        ] {
+            assert!(
+                checked_sub_with_named(&src, &dst, &named).is_none(),
+                "control: {src:?} does not narrow into {dst:?}"
+            );
         }
     }
 
@@ -941,36 +1163,75 @@ mod sealed_types {
     #[test]
     fn a_verified_reads_through_its_record_and_control_a_viewer_does_not_gain_the_seal() {
         let segment = |name: &str| vec![name.to_string()];
-        assert_eq!(crate::signature::type_at_path(&verified(), &segment("subject")), Some(OirType::String));
-        assert_eq!(crate::signature::type_at_path(&verified(), &segment("expiresAt")), Some(OirType::Instant));
+        assert_eq!(
+            crate::signature::type_at_path(&verified(), &segment("subject")),
+            Some(OirType::String)
+        );
+        assert_eq!(
+            crate::signature::type_at_path(&verified(), &segment("expiresAt")),
+            Some(OirType::Instant)
+        );
         assert!(crate::signature::type_at_path(&verified(), &segment("password")).is_none());
-        assert!(sub(&verified(), &sealed_record("Verified").expect("record")).is_some(), "a verified reads as its record");
+        assert!(
+            sub(&verified(), &sealed_record("Verified").expect("record")).is_some(),
+            "a verified reads as its record"
+        );
     }
 }
 
 #[test]
 fn semantic_string_refinements_enter_a_union_that_has_string() {
-    let accepts = union(&[OirType::String, OirType::Number, OirType::Boolean, OirType::Date, OirType::DateTime]);
+    let accepts = union(&[
+        OirType::String,
+        OirType::Number,
+        OirType::Boolean,
+        OirType::Date,
+        OirType::DateTime,
+    ]);
     for src in [OirType::Email, OirType::Url, OirType::Phone] {
-        assert!(sub(&src, &accepts).is_some_and(|c| !c.requires_cast()), "{src:?}");
-        assert!(super::assignable(&src, &union(&[OirType::String, OirType::Number])), "{src:?}");
-        assert!(!super::assignable(&src, &union(&[OirType::Number, OirType::Boolean])), "{src:?}");
+        assert!(
+            sub(&src, &accepts).is_some_and(|c| !c.requires_cast()),
+            "{src:?}"
+        );
+        assert!(
+            super::assignable(&src, &union(&[OirType::String, OirType::Number])),
+            "{src:?}"
+        );
+        assert!(
+            !super::assignable(&src, &union(&[OirType::Number, OirType::Boolean])),
+            "{src:?}"
+        );
     }
     assert!(super::assignable(&OirType::String, &accepts));
 }
 
 #[test]
 fn semantic_string_record_fields_enter_a_map_of_a_union_with_string() {
-    let value = union(&[OirType::String, OirType::Number, OirType::Boolean, OirType::Date, OirType::DateTime]);
-    let map = OirType::Map { key: Box::new(OirType::String), value: Box::new(value) };
+    let value = union(&[
+        OirType::String,
+        OirType::Number,
+        OirType::Boolean,
+        OirType::Date,
+        OirType::DateTime,
+    ]);
+    let map = OirType::Map {
+        key: Box::new(OirType::String),
+        value: Box::new(value),
+    };
     let none = |_: &str| None;
     for src in [OirType::Email, OirType::Url, OirType::Phone] {
         let record = OirType::Struct {
             additional: None,
             fields: vec![crate::ir::types::OirField::new("email", src.clone())].into(),
         };
-        assert!(super::sub(&record, &map).is_some_and(|c| !c.requires_cast()), "{src:?}");
-        assert!(super::checked_sub_with_named(&record, &map, &none).is_some_and(|c| !c.requires_cast()), "{src:?} checked");
+        assert!(
+            super::sub(&record, &map).is_some_and(|c| !c.requires_cast()),
+            "{src:?}"
+        );
+        assert!(
+            super::checked_sub_with_named(&record, &map, &none).is_some_and(|c| !c.requires_cast()),
+            "{src:?} checked"
+        );
     }
     let numeric = OirType::Map {
         key: Box::new(OirType::String),

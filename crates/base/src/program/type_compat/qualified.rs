@@ -110,8 +110,14 @@ mod tests {
 
     #[test]
     fn a_qualified_type_is_one_pascal_case_identifier_and_an_unqualified_one_is_unchanged() {
-        assert_eq!(type_identifier("std-api-key-verifier::KeyClaim"), "StdApiKeyVerifierKeyClaim");
-        assert_eq!(type_identifier("std_bearer-verify::HttpHeader"), "StdBearerVerifyHttpHeader");
+        assert_eq!(
+            type_identifier("std-api-key-verifier::KeyClaim"),
+            "StdApiKeyVerifierKeyClaim"
+        );
+        assert_eq!(
+            type_identifier("std_bearer-verify::HttpHeader"),
+            "StdBearerVerifyHttpHeader"
+        );
         assert_eq!(type_identifier("std-http2--x::T"), "StdHttp2XT");
         for name in ["KeyClaim", "::X", "B::", "", "my_type"] {
             assert_eq!(type_identifier(name), name, "{name}");
@@ -120,7 +126,10 @@ mod tests {
 
     #[test]
     fn a_finding_words_a_qualified_name_without_the_qualifier_spelling() {
-        assert_eq!(describe_type_name("B::Item"), "Item (declared by behavior B)");
+        assert_eq!(
+            describe_type_name("B::Item"),
+            "Item (declared by behavior B)"
+        );
         assert_eq!(describe_type_name("Item"), "Item");
     }
 

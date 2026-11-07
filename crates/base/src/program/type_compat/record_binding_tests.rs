@@ -10,7 +10,7 @@ fn is_entity(n: &str) -> bool {
 }
 fn check(ty: &str, expected: Option<&str>) -> Option<RecordBindingMismatch> {
     bound_shape_of_type_str(ty)
-        .and_then(|b| record_prop_binding_mismatch(&b, &["object"], expected, is_entity))
+        .and_then(|b| record_prop_binding_mismatch(&b, false, expected, is_entity))
 }
 
 #[test]
@@ -93,7 +93,11 @@ fn a_scalar_is_never_a_record() {
             Some(RecordBindingMismatch::ScalarIntoRecord),
             "{ty}"
         );
-        assert_eq!(check(ty, None), Some(RecordBindingMismatch::ScalarIntoRecord), "{ty}");
+        assert_eq!(
+            check(ty, None),
+            Some(RecordBindingMismatch::ScalarIntoRecord),
+            "{ty}"
+        );
     }
 }
 
@@ -109,14 +113,26 @@ fn a_scalar_fills_a_prop_that_also_admits_one() {
     for ty in ["string", "number", "boolean"] {
         let bound = bound_shape_of_type_str(ty).unwrap();
         assert_eq!(
-            record_prop_binding_mismatch(&bound, &["string", "object"], None, is_entity),
+            record_prop_binding_mismatch(
+                &bound,
+                prop_admits_scalar(&["string", "object"]),
+                None,
+                is_entity
+            ),
             None,
             "{ty}"
         );
     }
     let collection = bound_shape_of_type_str("[object]").unwrap();
     assert_eq!(
-        record_prop_binding_mismatch(&collection, &["string", "object"], None, is_entity),
+        record_prop_binding_mismatch(&collection, true, None, is_entity),
         Some(RecordBindingMismatch::CollectionIntoRecord)
     );
+}
+
+#[test]
+fn edge_only_scalar_types_admit_a_scalar() {
+    assert!(!prop_admits_scalar(&["object"]));
+    assert!(!prop_admits_scalar(&[]));
+    assert!(prop_admits_scalar(&["object", "number"]));
 }

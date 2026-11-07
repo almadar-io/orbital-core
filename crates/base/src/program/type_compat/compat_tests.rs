@@ -181,13 +181,23 @@ fn compat_kind_oir_round_trips_the_legacy_vocabulary() {
     );
     // Markers with no real `OirType` fall back to their witness type.
     assert_eq!(compat_kind_oir("money"), Money);
-    assert_eq!(compat_kind_oir("any"), OirType::erased(), "a spelling nothing declares is unknown");
+    assert_eq!(
+        compat_kind_oir("any"),
+        OirType::erased(),
+        "a spelling nothing declares is unknown"
+    );
 }
 
 #[test]
 fn object_json_map_family() {
-    assert!(!set_value_type_compatible("object", "json"), "json is not a type");
-    assert!(!set_value_type_compatible("json", "object"), "json is not a type");
+    assert!(
+        !set_value_type_compatible("object", "json"),
+        "json is not a type"
+    );
+    assert!(
+        !set_value_type_compatible("json", "object"),
+        "json is not a type"
+    );
     assert!(set_value_type_compatible("Map<string,string>", "object"));
     assert!(set_value_type_compatible("object", "Map<string,string>"));
     assert!(set_value_type_compatible("Map<a,b>", "Map<c,d>"));
@@ -229,7 +239,10 @@ fn bytes_is_not_implicitly_a_string() {
     assert!(!set_value_type_compatible("bytes", "string"));
     assert!(!set_value_type_compatible("string", "bytes"));
     assert!(!set_value_type_compatible("number", "bytes"));
-    assert!(!set_value_type_compatible("any", "bytes"), "any is not a type");
+    assert!(
+        !set_value_type_compatible("any", "bytes"),
+        "any is not a type"
+    );
     assert!(super::sub(&Bytes, &Bytes).is_some());
     assert_eq!(super::sub(&String, &Bytes), None);
     assert_eq!(super::sub(&Bytes, &String), None);
@@ -320,7 +333,9 @@ fn sub_optional_wrap_unwrap_witnesses() {
             },
             &String
         ),
-        Some(C::Unwrap { inner: Box::new(C::Identity) })
+        Some(C::Unwrap {
+            inner: Box::new(C::Identity)
+        })
     );
     assert_eq!(
         sub(
@@ -329,7 +344,9 @@ fn sub_optional_wrap_unwrap_witnesses() {
             },
             &Number
         ),
-        Some(C::Unwrap { inner: Box::new(C::Widen(WidenKind::IntegerNumber)) })
+        Some(C::Unwrap {
+            inner: Box::new(C::Widen(WidenKind::IntegerNumber))
+        })
     );
     assert_eq!(
         sub(
@@ -370,7 +387,10 @@ fn sub_string_kind_family() {
     );
     assert_eq!(sub(&status, &Url), Some(C::Refine(SemanticStringKind::Url)));
     // …a semantic domain is a string, but domains do not inter-assign.
-    assert_eq!(sub(&Email, &String), Some(C::Widen(WidenKind::SemanticToString)));
+    assert_eq!(
+        sub(&Email, &String),
+        Some(C::Widen(WidenKind::SemanticToString))
+    );
     assert_eq!(sub(&Email, &Url), None);
     assert_eq!(sub(&Email, &Email), Some(C::Identity));
 }
@@ -431,7 +451,10 @@ fn sub_date_family_and_scalars() {
     assert_eq!(sub(&Number, &Date), None);
     assert_eq!(sub(&Instant, &Number), None);
     assert_eq!(sub(&Integer, &Instant), None);
-    assert_eq!(sub(&String, &DateTime), Some(C::Widen(WidenKind::StringToDateTime)));
+    assert_eq!(
+        sub(&String, &DateTime),
+        Some(C::Widen(WidenKind::StringToDateTime))
+    );
     assert_eq!(sub(&Date, &DateTime), None);
     assert_eq!(sub(&DateTime, &Date), None);
     assert_eq!(sub(&Boolean, &Date), None);
@@ -444,7 +467,8 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
         variants: vec![
             crate::ir::types::OirField::new("string".to_string(), String),
             crate::ir::types::OirField::new("number".to_string(), Number),
-        ].into(),
+        ]
+        .into(),
     };
     assert_eq!(
         sub(&String, &union),
@@ -463,8 +487,12 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
     let tagged = Union {
         variants: vec![crate::ir::types::OirField::new(
             "a".to_string(),
-            Struct { fields: Default::default(), additional: None },
-        )].into(),
+            Struct {
+                fields: Default::default(),
+                additional: None,
+            },
+        )]
+        .into(),
     };
     assert_eq!(sub(&String, &tagged), None);
 }
@@ -472,7 +500,10 @@ fn a_primitive_union_takes_its_member_kinds_and_nothing_else() {
 #[test]
 fn sub_object_json_family_mutually_compatible() {
     use super::sub;
-    let row = Struct { fields: Default::default(), additional: None };
+    let row = Struct {
+        fields: Default::default(),
+        additional: None,
+    };
     let bag = Map {
         key: Box::new(String),
         value: Box::new(OirType::erased()),
@@ -522,7 +553,14 @@ fn an_atom_and_a_list_of_program_data_are_an_sexpr() {
         "the empty list"
     );
     assert!(
-        sub(&Struct { fields: Default::default(), additional: None }, &SExpr).is_some(),
+        sub(
+            &Struct {
+                fields: Default::default(),
+                additional: None
+            },
+            &SExpr
+        )
+        .is_some(),
         "an options object"
     );
     assert!(sub(
@@ -584,7 +622,10 @@ fn sub_reference_row_or_id() {
     let article = Reference {
         entity: "Article".into(),
     };
-    let row = Struct { fields: Default::default(), additional: None };
+    let row = Struct {
+        fields: Default::default(),
+        additional: None,
+    };
     assert_eq!(sub(&row, &article), Some(C::Row { from_id: false }));
     assert_eq!(sub(&String, &article), Some(C::Row { from_id: true }));
     assert_eq!(
@@ -602,7 +643,12 @@ fn sub_reference_row_or_id() {
         None
     );
     // Owner ruling 2026-10-25: a relation read is the related row's id, so it fits a string, and is not a row.
-    assert_eq!(sub(&article, &String), Some(C::Erase { from: article.clone() }));
+    assert_eq!(
+        sub(&article, &String),
+        Some(C::Erase {
+            from: article.clone()
+        })
+    );
     assert_eq!(sub(&article, &row), None);
     assert_eq!(sub(&SExpr, &article), None);
 }
@@ -616,7 +662,10 @@ fn sub_row_is_object_family() {
     let revision_ref = Reference {
         entity: "Revision".into(),
     };
-    let object = Struct { fields: Default::default(), additional: None };
+    let object = Struct {
+        fields: Default::default(),
+        additional: None,
+    };
     // A row takes an object-family value and erases into shapeless destinations.
     assert_eq!(
         sub(&object, &row),
@@ -646,9 +695,17 @@ fn a_semantic_string_domain_widens_to_string_and_never_back_unchecked() {
             "{domain:?}"
         );
         assert!(sub(&String, &domain).is_some_and(|c| matches!(c, C::Refine(_))));
-        assert_eq!(sub(&domain, &Number), None, "control: a domain is not a number");
+        assert_eq!(
+            sub(&domain, &Number),
+            None,
+            "control: a domain is not a number"
+        );
     }
-    assert_eq!(sub(&Email, &Url), None, "control: domains are not interchangeable");
+    assert_eq!(
+        sub(&Email, &Url),
+        None,
+        "control: domains are not interchangeable"
+    );
     assert_eq!(sub(&Email, &Email), Some(C::Identity));
 }
 
@@ -662,7 +719,10 @@ fn sub_node_renders_any_scalar() {
         Some(C::Widen(WidenKind::ScalarToNode))
     );
     assert_eq!(sub(&Money, &Node), Some(C::Widen(WidenKind::ScalarToNode)));
-    let row = Struct { fields: Default::default(), additional: None };
+    let row = Struct {
+        fields: Default::default(),
+        additional: None,
+    };
     assert_eq!(sub(&row, &Node), Some(C::Erase { from: row }));
     let arr = Array {
         inner: Box::new(String),

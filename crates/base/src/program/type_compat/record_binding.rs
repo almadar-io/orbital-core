@@ -66,18 +66,18 @@ pub fn prop_admits_scalar(prop_types: &[&str]) -> bool {
 /// A single-record prop (declared object-only) bound to `bound`. `expected`
 /// is the entity the prop renders (the trait's linked entity) when known;
 /// `is_entity` limits the identity compare to declared entities, so a struct
-/// alias is never mistaken for a row of the wrong entity. `prop_types` are the
-/// registry's accepted types: a prop that also admits a scalar
-/// (`skeleton : string | object`) takes one.
+/// alias is never mistaken for a row of the wrong entity. `admits_scalar`
+/// (see [`prop_admits_scalar`]): the prop also accepts a scalar
+/// (`skeleton : string | object`), so a scalar fills it.
 pub fn record_prop_binding_mismatch(
     bound: &BoundShape,
-    prop_types: &[&str],
+    admits_scalar: bool,
     expected: Option<&str>,
     is_entity: impl Fn(&str) -> bool,
 ) -> Option<RecordBindingMismatch> {
     match bound {
         BoundShape::Collection => Some(RecordBindingMismatch::CollectionIntoRecord),
-        BoundShape::Scalar if prop_admits_scalar(prop_types) => None,
+        BoundShape::Scalar if admits_scalar => None,
         BoundShape::Scalar => Some(RecordBindingMismatch::ScalarIntoRecord),
         BoundShape::Record(Some(actual)) => match expected {
             Some(exp) if actual != exp && is_entity(actual) && is_entity(exp) => {
