@@ -102,9 +102,9 @@ fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
                 if let Some((params, at)) = wrap_at.filter(|(_, at)| *at == i) {
                     let body = next.as_ref().unwrap_or(item);
                     if !is_lambda_form(body) && lower_sexpr(body).is_ok_and(|lowered| binds_element(&lowered, params)) {
-                        let names = params.iter().map(|p| SExpression::string(*p)).collect::<Vec<_>>();
+                        let names = params.iter().map(|p| SExpression::string(p.to_string())).collect::<Vec<_>>();
                         next = Some(SExpression::Array(
-                            vec![SExpression::string("fn"), SExpression::Array(names.into()), body.clone()].into(),
+                            vec![SExpression::string("fn".to_string()), SExpression::Array(names.into()), body.clone()].into(),
                         ));
                     }
                 }

@@ -321,3 +321,40 @@ fn a_raw_callback_body_that_reads_the_element_lowers_to_a_lambda() {
         "control: a written lambda stays the one lambda"
     );
 }
+
+#[test]
+fn a_raw_callback_body_becomes_the_lambda_the_compiler_lowers_it_to() {
+    let mut expr: SExpression = serde_json::from_str(
+        r#"["set", "@entity.bars", ["array/map", "@entity.values", {"value": "@item", "label": ["str/concat", "", "@item"]}]]"#,
+    )
+    .unwrap();
+    raw_callbacks_as_lambdas(&mut expr);
+    let expected: SExpression = serde_json::from_str(
+        r#"["set", "@entity.bars", ["array/map", "@entity.values", ["fn", ["item", "index"], {"value": "@item", "label": ["str/concat", "", "@item"]}]]]"#,
+    )
+    .unwrap();
+    assert_eq!(expr, expected);
+    let reduce: SExpression = serde_json::from_str(r#"["array/reduce", [1, 2], 0, ["+", "@acc", "@item"]]"#).unwrap();
+    let mut wrapped = reduce.clone();
+    raw_callbacks_as_lambdas(&mut wrapped);
+    assert_eq!(
+        wrapped,
+        serde_json::from_str::<SExpression>(r#"["array/reduce", [1, 2], 0, ["fn", ["acc", "item"], ["+", "@acc", "@item"]]]"#).unwrap()
+    );
+}
+
+#[test]
+fn control_a_written_lambda_a_value_slot_and_quoted_data_stay_as_written() {
+    for json in [
+        r#"["array/map", [1, 2], ["fn", "x", "@x"]]"#,
+        r#"["array/filter", "@entity.rows", ["object/get", "@config", "pred"]]"#,
+        r#"["array/filter", ["object/get", "@item", "children"], ["fn", "c", true]]"#,
+        r#"["quote", ["array/map", [1], ["+", "@item", 1]]]"#,
+        r#"["array/findIndex", [1, 2], [">", "@item", 1]]"#,
+    ] {
+        let original: SExpression = serde_json::from_str(json).unwrap();
+        let mut expr = original.clone();
+        raw_callbacks_as_lambdas(&mut expr);
+        assert_eq!(expr, original, "{json}");
+    }
+}
