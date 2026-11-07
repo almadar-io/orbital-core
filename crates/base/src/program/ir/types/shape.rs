@@ -318,17 +318,19 @@ pub fn payload_field_shape_with_entity(
     field: &crate::schema::types::PayloadField,
     is_entity: &impl Fn(&str) -> bool,
 ) -> Result<OirType, ShapeError> {
-    payload_shape(field, &PayloadNames { entity: is_entity, alias: &|_| false })
+    payload_shape(field, &PayloadNames { entity: is_entity, alias: &|_| false, sorted: false })
 }
 
 /// [`payload_field_shape_with_entity`] for codegen: a field projected from a declared alias (`projectedFrom.type`,
-/// whole type, `is_alias` true) is the `TypeRef` naming that alias, so a shell hoists one model per declared name.
+/// whole type, `is_alias` true) is the `TypeRef` naming that alias, so a shell hoists one model per declared name, and
+/// a record's fields are in name order (the canonical order every generated record model and literal shares; union
+/// arms keep their declared order, which arm selection reads).
 pub fn payload_field_shape_named(
     field: &crate::schema::types::PayloadField,
     is_entity: &impl Fn(&str) -> bool,
     is_alias: &impl Fn(&str) -> bool,
 ) -> Result<OirType, ShapeError> {
-    payload_shape(field, &PayloadNames { entity: is_entity, alias: is_alias })
+    payload_shape(field, &PayloadNames { entity: is_entity, alias: is_alias, sorted: true })
 }
 
 /// [`declared_alias_shape`] whose members reference other declared aliases by name (see
@@ -337,20 +339,30 @@ pub fn declared_alias_shape_named(
     members: &[crate::schema::types::PayloadField],
     is_alias: &impl Fn(&str) -> bool,
 ) -> Result<OirType, ShapeError> {
-    let names = PayloadNames { entity: &|_| false, alias: is_alias };
+    let names = PayloadNames { entity: &|_| false, alias: is_alias, sorted: true };
     match members {
         [only] if only.name.is_empty() => {
             let mut body = only.clone();
             body.projected_from = None;
             payload_shape(&body, &names)
         }
-        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &names)?.into() }),
+        _ => Ok(OirType::Struct { additional: None, fields: record_members(members, &names)?.into() }),
     }
 }
 
 struct PayloadNames<'a> {
     entity: &'a dyn Fn(&str) -> bool,
     alias: &'a dyn Fn(&str) -> bool,
+    sorted: bool,
+}
+
+/// A record's members, in name order when `names.sorted`.
+fn record_members(props: &[crate::schema::types::PayloadField], names: &PayloadNames<'_>) -> Result<Vec<OirField>, ShapeError> {
+    let mut fields = payload_members(props, names)?;
+    if names.sorted {
+        fields.sort_by(|a, b| a.name.cmp(&b.name));
+    }
+    Ok(fields)
 }
 
 fn payload_shape(field: &crate::schema::types::PayloadField, names: &PayloadNames<'_>) -> Result<OirType, ShapeError> {
@@ -442,10 +454,10 @@ fn payload_field_shape_inner(
             Ok(if list { OirType::array(named) } else { named })
         }
         Some(props) => {
-            let fields = payload_members(props, names)?;
             if field.field_type == "union" {
-                return Ok(OirType::Union { variants: fields.into() });
+                return Ok(OirType::Union { variants: payload_members(props, names)?.into() });
             }
+            let fields = record_members(props, names)?;
             let record = OirType::Struct { fields: fields.into(), additional: additional()? };
             Ok(if list { OirType::array(record) } else { record })
         }
@@ -571,6 +583,6 @@ pub fn names_in(ty: &OirType, out: &mut Vec<String>) {
 pub fn declared_alias_shape(members: &[crate::schema::types::PayloadField]) -> Result<OirType, ShapeError> {
     match members {
         [only] if only.name.is_empty() => payload_field_shape(only),
-        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &PayloadNames { entity: &|_| false, alias: &|_| false })?.into() }),
+        _ => Ok(OirType::Struct { additional: None, fields: payload_members(members, &PayloadNames { entity: &|_| false, alias: &|_| false, sorted: false })?.into() }),
     }
 }

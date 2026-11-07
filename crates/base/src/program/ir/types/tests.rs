@@ -1067,3 +1067,22 @@ fn a_named_payload_shape_references_declared_aliases_by_name_and_the_structural_
         "a list of a declared alias is a list of its name"
     );
 }
+
+#[test]
+fn a_named_record_lists_its_fields_in_name_order_and_a_union_keeps_its_arm_order() {
+    let record: Vec<crate::schema::types::PayloadField> = serde_json::from_value(serde_json::json!([
+        { "name": "type", "type": "string" }, { "name": "text", "type": "string", "required": true }
+    ]))
+    .unwrap();
+    let OirType::Struct { fields, .. } = declared_alias_shape_named(&record, &|_| false).unwrap() else { panic!("a record") };
+    assert_eq!(fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["text", "type"]);
+    let OirType::Struct { fields, .. } = declared_alias_shape(&record).unwrap() else { panic!("a record") };
+    assert_eq!(fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["type", "text"], "control: the structural shape keeps declared order");
+    let union: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({
+        "name": "", "type": "union", "properties": [
+            { "name": "Zed", "type": "object", "properties": [{ "name": "z", "type": "string" }] },
+            { "name": "Alpha", "type": "object", "properties": [{ "name": "a", "type": "string" }] } ] }))
+    .unwrap();
+    let OirType::Union { variants } = declared_alias_shape_named(std::slice::from_ref(&union), &|_| false).unwrap() else { panic!("a union") };
+    assert_eq!(variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Zed", "Alpha"], "union arms keep declared order");
+}
