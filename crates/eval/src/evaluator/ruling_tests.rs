@@ -230,6 +230,22 @@ fn str_template_substitutes_double_braces_and_leaves_single_braces_and_unknown_k
 }
 
 #[test]
+fn g_cross_451_str_template_does_not_expand_a_placeholder_inside_a_substituted_value() {
+    assert_eq!(
+        ok(r#"["str/template", "{{a}} {{b}} {{c}}", {"a": "x", "b": "B", "c": "z"}]"#),
+        Value::string("x B z")
+    );
+    assert_eq!(
+        ok(r#"["str/template", "{{a}} {{b}}", {"a": "{{b}}", "b": "B"}]"#),
+        Value::string("{{b}} B")
+    );
+    assert_eq!(
+        ok(r#"["str/template", "{{b}} {{a}}", {"a": "{{b}}", "b": "B"}]"#),
+        Value::string("B {{b}}")
+    );
+}
+
+#[test]
 fn str_truncate_keeps_len_characters_then_appends_the_suffix() {
     assert_eq!(
         ok(r#"["str/truncate", "Hello World", 8, "..."]"#),

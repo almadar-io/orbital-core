@@ -204,7 +204,7 @@ pub struct MutationVerdictWire {
 }
 
 fn parse<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, String> {
-    serde_json::from_str(json).map_err(|e| format!("parse {what}: {e}"))
+    orbital_core_base::json_value::parse_deep_json(json, what)
 }
 
 fn to_json<T: Serialize>(value: &T) -> Result<String, String> {
@@ -848,6 +848,19 @@ mod resolve_values_tests {
 
     fn resolve(context: Json, values: Json) -> Json {
         serde_json::from_str(&resolve_values_json(&context.to_string(), &values.to_string()).unwrap()).unwrap()
+    }
+
+    fn nested_values(depth: usize) -> String {
+        format!("[{}1{}]", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn g_orbital_core_128_a_value_nested_past_128_levels_parses_through_the_wire_entry() {
+        let context = json!({ "entity": {} }).to_string();
+        let shallow = resolve_values_json(&context, &nested_values(50)).expect("control: a shallow value resolves");
+        assert!(shallow.contains("\"kind\":\"value\""));
+        let deep = resolve_values_json(&context, &nested_values(200)).expect("a 200-deep value resolves");
+        assert!(deep.contains("\"kind\":\"value\""));
     }
 
     #[test]

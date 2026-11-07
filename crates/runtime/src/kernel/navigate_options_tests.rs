@@ -54,3 +54,30 @@ fn control_a_well_typed_call_in_navigate_params_resolves_to_its_value() {
     };
     assert_eq!(params.get("tags"), Some(&Value::string("a, b")));
 }
+
+fn navigate_path_of(path: &str, payload: ValueMap) -> String {
+    let ctx = BindingContextBuilder::new()
+        .payload(Value::object(payload))
+        .build();
+    let effect = Effect::Navigate {
+        path: path.to_string(),
+        params: None,
+        options: None,
+    };
+    let Ok(Effect::Navigate { path, .. }) = resolve_effect_bindings(effect, &ctx) else {
+        panic!("expected resolved navigate effect");
+    };
+    path
+}
+
+#[test]
+fn g_cross_359_navigate_path_resolves_a_payload_binding() {
+    let mut payload = ValueMap::default();
+    payload.insert("href".into(), Value::string("/rust"));
+    assert_eq!(navigate_path_of("@payload.href", payload), "/rust");
+}
+
+#[test]
+fn control_g_cross_359_a_literal_navigate_path_passes_through() {
+    assert_eq!(navigate_path_of("/notes/:id", ValueMap::default()), "/notes/:id");
+}

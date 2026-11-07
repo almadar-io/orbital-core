@@ -90,7 +90,12 @@ pub(super) fn bind_type(
                     }
                 }
                 let mut undetermined = None;
+                let mut key_refused = None;
                 for member in of {
+                    // A literal name is never a function: only the field-name member can take it.
+                    if actual.text.is_some() && matches!(member, OperatorTypeRef::Tagged(K::Fn { .. })) {
+                        continue;
+                    }
                     let mut trial = b.clone();
                     match bind_type(member, actual, &mut trial, mode) {
                         Ok(()) => {
@@ -100,12 +105,15 @@ pub(super) fn bind_type(
                         Err(found @ Mismatch::Undetermined { .. }) => {
                             undetermined.get_or_insert(found);
                         }
+                        Err(found) if matches!(member, OperatorTypeRef::Tagged(K::KeyOf { .. })) => {
+                            key_refused.get_or_insert(found);
+                        }
                         Err(_) => {}
                     }
                 }
                 // A member that fits in kind but whose type variables cannot be bound is the finding, not "no
-                // member fits".
-                Err(undetermined.unwrap_or_else(|| type_mismatch(formal, actual)))
+                // member fits"; a field name the key refuses is the finding, not the union.
+                Err(undetermined.or(key_refused).unwrap_or_else(|| type_mismatch(formal, actual)))
             }
             K::Literal { value } => match (value, known) {
                 (serde_json::Value::Null, _) => Err(type_mismatch(formal, actual)),
@@ -419,7 +427,7 @@ pub(super) fn bind_type(
                 Some(of) => bind_type(of, actual, b, mode),
                 None => Ok(()),
             },
-            K::KeyOf { of } => bind_key(of, actual, formal, b, mode),
+            K::KeyOf { of, .. } => bind_key(of, actual, formal, b, mode),
             K::FieldOf { of } => {
                 if matches!(known, Known::Type(ty) if !ty.is_optional()) || matches!(known, Known::EmptyList) {
                     b.defaulted.insert(of.clone());
@@ -535,6 +543,24 @@ pub(super) fn bind_unknown(
             }
         }
         K::Union { of } => {
+            if actual.lambda.is_some() {
+                let mut refused = None;
+                for member in of.iter().filter(|m| matches!(m, OperatorTypeRef::Tagged(K::Fn { .. }))) {
+                    let mut trial = b.clone();
+                    match bind_unknown(member, actual, &mut trial, mode) {
+                        Ok(()) => {
+                            *b = trial;
+                            return Ok(());
+                        }
+                        Err(found) => {
+                            refused.get_or_insert(found);
+                        }
+                    }
+                }
+                if let Some(found) = refused {
+                    return Err(found);
+                }
+            }
             for member in of {
                 let mut trial = b.clone();
                 if bind_unknown(member, actual, &mut trial, mode).is_ok() {
@@ -544,7 +570,7 @@ pub(super) fn bind_unknown(
             }
             Ok(())
         }
-        K::KeyOf { of } => bind_key(of, actual, formal, b, mode),
+        K::KeyOf { of, .. } => bind_key(of, actual, formal, b, mode),
         K::Array { of } => {
             if let Some(texts) = &actual.texts {
                 for text in texts {
@@ -771,7 +797,7 @@ pub(super) fn bind_literal_keys(
     b: &mut CallBindings,
     mode: Mode,
 ) -> Result<(), Mismatch> {
-    let OperatorTypeRef::Tagged(OperatorTypeRefKind::KeyOf { of }) = element_formal else {
+    let OperatorTypeRef::Tagged(OperatorTypeRefKind::KeyOf { of, .. }) = element_formal else {
         return Ok(());
     };
     for text in actual.texts.iter().flatten() {
@@ -835,6 +861,14 @@ pub(super) fn bind_key(
     for path in paths {
         if mode != Mode::Runtime {
             let walked = walk_path_in(&record, path, true, &|name| b.named_types.get(name).cloned());
+            if let (Path::Found(field), Some(declared)) = (&walked, key_value(formal, b)) {
+                if !is_uninformative(field) && !fits(field, &declared, b, mode) {
+                    return Err(Mismatch::Type {
+                        expected: type_label(&declared, mode),
+                        actual: type_label(field, mode),
+                    });
+                }
+            }
             if matches!(walked, Path::Missing | Path::Impossible) {
                 b.absent.insert(
                     record_var.to_string(),
@@ -844,8 +878,15 @@ pub(super) fn bind_key(
         }
         b.keys.entry_or_default(record_var).push(path.clone());
     }
-    let _ = formal;
     Ok(())
+}
+
+/// The type the `key-of` formal declares every field it names must have, when it declares one.
+fn key_value(formal: &OperatorTypeRef, b: &CallBindings) -> Option<OirType> {
+    let OperatorTypeRef::Tagged(OperatorTypeRefKind::KeyOf { value: Some(value), .. }) = formal else {
+        return None;
+    };
+    resolve(value, b)
 }
 
 /// An `int` binding a later `number` argument widens (EXEC-EVAL-11): the variable keeps its own optionality and becomes

@@ -35,7 +35,10 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             params,
             options,
         } => Effect::Navigate {
-            path,
+            path: ctx
+                .resolve_value_checked(&Value::string(path))?
+                .into_owned()
+                .to_string_value(),
             params: params
                 .map(|p| {
                     p.iter()

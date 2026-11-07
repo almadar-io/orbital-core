@@ -17,12 +17,12 @@ jobs:
           node-version: 22
 
       - name: Install the Almadar language data
-        run: npm install --no-save --no-package-lock @almadar/core@^10 @almadar/std@^16 @almadar/lolo-ar@^1 @almadar/lolo-sl@^1
+        run: npm install --no-save --no-package-lock @almadar/core@^11 @almadar/std@^17 @almadar/lolo-ar@^2 @almadar/lolo-sl@^2
 
       - uses: dtolnay/rust-toolchain@1.93.0
 
       - name: Install orb
-        run: npm install --no-save --no-package-lock @almadar/orb@^18
+        run: npm install --no-save --no-package-lock @almadar/orb@^19
 
       - name: T4 gate (every crate's tests, ratcheted against scripts/gates/known-failures)
         run: ORB="npx orb" bash scripts/gates/t4.sh

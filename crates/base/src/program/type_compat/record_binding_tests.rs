@@ -76,12 +76,30 @@ fn a_lowered_payload_field_carries_its_entity_separately() {
     );
     assert_eq!(
         bound_shape_of_payload_field("string", None),
-        Some(BoundShape::Other)
+        Some(BoundShape::Scalar)
     );
 }
 
 #[test]
-fn edge_scalars_and_an_unknown_expected_entity_pass() {
-    assert_eq!(check("string", Some("Booking")), None);
+fn edge_an_unknown_expected_entity_passes() {
     assert_eq!(check("Staff", None), None);
+}
+
+#[test]
+fn a_scalar_is_never_a_record() {
+    for ty in ["number", "string", "boolean", "number!"] {
+        assert_eq!(
+            check(ty, Some("Booking")),
+            Some(RecordBindingMismatch::ScalarIntoRecord),
+            "{ty}"
+        );
+        assert_eq!(check(ty, None), Some(RecordBindingMismatch::ScalarIntoRecord), "{ty}");
+    }
+}
+
+#[test]
+fn control_a_nullable_or_null_binding_is_not_a_scalar() {
+    for ty in ["number?", "string?", "null", "Booking?"] {
+        assert_eq!(check(ty, Some("Booking")), None, "{ty}");
+    }
 }

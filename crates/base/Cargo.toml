@@ -11,7 +11,7 @@ orbital-core-std = { path = "../std" }
 indexmap = { version = "2", default-features = false, features = ["serde"] }
 foldhash = { version = "0.2", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc", "rc"] }
-serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order"] }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc", "preserve_order", "unbounded_depth"] }
 serde_path_to_error = "0.1"
 serde_stacker = { version = "0.1", optional = true }
 thiserror = { version = "2", default-features = false }
@@ -47,7 +47,6 @@ std = [
     "indexmap/std",
     "serde/std",
     "serde_json/std",
-    "serde_json/unbounded_depth",
     "dep:serde_stacker",
     "thiserror/std",
     "tracing/std",

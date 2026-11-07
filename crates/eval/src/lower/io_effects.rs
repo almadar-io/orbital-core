@@ -72,15 +72,16 @@ impl NodeLowerer {
 
     pub(super) fn resolve_os_effect(&self, name: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
         // Format: ["os/<op>", args…, { key?, emit? }?]
-        use orbital_core_base::os::{accepts_arity, split_envelope, OsOp};
+        use orbital_core_base::os::{split_envelope, try_accepts_arity, OsOp};
         let op = OsOp::from_name(name)
             .ok_or_else(|| LowerError::InvalidSExpr(format!("{name} is not an os operation")))?;
         let (positional, envelope) = split_envelope(op, args);
-        if !accepts_arity(op, positional.len()) {
+        let language = |e: orbital_core_base::language_data::LanguageDataError| LowerError::InvalidSExpr(format!("{}: {e}", e.code()));
+        if !try_accepts_arity(op, positional.len()).map_err(language)? {
             return Err(LowerError::InvalidSExpr(format!(
                 "{name} takes {} to {} arguments, got {}",
-                op.min_args(),
-                op.max_args(),
+                op.try_min_args().map_err(language)?,
+                op.try_max_args().map_err(language)?,
                 positional.len()
             )));
         }

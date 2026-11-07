@@ -299,12 +299,29 @@ impl Operator for StrTemplateOp {
             }
         };
 
-        // Replace {{key}} patterns
-        let mut result = template.clone();
-        for (key, value) in &obj {
-            let placeholder = format!("{{{{{}}}}}", key);
-            result = result.replace(&placeholder, &value.to_string_value());
+        let mut result = String::with_capacity(template.len());
+        let mut rest = template.as_str();
+        while let Some(open) = rest.find("{{") {
+            result.push_str(&rest[..open]);
+            let after = &rest[open + 2..];
+            let found = after.find("}}").and_then(|close| {
+                let key = &after[..close];
+                obj.iter()
+                    .find(|(k, _)| k.as_str() == key)
+                    .map(|(_, value)| (close, value))
+            });
+            match found {
+                Some((close, value)) => {
+                    result.push_str(&value.to_string_value());
+                    rest = &after[close + 2..];
+                }
+                None => {
+                    result.push('{');
+                    rest = &rest[open + 1..];
+                }
+            }
         }
+        result.push_str(rest);
 
         Ok(Value::string(result))
     }

@@ -909,11 +909,27 @@ pub fn certify_operator_data(data: &OperatorData, implemented: OperatorProbe) ->
         }
     })?;
     if missing.is_empty() {
-        return Ok(());
+        return certify_os_operator_coverage(data);
     }
     Err(LanguageDataError::Unimplemented {
         package: STD_PACKAGE,
         version: data.std_version.clone(),
         operators: missing,
     })
+}
+
+/// Refuses an operator table that predates this orb: every os operation the binary carries must be declared in it.
+fn certify_os_operator_coverage(data: &OperatorData) -> Result<(), LanguageDataError> {
+    let invalid = |reason: String| LanguageDataError::Invalid { path: data.root.clone(), reason };
+    let doc: Value = serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+    let declared = doc.get("operators").and_then(Value::as_object).ok_or_else(|| invalid("missing `operators`".into()))?;
+    let lacking: Vec<&str> = crate::os::OsOp::ALL.iter().map(|op| op.name()).filter(|name| !declared.contains_key(*name)).collect();
+    if lacking.is_empty() {
+        return Ok(());
+    }
+    Err(invalid(format!(
+        "the installed {STD_PACKAGE}@{} lacks operator(s) {} this orb carries — this orb is newer than the table: run `orb update` for a matching {STD_PACKAGE}",
+        data.std_version,
+        lacking.join(", ")
+    )))
 }

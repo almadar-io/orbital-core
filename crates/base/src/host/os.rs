@@ -226,6 +226,11 @@ impl OsOp {
         self.table_entry().min_arity as usize
     }
 
+    /// [`Self::min_args`] for a running kernel: the typed language-data error, never a panic.
+    pub fn try_min_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
+        Ok(self.try_table_entry()?.min_arity as usize)
+    }
+
     /// The most positional arguments the operation takes: the operator table's `maxArity` less its trailing
     /// `options` parameter, which the envelope carries.
     pub fn max_args(self) -> usize {
@@ -233,6 +238,17 @@ impl OsOp {
         max as usize - 1
     }
 
+    /// [`Self::max_args`] for a running kernel: the typed language-data error, never a panic.
+    pub fn try_max_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
+        let entry = self.try_table_entry()?;
+        let max = entry.max_arity.ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
+            path: Default::default(),
+            reason: format!("the operator table bounds the arity of `{}`", self.name()),
+        })?;
+        Ok(max as usize - 1)
+    }
+
+    // Safe after load: `certify_operator_data` refuses a table that lacks any `OsOp`.
     fn table_entry(self) -> &'static crate::language::registry::EmbeddedOperator {
         crate::language::registry::get_operator(self.name())
             .unwrap_or_else(|| panic!("the operator table declares no `{}`", self.name()))
@@ -380,6 +396,11 @@ pub fn split_envelope(op: OsOp, args: &[SExpression]) -> (&[SExpression], Option
 /// Whether `count` positional arguments are a legal call of `op`.
 pub fn accepts_arity(op: OsOp, count: usize) -> bool {
     (op.min_args()..=op.max_args()).contains(&count)
+}
+
+/// [`accepts_arity`] for a running kernel: the typed language-data error, never a panic.
+pub fn try_accepts_arity(op: OsOp, count: usize) -> Result<bool, crate::language_data::LanguageDataError> {
+    Ok((op.try_min_args()?..=op.try_max_args()?).contains(&count))
 }
 
 /// Whose credential an `os/send` segment names: the app's, or the signed-in viewer's.
@@ -533,6 +554,27 @@ mod tests {
 
     fn sx(v: serde_json::Value) -> Vec<SExpression> {
         serde_json::from_value(v).expect("s-expression array")
+    }
+
+    fn table_naming(names: impl Iterator<Item = &'static str>) -> crate::language_data::OperatorData {
+        let operators: serde_json::Map<String, serde_json::Value> = names
+            .map(|name| (name.to_string(), json!({ "category": "os", "minArity": 0, "maxArity": 1 })))
+            .collect();
+        crate::language_data::OperatorData {
+            running: String::new(),
+            std_version: "0.0.0".into(),
+            root: Default::default(),
+            operators: json!({ "categories": { "os": { "target": ["rust"] } }, "operators": operators }).to_string(),
+        }
+    }
+
+    #[test]
+    fn g_orbital_core_137_a_table_missing_an_os_operator_is_refused_with_a_typed_error() {
+        let full = table_naming(OsOp::ALL.iter().map(|op| op.name()));
+        assert_eq!(crate::language_data::certify_operator_data(&full, |_| true), Ok(()));
+        let older = table_naming(OsOp::ALL.iter().filter(|op| **op != OsOp::GpuDeviceOpen).map(|op| op.name()));
+        let refused = crate::language_data::certify_operator_data(&older, |_| true);
+        assert!(refused.is_err(), "a table lacking `gpu/device-open` must be refused at load, not panic later in min_args");
     }
 
     #[test]

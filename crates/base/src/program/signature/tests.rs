@@ -1314,6 +1314,31 @@ fn a_predicate_lambda_must_return_a_boolean() {
     );
 }
 
+#[test]
+fn g_orb_594_a_group_by_key_that_is_not_text_is_refused() {
+    let group_by = op(
+        json!([
+            p("arr", list(var("T"))),
+            p("key", json!({ "kind": "union", "of": [
+                { "kind": "keyOf", "of": "T", "value": "string" },
+                { "kind": "fn", "params": [var("T")], "returns": "string" }
+            ] })),
+        ]),
+        json!({ "kind": "map", "key": "string", "value": list(var("T")) }),
+        Some(2),
+    );
+    let rows = || ty(s_arr(struct_of(&[("exact", OirType::Boolean), ("name", OirType::String)])));
+    let keyed_by_fn = |returns: OirType| {
+        let body = move |_: &[Option<OirType>]| Some(returns.clone());
+        let lambda = Actual { known: None, text: None, texts: None, lambda: Some(&body) };
+        call(&group_by, &[rows(), lambda], Mode::Proof)
+    };
+    assert!(keyed_by_fn(OirType::String).is_ok(), "control: a key function returning text");
+    assert!(call(&group_by, &[rows(), text("name")], Mode::Proof).is_ok(), "control: a text field");
+    assert!(keyed_by_fn(OirType::Boolean).is_err(), "a key function returning a boolean throws at run time");
+    assert!(call(&group_by, &[rows(), text("exact")], Mode::Proof).is_err(), "a boolean field throws at run time");
+}
+
 fn get() -> EmbeddedOperator {
     op(
         json!([

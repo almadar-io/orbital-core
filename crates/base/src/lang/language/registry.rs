@@ -194,6 +194,9 @@ pub enum OperatorTypeRefKind {
     #[serde(rename = "keyOf")]
     KeyOf {
         of: String,
+        /// The type every field the key names must have (`keyOf {of: T, value: string}`); absent, any field is named.
+        #[serde(default)]
+        value: Option<Box<OperatorTypeRef>>,
     },
     /// `field-of R`: the type of the field of `of` the call's `key-of` argument names.
     #[serde(rename = "fieldOf")]
@@ -316,6 +319,9 @@ pub struct EmbeddedOperator {
     /// (`T?`) and the program handles the missing value (owner ruling 2026-10-25).
     #[serde(default)]
     pub failable: Option<FailableOperator>,
+    /// Arguments the kernel raises on unless their value is provably in range (`rejects` in the operator table).
+    #[serde(default)]
+    pub rejects: Option<RejectsOperator>,
     /// The sign of a numeric result (`sign` in the operator table): always at least zero (`nonNegative`), or derived
     /// from the arguments' signs (`sum`, `product`, `max`, `min`). The checker proves divisors and roots with it.
     #[serde(default)]
@@ -447,6 +453,15 @@ impl EmbeddedOperator {
         let required = declared.iter().copied().filter(|name| !optional.iter().any(|o| o == name)).collect();
         Some((declared, required))
     }
+}
+
+/// What an operator raises on rather than answering null (the table's `rejects`).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RejectsOperator {
+    /// Argument positions the kernel raises on when the value is negative: a call is refused unless each is shown to
+    /// be at least zero.
+    #[serde(rename = "unlessNonNegative", default)]
+    pub unless_non_negative: Vec<usize>,
 }
 
 /// When a failable operator's result is not optional.

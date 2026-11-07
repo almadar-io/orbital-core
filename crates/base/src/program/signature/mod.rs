@@ -369,7 +369,7 @@ impl<'a> Signature<'a> {
             };
             let slot = match kind {
                 K::Var { name, .. } if name == of => &mut source_arg,
-                K::KeyOf { of: variable } if variable == of => &mut key_arg,
+                K::KeyOf { of: variable, .. } if variable == of => &mut key_arg,
                 K::FieldOf { of: variable } if variable == of => &mut default_arg,
                 _ => continue,
             };

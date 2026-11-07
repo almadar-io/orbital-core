@@ -249,3 +249,97 @@ mod tests {
         assert_eq!(serde_json::to_string(&Value::Number(1e19)).unwrap(), "1e+19");
     }
 }
+
+/// The deepest nesting a boundary parse accepts, on every host.
+pub const MAX_JSON_DEPTH: usize = 8192;
+
+#[derive(Debug)]
+pub enum DeepJsonError {
+    TooDeep { limit: usize },
+    Json(serde_json::Error),
+}
+
+impl core::fmt::Display for DeepJsonError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            DeepJsonError::TooDeep { limit } => write!(f, "nesting exceeds {limit} levels"),
+            DeepJsonError::Json(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl From<serde_json::Error> for DeepJsonError {
+    fn from(e: serde_json::Error) -> Self {
+        DeepJsonError::Json(e)
+    }
+}
+
+fn check_depth(bytes: &[u8]) -> Result<(), DeepJsonError> {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for &b in bytes {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > MAX_JSON_DEPTH {
+                    return Err(DeepJsonError::TooDeep { limit: MAX_JSON_DEPTH });
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Parse JSON up to [`MAX_JSON_DEPTH`] levels: a resolved program nests as deep as its expressions. The depth is
+/// pre-scanned so every host refuses at the same bound; std builds then grow the stack, others recurse natively.
+pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DeepJsonError> {
+    check_depth(bytes)?;
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    de.disable_recursion_limit();
+    #[cfg(feature = "std")]
+    let value = T::deserialize(serde_stacker::Deserializer::new(&mut de))?;
+    #[cfg(not(feature = "std"))]
+    let value = T::deserialize(&mut de)?;
+    de.end()?;
+    Ok(value)
+}
+
+/// [`from_deep_json`] for a host wire string, its failure worded `parse {what}: {error}`.
+pub fn parse_deep_json<T: serde::de::DeserializeOwned>(json: &str, what: &str) -> Result<T, String> {
+    from_deep_json(json.as_bytes()).map_err(|e| format!("parse {what}: {e}"))
+}
+
+#[cfg(test)]
+mod deep_json_tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn deep_json_control_a_shallow_text_parses_and_brackets_in_strings_do_not_count() {
+        let parsed: serde_json::Value = from_deep_json(br#"{"a":["[[[[", "\\\"[", 1]}"#).expect("parses");
+        assert_eq!(parsed["a"][2], serde_json::json!(1));
+    }
+
+    #[test]
+    fn deep_json_the_bound_itself_parses_and_one_past_it_is_a_typed_refusal() {
+        assert!(from_deep_json::<serde_json::Value>(nested(MAX_JSON_DEPTH).as_bytes()).is_ok());
+        let err = from_deep_json::<serde_json::Value>(nested(MAX_JSON_DEPTH + 1).as_bytes()).unwrap_err();
+        assert!(matches!(err, DeepJsonError::TooDeep { limit: MAX_JSON_DEPTH }));
+        let text = parse_deep_json::<serde_json::Value>(&nested(MAX_JSON_DEPTH + 1), "values").unwrap_err();
+        assert_eq!(text, "parse values: nesting exceeds 8192 levels");
+    }
+}

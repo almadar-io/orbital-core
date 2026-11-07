@@ -268,14 +268,7 @@ pub fn read_request<T: serde::de::DeserializeOwned>() -> Result<T, ShellFailure>
     from_deep_json(input.as_bytes()).map_err(|e| ShellFailure::new(CODE_BAD_REQUEST, format!("parse request: {e}")))
 }
 
-/// Parse JSON at any nesting depth: a resolved program nests as deep as its expressions.
-pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
-    let mut de = serde_json::Deserializer::from_slice(bytes);
-    de.disable_recursion_limit();
-    let value = T::deserialize(serde_stacker::Deserializer::new(&mut de))?;
-    de.end()?;
-    Ok(value)
-}
+pub use crate::json_value::from_deep_json;
 
 pub fn reply_exit<T: Serialize>(reply: &T, ok: bool) -> ExitCode {
     println!(
@@ -544,12 +537,32 @@ pub fn ship_kernel_beside_program(
     file: &str,
     output: &std::path::Path,
 ) -> Result<Option<String>, ShellFailure> {
-    let beside = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(file)));
-    let Some(source) = beside.filter(|path| path.exists()) else {
+    let exe = std::env::current_exe().ok();
+    ship_kernel_from(
+        file,
+        output,
+        exe.as_deref().and_then(std::path::Path::parent),
+        crate::behavior_packages::user_store_dir().as_deref(),
+    )
+}
+
+fn ship_kernel_from(
+    file: &str,
+    output: &std::path::Path,
+    exe_dir: Option<&std::path::Path>,
+    user_store: Option<&std::path::Path>,
+) -> Result<Option<String>, ShellFailure> {
+    let beside = exe_dir.map(|dir| dir.join(file)).filter(|path| path.exists());
+    let installed = || {
+        let (start, store) = exe_dir.zip(user_store)?;
+        let package = format!("@almadar/orb-{}", platform());
+        let root = crate::behavior_packages::find_npm_package(&package, start, store)?.root;
+        Some(root.join(file)).filter(|path| path.exists())
+    };
+    let Some(source) = beside.or_else(installed) else {
         return Ok(Some(format!(
-            "{file} is not beside this shell program; put it in kernel/ or set ORBITAL_KERNEL_DIR before running the app"
+            "{file} is not beside this shell program or in the installed @almadar/orb-{} package; put it in kernel/ or set ORBITAL_KERNEL_DIR before running the app",
+            platform()
         )));
     };
     let target = output.join("kernel");
@@ -953,5 +966,37 @@ mod tests {
     fn edge_a_binary_that_does_not_exist_is_not_runnable() {
         let err = describe(Path::new("/nonexistent/orb-shell-none")).unwrap_err();
         assert_eq!(err.code, CODE_NOT_RUNNABLE);
+    }
+
+    #[test]
+    fn g_cross_474_a_kernel_add_on_in_the_installed_orb_package_ships_with_the_project() {
+        let exe_dir = tempfile::tempdir().unwrap();
+        let store = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+
+        let empty = ship_kernel_from("kernel.node", output.path(), Some(exe_dir.path()), Some(store.path())).unwrap();
+        assert!(
+            empty.is_some_and(|note| note.contains("kernel.node is not beside")),
+            "control: with no add-on anywhere the note stays"
+        );
+
+        let package = store
+            .path()
+            .join("node_modules/@almadar")
+            .join(format!("orb-{}", platform()));
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(
+            package.join("package.json"),
+            serde_json::json!({"name": format!("@almadar/orb-{}", platform()), "version": "1.0.0"}).to_string(),
+        )
+        .unwrap();
+        std::fs::write(package.join("kernel.node"), "addon").unwrap();
+
+        let shipped = ship_kernel_from("kernel.node", output.path(), Some(exe_dir.path()), Some(store.path())).unwrap();
+        assert_eq!(shipped, None, "the add-on in the installed store is found");
+        assert_eq!(
+            std::fs::read_to_string(output.path().join("kernel/kernel.node")).unwrap(),
+            "addon"
+        );
     }
 }

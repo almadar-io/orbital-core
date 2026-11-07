@@ -370,9 +370,9 @@ impl EmbeddedServer {
         write_json: &str,
     ) -> Result<(), String> {
         let query: Option<crate::row_query::QueryCapabilities> =
-            serde_json::from_str(query_json).map_err(|e| format!("parse query_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(query_json, "query_json")?;
         let write: Option<crate::row_query::WriteCapabilities> =
-            serde_json::from_str(write_json).map_err(|e| format!("parse write_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(write_json, "write_json")?;
         if let Some(q) = query {
             self.kernel.set_query_capabilities(entity_type, q);
         }
@@ -568,7 +568,7 @@ impl EmbeddedServer {
     /// [`Self::resolve_rows`] over JSON: the reference in, a `ResolveProgressWire` out.
     pub fn resolve_rows_json(&self, ref_json: &str, client_id: Option<&str>) -> Result<String, String> {
         let reference: RowSetRef =
-            serde_json::from_str(ref_json).map_err(|e| format!("parse ref_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(ref_json, "ref_json")?;
         let progress = self.resolve_rows(&reference, client_id)?;
         to_js_readable_json(&ResolveProgressWire::from(&progress))
     }
@@ -576,7 +576,7 @@ impl EmbeddedServer {
     /// [`Self::resume_resolve`] over JSON: the answers (`IoReplyWire[]`) in, a `ResolveProgressWire` out.
     pub fn resume_resolve_json(&self, flight: u64, replies_json: &str) -> Result<String, String> {
         let replies: Vec<IoReplyWire> =
-            serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(replies_json, "replies_json")?;
         let progress =
             self.resume_resolve(flight, replies.into_iter().map(IoReply::from).collect())?;
         to_js_readable_json(&ResolveProgressWire::from(&progress))
@@ -1023,8 +1023,7 @@ impl EmbeddedServer {
     /// args } }` when the host must answer one more raw ask (call again with its outcome), or `{ "done": Settled }`
     /// with the program's outcome.
     pub fn tls_complete_json(&self, key: &str, outcome_json: &str) -> Result<String, String> {
-        let outcome: Result<Value, OsError> = serde_json::from_str::<Settled<Value, OsError>>(outcome_json)
-            .map_err(|e| format!("parse outcome_json: {e}"))?
+        let outcome: Result<Value, OsError> = orbital_core_base::json_value::parse_deep_json::<Settled<Value, OsError>>(outcome_json, "outcome_json")?
             .into();
         #[cfg(feature = "wire-drivers")]
         let step = self.kernel.tls_complete(key, outcome).map(|completion| match completion {
@@ -1056,7 +1055,7 @@ impl EmbeddedServer {
     /// Place the program's anchored grants and arguments under the host's anchors (`OsAnchorsWire` JSON); answers the
     /// entries that grant nothing under them, as `[{ path, message }]`.
     pub fn set_os_anchors_json(&self, anchors_json: &str) -> Result<String, String> {
-        let wire: OsAnchorsWire = serde_json::from_str(anchors_json).map_err(|e| format!("parse anchors_json: {e}"))?;
+        let wire: OsAnchorsWire = orbital_core_base::json_value::parse_deep_json(anchors_json, "anchors_json")?;
         let anchors = OsAnchors { home: wire.home, start: wire.start, exe_dir: wire.exe_dir, exe: wire.exe, env: EnvSnapshot::from_pairs(wire.env), tools: Default::default() };
         let (_, problems) = self.kernel.os_grants().resolve_anchors(&anchors);
         *self.os_anchors.lock() = anchors;
@@ -1070,7 +1069,7 @@ impl EmbeddedServer {
     /// the host's anchors, as `Settled<args, OsError>` JSON.
     pub fn os_resolve_args_json(&self, op: &str, args_json: &str) -> Result<String, String> {
         let op = OsOp::from_name(op).ok_or_else(|| format!("{op} is not an os operation"))?;
-        let args: Vec<Value> = serde_json::from_str(args_json).map_err(|e| format!("parse args_json: {e}"))?;
+        let args: Vec<Value> = orbital_core_base::json_value::parse_deep_json(args_json, "args_json")?;
         let resolved: Settled<Vec<Value>, OsError> = resolve_anchored_args(op, &args, &self.os_anchors.lock()).into();
         to_js_readable_json(&resolved)
     }
@@ -1084,8 +1083,7 @@ impl EmbeddedServer {
     /// Whether the grants of `orbital` (its own plus the app level; the app level alone when none is named) cover
     /// `requirement_json` (an `OsRequirement`): the one check every host makes.
     pub fn os_allows_json(&self, requirement_json: &str, orbital: Option<&str>) -> Result<bool, String> {
-        let need: OsRequirement = serde_json::from_str(requirement_json)
-            .map_err(|e| format!("parse requirement_json: {e}"))?;
+        let need: OsRequirement = orbital_core_base::json_value::parse_deep_json(requirement_json, "requirement_json")?;
         Ok(self.os_grants_for(orbital).allows(&need))
     }
 
@@ -1104,7 +1102,7 @@ impl EmbeddedServer {
     /// Whether a live item reaches the client `client_id`: addressed to it, and its entity's `@read` admits the
     /// identity bound to that client's session.
     pub fn live_item_delivered(&self, item_json: &str, client_id: Option<&str>) -> Result<bool, String> {
-        let item: crate::effects::LiveBroadcastItem = serde_json::from_str(item_json).map_err(|e| format!("parse item_json: {e}"))?;
+        let item: crate::effects::LiveBroadcastItem = orbital_core_base::json_value::parse_deep_json(item_json, "item_json")?;
         let _in_session = client_id.map(|client| self.kernel.enter_session(client));
         let viewer = self.kernel.session_viewer().map_err(|e| e.to_string())?;
         Ok(item.delivered_to(client_id, |item| self.kernel.live_item_visible_to(item, &viewer)))
@@ -1119,7 +1117,7 @@ impl EmbeddedServer {
     /// [`Self::start`] over JSON: the request in, a `ServerProgressWire` out.
     pub fn start_json(&self, orbital: &str, request_json: &str) -> Result<String, String> {
         let request: EventRequest =
-            serde_json::from_str(request_json).map_err(|e| format!("parse request_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(request_json, "request_json")?;
         let progress = self.start(orbital, request)?;
         to_js_readable_json(&self.started_wire(&progress))
     }
@@ -1203,7 +1201,7 @@ impl EmbeddedServer {
     /// [`Self::resume`] over JSON: the answers (`IoReplyWire[]`) in, a `ServerProgressWire` out.
     pub fn resume_json(&self, flight: u64, replies_json: &str) -> Result<String, String> {
         let replies: Vec<IoReplyWire> =
-            serde_json::from_str(replies_json).map_err(|e| format!("parse replies_json: {e}"))?;
+            orbital_core_base::json_value::parse_deep_json(replies_json, "replies_json")?;
         let progress = self.resume_wire(flight, replies)?;
         to_js_readable_json(&self.held_wire(ServerProgressWire::from(&progress)))
     }
@@ -1313,20 +1311,18 @@ pub fn os_stream_ops_json() -> Result<String, String> {
 /// The event a deferred keyed `os/` call's outcome fires on its call site (`completion_event`), as `{ event, payload }`
 /// JSON, or `null` when the site declares no route for the outcome. `outcome_json` is a `Settled<_, OsError>`.
 pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) -> Result<String, String> {
-    let site: CallSite = serde_json::from_str::<CallSiteWire>(site_json)
-        .map_err(|e| format!("parse site_json: {e}"))?
+    let site: CallSite = orbital_core_base::json_value::parse_deep_json::<CallSiteWire>(site_json, "site_json")?
         .into();
-    let outcome: Result<Value, OsError> = serde_json::from_str::<Settled<Value, OsError>>(outcome_json)
-        .map_err(|e| format!("parse outcome_json: {e}"))?
+    let outcome: Result<Value, OsError> = orbital_core_base::json_value::parse_deep_json::<Settled<Value, OsError>>(outcome_json, "outcome_json")?
         .into();
     let fired = completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
     to_js_readable_json(&fired)
 }
 
 pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, args_json: &str, outcome_json: &str) -> Result<String, String> {
-    let site: CallSite = serde_json::from_str::<CallSiteWire>(site_json).map_err(|e| format!("parse site_json: {e}"))?.into();
-    let args: Vec<Value> = serde_json::from_str(args_json).map_err(|e| format!("parse args_json: {e}"))?;
-    let outcome: Result<Value, super::wire::SubstrateFailureWire> = serde_json::from_str::<Settled<Value, super::wire::SubstrateFailureWire>>(outcome_json).map_err(|e| format!("parse outcome_json: {e}"))?.into();
+    let site: CallSite = orbital_core_base::json_value::parse_deep_json::<CallSiteWire>(site_json, "site_json")?.into();
+    let args: Vec<Value> = orbital_core_base::json_value::parse_deep_json(args_json, "args_json")?;
+    let outcome: Result<Value, super::wire::SubstrateFailureWire> = orbital_core_base::json_value::parse_deep_json::<Settled<Value, super::wire::SubstrateFailureWire>>(outcome_json, "outcome_json")?.into();
     let outcome = outcome
         .map_err(|failure| crate::effects::executor::SubstrateFailure { message: failure.message, errors: failure.errors })
         .and_then(|value| crate::agent_ports::program_answer(op, &args, value))
@@ -1405,6 +1401,26 @@ mod program_context_tests {
             target_trait: Some(trait_name.to_string()),
             ..Default::default()
         }
+    }
+
+    fn start_with_payload_nested(depth: usize) -> Result<String, String> {
+        let nested = format!("{}1{}", "[".repeat(depth), "]".repeat(depth));
+        let request = format!(r#"{{"event":"GO","targetTrait":"AppTrait","payload":{{"deep":{nested}}}}}"#);
+        app().start_json("AppOrbital", &request)
+    }
+
+    #[test]
+    fn g_orbital_core_128_start_json_parses_a_payload_nested_past_128_levels() {
+        let shallow = start_with_payload_nested(10);
+        assert!(!shallow.as_ref().err().is_some_and(|e| e.starts_with("parse request_json")), "control: {shallow:?}");
+        let deep = start_with_payload_nested(200);
+        assert!(!deep.as_ref().err().is_some_and(|e| e.starts_with("parse request_json")), "{deep:?}");
+    }
+
+    #[test]
+    fn g_orbital_core_128_start_json_refuses_past_the_depth_bound_with_a_typed_parse_error() {
+        let err = start_with_payload_nested(8193).unwrap_err();
+        assert_eq!(err, "parse request_json: nesting exceeds 8192 levels");
     }
 
     #[test]

@@ -8,7 +8,9 @@ pub enum BoundShape {
     Collection,
     /// One row: of the named type (`Order`), or an unnamed `object`.
     Record(Option<String>),
-    /// Anything a record check has no opinion on (scalars, …).
+    /// A number, string or boolean: never a record.
+    Scalar,
+    /// Anything a record check has no opinion on (null, nullable, unresolved, …).
     Other,
 }
 
@@ -16,6 +18,7 @@ pub enum BoundShape {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecordBindingMismatch {
     CollectionIntoRecord,
+    ScalarIntoRecord,
     WrongEntity { expected: String, actual: String },
 }
 
@@ -31,6 +34,9 @@ pub fn bound_shape_of_type_str(declared: &str) -> Option<BoundShape> {
     }
     if t == "object" {
         return Some(BoundShape::Record(None));
+    }
+    if matches!(t, "number" | "string" | "boolean") {
+        return Some(BoundShape::Scalar);
     }
     if t.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
         return Some(BoundShape::Record(Some(t.to_string())));
@@ -61,6 +67,7 @@ pub fn record_prop_binding_mismatch(
 ) -> Option<RecordBindingMismatch> {
     match bound {
         BoundShape::Collection => Some(RecordBindingMismatch::CollectionIntoRecord),
+        BoundShape::Scalar => Some(RecordBindingMismatch::ScalarIntoRecord),
         BoundShape::Record(Some(actual)) => match expected {
             Some(exp) if actual != exp && is_entity(actual) && is_entity(exp) => {
                 Some(RecordBindingMismatch::WrongEntity {

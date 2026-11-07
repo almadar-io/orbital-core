@@ -46,7 +46,7 @@ pub struct MemoryStoreApi {
 }
 
 fn parse<T: DeserializeOwned>(json: &str) -> Result<T, String> {
-    serde_json::from_str(json).map_err(|e| format!("parse memory store input: {e}"))
+    orbital_core_base::json_value::parse_deep_json(json, "memory store input")
 }
 
 fn json<T: Serialize>(value: &T) -> Result<String, String> {
