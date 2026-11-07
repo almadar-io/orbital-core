@@ -3,7 +3,10 @@
 use super::*;
 
 impl NodeLowerer {
-    pub(super) fn resolve_call_service_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_call_service_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["call-service", "serviceName", "action", { ...params }]
         // With emit: ["call-service", "svc", "action", argsExpr, { emit: {...} }]
         if args.len() < 2 {
@@ -70,13 +73,19 @@ impl NodeLowerer {
         }
     }
 
-    pub(super) fn resolve_os_effect(&self, name: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_os_effect(
+        &self,
+        name: &str,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["os/<op>", args…, { key?, emit? }?]
         use orbital_core_base::os::{split_envelope, try_accepts_arity, OsOp};
         let op = OsOp::from_name(name)
             .ok_or_else(|| LowerError::InvalidSExpr(format!("{name} is not an os operation")))?;
         let (positional, envelope) = split_envelope(op, args);
-        let language = |e: orbital_core_base::language_data::LanguageDataError| LowerError::InvalidSExpr(format!("{}: {e}", e.code()));
+        let language = |e: orbital_core_base::language_data::LanguageDataError| {
+            LowerError::InvalidSExpr(format!("{}: {e}", e.code()))
+        };
         if !try_accepts_arity(op, positional.len()).map_err(language)? {
             return Err(LowerError::InvalidSExpr(format!(
                 "{name} takes {} to {} arguments, got {}",
@@ -102,7 +111,10 @@ impl NodeLowerer {
         Ok(OirExpr::effect(OirEffect::os(op, resolved, key, emit)))
     }
 
-    pub(super) fn resolve_random_bytes_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_random_bytes_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["random-bytes", n, { key?, emit? }?]
         if !(1..=2).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(
@@ -156,22 +168,42 @@ impl NodeLowerer {
         }))
     }
 
-    pub(super) fn resolve_credential_admin_effect(&self, head: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_credential_admin_effect(
+        &self,
+        head: &str,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["credential-<verb>", request, { emit? }?]; `credential-rotate` takes no request.
-        let Some(op) = orbital_core_base::credential_admin::CredentialAdminOp::from_name(head) else {
-            return Err(LowerError::InvalidSExpr(format!("{head} is not a credential effect")));
+        let Some(op) = orbital_core_base::credential_admin::CredentialAdminOp::from_name(head)
+        else {
+            return Err(LowerError::InvalidSExpr(format!(
+                "{head} is not a credential effect"
+            )));
         };
         let first = usize::from(op.takes_request());
         if !(first..=first + 1).contains(&args.len()) {
-            let shape = if op.takes_request() { "a request object and optional options" } else { "only optional options" };
+            let shape = if op.takes_request() {
+                "a request object and optional options"
+            } else {
+                "only optional options"
+            };
             return Err(LowerError::InvalidSExpr(format!("{head} takes {shape}")));
         }
         let emit = self.resolve_emit_only_options(head, args.get(first))?;
-        let request = if op.takes_request() { self.resolve_sexpr(&args[0])? } else { OirExpr::null() };
-        Ok(OirExpr::effect(OirEffect::credential_admin(op, request, emit)))
+        let request = if op.takes_request() {
+            self.resolve_sexpr(&args[0])?
+        } else {
+            OirExpr::null()
+        };
+        Ok(OirExpr::effect(OirEffect::credential_admin(
+            op, request, emit,
+        )))
     }
 
-    pub(super) fn resolve_credential_connect_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_credential_connect_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["credential-connect", { credential, tokenEndpoint, ... }, { emit? }?]
         if !(1..=2).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(
@@ -179,10 +211,16 @@ impl NodeLowerer {
             ));
         }
         let emit = self.resolve_emit_only_options("credential-connect", args.get(1))?;
-        Ok(OirExpr::effect(OirEffect::credential_connect(self.resolve_sexpr(&args[0])?, emit)))
+        Ok(OirExpr::effect(OirEffect::credential_connect(
+            self.resolve_sexpr(&args[0])?,
+            emit,
+        )))
     }
 
-    pub(super) fn resolve_access_check_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_access_check_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["access-check", { entity, action, row, viewer }, { emit? }?]
         if !(1..=2).contains(&args.len()) {
             return Err(LowerError::InvalidSExpr(
@@ -190,10 +228,16 @@ impl NodeLowerer {
             ));
         }
         let emit = self.resolve_emit_only_options("access-check", args.get(1))?;
-        Ok(OirExpr::effect(OirEffect::access_check(self.resolve_sexpr(&args[0])?, emit)))
+        Ok(OirExpr::effect(OirEffect::access_check(
+            self.resolve_sexpr(&args[0])?,
+            emit,
+        )))
     }
 
-    pub(super) fn resolve_cancel_call_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_cancel_call_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // Format: ["cancel-call", keyExpr]
         let [key] = args else {
             return Err(LowerError::InvalidSExpr(

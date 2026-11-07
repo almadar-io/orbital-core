@@ -121,7 +121,11 @@ impl NodeLowerer {
     /// `what` names the operator + argument slot (e.g. "(emit …) argument 1 —
     /// the event name") so a resolve-stage failure is actionable instead of a
     /// bare "Expected string" with no context (T-RESOLVE-OPAQUE).
-    pub(super) fn sexpr_as_str(&self, sexpr: &SExpression, what: &str) -> Result<String, LowerError> {
+    pub(super) fn sexpr_as_str(
+        &self,
+        sexpr: &SExpression,
+        what: &str,
+    ) -> Result<String, LowerError> {
         match sexpr {
             SExpression::String(s) => Ok(s.clone().into_inner()),
             other => {

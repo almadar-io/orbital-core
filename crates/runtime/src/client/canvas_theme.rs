@@ -237,7 +237,7 @@ pub fn canvas_theme(tokens: &ThemeTokens) -> CanvasTheme {
             .light_key_color
             .as_deref()
             .and_then(parse_color)
-            .map_or_else(|| "#ffffff".to_string(), |c| c.css()),
+            .map_or_else(|| "rgb(255, 255, 255)".to_string(), |c| c.css()),
         fog: number(&scene_tokens.fog, 0.0),
     };
     CanvasTheme {
@@ -457,7 +457,10 @@ mod tests {
     use serde_json::Value;
 
     fn fixtures() -> Vec<(String, Value)> {
-        let dir = concat!(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."), "/tests/fixtures/canvas-theme");
+        let dir = concat!(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+            "/tests/fixtures/canvas-theme"
+        );
         let mut out: Vec<(String, Value)> = std::fs::read_dir(dir)
             .expect("canvas-theme fixture dir")
             .filter_map(Result::ok)
@@ -526,7 +529,16 @@ mod tests {
                 pairs.push((format!("{group}.{k}"), w.clone(), got[group][k].clone()));
             }
         }
-        for k in ["roughness", "metalness", "flat", "outline", "ambient", "key", "keyColor", "fog"] {
+        for k in [
+            "roughness",
+            "metalness",
+            "flat",
+            "outline",
+            "ambient",
+            "key",
+            "keyColor",
+            "fog",
+        ] {
             pairs.push((
                 format!("scene.{k}"),
                 want["scene"][k].clone(),

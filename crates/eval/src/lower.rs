@@ -8,8 +8,8 @@ use orbital_core_base::ir::effects::{OirEffect, OirEmitConfig};
 use orbital_core_base::ir::expr::{OirBinaryOp, OirBinding, OirBindingRoot, OirExpr};
 use orbital_core_base::ir::types::{OirPattern, OirValue};
 use orbital_core_base::schema::sexpr::{SExpression, SObject};
-use thiserror::Error;
 use std::{borrow::Cow, cell::RefCell, collections::HashMap, rc::Rc};
+use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Error)]
 pub enum LowerError {
@@ -84,7 +84,8 @@ pub fn raw_callbacks_as_lambdas(expr: &mut SExpression) {
 fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
     match expr {
         SExpression::Array(items) => {
-            if matches!(items.first(), Some(SExpression::String(head)) if head.as_str() == "quote") {
+            if matches!(items.first(), Some(SExpression::String(head)) if head.as_str() == "quote")
+            {
                 return None;
             }
             let wrap_at = match items.first() {
@@ -92,7 +93,9 @@ fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
                     let params = crate::evaluator::operators::raw_callback_params(op.as_str());
                     let pos = orbital_core_base::language::registry::get_operator(op.as_str())
                         .and_then(|m| m.lambda_arg_position);
-                    params.zip(pos).map(|(params, pos)| (params, pos as usize + 1))
+                    params
+                        .zip(pos)
+                        .map(|(params, pos)| (params, pos as usize + 1))
                 }
                 _ => None,
             };
@@ -101,10 +104,20 @@ fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
                 let mut next = with_lambdas(item);
                 if let Some((params, _)) = wrap_at.filter(|(_, at)| *at == i) {
                     let body = next.as_ref().unwrap_or(item);
-                    if !is_lambda_form(body) && lower_sexpr(body).is_ok_and(|lowered| binds_element(&lowered, params)) {
-                        let names = params.iter().map(|p| SExpression::string(p.to_string())).collect::<Vec<_>>();
+                    if !is_lambda_form(body)
+                        && lower_sexpr(body).is_ok_and(|lowered| binds_element(&lowered, params))
+                    {
+                        let names = params
+                            .iter()
+                            .map(|p| SExpression::string(p.to_string()))
+                            .collect::<Vec<_>>();
                         next = Some(SExpression::Array(
-                            vec![SExpression::string("fn".to_string()), SExpression::Array(names.into()), body.clone()].into(),
+                            vec![
+                                SExpression::string("fn".to_string()),
+                                SExpression::Array(names.into()),
+                                body.clone(),
+                            ]
+                            .into(),
                         ));
                     }
                 }
@@ -118,7 +131,8 @@ fn with_lambdas(expr: &SExpression) -> Option<SExpression> {
             let mut out: Option<SObject> = None;
             for (key, value) in fields.iter() {
                 if let Some(changed) = with_lambdas(value) {
-                    out.get_or_insert_with(|| (**fields).clone()).insert(key.clone(), changed);
+                    out.get_or_insert_with(|| (**fields).clone())
+                        .insert(key.clone(), changed);
                 }
             }
             out.map(|fields| SExpression::Object(fields.into()))
@@ -150,7 +164,10 @@ struct LowerInput<'a> {
 impl<'a> LowerInput<'a> {
     fn new(expression: Cow<'a, SExpression>) -> Rc<Self> {
         let expression = Rc::new(expression);
-        let mut locations = vec![InputLocation { parent: None, index: 0 }];
+        let mut locations = vec![InputLocation {
+            parent: None,
+            index: 0,
+        }];
         let mut positions = HashMap::new();
         let mut pending = vec![(expression.as_ref().as_ref(), 0)];
         while let Some((node, location)) = pending.pop() {
@@ -162,11 +179,18 @@ impl<'a> LowerInput<'a> {
             };
             for (index, child) in children.enumerate() {
                 let child_location = locations.len();
-                locations.push(InputLocation { parent: Some(location), index });
+                locations.push(InputLocation {
+                    parent: Some(location),
+                    index,
+                });
                 pending.push((child, child_location));
             }
         }
-        Rc::new(Self { expression, locations, positions })
+        Rc::new(Self {
+            expression,
+            locations,
+            positions,
+        })
     }
 
     fn expression(&self, mut location: usize) -> &SExpression {
@@ -203,7 +227,10 @@ impl ExprLowerer {
         while let Some(next) = work.pop() {
             match next {
                 Work::Visit(input, location) => {
-                    let discover = NodeLowerer { children: RefCell::new(Vec::new()), answers: None };
+                    let discover = NodeLowerer {
+                        children: RefCell::new(Vec::new()),
+                        answers: None,
+                    };
                     // The canonical rules request only semantic children; syntax and ignored operands stay untouched.
                     let _ = discover.resolve_node(input.expression(location));
                     let children = discover.children.into_inner();
@@ -239,13 +266,18 @@ impl NodeLowerer {
         if let Some(answers) = &self.answers {
             return answers.borrow_mut().next().expect("requested child result");
         }
-        self.children.borrow_mut().push(LowerChild::Input(sexpr as *const SExpression as usize));
+        self.children
+            .borrow_mut()
+            .push(LowerChild::Input(sexpr as *const SExpression as usize));
         Ok(OirExpr::Null)
     }
 
     fn resolve_owned(&self, sexpr: SExpression) -> Lowered {
         if let Some(answers) = &self.answers {
-            return answers.borrow_mut().next().expect("requested owned child result");
+            return answers
+                .borrow_mut()
+                .next()
+                .expect("requested owned child result");
         }
         self.children.borrow_mut().push(LowerChild::Owned(sexpr));
         Ok(OirExpr::Null)
@@ -318,7 +350,11 @@ impl NodeLowerer {
     }
 
     /// A substrate operator lowered as an `OirEffect::Custom`.
-    fn custom_effect_call(&self, op_name: &str, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    fn custom_effect_call(
+        &self,
+        op_name: &str,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         // A trailing `{ emit: { success, failure } }` options object
         // (mirroring fetch/persist) carries the completion events.
         // The op fires `getSubstrateService().invoke(name, args)` and
@@ -447,7 +483,10 @@ impl NodeLowerer {
             "random-bytes" => self.resolve_random_bytes_effect(args),
             "credential-status" => self.resolve_credential_effect(args, true),
             "credential-forget" => self.resolve_credential_effect(args, false),
-            admin if orbital_core_base::credential_admin::CredentialAdminOp::from_name(admin).is_some() => {
+            admin
+                if orbital_core_base::credential_admin::CredentialAdminOp::from_name(admin)
+                    .is_some() =>
+            {
                 self.resolve_credential_admin_effect(admin, args)
             }
             "credential-connect" => self.resolve_credential_connect_effect(args),
@@ -617,7 +656,9 @@ impl NodeLowerer {
             }
             op_name if orbital_core_base::tab::TabOp::from_name(op_name).is_some() => {
                 let Some(op) = orbital_core_base::tab::TabOp::from_name(op_name) else {
-                    return Err(LowerError::InvalidSExpr(format!("{op_name} is not a tab operation")));
+                    return Err(LowerError::InvalidSExpr(format!(
+                        "{op_name} is not a tab operation"
+                    )));
                 };
                 if !(1..=2).contains(&args.len()) {
                     return Err(LowerError::InvalidSExpr(format!(
@@ -822,9 +863,9 @@ impl ExprLowerer {
 }
 
 mod data_effects;
-mod ui_effects;
 mod io_effects;
 mod options;
+mod ui_effects;
 
 #[cfg(test)]
 mod tests;

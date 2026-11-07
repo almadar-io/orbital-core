@@ -3,7 +3,10 @@
 use super::*;
 
 impl NodeLowerer {
-    pub(super) fn resolve_navigate_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_navigate_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if args.is_empty() {
             return Err(LowerError::InvalidSExpr(
                 "navigate requires path".to_string(),
@@ -40,7 +43,10 @@ impl NodeLowerer {
         }))
     }
 
-    pub(super) fn resolve_navigate_back_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_navigate_back_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if !args.is_empty() {
             return Err(LowerError::InvalidSExpr(
                 "navigate-back takes no arguments".to_string(),
@@ -49,7 +55,10 @@ impl NodeLowerer {
         Ok(OirExpr::effect(OirEffect::NavigateBack))
     }
 
-    pub(super) fn resolve_render_ui_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_render_ui_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if args.len() < 2 {
             return Err(LowerError::InvalidSExpr(
                 "render-ui requires slot and pattern".to_string(),
@@ -99,7 +108,10 @@ impl NodeLowerer {
     /// gate that should have already caught this; this arm only exists so a
     /// stale tuple that somehow reaches resolve fails cleanly instead of
     /// panicking the effect parser.
-    pub(super) fn resolve_notify_effect(&self, _args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_notify_effect(
+        &self,
+        _args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         Err(LowerError::InvalidSExpr(
             "notify is retired sugar for render-ui toast — re-emit the .lolo".to_string(),
         ))

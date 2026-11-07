@@ -26,7 +26,10 @@ impl NodeLowerer {
     /// (literal list elements, or the tuple an `array/map` lambda returns) are
     /// wrapped in the `["list", …]` literal constructor so they resolve as array
     /// values, never as calls to a `create`/`update`/`delete` operator.
-    pub(super) fn resolve_persist_batch_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_persist_batch_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         use orbital_core_base::persist_batch::{
             batch_entities, classify_ops, is_op_tuple, BatchOps,
         };
@@ -81,7 +84,10 @@ impl NodeLowerer {
         }))
     }
 
-    pub(super) fn resolve_persist_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_persist_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if args.first().and_then(|a| a.as_str()) == Some("batch") {
             return self.resolve_persist_batch_effect(args);
         }
@@ -323,7 +329,10 @@ impl NodeLowerer {
         )))
     }
 
-    pub(super) fn resolve_fetch_stream_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_fetch_stream_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if args.is_empty() {
             return Err(LowerError::InvalidSExpr(
                 "fetch-stream requires entity name".to_string(),
@@ -368,7 +377,10 @@ impl NodeLowerer {
         }))
     }
 
-    pub(super) fn resolve_send_server_effect(&self, args: &[SExpression]) -> Result<OirExpr, LowerError> {
+    pub(super) fn resolve_send_server_effect(
+        &self,
+        args: &[SExpression],
+    ) -> Result<OirExpr, LowerError> {
         if args.is_empty() {
             return Err(LowerError::InvalidSExpr(
                 "send-server requires event name".to_string(),
