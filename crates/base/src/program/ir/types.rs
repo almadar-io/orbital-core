@@ -312,6 +312,7 @@ mod shape;
 mod traits;
 mod transition;
 mod page;
+mod union_arms;
 mod value;
 pub use entity::{OirCardinality, OirConstraint, OirEntity, OirField, OirPersistence, OirRelation};
 pub use oir_type::{no_fields, OirType};
@@ -325,6 +326,7 @@ pub use shape::{
     payload_field_shape_named, payload_field_shape_with_entity, payload_tuple_slots, payload_type_shape, record_shape,
     DeclaredShape, ShapeError, ShapeGap,
 };
+pub use union_arms::{field_union_arm_collision, payload_union_arm_collision, union_arm_collision, UnionArmCollision};
 pub use traits::{OirDispatchMode, OirEvent, OirState, OirTrait, OirTraitSource};
 pub use transition::{
     await_render_rows_from_resolved, AwaitRender, AwaitRenderRow, OirEmit, OirEventScope, OirGuard,
