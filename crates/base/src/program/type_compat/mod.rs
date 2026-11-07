@@ -277,7 +277,7 @@ pub use oir_kind::{
     semantic_string_kind,
 };
 pub use record_binding::{
-    bound_shape_of_payload_field, bound_shape_of_type_str, record_prop_binding_mismatch,
+    bound_shape_of_payload_field, bound_shape_of_type_str, prop_admits_scalar, record_prop_binding_mismatch,
     BoundShape, RecordBindingMismatch,
 };
 

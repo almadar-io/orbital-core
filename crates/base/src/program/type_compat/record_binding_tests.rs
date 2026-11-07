@@ -10,7 +10,7 @@ fn is_entity(n: &str) -> bool {
 }
 fn check(ty: &str, expected: Option<&str>) -> Option<RecordBindingMismatch> {
     bound_shape_of_type_str(ty)
-        .and_then(|b| record_prop_binding_mismatch(&b, expected, is_entity))
+        .and_then(|b| record_prop_binding_mismatch(&b, &["object"], expected, is_entity))
 }
 
 #[test]
@@ -102,4 +102,21 @@ fn control_a_nullable_or_null_binding_is_not_a_scalar() {
     for ty in ["number?", "string?", "null", "Booking?"] {
         assert_eq!(check(ty, Some("Booking")), None, "{ty}");
     }
+}
+
+#[test]
+fn a_scalar_fills_a_prop_that_also_admits_one() {
+    for ty in ["string", "number", "boolean"] {
+        let bound = bound_shape_of_type_str(ty).unwrap();
+        assert_eq!(
+            record_prop_binding_mismatch(&bound, &["string", "object"], None, is_entity),
+            None,
+            "{ty}"
+        );
+    }
+    let collection = bound_shape_of_type_str("[object]").unwrap();
+    assert_eq!(
+        record_prop_binding_mismatch(&collection, &["string", "object"], None, is_entity),
+        Some(RecordBindingMismatch::CollectionIntoRecord)
+    );
 }
