@@ -27,6 +27,10 @@ pub trait TargetLiteralRenderer {
     fn object(&self) -> Option<Self::Out> {
         None
     }
+    /// A `node` default that is text (a node can be text): the target's node value for it, or `None` when the shell cannot write one (the default is then refused).
+    fn node_text(&self, _s: &str) -> Option<Self::Out> {
+        None
+    }
     /// A union default: `inner` is the value rendered at the union arm `arm` it fits. Untagged targets keep `inner`.
     fn union_arm(&self, _arm: &str, inner: Self::Out) -> Self::Out {
         inner
@@ -169,6 +173,10 @@ pub fn render_default<R: TargetLiteralRenderer>(
                 }
             }
             Ok(Some(r.array(rendered)))
+        }
+
+        (OirType::Node, OirValue::String(s)) => {
+            r.node_text(s).map(Some).ok_or(LiteralMismatch { expected: type_tag(ty), found: value_kind(value) })
         }
 
         (
@@ -319,6 +327,48 @@ mod tests {
             "control: a value no arm fits is a mismatch"
         );
         assert_eq!(render_default(&TaggedRenderer, &OirValue::Null, &host_union(), None), Ok(None), "control: null has no default");
+    }
+
+    struct NodeTextRenderer;
+
+    impl TargetLiteralRenderer for NodeTextRenderer {
+        type Out = String;
+        fn null(&self) -> String {
+            "null".to_string()
+        }
+        fn bool(&self, b: bool) -> String {
+            b.to_string()
+        }
+        fn integer(&self, i: i64) -> String {
+            i.to_string()
+        }
+        fn number(&self, n: f64) -> String {
+            n.to_string()
+        }
+        fn string(&self, s: &str) -> String {
+            format!("\"{s}\"")
+        }
+        fn enum_member(&self, enum_name: &str, member: &str) -> String {
+            format!("{enum_name}.{member}")
+        }
+        fn array(&self, items: Vec<String>) -> String {
+            format!("[{}]", items.join(", "))
+        }
+        fn node_text(&self, s: &str) -> Option<String> {
+            Some(format!("Node.text(\"{s}\")"))
+        }
+    }
+
+    #[test]
+    fn a_text_default_of_a_node_renders_through_the_shells_node_text() {
+        let text = OirValue::String("Ticket details".to_string());
+        assert_eq!(render_default(&NodeTextRenderer, &text, &OirType::Node, None), Ok(Some("Node.text(\"Ticket details\")".to_string())));
+        assert_eq!(
+            render_default(&r(), &text, &OirType::Node, None),
+            Err(LiteralMismatch { expected: "node".to_string(), found: "string" }),
+            "control: a shell without node_text still refuses it"
+        );
+        assert_eq!(render_default(&NodeTextRenderer, &OirValue::Number(1.0), &OirType::Node, None).map(|_| ()), Err(LiteralMismatch { expected: "node".to_string(), found: "number" }), "control: a number is not a text node");
     }
 
     #[test]
