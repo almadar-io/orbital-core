@@ -10,19 +10,25 @@ use super::*;
 /// - `["render-ui", "slot", { content }]`
 /// - `["navigate", "/path"]`
 /// - `["set", "@path", value]`
-pub fn parse_effect(expr: &SExpression) -> Option<Effect> {
-    let arr = expr.as_array()?;
-    if arr.is_empty() {
-        return None;
-    }
-
-    let op = arr[0].as_str()?;
+///
+/// `Ok(None)` is a malformed effect; `Err` is an installed operator table that does not carry an `os/` operation
+/// the call names.
+pub fn parse_effect(expr: &SExpression) -> Result<Option<Effect>, crate::language_data::LanguageDataError> {
+    let Some(arr) = expr.as_array() else {
+        return Ok(None);
+    };
+    let Some(op) = arr.first().and_then(SExpression::as_str) else {
+        return Ok(None);
+    };
     let args = &arr[1..];
 
     if let Some(os_op) = OsOp::from_name(op) {
         return parse_os(os_op, args);
     }
+    Ok(parse_non_os(op, args))
+}
 
+fn parse_non_os(op: &str, args: &[SExpression]) -> Option<Effect> {
     if let Some(tab_op) = crate::tab::TabOp::from_name(op) {
         return parse_tab(tab_op, args);
     }
@@ -415,10 +421,10 @@ pub(super) fn parse_tab(op: crate::tab::TabOp, args: &[SExpression]) -> Option<E
 
 /// `["os/<op>", args…, { key?, emit? }?]`; the envelope is told from the op's own options object by
 /// [`split_envelope`], and the positional count must be one the op takes.
-pub(super) fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
-    let (positional, envelope) = split_envelope(op, args);
-    if !accepts_arity(op, positional.len()) {
-        return None;
+pub(super) fn parse_os(op: OsOp, args: &[SExpression]) -> Result<Option<Effect>, crate::language_data::LanguageDataError> {
+    let (positional, envelope) = split_envelope(op, args)?;
+    if !accepts_arity(op, positional.len())? {
+        return Ok(None);
     }
     let options = envelope.map(|fields| Value::from(SExpression::object(fields.clone())));
     let key = options
@@ -427,12 +433,12 @@ pub(super) fn parse_os(op: OsOp, args: &[SExpression]) -> Option<Effect> {
         .and_then(|o| o.get("key"))
         .cloned();
     let emit = options.as_ref().and_then(parse_emit_config);
-    Some(Effect::Os {
+    Ok(Some(Effect::Os {
         op,
         args: positional.iter().map(|e| Value::from(e.clone())).collect(),
         key,
         emit,
-    })
+    }))
 }
 
 /// `["random-bytes", n, { key?, emit? }?]`.

@@ -10,7 +10,7 @@ fn is_entity(n: &str) -> bool {
 }
 fn check(ty: &str, expected: Option<&str>) -> Option<RecordBindingMismatch> {
     bound_shape_of_type_str(ty)
-        .and_then(|b| record_prop_binding_mismatch(&b, false, expected, is_entity))
+        .and_then(|b| record_prop_binding_mismatch(&b, &["object"], expected, is_entity))
 }
 
 #[test]
@@ -76,7 +76,7 @@ fn a_lowered_payload_field_carries_its_entity_separately() {
     );
     assert_eq!(
         bound_shape_of_payload_field("string", None),
-        Some(BoundShape::Scalar)
+        Some(BoundShape::Scalar("string"))
     );
 }
 
@@ -109,30 +109,12 @@ fn control_a_nullable_or_null_binding_is_not_a_scalar() {
 }
 
 #[test]
-fn a_scalar_fills_a_prop_that_also_admits_one() {
-    for ty in ["string", "number", "boolean"] {
-        let bound = bound_shape_of_type_str(ty).unwrap();
-        assert_eq!(
-            record_prop_binding_mismatch(
-                &bound,
-                prop_admits_scalar(&["string", "object"]),
-                None,
-                is_entity
-            ),
-            None,
-            "{ty}"
-        );
-    }
-    let collection = bound_shape_of_type_str("[object]").unwrap();
-    assert_eq!(
-        record_prop_binding_mismatch(&collection, true, None, is_entity),
-        Some(RecordBindingMismatch::CollectionIntoRecord)
-    );
-}
-
-#[test]
-fn edge_only_scalar_types_admit_a_scalar() {
-    assert!(!prop_admits_scalar(&["object"]));
-    assert!(!prop_admits_scalar(&[]));
-    assert!(prop_admits_scalar(&["object", "number"]));
+fn a_scalar_fills_a_prop_only_when_its_own_type_is_admitted() {
+    let into = |ty: &str| {
+        record_prop_binding_mismatch(&bound_shape_of_type_str(ty).unwrap(), &["string", "object"], None, is_entity)
+    };
+    assert_eq!(into("string"), None, "a string fills `string | object`");
+    assert_eq!(into("number"), Some(RecordBindingMismatch::ScalarIntoRecord), "control: a number does not");
+    assert_eq!(into("boolean"), Some(RecordBindingMismatch::ScalarIntoRecord), "control: nor a boolean");
+    assert_eq!(into("[object]"), Some(RecordBindingMismatch::CollectionIntoRecord), "a collection never does");
 }

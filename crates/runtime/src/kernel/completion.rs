@@ -4,16 +4,15 @@ use super::*;
 
 /// The consecutive top-level plain `persist` effects of `effects` from `start`: a write run. Effects nested in
 /// `let`/`do`/`if`/`when` are not top-level, and a `persist batch` is its own request, so neither joins a run.
-pub(super) fn persist_run(effects: &[SExpression], start: usize) -> Vec<Effect> {
-    effects[start..]
-        .iter()
-        .map_while(
-            |expr| match orbital_core_base::effect_types::parse_effect(expr) {
-                Some(effect @ Effect::Persist { .. }) => Some(effect),
-                _ => None,
-            },
-        )
-        .collect()
+pub(super) fn persist_run(effects: &[SExpression], start: usize) -> Result<Vec<Effect>, orbital_core_base::language_data::LanguageDataError> {
+    let mut run = Vec::new();
+    for expr in &effects[start..] {
+        match orbital_core_base::effect_types::parse_effect(expr)? {
+            Some(effect @ Effect::Persist { .. }) => run.push(effect),
+            _ => break,
+        }
+    }
+    Ok(run)
 }
 
 /// Whether a failed effect is one the JS executor throws, the failure a response reports as `effect-failed`.
@@ -309,6 +308,7 @@ mod absent_not_null_tests {
         let fetch = orbital_core_base::effect_types::parse_effect(
             &serde_json::from_value::<SExpression>(serde_json::json!(["fetch", "Task"])).unwrap(),
         )
+        .expect("table")
         .expect("a fetch effect");
         let failed = EffectResult::failed(fetch, "boom");
         let payload = emitted(fetch_completion_emit(&routes(), &failed, None));

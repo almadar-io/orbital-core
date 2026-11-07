@@ -77,25 +77,26 @@ pub enum OsGrantPass {
     Final,
 }
 
-fn each_os_call<'a>(expr: &'a SExpression, visit: &mut dyn FnMut(OsOp, &'a [SExpression])) {
+fn each_os_call<'a>(expr: &'a SExpression, visit: &mut dyn FnMut(OsOp, &'a [SExpression]) -> Result<(), crate::language_data::LanguageDataError>) -> Result<(), crate::language_data::LanguageDataError> {
     match expr {
         SExpression::Array(arr) => {
             if let Some(SExpression::String(head)) = arr.first() {
                 if let Some(op) = OsOp::from_name(head) {
-                    visit(op, &arr[1..]);
+                    visit(op, &arr[1..])?;
                 }
             }
             for item in arr {
-                each_os_call(item, visit);
+                each_os_call(item, visit)?;
             }
         }
         SExpression::Object(obj) => {
             for v in obj.values() {
-                each_os_call(v, visit);
+                each_os_call(v, visit)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// A target read from the composing call site's `config`: the binding `@config.*`, or a call whose data
@@ -533,7 +534,7 @@ fn literal_wgsl(op: OsOp, positional: &[SExpression]) -> Option<&str> {
 
 /// The findings of the program as written: an `os/` call not covered by the grants of its orbital, a computed
 /// target, a malformed entry, an entry no call uses.
-fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
+fn written(schema: &OrbitalSchema) -> Result<Vec<OsGrantFinding>, crate::language_data::LanguageDataError> {
     let mut out = Vec::new();
     if let Some(app) = &schema.os_grants {
         check_entries(app, "osGrants", None, &mut out);
@@ -556,7 +557,7 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
             let path = trait_path(i, &orbital.name, j, trait_ref);
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
-                    let (positional, _) = split_envelope(op, args);
+                    let (positional, _) = split_envelope(op, args)?;
                     #[cfg(feature = "wgsl")]
                     if let Some(source) = literal_wgsl(op, positional) {
                         out.extend(shader_invalid(&orbital.name, source, &site));
@@ -571,11 +572,12 @@ fn written(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
                             }
                         }
                     }
-                });
+                    Ok(())
+                })?;
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// The values a config-fed `os/` target can take in the finished program, read from the trait's composed knob
@@ -677,7 +679,7 @@ fn concat_roots(
 /// The findings of the finished program: a config-fed `os/` target is a literal once the program is composed, so
 /// every value it can take is checked against the orbital's grants like a written one; one the pass cannot resolve
 /// is not static.
-fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<OsRequirement>>) {
+fn finished_with_needs(schema: &OrbitalSchema) -> Result<(Vec<OsGrantFinding>, Vec<Vec<OsRequirement>>), crate::language_data::LanguageDataError> {
     let mut out = Vec::new();
     let mut needs_by_orbital: Vec<Vec<OsRequirement>> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
@@ -691,7 +693,7 @@ fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<
             let path = trait_path(i, &orbital.name, j, trait_ref);
             for (effect, site) in effect_sites(trait_def, &path) {
                 each_os_call(effect, &mut |op, args| {
-                    let (positional, _) = split_envelope(op, args);
+                    let (positional, _) = split_envelope(op, args)?;
                     let as_written = os_requirements_deferring(op, positional, &knob_fed)
                         .unwrap_or_default();
                     needs.extend(as_written.iter().cloned());
@@ -830,7 +832,8 @@ fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<
                             }
                         }
                     }
-                });
+                    Ok(())
+                })?;
             }
         }
         needs_by_orbital.push(needs);
@@ -856,19 +859,19 @@ fn finished_with_needs(schema: &OrbitalSchema) -> (Vec<OsGrantFinding>, Vec<Vec<
             }
         }
     }
-    (out, needs_by_orbital)
+    Ok((out, needs_by_orbital))
 }
 
-fn finished(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
-    finished_with_needs(schema).0
+fn finished(schema: &OrbitalSchema) -> Result<Vec<OsGrantFinding>, crate::language_data::LanguageDataError> {
+    Ok(finished_with_needs(schema)?.0)
 }
 
 /// Drops from each orbital the grants composition copied onto it that no `os/` call of that orbital uses (EXEC-GRANTS-2:
 /// a grant lands only on the orbital whose calls need it). `authored` holds, per orbital name, the grants the program
 /// itself wrote on that orbital: those stay (an unused one is still reported by the final pass). The use is the
 /// final pass's own: the same per-orbital needs that `ORB_OS_GRANT_UNUSED` reads.
-pub fn prune_composed_unused_grants(schema: &mut OrbitalSchema, authored: &IndexMap<String, OsGrants>) {
-    let (_, needs) = finished_with_needs(schema);
+pub fn prune_composed_unused_grants(schema: &mut OrbitalSchema, authored: &IndexMap<String, OsGrants>) -> Result<(), crate::language_data::LanguageDataError> {
+    let (_, needs) = finished_with_needs(schema)?;
     for (orbital, needs) in schema.orbitals.iter_mut().zip(needs) {
         let Some(own) = orbital.os_grants.as_ref() else {
             continue;
@@ -889,17 +892,18 @@ pub fn prune_composed_unused_grants(schema: &mut OrbitalSchema, authored: &Index
             orbital.os_grants = (!kept.is_empty()).then_some(kept);
         }
     }
+    Ok(())
 }
 
 /// The typed findings of one pass of the static `os/` grant check over a lowered program.
-pub fn os_grant_findings(schema: &OrbitalSchema, pass: OsGrantPass) -> Vec<OsGrantFinding> {
+pub fn os_grant_findings(schema: &OrbitalSchema, pass: OsGrantPass) -> Result<Vec<OsGrantFinding>, crate::language_data::LanguageDataError> {
     match pass {
         OsGrantPass::Written => written(schema),
         #[cfg(feature = "wgsl")]
         OsGrantPass::Final => {
-            let mut found = finished(schema);
-            found.extend(super::gpu_bindings::binding_mismatches(schema));
-            found
+            let mut found = finished(schema)?;
+            found.extend(super::gpu_bindings::binding_mismatches(schema)?);
+            Ok(found)
         }
         #[cfg(not(feature = "wgsl"))]
         OsGrantPass::Final => finished(schema),

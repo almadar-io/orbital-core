@@ -6,7 +6,7 @@ use serde_json::{json, Value as Json};
 
 fn kernel(applies_to: Json) -> RuntimeKernel {
     let mut tick =
-        json!({ "name": "beat", "interval": 1000, "effects": [["set", "@entity.beats", 1]] });
+        json!({ "name": "beat", "interval": 1000, "runsInBackground": true, "effects": [["set", "@entity.beats", 1]] });
     if !applies_to.is_null() {
         tick["appliesTo"] = applies_to;
     }
@@ -114,4 +114,20 @@ fn a_skipped_tick_dispatches_no_emits() {
         .unwrap();
     assert!(!dispatched.outcome.executed);
     assert!(dispatched.emits.is_empty());
+}
+
+// EXEC-INBOUND awaited answer: a `[background]` tick waiting in a state it names is a pending timer (G-STD-249).
+#[test]
+fn g_std_249_a_background_tick_is_pending_while_its_trait_is_in_a_state_it_names() {
+    let kernel = kernel(json!(["running"]));
+    assert!(kernel.pending_background_ticks().is_empty(), "control: the trait has not entered the named state");
+    start(&kernel);
+    assert_eq!(kernel.pending_background_ticks(), [("Clock".to_string(), "beat".to_string())]);
+}
+
+#[test]
+fn g_std_249_a_tick_naming_no_state_is_never_pending() {
+    let kernel = kernel(Json::Null);
+    start(&kernel);
+    assert!(kernel.pending_background_ticks().is_empty(), "a tick that runs in every state is not a scheduled wait");
 }

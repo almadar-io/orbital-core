@@ -3,6 +3,10 @@ use super::requirements::{ffi_need, gpu_need, kernel_need, mem_need, need_of};
 use serde_json::json;
 use crate::num_width::NumWidth;
 
+fn findings(schema: &crate::schema::OrbitalSchema, pass: OsGrantPass) -> Vec<OsGrantFinding> {
+    os_grant_findings(schema, pass).expect("table")
+}
+
 fn fs_grants(glob: &str, modes: &[FsMode]) -> OsGrants {
     OsGrants {
         fs: vec![FsGrant {
@@ -2210,10 +2214,10 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
             };
             for at in positions {
                 assert!(
-                    at < op.max_args(),
+                    at < op.max_args().expect("table"),
                     "{} names argument {at}, past its {} arguments",
                     op.name(),
-                    op.max_args()
+                    op.max_args().expect("table")
                 );
             }
         }
@@ -2700,7 +2704,7 @@ mod static_check {
     }
 
     fn one(grants: serde_json::Value, effects: serde_json::Value) -> Vec<OsGrantFinding> {
-        os_grant_findings(
+        findings(
             &program(
                 json!(null),
                 vec![orbital("Orders", grants, None, effects, json!({}))],
@@ -2715,7 +2719,7 @@ mod static_check {
         effects: serde_json::Value,
         config: serde_json::Value,
     ) -> Vec<OsGrantFinding> {
-        os_grant_findings(
+        findings(
             &program(json!(null), vec![orbital("Orders", grants, guard, effects, config)]),
             OsGrantPass::Final,
         )
@@ -2807,9 +2811,9 @@ mod static_check {
             "pages": []
         }] });
         let schema: OrbitalSchema = serde_json::from_value(schema).expect("schema");
-        let written = os_grant_findings(&schema, OsGrantPass::Written);
+        let written = findings(&schema, OsGrantPass::Written);
         assert!(!has(&written, OsGrantFindingCode::BindingMismatch), "the finished pass alone checks bindings: {written:?}");
-        os_grant_findings(&schema, OsGrantPass::Final).into_iter().filter(|f| f.code == OsGrantFindingCode::BindingMismatch).collect()
+        findings(&schema, OsGrantPass::Final).into_iter().filter(|f| f.code == OsGrantFindingCode::BindingMismatch).collect()
     }
 
     #[cfg(feature = "wgsl")]
@@ -2905,7 +2909,7 @@ mod static_check {
     #[test]
     fn a_statically_false_guard_needs_no_grant_and_its_grant_is_unused() {
         let run = |guard: serde_json::Value, effects: serde_json::Value| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital(
@@ -3032,7 +3036,7 @@ mod static_check {
             "pack": { "type": "string", "default": "" },
             "transport": { "type": "string", "default": "http" }
         });
-        let written = os_grant_findings(
+        let written = findings(
             &program(
                 json!(null),
                 vec![orbital("Orders", read_data(), Some(defaults), read.clone(), knobs.clone())],
@@ -3046,7 +3050,7 @@ mod static_check {
         let dead = json!(["and", ["!=", "", ""], ["=", "file", "file"]]);
         let idle = final_of(read_data(), Some(dead), read.clone(), json!({}));
         assert!(has(&idle, OsGrantFindingCode::Unused), "composed with the knobs off: {idle:?}");
-        let missing = os_grant_findings(
+        let missing = findings(
             &program(
                 json!(null),
                 vec![orbital("Orders", read_data(), Some(json!(["=", "@config.transport", "file"])), json!([["os/read-file", "/etc/passwd"]]), knobs)],
@@ -3054,7 +3058,7 @@ mod static_check {
             OsGrantPass::Written,
         );
         assert!(has(&missing, OsGrantFindingCode::Missing), "control: missing is still reported in the written pass");
-        let app_idle = os_grant_findings(
+        let app_idle = findings(
             &program(read_data(), vec![orbital("Orders", json!(null), None, json!([]), json!({}))]),
             OsGrantPass::Final,
         );
@@ -3065,7 +3069,7 @@ mod static_check {
     #[test]
     fn grants_are_per_orbital_and_the_app_level_reaches_every_orbital() {
         let read = json!([["os/read-file", "/data/a"]]);
-        let split = os_grant_findings(
+        let split = findings(
             &program(
                 json!(null),
                 vec![
@@ -3081,7 +3085,7 @@ mod static_check {
             .collect();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].orbital.as_deref(), Some("Billing"));
-        let app = os_grant_findings(
+        let app = findings(
             &program(
                 read_data(),
                 vec![
@@ -3207,7 +3211,7 @@ mod static_check {
             !has(&one(good, json!([])), OsGrantFindingCode::EntryInvalid),
             "control"
         );
-        let app = os_grant_findings(
+        let app = findings(
             &program(
                 json!({ "exec": [""] }),
                 vec![orbital("Orders", json!(null), None, json!([]), json!({}))],
@@ -3220,7 +3224,7 @@ mod static_check {
     #[test]
     fn an_app_entry_is_used_when_any_orbital_uses_it() {
         let read = json!([["os/read-file", "/data/a"]]);
-        let used = os_grant_findings(
+        let used = findings(
             &program(
                 read_data(),
                 vec![
@@ -3231,7 +3235,7 @@ mod static_check {
             OsGrantPass::Final,
         );
         assert!(used.is_empty(), "{used:?}");
-        let idle = os_grant_findings(
+        let idle = findings(
             &program(
                 read_data(),
                 vec![orbital("Orders", json!(null), None, json!([]), json!({}))],
@@ -3327,7 +3331,7 @@ mod static_check {
             "b": { "type": "string", "default": "y" }
         });
         let run = |path: serde_json::Value| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital(
@@ -3382,7 +3386,7 @@ mod static_check {
             ["os/write-file", {"anchor": "cwd", "path": "@config.dir"}, "x"]
         ]);
         let run = |dir: &str, pass: OsGrantPass, effects: serde_json::Value| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital(
@@ -3431,7 +3435,7 @@ mod static_check {
         });
         let spawn = json!([["os/spawn", "git", [], {"cwd": {"anchor": "cwd", "path": "@config.dir"}}]]);
         let run = |dir: &str, pass: OsGrantPass, effects: serde_json::Value| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital("Orders", grant.clone(), None, effects, json!({ "dir": { "type": "string", "default": dir } }))],
@@ -3454,7 +3458,7 @@ mod static_check {
         let concat = json!([["os/spawn", "git", [], {"cwd": {"anchor": "cwd", "path": ["str/concat", "@config.dir", "@entity.name"]}}]]);
         assert!(run("work/a/", OsGrantPass::Final, concat.clone()).is_empty(), "a concat cwd under the grant is covered");
         assert!(has(&run("src/a/", OsGrantPass::Final, concat), OsGrantFindingCode::Missing));
-        let lost = os_grant_findings(
+        let lost = findings(
             &program(json!(null), vec![orbital("Orders", grant.clone(), None, spawn, json!({}))]),
             OsGrantPass::Final,
         );
@@ -3467,7 +3471,7 @@ mod static_check {
     #[test]
     fn the_finished_pass_decides_a_config_prefix_by_its_value() {
         let run = |root: &str| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital(
@@ -3599,7 +3603,7 @@ mod static_check {
     fn the_finished_pass_checks_every_value_a_config_target_can_take() {
         let knob = json!({ "cmd": { "type": "string", "default": "git" } });
         let run = |grants: serde_json::Value, config: serde_json::Value| {
-            os_grant_findings(
+            findings(
                 &program(
                     json!(null),
                     vec![orbital(
@@ -3636,7 +3640,7 @@ mod static_check {
             .iter()
             .map(|(name, grants)| (name.to_string(), serde_json::from_value(grants.clone()).expect("grants")))
             .collect();
-        prune_composed_unused_grants(&mut schema, &written);
+        prune_composed_unused_grants(&mut schema, &written).expect("table");
         schema
     }
 
@@ -3660,7 +3664,7 @@ mod static_check {
         assert!(holder.net.is_empty(), "the holder's unused vendor grant goes");
         assert!(grants_of(&schema, "Bystander").is_none(), "the bystander holds no grant");
         assert!(
-            !has(&os_grant_findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused),
+            !has(&findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused),
             "the pruned program has no unused grant"
         );
     }
@@ -3690,7 +3694,7 @@ mod static_check {
         let staff = grants_of(&schema, "Staff").expect("authored entry kept");
         assert_eq!(staff.env.len(), 1);
         assert!(staff.net.is_empty(), "the composed vendor grant still goes");
-        assert!(has(&os_grant_findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused));
+        assert!(has(&findings(&schema, OsGrantPass::Final), OsGrantFindingCode::Unused));
     }
 
     #[test]

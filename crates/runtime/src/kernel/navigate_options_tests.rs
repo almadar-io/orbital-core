@@ -37,7 +37,7 @@ fn a_mistyped_call_in_navigate_params_fails_resolution() {
         ["navigate", "/items", { "tags": ["str/join", ["array/filter", "not-a-list", ["fn", "x", true]], ", "] }]
     ))
     .unwrap();
-    let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("a navigate effect");
+    let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("table").expect("a navigate effect");
     let resolved = resolve_effect_bindings(effect, &BindingContextBuilder::new().build());
     assert!(resolved.is_err(), "{resolved:?}");
 }
@@ -48,7 +48,7 @@ fn control_a_well_typed_call_in_navigate_params_resolves_to_its_value() {
         ["navigate", "/items", { "tags": ["str/join", ["array/filter", ["a", "b"], ["fn", "x", true]], ", "] }]
     ))
     .unwrap();
-    let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("a navigate effect");
+    let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("table").expect("a navigate effect");
     let Ok(Effect::Navigate { params: Some(params), .. }) = resolve_effect_bindings(effect, &BindingContextBuilder::new().build()) else {
         panic!("expected resolved navigate params");
     };

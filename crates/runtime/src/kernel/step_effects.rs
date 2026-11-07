@@ -12,9 +12,9 @@ impl RuntimeKernel {
         &self,
         effects: &[SExpression],
         ctx: &BindingContext,
-    ) -> (Vec<EffectResult>, Value, Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>) {
-        let (effect_results, entity_data, _, _, scopes) = self.execute_effects_traced(effects, ctx);
-        (effect_results, entity_data, scopes)
+    ) -> Result<(Vec<EffectResult>, Value, Vec<(usize, orbital_core_eval::evaluator::context::LocalScope)>), KernelError> {
+        let (effect_results, entity_data, _, _, scopes) = self.execute_effects_traced(effects, ctx)?;
+        Ok((effect_results, entity_data, scopes))
     }
 
     /// `execute_effects_with_entity`, also reporting how each authored effect ran.
@@ -22,7 +22,7 @@ impl RuntimeKernel {
         &self,
         effects: &[SExpression],
         ctx: &BindingContext,
-    ) -> StepRun {
+    ) -> Result<StepRun, KernelError> {
         let outer_scopes = std::mem::take(&mut *self.step.render_scopes.write());
         let evaluator = Evaluator::new();
         let mut effect_results = Vec::new();
@@ -44,7 +44,13 @@ impl RuntimeKernel {
             }
             let before = effect_results.len();
             if !run_results.contains_key(&index) {
-                let run = persist_run(effects, index);
+                let run = match persist_run(effects, index) {
+                    Ok(run) => run,
+                    Err(fault) => {
+                        *self.step.render_scopes.write() = outer_scopes;
+                        return Err(fault.into());
+                    }
+                };
                 if run.len() >= 2 {
                     let mirrored = entity_data.apply(ctx);
                     let results = self.effect_executor.execute_persist_run(&run, &mirrored);
@@ -53,7 +59,13 @@ impl RuntimeKernel {
                 }
             }
             if let Some(result) = run_results.remove(&index) {
-                let declared = orbital_core_base::effect_types::parse_effect(effect_expr);
+                let declared = match orbital_core_base::effect_types::parse_effect(effect_expr) {
+                    Ok(declared) => declared,
+                    Err(fault) => {
+                        *self.step.render_scopes.write() = outer_scopes;
+                        return Err(fault.into());
+                    }
+                };
                 let result = match declared.as_ref().and_then(Effect::emit_routes) {
                     Some(routes) => result.with_declared_routes(routes),
                     None => result,
@@ -73,13 +85,16 @@ impl RuntimeKernel {
                 effect_results.push(result);
                 effect_results.extend(completion.map(EffectResult::as_completion));
             } else {
-                self.exec_effect_expr(
+                if let Err(fault) = self.exec_effect_expr(
                     effect_expr,
                     ctx,
                     &evaluator,
                     &mut effect_results,
                     &mut entity_data,
-                );
+                ) {
+                    *self.step.render_scopes.write() = outer_scopes;
+                    return Err(fault.into());
+                }
             }
             let ran = &effect_results[before..];
             let failed = ran.iter().find(|r| r.is_failed());
@@ -110,13 +125,13 @@ impl RuntimeKernel {
             scopes.clear();
         }
 
-        (
+        Ok((
             effect_results,
             Value::object(entity_data.sets),
             runs,
             failure,
             scopes,
-        )
+        ))
     }
 
     /// Execute a single top-level effect expression.
@@ -136,7 +151,7 @@ impl RuntimeKernel {
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut PendingSets,
-    ) {
+    ) -> Result<(), orbital_core_base::language_data::LanguageDataError> {
         let secreted = self.with_operator_credentials(effect_expr, ctx, evaluator);
         let ctx = secreted.as_ref().unwrap_or(ctx);
         // Only control flow reads the mirrored `@entity` here; a leaf mirrors it itself so it can
@@ -162,10 +177,10 @@ impl RuntimeKernel {
                                                 }
                                                 Err(err) => {
                                                     tracing::error!(site = %self.effect_site(), binding = %name, error = %err, "kernel: let binding failed to evaluate");
-                                                    if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) {
+                                                    if let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr)? {
                                                         effect_results.push(EffectResult::failed(effect, &err.to_string()));
                                                     }
-                                                    return;
+                                                    return Ok(());
                                                 }
                                             }
                                         }
@@ -179,7 +194,7 @@ impl RuntimeKernel {
                                     evaluator,
                                     effect_results,
                                     entity_data,
-                                );
+                                )?;
                                 if effect_results.iter().any(is_thrown_failure) {
                                     break;
                                 }
@@ -193,7 +208,7 @@ impl RuntimeKernel {
                                     evaluator,
                                     effect_results,
                                     entity_data,
-                                );
+                                )?;
                                 if effect_results.iter().any(is_thrown_failure) {
                                     break;
                                 }
@@ -203,9 +218,9 @@ impl RuntimeKernel {
                             // [ "if", cond, then, else? ]
                             if let Some(cond) = items.get(1) {
                                 let Some(holds) =
-                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())?
                                 else {
-                                    return;
+                                    return Ok(());
                                 };
                                 let branch = if holds { items.get(2) } else { items.get(3) };
                                 if let Some(branch) = branch {
@@ -215,7 +230,7 @@ impl RuntimeKernel {
                                         evaluator,
                                         effect_results,
                                         entity_data,
-                                    );
+                                    )?;
                                 }
                             }
                         }
@@ -223,9 +238,9 @@ impl RuntimeKernel {
                             // [ "when", cond, body… ]
                             if let Some(cond) = items.get(1) {
                                 let Some(holds) =
-                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())
+                                    condition_holds(effect_expr, cond, ctx, evaluator, effect_results, || self.effect_site())?
                                 else {
-                                    return;
+                                    return Ok(());
                                 };
                                 if holds {
                                     for body in items.iter().skip(2) {
@@ -235,23 +250,23 @@ impl RuntimeKernel {
                                             evaluator,
                                             effect_results,
                                             entity_data,
-                                        );
+                                        )?;
                                         if effect_results.iter().any(is_thrown_failure) {
                                             break;
                                         }
                                     }
                                 }
                             }
-                            return;
+                            return Ok(());
                         }
                         _ => {}
                     }
-                    return;
+                    return Ok(());
                 }
             }
         }
 
-        self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data);
+        self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data)
     }
 
     /// `ctx` with the value of every credential an operator in `CREDENTIAL_OPERATORS` names in `expr`, resolved through the
@@ -304,25 +319,25 @@ impl RuntimeKernel {
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut PendingSets,
-    ) {
+    ) -> Result<(), orbital_core_base::language_data::LanguageDataError> {
         let mirrored = entity_data.apply(ctx);
         let ctx: &BindingContext = &mirrored;
-        let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr) else {
-            return;
+        let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr)? else {
+            return Ok(());
         };
         match &effect {
             Effect::Set { path, value } => {
                 let Some(evaluated_value) =
                     set_value(&effect, path, value, ctx, evaluator, effect_results, || self.effect_site())
                 else {
-                    return;
+                    return Ok(());
                 };
                 let field_name = path.strip_prefix("@entity.").unwrap_or(path);
                 if evaluated_value.is_null() {
                     if let Some(refusal) = self.null_refused_by(field_name) {
                         tracing::error!(site = %self.effect_site(), path = %path, error = %refusal, "kernel: set refused");
                         effect_results.push(EffectResult::failed(effect.clone(), &refusal));
-                        return;
+                        return Ok(());
                     }
                 }
                 drop(mirrored);
@@ -340,7 +355,7 @@ impl RuntimeKernel {
                     Err(fault) => {
                         tracing::error!(site = %self.effect_site(), effect = "fetch", error = %fault, "kernel: effect arguments failed to evaluate");
                         effect_results.push(EffectResult::failed(effect.clone(), &OrbitalError::Eval(fault).to_string()));
-                        return;
+                        return Ok(());
                     }
                 };
                 let result = self
@@ -426,7 +441,7 @@ impl RuntimeKernel {
             }
             Effect::Custom { .. } => {
                 let Some(resolved) = resolved_custom_or_failed(&effect, ctx, effect_results) else {
-                    return;
+                    return Ok(());
                 };
                 effect_results.push(self.effect_executor.execute(&resolved, ctx));
             }
@@ -464,6 +479,7 @@ impl RuntimeKernel {
             }
             _ => effect_results.push(self.effect_executor.execute(&effect, ctx)),
         }
+        Ok(())
     }
 
     /// A call-shaped effect: resolve it, run it (in place on the client role when its shape says so), settle its
@@ -782,15 +798,15 @@ fn condition_holds(
     evaluator: &Evaluator,
     effect_results: &mut Vec<EffectResult>,
     site: impl FnOnce() -> EffectSite,
-) -> Option<bool> {
+) -> Result<Option<bool>, orbital_core_base::language_data::LanguageDataError> {
     match evaluator.evaluate(cond, ctx).map_err(|err| err.to_string()).and_then(|v| v.boolean().map_err(|err| err.to_string())) {
-        Ok(holds) => Some(holds),
+        Ok(holds) => Ok(Some(holds)),
         Err(message) => {
             tracing::error!(site = %site(), error = %message, "kernel: effect condition is not a boolean");
-            if let Some(effect) = orbital_core_base::effect_types::parse_effect(form) {
+            if let Some(effect) = orbital_core_base::effect_types::parse_effect(form)? {
                 effect_results.push(EffectResult::failed(effect, &message));
             }
-            None
+            Ok(None)
         }
     }
 }

@@ -10,10 +10,10 @@ impl RuntimeKernel {
         state_name: &str,
         ctx: &BindingContext,
         _entity_data: &SharedEntity,
-    ) -> Vec<EffectResult> {
+    ) -> Result<Vec<EffectResult>, KernelError> {
         // Resolve every binding through the one canonical walker
         // (`ctx.entity` already carries the current entity here).
-        state_render_sources(trait_def, state_name)
+        Ok(state_render_sources(trait_def, state_name)?
             .into_iter()
             .map(|(slot, content)| {
                 resolve_effect_result(
@@ -21,7 +21,7 @@ impl RuntimeKernel {
                     ctx,
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// Keep a trait's just-run `render-ui` effects (`sources`: unresolved, in run order;

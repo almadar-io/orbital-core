@@ -342,7 +342,7 @@ fn test_persist_create_data_call_expression_is_evaluated_not_left_literal() {
         ].into()),
     ].into());
     let effect =
-        orbital_core_base::effect_types::parse_effect(&raw).expect("parse_persist must recognize this shape");
+        orbital_core_base::effect_types::parse_effect(&raw).expect("table").expect("parse_persist must recognize this shape");
 
     let mut payload_data = ValueMap::default();
     payload_data.insert("content".into(), Value::string("hello"));
@@ -554,7 +554,7 @@ fn test_execute_all_from_sexpr() {
     ];
 
     let ctx = BindingContext::new();
-    let results = executor.execute_all(&effects, &ctx);
+    let results = executor.execute_all(&effects, &ctx).expect("table");
 
     assert_eq!(results.len(), 2);
     assert!(results[0].is_executed());
@@ -1545,7 +1545,7 @@ mod fetch_option_evaluation {
         let executor = EffectExecutor::server().with_fetch_handler(persistence);
         let raw: SExpression =
             serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
-        let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("fetch parses");
+        let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("table").expect("fetch parses");
         let mut ctx = BindingContext::new();
         ctx.payload = Arc::new(v(payload));
         ctx.set_entity(v(entity));
@@ -1693,7 +1693,7 @@ mod fetch_option_evaluation {
         let fetch = |options: serde_json::Value| {
             let raw: SExpression =
                 serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
-            let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("fetch parses");
+            let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("table").expect("fetch parses");
             let mut ctx = BindingContext::new();
             ctx.payload = Arc::new(v(json!({})));
             ctx.set_entity(v(json!({})));

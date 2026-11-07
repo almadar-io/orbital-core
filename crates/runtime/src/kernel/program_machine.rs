@@ -587,6 +587,7 @@ mod tests {
         ]));
         let run = |effect: &SExpression, status| {
             let routed = orbital_core_base::effect_types::parse_effect(effect)
+                .expect("table")
                 .as_ref()
                 .and_then(orbital_core_base::effect_types::Effect::emit_routes)
                 .is_some_and(|routes| routes.failure.is_some());

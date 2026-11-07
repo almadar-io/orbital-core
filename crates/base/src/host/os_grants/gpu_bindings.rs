@@ -28,7 +28,7 @@ struct Trace<'a> {
     config: IndexMap<String, ConfigField>,
 }
 
-fn walk<'a>(expr: &'a SExpression, event: Option<&'a str>, site: &str, trace: &mut Trace<'a>) {
+fn walk<'a>(expr: &'a SExpression, event: Option<&'a str>, site: &str, trace: &mut Trace<'a>) -> Result<(), crate::language_data::LanguageDataError> {
     match expr {
         SExpression::Array(arr) => {
             match arr.first() {
@@ -48,7 +48,7 @@ fn walk<'a>(expr: &'a SExpression, event: Option<&'a str>, site: &str, trace: &m
                 }
                 Some(SExpression::String(head)) => {
                     if let Some(op) = OsOp::from_name(head) {
-                        let (positional, envelope) = split_envelope(op, &arr[1..]);
+                        let (positional, envelope) = split_envelope(op, &arr[1..])?;
                         let success =
                             envelope
                                 .and_then(|options| options.get("emit"))
@@ -70,19 +70,20 @@ fn walk<'a>(expr: &'a SExpression, event: Option<&'a str>, site: &str, trace: &m
                 _ => {}
             }
             for item in arr {
-                walk(item, event, site, trace);
+                walk(item, event, site, trace)?;
             }
         }
         SExpression::Object(obj) => {
             for v in obj.values() {
-                walk(v, event, site, trace);
+                walk(v, event, site, trace)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
-fn trace_of<'a>(trait_def: &'a TraitDefinition, path: &str) -> Trace<'a> {
+fn trace_of<'a>(trait_def: &'a TraitDefinition, path: &str) -> Result<Trace<'a>, crate::language_data::LanguageDataError> {
     let mut trace = Trace {
         calls: Vec::new(),
         sets: Vec::new(),
@@ -108,7 +109,7 @@ fn trace_of<'a>(trait_def: &'a TraitDefinition, path: &str) -> Trace<'a> {
                 Some(transition.event.as_str()),
                 &format!("{path}.stateMachine.transitions[{i}].effects[{j}]"),
                 &mut trace,
-            );
+            )?;
         }
     }
     for (i, tick) in trait_def.ticks.iter().flatten().enumerate() {
@@ -118,10 +119,10 @@ fn trace_of<'a>(trait_def: &'a TraitDefinition, path: &str) -> Trace<'a> {
                 None,
                 &format!("{path}.ticks[{i}].effects[{j}]"),
                 &mut trace,
-            );
+            )?;
         }
     }
-    trace
+    Ok(trace)
 }
 
 impl<'a> Trace<'a> {
@@ -316,7 +317,7 @@ fn mismatches(
 }
 
 /// Every `gpu/bind-group-create` of the finished program whose literal entries disagree with a pipeline it is traced to.
-pub(super) fn binding_mismatches(schema: &OrbitalSchema) -> Vec<OsGrantFinding> {
+pub(super) fn binding_mismatches(schema: &OrbitalSchema) -> Result<Vec<OsGrantFinding>, crate::language_data::LanguageDataError> {
     let mut out: Vec<OsGrantFinding> = Vec::new();
     for (i, orbital) in schema.orbitals.iter().enumerate() {
         for (j, trait_ref) in orbital.traits.iter().enumerate() {
@@ -327,7 +328,7 @@ pub(super) fn binding_mismatches(schema: &OrbitalSchema) -> Vec<OsGrantFinding> 
                 "orbitals[{i} ({})].traits[{j} ({})]",
                 orbital.name, trait_def.name
             );
-            let trace = trace_of(trait_def, &path);
+            let trace = trace_of(trait_def, &path)?;
             for call in trace
                 .calls
                 .iter()
@@ -368,5 +369,5 @@ pub(super) fn binding_mismatches(schema: &OrbitalSchema) -> Vec<OsGrantFinding> 
             }
         }
     }
-    out
+    Ok(out)
 }

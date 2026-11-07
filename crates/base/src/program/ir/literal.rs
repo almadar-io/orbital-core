@@ -27,6 +27,10 @@ pub trait TargetLiteralRenderer {
     fn object(&self) -> Option<Self::Out> {
         None
     }
+    /// A `Map K V` default: its entries in written order, each value rendered at `V`, or `None` when the shell cannot write one.
+    fn map(&self, _entries: Vec<(String, Self::Out)>) -> Option<Self::Out> {
+        None
+    }
     /// A `node` default that is text (a node can be text): the target's node value for it, or `None` when the shell cannot write one (the default is then refused).
     fn node_text(&self, _s: &str) -> Option<Self::Out> {
         None
@@ -179,9 +183,18 @@ pub fn render_default<R: TargetLiteralRenderer>(
             r.node_text(s).map(Some).ok_or(LiteralMismatch { expected: type_tag(ty), found: value_kind(value) })
         }
 
+        (OirType::Map { value: entry, .. }, OirValue::Object(fields)) => {
+            let mut entries = Vec::with_capacity(fields.len());
+            for (key, item) in fields {
+                if let Some(out) = render_default(r, item, entry, None)? {
+                    entries.push((key.clone(), out));
+                }
+            }
+            Ok(r.map(entries).or_else(|| r.object()))
+        }
+
         (
             OirType::Struct { .. }
-            | OirType::Map { .. }
             | OirType::Node
             | OirType::Row { .. },
             OirValue::Object(_),
@@ -357,6 +370,24 @@ mod tests {
         fn node_text(&self, s: &str) -> Option<String> {
             Some(format!("Node.text(\"{s}\")"))
         }
+        fn map(&self, entries: Vec<(String, String)>) -> Option<String> {
+            Some(format!("{{{}}}", entries.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ")))
+        }
+    }
+
+    #[test]
+    fn a_map_default_renders_its_entries_through_the_shells_map() {
+        let ty = OirType::Map { key: Box::new(OirType::String), value: Box::new(OirType::Array { inner: Box::new(OirType::Number) }) };
+        let mut fields = crate::ir::types::OirObject::default();
+        fields.insert("open".to_string(), OirValue::Array(vec![OirValue::Number(1.0)]));
+        fields.insert("closed".to_string(), OirValue::Array(vec![]));
+        assert_eq!(render_default(&NodeTextRenderer, &OirValue::Object(fields.clone()), &ty, None), Ok(Some("{open: [1], closed: []}".to_string())));
+        assert_eq!(render_default(&NodeTextRenderer, &OirValue::Object(Default::default()), &ty, None), Ok(Some("{}".to_string())));
+        assert_eq!(render_default(&ObjectRenderer, &OirValue::Object(fields.clone()), &ty, None), Ok(Some("{}".to_string())), "control: a shell without map keeps its object default");
+        assert_eq!(render_default(&r(), &OirValue::Object(fields), &ty, None), Ok(None), "control: a shell with neither emits no default");
+        let mut bad = crate::ir::types::OirObject::default();
+        bad.insert("open".to_string(), OirValue::String("x".to_string()));
+        assert!(render_default(&NodeTextRenderer, &OirValue::Object(bad), &ty, None).is_err(), "control: an entry that does not fit the value type is refused");
     }
 
     #[test]

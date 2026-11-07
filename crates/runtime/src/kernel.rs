@@ -108,6 +108,10 @@ pub enum KernelError {
     /// A lazy orbital could not be loaded when a request or event reached it (EXEC-LOAD-2).
     #[error("lazy orbital `{orbital}` could not be loaded: {reason}")]
     LazyLoad { orbital: String, reason: String },
+
+    /// The installed language data cannot answer a lookup a step needs (an operator table older than this orb).
+    #[error("{code}: {0}", code = .0.code())]
+    LanguageData(#[from] orbital_core_base::language_data::LanguageDataError),
 }
 
 pub mod agent_ports;
@@ -973,26 +977,22 @@ fn scoped<'c>(ctx: &'c BindingContext, scope: Option<&orbital_core_eval::evaluat
 }
 
 /// The unresolved `render-ui` effects of the transition that enters `state_name`.
-fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Vec<(String, Value)> {
+fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Result<Vec<(String, Value)>, KernelError> {
     let Some(entering) = trait_def
         .state_machine
         .transitions
         .iter()
         .find(|t| t.to == state_name)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    entering
-        .effects
-        .iter()
-        .flatten()
-        .filter_map(
-            |expr| match orbital_core_base::effect_types::parse_effect(expr) {
-                Some(Effect::RenderUi { slot, content }) => Some((slot, content)),
-                _ => None,
-            },
-        )
-        .collect()
+    let mut sources = Vec::new();
+    for expr in entering.effects.iter().flatten() {
+        if let Some(Effect::RenderUi { slot, content }) = orbital_core_base::effect_types::parse_effect(expr)? {
+            sources.push((slot, content));
+        }
+    }
+    Ok(sources)
 }
 
 /// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.

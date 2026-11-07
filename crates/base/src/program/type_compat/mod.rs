@@ -289,7 +289,7 @@ pub use qualified::{
     split_qualified_type_name, type_identifier, TYPE_QUALIFIER,
 };
 pub use record_binding::{
-    bound_shape_of_payload_field, bound_shape_of_type_str, prop_admits_scalar,
+    bound_shape_of_payload_field, bound_shape_of_type_str,
     record_prop_binding_mismatch, BoundShape, RecordBindingMismatch,
 };
 use relation::*;

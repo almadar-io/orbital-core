@@ -42,9 +42,16 @@ fn json_type(declared: &str) -> Option<&'static str> {
         "number" | "instant" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),
-        "object" | "relation" | "orbital" | "behavior" => Some("object"),
+        "relation" => Some("string"),
+        "object" | "orbital" | "behavior" => Some("object"),
         _ => None,
     }
+}
+
+fn field_element_of(field: &PayloadField) -> (bool, &str) {
+    let (is_array, element) = element_of(&field.field_type);
+    let to_many = field.field_type == "relation" && field.relation.as_ref().is_some_and(|r| r.is_to_many());
+    (is_array || to_many, element)
 }
 
 fn element_of(declared: &str) -> (bool, &str) {
@@ -83,7 +90,7 @@ pub fn payload_json_schema(fields: &[PayloadField]) -> Value {
 }
 
 fn field_json_schema(field: &PayloadField) -> Value {
-    let (is_array, element) = element_of(&field.field_type);
+    let (is_array, element) = field_element_of(field);
     let mut shape = match &field.properties {
         Some(properties) => payload_json_schema(properties),
         None => {
@@ -197,7 +204,7 @@ fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<Payloa
 }
 
 fn field_issues(field: &PayloadField, value: &Value, at: &str) -> Vec<PayloadIssue> {
-    let (is_array, element) = element_of(&field.field_type);
+    let (is_array, element) = field_element_of(field);
     if !is_array && field.field_type != "array" {
         return element_issues(field, element, value, at);
     }
@@ -456,6 +463,22 @@ mod tests {
                 "required": ["title", "data"]
             })
         );
+    }
+
+    #[test]
+    fn g_behaviors_018_a_relation_is_an_id_or_a_list_of_ids_and_never_an_object() {
+        let f = fields(json!([
+            { "name": "assignee", "type": "relation", "relation": { "entity": "TeamMember", "cardinality": "one" } },
+            { "name": "members", "type": "relation", "relation": { "entity": "TeamMember", "cardinality": "many" } },
+            { "name": "title", "type": "string" }
+        ]));
+        let schema = payload_json_schema(&f);
+        assert_eq!(schema["properties"]["assignee"], json!({ "type": "string" }));
+        assert_eq!(schema["properties"]["members"], json!({ "type": "array", "items": { "type": "string" } }));
+        assert_eq!(schema["properties"]["title"], json!({ "type": "string" }));
+        assert!(payload_issues(&f, &json!({ "assignee": "m1", "members": ["a", "b"] })).is_empty());
+        assert_eq!(payload_issues(&f, &json!({ "assignee": {} })).len(), 1);
+        assert_eq!(payload_issues(&f, &json!({ "members": [{}] })).len(), 1);
     }
 
     #[test]

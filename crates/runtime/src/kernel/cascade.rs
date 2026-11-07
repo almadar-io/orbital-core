@@ -420,22 +420,28 @@ impl RuntimeKernel {
         }
         let client_only: HashSet<String> = {
             let defs = self.registry.trait_definitions.read();
-            listeners
-                .iter()
-                .filter(|l| {
-                    let mode = match defs.get(&l.trait_name) {
-                        Some(d) => Some(self.dispatch_mode_of(d)),
-                        None => self.lazy_trait_mode(&l.trait_name),
-                    };
-                    mode == Some(DispatchMode::HybridClientOnly)
-                })
-                .map(|l| l.trait_name.clone())
-                .collect()
+            listeners.iter().filter(|l| self.is_client_only_in(&defs, &l.trait_name)).map(|l| l.trait_name.clone()).collect()
         };
         if client_only.is_empty() {
             return listeners;
         }
         let routed = self.route_page_traits();
         listeners.into_iter().filter(|l| !(client_only.contains(&l.trait_name) && routed.contains(&l.trait_name))).collect()
+    }
+
+    /// The `[client]` traits a browser runs (EXEC-ENDPOINT-3a): the ones a route page places or a route page trait
+    /// embeds. A host leaves every delivery to them to the browser ([`Self::without_browser_listeners`]).
+    pub(crate) fn browser_run_traits(&self) -> HashSet<String> {
+        let routed = self.route_page_traits();
+        let defs = self.registry.trait_definitions.read();
+        routed.into_iter().filter(|name| self.is_client_only_in(&defs, name)).collect()
+    }
+
+    fn is_client_only_in(&self, defs: &HashMap<String, Arc<TraitDefinition>>, name: &str) -> bool {
+        let mode = match defs.get(name) {
+            Some(d) => Some(self.dispatch_mode_of(d)),
+            None => self.lazy_trait_mode(name),
+        };
+        mode == Some(DispatchMode::HybridClientOnly)
     }
 }

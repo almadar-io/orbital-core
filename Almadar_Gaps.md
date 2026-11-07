@@ -46,7 +46,10 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-125** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
 
-Next code: `G-ORBITAL-CORE-138`
+Next code: `G-ORBITAL-CORE-140`
+
+- **G-ORBITAL-CORE-139** [mechanical] — The payload JSON-type map, schema builder and payload checker exist twice in orbital-core base: `host/agent_ports.rs` (kernel `Value`, in-program agent ports `reflect_input`/`payload_issues`) and `contract/payload_check.rs` (`serde_json`, `contract_query` schema + issues, runtime `kernel/contract_query.rs:258-260`). G-BEHAVIORS-018 (2026-11-07) had to apply the relation-is-an-id rule to both. Fix: one implementation over one value type, both surfaces calling it. Rung: none (duplicate mechanism, CLAUDE.md rule 1). Root cause: H3.
+
 
 
 

@@ -958,3 +958,86 @@ fn control_a_mount_that_opens_no_route_posts_none() {
         .unwrap();
     assert!(mount.legs.iter().chain(&mount.stateful_legs).all(|l| l.leg.route.is_none()));
 }
+
+/// The launchpad deep-link shape: `Link` (`[client]`) INIT emits LINKED; `Home` (`[client]`) hears it and emits WANT;
+/// `Data` (server) hears WANT (or, with `direct`, LINKED itself) and fetches. `page` places the three.
+fn browser_chain_schema(page: serde_json::Value, direct: bool) -> OrbitalSchema {
+    let data_source = if direct { "Link" } else { "Home" };
+    let data_event = if direct { "LINKED" } else { "WANT" };
+    serde_json::from_value(json!({
+        "name": "linked",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Links",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Link", "dispatch": "client",
+                  "emits": [{ "event": "LINKED", "scope": "external" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "LINKED", {}]] }] } },
+                { "name": "Home", "dispatch": "client",
+                  "emits": [{ "event": "WANT", "scope": "external" }],
+                  "listens": [{ "event": "LINKED", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Link" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["emit", "WANT", {}]] }] } },
+                { "name": "Data", "linkedEntity": "Person",
+                  "listens": [{ "event": data_event, "triggers": "LOAD", "source": { "kind": "trait", "trait": data_source } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Person", {}]] }] } }
+            ],
+            "pages": [page]
+        }]
+    }))
+    .unwrap()
+}
+
+fn browser_chain_mount(page: serde_json::Value, direct: bool, order: &[&str]) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(browser_chain_schema(page, direct), "c1").unwrap();
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    k.dispatch_mount(&seeds, None, Value::Null).unwrap()
+}
+
+fn route_page() -> serde_json::Value {
+    json!({ "name": "Linked", "path": "/:id", "traits": [{ "ref": "Link" }, { "ref": "Home" }, { "ref": "Data" }] })
+}
+
+/// EXEC-DIST-10 + EXEC-ENDPOINT-3a: the host leaves `Home`'s steps to the browser, so its replay of `Link` never reaches
+/// `Data`; the hop the client computed is posted after the mount, in every seed order.
+#[test]
+fn a_mount_posts_the_server_hop_a_browser_run_trait_delivered_as_its_own_leg() {
+    let mut wrong = Vec::new();
+    for order in permutations(&["Link", "Home", "Data"]) {
+        let mount = browser_chain_mount(route_page(), false, &order);
+        let hops: Vec<(Option<String>, String)> = mount.hops.iter().map(|h| (h.leg.target_trait.clone(), h.leg.event.clone())).collect();
+        if hops != vec![(Some("Data".to_string()), "LOAD".to_string())] {
+            wrong.push(format!("{}: hops {hops:?}", order.join(",")));
+        }
+    }
+    assert!(wrong.is_empty(), "the hop is not posted: {wrong:#?}");
+}
+
+#[test]
+fn control_a_hop_the_seed_emits_straight_to_is_the_replays_and_posts_no_hop() {
+    for order in permutations(&["Link", "Home", "Data"]) {
+        let mount = browser_chain_mount(route_page(), true, &order);
+        assert!(mount.hops.is_empty(), "{order:?}: {:?}", mount.hops);
+        assert!(!mount.legs.is_empty(), "{order:?}: the replay still posts");
+    }
+}
+
+#[test]
+fn control_a_client_trait_on_no_route_is_the_hosts_and_posts_no_hop() {
+    let boot = json!({ "name": "Work", "path": "", "protocol": "boot", "traits": [{ "ref": "Link" }, { "ref": "Home" }, { "ref": "Data" }] });
+    for order in permutations(&["Link", "Home", "Data"]) {
+        let mount = browser_chain_mount(boot.clone(), false, &order);
+        assert!(mount.hops.is_empty(), "{order:?}: {:?}", mount.hops);
+    }
+}

@@ -131,12 +131,18 @@ impl EffectExecutor {
     }
 
     /// Execute multiple effects from S-expressions
-    pub fn execute_all(&self, effects: &[SExpression], ctx: &BindingContext) -> Vec<EffectResult> {
-        effects
-            .iter()
-            .filter_map(orbital_core_base::effect_types::parse_effect)
-            .map(|effect| self.execute(&effect, ctx))
-            .collect()
+    pub fn execute_all(
+        &self,
+        effects: &[SExpression],
+        ctx: &BindingContext,
+    ) -> Result<Vec<EffectResult>, orbital_core_base::language_data::LanguageDataError> {
+        let mut results = Vec::new();
+        for expr in effects {
+            if let Some(effect) = orbital_core_base::effect_types::parse_effect(expr)? {
+                results.push(self.execute(&effect, ctx));
+            }
+        }
+        Ok(results)
     }
 
     // ========================================================================

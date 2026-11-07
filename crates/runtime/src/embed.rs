@@ -70,6 +70,52 @@ fn with_awaiting_init(payload: Value, awaiting: Value) -> Value {
     }
 }
 
+/// The steps a dispatch ran, in order: each executed outcome, the trait whose emit delivered it, and whether it delegated.
+fn batch_steps(outcomes: &[(String, ProcessEventResult)]) -> Vec<BatchStep> {
+    outcomes
+        .iter()
+        .filter(|(_, r)| r.executed)
+        .map(|(t, r)| BatchStep {
+            trait_name: t.clone(),
+            emitter: r
+                .entry
+                .as_ref()
+                .and_then(|entry| crate::effects::response::DeliveryRecord::from_value(&entry.view.event))
+                .and_then(|d| d.source.r#trait),
+            delegated: r
+                .effect_results
+                .iter()
+                .any(|e| matches!(e.outcome, orbital_core_base::effect_types::EffectOutcome::Delegated(_))),
+        })
+        .collect()
+}
+
+/// Whether `leg`, owed by the dispatch of `seed` that ran `steps`, is a hop to another trait that a step delivered
+/// through a browser-run trait ([`EmbeddedKernel::mount_hops`]).
+fn is_unreachable_hop(seed: &str, steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>) -> bool {
+    let Some(target) = leg.target_trait.as_deref().filter(|t| *t != seed) else { return false };
+    steps
+        .iter()
+        .rposition(|s| s.trait_name == target && s.emitter.as_deref() == leg.source_trait.as_deref())
+        .is_some_and(|hop| delivered_through_browser(steps, hop, browser_run))
+}
+
+/// Whether the step at `at`, or a step that delivered it, walking back through each step's emitter, ran as a delivery to
+/// a trait in `browser_run`. The walk ends at a seed step (no emitter) or at an emitter no earlier step of `steps` ran.
+fn delivered_through_browser<S: core::borrow::Borrow<BatchStep>>(steps: &[S], mut at: usize, browser_run: &HashSet<String>) -> bool {
+    loop {
+        let step = steps[at].borrow();
+        let Some(emitter) = step.emitter.as_deref() else { return false };
+        if browser_run.contains(&step.trait_name) {
+            return true;
+        }
+        match steps[..at].iter().rposition(|s| s.borrow().trait_name == emitter) {
+            Some(earlier) => at = earlier,
+            None => return false,
+        }
+    }
+}
+
 /// The rows a posted leg is folded against, by trait ([`EmbeddedKernel::fold_base`]).
 pub type FoldBase = ValueMap;
 
@@ -249,23 +295,7 @@ impl EmbeddedKernel {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let steps = dispatch
-            .outcomes
-            .iter()
-            .filter(|(_, r)| r.executed)
-            .map(|(t, r)| BatchStep {
-                trait_name: t.clone(),
-                emitter: r
-                    .entry
-                    .as_ref()
-                    .and_then(|entry| crate::effects::response::DeliveryRecord::from_value(&entry.view.event))
-                    .and_then(|d| d.source.r#trait),
-                delegated: r
-                    .effect_results
-                    .iter()
-                    .any(|e| matches!(e.outcome, orbital_core_base::effect_types::EffectOutcome::Delegated(_))),
-            })
-            .collect();
+        let steps = batch_steps(&dispatch.outcomes);
         let flight = (!server_legs.is_empty() || stateful_leg.is_some()).then(|| self.fold_order.open());
         Ok(DispatchWire {
             orbital: orbital.to_string(),
@@ -415,22 +445,51 @@ impl EmbeddedKernel {
                 }
             }
         }
-        let (legs, stateful_legs) = if failed.is_some() {
-            (Vec::new(), Vec::new())
+        let (legs, stateful_legs, hops) = if failed.is_some() {
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
             let mut legs = self.mount_legs(&dispatched, entity_id, false);
             let mut stateful_legs = self.mount_legs(&dispatched, entity_id, true);
             for posted in [legs.first_mut(), stateful_legs.first_mut()].into_iter().flatten() {
                 posted.leg.route = route.map(str::to_string);
             }
-            (legs, stateful_legs)
+            let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire)).into_iter().cloned().collect();
+            (legs, stateful_legs, hops)
         };
         Ok(MountWire {
             seeds: dispatched.into_iter().map(|(_, wire)| wire).collect(),
             legs,
             stateful_legs,
+            hops,
             failed,
         })
+    }
+
+    /// The server hops a mount's seeds owe that the host's replay of the mount cannot reach, in seed order: walking back
+    /// from the hop through the steps that delivered it, one ran as a delivery to a `[client]` trait a browser runs, which
+    /// the host leaves to the browser (EXEC-ENDPOINT-3a). A hop the walk reaches from a seed step without one is the
+    /// host's cascade from that seed's replay; a leg for the seed itself is its replay (EXEC-SEED-2).
+    pub fn mount_hops<'w>(&self, wires: impl IntoIterator<Item = &'w DispatchWire>) -> Vec<&'w RoutedLeg> {
+        let browser_run = self.kernel.browser_run_traits();
+        let mut hops = Vec::new();
+        for wire in wires {
+            for routed in &wire.server_legs {
+                if is_unreachable_hop(&wire.seed.trait_name, &wire.steps, &routed.leg, &browser_run) {
+                    hops.push(routed);
+                }
+            }
+        }
+        hops
+    }
+
+    /// [`Self::mount_hops`] for one seed's [`ClientDispatch`]: the positions in its `server_legs` of the hops the host's
+    /// replay of the mount cannot reach.
+    pub fn mount_hop_positions(&self, dispatch: &ClientDispatch) -> Vec<usize> {
+        let browser_run = self.kernel.browser_run_traits();
+        let steps = batch_steps(&dispatch.outcomes);
+        (0..dispatch.server_legs.len())
+            .filter(|i| is_unreachable_hop(&dispatch.seed.0, &steps, &dispatch.server_legs[*i], &browser_run))
+            .collect()
     }
 
     fn mount_legs(
@@ -441,9 +500,12 @@ impl EmbeddedKernel {
     ) -> Vec<MountLegWire> {
         // A client-only seed whose held emit a later seed delivered to a server trait (EXEC-SEED-2) is replayed with
         // the mount: the host runs no other copy of it, so the delivery is no part of its cascade (EXEC-DIST-10).
+        // A hop the replay cannot reach is posted after the mount (`mount_hops`): replaying its emitter would not reach it.
+        let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire));
         let held_emitters: std::collections::BTreeSet<&str> = dispatched
             .iter()
             .flat_map(|(_, wire)| wire.server_legs.iter())
+            .filter(|routed| !hops.iter().any(|hop| std::ptr::eq(*hop, *routed)))
             .filter_map(|routed| {
                 routed
                     .leg
@@ -466,12 +528,14 @@ impl EmbeddedKernel {
             .iter()
             .map(|s| (s.trait_name.as_str(), s.emitter.as_deref()))
             .collect();
+        let browser_run = self.kernel.browser_run_traits();
         for (i, step) in steps.iter().enumerate() {
             let Some(emitter) = step.emitter.as_deref() else { continue };
             if emitter != step.trait_name
                 && !client_only_seeds.contains(step.trait_name.as_str())
                 && client_only_seeds.contains(emitter)
                 && crate::kernel::chain_needs_server(&chain, i, |j| steps[j].delegated)
+                && !delivered_through_browser(&steps, i, &browser_run)
             {
                 held_emitters.insert(emitter);
             }

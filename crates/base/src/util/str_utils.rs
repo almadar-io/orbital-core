@@ -316,6 +316,26 @@ pub fn sanitize_identifier(name: &str, keywords: &[&str]) -> String {
     }
 }
 
+/// A literal-union member as a target identifier. A word (a letter, then letters, digits, `_`, `-`)
+/// keeps `case(member)`; any other member (`==`, `127.0.0.1`) is `_` plus each char, ASCII letters
+/// and digits as themselves and every other char as `_<hex>_`, so distinct members never collide.
+pub fn literal_member_identifier(member: &str, case: impl Fn(&str) -> String) -> String {
+    let word = member.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && member.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if word {
+        return case(member);
+    }
+    let mut out = String::from("_");
+    for c in member.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push_str(&format!("_{:x}_", c as u32));
+        }
+    }
+    out
+}
+
 pub fn js_number_from_text(text: &str) -> f64 {
     let text = text.trim_matches(|c| {
         matches!(c,
@@ -458,6 +478,26 @@ pub fn js_number_string(n: f64) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn literal_member_identifier_keeps_a_word_and_encodes_the_rest_distinctly() {
+        let pascal = |m: &str| split_to_pascal_case(m);
+        assert_eq!(literal_member_identifier("in-progress", pascal), split_to_pascal_case("in-progress"));
+        let ops: Vec<String> = ["==", "!=", "<", "<=", ">", ">="]
+            .iter()
+            .map(|m| literal_member_identifier(m, pascal))
+            .collect();
+        let unique: std::collections::HashSet<&String> = ops.iter().collect();
+        assert_eq!(unique.len(), ops.len(), "{ops:?}");
+        assert_eq!(literal_member_identifier("==", pascal), "__3d__3d_");
+        assert_eq!(literal_member_identifier("127.0.0.1", pascal), "_127_2e_0_2e_0_2e_1");
+        assert_eq!(literal_member_identifier("api.deepseek.com", pascal), "_api_2e_deepseek_2e_com");
+        assert_ne!(literal_member_identifier("a_b", |m: &str| m.to_string()), literal_member_identifier("a.b", |m: &str| m.to_string()));
+        assert_eq!(literal_member_identifier("", pascal), "_");
+        for id in ops.iter().chain([literal_member_identifier("9lives", pascal)].iter()) {
+            assert!(id.starts_with('_') && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{id}");
+        }
+    }
+
     use super::*;
 
     #[test]

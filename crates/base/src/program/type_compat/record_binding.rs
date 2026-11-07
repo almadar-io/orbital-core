@@ -8,8 +8,8 @@ pub enum BoundShape {
     Collection,
     /// One row: of the named type (`Order`), or an unnamed `object`.
     Record(Option<String>),
-    /// A number, string or boolean: never a record.
-    Scalar,
+    /// A number, string or boolean (its type name): never a record.
+    Scalar(&'static str),
     /// Anything a record check has no opinion on (null, nullable, unresolved, …).
     Other,
 }
@@ -35,8 +35,10 @@ pub fn bound_shape_of_type_str(declared: &str) -> Option<BoundShape> {
     if t == "object" {
         return Some(BoundShape::Record(None));
     }
-    if matches!(t, "number" | "string" | "boolean") {
-        return Some(BoundShape::Scalar);
+    for scalar in ["number", "string", "boolean"] {
+        if t == scalar {
+            return Some(BoundShape::Scalar(scalar));
+        }
     }
     if t.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
         return Some(BoundShape::Record(Some(t.to_string())));
@@ -56,29 +58,22 @@ pub fn bound_shape_of_payload_field(field_type: &str, entity: Option<&str>) -> O
     }
 }
 
-/// The registry types of a prop include a scalar one.
-pub fn prop_admits_scalar(prop_types: &[&str]) -> bool {
-    prop_types
-        .iter()
-        .any(|t| matches!(*t, "string" | "number" | "boolean"))
-}
-
 /// A single-record prop (declared object-only) bound to `bound`. `expected`
 /// is the entity the prop renders (the trait's linked entity) when known;
 /// `is_entity` limits the identity compare to declared entities, so a struct
-/// alias is never mistaken for a row of the wrong entity. `admits_scalar`
-/// (see [`prop_admits_scalar`]): the prop also accepts a scalar
-/// (`skeleton : string | object`), so a scalar fills it.
+/// alias is never mistaken for a row of the wrong entity. `prop_types` are the
+/// prop's registry types: a scalar whose own type is among them fills it
+/// (`skeleton : string | object` takes a string, never a number).
 pub fn record_prop_binding_mismatch(
     bound: &BoundShape,
-    admits_scalar: bool,
+    prop_types: &[&str],
     expected: Option<&str>,
     is_entity: impl Fn(&str) -> bool,
 ) -> Option<RecordBindingMismatch> {
     match bound {
         BoundShape::Collection => Some(RecordBindingMismatch::CollectionIntoRecord),
-        BoundShape::Scalar if admits_scalar => None,
-        BoundShape::Scalar => Some(RecordBindingMismatch::ScalarIntoRecord),
+        BoundShape::Scalar(scalar) if prop_types.contains(scalar) => None,
+        BoundShape::Scalar(_) => Some(RecordBindingMismatch::ScalarIntoRecord),
         BoundShape::Record(Some(actual)) => match expected {
             Some(exp) if actual != exp && is_entity(actual) && is_entity(exp) => {
                 Some(RecordBindingMismatch::WrongEntity {

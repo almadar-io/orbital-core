@@ -765,6 +765,16 @@ impl ClientKernel {
             settled = self.fold_answer(bridge.as_ref(), &response, &already, settled)?;
             settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
+        // The hops the host's replay of the mount cannot reach leave after it, each folded as a dispatch's leg (EXEC-DIST-10).
+        for (_, b) in &begun.seeds {
+            for position in self.embedded.mount_hop_positions(&b.dispatch) {
+                let leg = &b.dispatch.server_legs[position];
+                let orbital = self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
+                let response = bridge.send_request(orbital, leg)?;
+                settled = self.fold_answer(bridge.as_ref(), &response, &std::collections::HashSet::new(), settled)?;
+                settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
+            }
+        }
         Ok(settled)
     }
 

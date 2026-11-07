@@ -111,6 +111,10 @@ pub struct MountWire {
     pub legs: Vec<MountLegWire>,
     /// For a host that holds it (stateful): the legs of every server-backed seed, delegated effect or not.
     pub stateful_legs: Vec<MountLegWire>,
+    /// The server hops the seeds' cascades owe that the host's replay of the mount cannot reach (a step on the way ran as
+    /// a delivery to a `[client]` trait a browser runs, EXEC-ENDPOINT-3a), in seed order: each is posted after the mount
+    /// legs, on every topology, and folded as a dispatch's leg is (EXEC-DIST-10).
+    pub hops: Vec<RoutedLeg>,
     /// The seed that failed to dispatch; the batch stopped there and carries no legs.
     pub failed: Option<MountFailure>,
 }

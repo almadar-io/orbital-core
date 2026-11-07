@@ -19,6 +19,26 @@ impl RuntimeKernel {
             .cloned()
     }
 
+    /// The `(trait, tick)` pairs a `[background]` tick that names its states (`appliesTo`) is waiting on: the
+    /// trait's singleton instance is in one of them, so the tick will fire. A tick naming no state runs in every
+    /// state and is never pending (EXEC-INBOUND awaited answer).
+    pub fn pending_background_ticks(&self) -> Vec<(String, String)> {
+        let defs = self.registry.trait_definitions.read();
+        let mut pending = Vec::new();
+        for def in defs.values() {
+            let Some(state) = self.get_state(&def.name, None) else {
+                continue;
+            };
+            for tick in def.ticks.iter().flatten() {
+                let applies = tick.applies_to.as_deref().unwrap_or_default();
+                if tick.background && applies.contains(&state.current_state) {
+                    pending.push((def.name.clone(), tick.name.clone()));
+                }
+            }
+        }
+        pending
+    }
+
     /// Run one scheduled tick of `trait_name` against `entity_id` through the **same**
     /// effect path as a transition (`execute_effects_with_entity`) — no parallel walker.
     /// Mirrors the canonical JS runtime's `executeTick`: build the entity/state context,
@@ -189,9 +209,9 @@ impl RuntimeKernel {
         }
 
         *self.step.step_site.write() = Some((trait_name.to_string(), false));
-        let (effect_results, captured_entity_data, scopes) =
-            self.execute_effects_with_entity(&tick.effects, &ctx);
+        let executed = self.execute_effects_with_entity(&tick.effects, &ctx);
         *self.step.step_site.write() = None;
+        let (effect_results, captured_entity_data, scopes) = executed?;
 
         // Effective entity = base entity with the tick's `set` fields merged in.
         // Persist the MERGED entity (read-modify-write), not the partial — same

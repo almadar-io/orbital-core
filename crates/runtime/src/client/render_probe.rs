@@ -170,7 +170,7 @@ where
     let mut found = Findings::default();
     let mut game_canvas_failures: Vec<String> = Vec::new();
     let mut slots_rendered = 0usize;
-    let facts = ProgramFacts::new(&schema);
+    let facts = ProgramFacts::new(&schema)?;
     let trait_union = facts.trait_union(orbital_count, &build_app)?;
     let cx = FactCx {
         trait_content: &trait_union,
@@ -221,7 +221,8 @@ where
     // or its `from` state isn't the post-INIT state) is inconclusive, not a failure — we
     // only flag a slot that opens but renders an unreal/stub pattern.
     let mut overlay_offenders: Vec<String> = Vec::new();
-    for path in orbital_core_base::slots::modal_open_paths(&schema) {
+    let open_paths = orbital_core_base::slots::modal_open_paths(&schema).map_err(|e| format!("{}: {e}", e.code()))?;
+    for path in open_paths {
         // `--trait`: only drive open paths whose render-ui TARGET is a selected trait.
         if let Some(s) = &scope {
             if !s.contains(path.modal_trait.as_str()) {
@@ -350,7 +351,7 @@ struct ProgramFacts {
 }
 
 impl ProgramFacts {
-    fn new(schema: &OrbitalSchema) -> Self {
+    fn new(schema: &OrbitalSchema) -> Result<Self, String> {
         use orbital_core_base::schema::types::{EntityRef, TraitReference};
         let gated = schema
             .orbitals
@@ -373,11 +374,12 @@ impl ProgramFacts {
                 _ => None,
             })
             .collect();
-        Self {
+        let overlay_only = orbital_core_base::slots::overlay_only_traits(schema).map_err(|e| format!("{}: {e}", e.code()))?;
+        Ok(Self {
             gated,
             linked_entity,
-            overlay_only: orbital_core_base::slots::overlay_only_traits(schema),
-        }
+            overlay_only,
+        })
     }
 
     /// Init every orbital and take the UNION of their trait content: a `@trait.X` defined in orbital A
@@ -461,7 +463,7 @@ where
         app.settle(8);
         Ok(app)
     };
-    let facts = ProgramFacts::new(schema);
+    let facts = ProgramFacts::new(schema)?;
     let trait_union = facts.trait_union(schema.orbitals.len(), &build_app)?;
     let mut app = build_app(idx)?;
     if event != "INIT" || entity.is_some() {

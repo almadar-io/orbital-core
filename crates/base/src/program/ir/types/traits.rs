@@ -123,7 +123,7 @@ pub struct OirTrait {
 pub type OirDispatchMode = crate::dispatch_mode::DispatchMode;
 
 /// A knob default the kernel evaluates (a `@` binding or an operator call, at any depth) is no
-/// static value: a target shell has no literal for it.
+/// static value: a target shell has no literal for it. Nor is render content (`node`, `sexpr`).
 fn is_static_value(value: &OirValue) -> bool {
     match value {
         OirValue::String(s) => !s.starts_with('@'),
@@ -152,7 +152,7 @@ impl OirTrait {
                     .declared_config_defaults
                     .as_ref()
                     .and_then(|d| d.get(name))
-                    .filter(|v| !matches!(v, OirValue::Null) && knob.field_type != OirType::SExpr && is_static_value(v));
+                    .filter(|v| !matches!(v, OirValue::Null) && !matches!(knob.field_type, OirType::SExpr | OirType::Node) && is_static_value(v));
                 match declared {
                     Some(value) => field.default = Some(value.clone()),
                     None => field.required = false,

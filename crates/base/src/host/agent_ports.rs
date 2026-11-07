@@ -255,12 +255,19 @@ fn json_type_of(field_type: &str) -> Option<&'static str> {
         "number" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),
-        "object" | "relation" | "orbital" | "behavior" => Some("object"),
+        "relation" => Some("string"),
+        "object" | "orbital" | "behavior" => Some("object"),
         _ => None,
     }
 }
 
-/// `[T]` is an array of `T`; anything else is its own element.
+/// `[T]` is an array of `T`; a to-many relation is a list of ids; anything else is its own element.
+fn field_element_of(field: &PayloadField) -> (bool, &str) {
+    let (is_array, element) = element_of(&field.field_type);
+    let to_many = field.field_type == "relation" && field.relation.as_ref().is_some_and(|r| r.is_to_many());
+    (is_array || to_many, element)
+}
+
 fn element_of(field_type: &str) -> (bool, &str) {
     if field_type.len() >= 2 && field_type.starts_with('[') && field_type.ends_with(']') {
         (true, &field_type[1..field_type.len() - 1])
@@ -295,7 +302,7 @@ pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
 }
 
 fn payload_field_to_json_schema(field: &PayloadField) -> Value {
-    let (is_array, element) = element_of(&field.field_type);
+    let (is_array, element) = field_element_of(field);
     let mut shape = match &field.properties {
         Some(properties) => payload_schema_to_json_schema(properties),
         None => {
@@ -387,7 +394,7 @@ fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<Payloa
 }
 
 fn field_issues(field: &PayloadField, value: &Value, at: &str) -> Vec<PayloadIssue> {
-    let (is_array, element) = element_of(&field.field_type);
+    let (is_array, element) = field_element_of(field);
     if is_array || field.field_type == "array" {
         let Value::Array(items) = value else {
             return vec![issue(at, "wrong-type", Some(field.field_type.clone()))];
@@ -1043,6 +1050,73 @@ mod tests {
             as_json(&Value::array(issues)),
             serde_json::json!([{ "path": "n", "reason": "missing" }])
         );
+    }
+
+    fn payload_field(name: &str, field_type: &str, relation: Option<crate::schema::types::RelationDefinition>) -> PayloadField {
+        PayloadField {
+            nullable: None,
+            additional_properties: None,
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            values: None,
+            required: None,
+            description: None,
+            properties: None,
+            type_when: None,
+            entity: None,
+            projected_from: None,
+            items: None,
+            relation,
+        }
+    }
+
+    fn to_one(entity: &str) -> crate::schema::types::RelationDefinition {
+        crate::schema::types::RelationDefinition {
+            entity: entity.to_string(),
+            entity_id: None,
+            cardinality: Some(crate::schema::types::Cardinality::One),
+            on_delete: None,
+            display: None,
+        }
+    }
+
+    #[test]
+    fn g_behaviors_018_a_relation_field_is_advertised_as_its_id_not_an_object() {
+        let fields = vec![
+            payload_field("assignee", "relation", Some(to_one("TeamMember"))),
+            payload_field("title", "string", None),
+        ];
+        let schema = as_json(&payload_schema_to_json_schema(&fields));
+        assert_eq!(schema["properties"]["title"], serde_json::json!({ "type": "string" }), "control: a scalar field's schema is unchanged");
+        assert_eq!(schema["properties"]["assignee"], serde_json::json!({ "type": "string" }));
+    }
+
+    #[test]
+    fn g_behaviors_018_a_relation_field_refuses_an_object_and_accepts_an_id() {
+        let fields = vec![payload_field("assignee", "relation", Some(to_one("TeamMember")))];
+        let sent = |json: serde_json::Value| serde_json::from_value::<Value>(json).unwrap();
+        assert!(
+            payload_issues(&fields, &sent(serde_json::json!({ "assignee": "member-1" }))).is_empty(),
+            "control: a valid id string is accepted"
+        );
+        let issues = payload_issues(&fields, &sent(serde_json::json!({ "assignee": {} })));
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!((issues[0].path.as_str(), issues[0].reason), ("assignee", "wrong-type"));
+    }
+
+    #[test]
+    fn g_behaviors_018_a_to_many_relation_is_a_list_of_ids() {
+        let many = crate::schema::types::RelationDefinition {
+            cardinality: Some(crate::schema::types::Cardinality::Many),
+            ..to_one("TeamMember")
+        };
+        let fields = vec![payload_field("members", "relation", Some(many))];
+        let schema = as_json(&payload_schema_to_json_schema(&fields));
+        assert_eq!(schema["properties"]["members"], serde_json::json!({ "type": "array", "items": { "type": "string" } }));
+        let sent = |json: serde_json::Value| serde_json::from_value::<Value>(json).unwrap();
+        assert!(payload_issues(&fields, &sent(serde_json::json!({ "members": ["a", "b"] }))).is_empty());
+        assert_eq!(payload_issues(&fields, &sent(serde_json::json!({ "members": {} }))).len(), 1);
+        assert_eq!(payload_issues(&fields, &sent(serde_json::json!({ "members": [{}] }))).len(), 1);
     }
 
     #[test]

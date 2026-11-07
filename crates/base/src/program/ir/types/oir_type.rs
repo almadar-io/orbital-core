@@ -191,6 +191,35 @@ impl OirType {
         }
     }
 
+    /// Every alias name a `TypeRef` anywhere in this type points at.
+    pub fn collect_type_refs(&self, out: &mut std::collections::BTreeSet<String>) {
+        match self {
+            Self::TypeRef { name } => {
+                out.insert(name.clone());
+            }
+            Self::Array { inner } | Self::Optional { inner } => inner.collect_type_refs(out),
+            Self::Map { key, value } => {
+                key.collect_type_refs(out);
+                value.collect_type_refs(out);
+            }
+            Self::Tuple { items } => items.iter().for_each(|item| item.collect_type_refs(out)),
+            Self::Struct { fields, additional } => {
+                fields.iter().for_each(|f| f.field_type.collect_type_refs(out));
+                if let Some(additional) = additional {
+                    additional.collect_type_refs(out);
+                }
+            }
+            Self::FieldRef { record, value } => {
+                record.collect_type_refs(out);
+                if let Some(value) = value {
+                    value.collect_type_refs(out);
+                }
+            }
+            Self::Union { variants } => variants.iter().for_each(|f| f.field_type.collect_type_refs(out)),
+            _ => {}
+        }
+    }
+
     pub fn substitute_type_vars(
         &mut self,
         bindings: &std::collections::BTreeMap<String, OirType>,

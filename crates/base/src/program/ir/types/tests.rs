@@ -1096,6 +1096,7 @@ fn config_fields_give_an_evaluated_knob_default_no_static_value() {
         ("tags", OirType::Array { inner: Box::new(OirType::String) }),
         ("links", OirType::Array { inner: Box::new(OirType::Node) }),
         ("content", OirType::SExpr),
+        ("label", OirType::Node),
     ]
     .into_iter()
     .map(|(k, ty)| (k.to_string(), OirConfigFieldType { field_type: ty, values: None }))
@@ -1112,6 +1113,7 @@ fn config_fields_give_an_evaluated_knob_default_no_static_value() {
             ("tags", OirValue::Array(vec![s("a"), s("b")])),
             ("links", OirValue::Array(vec![link(OirValue::Array(vec![s("str/concat"), s("/"), s("x")]))])),
             ("content", OirValue::Object([("type".to_string(), s("typography"))].into_iter().collect())),
+            ("label", s("Loading")),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -1119,8 +1121,36 @@ fn config_fields_give_an_evaluated_knob_default_no_static_value() {
     );
     let fields = t.config_fields();
     let by = |n: &str| fields.iter().find(|f| f.name == n).expect(n);
-    for evaluated in ["path", "viewer", "links", "content"] {
+    for evaluated in ["path", "viewer", "links", "content", "label"] {
         assert!(by(evaluated).default.is_none() && !by(evaluated).required, "{evaluated}");
     }
     assert_eq!(by("tags").default, Some(OirValue::Array(vec![s("a"), s("b")])), "control: a list literal stays");
+}
+
+#[test]
+fn close_named_types_registers_an_alias_reached_only_through_a_union_or_map() {
+    let wire_ref = || OirType::TypeRef { name: "Wire".into() };
+    let wire = OirType::Union {
+        variants: vec![
+            OirField::new("string", OirType::String),
+            OirField::new("map", OirType::map(OirType::String, OirType::optional(wire_ref()))),
+        ]
+        .into(),
+    };
+    let mut module = OirModule::new("App", "1.0.0");
+    let mut doc = OirEntity::new("Doc");
+    doc.fields.push(OirField::new(
+        "fields",
+        OirType::Union { variants: vec![OirField::new("array", OirType::array(OirType::optional(wire_ref())))].into() },
+    ));
+    module.entities.push(doc);
+    let table = wire.clone();
+    module
+        .close_named_types(|name| Ok::<_, ()>((name == "Wire").then(|| table.clone())))
+        .unwrap();
+    assert_eq!(module.named_types.get("Wire"), Some(&wire));
+    let mut control = OirModule::new("App", "1.0.0");
+    control.entities.push(OirEntity::new("Plain"));
+    control.close_named_types(|_| Ok::<_, ()>(Some(OirType::String))).unwrap();
+    assert!(control.named_types.is_empty(), "control: nothing referenced, nothing registered");
 }

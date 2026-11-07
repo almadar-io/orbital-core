@@ -77,6 +77,9 @@ pub mod behavior_packages;
 #[cfg(feature = "std")]
 #[path = "lang/renderer_packs.rs"]
 pub mod renderer_packs;
+#[cfg(feature = "std")]
+#[path = "lang/native_bundle.rs"]
+pub mod native_bundle;
 #[path = "lang/theme/mod.rs"]
 pub mod theme;
 #[path = "lang/route.rs"]

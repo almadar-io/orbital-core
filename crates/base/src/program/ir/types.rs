@@ -105,6 +105,44 @@ pub struct OirModule {
 }
 
 impl OirModule {
+    /// Register the declared shape of every alias a `TypeRef` in the module points at (entity
+    /// fields, event payloads, trait config, and the registered shapes themselves), so each
+    /// name a shell renders bare has one declaration. `lookup` reads the program's alias table.
+    pub fn close_named_types<E>(
+        &mut self,
+        lookup: impl Fn(&str) -> Result<Option<OirType>, E>,
+    ) -> Result<(), E> {
+        let mut referenced = std::collections::BTreeSet::new();
+        for entity in &self.entities {
+            entity.fields.iter().for_each(|f| f.field_type.collect_type_refs(&mut referenced));
+        }
+        for t in &self.traits {
+            for event in &t.events {
+                if let Some(schema) = &event.payload_schema {
+                    schema.values().for_each(|ty| ty.collect_type_refs(&mut referenced));
+                }
+            }
+            if let Some(schema) = &t.declared_config_schema {
+                schema.values().for_each(|knob| knob.field_type.collect_type_refs(&mut referenced));
+            }
+        }
+        self.named_types.values().for_each(|ty| ty.collect_type_refs(&mut referenced));
+        let mut pending: Vec<String> = referenced.into_iter().collect();
+        while let Some(name) = pending.pop() {
+            if self.named_types.contains_key(&name) {
+                continue;
+            }
+            let Some(shape) = lookup(&name)? else {
+                continue;
+            };
+            let mut next = std::collections::BTreeSet::new();
+            shape.collect_type_refs(&mut next);
+            pending.extend(next.into_iter().filter(|n| !self.named_types.contains_key(n)));
+            self.named_types.insert(name, shape);
+        }
+        Ok(())
+    }
+
     /// Every transition's `await_render`, flattened in trait and transition order.
     pub fn await_render_rows(&self) -> Vec<AwaitRenderRow> {
         let mut rows = Vec::new();

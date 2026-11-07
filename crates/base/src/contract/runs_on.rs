@@ -385,7 +385,20 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
         root.remove(key);
     }
     if let Some(orbitals) = root.get_mut("orbitals").and_then(serde_json::Value::as_array_mut) {
-        orbitals.retain(|orbital| !serves_only_protocol_pages(orbital));
+        let linked = client_linked_entities(orbitals);
+        orbitals.retain_mut(|orbital| {
+            if !serves_only_protocol_pages(orbital) {
+                return true;
+            }
+            let keep = entity_name(orbital).is_some_and(|name| linked.contains(name));
+            if keep {
+                if let Some(orbital) = orbital.as_object_mut() {
+                    orbital.insert("traits".to_string(), serde_json::Value::Array(Vec::new()));
+                    orbital.insert("pages".to_string(), serde_json::Value::Array(Vec::new()));
+                }
+            }
+            keep
+        });
         for orbital in orbitals {
             if let Some(pages) = orbital.get_mut("pages").and_then(serde_json::Value::as_array_mut) {
                 pages.retain(|page| page.get("protocol").is_none());
@@ -405,6 +418,22 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
         root.insert("_metadata".to_string(), serde_json::Value::Object(metadata));
     }
     projected
+}
+
+fn entity_name(orbital: &serde_json::Value) -> Option<&str> {
+    let entity = orbital.get("entity")?;
+    entity.as_str().or_else(|| entity.get("name").and_then(serde_json::Value::as_str))
+}
+
+/// The entities the client's own orbitals' traits are linked to: a server orbital that declares one stays in the
+/// client program as that entity alone.
+fn client_linked_entities(orbitals: &[serde_json::Value]) -> std::collections::BTreeSet<String> {
+    orbitals
+        .iter()
+        .filter(|orbital| !serves_only_protocol_pages(orbital))
+        .flat_map(|orbital| orbital.get("traits").and_then(serde_json::Value::as_array).into_iter().flatten())
+        .filter_map(|trait_def| trait_def.get("linkedEntity").and_then(serde_json::Value::as_str).map(str::to_string))
+        .collect()
 }
 
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
@@ -561,44 +590,48 @@ fn then_each(
 pub fn expr_leg_touches(
     expr: &crate::schema::sexpr::SExpression,
     residence: &Residence,
-) -> std::collections::BTreeSet<LegTouch> {
+) -> Result<std::collections::BTreeSet<LegTouch>, crate::language_data::LanguageDataError> {
     use crate::schema::sexpr::SExpression;
     use std::collections::BTreeSet;
     let none = || BTreeSet::from([LegTouch::NONE]);
-    let sequence = |items: &[SExpression]| {
+    let sequence = |items: &[SExpression]| -> Result<BTreeSet<LegTouch>, crate::language_data::LanguageDataError> {
         items
             .iter()
-            .fold(none(), |acc, item| then_each(&acc, &expr_leg_touches(item, residence)))
+            .try_fold(none(), |acc, item| Ok(then_each(&acc, &expr_leg_touches(item, residence)?)))
     };
     match expr {
         SExpression::Array(arr) => {
             let head = arr.first().and_then(|e| e.as_str());
             if matches!(head, Some("if") | Some("when")) && arr.len() >= 3 {
-                let cond = expr_leg_touches(&arr[1], residence);
+                let cond = expr_leg_touches(&arr[1], residence)?;
                 let then_live = !arr[1].is_statically_false();
                 let mut arms = BTreeSet::new();
                 if then_live {
-                    arms.extend(sequence(&arr[2..if head == Some("if") { 3 } else { arr.len() }]));
+                    arms.extend(sequence(&arr[2..if head == Some("if") { 3 } else { arr.len() }])?);
                 }
                 if head == Some("if") {
-                    arms.extend(arr.get(3).map_or_else(none, |e| expr_leg_touches(e, residence)));
+                    arms.extend(match arr.get(3) {
+                        Some(e) => expr_leg_touches(e, residence)?,
+                        None => none(),
+                    });
                 } else {
                     arms.insert(LegTouch::NONE);
                 }
-                return then_each(&cond, &arms);
+                return Ok(then_each(&cond, &arms));
             }
             let own = match head {
-                Some(op) if runs_on(op) == RunsOn::Server => crate::effect_types::parse_effect(expr)
-                    .map(|e| LegTouch::of_effect(&e, residence))
-                    .unwrap_or(LegTouch { browser_rows: false, server_work: true }),
+                Some(op) if runs_on(op) == RunsOn::Server => match crate::effect_types::parse_effect(expr)? {
+                    Some(e) => LegTouch::of_effect(&e, residence),
+                    None => LegTouch { browser_rows: false, server_work: true },
+                },
                 _ => LegTouch::NONE,
             };
-            then_each(&BTreeSet::from([own]), &sequence(arr.get(1..).unwrap_or_default()))
+            Ok(then_each(&BTreeSet::from([own]), &sequence(arr.get(1..).unwrap_or_default())?))
         }
         SExpression::Object(obj) => obj
             .values()
-            .fold(none(), |acc, v| then_each(&acc, &expr_leg_touches(v, residence))),
-        _ => none(),
+            .try_fold(none(), |acc, v| Ok(then_each(&acc, &expr_leg_touches(v, residence)?))),
+        _ => Ok(none()),
     }
 }
 
@@ -613,8 +646,8 @@ mod tests {
         let residence = Residence::none();
         let empty = SExpression::Array(Vec::new().into());
         let single = SExpression::Array(vec![SExpression::String("math/abs".into())].into());
-        assert_eq!(expr_leg_touches(&empty, &residence), none);
-        assert_eq!(expr_leg_touches(&single, &residence), none);
+        assert_eq!(expr_leg_touches(&empty, &residence).expect("table"), none);
+        assert_eq!(expr_leg_touches(&single, &residence).expect("table"), none);
     }
 
     #[test]
@@ -624,6 +657,25 @@ mod tests {
         assert!(!serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })), "control: one route page keeps it the client's");
         assert!(!serves_only_protocol_pages(&json!({ "pages": [] })), "control: no pages is not an endpoint orbital");
         assert!(!serves_only_protocol_pages(&json!({ "name": "Rows" })), "control: an orbital with no pages field is not one either");
+    }
+
+    #[test]
+    fn a_server_orbital_whose_entity_a_client_trait_links_stays_as_that_entity_alone() {
+        use serde_json::json;
+        let api = json!([{ "name": "Api", "protocol": "http" }]);
+        let program = json!({ "orbitals": [
+            { "name": "Data", "entity": { "name": "Article", "fields": [{ "name": "total", "type": "number" }] }, "traits": [{ "name": "Serve" }], "pages": api },
+            { "name": "Other", "entity": { "name": "Secret" }, "traits": [{ "name": "Hidden" }], "pages": api },
+            { "name": "Feed", "entity": { "name": "Visit" }, "traits": [{ "name": "List", "linkedEntity": "Article" }], "pages": [{ "name": "Home", "path": "/" }] }
+        ] });
+        let projected = client_program(&program);
+        let orbitals = projected["orbitals"].as_array().expect("orbitals");
+        let names: Vec<&str> = orbitals.iter().filter_map(|o| o["name"].as_str()).collect();
+        assert_eq!(names, ["Data", "Feed"], "control: a server orbital no client trait links is still left out");
+        assert_eq!(orbitals[0]["entity"]["fields"][0]["name"], "total");
+        assert_eq!(orbitals[0]["traits"], json!([]), "the server's traits never reach the client");
+        assert_eq!(orbitals[0]["pages"], json!([]), "nor its endpoint pages");
+        assert_eq!(orbitals[1]["traits"][0]["name"], "List", "control: the client's own orbital is unchanged");
     }
 
     #[test]

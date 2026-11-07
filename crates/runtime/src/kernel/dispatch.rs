@@ -165,15 +165,15 @@ impl RuntimeKernel {
             ctx.to_state = Some(std::sync::Arc::from(new_state.as_str()));
             *self.step.step_site.write() = Some((trait_name.to_string(), follow_on));
             *self.step.step_frame.write() = Some(entity_id.to_string());
-            let (effect_results, captured_entity_data, effect_runs, failure, scopes) =
-                match self.server_leg_collector() {
-                    Some(collector) => collector.attribute(trait_name, || {
-                        self.execute_effects_traced(result.effects(), &ctx)
-                    }),
-                    None => self.execute_effects_traced(result.effects(), &ctx),
-                };
+            let traced = match self.server_leg_collector() {
+                Some(collector) => collector.attribute(trait_name, || {
+                    self.execute_effects_traced(result.effects(), &ctx)
+                }),
+                None => self.execute_effects_traced(result.effects(), &ctx),
+            };
             *self.step.step_site.write() = None;
             *self.step.step_frame.write() = None;
+            let (effect_results, captured_entity_data, effect_runs, failure, scopes) = traced?;
 
             // Effective entity = read entity with Set-effect fields merged in. Persist
             // the MERGED entity (read-modify-write), never the partial
@@ -297,7 +297,7 @@ impl RuntimeKernel {
             // EXEC-STEP-5: a step that does not fire repaints the slots the state renders into; each shows what it
             // holds now (EXEC-RENDER-4), and a trait that has painted nothing shows the entering transition's render.
             let held = self.renders.read().held(trait_name, entity_id);
-            let sources = state_render_sources(&trait_def, &current_state.current_state)
+            let sources = state_render_sources(&trait_def, &current_state.current_state)?
                 .into_iter()
                 .map(|(slot, content)| (slot, content, None))
                 .collect();
@@ -306,7 +306,7 @@ impl RuntimeKernel {
                 &current_state.current_state,
                 &ctx,
                 &entity_data,
-            );
+            )?;
             if held.is_empty() {
                 self.record_renders(trait_name, entity_id, sources, &state_effects, &ctx);
             } else {

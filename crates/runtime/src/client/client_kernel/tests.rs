@@ -1334,3 +1334,62 @@ fn a_settled_answer_carries_the_servers_own_renders_and_undelivered_emits() {
     assert_eq!(emitted.iter().filter(|e| **e == "SERVER_ONLY").count(), 1, "{emitted:?}");
     assert!(!emitted.contains(&"CREATED"), "an echo of the CREATED this client delivered is not carried: {emitted:?}");
 }
+
+/// `Link` (`[client]`) INIT emits LINKED; `Home` (`[client]`) hears it and emits WANT; `Data` (server) hears WANT (or,
+/// with `direct`, LINKED itself) and fetches. One route page places the three.
+fn browser_chain_kernel(direct: bool) -> (ClientKernel, Arc<RecordingBridge>) {
+    let (data_source, data_event) = if direct { ("Link", "LINKED") } else { ("Home", "WANT") };
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "linked",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Links",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Link", "dispatch": "client",
+                  "emits": [{ "event": "LINKED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "LINKED", {}]] }] } },
+                { "name": "Home", "dispatch": "client",
+                  "emits": [{ "event": "WANT", "scope": "external" }],
+                  "listens": [{ "event": "LINKED", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Link" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["emit", "WANT", {}]] }] } },
+                { "name": "Data", "linkedEntity": "Person",
+                  "listens": [{ "event": data_event, "triggers": "LOAD", "source": { "kind": "trait", "trait": data_source } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Person", {}]] }] } }
+            ],
+            "pages": [{ "name": "Linked", "path": "/:id", "traits": [{ "ref": "Link" }, { "ref": "Home" }, { "ref": "Data" }] }]
+        }]
+    }))
+    .unwrap();
+    let bridge = Arc::new(RecordingBridge::new());
+    let kernel = ClientKernel::new(schema, Some(Arc::clone(&bridge) as Arc<dyn ServerBridge>)).unwrap();
+    (kernel, bridge)
+}
+
+/// EXEC-DIST-10 + EXEC-ENDPOINT-3a: the host's replay of `Link` never runs `Home`, so the `Data` hop the client
+/// computed is posted after the mount leg (JS twin: `settleMount`'s `mount.hops`).
+#[test]
+fn a_settled_mount_posts_the_hop_a_browser_run_trait_delivered_after_its_mount_leg() {
+    let (kernel, bridge) = browser_chain_kernel(false);
+    let begun = kernel.begin_mount(&[seed("Home", "INIT"), seed("Data", "INIT"), seed("Link", "INIT")], Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    let posts = bridge.posts.lock().clone();
+    assert_eq!(posts.last(), Some(&("Links".to_string(), "LOAD".to_string())), "{posts:?}");
+    assert_eq!(posts.iter().filter(|(_, e)| e == "LOAD").count(), 1, "{posts:?}");
+}
+
+#[test]
+fn control_a_settled_mount_whose_seed_emits_straight_to_the_server_trait_posts_no_hop() {
+    let (kernel, bridge) = browser_chain_kernel(true);
+    let begun = kernel.begin_mount(&[seed("Home", "INIT"), seed("Data", "INIT"), seed("Link", "INIT")], Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    let posts = bridge.posts.lock().clone();
+    assert!(posts.iter().all(|(_, e)| e != "LOAD"), "the replay of Link reaches Data itself: {posts:?}");
+}

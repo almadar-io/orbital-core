@@ -130,7 +130,7 @@ pub struct SlotTransition {
 /// forwards_source_payload_unchanged` in `tests/cross_trait_dispatch.rs`).
 /// Effects are parsed through the canonical [`crate::effects::parse_effect`]. One entry
 /// per (transition source state, distinct non-main slot).
-pub fn non_main_slot_transitions(schema: &OrbitalSchema) -> Vec<SlotTransition> {
+pub fn non_main_slot_transitions(schema: &OrbitalSchema) -> Result<Vec<SlotTransition>, crate::language_data::LanguageDataError> {
     use std::collections::BTreeSet;
     let mut out = Vec::new();
     for orbital in &schema.orbitals {
@@ -143,7 +143,7 @@ pub fn non_main_slot_transitions(schema: &OrbitalSchema) -> Vec<SlotTransition> 
                 let mut slots: BTreeSet<String> = BTreeSet::new();
                 for eff in effects {
                     if let Some(crate::effect_types::Effect::RenderUi { slot, content }) =
-                        crate::effect_types::parse_effect(eff)
+                        crate::effect_types::parse_effect(eff)?
                     {
                         if slot_role(&slot) != SlotRole::Main && !content.is_null() {
                             slots.insert(slot);
@@ -165,7 +165,7 @@ pub fn non_main_slot_transitions(schema: &OrbitalSchema) -> Vec<SlotTransition> 
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// How a non-`main` slot is actually opened at runtime: the user event a button emits
@@ -188,7 +188,7 @@ pub struct ModalOpenPath {
 /// For every non-`main` slot transition, resolve the (source trait, source event) that
 /// opens it: if the modal trait `listens` for the transition's event from another trait,
 /// that emitter is the source; otherwise the modal trait opens it directly.
-pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
+pub fn modal_open_paths(schema: &OrbitalSchema) -> Result<Vec<ModalOpenPath>, crate::language_data::LanguageDataError> {
     type ListenRoute<'a> = (&'a str, &'a str, &'a Option<crate::schema::sexpr::SObject>);
     let mut listen_index: std::collections::HashMap<(&str, &str), ListenRoute<'_>> =
         std::collections::HashMap::new();
@@ -207,7 +207,7 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
         }
     }
 
-    non_main_slot_transitions(schema)
+    Ok(non_main_slot_transitions(schema)?
         .into_iter()
         .map(
             |st| match listen_index.get(&(st.trait_name.as_str(), st.event.as_str())).copied() {
@@ -229,7 +229,7 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Vec<ModalOpenPath> {
                 },
             },
         )
-        .collect()
+        .collect())
 }
 
 fn listen_source_trait(source: &Option<crate::schema::types::ListenSource>) -> Option<&str> {
@@ -258,7 +258,7 @@ fn listen_source_trait(source: &Option<crate::schema::types::ListenSource>) -> O
 /// landing on initial") because a modal's own close arm legitimately lands back on the
 /// initial state WITH a `render-ui <overlay> null` clearing effect — that must not
 /// disqualify it.
-pub fn overlay_only_traits(schema: &OrbitalSchema) -> std::collections::HashSet<String> {
+pub fn overlay_only_traits(schema: &OrbitalSchema) -> Result<std::collections::HashSet<String>, crate::language_data::LanguageDataError> {
     let mut out = std::collections::HashSet::new();
     for orbital in &schema.orbitals {
         for tr in &orbital.traits {
@@ -281,7 +281,7 @@ pub fn overlay_only_traits(schema: &OrbitalSchema) -> std::collections::HashSet<
                 let Some(effects) = &t.effects else { continue };
                 for eff in effects {
                     if let Some(crate::effect_types::Effect::RenderUi { slot, .. }) =
-                        crate::effect_types::parse_effect(eff)
+                        crate::effect_types::parse_effect(eff)?
                     {
                         if t.event == "INIT" && t.from.matches(&initial.name) {
                             initial_has_render = true;
@@ -298,7 +298,7 @@ pub fn overlay_only_traits(schema: &OrbitalSchema) -> std::collections::HashSet<
             }
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -430,7 +430,7 @@ mod tests {
         }))
         .unwrap();
 
-        let transitions = non_main_slot_transitions(&schema);
+        let transitions = non_main_slot_transitions(&schema).expect("table");
         let events: Vec<&str> = transitions.iter().map(|t| t.event.as_str()).collect();
         assert_eq!(
             events,

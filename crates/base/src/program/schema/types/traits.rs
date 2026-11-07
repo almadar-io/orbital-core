@@ -518,6 +518,10 @@ pub struct TraitDefinition {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub listens: Option<crate::value::Shared<Vec<ListenDefinition>>>,
 
+    /// Atom routes a call-site `listens` override replaced, with their sources; read by the composed-wiring check.
+    #[serde(rename = "droppedListens", default, skip_serializing_if = "Option::is_none")]
+    pub dropped_listens: Option<crate::value::Shared<Vec<ListenDefinition>>>,
+
     /// State machine definition
     #[serde(rename = "stateMachine")]
     pub state_machine: crate::value::Shared<StateMachine>,
@@ -778,6 +782,10 @@ pub struct ConfigField {
     /// instead of falling back to bare `string`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub values: Option<Vec<String>>,
+    /// Lowering sets it when the knob's type is a union of shapes (`host : string | HttpEnvPart`):
+    /// `values` names the arms and `properties` carries each arm's shape. Absent for a string enum.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub union: Option<bool>,
     /// Array item schema for `[T]` config slots — mirrors
     /// `FieldDefinition.items`. Populated by lowering named array types
     /// (e.g. `metrics : [MetricSpec]`) so consumers see the full

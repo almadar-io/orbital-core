@@ -222,24 +222,13 @@ os_ops! {
 
 impl OsOp {
     /// The fewest positional arguments the operation takes: the operator table's `minArity`.
-    pub fn min_args(self) -> usize {
-        self.table_entry().min_arity as usize
-    }
-
-    /// [`Self::min_args`] for a running kernel: the typed language-data error, never a panic.
-    pub fn try_min_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
+    pub fn min_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
         Ok(self.try_table_entry()?.min_arity as usize)
     }
 
     /// The most positional arguments the operation takes: the operator table's `maxArity` less its trailing
     /// `options` parameter, which the envelope carries.
-    pub fn max_args(self) -> usize {
-        let max = self.table_entry().max_arity.unwrap_or_else(|| panic!("the operator table bounds the arity of `{}`", self.name()));
-        max as usize - 1
-    }
-
-    /// [`Self::max_args`] for a running kernel: the typed language-data error, never a panic.
-    pub fn try_max_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
+    pub fn max_args(self) -> Result<usize, crate::language_data::LanguageDataError> {
         let entry = self.try_table_entry()?;
         let max = entry.max_arity.ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
             path: Default::default(),
@@ -248,13 +237,7 @@ impl OsOp {
         Ok(max as usize - 1)
     }
 
-    // Safe after load: `certify_operator_data` refuses a table that lacks any `OsOp`.
-    fn table_entry(self) -> &'static crate::language::registry::EmbeddedOperator {
-        crate::language::registry::get_operator(self.name())
-            .unwrap_or_else(|| panic!("the operator table declares no `{}`", self.name()))
-    }
-
-    /// [`Self::table_entry`] for a running kernel: the typed language-data error when no operator table is installed.
+    /// The operator table's entry for the operation: the typed language-data error when no table is installed or it declares none.
     pub fn try_table_entry(self) -> Result<&'static crate::language::registry::EmbeddedOperator, crate::language_data::LanguageDataError> {
         crate::language::registry::lookup_operator(self.name())?.ok_or_else(|| crate::language_data::LanguageDataError::Invalid {
             path: Default::default(),
@@ -381,26 +364,21 @@ impl OsError {
 /// An `os/` call site's arguments split from its trailing `{ key?, emit? }` envelope. The last argument is the
 /// envelope when it is a non-empty object whose every key is `key` or `emit` and the operation still has its
 /// required positional arguments without it.
-pub fn split_envelope(op: OsOp, args: &[SExpression]) -> (&[SExpression], Option<&SObject>) {
+pub fn split_envelope(op: OsOp, args: &[SExpression]) -> Result<(&[SExpression], Option<&SObject>), crate::language_data::LanguageDataError> {
     if let Some((SExpression::Object(options), positional)) = args.split_last() {
         let is_envelope = !options.is_empty()
             && options.keys().all(|k| k == "key" || k == "emit")
-            && positional.len() >= op.min_args();
+            && positional.len() >= op.min_args()?;
         if is_envelope {
-            return (positional, Some(options));
+            return Ok((positional, Some(options)));
         }
     }
-    (args, None)
+    Ok((args, None))
 }
 
 /// Whether `count` positional arguments are a legal call of `op`.
-pub fn accepts_arity(op: OsOp, count: usize) -> bool {
-    (op.min_args()..=op.max_args()).contains(&count)
-}
-
-/// [`accepts_arity`] for a running kernel: the typed language-data error, never a panic.
-pub fn try_accepts_arity(op: OsOp, count: usize) -> Result<bool, crate::language_data::LanguageDataError> {
-    Ok((op.try_min_args()?..=op.try_max_args()?).contains(&count))
+pub fn accepts_arity(op: OsOp, count: usize) -> Result<bool, crate::language_data::LanguageDataError> {
+    Ok((op.min_args()?..=op.max_args()?).contains(&count))
 }
 
 /// Whose credential an `os/send` segment names: the app's, or the signed-in viewer's.
@@ -594,7 +572,7 @@ mod tests {
                     || op.name().starts_with("gpu/")
                     || op.is_kv()
             );
-            assert!(op.min_args() <= op.max_args());
+            assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
         assert_eq!(OsOp::ALL.len(), 128);
         assert_eq!(OsOp::from_name("http"), None);
@@ -639,8 +617,8 @@ mod tests {
             let entry = get_operator(op.name()).expect("table entry");
             let last = entry.params.last().expect("a parameter");
             assert_eq!(last.name, "options", "{}", op.name());
-            assert_eq!(op.max_args() + 1, entry.max_arity.expect("bounded") as usize, "{}", op.name());
-            assert_eq!(op.min_args(), entry.min_arity as usize, "{}", op.name());
+            assert_eq!(op.max_args().expect("table") + 1, entry.max_arity.expect("bounded") as usize, "{}", op.name());
+            assert_eq!(op.min_args().expect("table"), entry.min_arity as usize, "{}", op.name());
         }
     }
 
@@ -783,14 +761,14 @@ mod tests {
             vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]
         );
         assert_eq!(
-            (OsOp::MmioRead.min_args(), OsOp::MmioRead.max_args()),
+            (OsOp::MmioRead.min_args().expect("table"), OsOp::MmioRead.max_args().expect("table")),
             (3, 3)
         );
         assert_eq!(
-            (OsOp::MmioWrite.min_args(), OsOp::MmioWrite.max_args()),
+            (OsOp::MmioWrite.min_args().expect("table"), OsOp::MmioWrite.max_args().expect("table")),
             (4, 4)
         );
-        assert_eq!((OsOp::IrqWait.min_args(), OsOp::IrqAck.max_args()), (1, 1));
+        assert_eq!((OsOp::IrqWait.min_args().expect("table"), OsOp::IrqAck.max_args().expect("table")), (1, 1));
         assert!(dev
             .iter()
             .all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
@@ -884,7 +862,7 @@ mod tests {
     #[test]
     fn a_trailing_key_emit_object_is_the_envelope() {
         let args = sx(json!(["/tmp/a", {"emit": {"success": "OK"}}]));
-        let (positional, options) = split_envelope(OsOp::ReadFile, &args);
+        let (positional, options) = split_envelope(OsOp::ReadFile, &args).expect("table");
         assert_eq!(positional.len(), 1);
         assert!(options.is_some());
     }
@@ -892,13 +870,13 @@ mod tests {
     #[test]
     fn an_options_object_of_the_op_itself_is_not_the_envelope() {
         let args = sx(json!(["git", ["status"], {"cwd": "/repo", "stdin": "null"}]));
-        let (positional, options) = split_envelope(OsOp::Spawn, &args);
+        let (positional, options) = split_envelope(OsOp::Spawn, &args).expect("table");
         assert_eq!(positional.len(), 3);
         assert!(options.is_none());
         let args = sx(
             json!(["git", ["status"], {"cwd": "/repo"}, {"key": "k", "emit": {"success": "OK"}}]),
         );
-        let (positional, options) = split_envelope(OsOp::Spawn, &args);
+        let (positional, options) = split_envelope(OsOp::Spawn, &args).expect("table");
         assert_eq!(positional.len(), 3);
         assert!(options.is_some());
     }
@@ -906,26 +884,26 @@ mod tests {
     #[test]
     fn an_envelope_does_not_stand_in_for_a_required_argument() {
         let args = sx(json!([{"emit": {"success": "OK"}}]));
-        let (positional, options) = split_envelope(OsOp::ReadFile, &args);
+        let (positional, options) = split_envelope(OsOp::ReadFile, &args).expect("table");
         assert_eq!(positional.len(), 1);
         assert!(options.is_none());
         let empty = sx(json!([{}]));
-        let (positional, options) = split_envelope(OsOp::Cwd, &empty);
+        let (positional, options) = split_envelope(OsOp::Cwd, &empty).expect("table");
         assert_eq!(positional.len(), 1);
         assert!(options.is_none());
     }
 
     #[test]
     fn arity_is_the_declared_range() {
-        assert!(accepts_arity(OsOp::ReadFile, 1));
-        assert!(!accepts_arity(OsOp::ReadFile, 0));
-        assert!(!accepts_arity(OsOp::ReadFile, 2), "the table declares a path and the options");
-        assert!(accepts_arity(OsOp::Spawn, 3) && !accepts_arity(OsOp::Spawn, 2), "the table requires the config");
-        assert!(accepts_arity(OsOp::VolumeMute, 1) && !accepts_arity(OsOp::VolumeMute, 0));
-        assert!(accepts_arity(OsOp::WatchProcess, 2) && !accepts_arity(OsOp::WatchProcess, 1));
-        assert!(accepts_arity(OsOp::Exists, 1) && !accepts_arity(OsOp::Exists, 2));
-        assert!(accepts_arity(OsOp::Cwd, 0));
-        assert!(!accepts_arity(OsOp::Cwd, 1));
+        assert!(accepts_arity(OsOp::ReadFile, 1).expect("table"));
+        assert!(!accepts_arity(OsOp::ReadFile, 0).expect("table"));
+        assert!(!accepts_arity(OsOp::ReadFile, 2).expect("table"), "the table declares a path and the options");
+        assert!(accepts_arity(OsOp::Spawn, 3).expect("table") && !accepts_arity(OsOp::Spawn, 2).expect("table"), "the table requires the config");
+        assert!(accepts_arity(OsOp::VolumeMute, 1).expect("table") && !accepts_arity(OsOp::VolumeMute, 0).expect("table"));
+        assert!(accepts_arity(OsOp::WatchProcess, 2).expect("table") && !accepts_arity(OsOp::WatchProcess, 1).expect("table"));
+        assert!(accepts_arity(OsOp::Exists, 1).expect("table") && !accepts_arity(OsOp::Exists, 2).expect("table"));
+        assert!(accepts_arity(OsOp::Cwd, 0).expect("table"));
+        assert!(!accepts_arity(OsOp::Cwd, 1).expect("table"));
     }
 
     #[test]
@@ -933,9 +911,9 @@ mod tests {
         assert_eq!(OsOp::from_name("os/current-exe"), Some(OsOp::CurrentExe));
         assert_eq!(OsOp::CurrentExe.name(), "os/current-exe");
         assert!(!OsOp::CurrentExe.is_stream() && !OsOp::CurrentExe.defers_completion());
-        assert!(accepts_arity(OsOp::CurrentExe, 0));
+        assert!(accepts_arity(OsOp::CurrentExe, 0).expect("table"));
         assert!(
-            !accepts_arity(OsOp::CurrentExe, 1),
+            !accepts_arity(OsOp::CurrentExe, 1).expect("table"),
             "control: it takes no path"
         );
     }

@@ -430,7 +430,7 @@ mod tests {
     use orbital_core_base::value::ValueMap;
 
     fn create_user_management_trait() -> TraitDefinition {
-        TraitDefinition {
+        TraitDefinition { dropped_listens: None,
             effect_row: None,
             type_params: None,
             type_args: None,
@@ -931,7 +931,7 @@ mod tests {
     }
 
     fn create_gated_trait() -> TraitDefinition {
-        TraitDefinition {
+        TraitDefinition { dropped_listens: None,
             effect_row: None,
             type_params: None,
             type_args: None,
