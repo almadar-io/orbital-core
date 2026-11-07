@@ -1696,3 +1696,17 @@ fn a_runtime_entitys_own_violating_set_is_reported_beside_a_foreign_persist() {
     let schema = with_foreign_writer(program_with("runtime", own, J::Null, inv), json!([["persist", "batch", "@payload.ops"]]));
     assert!(matches!(only(&schema), Verdict::Violated { .. }));
 }
+
+#[test]
+fn an_unconfirmed_model_names_the_calls_known_only_by_their_sign() {
+    let create = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", 0],
+        "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]);
+    let verdict = only(&program(create.clone(), J::Null, row_invariant(json!([">", ["str/len", "@entity.status"], 0]))));
+    let Verdict::Unproved { reason, .. } = &verdict else { panic!("a length known only to be non-negative cannot be proved positive: {verdict:?}") };
+    assert!(reason.contains("str/len"), "the reason names the call the prover sees only by its sign: {reason}");
+    assert_eq!(
+        only(&program(create, J::Null, row_invariant(json!([">=", ["str/len", "@entity.status"], 0])))),
+        Verdict::Proved,
+        "control: its sign alone proves it non-negative"
+    );
+}

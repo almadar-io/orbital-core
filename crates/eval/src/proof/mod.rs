@@ -209,9 +209,14 @@ fn judge(o: &obligations::Obligation) -> Verdict {
             fill_free(&mut model, read, &vars);
             let cex = confirm::counterexample(&model);
             if !confirm::confirms(&model, &o.assumptions, &o.goal) {
+                let mut sign_only = Vec::new();
+                for e in o.assumptions.iter().chain(std::iter::once(&o.goal)) {
+                    formula::non_negative_calls(e, &mut sign_only);
+                }
                 let undecided: Vec<String> = t
                     .opaque
                     .values()
+                    .chain(sign_only.iter())
                     .map(orbital_core_base::schema::format_sexpr)
                     .collect();
                 let reason = if undecided.is_empty() {
