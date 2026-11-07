@@ -14,6 +14,9 @@ pub(super) enum IdentityBinding {
     /// `user` is a `[runtime]` identity's `@user`, kept in the binding so it is freed with the session; `None` reads
     /// the `[persistent]` identity's row from its store.
     Subject { subject: Arc<str>, user: Option<Value> },
+    /// An `ALMADAR_PERSONA` spec a guest was opened as (EXEC-CONC-7 `persona`): it resolves against the program's
+    /// seeded `[identity]` rows when `@user` is first read, then holds as that row's subject.
+    Persona { spec: Arc<str> },
     Anonymous,
 }
 
@@ -76,7 +79,7 @@ impl RuntimeKernel {
         match binding {
             None | Some(IdentityBinding::Anonymous) => Some(FrameIdentity::default()),
             Some(IdentityBinding::Subject { user: Some(user), .. }) => Some(FrameIdentity { user: Some(user) }),
-            Some(IdentityBinding::Subject { user: None, .. }) => {
+            Some(IdentityBinding::Subject { user: None, .. }) | Some(IdentityBinding::Persona { .. }) => {
                 self.session_user().ok().map(|user| FrameIdentity { user: Some(user) })
             }
         }
@@ -130,6 +133,16 @@ impl RuntimeKernel {
         match binding {
             None | Some(IdentityBinding::Anonymous) => Ok(self.sessions.anonymous.clone()),
             Some(IdentityBinding::Subject { user: Some(user), .. }) => Ok(user),
+            Some(IdentityBinding::Persona { spec }) => {
+                let roster = self.persona_roster().map_err(KernelError::Internal)?;
+                if self.io.suspended() {
+                    return Err(Fault::Suspended);
+                }
+                let user = orbital_core_base::viewer::resolve_persona(&spec, &roster).map_err(KernelError::Internal)?;
+                let subject = user.get("id").and_then(Value::as_str).map(Arc::from).ok_or_else(|| KernelError::Internal("a resolved persona names no `id`".to_string()))?;
+                self.sessions.identities.write().insert(self.identity_key().to_string(), IdentityBinding::Subject { subject, user: None });
+                Ok(user)
+            }
             Some(IdentityBinding::Subject { subject, user: None }) => {
                 let Some(decl) = self.identity_decl() else {
                     return Ok(subject_user(&subject, None));
@@ -142,6 +155,21 @@ impl RuntimeKernel {
                 Ok(subject_user(&subject, row.as_deref()))
             }
         }
+    }
+
+    /// The seeded rows of the program's `[identity]` entity, the roster a persona spec resolves against; empty when the
+    /// program declares no identity entity.
+    pub fn persona_roster(&self) -> Result<Vec<Value>, String> {
+        let Some(decl) = self.identity_decl() else {
+            return Ok(Vec::new());
+        };
+        Ok(self.entity_source.list(&decl.name)?.iter().map(|row| (**row).clone()).collect())
+    }
+
+    /// Binds this thread's session to `spec`, an `ALMADAR_PERSONA` spec resolved on the first `@user` read
+    /// (EXEC-CONC-7 `persona`: only `program/open` reaches it, for the guest it opens).
+    pub(crate) fn bind_persona(&self, spec: &str) {
+        self.sessions.identities.write().insert(self.identity_key().to_string(), IdentityBinding::Persona { spec: Arc::from(spec) });
     }
 
     /// The `@user` of the session this thread is in, for a host that reads on its behalf (row visibility, row

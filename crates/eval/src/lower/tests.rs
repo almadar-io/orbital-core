@@ -302,3 +302,22 @@ fn control_distinct_subtrees_lower_in_place() {
     let product = |a: f64, b: f64| OirExpr::sub(OirExpr::number(a), OirExpr::number(b));
     assert_eq!(lower_sexpr(&expr), Ok(OirExpr::add(product(2.0, 3.0), product(4.0, 5.0))));
 }
+
+#[test]
+fn a_raw_callback_body_that_reads_the_element_lowers_to_a_lambda() {
+    for body in [
+        r#"{"value": "@item", "label": ["str/concat", "", "@item"]}"#,
+        r#"["str/concat", "", "@item"]"#,
+        r#"["+", "@item", "@index"]"#,
+    ] {
+        let expr: SExpression = serde_json::from_str(&format!(r#"["array/map", [1, 2], {body}]"#)).unwrap();
+        let lowered = format!("{:?}", lower_sexpr(&expr).unwrap());
+        assert!(lowered.contains("Lambda"), "{body} lowers to a lambda: {lowered}");
+    }
+    let constant: SExpression = serde_json::from_str(r#"["array/map", [1, 2], ["fn", "x", "@x"]]"#).unwrap();
+    assert_eq!(
+        format!("{:?}", lower_sexpr(&constant).unwrap()).matches("Lambda").count(),
+        1,
+        "control: a written lambda stays the one lambda"
+    );
+}
