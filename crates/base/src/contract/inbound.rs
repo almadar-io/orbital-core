@@ -586,4 +586,21 @@ mod tests {
         assert_eq!(answer_of_response(&calendar_route(), empty, Some("boom")), dispatch_failed("boom"));
         assert_eq!(answer_of_response(&calendar_route(), empty, None), dispatch_failed("inbound-unanswered"));
     }
+
+    #[test]
+    fn g_orb_448_an_answer_payload_can_carry_the_process_exit_code() {
+        let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "census: 3 unscanned", "exit": 3 })).unwrap();
+        let emitted = [("PUSH_ANSWERED", &payload)];
+        let answer = answer_of_response(&calendar_route(), emitted, None);
+        let wire = serde_json::to_value(&answer).unwrap();
+        assert_eq!(wire.get("exit"), Some(&json!(3)), "a program's `exit 3` reaches the host; today the field is dropped: {wire}");
+    }
+
+    #[test]
+    fn control_the_answer_payload_without_exit_round_trips_status_and_body() {
+        let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "ok" })).unwrap();
+        let emitted = [("PUSH_ANSWERED", &payload)];
+        let wire = serde_json::to_value(answer_of_response(&calendar_route(), emitted, None)).unwrap();
+        assert_eq!(wire, json!({ "status": 200, "body": "ok" }));
+    }
 }

@@ -157,6 +157,22 @@ fn a_diverged_replay_still_logs_error_never_a_suspend() {
     assert!(!lines.iter().any(|l| l.contains("suspended")), "{lines:?}");
 }
 
+#[test]
+fn g_orb_565_a_diverged_replay_names_the_divergence_not_the_suspend_string() {
+    let port = Arc::new(bound_port());
+    let other = IoRequest::WriteRows {
+        batch: RowWriteBatch {
+            ops: vec![RowWriteOp::Delete { entity_type: "Ticket".into(), id: "t9".into(), guard: None }],
+            on_failure: RowWriteFailureMode::Stop,
+        },
+    };
+    let recorded = Exchange::new(other, IoAnswer::Wrote(Ok(Vec::new())));
+    let lines = run_logged(&port, vec![recorded], &delete_of("t1"));
+    assert_eq!(errors(&lines).len(), 1, "{lines:?}");
+    assert!(errors(&lines)[0].contains("the replayed step asked for"), "{lines:?}");
+    assert!(!errors(&lines)[0].contains("awaiting host I/O"), "{lines:?}");
+}
+
 fn batch_of(ids: &[&str]) -> Effect {
     let ops: Vec<serde_json::Value> = ids
         .iter()

@@ -751,3 +751,50 @@ fn a_sealed_replay_whose_operands_changed_diverges_and_a_drawing_failure_is_an_e
     assert!(end.journal.is_empty(), "nothing was recorded");
     assert_eq!(runs.load(Ordering::SeqCst), 1);
 }
+
+fn recorded_service_call() -> Vec<Exchange> {
+    let port = port();
+    let (_, end) = port.run_step(Vec::new(), || call_unkeyed(&port));
+    let request = end.pending[0].clone();
+    vec![Exchange::new(request, IoAnswer::Service(Ok(Value::Null)))]
+}
+
+#[test]
+fn g_orb_565_a_service_ask_that_diverges_names_the_divergence() {
+    let port = port();
+    let (out, end) = port.run_step(recorded_service_call(), || port.call("other", "go", &Value::Null, None, None));
+    assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    let message = out.unwrap_err();
+    assert!(message.contains("the replayed step asked for"), "{message}");
+}
+
+#[test]
+fn g_orb_565_a_secret_ask_that_diverges_names_the_divergence_and_a_later_ask_repeats_it() {
+    let port = port();
+    let (out, end) = port.run_step(recorded_service_call(), || (port.secret("k", None), port.clock()));
+    assert!(matches!(end.diverged, Some(ResumeError::Diverged { .. })));
+    assert!(out.0.unwrap_err().contains("the replayed step asked for"));
+    assert!(out.1.unwrap_err().contains("the replayed step asked for"));
+}
+
+#[test]
+fn control_g_orb_565_a_withheld_ask_without_divergence_keeps_the_suspend_string() {
+    let port = port();
+    let (out, end) = port.run_step(Vec::new(), || (call_unkeyed(&port), port.clock()));
+    assert!(end.diverged.is_none());
+    assert_eq!(out.0, Err(AWAITING_HOST.to_string()));
+    assert_eq!(out.1, Err(AWAITING_HOST.to_string()));
+}
+
+#[test]
+fn g_orb_565_a_sealed_replay_that_diverges_names_the_divergence() {
+    let peer = ecdh_peer();
+    let runs = Arc::new(AtomicUsize::new(0));
+    let recorded = {
+        let port = port();
+        port.run_step(Vec::new(), || port.sealed("ecdh/p256-ephemeral", &sealed_args(&peer), &mut ecdh_compute(&peer, Arc::clone(&runs)))).1.journal
+    };
+    let port = port();
+    let (out, _) = port.run_step(recorded, || port.sealed("ecdh/p256-ephemeral", &sealed_args("AAAA"), &mut ecdh_compute(&peer, Arc::clone(&runs))));
+    assert!(out.unwrap_err().contains("the replayed step asked for"));
+}

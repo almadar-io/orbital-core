@@ -1145,3 +1145,32 @@ fn route_precedence_navigate_opens_a_literal_page_declared_after_its_param_sibli
     core.navigate_to("/notes/42", None);
     assert_eq!(core.current_page.as_deref(), Some("DetailPage"), "control: another segment still opens the param page");
 }
+
+/// A boot endpoint page (empty path) is not a route: `/` opens the orbital whose route is `/`, never the boot page.
+#[test]
+fn a_boot_page_is_never_a_navigation_target() {
+    let mut value = serde_json::to_value(two_orbital_schema()).unwrap();
+    value["orbitals"][0]["pages"] = serde_json::json!([{
+        "name": "HomeBoot", "path": "", "protocol": "boot", "traits": [{ "ref": "HomeTrait" }]
+    }]);
+    value["orbitals"][1]["pages"][0]["path"] = serde_json::json!("/");
+    let schema: OrbitalSchema = serde_json::from_value(value).unwrap();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    assert_eq!(
+        (core.current_orbital_idx, core.current_page.as_deref()),
+        (1, Some("SettingsPage")),
+        "the app opens on the first route page, never a boot page"
+    );
+    core.set_orbital(0);
+    assert_eq!(core.current_page, None, "a boot page is not an orbital's route");
+    core.navigate_to("/", None);
+    assert_eq!(core.current_orbital_idx, 1);
+    assert_eq!(core.current_page.as_deref(), Some("SettingsPage"));
+    core.navigate_to("/home", None);
+    assert_eq!(
+        core.status_message.as_ref().map(|(_, error)| *error),
+        Some(true),
+        "control: a path no route declares is still refused"
+    );
+}

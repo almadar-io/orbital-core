@@ -386,6 +386,38 @@ mod union_variant {
     }
 
     #[test]
+    fn an_object_selects_the_open_map_variant_when_no_closed_shape_fits() {
+        let def = union(
+            json!({
+                "string": { "type": "string" },
+                "number": { "type": "number" },
+                "map": { "type": "object" }
+            }),
+            &["string", "number", "map"],
+        );
+        assert_eq!(chosen(&def, pick(&def, &[])), Some("map"));
+        assert_eq!(chosen(&def, pick(&def, &[("a", "x")])), Some("map"));
+    }
+
+    #[test]
+    fn control_a_fitting_closed_shape_beats_the_open_map_and_two_maps_never_guess() {
+        let text = json!({ "type": "string" });
+        let def = union(
+            json!({ "Read": { "type": "object", "properties": { "read": text } }, "map": { "type": "object" } }),
+            &["Read", "map"],
+        );
+        assert_eq!(chosen(&def, pick(&def, &[("read", "x")])), Some("Read"));
+        assert_eq!(chosen(&def, pick(&def, &[("other", "x")])), Some("map"));
+        let two = union(
+            json!({ "a": { "type": "object" }, "b": { "type": "object" } }),
+            &["a", "b"],
+        );
+        assert!(matches!(pick(&two, &[("k", "v")]), UnionVariantChoice::NoMatch));
+        let none = union(json!({ "string": { "type": "string" } }), &["string"]);
+        assert!(matches!(pick(&none, &[]), UnionVariantChoice::NoMatch));
+    }
+
+    #[test]
     fn a_by_name_reference_is_not_a_variant_tag() {
         let def = predicate();
         assert_eq!(chosen(&def, pick(&def, &[("of", "x")])), Some("Not"));

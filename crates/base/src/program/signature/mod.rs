@@ -616,6 +616,11 @@ impl<'a> Signature<'a> {
         resolve(self.returns, bindings)
     }
 
+    /// The concrete type of the parameter at `index` under `bindings`, or `None` when it is not determined.
+    pub fn formal_type(&self, index: usize, bindings: &CallBindings) -> Option<OirType> {
+        resolve(self.formal(index)?, bindings)
+    }
+
     /// The result with the declared null alternative left out (`T | null` read as the `T` the bindings give),
     /// for a call that cannot answer null; `None` when the declared result names no null alternative.
     pub fn result_without_null(&self, bindings: &CallBindings) -> Option<OirType> {

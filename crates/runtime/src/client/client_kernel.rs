@@ -766,8 +766,9 @@ impl ClientKernel {
             settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
         // The hops the host's replay of the mount cannot reach leave after it, each folded as a dispatch's leg (EXEC-DIST-10).
+        let seeds: Vec<crate::effects::response::MountSeed> = begun.seeds.iter().map(|(seed, _)| seed.clone()).collect();
         for (_, b) in &begun.seeds {
-            for position in self.embedded.mount_hop_positions(&b.dispatch) {
+            for position in self.embedded.mount_hop_positions(&b.dispatch, &seeds) {
                 let leg = &b.dispatch.server_legs[position];
                 let orbital = self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
                 let response = bridge.send_request(orbital, leg)?;

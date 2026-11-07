@@ -21,7 +21,7 @@ use orbital_core_base::client_effect::{ClientEffect, HostAskCompletion};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -105,6 +105,8 @@ pub struct ClientCore {
     pub slot_faults: HashMap<String, String>,
     /// Per-trait `main` render-ui content, keyed by trait name — resolves `@trait.X`.
     pub trait_content: ValueMap,
+    /// Traits whose last `main` render-ui was `null`: resolved, and empty on purpose (a gate that admits nobody).
+    pub trait_rendered_empty: HashSet<String>,
     /// Form field values for the active form.
     pub form_data: HashMap<String, String>,
     /// Entity cache populated from server responses.
@@ -190,26 +192,30 @@ impl ClientCore {
         schema: OrbitalSchema,
         server_bridge: Option<Arc<dyn crate::client::bridge::ServerBridge>>,
     ) -> Self {
+        let (start_idx, current_page) = match default_page(&schema) {
+            Some((idx, page)) => (idx, Some(page)),
+            None => (0, None),
+        };
         let current_trait_name = schema
             .orbitals
-            .first()
+            .get(start_idx)
             .and_then(|orbital| orbital.traits.first())
             .and_then(|t| t.trait_name())
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Unknown".to_string());
         let embedded = embedded_traits(&schema);
-        let current_page = initial_page(&schema, 0);
 
         Self {
             schema,
             server_bridge,
             client_kernel: None,
-            current_orbital_idx: 0,
+            current_orbital_idx: start_idx,
             current_trait_name,
             current_state: "browsing".to_string(),
             ui_slots: HashMap::new(),
             slot_faults: HashMap::new(),
             trait_content: ValueMap::default(),
+            trait_rendered_empty: HashSet::new(),
             form_data: HashMap::new(),
             entities: HashMap::new(),
             status_message: None,
@@ -770,6 +776,7 @@ impl ClientCore {
         self.show_page_of(trait_name);
         self.ui_slots.clear();
         self.trait_content.clear();
+        self.trait_rendered_empty.clear();
     }
 
     /// Switch the active orbital (caller re-inits to repopulate).
@@ -784,6 +791,7 @@ impl ClientCore {
                 .to_string();
             self.ui_slots.clear();
             self.trait_content.clear();
+            self.trait_rendered_empty.clear();
             self.current_page = initial_page(&self.schema, idx);
             self.route_params.clear();
         }
@@ -839,9 +847,9 @@ impl ClientCore {
     /// as the web router merges them); an unknown path keeps the page and says so.
     pub fn navigate_to(&mut self, path: &str, params: Option<&Value>) {
         let most_specific = |idx: usize| {
-            let paths: Vec<String> = pages_of(&self.schema, idx).map(|p| p.path.clone()).collect();
+            let paths: Vec<String> = route_pages_of(&self.schema, idx).map(|p| p.path.clone()).collect();
             let best = orbital_core_base::route::best_path_match(path, paths.iter().map(String::as_str))?.to_string();
-            pages_of(&self.schema, idx).find(|p| p.path == best).and_then(|p| orbital_core_base::route::route_params(&p.path, path).map(|r| (idx, p.name.clone(), r)))
+            route_pages_of(&self.schema, idx).find(|p| p.path == best).and_then(|p| orbital_core_base::route::route_params(&p.path, path).map(|r| (idx, p.name.clone(), r)))
         };
         let found = most_specific(self.current_orbital_idx).or_else(|| (0..self.schema.orbitals.len()).find_map(most_specific));
         let Some((idx, page, mut route)) = found.or_else(|| self.not_found_target()) else {
@@ -863,7 +871,7 @@ impl ClientCore {
     /// The page declared `[notFound]` (the resolver guarantees at most one), searched orbital by orbital.
     fn not_found_target(&self) -> Option<(usize, String, ValueMap)> {
         (0..self.schema.orbitals.len()).find_map(|idx| {
-            pages_of(&self.schema, idx)
+            route_pages_of(&self.schema, idx)
                 .find(|p| p.is_not_found == Some(true))
                 .map(|p| (idx, p.name.clone(), ValueMap::default()))
         })
@@ -1148,9 +1156,11 @@ impl ClientCore {
                 if config.is_none() {
                     if is_main(slot) {
                         self.trait_content.shift_remove(src);
+                        self.trait_rendered_empty.insert(src.clone());
                     }
                 } else if let Some(content) = effect.render_ui_value() {
                     if is_main(slot) {
+                        self.trait_rendered_empty.remove(src);
                         self.trait_content.insert(src.clone().into(), content);
                     } else {
                         self.trait_content
@@ -1367,9 +1377,27 @@ fn pages_of(
         })
 }
 
+/// The route pages of orbital `idx`: an endpoint page (`http`, `stdio`, `boot`) is never navigated to.
+fn route_pages_of(
+    schema: &OrbitalSchema,
+    idx: usize,
+) -> impl Iterator<Item = &orbital_core_base::schema::types::PageDefinition> {
+    pages_of(schema, idx).filter(|p| p.is_route())
+}
+
+/// The page the app opens on, as the web's `defaultPage`: the first route page marked initial, else the first route
+/// page of the first orbital that declares one.
+fn default_page(schema: &OrbitalSchema) -> Option<(usize, String)> {
+    let routes = || (0..schema.orbitals.len()).flat_map(|idx| route_pages_of(schema, idx).map(move |p| (idx, p)));
+    routes()
+        .find(|(_, p)| p.is_initial == Some(true))
+        .or_else(|| routes().next())
+        .map(|(idx, p)| (idx, p.name.clone()))
+}
+
 /// The page an orbital opens on: the one marked initial, else its first.
 fn initial_page(schema: &OrbitalSchema, idx: usize) -> Option<String> {
-    let pages: Vec<_> = pages_of(schema, idx).collect();
+    let pages: Vec<_> = route_pages_of(schema, idx).collect();
     orbital_core_base::ir::types::initial_of(&pages, |p| p.is_initial == Some(true))
         .map(|p| p.name.clone())
 }

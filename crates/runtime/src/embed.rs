@@ -75,45 +75,70 @@ fn batch_steps(outcomes: &[(String, ProcessEventResult)]) -> Vec<BatchStep> {
     outcomes
         .iter()
         .filter(|(_, r)| r.executed)
-        .map(|(t, r)| BatchStep {
+        .map(|(t, r)| {
+            let delivery = r.entry.as_ref().and_then(|entry| crate::effects::response::DeliveryRecord::from_value(&entry.view.event));
+            BatchStep {
             trait_name: t.clone(),
-            emitter: r
-                .entry
-                .as_ref()
-                .and_then(|entry| crate::effects::response::DeliveryRecord::from_value(&entry.view.event))
-                .and_then(|d| d.source.r#trait),
+            event: r.event.clone(),
+            emitter: delivery.as_ref().and_then(|d| d.source.r#trait.clone()),
+            delivered: delivery.map(|d| d.event),
+            emitted: r
+                .effect_results
+                .iter()
+                .filter_map(|e| match &e.effect {
+                    Effect::Emit { event, .. } => Some(event.clone()),
+                    _ => None,
+                })
+                .collect(),
             delegated: r
                 .effect_results
                 .iter()
                 .any(|e| matches!(e.outcome, orbital_core_base::effect_types::EffectOutcome::Delegated(_))),
+            }
         })
         .collect()
 }
 
 /// Whether `leg`, owed by the dispatch of `seed` that ran `steps`, is a hop to another trait that a step delivered
 /// through a browser-run trait ([`EmbeddedKernel::mount_hops`]).
-fn is_unreachable_hop(seed: &str, steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>) -> bool {
+fn is_unreachable_hop(seed: &str, steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>) -> bool {
     let Some(target) = leg.target_trait.as_deref().filter(|t| *t != seed) else { return false };
     steps
         .iter()
         .rposition(|s| s.trait_name == target && s.emitter.as_deref() == leg.source_trait.as_deref())
-        .is_some_and(|hop| delivered_through_browser(steps, hop, browser_run))
+        .is_some_and(|hop| delivered_through_browser(steps, hop, browser_run, seeds))
 }
 
-/// Whether the step at `at`, or a step that delivered it, walking back through each step's emitter, ran as a delivery to
-/// a trait in `browser_run`. The walk ends at a seed step (no emitter) or at an emitter no earlier step of `steps` ran.
-fn delivered_through_browser<S: core::borrow::Borrow<BatchStep>>(steps: &[S], mut at: usize, browser_run: &HashSet<String>) -> bool {
-    loop {
+/// Whether the step at `at` cannot run in the host's replay of the mount: walking back from it to the steps whose effects
+/// emitted the event that delivered it (an earlier step of its emitter that emitted that event), one ran as a delivery to
+/// a trait in `browser_run`. A seed step (no emitter, or the lifecycle event of one of the batch's `seeds`, which the
+/// host replays itself) and an emitter no earlier step of `steps` ran end the walk as reachable. When several steps
+/// emitted the event, the step is unreachable only when every one of them is, so a step the replay may reach is never
+/// posted twice.
+fn delivered_through_browser<S: core::borrow::Borrow<BatchStep>>(steps: &[S], at: usize, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>) -> bool {
+    fn walk<S: core::borrow::Borrow<BatchStep>>(steps: &[S], at: usize, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>, memo: &mut [Option<bool>]) -> bool {
+        if let Some(known) = memo[at] {
+            return known;
+        }
         let step = steps[at].borrow();
-        let Some(emitter) = step.emitter.as_deref() else { return false };
-        if browser_run.contains(&step.trait_name) {
-            return true;
-        }
-        match steps[..at].iter().rposition(|s| s.borrow().trait_name == emitter) {
-            Some(earlier) => at = earlier,
-            None => return false,
-        }
+        let unreachable = match step.emitter.as_deref() {
+            None => false,
+            Some(_) if step.event.as_deref().is_some_and(|event| seeds.contains(&(step.trait_name.as_str(), event))) => false,
+            Some(_) if browser_run.contains(&step.trait_name) => true,
+            Some(emitter) => {
+                let emitters: Vec<usize> = (0..at)
+                    .filter(|j| {
+                        let earlier = steps[*j].borrow();
+                        earlier.trait_name == emitter && step.delivered.as_ref().is_some_and(|event| earlier.emitted.contains(event))
+                    })
+                    .collect();
+                !emitters.is_empty() && emitters.into_iter().all(|j| walk(steps, j, browser_run, seeds, memo))
+            }
+        };
+        memo[at] = Some(unreachable);
+        unreachable
     }
+    walk(steps, at, browser_run, seeds, &mut vec![None; at + 1])
 }
 
 /// The rows a posted leg is folded against, by trait ([`EmbeddedKernel::fold_base`]).
@@ -471,10 +496,12 @@ impl EmbeddedKernel {
     /// host's cascade from that seed's replay; a leg for the seed itself is its replay (EXEC-SEED-2).
     pub fn mount_hops<'w>(&self, wires: impl IntoIterator<Item = &'w DispatchWire>) -> Vec<&'w RoutedLeg> {
         let browser_run = self.kernel.browser_run_traits();
+        let wires: Vec<&DispatchWire> = wires.into_iter().collect();
+        let seeds: HashSet<(&str, &str)> = wires.iter().map(|w| (w.seed.trait_name.as_str(), w.seed.event.as_str())).collect();
         let mut hops = Vec::new();
         for wire in wires {
             for routed in &wire.server_legs {
-                if is_unreachable_hop(&wire.seed.trait_name, &wire.steps, &routed.leg, &browser_run) {
+                if is_unreachable_hop(&wire.seed.trait_name, &wire.steps, &routed.leg, &browser_run, &seeds) {
                     hops.push(routed);
                 }
             }
@@ -482,13 +509,14 @@ impl EmbeddedKernel {
         hops
     }
 
-    /// [`Self::mount_hops`] for one seed's [`ClientDispatch`]: the positions in its `server_legs` of the hops the host's
-    /// replay of the mount cannot reach.
-    pub fn mount_hop_positions(&self, dispatch: &ClientDispatch) -> Vec<usize> {
+    /// [`Self::mount_hops`] for one seed's [`ClientDispatch`] in a batch of `seeds`: the positions in its `server_legs`
+    /// of the hops the host's replay of the mount cannot reach.
+    pub fn mount_hop_positions(&self, dispatch: &ClientDispatch, seeds: &[MountSeed]) -> Vec<usize> {
         let browser_run = self.kernel.browser_run_traits();
+        let seeds: HashSet<(&str, &str)> = seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())).collect();
         let steps = batch_steps(&dispatch.outcomes);
         (0..dispatch.server_legs.len())
-            .filter(|i| is_unreachable_hop(&dispatch.seed.0, &steps, &dispatch.server_legs[*i], &browser_run))
+            .filter(|i| is_unreachable_hop(&dispatch.seed.0, &steps, &dispatch.server_legs[*i], &browser_run, &seeds))
             .collect()
     }
 
@@ -529,13 +557,14 @@ impl EmbeddedKernel {
             .map(|s| (s.trait_name.as_str(), s.emitter.as_deref()))
             .collect();
         let browser_run = self.kernel.browser_run_traits();
+        let seeds: HashSet<(&str, &str)> = dispatched.iter().map(|(_, w)| (w.seed.trait_name.as_str(), w.seed.event.as_str())).collect();
         for (i, step) in steps.iter().enumerate() {
             let Some(emitter) = step.emitter.as_deref() else { continue };
             if emitter != step.trait_name
                 && !client_only_seeds.contains(step.trait_name.as_str())
                 && client_only_seeds.contains(emitter)
                 && crate::kernel::chain_needs_server(&chain, i, |j| steps[j].delegated)
-                && !delivered_through_browser(&steps, i, &browser_run)
+                && !delivered_through_browser(&steps, i, &browser_run, &seeds)
             {
                 held_emitters.insert(emitter);
             }

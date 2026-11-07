@@ -38,3 +38,25 @@ jobs:
         run: cargo test --manifest-path crates/base/Cargo.toml os_grants::tests::a_drive_
       - name: File host
         run: cargo test --manifest-path crates/runtime/Cargo.toml os_host::fs::tests_windows
+
+  feature-matrix:
+    # Nothing else builds a non-default feature, so a cfg slip behind one (G-ORBITAL-CORE-048) goes unseen.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: base, features: async }
+          - { crate: base, features: ts-export }
+          - { crate: base, features: wgsl }
+          - { crate: eval, features: async }
+          - { crate: eval, features: ts-export }
+          - { crate: eval, features: parallel }
+          - { crate: runtime, features: async }
+          - { crate: runtime, features: client-http }
+          - { crate: runtime, features: wgsl }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+      - name: Build ${{ matrix.crate }} with ${{ matrix.features }}
+        run: cargo check --manifest-path crates/${{ matrix.crate }}/Cargo.toml --features ${{ matrix.features }}

@@ -263,31 +263,8 @@ impl<'a> OirValidator<'a> {
             result.add_error(ValidationError::error(&path, "Entity name cannot be empty"));
         }
 
-        // Check for duplicate field names
-        let mut field_names = HashSet::new();
-        for field in &entity.fields {
-            if !field_names.insert(&field.name) {
-                result.add_error(ValidationError::error(
-                    format!("{}.fields.{}", path, field.name),
-                    "Duplicate field name",
-                ));
-            }
-        }
-
-        // Validate relations
-        for field in &entity.fields {
-            if let Some(relation) = &field.relation {
-                if !self.entity_names.contains(&relation.target_entity) {
-                    result.add_error(ValidationError::error(
-                        format!("{}.fields.{}", path, field.name),
-                        format!(
-                            "Relation target entity '{}' does not exist",
-                            relation.target_entity
-                        ),
-                    ));
-                }
-            }
-        }
+        // Duplicate field names are the std lint `std-orb-lint-entity-duplicate-field`, and relation targets are
+        // `std-orb-lint-relation-targets` (ORB_E_INVALID_RELATION), not this OIR layer (G-ORBITAL-CORE-055).
     }
 
     fn validate_trait(&self, trait_def: &OirTrait, result: &mut ValidationResult) {
@@ -683,6 +660,18 @@ mod tests {
             .errors
             .iter()
             .any(|e| e.message.contains("does not exist")));
+    }
+
+    #[test]
+    fn g_orbital_core_055_the_oir_layer_leaves_field_duplicates_and_relation_targets_to_the_lints() {
+        let mut module = create_test_module();
+        module.entities[0].fields.push(OirField::new("title", OirType::String));
+        let result = validate(&module);
+        assert!(
+            !result.errors.iter().any(|e| e.message.contains("Duplicate field")),
+            "{:?}",
+            result.errors
+        );
     }
 
     #[test]

@@ -70,7 +70,11 @@ impl BindingContext {
         // If there's a rest path, traverse it (owned walk so array `length`/
         // `count` resolve — `@payload.data.length`).
         if let Some(rest_path) = rest {
-            root_value.get_path_owned(rest_path)
+            if root == "config" {
+                root_value.get_path_owned_through_quotes(rest_path)
+            } else {
+                root_value.get_path_owned(rest_path)
+            }
         } else {
             Some(root_value.clone())
         }

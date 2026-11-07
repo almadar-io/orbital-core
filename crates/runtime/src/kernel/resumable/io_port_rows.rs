@@ -28,7 +28,7 @@ impl EntitySource for IoPort {
                 self.remember_read(entity_type, id, Some(row.clone()));
                 Some(row)
             }),
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -56,7 +56,7 @@ impl EntitySource for IoPort {
                 self.forget_reads(entity_type);
                 row
             }
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -79,7 +79,7 @@ impl EntitySource for IoPort {
                 self.forget_reads(entity_type);
                 row
             }
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -101,7 +101,7 @@ impl EntitySource for IoPort {
                 self.forget_reads(entity_type);
                 done
             }
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -120,7 +120,7 @@ impl EntitySource for IoPort {
         }) {
             Asked::Direct => self.source_for(entity_type).list(entity_type),
             Asked::Answer(IoAnswer::Rows(rows)) => rows,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -180,7 +180,7 @@ impl EntitySource for IoPort {
                         &detail,
                     ),
                     Asked::Answer(_) | Asked::Withheld => {
-                        return QueryAnswer::Failed(AWAITING_HOST.to_string())
+                        return QueryAnswer::Failed(self.withheld_error())
                     }
                 },
             }
@@ -224,7 +224,7 @@ impl EntitySource for IoPort {
                         &detail,
                     ),
                     Asked::Answer(_) | Asked::Withheld => {
-                        return QueryAnswer::Failed(AWAITING_HOST.to_string())
+                        return QueryAnswer::Failed(self.withheld_error())
                     }
                 },
             }

@@ -1180,6 +1180,22 @@ mod tests {
     }
 
     #[test]
+    fn g_std_300_each_steps_states_are_the_states_after_that_step() {
+        let report = play(serde_json::json!([
+            { "trait": "Modes", "event": "KEY", "payload": { "key": "i" } },
+            { "trait": "Modes", "event": "KEY", "payload": { "key": "x" } }
+        ]))
+        .unwrap();
+        assert_eq!(report["steps"][0]["outcomes"][0]["newState"], "INSERT");
+        assert_eq!(report["steps"][0]["states"]["Modes"], "INSERT");
+        let control = play(serde_json::json!([
+            { "trait": "Modes", "event": "KEY", "payload": { "key": "x" } }
+        ]))
+        .unwrap();
+        assert_eq!(control["steps"][0]["states"]["Modes"], "NORMAL");
+    }
+
+    #[test]
     fn a_refusal_mid_replay_carries_the_failing_trait_and_the_outcomes_so_far() {
         let refusal = play_refusable(
             MODES,

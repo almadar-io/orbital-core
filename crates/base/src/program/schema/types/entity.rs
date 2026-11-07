@@ -410,7 +410,7 @@ impl FieldDefinition {
     /// The variant of this tagged union a value belongs to (the LOLO tagged-union rule). A variant is chosen by its
     /// tags (each single-valued field that is not a by-name reference) when the value carries them all; a value
     /// carrying no variant's tags selects the one untagged variant whose closed shape it fits (every key declared;
-    /// on a tie, every required member present). None or several is never a guess. `keys` are the value's keys;
+    /// on a tie, every required member present), else the one open map variant (`Map string V`). None or several is never a guess. `keys` are the value's keys;
     /// `read_tag(field, tag)` reads the value's `field` against `tag`.
     pub fn select_union_variant<'d>(
         &'d self,
@@ -423,6 +423,7 @@ impl FieldDefinition {
             );
         };
         let mut untagged: Vec<(&str, &FieldDefinition)> = Vec::new();
+        let mut open_maps: Vec<&FieldDefinition> = Vec::new();
         let mut deferred = false;
         for name in names {
             let Some(variant) = variants.get(name) else {
@@ -431,6 +432,9 @@ impl FieldDefinition {
                 ));
             };
             let Some(props) = &variant.properties else {
+                if variant.field_type == FieldType::Object {
+                    open_maps.push(variant);
+                }
                 continue;
             };
             let tags: Vec<(&str, &str)> = props
@@ -488,7 +492,10 @@ impl FieldDefinition {
         }
         match fits.as_slice() {
             [(_, one)] => UnionVariantChoice::Matched(one),
-            [] => UnionVariantChoice::NoMatch,
+            [] => match open_maps.as_slice() {
+                [one] => UnionVariantChoice::Matched(one),
+                _ => UnionVariantChoice::NoMatch,
+            },
             many => {
                 let mut names: Vec<String> = many.iter().map(|(n, _)| n.to_string()).collect();
                 names.sort_unstable();

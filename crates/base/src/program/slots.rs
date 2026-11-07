@@ -190,7 +190,7 @@ pub struct ModalOpenPath {
 /// that emitter is the source; otherwise the modal trait opens it directly.
 pub fn modal_open_paths(schema: &OrbitalSchema) -> Result<Vec<ModalOpenPath>, crate::language_data::LanguageDataError> {
     type ListenRoute<'a> = (&'a str, &'a str, &'a Option<crate::schema::sexpr::SObject>);
-    let mut listen_index: std::collections::HashMap<(&str, &str), ListenRoute<'_>> =
+    let mut listen_index: std::collections::HashMap<(&str, &str), Vec<ListenRoute<'_>>> =
         std::collections::HashMap::new();
     for orbital in &schema.orbitals {
         for tr in &orbital.traits {
@@ -201,35 +201,41 @@ pub fn modal_open_paths(schema: &OrbitalSchema) -> Result<Vec<ModalOpenPath>, cr
             for l in listens {
                 let triggers = l.triggers.as_deref().unwrap_or(&l.event);
                 if let Some(src) = listen_source_trait(&l.source) {
-                    listen_index.insert((td.name.as_str(), triggers), (src, l.event.as_str(), &l.payload_mapping));
+                    listen_index
+                        .entry((td.name.as_str(), triggers))
+                        .or_default()
+                        .push((src, l.event.as_str(), &l.payload_mapping));
                 }
             }
         }
     }
 
-    Ok(non_main_slot_transitions(schema)?
-        .into_iter()
-        .map(
-            |st| match listen_index.get(&(st.trait_name.as_str(), st.event.as_str())).copied() {
-                Some((src_trait, src_event, mapping)) => ModalOpenPath {
-                    source_trait: src_trait.to_string(),
-                    source_event: src_event.to_string(),
-                    payload_mapping: mapping.clone(),
-                    modal_trait: st.trait_name,
-                    slot: st.slot,
-                    modal_event: st.event,
-                },
-                None => ModalOpenPath {
-                    source_trait: st.trait_name.clone(),
-                    source_event: st.event.clone(),
-                    modal_trait: st.trait_name,
-                    slot: st.slot,
-                    modal_event: st.event,
-                    payload_mapping: None,
-                },
-            },
-        )
-        .collect())
+    let mut paths = Vec::new();
+    for st in non_main_slot_transitions(schema)? {
+        match listen_index.get(&(st.trait_name.as_str(), st.event.as_str())) {
+            Some(routes) => {
+                for (src_trait, src_event, mapping) in routes {
+                    paths.push(ModalOpenPath {
+                        source_trait: src_trait.to_string(),
+                        source_event: src_event.to_string(),
+                        payload_mapping: (*mapping).clone(),
+                        modal_trait: st.trait_name.clone(),
+                        slot: st.slot.clone(),
+                        modal_event: st.event.clone(),
+                    });
+                }
+            }
+            None => paths.push(ModalOpenPath {
+                source_trait: st.trait_name.clone(),
+                source_event: st.event.clone(),
+                modal_trait: st.trait_name,
+                slot: st.slot,
+                modal_event: st.event,
+                payload_mapping: None,
+            }),
+        }
+    }
+    Ok(paths)
 }
 
 fn listen_source_trait(source: &Option<crate::schema::types::ListenSource>) -> Option<&str> {
@@ -436,6 +442,46 @@ mod tests {
             events,
             vec!["OPEN"],
             "only the real-content OPEN transition should be enumerated, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn g_orb_068_a_modal_opened_from_two_routes_keeps_both() {
+        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Modal",
+                    "linkedEntity": "Item",
+                    "stateMachine": {
+                        "states": [{ "name": "closed", "isInitial": true }, { "name": "open" }],
+                        "transitions": [
+                            { "from": "closed", "to": "open", "event": "OPEN",
+                              "effects": [["render-ui", "modal", { "type": "form" }]] }
+                        ]
+                    },
+                    "listens": [
+                        { "event": "TAG_SELECTED", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Browse" } },
+                        { "event": "RELATION_OPEN", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Details" } }
+                    ]
+                }]
+            }]
+        }))
+        .unwrap();
+        let mut routes: Vec<(String, String)> = modal_open_paths(&schema)
+            .expect("table")
+            .into_iter()
+            .map(|p| (p.source_trait, p.source_event))
+            .collect();
+        routes.sort();
+        assert_eq!(
+            routes,
+            vec![
+                ("Browse".to_string(), "TAG_SELECTED".to_string()),
+                ("Details".to_string(), "RELATION_OPEN".to_string())
+            ]
         );
     }
 }

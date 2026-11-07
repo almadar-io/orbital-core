@@ -660,11 +660,21 @@ impl Value {
     /// (length is terminal). Numeric segments still index; object segments still
     /// look up keys.
     pub fn get_path_owned(&self, path: &str) -> Option<Value> {
-        let mut current: &Value = self;
-        let mut parts = path_segments(path).peekable();
+        self.walk_path_owned(&split_path(path), false)
+    }
 
-        while let Some(part) = parts.next() {
-            let last = parts.peek().is_none();
+    /// [`Value::get_path_owned`] that reads through a `(quote x)` value (`["quote", <body>]`, G-CROSS-041): the path
+    /// continues inside the decoded `x`, so a quoted config value answers `machine.transitions` as it answers
+    /// `machine` (G-CROSS-076). Only an authored value is walked this way; runtime data keeps its shape.
+    pub fn get_path_owned_through_quotes(&self, path: &str) -> Option<Value> {
+        self.walk_path_owned(&split_path(path), true)
+    }
+
+    fn walk_path_owned(&self, segments: &[std::borrow::Cow<'_, str>], through_quotes: bool) -> Option<Value> {
+        let mut current: &Value = self;
+
+        for (i, part) in segments.iter().enumerate() {
+            let last = i + 1 == segments.len();
             let seg: &str = part.as_ref();
             match current {
                 Value::Object(obj) => {
@@ -674,6 +684,14 @@ impl Value {
                     current = sealed.fields.get(seg)?;
                 }
                 Value::Array(arr) => {
+                    if through_quotes {
+                        if let [Value::String(head), Value::String(body)] = arr.as_slice() {
+                            if head.as_str() == crate::schema::quote::QUOTE_HEAD {
+                                let decoded = Value::from(crate::schema::quote::decode_quote_body(body)?);
+                                return decoded.walk_path_owned(&segments[i..], true);
+                            }
+                        }
+                    }
                     if seg == "length" || seg == "count" {
                         return if last {
                             Some(Value::Number(arr.len() as f64))
@@ -1039,6 +1057,20 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn g_cross_076_a_path_reads_through_a_quote_value_only_when_asked() {
+        use crate::schema::quote::quote_expr;
+        let body: SExpression = serde_json::from_str(r#"{"transitions":[1,2],"name":"m"}"#).unwrap();
+        let quoted = Value::from(quote_expr(&body));
+        let holder = Value::object(ValueMap::from_iter([("machine".to_string().into(), quoted)]));
+        assert_eq!(
+            holder.get_path_owned_through_quotes("machine.transitions"),
+            Some(Value::array(vec![Value::Number(1.0), Value::Number(2.0)]))
+        );
+        assert_eq!(holder.get_path_owned_through_quotes("machine.transitions.length"), Some(Value::Number(2.0)));
+        assert_eq!(holder.get_path_owned("machine.transitions"), None, "control: the plain walk keeps the quote's shape");
+    }
+
     #[test]
     fn value_is_sixteen_bytes() {
         assert_eq!(std::mem::size_of::<Value>(), 16);

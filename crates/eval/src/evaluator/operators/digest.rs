@@ -1400,4 +1400,91 @@ mod tests {
         assert!(matches!(fields.get("crc"), Some(Value::Int(_))));
         assert!(matches!(fields.get("data"), Some(Value::Bytes(_))));
     }
+
+    // PROVE lane, G-ORBITAL-CORE-108..112: red tests state the missing capability with published vectors. Operator names for the
+    // new primitives (hmac/sha1-bytes, ecdsa/p384-verify, ed25519/verify, rsa-pss/verify) are placeholders pending an owner ruling.
+    const G112_PSS_SIGNATURE: &str = "pVqynRz4FGNxWXoIKr8r0FOX7fXgoaO6miX+YGf/4JYE94oOI6uWiAcSt8ubmiVvm9MDiSnOyQTrQrKOVI3wQ3HSfftVoGqyZNnTg2+7eCzgVJB31t44k7KHztmZoTfQJXnSx0rWLT1+HjUVI0G91pBo4KRwMwjjHihMtoCd98ecMFM1MreCaXvX9PRF/iLstxyKbgxHBGGZdEwHp8ldsYRsxs0W46bDQeBHzu+6Pa63FebgOYFFY7kVntqYwIzI+LeByIOdSnXf0uNuBg5M2ai3eLsKE8EWb07jFKThNADIWuzhd6sbWn+DXZv5iwNEuXa4slKgY05o56Bn1zdb4w==";
+    const G110_P384_X: &str = "yd9yXA0fkWGXEtFBoAnQFpUyvBp+sGiTpARdOXHSuh2N9VSV6DsaHz5lowkbiVLj";
+    const G110_P384_Y: &str = "x3DiU/NXVERvT2s1IuTCNtx9Y3o/maWza5d3j5Rom8aVgJQZAHqmI8CnMP87Vw7I";
+    const G110_P384_SIGNATURE: &str = "kAc02ujFHAJL+PPOvC3nAIZLmzebZCawi6I0DZYw5Irdj+WDRQX47HSX5F0JNPG7IIr39eEbOlWL484mcopoNoXg6osQQpiXDUImKKeJDxxUMSET7jbYgNCtUf22KIP3";
+
+    #[test]
+    fn g_orbital_core_108_hash_sha_answers_384_and_1() {
+        let sha = |bits: i64| eval(serde_json::json!(["hash/sha", bits, "abc", "hex"]));
+        assert_eq!(
+            sha(384).ok(),
+            Some(Value::string("cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7")),
+            "FIPS 180-4 SHA-384(abc)"
+        );
+        assert_eq!(sha(1).ok(), Some(Value::string("a9993e364706816aba3e25717850c26c9cd0d89d")), "FIPS 180-4 SHA-1(abc)");
+    }
+
+    #[test]
+    fn g_orbital_core_108_control_hash_sha_256_and_512_are_answered_and_other_counts_are_null() {
+        assert_eq!(sha256(serde_json::json!(["hash/sha", 256, "abc", "hex"])), ABC);
+        assert!(matches!(eval(serde_json::json!(["hash/sha", 512, "abc", "hex"])), Ok(Value::String(_))));
+        assert_eq!(eval(serde_json::json!(["hash/sha", 384, "abc", "hex"])).ok(), Some(Value::Null));
+        assert_eq!(eval(serde_json::json!(["hash/sha", 1, "abc", "hex"])).ok(), Some(Value::Null));
+    }
+
+    #[test]
+    fn g_orbital_core_109_hmac_sha1_384_512_answer_the_rfc_vectors() {
+        let message = "what do ya want for nothing?";
+        for (op, expected) in [
+            ("hmac/sha1-bytes", "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79"),
+            (
+                "hmac/sha384-bytes",
+                "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
+            ),
+            (
+                "hmac/sha512-bytes",
+                "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+            ),
+        ] {
+            assert_eq!(eval(serde_json::json!([op, "SmVmZQ==", message, "hex"])).ok(), Some(Value::string(expected)), "{op} (RFC 2202 / 4231 case 2)");
+        }
+    }
+
+    #[test]
+    fn g_orbital_core_109_control_hmac_sha256_bytes_matches_rfc_4231_case_2() {
+        assert_eq!(
+            eval(serde_json::json!(["hmac/sha256-bytes", "SmVmZQ==", "what do ya want for nothing?", "hex"])).ok(),
+            Some(Value::string("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"))
+        );
+    }
+
+    #[test]
+    fn g_orbital_core_110_ecdsa_p384_verifies_an_es384_signature() {
+        let form = serde_json::json!(["ecdsa/p384-verify", G110_P384_X, G110_P384_Y, "header.payload", G110_P384_SIGNATURE]);
+        assert_eq!(eval(form).ok(), Some(Value::string("valid")), "openssl-made ECDSA P-384 / SHA-384 raw r||s signature");
+    }
+
+    #[test]
+    fn g_orbital_core_110_control_p256_verify_refuses_a_p384_key() {
+        let verdict = verdict(serde_json::json!(["ecdsa/p256-verify", G110_P384_X, G110_P384_Y, "header.payload", G110_P384_SIGNATURE]));
+        assert_ne!(verdict, "valid");
+    }
+
+    #[test]
+    fn g_orbital_core_111_ed25519_verifies_the_rfc_8032_vector() {
+        let form = serde_json::json!([
+            "ed25519/verify",
+            "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
+            "",
+            "5VZDAMNgrHKQhuLMgG6CioSHfx645dl02HPgZSJJAVVfuIIVkKM7rMYeOXAc+bRr0lv18FlbviRlUUFDjnoQCw=="
+        ]);
+        assert_eq!(eval(form).ok(), Some(Value::string("valid")), "RFC 8032 section 7.1 test 1 (empty message)");
+    }
+
+    #[test]
+    fn g_orbital_core_112_rsa_pss_verifies_a_pss_sha256_signature() {
+        let form = serde_json::json!(["rsa-pss/verify", SIGN_RSA_N, "AQAB", "header.payload", G112_PSS_SIGNATURE]);
+        assert_eq!(eval(form).ok(), Some(Value::string("valid")), "openssl RSASSA-PSS SHA-256, salt 32, same key as rsa/sign");
+    }
+
+    #[test]
+    fn g_orbital_core_112_rsa_verify_is_pkcs1_v15_only_so_a_valid_pss_signature_is_a_mismatch() {
+        let verdict = verdict(serde_json::json!(["rsa/verify", SIGN_RSA_N, "AQAB", "header.payload", G112_PSS_SIGNATURE]));
+        assert_eq!(verdict, "mismatch", "rsa/verify has arity 4 and no padding selector: a PSS signature cannot verify through it");
+    }
 }

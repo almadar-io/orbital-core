@@ -171,9 +171,10 @@ where
     let mut game_canvas_failures: Vec<String> = Vec::new();
     let mut slots_rendered = 0usize;
     let facts = ProgramFacts::new(&schema)?;
-    let trait_union = facts.trait_union(orbital_count, &build_app)?;
+    let (trait_union, trait_empty) = facts.trait_union(orbital_count, &build_app)?;
     let cx = FactCx {
         trait_content: &trait_union,
+        trait_empty: &trait_empty,
         target,
         trait_scope: scope.as_ref(),
         overlay_only: &facts.overlay_only,
@@ -388,15 +389,18 @@ impl ProgramFacts {
         &self,
         orbital_count: usize,
         build_app: &dyn Fn(usize) -> Result<ClientCore, String>,
-    ) -> Result<ValueMap, String> {
+    ) -> Result<(ValueMap, HashSet<String>), String> {
         let mut union = ValueMap::default();
+        let mut empty = HashSet::new();
         for idx in 0..orbital_count {
             let app = build_app(idx)?;
             for (name, content) in &app.trait_content {
                 union.entry(name.clone()).or_insert_with(|| content.clone());
             }
+            empty.extend(app.trait_rendered_empty.iter().cloned());
         }
-        Ok(union)
+        empty.retain(|name| !union.contains_key(name));
+        Ok((union, empty))
     }
 
     fn slot_nodes(
@@ -464,7 +468,7 @@ where
         Ok(app)
     };
     let facts = ProgramFacts::new(schema)?;
-    let trait_union = facts.trait_union(schema.orbitals.len(), &build_app)?;
+    let (trait_union, trait_empty) = facts.trait_union(schema.orbitals.len(), &build_app)?;
     let mut app = build_app(idx)?;
     if event != "INIT" || entity.is_some() {
         let bridge = app
@@ -479,6 +483,7 @@ where
     }
     let cx = FactCx {
         trait_content: &trait_union,
+        trait_empty: &trait_empty,
         target,
         trait_scope: None,
         overlay_only: &facts.overlay_only,
@@ -561,6 +566,8 @@ impl<'a> AccessScope<'a> {
 /// What every node of one walk is read against.
 struct FactCx<'a> {
     trait_content: &'a ValueMap,
+    // Traits whose `main` render-ui is `null`: a reference to one is resolved, and renders nothing.
+    trait_empty: &'a HashSet<String>,
     target: &'a dyn RenderTarget,
     // `--trait` scope: the resolved trait names the walk is restricted to (`None` = no filter).
     trait_scope: Option<&'a HashSet<&'a str>>,
@@ -624,7 +631,7 @@ fn node_facts(
             if let Some(i) = at {
                 nodes[i].trait_refs.push(TraitRef {
                     name: name.clone(),
-                    resolved: resolved.is_some(),
+                    resolved: resolved.is_some() || cx.trait_empty.contains(&name),
                     overlay_only: cx.overlay_only.contains(&name),
                 });
             }
@@ -920,6 +927,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({ "type": "typography" })).unwrap(),
         );
         let overlay_only: HashSet<String> = ["Drawer".to_string()].into_iter().collect();
+        let trait_empty: HashSet<String> = ["Gated".to_string()].into_iter().collect();
         let gated: HashSet<String> = gated.iter().map(|g| g.to_string()).collect();
         let linked: HashMap<String, String> = [("NotesView".to_string(), "Note".to_string())]
             .into_iter()
@@ -940,6 +948,7 @@ mod tests {
         };
         let cx = FactCx {
             trait_content: &trait_content,
+            trait_empty: &trait_empty,
             target: &target,
             trait_scope: None,
             overlay_only: &overlay_only,
@@ -1026,6 +1035,18 @@ mod tests {
             ]
         );
         assert_eq!(found.access_scoped_empty, vec!["table-view[Note: @read]"]);
+    }
+
+    #[test]
+    fn g_orb_394_a_reference_to_a_trait_that_rendered_null_is_resolved_and_one_never_rendered_is_not() {
+        let nodes = facts_of(
+            serde_json::json!({ "type": "stack", "children": ["@trait.Gated", "@trait.Missing"] }),
+            &[],
+            &[],
+        );
+        let (mut unreal, mut found) = (Vec::new(), Findings::default());
+        judge_nodes(&nodes, &mut unreal, &mut found);
+        assert_eq!(found.unresolved, vec!["Missing".to_string()]);
     }
 
     #[test]

@@ -2595,6 +2595,15 @@ fn test_str_snake_case() {
 }
 
 #[test]
+fn g_cross_452_snake_and_kebab_case_keep_an_all_caps_word_whole() {
+    assert_eq!(eval(r#"["str/snakeCase", "TOOL_CHOSEN"]"#), Value::string("tool_chosen"));
+    assert_eq!(eval(r#"["str/snakeCase", "toolChosen"]"#), Value::string("tool_chosen"));
+    assert_eq!(eval(r#"["str/snakeCase", "HTTPServer"]"#), Value::string("http_server"));
+    assert_eq!(eval(r#"["str/kebabCase", "TOOL_CHOSEN"]"#), Value::string("tool-chosen"));
+    assert_eq!(eval(r#"["str/kebabCase", "item2Name"]"#), Value::string("item2-name"));
+}
+
+#[test]
 fn default_answers_the_fallback_only_for_null_and_evaluates_it_only_then() {
     assert_eq!(eval(r#"["default", null, "fallback"]"#), Value::string("fallback"));
     assert_eq!(eval(r#"["default", "", "fallback"]"#), Value::string(""), "an empty string is present");
@@ -2658,6 +2667,54 @@ fn test_math_random() {
     let result = eval(r#"["math/random"]"#);
     if let Value::Number(n) = result {
         assert!((0.0..=1.0).contains(&n));
+    }
+}
+
+#[test]
+fn g_orbital_core_120_math_random_calls_in_one_millisecond_are_not_all_equal() {
+    let draws: Vec<u64> = (0..200)
+        .map(|_| match eval(r#"["math/random"]"#) {
+            Value::Number(n) => n.to_bits(),
+            other => panic!("expected a number, got {other:?}"),
+        })
+        .collect();
+    let distinct = draws.iter().collect::<std::collections::BTreeSet<_>>().len();
+    assert!(distinct > 100, "200 back-to-back draws gave only {distinct} distinct values: the seed is the millisecond clock");
+}
+
+#[test]
+fn g_orbital_core_120_math_random_in_consecutive_milliseconds_is_not_nearly_identical() {
+    let draw = || match eval(r#"["math/random"]"#) {
+        Value::Number(n) => n,
+        other => panic!("expected a number, got {other:?}"),
+    };
+    let first = draw();
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let second = draw();
+    assert!(
+        (first - second).abs() > 1e-6,
+        "draws a few ms apart differ by {} (an LCG step on the clock moves the result by about 6e-11 per ms)",
+        (first - second).abs()
+    );
+}
+
+#[test]
+fn g_orbital_core_120_random_int_and_shuffle_repeat_within_one_millisecond() {
+    let ints: std::collections::BTreeSet<String> =
+        (0..200).map(|_| format!("{:?}", eval(r#"["math/randomInt", 0, 999999]"#))).collect();
+    assert!(ints.len() > 100, "200 randomInt draws gave {} distinct values", ints.len());
+    let shuffles: std::collections::BTreeSet<String> =
+        (0..200).map(|_| format!("{:?}", eval(r#"["array/shuffle", [1,2,3,4,5,6,7,8,9,10,11,12]]"#))).collect();
+    assert!(shuffles.len() > 100, "200 shuffles of 12 items gave {} distinct orders", shuffles.len());
+}
+
+#[test]
+fn g_orbital_core_120_control_random_stays_in_range() {
+    for _ in 0..50 {
+        let Value::Number(n) = eval(r#"["math/random"]"#) else { panic!("number") };
+        assert!((0.0..=1.0).contains(&n));
+        let Value::Int(i) = eval(r#"["math/randomInt", 3, 9]"#) else { panic!("int") };
+        assert!((3..=9).contains(&i));
     }
 }
 

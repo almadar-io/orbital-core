@@ -26,7 +26,7 @@ impl IoPort {
         }
         Some(match self.ask(|| IoRequest::WriteRows { batch: batch.clone() }) {
             Asked::Answer(IoAnswer::Wrote(outcomes)) => outcomes,
-            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         })
     }
 
@@ -70,7 +70,7 @@ impl IoPort {
                 Asked::Answer(IoAnswer::Committed(Ok(true))) => return Ok(outcomes),
                 Asked::Answer(IoAnswer::Committed(Ok(false))) => continue,
                 Asked::Answer(IoAnswer::Committed(Err(error))) => return Err(error),
-                Asked::Direct | Asked::Answer(_) | Asked::Withheld => return Err(AWAITING_HOST.to_string()),
+                Asked::Direct | Asked::Answer(_) | Asked::Withheld => return Err(self.withheld_error()),
             }
         }
         Err("the rows kept changing".to_string())
@@ -175,7 +175,7 @@ impl IoPort {
                     None
                 }
             }
-            Asked::Answer(_) | Asked::Withheld => Some(Err(AWAITING_HOST.to_string())),
+            Asked::Answer(_) | Asked::Withheld => Some(Err(self.withheld_error())),
         }
     }
 }
@@ -232,7 +232,7 @@ impl ServiceHandler for IoPort {
                 });
                 Ok(Value::Null)
             }
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -249,7 +249,7 @@ impl ServiceHandler for IoPort {
                 None => Err("no service handler configured".to_string()),
             },
             Asked::Answer(IoAnswer::Cancelled(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 }
@@ -259,7 +259,7 @@ impl IoPort {
         match self.ask(|| IoRequest::PageFacts { fields: fields.to_vec() }) {
             Asked::Direct => Err(NO_PAGE_FACTS_HOST.to_string()),
             Asked::Answer(IoAnswer::PageFacts(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -276,7 +276,7 @@ impl IoPort {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(ModelFailure::new(ModelFailureKind::Failed, CALL_CANCELLED))
             }
-            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, AWAITING_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, self.withheld_error())),
         }
     }
 
@@ -289,7 +289,7 @@ impl IoPort {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(ModelFailure::new(ModelFailureKind::Failed, CALL_CANCELLED))
             }
-            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, AWAITING_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(ModelFailure::new(ModelFailureKind::Failed, self.withheld_error())),
         }
     }
 
@@ -302,7 +302,7 @@ impl IoPort {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(TabFailure::new(TabFailureKind::Failed, CALL_CANCELLED))
             }
-            Asked::Answer(_) | Asked::Withheld => Err(TabFailure::new(TabFailureKind::Failed, AWAITING_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(TabFailure::new(TabFailureKind::Failed, self.withheld_error())),
         }
     }
 
@@ -313,7 +313,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Secret(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -332,7 +332,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretSet(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -344,7 +344,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::SecretRotate(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -368,7 +368,7 @@ impl IoPort {
                 }
             }
             Asked::Answer(answer) => answer,
-            Asked::Withheld => return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
+            Asked::Withheld => return Err(OsError::new(OsErrorKind::Io, self.withheld_error())),
         };
         match answer {
             IoAnswer::Os(out) => out
@@ -383,7 +383,7 @@ impl IoPort {
                 *self.verdict.lock() = Some(CallVerdict::Cancelled);
                 Err(OsError::new(OsErrorKind::Closed, CALL_CANCELLED))
             }
-            _ => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
+            _ => Err(OsError::new(OsErrorKind::Io, self.withheld_error())),
         }
     }
 
@@ -406,7 +406,7 @@ impl IoPort {
         match self.ask(|| IoRequest::Clock) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Clock(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -414,7 +414,7 @@ impl IoPort {
         match self.ask(|| IoRequest::Random { bytes }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::Random(out)) => out.map(Secret::into_inner),
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -425,7 +425,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStatus(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -436,7 +436,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialForget(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -448,7 +448,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialConnect { grant: Box::new(grant) }) {
             Asked::Direct => Err(ConnectFailure::new(ConnectFailureKind::Unavailable, NO_CONNECT)),
             Asked::Answer(IoAnswer::CredentialConnect(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(ConnectFailure::new(ConnectFailureKind::Malformed, AWAITING_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(ConnectFailure::new(ConnectFailureKind::Malformed, self.withheld_error())),
         }
     }
 
@@ -456,7 +456,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialStoreList) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreList(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -464,7 +464,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialEnvTails { names: names.to_vec() }) {
             Asked::Direct => Ok(crate::credential_admin::EnvTails::Unsupported),
             Asked::Answer(IoAnswer::CredentialEnvTails(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -472,7 +472,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialStoreRead { name: name.to_string() }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRead(out)) => out.map(|value| value.map(Secret::into_inner)),
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -484,7 +484,7 @@ impl IoPort {
         }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreWrite(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -492,7 +492,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialStoreRemove { name: name.to_string() }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRemove(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -500,7 +500,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialStoreRotate) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialStoreRotate(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -508,7 +508,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialModeRead) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialModeRead(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -516,7 +516,7 @@ impl IoPort {
         match self.ask(|| IoRequest::CredentialModeWrite { mode: mode.to_string() }) {
             Asked::Direct => Err(NO_PORT_HOST.to_string()),
             Asked::Answer(IoAnswer::CredentialModeWrite(out)) => out,
-            Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         }
     }
 
@@ -553,7 +553,7 @@ impl IoPort {
             Asked::Answer(IoAnswer::Substrate(Err(failure))) => Err(failure),
             Asked::Direct => Err(crate::agent_ports::guest_failure(OsErrorKind::Unsupported, NO_PORT_HOST)),
             Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {
-                message: AWAITING_HOST.to_string(),
+                message: self.withheld_error(),
                 errors: Vec::new(),
             }),
         }
@@ -608,7 +608,7 @@ impl SubstrateHandler for IoPort {
                 Ok(Value::Null)
             }
             Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {
-                message: AWAITING_HOST.to_string(),
+                message: self.withheld_error(),
                 errors: Vec::new(),
             }),
         }

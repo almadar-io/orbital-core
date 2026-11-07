@@ -567,6 +567,37 @@ impl Operator for StrCamelCaseOp {
     }
 }
 
+/// Words of a text for the kebab and snake cases: a break at every non-alphanumeric character, at a lower-to-upper
+/// step (`helloWorld`) and at the end of an upper-case run (`HTTPServer` is `http` `server`); an all-caps word stays whole.
+fn case_words(s: &str) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut words = Vec::new();
+    let mut current = String::new();
+    for (i, &c) in chars.iter().enumerate() {
+        if !c.is_alphanumeric() {
+            if !current.is_empty() {
+                words.push(current.to_lowercase());
+                current = String::new();
+            }
+            continue;
+        }
+        if c.is_uppercase() && i > 0 {
+            let prev = chars[i - 1];
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            let breaks = prev.is_lowercase() || prev.is_numeric() || (prev.is_uppercase() && next_lower);
+            if breaks && !current.is_empty() {
+                words.push(current.to_lowercase());
+                current = String::new();
+            }
+        }
+        current.push(c);
+    }
+    if !current.is_empty() {
+        words.push(current.to_lowercase());
+    }
+    words
+}
+
 /// str/kebabCase - Convert to kebab-case
 pub struct StrKebabCaseOp;
 impl Operator for StrKebabCaseOp {
@@ -574,25 +605,7 @@ impl Operator for StrKebabCaseOp {
         require_arity!(args, "kebabCase", 1);
         let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
-        // Split on non-alphanumeric characters or camelCase boundaries
-        let mut words = Vec::new();
-        let mut current_word = String::new();
-
-        for c in s.chars() {
-            if c.is_alphanumeric() {
-                if c.is_uppercase() && !current_word.is_empty() {
-                    words.push(current_word.to_lowercase());
-                    current_word = String::new();
-                }
-                current_word.push(c);
-            } else if !current_word.is_empty() {
-                words.push(current_word.to_lowercase());
-                current_word = String::new();
-            }
-        }
-        if !current_word.is_empty() {
-            words.push(current_word.to_lowercase());
-        }
+        let words = case_words(&s);
 
         Ok(Value::string(words.join("-")))
     }
@@ -605,25 +618,7 @@ impl Operator for StrSnakeCaseOp {
         require_arity!(args, "snakeCase", 1);
         let s = eval_expr(&args[0], ctx)?.text()?.to_string();
 
-        // Split on non-alphanumeric characters or camelCase boundaries
-        let mut words = Vec::new();
-        let mut current_word = String::new();
-
-        for c in s.chars() {
-            if c.is_alphanumeric() {
-                if c.is_uppercase() && !current_word.is_empty() {
-                    words.push(current_word.to_lowercase());
-                    current_word = String::new();
-                }
-                current_word.push(c);
-            } else if !current_word.is_empty() {
-                words.push(current_word.to_lowercase());
-                current_word = String::new();
-            }
-        }
-        if !current_word.is_empty() {
-            words.push(current_word.to_lowercase());
-        }
+        let words = case_words(&s);
 
         Ok(Value::string(words.join("_")))
     }

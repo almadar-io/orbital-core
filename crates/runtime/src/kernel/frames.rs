@@ -294,11 +294,12 @@ impl RuntimeKernel {
         &self,
         entity_id: Option<&str>,
     ) -> BTreeMap<String, (String, DispatchMode)> {
+        let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         let defs: Vec<Arc<TraitDefinition>> =
             self.registry.trait_definitions.read().values().cloned().collect();
         defs.iter()
             .map(|def| {
-                let state = self.current_state_name(&def.name, entity_id);
+                let state = self.current_state_name(&def.name, Some(eid));
                 (def.name.clone(), (state, self.dispatch_mode_of(def)))
             })
             .collect()

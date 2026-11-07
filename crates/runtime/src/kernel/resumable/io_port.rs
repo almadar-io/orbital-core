@@ -150,8 +150,8 @@ impl IoPort {
             match slot.as_mut().filter(|ledger| ledger.thread == orbital_core_base::sync::current_thread()) {
                 None => false,
                 Some(ledger) => {
-                    if ledger.diverged.is_some() {
-                        return Err(AWAITING_HOST.to_string());
+                    if let Some(diverged) = &ledger.diverged {
+                        return Err(diverged.to_string());
                     }
                     let next = (0..ledger.journal.len()).find(|i| !ledger.claimed.has(*i));
                     match next {
@@ -162,11 +162,13 @@ impl IoPort {
                                 ledger.claimed.claim(i);
                                 return out;
                             }
-                            ledger.diverged = Some(ResumeError::Diverged {
+                            let diverged = ResumeError::Diverged {
                                 recorded: Box::new(recorded.request.clone()),
                                 got: Box::new(request),
-                            });
-                            return Err(AWAITING_HOST.to_string());
+                            };
+                            let message = diverged.to_string();
+                            ledger.diverged = Some(diverged);
+                            return Err(message);
                         }
                         None if ledger.blocked => return Err(AWAITING_HOST.to_string()),
                         None => true,
@@ -324,7 +326,7 @@ impl IoPort {
                 self.forget_reads(entity_type);
                 outcomes.and_then(|mut o| o.pop().ok_or_else(|| "the store driver answered a write with no outcome".to_string()))
             }
-            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(AWAITING_HOST.to_string()),
+            Asked::Direct | Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
         })
     }
 
@@ -489,6 +491,17 @@ impl IoPort {
             .as_ref()
             .filter(|ledger| ledger.thread == orbital_core_base::sync::current_thread())
             .map_or(0, |ledger| ledger.claimed.prefix)
+    }
+
+    /// The error of an ask the step could not have answered: the divergence from the journal when the replay asked
+    /// differently than it recorded, else [`AWAITING_HOST`].
+    pub(crate) fn withheld_error(&self) -> String {
+        self.ledger
+            .lock()
+            .as_ref()
+            .filter(|l| l.thread == orbital_core_base::sync::current_thread())
+            .and_then(|l| l.diverged.as_ref().map(ToString::to_string))
+            .unwrap_or_else(|| AWAITING_HOST.to_string())
     }
 
     /// Whether the step in flight is waiting on host or store answers, and has not diverged from its record.

@@ -435,6 +435,7 @@ impl NodeLowerer {
 
             // Arithmetic operators
             "+" => self.variadic_binary_op(args, OirExpr::add),
+            "-" if args.len() == 1 => self.unary_op(args, OirExpr::neg),
             "-" => self.binary_op(args, OirExpr::sub),
             "*" => self.variadic_binary_op(args, |l, r| OirExpr::BinaryOp {
                 op: OirBinaryOp::Mul,

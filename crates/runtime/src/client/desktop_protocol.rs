@@ -49,7 +49,19 @@ pub enum DesktopRequest {
         route: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server: Option<String>,
+        /// Physical size and device pixel ratio of the capture (another host's screen, for a pixel diff); the
+        /// program's default window when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        viewport: Option<CaptureViewport>,
     },
+}
+
+/// A capture surface: `width` × `height` physical pixels at device pixel ratio `scale`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CaptureViewport {
+    pub width: u32,
+    pub height: u32,
+    pub scale: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +236,18 @@ mod tests {
         assert_eq!(window_flags(&args(&["--renderer", "tui", "--renderer", "dioxus"])), None);
         assert_eq!(window_flags(&args(&["--renderer"])), None);
         assert_eq!(window_flags(&args(&["--nope", "x"])), None);
+    }
+
+    #[test]
+    fn a_screenshot_viewport_is_optional_and_carries_physical_size_and_scale() {
+        let base = r#"{"command":"screenshot","renderer":"dioxus","item":"i","schema":{"name":"A","typeContractVersion":1,"orbitals":[]},"outDir":"/tmp/o","route":"/""#;
+        let with: DesktopRequest =
+            serde_json::from_str(&format!(r#"{base},"viewport":{{"width":1080,"height":2400,"scale":2.625}}}}"#)).unwrap();
+        let DesktopRequest::Screenshot { viewport, .. } = with else { panic!("screenshot") };
+        assert_eq!(viewport, Some(CaptureViewport { width: 1080, height: 2400, scale: 2.625 }));
+        let without: DesktopRequest = serde_json::from_str(&format!("{base}}}")).unwrap();
+        let DesktopRequest::Screenshot { viewport, .. } = without else { panic!("screenshot") };
+        assert_eq!(viewport, None, "control: an envelope without a viewport keeps the default window");
     }
 
     #[test]

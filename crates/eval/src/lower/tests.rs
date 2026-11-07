@@ -509,3 +509,11 @@ fn control_a_written_lambda_a_value_slot_and_quoted_data_stay_as_written() {
         assert_eq!(expr, original, "{json}");
     }
 }
+
+#[test]
+fn g_cross_450_a_one_argument_minus_lowers_to_a_negation() {
+    let lowered = lower_sexpr(&call("-", vec![SExpression::Number(5.0)])).expect("unary minus lowers");
+    assert_eq!(lowered, OirExpr::neg(OirExpr::number(5.0)));
+    let binary = lower_sexpr(&call("-", vec![SExpression::Number(5.0), SExpression::Number(2.0)])).expect("binary minus lowers");
+    assert_eq!(binary, OirExpr::sub(OirExpr::number(5.0), OirExpr::number(2.0)));
+}

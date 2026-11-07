@@ -72,7 +72,13 @@ pub struct DispatchWire {
 #[derive(Debug, Clone)]
 pub struct BatchStep {
     pub trait_name: String,
+    /// The event the step ran (`None` for a tick).
+    pub event: Option<String>,
     pub emitter: Option<String>,
+    /// The event as its emitter emitted it (before a listen's mapping), when a delivery ran the step.
+    pub delivered: Option<String>,
+    /// The events the step's effects emitted, in order.
+    pub emitted: Vec<String>,
     pub delegated: bool,
 }
 
