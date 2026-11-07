@@ -79,7 +79,17 @@ impl RuntimeKernel {
         referenced
     }
 
-    /// Which page a client shows and what mounts for it: the named page, else the page a route matches,
+    /// The INIT payload a page mount of `route` carries: the route params of the page it resolves to (EXEC-ENDPOINT-3),
+    /// as a client's `page_mount_payload`; `null` when the page has none or no page matches.
+    pub fn route_mount_payload(&self, route: &str) -> Value {
+        let pages = self.route_pages();
+        orbital_core_base::route::best_path_match(route, pages.iter().map(|p| p.path.as_str()))
+            .and_then(|pattern| orbital_core_base::route::route_params(pattern, route))
+            .filter(|params| !params.is_empty())
+            .map_or(Value::Null, Value::object)
+    }
+
+    /// Which page a client shows and what mounts for it: the named page, else the most specific page a route matches,
     /// else the `[initial]` page, else the first route page in declaration order; an unmatched route resolves to the `[notFound]` page.
     pub fn page_circuit(
         &self,
@@ -95,9 +105,8 @@ impl RuntimeKernel {
                     .find(|p| p.name == name)
                     .ok_or_else(|| format!("unknown page: {name}"))?,
             ),
-            (None, Some(route)) => pages
-                .iter()
-                .find(|p| orbital_core_base::route::path_matches_pattern(route, &p.path))
+            (None, Some(route)) => orbital_core_base::route::best_path_match(route, pages.iter().map(|p| p.path.as_str()))
+                .and_then(|best| pages.iter().find(|p| p.path == best))
                 .or_else(|| {
                     not_found = true;
                     pages.iter().find(|p| p.is_not_found)

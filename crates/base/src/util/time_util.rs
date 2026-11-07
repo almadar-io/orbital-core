@@ -15,11 +15,24 @@ pub fn now_millis() -> i64 {
 }
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+static INSTALLED_CLOCK: std::sync::OnceLock<fn() -> i64> = std::sync::OnceLock::new();
+
+/// A clock that replaces the OS clock for the whole process, installed once before the kernel reads time: a harness that
+/// runs two kernels side by side gives both the same `@now`. Without one, the OS clock is read.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub fn install_clock(clock: fn() -> i64) {
+    assert!(INSTALLED_CLOCK.set(clock).is_ok(), "the clock is installed once");
+}
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    match INSTALLED_CLOCK.get() {
+        Some(clock) => clock(),
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+    }
 }
 
 #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
@@ -53,7 +66,10 @@ pub fn now_rfc3339() -> String {
 
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub fn now_rfc3339() -> String {
-    chrono::Utc::now().to_rfc3339()
+    match INSTALLED_CLOCK.get() {
+        Some(clock) => chrono::DateTime::from_timestamp_millis(clock()).map(|at| at.to_rfc3339()).unwrap_or_default(),
+        None => chrono::Utc::now().to_rfc3339(),
+    }
 }
 
 #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]

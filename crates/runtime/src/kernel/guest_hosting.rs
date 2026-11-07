@@ -23,7 +23,7 @@ pub trait GuestHost: Send + Sync {
     fn kernel(&self) -> Arc<RuntimeKernel>;
     fn register(&self, schema: OrbitalSchema) -> Result<(), String>;
     /// The route mount of `route` (`$MOUNT` first, its deferred work settled), then `seeds`.
-    fn mount(&self, route: Option<&str>, seeds: &[MountSeed]) -> Result<DispatchOutcomes, String>;
+    fn mount(&self, route: Option<&str>, seeds: &[MountSeed], payload: Value) -> Result<DispatchOutcomes, String>;
     fn dispatch(
         &self,
         trait_name: &str,

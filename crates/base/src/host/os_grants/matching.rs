@@ -630,3 +630,120 @@ pub fn covers(asker: &OsGrants, guest: &OsGrants) -> Result<(), Vec<String>> {
     }
     if missing.is_empty() { Ok(()) } else { Err(missing) }
 }
+
+fn held_kinds<K: Copy + PartialEq>(held: impl Iterator<Item = K>, asked: &[K]) -> Vec<K> {
+    let held: Vec<K> = held.collect();
+    asked.iter().copied().filter(|kind| held.contains(kind)).collect()
+}
+
+/// `guest` narrowed to what `asker` holds (EXEC-CONC-7 `declared`): each guest grant keeps only the kinds the asker
+/// holds over its target, by the same containment [`covers`] checks, and a grant left with none is dropped, so
+/// `covers(asker, &narrow(asker, guest))` always holds.
+pub fn narrow(asker: &OsGrants, guest: &OsGrants) -> OsGrants {
+    let mut out = OsGrants::default();
+    for grant in &guest.fs {
+        let modes = held_kinds(asker.fs.iter().filter(|g| glob_within(&g.glob, &grant.glob)).flat_map(|g| g.modes.iter().copied()), &grant.modes);
+        if !modes.is_empty() {
+            out.fs.push(FsGrant { glob: grant.glob.clone(), modes });
+        }
+    }
+    out.exec = guest.exec.iter().filter(|command| asker.exec.contains(command)).cloned().collect();
+    for grant in &guest.net {
+        let kinds = held_kinds(asker.net.iter().filter(|g| net_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.net.push(NetGrant { target: grant.target.clone(), kinds });
+        }
+    }
+    out.env = guest.env.iter().filter(|name| asker.env.contains(name)).cloned().collect();
+    out.stdio = held_kinds(asker.stdio.iter().copied(), &guest.stdio);
+    out.sys = held_kinds(asker.sys.iter().copied(), &guest.sys);
+    out.desktop = held_kinds(asker.desktop.iter().copied(), &guest.desktop);
+    out.credentials = held_kinds(asker.credentials.iter().copied(), &guest.credentials);
+    for grant in &guest.dev {
+        let kinds = held_kinds(asker.dev.iter().filter(|g| dev_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.dev.push(DevGrant { target: grant.target.clone(), kinds });
+        }
+    }
+    for grant in &guest.mem {
+        let kinds = held_kinds(asker.mem.iter().filter(|g| mem_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.mem.push(MemGrant { target: grant.target.clone(), kinds });
+        }
+    }
+    for grant in &guest.kernel {
+        let kinds = held_kinds(asker.kernel.iter().filter(|g| kernel_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.kernel.push(KernelGrant { target: grant.target.clone(), kinds });
+        }
+    }
+    for grant in &guest.gpu {
+        let kinds = held_kinds(asker.gpu.iter().filter(|g| gpu_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.gpu.push(GpuGrant { target: grant.target.clone(), kinds });
+        }
+    }
+    out.ffi = guest.ffi.iter().filter(|grant| asker.ffi.contains(grant)).cloned().collect();
+    for (store, modes) in &guest.kv {
+        let literal = !store.contains(['*', '?']);
+        let held = asker
+            .kv
+            .iter()
+            .filter(|(glob, _)| *glob == store || glob.as_str() == "*" || (literal && segment_matches(&glob.chars().collect::<Vec<_>>(), &store.chars().collect::<Vec<_>>())))
+            .flat_map(|(_, held)| held.iter().copied());
+        let modes = held_kinds(held, modes);
+        if !modes.is_empty() {
+            out.kv.insert(store.clone(), modes);
+        }
+    }
+    for grant in &guest.anchored.fs {
+        let modes = held_kinds(asker.anchored.fs.iter().filter(|g| g.anchor == grant.anchor && glob_within(&g.glob, &grant.glob)).flat_map(|g| g.modes.iter().copied()), &grant.modes);
+        if !modes.is_empty() {
+            out.anchored.fs.push(AnchoredFsGrant { anchor: grant.anchor.clone(), glob: grant.glob.clone(), modes });
+        }
+    }
+    out.anchored.exec = guest.anchored.exec.iter().filter(|entry| asker.anchored.exec.contains(entry)).cloned().collect();
+    for grant in &guest.anchored.net {
+        let kinds = held_kinds(asker.anchored.net.iter().filter(|g| g.host == grant.host && g.port == grant.port).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
+        if !kinds.is_empty() {
+            out.anchored.net.push(AnchoredNetGrant { host: grant.host.clone(), port: grant.port.clone(), kinds });
+        }
+    }
+    out
+}
+
+/// `a` and `b` together: every grant of either.
+pub fn union(a: &OsGrants, b: &OsGrants) -> OsGrants {
+    let mut out = a.clone();
+    out.fs.extend(b.fs.iter().cloned());
+    out.exec.extend(b.exec.iter().filter(|c| !a.exec.contains(c)).cloned());
+    out.net.extend(b.net.iter().cloned());
+    out.env.extend(b.env.iter().filter(|n| !a.env.contains(n)).cloned());
+    out.stdio.extend(b.stdio.iter().filter(|k| !a.stdio.contains(k)).copied());
+    out.sys.extend(b.sys.iter().filter(|k| !a.sys.contains(k)).copied());
+    out.desktop.extend(b.desktop.iter().filter(|k| !a.desktop.contains(k)).copied());
+    out.credentials.extend(b.credentials.iter().filter(|k| !a.credentials.contains(k)).copied());
+    out.dev.extend(b.dev.iter().cloned());
+    out.mem.extend(b.mem.iter().cloned());
+    out.kernel.extend(b.kernel.iter().cloned());
+    out.gpu.extend(b.gpu.iter().cloned());
+    out.ffi.extend(b.ffi.iter().filter(|g| !a.ffi.contains(g)).cloned());
+    for (store, modes) in &b.kv {
+        let held = out.kv.entry(store.clone()).or_default();
+        held.extend(modes.iter().filter(|m| !held.contains(m)).copied().collect::<Vec<_>>());
+    }
+    out.anchored.fs.extend(b.anchored.fs.iter().cloned());
+    out.anchored.exec.extend(b.anchored.exec.iter().filter(|e| !a.anchored.exec.contains(e)).cloned());
+    out.anchored.net.extend(b.anchored.net.iter().cloned());
+    out
+}
+
+/// What a guest opened with `declared` holds (EXEC-CONC-7): each orbital's declared grants and the app level's narrowed
+/// to `held`, with `passed` added at the app level.
+pub fn narrow_program_grants(schema: &mut crate::schema::types::OrbitalSchema, held: &OsGrants, passed: &OsGrants) {
+    let app = schema.os_grants.as_ref().map(|declared| narrow(held, declared)).unwrap_or_default();
+    schema.os_grants = Some(union(passed, &app));
+    for orbital in schema.orbitals.iter_mut() {
+        orbital.os_grants = orbital.os_grants.as_ref().map(|declared| narrow(held, declared));
+    }
+}

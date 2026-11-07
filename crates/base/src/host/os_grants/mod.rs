@@ -544,7 +544,7 @@ pub use gpu::{gpu_target, GpuGrant, GpuKind, GpuTarget};
 pub use ffi::{parse_ffi_signature, FfiGrant, FfiRet, FfiSignature, FfiType, FFI_MAX_PARAMS};
 pub use static_check::{os_grant_findings, prune_composed_unused_grants, OsGrantFinding, OsGrantFindingCode, OsGrantPass, OsGrantVia, OsGrantsReport};
 use matching::*;
-pub use matching::covers;
+pub use matching::{covers, narrow, narrow_program_grants, union};
 use anchors::*;
 pub use anchors::{AnchoredPath, EntryProblem, EnvSnapshot, GrantAtom, OsAnchors};
 #[cfg(feature = "std")]

@@ -19,7 +19,7 @@ use orbital_core_base::agent_ports::AgentPortFailure;
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::json_value::value_to_json;
-use orbital_core_base::os_grants::{covers, KernelKind, OsGrants};
+use orbital_core_base::os_grants::{covers, narrow_program_grants, KernelKind, OsGrants};
 use orbital_core_base::protocols::ProtocolSide;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::sync::RwLock;
@@ -297,9 +297,10 @@ fn mount_seeds(
     seeds: &[MountSeed],
     op: &str,
 ) -> Result<Vec<(String, ProcessEventResult)>, AgentPortFailure> {
+    let payload = route.map_or(Value::Null, |route| guest.route_mount_payload(route));
     let mounted = match host {
-        Some(host) => host.mount(route, seeds),
-        None => guest.dispatch_route_mount(route, seeds, None, Value::Null).map_err(|e| e.to_string()),
+        Some(host) => host.mount(route, seeds, payload),
+        None => guest.dispatch_route_mount(route, seeds, None, payload).map_err(|e| e.to_string()),
     };
     mounted.map_err(|e| failure(format!("{op}: mounting {}: {e}", route.unwrap_or_default())))
 }
@@ -387,8 +388,19 @@ impl RuntimeKernel {
         };
         let asked_grants = options.as_ref().and_then(|o| o.get("grants").cloned());
         let asked_arenas = options.as_ref().and_then(|o| o.get("arenas").cloned());
+        let keep_declared = match options.as_ref().and_then(|o| o.get("declared").cloned()) {
+            None => false,
+            Some(Value::Bool(keep)) => keep,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `declared` is true or false",
+                ))
+            }
+        };
         let mut granted: Option<OsGrants> = None;
-        if asked_grants.is_some() || asked_arenas.is_some() {
+        let mut opener_held: Option<OsGrants> = None;
+        if asked_grants.is_some() || asked_arenas.is_some() || keep_declared {
             let held = self.may_spawn_guest("program/open")?;
             let guest: OsGrants = serde_json::from_value(value_to_json(
                 asked_grants
@@ -408,6 +420,7 @@ impl RuntimeKernel {
                 )
             })?;
             granted = Some(guest);
+            opener_held = Some(held);
         }
         let mut handed = Vec::new();
         match &asked_arenas {
@@ -453,14 +466,20 @@ impl RuntimeKernel {
         let carries_lazy = carried.is_some();
         let mut lazy_programs = carried.unwrap_or_default();
         let host = self.guest_hosting().map(|hosting| hosting.open());
-        // A guest holds exactly the grants it was passed: none when none were, even under a host.
+        // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
+        // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {
             for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
-                carried_schema.os_grants = granted.clone();
-                carried_schema
-                    .orbitals
-                    .iter_mut()
-                    .for_each(|orbital| orbital.os_grants = None);
+                match (keep_declared, &opener_held) {
+                    (true, Some(held)) => narrow_program_grants(carried_schema, held, granted.as_ref().unwrap_or(&OsGrants::default())),
+                    _ => {
+                        carried_schema.os_grants = granted.clone();
+                        carried_schema
+                            .orbitals
+                            .iter_mut()
+                            .for_each(|orbital| orbital.os_grants = None);
+                    }
+                }
             }
         }
         let (guest, source) = match &host {

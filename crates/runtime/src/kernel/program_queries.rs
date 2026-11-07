@@ -271,12 +271,22 @@ impl RuntimeKernel {
         Ok(out.into())
     }
 
-    /// What mounts when a client opens `route_path`: the traits of the route pages whose path
-    /// matches, and nothing from protocol endpoints.
+    /// What mounts when a client opens `route_path`: the traits of the route pages its most specific
+    /// matching pattern names (EXEC-ENDPOINT-3), and nothing from protocol endpoints.
     pub fn route_mounts(&self, route_path: &str) -> Vec<crate::effects::response::MountSeed> {
+        let mut patterns: Vec<String> = Vec::new();
+        self.each_inline_page(|page| {
+            if page.is_route() {
+                patterns.push(page.path.clone());
+            }
+        });
+        let Some(best) = orbital_core_base::route::best_path_match(route_path, patterns.iter().map(String::as_str)) else {
+            return Vec::new();
+        };
         self.mounts_of(|page| {
             page.is_route()
                 && orbital_core_base::route::path_matches_pattern(route_path, &page.path)
+                && orbital_core_base::route::compare_path_specificity(&page.path, best) == core::cmp::Ordering::Equal
         })
     }
 

@@ -286,6 +286,33 @@ fn edge_a_guest_given_grants_needs_the_openers_kernel_spawn_grant() {
     );
 }
 
+fn opened_with(options: serde_json::Value) -> serde_json::Value {
+    let kernel = opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] }
+    ]));
+    run(&kernel, "GO")
+}
+
+#[test]
+fn edge_a_guest_keeping_its_declared_grants_needs_the_openers_kernel_spawn_grant() {
+    let after = opened_with(json!({ "declared": true }));
+    assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("no kernel guest grant covers it")), "{after}");
+}
+
+#[test]
+fn edge_declared_is_a_boolean() {
+    let after = opened_with(json!({ "declared": "yes" }));
+    assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("`declared` is true or false")), "{after}");
+}
+
+#[test]
+fn control_declared_false_opens_like_no_options() {
+    let after = opened_with(json!({ "declared": false }));
+    assert!(after["guest"].as_str().is_some_and(|g| g.starts_with("guest-")), "{after}");
+}
+
 /// An opener that paints the guest's last screen inside a `guest-view` and turns its control clicks into guest dispatches.
 /// A host scopes each guest paint to its painter, so a click reaches the opener as `<Painter>.<EVENT>`.
 fn painting_opener() -> RuntimeKernel {
@@ -897,4 +924,33 @@ fn a_guest_create_form_save_without_an_id_is_admitted() {
     let after = run(&kernel, "SAVE");
     assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
     assert!(painted(&after["got"]).contains(&"saved".to_string()), "{after}");
+}
+
+fn shop_with_item_page() -> serde_json::Value {
+    let item = json!({
+        "name": "ItemT", "linkedEntity": "ShopItem",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                ["render-ui", "main", { "type": "typography", "content": ["str/concat", "item ", ["object/get", "@payload", "id", "none"]] }]
+            ] }] }
+    });
+    json!({
+        "name": "Shop", "typeContractVersion": 1,
+        "orbitals": [shop_orbital("Main", "ShopItem", json!([item, paints("TreeT", "tree ran")]), json!([
+            { "name": "Item", "path": "/items/:id", "traits": [{ "ref": "ItemT" }] },
+            { "name": "Tree", "path": "/items/tree", "traits": [{ "ref": "TreeT" }] }
+        ]))]
+    })
+}
+
+#[test]
+fn a_guest_route_mount_carries_the_route_params_as_a_client_page_mount_does() {
+    let (_, after) = open_shop(shop_with_item_page(), json!({ "route": "/items/i-7" }));
+    assert!(painted(&after["got"]).contains(&"item i-7".to_string()), "{after}");
+}
+
+#[test]
+fn control_a_literal_guest_route_opens_its_own_page_not_the_param_sibling() {
+    let (_, after) = open_shop(shop_with_item_page(), json!({ "route": "/items/tree" }));
+    assert_eq!(mounted(&after["got"]), ["TreeT"], "{after}");
 }

@@ -3973,3 +3973,41 @@ fn a_drive_rooted_windows_path_is_its_drive_then_its_segments() {
     assert!(grants.fs_allows(Path::new("C:/Users/r/.almadar/derived/a"), FsMode::Write));
     assert!(!grants.fs_allows(Path::new("C:/Users/r/.almadar/a"), FsMode::Write), "outside the anchor");
 }
+
+#[test]
+fn narrow_keeps_only_what_the_asker_holds_of_each_declared_grant() {
+    let asker = grants_of(json!({
+        "env": ["HOME"],
+        "net": [{ "target": "*.github.com:443", "kinds": ["tcp"] }],
+        "fs": [{ "glob": "/data/**", "modes": ["read"] }],
+        "kernel": [{ "target": "guest", "kinds": ["spawn"] }]
+    }));
+    let declared = grants_of(json!({
+        "env": ["HOME", "OPENAI_API_KEY"],
+        "net": [{ "target": "api.github.com:443", "kinds": ["tcp"] }, { "target": "api.openai.com:443", "kinds": ["tcp"] }],
+        "fs": [{ "glob": "/data/notes/**", "modes": ["read", "write"] }],
+        "exec": ["git"]
+    }));
+    let narrowed = narrow(&asker, &declared);
+    assert_eq!(narrowed, grants_of(json!({
+        "env": ["HOME"],
+        "net": [{ "target": "api.github.com:443", "kinds": ["tcp"] }],
+        "fs": [{ "glob": "/data/notes/**", "modes": ["read"] }]
+    })));
+    assert_eq!(covers(&asker, &narrowed), Ok(()));
+}
+
+#[test]
+fn control_narrow_of_what_the_asker_fully_holds_is_unchanged_and_of_nothing_is_nothing() {
+    let asker = grants_of(json!({ "env": ["HOME", "PATH"], "exec": ["git"] }));
+    let declared = grants_of(json!({ "env": ["PATH"], "exec": ["git"] }));
+    assert_eq!(narrow(&asker, &declared), declared);
+    assert_eq!(narrow(&OsGrants::default(), &declared), OsGrants::default());
+}
+
+#[test]
+fn union_adds_the_passed_set_to_the_narrowed_one_without_duplicates() {
+    let a = grants_of(json!({ "env": ["HOME"] }));
+    let b = grants_of(json!({ "env": ["HOME", "AUTH_EMULATOR_HOST"] }));
+    assert_eq!(union(&a, &b), grants_of(json!({ "env": ["HOME", "AUTH_EMULATOR_HOST"] })));
+}

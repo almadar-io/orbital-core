@@ -838,15 +838,12 @@ impl ClientCore {
     /// orbital first, then any other, with its route params merged under `params` (explicit wins,
     /// as the web router merges them); an unknown path keeps the page and says so.
     pub fn navigate_to(&mut self, path: &str, params: Option<&Value>) {
-        let here = pages_of(&self.schema, self.current_orbital_idx).find_map(|p| {
-            route_params(&p.path, path).map(|r| (self.current_orbital_idx, p.name.clone(), r))
-        });
-        let found = here.or_else(|| {
-            (0..self.schema.orbitals.len()).find_map(|idx| {
-                pages_of(&self.schema, idx)
-                    .find_map(|p| route_params(&p.path, path).map(|r| (idx, p.name.clone(), r)))
-            })
-        });
+        let most_specific = |idx: usize| {
+            let paths: Vec<String> = pages_of(&self.schema, idx).map(|p| p.path.clone()).collect();
+            let best = orbital_core_base::route::best_path_match(path, paths.iter().map(String::as_str))?.to_string();
+            pages_of(&self.schema, idx).find(|p| p.path == best).and_then(|p| orbital_core_base::route::route_params(&p.path, path).map(|r| (idx, p.name.clone(), r)))
+        };
+        let found = most_specific(self.current_orbital_idx).or_else(|| (0..self.schema.orbitals.len()).find_map(most_specific));
         let Some((idx, page, mut route)) = found.or_else(|| self.not_found_target()) else {
             tracing::warn!(target: "almadar::client", path = %path, "navigate: no page matches");
             self.status_message = Some((format!("No page at {path}"), true));
@@ -1403,31 +1400,6 @@ fn fill_route(pattern: &str, params: &ValueMap) -> String {
 
 /// A route pattern matched against a path segment by segment: a `:param` segment matches any
 /// value and binds it. `None` when the path is not this route.
-fn route_params(pattern: &str, path: &str) -> Option<ValueMap> {
-    let route: Vec<&str> = pattern.trim_matches('/').split('/').collect();
-    let actual: Vec<&str> = path
-        .split(['?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_matches('/')
-        .split('/')
-        .collect();
-    if route.len() != actual.len() {
-        return None;
-    }
-    let mut params = ValueMap::default();
-    for (r, a) in route.iter().zip(&actual) {
-        match r.strip_prefix(':') {
-            Some(name) => {
-                params.insert(name.to_string().into(), Value::string((*a).to_string()));
-            }
-            None if r == a => {}
-            None => return None,
-        }
-    }
-    Some(params)
-}
-
 fn init_seeds(traits: &[String]) -> Vec<crate::effects::response::MountSeed> {
     traits
         .iter()

@@ -1131,3 +1131,17 @@ fn a_refused_mount_names_the_entering_traits() {
     assert_eq!(fault.trait_name, "First, Second");
     assert_eq!(fault.message, "Server error: unknown trait: X");
 }
+
+#[test]
+fn route_precedence_navigate_opens_a_literal_page_declared_after_its_param_sibling() {
+    let mut schema = two_page_schema();
+    schema.orbitals[0].pages.as_mut().unwrap().push(
+        serde_json::from_value(serde_json::json!({ "name": "TreePage", "path": "/notes/tree", "traits": [{ "ref": "ListTrait" }] })).unwrap(),
+    );
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.navigate_to("/notes/tree", None);
+    assert_eq!(core.current_page.as_deref(), Some("TreePage"));
+    core.navigate_to("/notes/42", None);
+    assert_eq!(core.current_page.as_deref(), Some("DetailPage"), "control: another segment still opens the param page");
+}
