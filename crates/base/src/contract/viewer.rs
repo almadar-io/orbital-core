@@ -90,42 +90,6 @@ pub fn is_identity_effect(operator: &str) -> bool {
 }
 
 /// The viewer theme effects (G-CROSS-395): bind or clear the session's theme key, as the identity effects bind `@user`.
-/// The `ALMADAR_PERSONA` contract (the twin of `@almadar/core`'s `resolvePersonaSpec`, sharing
-/// `tests/baked/mock-seed/persona-resolution.json`): a bare spec names a roster row by id, else by role (the first row
-/// with it), the roster being the program's seeded `[identity]` rows; a JSON spec is a self-contained viewer that needs
-/// an `id` (or `uid`). Anything unresolvable is an error, never the anonymous viewer.
-pub fn resolve_persona(spec: &str, roster: &[Value]) -> Result<Value, String> {
-    let raw = spec.trim();
-    if !raw.starts_with('{') {
-        let text = |row: &Value, key: &str| row.get(key).and_then(Value::as_str).map(str::to_string);
-        let found = roster
-            .iter()
-            .find(|row| text(row, "id").as_deref() == Some(raw))
-            .or_else(|| roster.iter().find(|row| text(row, "role").as_deref() == Some(raw)));
-        return found.cloned().ok_or_else(|| {
-            if roster.is_empty() {
-                format!("persona \"{raw}\": the program declares no seeded [identity] rows, so only the JSON persona form is accepted")
-            } else {
-                let known: Vec<String> = roster
-                    .iter()
-                    .map(|row| format!("{}/{}", text(row, "id").unwrap_or_default(), text(row, "role").unwrap_or_else(|| "-".to_string())))
-                    .collect();
-                format!("persona \"{raw}\" is not a declared persona id or role; known: {}", known.join(", "))
-            }
-        });
-    }
-    let parsed: serde_json::Value = serde_json::from_str(raw).map_err(|e| format!("persona is not valid JSON: {e}"))?;
-    let mut viewer: Value = serde_json::from_value(parsed).map_err(|e| format!("persona is not a viewer: {e}"))?;
-    let id = viewer.get("id").or_else(|| viewer.get("uid")).and_then(Value::as_str).filter(|id| !id.is_empty()).map(str::to_string);
-    let Some(id) = id else {
-        return Err(format!("persona needs an \"id\" (or \"uid\"): {raw}"));
-    };
-    if let Value::Object(map) = &mut viewer {
-        map.insert("id".into(), Value::string(id));
-    }
-    Ok(viewer)
-}
-
 pub const THEME_SET: &str = "theme/set";
 pub const THEME_CLEAR: &str = "theme/clear";
 
@@ -359,25 +323,5 @@ mod tests {
             }],
         };
         assert!(viewer.to_user().unwrap_err().contains("role"));
-    }
-}
-
-#[cfg(test)]
-mod persona_tests {
-    use super::*;
-
-    #[test]
-    fn resolve_persona_follows_the_shared_persona_resolution_vector() {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/baked/mock-seed/persona-resolution.json");
-        let vector: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let roster: Vec<Value> = vector["roster"].as_array().unwrap().iter().map(|r| serde_json::from_value(r.clone()).unwrap()).collect();
-        for case in vector["cases"].as_array().unwrap() {
-            let spec = case["spec"].as_str().unwrap();
-            let resolved = resolve_persona(spec, &roster);
-            match case["resolvesToId"].as_str() {
-                Some(id) => assert_eq!(resolved.unwrap().get("id").and_then(Value::as_str), Some(id), "spec {spec:?}"),
-                None => assert!(resolved.is_err(), "spec {spec:?} must be an error: {resolved:?}"),
-            }
-        }
     }
 }
