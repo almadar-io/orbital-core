@@ -16,6 +16,7 @@
 //! 3. **Complete**: Contains all information needed for code generation
 //! 4. **Validated**: By the time we have OIR, all validation has passed
 
+pub mod cycle;
 pub mod effects;
 pub mod embedded_traits;
 pub mod gated_traits;
