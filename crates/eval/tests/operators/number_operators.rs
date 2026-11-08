@@ -225,7 +225,6 @@ fn division_and_range_failures_answer_null_with_a_good_control() {
     }
     assert_eq!(eval_any(serde_json::json!(["/", 6, 3])), Value::Number(2.0));
     assert_eq!(eval_any(serde_json::json!(["%", 7, 3])), Value::Number(1.0));
-    assert_eq!(eval_any(serde_json::json!(["math/randomInt", 5, 5])), Value::Number(5.0));
     assert_eq!(eval_any(serde_json::json!(["bit/xor", 1, 3])), Value::Number(2.0));
     assert_eq!(eval_any(serde_json::json!(["bit/shl", 1, 3])), Value::Number(8.0));
     assert_eq!(eval_any(serde_json::json!(["bytes/at", "aGk=", 1])), Value::Number(105.0));

@@ -46,6 +46,20 @@ pub fn best_path_match<'a>(path: &str, patterns: impl IntoIterator<Item = &'a st
     best
 }
 
+/// The declared patterns that match a strict, non-empty prefix of `path`, shallowest first (the nav-stack cold-load
+/// seed, EXEC-ENDPOINT-3): for each prefix, the pattern `best_path_match` picks, paired with the concrete prefix.
+/// A query or fragment is ignored; the root is not an ancestor entry.
+pub fn ancestor_matches<'a>(path: &str, patterns: &[&'a str]) -> Vec<(String, &'a str)> {
+    let clean = path.split(['?', '#']).next().unwrap_or("");
+    let segments: Vec<&str> = clean.split('/').filter(|s| !s.is_empty()).collect();
+    (1..segments.len())
+        .filter_map(|depth| {
+            let prefix = format!("/{}", segments[..depth].join("/"));
+            best_path_match(&prefix, patterns.iter().copied()).map(|pattern| (prefix, pattern))
+        })
+        .collect()
+}
+
 /// The `:param` values `path` gives `pattern`, by name (none when it does not match); a query or fragment is ignored.
 pub fn route_params(pattern: &str, path: &str) -> Option<crate::value::ValueMap> {
     let route: Vec<&str> = pattern.trim_matches('/').split('/').collect();
@@ -101,5 +115,27 @@ mod tests {
         assert_eq!(best_path_match("/notes", declared), Some("/notes"));
         assert_eq!(best_path_match("/other", declared), None);
         assert_eq!(best_path_match("/a/b", ["/a/:x", "/a/:y"]), Some("/a/:x"));
+    }
+
+    #[test]
+    fn ancestors_are_the_declared_pages_matching_each_strict_prefix_shallowest_first() {
+        let declared = ["/", "/docs", "/docs/:id", "/docs/:id/edit"];
+        assert_eq!(
+            ancestor_matches("/docs/7/edit", &declared),
+            vec![("/docs".to_string(), "/docs"), ("/docs/7".to_string(), "/docs/:id")]
+        );
+        assert_eq!(ancestor_matches("/docs/7?tab=1#x", &declared), vec![("/docs".to_string(), "/docs")]);
+    }
+
+    #[test]
+    fn ancestors_skip_a_prefix_no_page_declares_and_literal_beats_param() {
+        assert_eq!(ancestor_matches("/a/b/c", &["/a/:x", "/a/b"]), vec![("/a/b".to_string(), "/a/b")]);
+        assert_eq!(ancestor_matches("/a/b", &["/a/b"]), Vec::<(String, &str)>::new());
+    }
+
+    #[test]
+    fn ancestors_control_a_root_or_single_segment_path_has_none() {
+        assert!(ancestor_matches("/", &["/", "/docs"]).is_empty());
+        assert!(ancestor_matches("/docs", &["/", "/docs"]).is_empty());
     }
 }

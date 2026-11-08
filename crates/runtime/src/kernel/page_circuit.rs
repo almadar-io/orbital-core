@@ -23,6 +23,17 @@ pub struct PageCircuit {
     /// The entities the page needs: each bound trait's linked entity and every entity reached through declared
     /// relation fields of those, transitively, sorted (EXEC-SEED-7).
     pub entities: Vec<String>,
+    /// The declared route pages whose pattern matches a strict prefix of the route, shallowest first (the nav-stack cold-load seed).
+    pub ancestors: Vec<PageAncestor>,
+}
+
+/// One ancestor of a route: the concrete prefix and the page declared for it.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageAncestor {
+    pub path: String,
+    pub page: String,
 }
 
 struct RoutePage {
@@ -128,6 +139,7 @@ impl RuntimeKernel {
                 linked_entity_by_trait: BTreeMap::new(),
                 traits: Vec::new(),
                 entities: Vec::new(),
+                ancestors: self.route_ancestors(route, &pages),
             });
         };
         let owners = TraitOwners::from_kernel(self);
@@ -163,7 +175,19 @@ impl RuntimeKernel {
             linked_entity_by_trait,
             traits,
             entities,
+            ancestors: self.route_ancestors(route, &pages),
         })
+    }
+
+    fn route_ancestors(&self, route: Option<&str>, pages: &[RoutePage]) -> Vec<PageAncestor> {
+        let Some(route) = route else { return Vec::new() };
+        let patterns: Vec<&str> = pages.iter().map(|p| p.path.as_str()).collect();
+        orbital_core_base::route::ancestor_matches(route, &patterns)
+            .into_iter()
+            .filter_map(|(path, pattern)| {
+                pages.iter().find(|p| p.path == pattern).map(|p| PageAncestor { path, page: p.name.clone() })
+            })
+            .collect()
     }
 
     /// The entities `traits` need: each one's linked entity and every entity reached through the declared relation

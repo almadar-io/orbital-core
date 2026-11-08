@@ -327,11 +327,6 @@ impl BindingContext {
         (source.0)(op, args, &mut compute).map_err(|message| OrbitalError::Eval(EvalError::InvalidArgument(message)))
     }
 
-    /// Whether this evaluation runs under the kernel's sealed boundary.
-    pub fn has_sealed_outputs(&self) -> bool {
-        self.sealed.is_some()
-    }
-
     /// Give this evaluation the kernel's sealed boundary.
     pub fn set_sealed_outputs(&mut self, source: SealedOutputs) -> &mut Self {
         self.sealed = Some(source);

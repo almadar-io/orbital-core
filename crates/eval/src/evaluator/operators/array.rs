@@ -411,8 +411,8 @@ fn sort_rank(v: &Value) -> u8 {
     }
 }
 
-/// Total order (so `sort_by` can never panic): null < boolean < number (NaN last) < string < array < other,
-/// then by value. Twin of almadar-evaluator `compareSortValues`.
+/// Total order of two present (non-null) values (so `sort_by` can never panic): boolean < number (NaN last) <
+/// string < array < other, then by value; `array/sort` places null after every value in both directions. Twin of almadar-evaluator `compareSortValues`.
 fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     let (ra, rb) = (sort_rank(a), sort_rank(b));
@@ -441,7 +441,8 @@ fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
 }
 
 /// array/sort `(arr, key?, dir?)` - sorted copy; `key` orders objects by that field (null or empty = the
-/// elements themselves), `dir` is "asc" (default) or "desc". Stable. Twin of
+/// elements themselves), `dir` is "asc" (default) or "desc". Stable. Null and a row missing the key sort last in
+/// both directions. Twin of
 /// almadar-evaluator `evalArraySort`.
 pub struct ArraySortOp;
 impl Operator for ArraySortOp {
@@ -504,7 +505,14 @@ impl Operator for ArraySortOp {
             }
         }
         array.sort_by(|a, b| {
-            let ord = sort_order(&field(a), &field(b));
+            let (x, y) = (field(a), field(b));
+            match (x.is_null(), y.is_null()) {
+                (true, true) => return std::cmp::Ordering::Equal,
+                (true, false) => return std::cmp::Ordering::Greater,
+                (false, true) => return std::cmp::Ordering::Less,
+                (false, false) => {}
+            }
+            let ord = sort_order(&x, &y);
             if ascending {
                 ord
             } else {
@@ -1520,7 +1528,11 @@ mod sort_tests {
         );
         assert_eq!(
             sort(json!(["array/sort", [{"k": 2}, {"k": null}, {"k": 1}], "k"])).unwrap(),
-            json!([{"k": null}, {"k": 1.0}, {"k": 2.0}])
+            json!([{"k": 1.0}, {"k": 2.0}, {"k": null}])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [{"k": 2}, {}, {"k": 1}, {"k": null}], "k", "desc"])).unwrap(),
+            json!([{"k": 2.0}, {"k": 1.0}, {}, {"k": null}])
         );
     }
 
@@ -1544,14 +1556,22 @@ mod sort_tests {
     }
 
     #[test]
-    fn sort_places_null_first_within_one_element_type() {
+    fn sort_places_null_last_in_both_directions() {
         assert_eq!(
             sort(json!(["array/sort", [2, null, 1]])).unwrap(),
-            json!([null, 1.0, 2.0])
+            json!([1.0, 2.0, null])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [2, null, 1], null, "desc"])).unwrap(),
+            json!([2.0, 1.0, null])
         );
         assert_eq!(
             sort(json!(["array/sort", [false, null, true]])).unwrap(),
-            json!([null, false, true])
+            json!([false, true, null])
+        );
+        assert_eq!(
+            sort(json!(["array/sort", [false, null, true], null, "desc"])).unwrap(),
+            json!([true, false, null])
         );
     }
 

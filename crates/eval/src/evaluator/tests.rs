@@ -8,6 +8,30 @@ fn eval(json: &str) -> Value {
     evaluator.evaluate(&expr, &ctx).unwrap()
 }
 
+/// A context under a kernel-like sealed boundary: every call draws a fresh 32-byte seed, as the kernel does.
+fn sealed_ctx() -> BindingContext {
+    use crate::evaluator::context::SealedOutputs;
+    let calls = std::sync::atomic::AtomicU64::new(0);
+    let mut ctx = BindingContext::new();
+    ctx.set_sealed_outputs(SealedOutputs::new(move |_, _, compute| {
+        let n = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(compute(orbital_core_base::codec::sha256(&n.to_le_bytes())))
+    }));
+    ctx
+}
+
+/// A context whose sealed boundary always hands over the same seed, so a draw is replayable.
+fn fixed_seed_ctx(byte: u8) -> BindingContext {
+    use crate::evaluator::context::SealedOutputs;
+    let mut ctx = BindingContext::new();
+    ctx.set_sealed_outputs(SealedOutputs::new(move |_, _, compute| Ok(compute([byte; 32]))));
+    ctx
+}
+
+fn eval_sealed(json: &str) -> Value {
+    eval_with_ctx(json, &sealed_ctx())
+}
+
 fn eval_err(json: &str) -> String {
     let expr: SExpression = serde_json::from_str(json).unwrap();
     Evaluator::new()
@@ -57,16 +81,16 @@ fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
 #[test]
 fn random_int_with_max_below_min_answers_null_not_a_panic() {
     for call in [r#"["math/randomInt", 5, 1]"#, r#"["math/randomInt", 1, 0]"#] {
-        assert_eq!(eval(call), Value::Null, "{call}");
+        assert_eq!(eval_sealed(call), Value::Null, "{call}");
     }
     assert!(eval_err(r#"["math/randomInt", 3, null]"#).contains("got null"));
 }
 
 #[test]
 fn random_int_control_an_equal_or_wider_range_draws_inside_it() {
-    assert_eq!(eval(r#"["math/randomInt", 3, 3]"#), Value::Number(3.0));
+    assert_eq!(eval_sealed(r#"["math/randomInt", 3, 3]"#), Value::Number(3.0));
     for _ in 0..20 {
-        let Value::Int(n) = eval(r#"["math/randomInt", -2, 2]"#) else {
+        let Value::Int(n) = eval_sealed(r#"["math/randomInt", -2, 2]"#) else {
             panic!("not an int")
         };
         assert!((-2..=2).contains(&n), "{n}");
@@ -2457,10 +2481,9 @@ fn test_validate_equals() {
 #[test]
 fn test_array_shuffle() {
     // Shuffle returns an array of the same length
-    let result = eval(r#"["array/shuffle", [1, 2, 3, 4, 5]]"#);
-    if let Value::Array(arr) = result {
-        assert_eq!(arr.len(), 5);
-    }
+    let result = eval_sealed(r#"["array/shuffle", [1, 2, 3, 4, 5]]"#);
+    let Value::Array(arr) = result else { panic!("an array") };
+    assert_eq!(arr.len(), 5);
 }
 
 #[test]
@@ -2664,16 +2687,15 @@ fn test_object_deep_clone() {
 
 #[test]
 fn test_math_random() {
-    let result = eval(r#"["math/random"]"#);
-    if let Value::Number(n) = result {
-        assert!((0.0..=1.0).contains(&n));
-    }
+    let Value::Number(n) = eval_sealed(r#"["math/random"]"#) else { panic!("a number") };
+    assert!((0.0..=1.0).contains(&n));
 }
 
 #[test]
 fn g_orbital_core_120_math_random_calls_in_one_millisecond_are_not_all_equal() {
+    let ctx = sealed_ctx();
     let draws: Vec<u64> = (0..200)
-        .map(|_| match eval(r#"["math/random"]"#) {
+        .map(|_| match eval_with_ctx(r#"["math/random"]"#, &ctx) {
             Value::Number(n) => n.to_bits(),
             other => panic!("expected a number, got {other:?}"),
         })
@@ -2684,7 +2706,8 @@ fn g_orbital_core_120_math_random_calls_in_one_millisecond_are_not_all_equal() {
 
 #[test]
 fn g_orbital_core_120_math_random_in_consecutive_milliseconds_is_not_nearly_identical() {
-    let draw = || match eval(r#"["math/random"]"#) {
+    let ctx = sealed_ctx();
+    let draw = || match eval_with_ctx(r#"["math/random"]"#, &ctx) {
         Value::Number(n) => n,
         other => panic!("expected a number, got {other:?}"),
     };
@@ -2700,30 +2723,56 @@ fn g_orbital_core_120_math_random_in_consecutive_milliseconds_is_not_nearly_iden
 
 #[test]
 fn g_orbital_core_120_random_int_and_shuffle_repeat_within_one_millisecond() {
+    let ctx = sealed_ctx();
     let ints: std::collections::BTreeSet<String> =
-        (0..200).map(|_| format!("{:?}", eval(r#"["math/randomInt", 0, 999999]"#))).collect();
+        (0..200).map(|_| format!("{:?}", eval_with_ctx(r#"["math/randomInt", 0, 999999]"#, &ctx))).collect();
     assert!(ints.len() > 100, "200 randomInt draws gave {} distinct values", ints.len());
     let shuffles: std::collections::BTreeSet<String> =
-        (0..200).map(|_| format!("{:?}", eval(r#"["array/shuffle", [1,2,3,4,5,6,7,8,9,10,11,12]]"#))).collect();
+        (0..200).map(|_| format!("{:?}", eval_with_ctx(r#"["array/shuffle", [1,2,3,4,5,6,7,8,9,10,11,12]]"#, &ctx))).collect();
     assert!(shuffles.len() > 100, "200 shuffles of 12 items gave {} distinct orders", shuffles.len());
 }
 
 #[test]
 fn g_orbital_core_120_control_random_stays_in_range() {
     for _ in 0..50 {
-        let Value::Number(n) = eval(r#"["math/random"]"#) else { panic!("number") };
+        let Value::Number(n) = eval_sealed(r#"["math/random"]"#) else { panic!("number") };
         assert!((0.0..=1.0).contains(&n));
-        let Value::Int(i) = eval(r#"["math/randomInt", 3, 9]"#) else { panic!("int") };
+        let Value::Int(i) = eval_sealed(r#"["math/randomInt", 3, 9]"#) else { panic!("int") };
         assert!((3..=9).contains(&i));
     }
 }
 
 #[test]
-fn test_math_random_int() {
-    let result = eval(r#"["math/randomInt", 1, 10]"#);
-    if let Value::Int(n) = result {
-        assert!((1..=10).contains(&n));
+fn g_orbital_core_120_a_random_draw_with_no_sealed_context_is_an_error() {
+    for call in [
+        r#"["math/random"]"#,
+        r#"["math/randomInt", 1, 10]"#,
+        r#"["math/randomInt", 3, 3]"#,
+        r#"["array/shuffle", [1, 2, 3]]"#,
+    ] {
+        let message = eval_err(call);
+        assert!(message.contains("no sealed-output boundary"), "{call}: {message}");
     }
+}
+
+#[test]
+fn g_orbital_core_120_control_a_sealed_seed_answers_the_same_value_every_time() {
+    let draws = |byte: u8| {
+        let ctx = fixed_seed_ctx(byte);
+        [
+            eval_with_ctx(r#"["math/random"]"#, &ctx),
+            eval_with_ctx(r#"["math/randomInt", 0, 999999]"#, &ctx),
+            eval_with_ctx(r#"["array/shuffle", [1,2,3,4,5,6,7,8,9,10,11,12]]"#, &ctx),
+        ]
+    };
+    assert_eq!(draws(7), draws(7));
+    assert_ne!(draws(7), draws(8));
+}
+
+#[test]
+fn test_math_random_int() {
+    let Value::Int(n) = eval_sealed(r#"["math/randomInt", 1, 10]"#) else { panic!("an int") };
+    assert!((1..=10).contains(&n));
 }
 
 // =========================================================================
@@ -4308,7 +4357,6 @@ fn g_orbital_shell_typescript_108_group_by_a_field_keeps_first_seen_group_order(
 }
 
 #[test]
-#[ignore = "red by design, owner-decision: G-ORBITAL-SHELL-TYPESCRIPT-108 (the web host's compareCellValues sends empty cells last in both directions; array/sort sends null first ascending, so first descending)"]
 fn g_orbital_shell_typescript_108_sort_by_a_key_puts_rows_missing_it_last_in_both_directions() {
     let rows = r#"[{"n": 2}, {"k": 1}, {"n": 1}]"#;
     assert_eq!(
@@ -4320,6 +4368,21 @@ fn g_orbital_shell_typescript_108_sort_by_a_key_puts_rows_missing_it_last_in_bot
         eval(&format!(r#"["array/sort", {rows}, "n", "desc"]"#)),
         eval(r#"[{"n": 2}, {"n": 1}, {"k": 1}]"#),
         "descending: the row without `n` still comes last"
+    );
+    assert_eq!(
+        eval(r#"["array/sort", [2, null, 1], null, "asc"]"#),
+        eval("[1, 2, null]"),
+        "plain values: null last ascending"
+    );
+    assert_eq!(
+        eval(r#"["array/sort", [2, null, 1], null, "desc"]"#),
+        eval("[2, 1, null]"),
+        "plain values: null last descending"
+    );
+    assert_eq!(
+        eval(r#"["array/sort", [{"n": 2}, {"n": null}, {"n": 1}], "n", "desc"]"#),
+        eval(r#"[{"n": 2}, {"n": 1}, {"n": null}]"#),
+        "an explicit null key is last too"
     );
 }
 

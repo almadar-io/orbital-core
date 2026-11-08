@@ -588,16 +588,19 @@ fn g_orbital_shell_typescript_106_page_circuit_carries_the_matched_routes_params
 }
 
 #[test]
-#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-106 (the nav-stack cold-load seed is derived in navStack.ts from the declared page-path hierarchy)"]
 fn g_orbital_shell_typescript_106_page_circuit_names_the_declared_ancestor_pages_of_the_path() {
     let c = circuit_json(&nested_paged().page_circuit(None, Some("/docs/7")).unwrap());
     assert_eq!(
         c["ancestors"],
-        serde_json::json!([{ "path": "/", "page": "Home" }, { "path": "/docs", "page": "Docs" }]),
-        "every declared page whose pattern matches a strict prefix of the path, shallowest first"
+        serde_json::json!([{ "path": "/docs", "page": "Docs" }]),
+        "every declared page whose pattern matches a strict non-root prefix of the path, shallowest first (the root is not a crumb, as navStack.ts seeds today)"
     );
     let c = circuit_json(&nested_paged().page_circuit(None, Some("/")).unwrap());
-    assert_eq!(c["ancestors"], serde_json::json!([]));
+    assert_eq!(c["ancestors"], serde_json::json!([]), "control: a root path has no ancestors");
+    let c = circuit_json(&nested_paged().page_circuit(None, Some("/docs")).unwrap());
+    assert_eq!(c["ancestors"], serde_json::json!([]), "control: a one-segment path has no ancestors");
+    let c = circuit_json(&nested_paged().page_circuit(Some("Doc"), None).unwrap());
+    assert_eq!(c["ancestors"], serde_json::json!([]), "control: a page named with no route has no ancestors");
 }
 
 fn gated() -> RuntimeKernel {

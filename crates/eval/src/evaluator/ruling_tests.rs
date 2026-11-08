@@ -11,8 +11,13 @@ use serde::Deserialize;
 
 fn run(json: &str) -> Result<Value, String> {
     let expr: SExpression = serde_json::from_str(json).unwrap();
+    // The kernel seals every dispatch, so a draw here has a boundary as it would there (EXEC-CRYPTO-2).
+    let mut ctx = BindingContext::new();
+    ctx.set_sealed_outputs(crate::evaluator::context::SealedOutputs::new(
+        |_, _, compute| Ok(compute([7; 32])),
+    ));
     Evaluator::new()
-        .evaluate(&expr, &BindingContext::new())
+        .evaluate(&expr, &ctx)
         .map_err(|e| e.to_string())
 }
 

@@ -370,11 +370,10 @@ impl Operator for MathMapOp {
 // Phase 4.4: Math Extras
 // ============================================================================
 
-/// The stream a `math/random`, `math/randomInt` or `array/shuffle` call draws from. Inside the kernel it is a ChaCha20
-/// stream seeded from the 32 bytes of sealed entropy the kernel draws for the call (EXEC-CRYPTO-2): the seed is never
-/// journaled, the journal records the operator's inputs and answer, and a replay returns the answer without drawing again.
-/// An evaluation with no sealed boundary (a bare evaluator, outside any dispatch) draws from one process-wide ChaCha20
-/// stream, which no replay can reproduce.
+/// The stream a `math/random`, `math/randomInt` or `array/shuffle` call draws from: a ChaCha20 stream seeded from the
+/// 32 bytes of sealed entropy the kernel draws for the call (EXEC-CRYPTO-2). The seed is never journaled, the journal
+/// records the operator's inputs and answer, and a replay returns the answer without drawing again. An evaluation with
+/// no sealed boundary has nothing to seal the draw to, so the draw is an evaluation error.
 pub(super) fn drawn(
     ctx: &BindingContext,
     op: &str,
@@ -382,20 +381,7 @@ pub(super) fn drawn(
     mut compute: impl FnMut(&mut rand_chacha::ChaCha20Rng) -> Value,
 ) -> EvalResult {
     use rand_chacha::rand_core::SeedableRng;
-    if ctx.has_sealed_outputs() {
-        return ctx.sealed(op, args, |seed| compute(&mut rand_chacha::ChaCha20Rng::from_seed(seed)));
-    }
-    static PROCESS_STREAM: std::sync::OnceLock<std::sync::Mutex<rand_chacha::ChaCha20Rng>> = std::sync::OnceLock::new();
-    let stream = PROCESS_STREAM.get_or_init(|| {
-        let local = 0u8;
-        let mut material = Vec::new();
-        material.extend_from_slice(&orbital_core_base::time_util::now_millis().to_le_bytes());
-        material.extend_from_slice(&(std::ptr::addr_of!(local) as usize).to_le_bytes());
-        material.extend_from_slice(&(std::ptr::addr_of!(PROCESS_STREAM) as usize).to_le_bytes());
-        std::sync::Mutex::new(rand_chacha::ChaCha20Rng::from_seed(orbital_core_base::codec::sha256(&material)))
-    });
-    let mut rng = stream.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(compute(&mut rng))
+    ctx.sealed(op, args, |seed| compute(&mut rand_chacha::ChaCha20Rng::from_seed(seed)))
 }
 
 /// An unbiased draw in `0..bound` (`bound` at least 1) by rejection.
