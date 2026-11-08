@@ -142,6 +142,16 @@ impl RuntimeKernel {
         self.stateful.store(stateful, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// No browser runs this kernel's `[client]` traits (a guest session): it delivers to them and runs them itself
+    /// instead of leaving them to a browser (EXEC-ENDPOINT-3a).
+    pub fn set_runs_client_traits(&self, runs: bool) {
+        self.runs_client_traits.store(runs, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn runs_client_traits(&self) -> bool {
+        self.runs_client_traits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Why a server-role host refuses `request` before it is admitted, the one admission every host calls: a `locale`
     /// the program does not declare (EXEC-DIST-12), and, once [`Self::set_stateful`], circuit state on a request that
     /// is not a delegated leg (EXEC-DIST-11). A host strips and checks nothing itself.

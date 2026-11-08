@@ -219,6 +219,7 @@ operator_dispatch! {
         "str/replace" => K::StrReplaceOp,
         "str/replaceAll" => K::StrReplaceAllOp,
         "str/replace-pattern" => K::StrReplacePatternOp,
+        "str/find-pattern" => K::StrFindPatternOp,
         "str/template" => K::StrTemplateOp,
 
         // Math

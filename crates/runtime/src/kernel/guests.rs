@@ -298,6 +298,9 @@ fn mount_seeds(
     op: &str,
 ) -> Result<Vec<(String, ProcessEventResult)>, AgentPortFailure> {
     let payload = route.map_or(Value::Null, |route| guest.route_mount_payload(route));
+    // The guest declares what it mounts, as a browser kernel does, so a delivery to a page trait waits for its lifecycle
+    // event (EXEC-SEED-2).
+    guest.mount_traits(seeds.iter().map(|seed| seed.r#trait.clone()));
     let mounted = match host {
         Some(host) => host.mount(route, seeds, payload),
         None => guest.dispatch_route_mount(route, seeds, None, payload).map_err(|e| e.to_string()),
@@ -497,6 +500,7 @@ impl RuntimeKernel {
                 (Arc::new(guest), Some(source))
             }
         };
+        guest.set_runs_client_traits(true);
         if carries_lazy {
             guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));
         }
@@ -564,8 +568,9 @@ impl RuntimeKernel {
         ))
     }
 
-    /// `program/navigate { guest, route, rows? }`: load the lazy page `route` names, seed its `rows`, mount the traits of
-    /// the route the guest has not mounted yet and answer as `program/open` does.
+    /// `program/navigate { guest, route, rows?, remount? }`: load the lazy page `route` names, seed its `rows`, mount the
+    /// traits of the route the guest has not mounted yet (every trait of it with `remount: true`) and answer as
+    /// `program/open` does.
     pub(super) fn navigate_guest(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
         let Some(Value::Object(options)) = args.first() else {
             return Err(failure("program/navigate: name `{ guest, route }`"));
@@ -587,6 +592,22 @@ impl RuntimeKernel {
         {
             seed_guest_rows(guest, rows, "program/navigate")?;
         }
+        let remount = matches!(options.get("remount"), Some(Value::Bool(true)));
+        if remount {
+            // A remount enters the page afresh: each of its mounted traits starts again from its initial state with no
+            // frame, so its lifecycle event is the one it handles there.
+            let traits = guest.page_circuit(None, Some(route.as_str())).map_err(|e| failure(format!("program/navigate: {e}")))?.traits;
+            let held = session.route.read();
+            for name in traits.iter().filter(|name| held.mounted.contains(*name)) {
+                let initial = guest.registry.trait_definitions.read().get(name).and_then(|def| {
+                    let states = &def.state_machine.states;
+                    states.iter().find(|s| s.is_initial == Some(true)).or_else(|| states.first()).map(|s| s.name.clone())
+                });
+                if let Some(state) = initial {
+                    guest.restore_trait(name, None, super::TraitSnapshot { state, entity: Value::Null });
+                }
+            }
+        }
         let RoutedPage {
             route: resolved,
             mounts: routed,
@@ -597,7 +618,7 @@ impl RuntimeKernel {
             let held = session.route.read();
             routed
                 .into_iter()
-                .filter(|seed| !held.mounted.contains(&seed.r#trait))
+                .filter(|seed| remount || !held.mounted.contains(&seed.r#trait))
                 .collect()
         };
         let outcomes = mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?;

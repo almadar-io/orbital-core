@@ -45,7 +45,8 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 - **G-ORBITAL-CORE-125** — A JSON number above `i64::MAX` still deserializes as a rounded `Number` (base program/value.rs `visit_u64`, value_serialize.rs): with `Value::Int` (EXEC-EVAL-11) every other integer is exact, but a u64 beyond the signed range has no exact variant. Needs a ruling: refuse at the typed entry, or a u64 variant. orbital-core base [owner-decision] — rung: (1) the type system. Root cause: one-off.
 
-Next code: `G-ORBITAL-CORE-143`
+Next code: `G-ORBITAL-CORE-144`
+
 
 
 

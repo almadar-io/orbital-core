@@ -205,6 +205,24 @@ impl TlsStream {
         self.awaiting.is_some()
     }
 
+    /// Hand `bytes` back as the next plaintext a receive returns, ahead of anything decrypted after them.
+    pub fn unread(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.inbox.splice(0..0, bytes.iter().copied());
+        }
+    }
+
+    /// Take back a receive whose only effect so far is its outstanding raw `os/recv` ask, leaving the session as it
+    /// was before the receive began. False (and nothing changed) for any other outstanding work.
+    pub fn withdraw_recv(&mut self) -> bool {
+        if self.goal != Goal::Recv || self.awaiting != Some(Awaiting::Recv) {
+            return false;
+        }
+        self.awaiting = None;
+        self.goal = Goal::Idle;
+        true
+    }
+
     /// Encrypt and send `plaintext`; ends in `Sent`.
     pub fn send(&mut self, plaintext: &[u8]) -> TlsEvent {
         if self.awaiting.is_some() {
@@ -539,6 +557,7 @@ pub(crate) mod tests {
         outbound: Vec<u8>,
         app_in: Vec<u8>,
         reply: Option<Vec<u8>>,
+        answer: Vec<u8>,
         error: Option<rustls::Error>,
     }
 
@@ -567,8 +586,15 @@ pub(crate) mod tests {
                 outbound: Vec::new(),
                 app_in: Vec::new(),
                 reply: None,
+                answer: b"pong".to_vec(),
                 error: None,
             }
+        }
+
+        /// A server that answers `ping` with `answer` instead of `pong`.
+        pub(crate) fn answering(mut self, answer: Vec<u8>) -> Self {
+            self.answer = answer;
+            self
         }
 
         pub(crate) fn receive(&mut self, bytes: &[u8]) {
@@ -580,6 +606,7 @@ pub(crate) mod tests {
                 outbound,
                 app_in,
                 reply,
+                answer,
                 error,
             } = self;
             let _scope = random::Scope::enter(rng);
@@ -613,7 +640,7 @@ pub(crate) mod tests {
                     ConnectionState::BlockedHandshake => stop = true,
                     ConnectionState::WriteTraffic(mut state) => match reply.take() {
                         Some(data) => {
-                            let mut buffer = vec![0u8; data.len() + 64];
+                            let mut buffer = vec![0u8; data.len() + 64 * (data.len() / 16384 + 2)];
                             let n = state.encrypt(&data, &mut buffer).expect("encrypt");
                             outbound.extend_from_slice(&buffer[..n]);
                         }
@@ -626,7 +653,7 @@ pub(crate) mod tests {
                             app_in.extend_from_slice(record.payload);
                         }
                         if app_in.as_slice() == b"ping" && reply.is_none() {
-                            *reply = Some(b"pong".to_vec());
+                            *reply = Some(answer.clone());
                         }
                     }
                     ConnectionState::PeerClosed | ConnectionState::Closed => stop = true,

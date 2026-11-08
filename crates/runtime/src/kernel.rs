@@ -452,6 +452,8 @@ pub struct RuntimeKernel {
     record_entity_after: std::sync::atomic::AtomicBool,
     /// Whether this host holds the circuit state itself ([`RuntimeKernel::set_stateful`]).
     stateful: std::sync::atomic::AtomicBool,
+    /// No browser runs this kernel's `[client]` traits, so it runs them itself ([`RuntimeKernel::set_runs_client_traits`]).
+    runs_client_traits: std::sync::atomic::AtomicBool,
     /// The program's declared locales (the first is the default) and merged message catalogs.
     i18n: Arc<RwLock<KernelI18n>>,
     /// The program's placement, the envelope ids accepted per sender and the dispatch origin in flight (EXEC-QUEUE-9).
@@ -803,6 +805,7 @@ impl RuntimeKernel {
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             stateful: std::sync::atomic::AtomicBool::new(false),
+            runs_client_traits: std::sync::atomic::AtomicBool::new(false),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             step: StepScope {
                 dispatch_now: Arc::new(RwLock::new(None)),

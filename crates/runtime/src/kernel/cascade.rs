@@ -421,7 +421,7 @@ impl RuntimeKernel {
     /// On a host, the listeners a browser runs itself are left to it (EXEC-ENDPOINT-3a): a `[client]` trait a route
     /// page places or a route page trait embeds. A `[client]` trait on no route (a `boot` or `stdio` endpoint) has no browser, so the host runs it.
     pub(super) fn without_browser_listeners(&self, listeners: Vec<crate::listener::ListenerInfo>) -> Vec<crate::listener::ListenerInfo> {
-        if self.effect_executor.environment().is_client() {
+        if self.effect_executor.environment().is_client() || self.runs_client_traits() {
             return listeners;
         }
         let client_only: HashSet<String> = {
@@ -438,6 +438,9 @@ impl RuntimeKernel {
     /// The `[client]` traits a browser runs (EXEC-ENDPOINT-3a): the ones a route page places or a route page trait
     /// embeds. A host leaves every delivery to them to the browser ([`Self::without_browser_listeners`]).
     pub(crate) fn browser_run_traits(&self) -> HashSet<String> {
+        if self.runs_client_traits() {
+            return HashSet::new();
+        }
         let routed = self.route_page_traits();
         let defs = self.registry.trait_definitions.read();
         routed.into_iter().filter(|name| self.is_client_only_in(&defs, name)).collect()

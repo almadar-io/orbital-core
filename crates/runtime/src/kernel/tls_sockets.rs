@@ -33,6 +33,18 @@ pub(crate) struct TlsSockets {
     parks: Mutex<HashMap<i64, Parks>>,
     pending: Mutex<HashMap<String, PendingTls>>,
     overlay: Mutex<Option<Overlay>>,
+    live: Mutex<HashMap<i64, Live>>,
+    rebuilds: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    keep_none: std::sync::atomic::AtomicBool,
+}
+
+/// A socket's session kept from the operation that last advanced it, valid while the transcript is still the
+/// `len` events and `consumed` bytes it reflects; any other state rebuilds the session from the transcript.
+struct Live {
+    stream: TlsStream,
+    len: usize,
+    consumed: usize,
 }
 
 #[derive(Clone)]
@@ -65,6 +77,7 @@ struct Overlay {
     opened: HashMap<i64, TlsSocket>,
     deltas: HashMap<i64, Delta>,
     closed: HashSet<i64>,
+    live: HashMap<i64, Live>,
 }
 
 impl TlsSockets {
@@ -74,6 +87,7 @@ impl TlsSockets {
             opened: HashMap::new(),
             deltas: HashMap::new(),
             closed: HashSet::new(),
+            live: HashMap::new(),
         });
     }
 
@@ -96,10 +110,126 @@ impl TlsSockets {
             }
         }
         let mut parks = self.parks.lock();
+        let mut live = self.live.lock();
         for sock in overlay.closed {
             open.remove(&sock);
             parks.remove(&sock);
+            live.remove(&sock);
         }
+        live.extend(overlay.live);
+    }
+
+    /// The transcript length and delivered byte count of `sock`'s session as this pass sees it.
+    fn state(&self, sock: i64) -> Option<(usize, usize)> {
+        let overlay = self.overlay.lock();
+        let mine = overlay
+            .as_ref()
+            .filter(|o| o.thread == std::thread::current().id());
+        if mine.is_some_and(|o| o.closed.contains(&sock)) {
+            return None;
+        }
+        let (mut len, mut consumed) = match mine.and_then(|o| o.opened.get(&sock)) {
+            Some(socket) => (socket.transcript.len(), socket.consumed),
+            None => {
+                let open = self.open.lock();
+                let socket = open.get(&sock)?;
+                (socket.transcript.len(), socket.consumed)
+            }
+        };
+        if let Some(delta) = mine.and_then(|o| o.deltas.get(&sock)) {
+            len += delta.events.len();
+            consumed += delta.consumed;
+        }
+        Some((len, consumed))
+    }
+
+    /// The kept session of `sock` when it reflects exactly `len` events and `consumed` bytes.
+    fn take_live(&self, sock: i64, len: usize, consumed: usize) -> Option<TlsStream> {
+        let mut overlay = self.overlay.lock();
+        let kept = match overlay
+            .as_mut()
+            .filter(|o| o.thread == std::thread::current().id())
+        {
+            Some(mine) => mine
+                .live
+                .remove(&sock)
+                .or_else(|| self.live.lock().remove(&sock)),
+            None => self.live.lock().remove(&sock),
+        };
+        let in_pass = overlay.is_some();
+        match kept {
+            Some(live) if live.len == len && live.consumed == consumed => Some(live.stream),
+            other => {
+                tracing::debug!(
+                    sock,
+                    len,
+                    consumed,
+                    in_pass,
+                    kept = ?other.as_ref().map(|live| (live.len, live.consumed)),
+                    "tls session rebuilt from the transcript"
+                );
+                None
+            }
+        }
+    }
+
+    /// Keep `stream` as `sock`'s session when it is idle and its transcript is the socket's whole transcript.
+    fn keep(&self, sock: i64, stream: TlsStream) {
+        #[cfg(test)]
+        if self.keep_none.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if stream.is_waiting() {
+            tracing::debug!(sock, "tls session not kept: an ask is outstanding");
+            return;
+        }
+        let Some((len, consumed)) = self.state(sock) else {
+            tracing::debug!(sock, "tls session not kept: the socket is closed");
+            return;
+        };
+        let own = stream.transcript().map(<[Recorded]>::len);
+        if own != Some(len) {
+            tracing::debug!(sock, len, ?own, "tls session not kept: the transcript moved");
+            return;
+        }
+        tracing::debug!(sock, len, consumed, "tls session kept");
+        let live = Live { stream, len, consumed };
+        let mut overlay = self.overlay.lock();
+        match overlay
+            .as_mut()
+            .filter(|o| o.thread == std::thread::current().id())
+        {
+            Some(mine) => {
+                mine.live.insert(sock, live);
+            }
+            None => {
+                self.live.lock().insert(sock, live);
+            }
+        }
+    }
+
+    /// Keep a receive's session that a pass abandoned at its raw ask, when the receive changed nothing yet and the
+    /// committed transcript is the one it began from: the replayed pass takes it up again.
+    fn keep_withdrawn(&self, sock: i64, mut stream: TlsStream, start_len: usize) {
+        #[cfg(test)]
+        if self.keep_none.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        if stream.transcript().map(<[Recorded]>::len) != Some(start_len) || !stream.withdraw_recv() {
+            return;
+        }
+        let consumed = match self.open.lock().get(&sock) {
+            Some(socket) if socket.transcript.len() == start_len => socket.consumed,
+            _ => return,
+        };
+        self.live.lock().insert(
+            sock,
+            Live {
+                stream,
+                len: start_len,
+                consumed,
+            },
+        );
     }
 
     fn snapshot(&self, sock: i64) -> Option<TlsSocket> {
@@ -122,7 +252,7 @@ impl TlsSockets {
     }
 
     fn contains(&self, sock: i64) -> bool {
-        self.snapshot(sock).is_some()
+        self.state(sock).is_some()
     }
 
     fn register(&self, sock: i64, socket: TlsSocket) {
@@ -170,6 +300,7 @@ impl TlsSockets {
             Some(mine) => {
                 mine.opened.remove(&sock);
                 mine.deltas.remove(&sock);
+                mine.live.remove(&sock);
                 mine.closed.insert(sock);
             }
             None => {
@@ -177,6 +308,7 @@ impl TlsSockets {
                 self.parks.lock().remove(&sock);
             }
         }
+        self.live.lock().remove(&sock);
         let parked = self.parks.lock().remove(&sock);
         if let Some(parked) = parked {
             let mut pending = self.pending.lock();
@@ -192,6 +324,9 @@ struct PendingTls {
     op: TrafficOp,
     plain: Vec<u8>,
     resumed: Option<(TlsStream, usize)>,
+    /// For a session parked at its first raw ask: the delivered byte count it began from, so the host's answer resumes
+    /// it only while the transcript is still the one it began from.
+    parked_from: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -444,7 +579,7 @@ impl TrafficRun {
         match advance(
             &self.sockets,
             self.sock,
-            &self.stream,
+            &mut self.stream,
             self.op,
             self.start_len,
             event,
@@ -482,7 +617,7 @@ fn op_of(op: TrafficOp) -> OsOp {
 fn advance(
     sockets: &TlsSockets,
     sock: i64,
-    stream: &TlsStream,
+    stream: &mut TlsStream,
     op: TrafficOp,
     start_len: usize,
     event: TlsEvent,
@@ -504,6 +639,7 @@ fn advance(
         (TlsEvent::Data(bytes), TrafficOp::Recv { count }) => {
             let taken = bytes.len().min(count);
             commit(taken);
+            stream.unread(&bytes[taken..]);
             TlsCompletion::Done(Ok(record([
                 ("data", Value::bytes(bytes[..taken].to_vec())),
                 ("eof", Value::Bool(false)),
@@ -673,6 +809,7 @@ impl RuntimeKernel {
                 consumed: 0,
             },
         );
+        self.tls.keep(id, stream.surviving_timeouts());
         let mut answer = vec![("sock", sock)];
         if let Some(name) = negotiated {
             answer.push(("alpn", Value::string(name)));
@@ -698,13 +835,18 @@ impl RuntimeKernel {
             TrafficOp::Close => stream.close(),
         };
         let sockets = self.tls.clone();
-        let first_step = match advance(&sockets, sock, &stream, traffic, start_len, first) {
+        let first_step = match advance(&sockets, sock, &mut stream, traffic, start_len, first) {
             TlsCompletion::Ask { op, args } => DriverStep::Ask(DriverAsk::Os {
                 op,
                 args,
                 key: None,
             }),
-            TlsCompletion::Done(outcome) => return outcome,
+            TlsCompletion::Done(outcome) => {
+                if outcome.is_ok() {
+                    self.tls.keep(sock, stream);
+                }
+                return outcome;
+            }
         };
         if let (
             Some(key),
@@ -720,18 +862,23 @@ impl RuntimeKernel {
                 let answer = self.io.os(*raw_op, raw_args, Some(key), None, None);
                 if self.io.peek_call_verdict() == Some(CallVerdict::Deferred) {
                     self.tls_park(sock, traffic, key);
+                    let parked_from = self.tls.state(sock).map(|(_, consumed)| consumed);
                     self.tls.pending.lock().insert(
                         key.to_string(),
                         PendingTls {
                             sock,
                             op: traffic,
                             plain,
-                            resumed: None,
+                            resumed: Some((stream, start_len)),
+                            parked_from,
                         },
                     );
                     return Ok(Value::Null);
                 }
                 if self.io.suspended() {
+                    if matches!(traffic, TrafficOp::Recv { .. }) {
+                        self.tls.keep_withdrawn(sock, stream, start_len);
+                    }
                     return Err(OsError::new(OsErrorKind::Io, AWAITING_HOST));
                 }
                 let mut run = TrafficRun {
@@ -774,13 +921,24 @@ impl RuntimeKernel {
 
     fn finish_traffic(&self, mut run: TrafficRun, step: DriverStep) -> Result<Value, OsError> {
         match drive(&self.io, &mut run, step, DriveContext::default()) {
-            DriveEnd::Done(_) => run.done.unwrap_or_else(|| {
-                Err(OsError::new(
-                    OsErrorKind::Tls,
-                    "the TLS operation ended with no outcome",
-                ))
-            }),
-            DriveEnd::AwaitingHost => Err(OsError::new(OsErrorKind::Io, AWAITING_HOST)),
+            DriveEnd::Done(_) => {
+                let outcome = run.done.take().unwrap_or_else(|| {
+                    Err(OsError::new(
+                        OsErrorKind::Tls,
+                        "the TLS operation ended with no outcome",
+                    ))
+                });
+                if outcome.is_ok() {
+                    self.tls.keep(run.sock, run.stream);
+                }
+                outcome
+            }
+            DriveEnd::AwaitingHost => {
+                if matches!(run.op, TrafficOp::Recv { .. }) {
+                    self.tls.keep_withdrawn(run.sock, run.stream, run.start_len);
+                }
+                Err(OsError::new(OsErrorKind::Io, AWAITING_HOST))
+            }
         }
     }
 
@@ -834,6 +992,16 @@ impl RuntimeKernel {
 
     /// The stream of `sock`'s session rebuilt from its transcript as it stands, and the transcript length it began at.
     fn tls_stream(&self, op: OsOp, sock: i64) -> Result<(TlsStream, usize), OsError> {
+        let (len, consumed) = self
+            .tls
+            .state(sock)
+            .ok_or_else(|| fail(op, OsErrorKind::Closed, "not an open socket"))?;
+        if let Some(stream) = self.tls.take_live(sock, len, consumed) {
+            return Ok((stream, len));
+        }
+        self.tls
+            .rebuilds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let socket = self
             .tls
             .snapshot(sock)
@@ -876,6 +1044,18 @@ impl RuntimeKernel {
             .map(|e| e.kind)
     }
 
+    #[cfg(test)]
+    pub(crate) fn tls_forget_live_for_test(&self) {
+        self.tls
+            .keep_none
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tls_rebuilds(&self) -> usize {
+        self.tls.rebuilds.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub(super) fn tls_begin_pass(&self) {
         self.tls.begin_pass();
     }
@@ -899,6 +1079,7 @@ impl RuntimeKernel {
                 op: TrafficOp::Recv { count: 16 },
                 plain: Vec::new(),
                 resumed: None,
+                parked_from: None,
             },
         );
     }
@@ -913,8 +1094,18 @@ impl RuntimeKernel {
             op,
             plain,
             resumed,
+            parked_from,
         } = self.tls.pending.lock().remove(key)?;
         let program_op = op_of(op);
+        let resumed = match (resumed, parked_from) {
+            (Some((stream, start_len)), Some(consumed))
+                if self.tls.state(sock) != Some((start_len, consumed)) =>
+            {
+                drop(stream);
+                None
+            }
+            (resumed, _) => resumed,
+        };
         let (mut stream, start_len) = match resumed {
             Some(resumed) => resumed,
             None => match self.tls_stream(program_op, sock) {
@@ -940,7 +1131,7 @@ impl RuntimeKernel {
             },
         };
         let event = stream.resume(DriverAnswer::Os(raw));
-        let completion = advance(&self.tls, sock, &stream, op, start_len, event);
+        let completion = advance(&self.tls, sock, &mut stream, op, start_len, event);
         match &completion {
             TlsCompletion::Ask { .. } => {
                 self.tls.pending.lock().insert(
@@ -950,10 +1141,16 @@ impl RuntimeKernel {
                         op,
                         plain,
                         resumed: Some((stream, start_len)),
+                        parked_from: None,
                     },
                 );
             }
-            TlsCompletion::Done(_) => self.tls_unpark(sock, op),
+            TlsCompletion::Done(outcome) => {
+                self.tls_unpark(sock, op);
+                if outcome.is_ok() {
+                    self.tls.keep(sock, stream);
+                }
+            }
         }
         Some(completion)
     }
@@ -1810,6 +2007,116 @@ mod tests {
             records[0], records[1],
             "each record carries its own sequence number"
         );
+    }
+
+    fn streaming_schema(recvs: usize) -> orbital_core_base::schema::types::OrbitalSchema {
+        let names: Vec<String> = (0..recvs).map(|i| format!("R{i}")).collect();
+        let mut chain: Vec<(&str, Vec<Json>)> = vec![
+            ("CONNECTED", vec![json!(["os/send", 5, "cGluZw==", routes("SENT")])]),
+            ("SENT", vec![json!(["os/recv", 5, 4096, routes(&names[0])])]),
+        ];
+        for (i, name) in names.iter().enumerate() {
+            let next = match names.get(i + 1) {
+                Some(next) => json!(["os/recv", 5, 4096, routes(next)]),
+                None => json!(["os/close", 5, routes("CLOSED")]),
+            };
+            chain.push((name.as_str(), vec![next]));
+        }
+        schema_chain(vec![connect_tls(true, "localhost")], grants(), chain)
+    }
+
+    fn received(response: &EventResponse, recvs: usize) -> Vec<u8> {
+        (0..recvs)
+            .flat_map(|i| {
+                let got = payload(response, &format!("R{i}")).expect("each receive answered");
+                codec::base64_decode(got["data"].as_str().expect("data")).expect("base64")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_long_download_keeps_one_session_and_delivers_every_byte_in_order() {
+        let body: Vec<u8> = (0..65536u32).map(|i| (i % 251) as u8).collect();
+        let recvs = 16;
+        let server = EmbeddedServer::new(streaming_schema(recvs)).expect("server");
+        let mut wire = Wire::new(7);
+        wire.server = FakeServer::new(9).answering(body.clone());
+        let response = run(&server, &mut wire);
+        assert!(payload(&response, "BAD").is_none(), "{:?}", payload(&response, "BAD"));
+        assert_eq!(received(&response, recvs), body, "every byte, in order, exactly once");
+        assert!(payload(&response, "CLOSED").is_some());
+        assert!(
+            server.kernel().tls_rebuilds() <= body.len() / 16384,
+            "a host that suspends rebuilds only where a record spans a replayed raw read, never per receive: {}",
+            server.kernel().tls_rebuilds()
+        );
+    }
+
+    #[test]
+    fn a_deferred_recv_resumes_the_session_it_parked_and_rebuilds_nothing() {
+        let body: Vec<u8> = (0..20000u32).map(|i| (i % 239) as u8).collect();
+        let keyed = json!(["os/recv", 5, 65536, { "key": "r1", "emit": { "success": "GOT", "failure": "BAD" } }]);
+        let server = EmbeddedServer::new(schema_recv(
+            vec![connect_tls(true, "localhost")],
+            grants(),
+            keyed,
+        ))
+        .expect("server");
+        let mut wire = Wire::new(7);
+        wire.server = FakeServer::new(9).answering(body.clone());
+        wire.defer_recv = true;
+        let response = run(&server, &mut wire);
+        assert!(payload(&response, "BAD").is_none());
+        assert!(server.kernel().tls_pending(&host_key("r1")));
+        let rebuilt_before = server.kernel().tls_rebuilds();
+        let mut got = Vec::new();
+        let mut asks = 0;
+        loop {
+            let raw = wire.os(OsOp::Recv, &[Value::Number(5.0), Value::Number(16384.0)]);
+            match server.kernel().tls_complete(&host_key("r1"), raw).expect("parked") {
+                TlsCompletion::Ask { op, .. } => {
+                    assert_eq!(op, OsOp::Recv, "a record split over raw reads asks for the rest");
+                    asks += 1;
+                }
+                TlsCompletion::Done(Ok(answer)) => {
+                    got.extend(answer.get_path("data").expect("data").bytes_view().expect("bytes").into_owned());
+                    break;
+                }
+                TlsCompletion::Done(Err(error)) => panic!("{error:?}"),
+            }
+        }
+        assert!(asks >= 1, "control: the first record spans more than one raw read");
+        assert!(!got.is_empty() && body.starts_with(&got), "the decrypted head of the body");
+        assert_eq!(rebuilt_before, 1, "only the send's replayed pass rebuilds; the recv's takes up the withdrawn session");
+        assert_eq!(
+            server.kernel().tls_rebuilds(),
+            rebuilt_before,
+            "the parked session resumes; nothing is rebuilt from the transcript"
+        );
+    }
+
+    #[test]
+    fn control_a_rebuilt_session_delivers_the_same_bytes_as_the_kept_one() {
+        let body: Vec<u8> = (0..65536u32).map(|i| (i % 241) as u8).collect();
+        let recvs = 16;
+        let kept = {
+            let server = EmbeddedServer::new(streaming_schema(recvs)).expect("server");
+            let mut wire = Wire::new(7);
+            wire.server = FakeServer::new(9).answering(body.clone());
+            let response = run(&server, &mut wire);
+            (received(&response, recvs), wire.sent)
+        };
+        let rebuilt = {
+            let server = EmbeddedServer::new(streaming_schema(recvs)).expect("server");
+            server.kernel().tls_forget_live_for_test();
+            let mut wire = Wire::new(7);
+            wire.server = FakeServer::new(9).answering(body.clone());
+            let response = run(&server, &mut wire);
+            assert!(server.kernel().tls_rebuilds() > 0, "control: this run rebuilds every operation");
+            (received(&response, recvs), wire.sent)
+        };
+        assert_eq!(kept.0, body);
+        assert_eq!(kept, rebuilt, "the same plaintext and the same wire bytes either way");
     }
 
     #[test]

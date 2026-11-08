@@ -1,0 +1,5 @@
+#!/bin/sh
+# Runs a tool of the Homebrew LLVM (keg-only, so not on PATH) named by this link's file name.
+llvm="$(brew --prefix llvm 2>/dev/null)/bin"
+[ -x "$llvm/$(basename "$0")" ] || { echo "$(basename "$0"): brew install llvm" >&2; exit 1; }
+exec "$llvm/$(basename "$0")" "$@"

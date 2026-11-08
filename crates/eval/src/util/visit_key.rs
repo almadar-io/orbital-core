@@ -7,9 +7,11 @@ use serde::Serialize;
 use serde_json::{Map, Number, Value};
 use xxhash_rust::xxh3::Xxh3;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
-use orbital_core_base::value::Value as EvalValue;
+use orbital_core_base::sync::{LazyLock, Mutex};
+
+use orbital_core_base::value::{Shared, Value as EvalValue};
 
 /// Largest integer an `f64` holds exactly; beyond it an integral float stays a float.
 const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
@@ -217,6 +219,45 @@ fn digest_float(h: &mut Xxh3, f: f64) {
     }
 }
 
+/// Bytes values at least this long keep their digest by allocation ([`bytes_digest`]).
+const BYTES_MEMO_MIN: usize = 4096;
+
+struct BytesDigests {
+    by_address: HashMap<usize, (Weak<Vec<u8>>, u128)>,
+    prune_at: usize,
+}
+
+static BYTES_DIGESTS: LazyLock<Mutex<BytesDigests>> =
+    LazyLock::new(|| Mutex::new(BytesDigests { by_address: HashMap::new(), prune_at: 1024 }));
+
+fn bytes_address(bytes: &Shared<Vec<u8>>) -> usize {
+    let held: &Vec<u8> = bytes;
+    held as *const Vec<u8> as usize
+}
+
+/// The xxh3-128 of a bytes value. A large one is digested once per allocation for the life of the process: values are
+/// immutable, and the memo holds only a weak handle, so a freed allocation whose address is reused never matches.
+fn bytes_digest(bytes: &Shared<Vec<u8>>) -> u128 {
+    if bytes.len() < BYTES_MEMO_MIN {
+        return xxhash_rust::xxh3::xxh3_128(bytes);
+    }
+    let at = bytes_address(bytes);
+    if let Some((held, digest)) = BYTES_DIGESTS.lock().by_address.get(&at) {
+        if held.upgrade().is_some_and(|live| (&*live as *const Vec<u8> as usize) == at) {
+            return *digest;
+        }
+    }
+    let digest = xxhash_rust::xxh3::xxh3_128(bytes);
+    let mut memo = BYTES_DIGESTS.lock();
+    memo.by_address.insert(at, (Shared::downgrade(bytes), digest));
+    if memo.by_address.len() > memo.prune_at {
+        memo.by_address.retain(|_, (held, _)| held.strong_count() > 0);
+        memo.prune_at = (memo.by_address.len() * 2).max(1024);
+    }
+    digest
+}
+
+/// A bytes value folds in its length and its own xxh3-128 ([`bytes_digest`]).
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
         EvalValue::Lambda(_) | EvalValue::Sealed(_) => {
@@ -230,7 +271,7 @@ fn digest_value(h: &mut Xxh3, value: &EvalValue) {
         EvalValue::Bytes(b) => {
             h.update(b"b");
             digest_len(h, b.len());
-            h.update(b);
+            h.update(&bytes_digest(b).to_le_bytes());
         }
         EvalValue::String(s) => {
             h.update(b"s");
@@ -552,6 +593,47 @@ mod tests {
         assert_eq!(Arc::strong_count(&large), 2, "the digest cache holds the one value it digested, no copy per step");
         assert!(visits.contains("T", "E", "s", &EValue::Null, &fields(&step(1))));
         assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&EValue::Null)), "control: no fields is another frame");
+    }
+
+    #[test]
+    fn a_field_of_byte_chunks_is_one_frame_by_content_and_a_new_chunk_is_a_new_frame() {
+        let chunk = |b: &[u8]| EValue::bytes(b.to_vec());
+        let parts = |items: Vec<EValue>| Arc::new(EValue::Array(items.into()));
+        let mut visits = DispatchVisits::default();
+        let a = chunk(b"alpha");
+        let b = chunk(b"beta");
+        let grown = parts(vec![a.clone(), b.clone()]);
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &fields(&[("parts", parts(vec![a.clone()]))])));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &fields(&[("parts", Arc::clone(&grown))])), "a grown list is a new frame");
+        let copied = parts(vec![chunk(b"alpha"), chunk(b"beta")]);
+        assert!(
+            visits.contains("T", "E", "s", &EValue::Null, &fields(&[("parts", copied)])),
+            "equal chunks in new allocations are the same frame"
+        );
+        let other = parts(vec![chunk(b"alpha"), chunk(b"betA")]);
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &fields(&[("parts", other)])), "control: one changed byte is another frame");
+        assert!(
+            !visits.contains("T", "E", "s", &EValue::Null, &fields(&[("parts", Arc::new(chunk(b"alphabeta")))])),
+            "control: the joined bytes are not the list of chunks"
+        );
+    }
+
+    #[test]
+    fn a_large_bytes_value_is_digested_by_content_across_allocations_and_dispatches() {
+        let big = |fill: u8| EValue::bytes(vec![fill; BYTES_MEMO_MIN * 4]);
+        let first = big(7);
+        let mut one = DispatchVisits::default();
+        assert!(one.insert("T", "E", "s", &first, &frame(&EValue::Null)));
+        let mut next = DispatchVisits::default();
+        assert!(next.insert("T", "E", "s", &first, &frame(&EValue::Null)), "a new dispatch keeps its own visits");
+        assert!(next.contains("T", "E", "s", &big(7), &frame(&EValue::Null)), "an equal copy in another allocation is the same payload");
+        drop(first);
+        for _ in 0..64 {
+            assert!(
+                !next.contains("T", "E", "s", &big(8), &frame(&EValue::Null)),
+                "edge: a freed allocation's address reused by other bytes is never taken for them"
+            );
+        }
     }
 
     #[test]

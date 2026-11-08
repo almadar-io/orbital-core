@@ -1,0 +1,4 @@
+#!/bin/sh
+# clang-cl for cross Windows builds: libffi's bundled dlmalloc.c passes int* where clang now errors on the type.
+llvm="$(brew --prefix llvm 2>/dev/null)/bin"
+exec "$llvm/clang-cl" -Wno-incompatible-pointer-types "$@"

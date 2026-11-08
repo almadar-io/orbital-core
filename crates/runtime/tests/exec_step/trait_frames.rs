@@ -247,3 +247,63 @@ fn snapshot_and_restore_round_trip_both_halves_of_a_shared_trait_frame() {
     assert_eq!(after["page"], json!(1.0));
     assert_eq!(after["tag"], json!("none"));
 }
+
+// An emit whose contract is `external` still reaches a listener of the same program, from a plain step and from a
+// fetch completion step (std-api-gateway's HomeFigures never heard HomeFigureFetcher.HomeFiguresLoaded).
+
+fn external_kernel(external: bool) -> RuntimeKernel {
+    let scope = if external { json!("external") } else { Json::Null };
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "external-listen",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "persistence": "persistent", "collection": "items", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+            "auxiliaryEntities": [{ "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] }],
+            "traits": [
+                {
+                    "name": "Fetcher", "linkedEntity": "Item",
+                    "emits": [{ "event": "LOADED", "scope": scope }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                        arm("GO", json!([["emit", "LOADED", { "data": [1, 2] }]])),
+                        arm("FETCH", json!([["fetch", "Item", { "emit": { "success": "READ", "failure": "FAILED" } }]])),
+                        arm("READ", json!([["emit", "LOADED", { "data": "@payload.data" }]])),
+                        arm("FAILED", json!([]))
+                    ] }
+                },
+                listener("Counter", "Tally", json!([from("Fetcher", "LOADED", "GOT")]), json!([arm("GOT", json!([["set", "@entity.n", ["array/len", "@payload.data"]]]))]))
+            ]
+        }]
+    }))
+    .unwrap();
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, Default::default());
+    k.register_schema(schema).unwrap();
+    for (id, name) in [("i1", "a"), ("i2", "b"), ("i3", "c")] {
+        cache.write("Item", id, &serde_json::from_value(json!({ "id": id, "name": name })).unwrap()).unwrap();
+    }
+    k
+}
+
+fn counted(k: &RuntimeKernel, event: &str) -> Json {
+    let outcomes = k.dispatch("Fetcher", None, event, Value::Null).unwrap();
+    outcomes
+        .iter()
+        .find(|(t, r)| t == "Counter" && r.executed)
+        .map(|(_, r)| serde_json::to_value(&r.entity_data).unwrap()["n"].clone())
+        .unwrap_or(Json::Null)
+}
+
+#[test]
+fn an_external_emit_reaches_a_listener_of_the_same_program() {
+    assert_eq!(counted(&external_kernel(true), "GO"), json!(2));
+}
+
+#[test]
+fn an_external_emit_from_a_fetch_completion_reaches_a_listener_of_the_same_program() {
+    assert_eq!(counted(&external_kernel(true), "FETCH"), json!(3));
+}
+
+#[test]
+fn control_an_internal_emit_from_a_fetch_completion_reaches_its_listener() {
+    assert_eq!(counted(&external_kernel(false), "FETCH"), json!(3));
+}

@@ -1103,6 +1103,7 @@
     "str/repeat": "str/repeat",
     "str/replace": "str/replace",
     "str/replace-pattern": "str/replace-pattern",
+    "str/find-pattern": "str/find-pattern",
     "str/replaceAll": "str/replaceAll",
     "str/reverse": "str/reverse",
     "str/slice": "str/slice",

@@ -631,6 +631,12 @@ fn shop_opener() -> RuntimeKernel {
         ] },
         { "from": "idle", "to": "idle", "event": "NAV", "effects": [
             ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route", "rows": "@payload.rows" }, { "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "STEP", "effects": [
+            ["program/dispatch", "@payload.address", {}, { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "REMOUNT", "effects": [
+            ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route", "rows": "@payload.rows", "remount": true }, { "emit": emit() }]
         ] }
     ]))
 }
@@ -717,6 +723,28 @@ fn navigating_to_a_mounted_route_mounts_nothing_new() {
     assert!(again["got"]["outcomes"].as_array().is_some_and(Vec::is_empty), "{again}");
     let home = shop_event(&kernel, "NAV", json!({ "route": "/", "rows": [] }));
     assert!(mounted(&home["got"]).is_empty(), "control: the route open at start is already mounted: {home}");
+}
+
+#[test]
+fn a_remount_runs_every_trait_of_the_mounted_page_again() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let again = shop_event(&kernel, "REMOUNT", json!({ "route": "/", "rows": [] }));
+    assert_eq!(mounted(&again["got"]), ["HomeT"], "the page's trait runs again although it is mounted: {again}");
+    assert!(painted(&again["got"]).contains(&"home ran".to_string()), "{again}");
+    assert!(!painted(&again["got"]).contains(&"boot ran".to_string()), "control: a boot trait is not part of the page and does not run again: {again}");
+}
+
+#[test]
+fn a_remounted_page_reads_the_rows_written_since_it_first_mounted() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let first = shop_event(&kernel, "NAV", json!({ "route": "/list", "rows": [] }));
+    assert!(painted(&first["got"]).contains(&"none listed".to_string()), "{first}");
+    let again = shop_event(
+        &kernel,
+        "REMOUNT",
+        json!({ "route": "/list", "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "Seeded later" }] }] }),
+    );
+    assert!(painted(&again["got"]).contains(&"Seeded later".to_string()), "the re-run INIT fetch saw the new row: {again}");
 }
 
 #[test]
@@ -953,4 +981,94 @@ fn a_guest_route_mount_carries_the_route_params_as_a_client_page_mount_does() {
 fn control_a_literal_guest_route_opens_its_own_page_not_the_param_sibling() {
     let (_, after) = open_shop(shop_with_item_page(), json!({ "route": "/items/tree" }));
     assert_eq!(mounted(&after["got"]), ["TreeT"], "{after}");
+}
+
+fn external_listen_program() -> serde_json::Value {
+    let arm = |event: &str, effects: serde_json::Value| json!({ "from": "idle", "to": "idle", "event": event, "effects": effects });
+    json!({
+        "name": "ExternalListen",
+        "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "ShopItem", "persistence": "persistent", "collection": "shopitem", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+            "auxiliaryEntities": [{ "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] }],
+            "traits": [
+                { "name": "Fetcher", "linkedEntity": "ShopItem", "emits": [{ "event": "LOADED", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      arm("INIT", json!([])),
+                      arm("FETCH", json!([["fetch", "ShopItem", { "emit": { "success": "READ", "failure": "FAILED" } }]])),
+                      arm("READ", json!([["emit", "LOADED", { "data": "@payload.data" }]])),
+                      arm("FAILED", json!([]))
+                  ] } },
+                { "name": "Counter", "linkedEntity": "Tally",
+                  "listens": [{ "event": "LOADED", "triggers": "GOT", "source": { "kind": "trait", "trait": "Fetcher" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      arm("INIT", json!([])),
+                      arm("GOT", json!([["set", "@entity.n", ["array/len", "@payload.data"]], ["render-ui", "main", { "type": "typography", "content": ["str/concat", "counted ", ["array/len", "@payload.data"]] }]]))
+                  ] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Fetcher" }, { "ref": "Counter" }] }]
+        }]
+    })
+}
+
+#[test]
+fn a_guest_listener_hears_an_external_emit_from_a_fetch_completion() {
+    let (kernel, _) = open_shop(external_listen_program(), json!({ "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "a" }, { "id": "i2", "name": "b" }] }] }));
+    let after = shop_event(&kernel, "STEP", json!({ "address": "Fetcher.FETCH" }));
+    let moves: Vec<String> = after["got"]["outcomes"].as_array().into_iter().flatten().map(|o| format!("{}.{}", o["trait"].as_str().unwrap_or(""), o["event"].as_str().unwrap_or(""))).collect();
+    assert!(moves.contains(&"Counter.GOT".to_string()), "the listener ran: {moves:?} {after}");
+    assert!(painted(&after["got"]).contains(&"counted 2".to_string()), "{after}");
+}
+
+
+#[test]
+fn a_guest_listener_embedded_by_another_trait_hears_an_emit_from_a_fetch_completion() {
+    let mut program = external_listen_program();
+    let traits = program["orbitals"][0]["traits"].as_array_mut().unwrap();
+    traits.push(json!({ "name": "Shell", "linkedEntity": "Tally",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+            { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "stack", "children": ["@trait.Counter"] }]] }
+        ] } }));
+    program["orbitals"][0]["pages"][0]["traits"] = json!([{ "ref": "Shell" }, { "ref": "Fetcher" }, { "ref": "Counter" }]);
+    let (kernel, _) = open_shop(program, json!({ "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "a" }, { "id": "i2", "name": "b" }] }] }));
+    let after = shop_event(&kernel, "STEP", json!({ "address": "Fetcher.FETCH" }));
+    let moves: Vec<String> = after["got"]["outcomes"].as_array().into_iter().flatten().map(|o| format!("{}.{}", o["trait"].as_str().unwrap_or(""), o["event"].as_str().unwrap_or(""))).collect();
+    assert!(moves.contains(&"Counter.GOT".to_string()), "the embedded listener ran: {moves:?} {after}");
+}
+
+#[test]
+fn a_guest_listener_naming_its_emitter_by_id_hears_an_emit_from_a_fetch_completion() {
+    let mut program = external_listen_program();
+    program["orbitals"][0]["traits"][0]["id"] = json!("trt_FETCHER");
+    program["orbitals"][0]["traits"][1]["listens"][0]["source"]["traitId"] = json!("trt_FETCHER");
+    let (kernel, _) = open_shop(program, json!({ "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "a" }, { "id": "i2", "name": "b" }] }] }));
+    let after = shop_event(&kernel, "STEP", json!({ "address": "Fetcher.FETCH" }));
+    let moves: Vec<String> = after["got"]["outcomes"].as_array().into_iter().flatten().map(|o| format!("{}.{}", o["trait"].as_str().unwrap_or(""), o["event"].as_str().unwrap_or(""))).collect();
+    assert!(moves.contains(&"Counter.GOT".to_string()), "the listener matched its emitter by id: {moves:?} {after}");
+}
+
+#[test]
+fn a_guest_runs_its_client_traits_itself_so_a_client_listener_on_its_page_hears_emits() {
+    let mut program = external_listen_program();
+    program["orbitals"][0]["traits"][1]["dispatch"] = json!("client");
+    let (kernel, _) = open_shop(program, json!({ "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "a" }, { "id": "i2", "name": "b" }] }] }));
+    let after = shop_event(&kernel, "STEP", json!({ "address": "Fetcher.FETCH" }));
+    let moves: Vec<String> = after["got"]["outcomes"].as_array().into_iter().flatten().map(|o| format!("{}.{}", o["trait"].as_str().unwrap_or(""), o["event"].as_str().unwrap_or(""))).collect();
+    assert!(moves.contains(&"Counter.GOT".to_string()), "no browser runs a guest's [client] trait, so the guest does: {moves:?} {after}");
+    assert!(painted(&after["got"]).contains(&"counted 2".to_string()), "{after}");
+}
+
+#[test]
+fn a_guest_holds_an_emit_for_a_page_trait_until_its_init_has_run() {
+    let mut program = external_listen_program();
+    // The fetcher loads at its own INIT, ahead of the counter on the page: the counter's INIT paints zero, so a GOT
+    // delivered before it would be wiped (EXEC-SEED-2 holds it until after).
+    program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"] = json!([["fetch", "ShopItem", { "emit": { "success": "READ", "failure": "FAILED" } }]]);
+    program["orbitals"][0]["traits"][1]["dispatch"] = json!("client");
+    program["orbitals"][0]["traits"][1]["stateMachine"]["transitions"][0]["effects"] = json!([["set", "@entity.n", 0], ["render-ui", "main", { "type": "typography", "content": "counted 0" }]]);
+    let (_, opened) = open_shop(program, json!({ "rows": [{ "entity": "ShopItem", "rows": [{ "id": "i1", "name": "a" }, { "id": "i2", "name": "b" }] }] }));
+    let moves: Vec<String> = opened["got"]["outcomes"].as_array().into_iter().flatten().filter(|o| o["trait"] == "Counter").map(|o| o["event"].as_str().unwrap_or("").to_string()).collect();
+    assert_eq!(moves, ["INIT", "GOT"], "the counter's GOT waits for its INIT: {opened}");
+    assert!(painted(&opened["got"]).contains(&"counted 2".to_string()), "{opened}");
 }

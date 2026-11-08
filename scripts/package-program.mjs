@@ -14,21 +14,27 @@
  *   node package-program.mjs platform --name orb-shell-python --binary <path> --platform darwin-arm64 \
  *        --version 18.0.0 --repo <shell repo root> --out <dir> [--shell python]
  *   node package-program.mjs meta --name orb-shell-python --version 18.0.0 --repo <shell repo root> --out <dir> \
- *        --kind shell --shell python --platforms darwin-arm64,darwin-x64,linux-x64,linux-arm64,windows-x64
+ *        --kind shell --shell python --platforms darwin-arm64,darwin-x64,linux-x64,linux-arm64,windows-x64 *   node package-program.mjs stage --name orb-shell-python --from <cargo target dir> --profile dist --version 18.0.0 \
+ *        --repo <shell repo root> --out <dir> --kind shell --shell python [--libc musl|gnu]
+ *        every platform from one build tree: strips each binary into <out>/symbols, then the platform packages and meta
  */
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const PLATFORMS = {
-  'darwin-arm64': { os: 'darwin', cpu: 'arm64' },
-  'darwin-x64': { os: 'darwin', cpu: 'x64' },
-  'linux-x64': { os: 'linux', cpu: 'x64' },
-  'linux-arm64': { os: 'linux', cpu: 'arm64' },
-  'windows-x64': { os: 'win32', cpu: 'x64' },
+export const PLATFORMS = {
+  'darwin-arm64': { os: 'darwin', cpu: 'arm64', target: () => 'aarch64-apple-darwin', exe: '' },
+  'darwin-x64': { os: 'darwin', cpu: 'x64', target: () => 'x86_64-apple-darwin', exe: '' },
+  'linux-x64': { os: 'linux', cpu: 'x64', target: (libc) => `x86_64-unknown-linux-${libc}`, exe: '' },
+  'linux-arm64': { os: 'linux', cpu: 'arm64', target: (libc) => `aarch64-unknown-linux-${libc}`, exe: '' },
+  'windows-x64': { os: 'win32', cpu: 'x64', target: () => 'x86_64-pc-windows-msvc', exe: '.exe' },
 };
 
-function args(argv) {
+const splitSymbols = path.join(path.dirname(fileURLToPath(import.meta.url)), 'split-symbols.sh');
+
+export function args(argv) {
   const out = { _: argv[0] };
   for (let i = 1; i < argv.length; i += 2) {
     if (!argv[i].startsWith('--') || argv[i + 1] === undefined) throw new Error(`bad argument ${argv[i]}`);
@@ -173,7 +179,38 @@ function meta(a) {
   console.log(`packaged ${dir}`);
 }
 
-const a = args(process.argv.slice(2));
-if (a._ === 'platform') platform(a);
-else if (a._ === 'meta') meta(a);
-else throw new Error('usage: package-program.mjs platform|meta …');
+/** Where each platform's binary sits in one cargo target dir that built every target. */
+export function builtBinary(from, profile, name, plat, libc) {
+  const p = PLATFORMS[plat];
+  return path.join(from, p.target(libc), profile, `${name}${p.exe}`);
+}
+
+function stage(a) {
+  const name = need(a, 'name');
+  const from = need(a, 'from');
+  const profile = need(a, 'profile');
+  const out = need(a, 'out');
+  const libc = a.libc ?? 'musl';
+  if (libc !== 'musl' && libc !== 'gnu') throw new Error(`--libc must be musl or gnu, got ${libc}`);
+  fs.rmSync(out, { recursive: true, force: true });
+  const symbols = path.join(out, 'symbols');
+  for (const plat of Object.keys(PLATFORMS)) {
+    const binary = builtBinary(from, profile, name, plat, libc);
+    if (!fs.existsSync(binary)) throw new Error(`missing build output ${binary}`);
+    platform({ ...a, _: 'platform', platform: plat, binary, out: path.join(out, 'npm') });
+    const packaged = path.join(out, 'npm', plat, 'bin', path.basename(binary));
+    const pdb = `${name.replaceAll('-', '_')}.pdb`;
+    if (PLATFORMS[plat].exe) fs.copyFileSync(path.join(path.dirname(binary), pdb), path.join(path.dirname(packaged), pdb));
+    execFileSync('bash', [splitSymbols, packaged, path.join(symbols, `${name}-${plat}.symbols`)], { stdio: 'inherit' });
+    fs.rmSync(path.join(path.dirname(packaged), pdb), { force: true });
+  }
+  meta({ ...a, _: 'meta', platforms: Object.keys(PLATFORMS).join(','), out: path.join(out, 'npm') });
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const a = args(process.argv.slice(2));
+  if (a._ === 'platform') platform(a);
+  else if (a._ === 'meta') meta(a);
+  else if (a._ === 'stage') stage(a);
+  else throw new Error('usage: package-program.mjs platform|meta|stage …');
+}

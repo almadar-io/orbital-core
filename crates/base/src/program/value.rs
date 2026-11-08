@@ -43,6 +43,11 @@ impl<T> Shared<T> {
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
     }
+
+    /// A handle to the allocation that does not keep it alive.
+    pub fn downgrade(this: &Self) -> std::sync::Weak<T> {
+        Arc::downgrade(&this.0)
+    }
 }
 
 impl<T: Clone> Shared<T> {
