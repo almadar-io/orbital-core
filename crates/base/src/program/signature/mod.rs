@@ -618,7 +618,15 @@ impl<'a> Signature<'a> {
 
     /// The concrete type of the parameter at `index` under `bindings`, or `None` when it is not determined.
     pub fn formal_type(&self, index: usize, bindings: &CallBindings) -> Option<OirType> {
-        resolve(self.formal(index)?, bindings)
+        let formal = self.formal(index)?;
+        // A key names a field of a record or map, or a position of a list.
+        if let OperatorTypeRef::Tagged(OperatorTypeRefKind::KeyOf { of, .. }) = formal {
+            return Some(match bindings.bound(of).map(unwrap_optional) {
+                Some(OirType::Array { .. }) => OirType::Number,
+                _ => OirType::String,
+            });
+        }
+        resolve(formal, bindings)
     }
 
     /// The result with the declared null alternative left out (`T | null` read as the `T` the bindings give),
