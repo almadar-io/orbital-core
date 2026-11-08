@@ -248,6 +248,7 @@ operator_kind! {
     StrRepeatOp => StrRepeatOp,
     StrReplaceAllOp => StrReplaceAllOp,
     StrReplacePatternOp => StrReplacePatternOp,
+    StrFindPatternOp => StrFindPatternOp,
     StrReplaceOp => StrReplaceOp,
     StrReverseOp => StrReverseOp,
     StrEncodeUriComponentOp => StrEncodeUriComponentOp,

@@ -88,7 +88,7 @@ impl Operator for AnimDirectionFromDeltaOp {
             .into());
         }
         // Screen coords: +y is down. atan2(dy,dx) in (-PI, PI].
-        let angle = dy.atan2(dx);
+        let angle = libm::atan2(dy, dx);
         let two_pi = std::f64::consts::PI * 2.0;
         let dir = if ways == 8.0 {
             // 8 buckets of 45°, centered on each direction starting at "right" (0 rad).

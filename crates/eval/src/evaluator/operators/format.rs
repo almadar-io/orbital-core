@@ -463,11 +463,11 @@ impl Operator for FormatBytesOp {
             return Ok(Value::string("0 B"));
         }
         const UNITS: [&str; 6] = ["B", "KB", "MB", "GB", "TB", "PB"];
-        let step = ((bytes.ln() / 1024f64.ln()).floor() as i64).clamp(0, 5) as usize;
+        let step = ((libm::log(bytes) / libm::log(1024f64)).floor() as i64).clamp(0, 5) as usize;
         if step == 0 {
             return Ok(Value::string(format!("{} B", js_number(bytes))));
         }
-        let value = bytes / 1024f64.powi(step as i32);
+        let value = bytes / libm::pow(1024f64, step as f64);
         let text = if value >= 10.0 {
             js_number((value + 0.5).floor())
         } else if value.fract() == 0.0 {

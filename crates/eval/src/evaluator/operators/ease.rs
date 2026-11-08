@@ -37,7 +37,7 @@ fn ease_curve(curve: &str, t: f64) -> f64 {
             } else {
                 let p = 0.3;
                 let s = p / 4.0;
-                2.0_f64.powf(-10.0 * t) * ((t - s) * (2.0 * PI) / p).sin() + 1.0
+                libm::pow(2.0_f64, -10.0 * t) * libm::sin((t - s) * (2.0 * PI) / p) + 1.0
             }
         }
         "bounce-out" => bounce_out(t),

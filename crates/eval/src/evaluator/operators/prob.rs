@@ -25,7 +25,7 @@ fn numbers(value: Value) -> Result<Vec<f64>, OrbitalError> {
 fn standard_normal(ctx: &BindingContext) -> Result<f64, OrbitalError> {
     let u1 = ctx.prob_next()?;
     let u2 = ctx.prob_next()?;
-    Ok((-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos())
+    Ok((-2.0 * libm::log(u1)).sqrt() * libm::cos(2.0 * std::f64::consts::PI * u2))
 }
 
 /// Marsaglia-Tsang gamma variate; for a shape below one, `gamma(shape + 1) * U^(1/shape)`.
@@ -35,7 +35,7 @@ fn gamma_variate(shape: f64, ctx: &BindingContext) -> Result<f64, OrbitalError> 
     }
     if shape < 1.0 {
         let u = ctx.prob_next()?;
-        return Ok(gamma_variate(shape + 1.0, ctx)? * u.powf(1.0 / shape));
+        return Ok(gamma_variate(shape + 1.0, ctx)? * libm::pow(u, 1.0 / shape));
     }
     let d = shape - 1.0 / 3.0;
     let c = 1.0 / (9.0 * d).sqrt();
@@ -52,7 +52,7 @@ fn gamma_variate(shape: f64, ctx: &BindingContext) -> Result<f64, OrbitalError> 
         if u < 1.0 - 0.0331 * (x * x) * (x * x) {
             return Ok(d * v);
         }
-        if u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln()) {
+        if libm::log(u) < 0.5 * x * x + d * (1.0 - v + libm::log(v)) {
             return Ok(d * v);
         }
     }
@@ -131,7 +131,7 @@ prob_op!(ProbCategoricalOp, "prob/categorical", 2, |args, ctx| {
 });
 
 prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
-    let limit = (-number(&args[0], ctx)?).exp();
+    let limit = libm::exp(-number(&args[0], ctx)?);
     let mut k = 0.0;
     let mut p = 1.0;
     loop {
@@ -260,7 +260,7 @@ prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
         .into());
     }
     let mean = samples.iter().sum::<f64>() / count;
-    let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
+    let variance = samples.iter().map(|v| libm::pow(v - mean, 2.0)).sum::<f64>() / count;
     let rate = count / n;
     let mut out = ValueMap::default();
     out.insert("mean".into(), Value::Number(mean));
@@ -296,7 +296,7 @@ prob_op!(ProbVarianceOp, "prob/variance", 1, |args, ctx| {
     let samples = numbers(eval_expr(&args[0], ctx)?)?;
     let mean = mean_of("prob/variance", &samples)?;
     Ok(Value::Number(
-        samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / samples.len() as f64,
+        samples.iter().map(|v| libm::pow(v - mean, 2.0)).sum::<f64>() / samples.len() as f64,
     ))
 });
 

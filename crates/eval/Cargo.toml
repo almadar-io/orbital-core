@@ -26,6 +26,7 @@ saphyr-parser = { version = "=0.0.6", optional = true }
 icu_collator = { version = "2.3", default-features = false, features = ["unstable", "compiled_data"] }
 ts-rs = { version = "12.0.1", optional = true }
 orbital-core-base = { path = "../base", default-features = false }
+libm = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rayon = { version = "1.10", optional = true }

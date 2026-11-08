@@ -115,8 +115,11 @@ pub struct BytesLengthOp;
 impl Operator for BytesLengthOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/length", == 1);
-        let data = bytes_arg(&args[0], ctx, "bytes/length")?;
-        Ok(super::util::int_of(data.len()))
+        let len = match eval_expr(&args[0], ctx)? {
+            Value::Bytes(b) => b.len(),
+            other => decode_value(other, "bytes/length")?.len(),
+        };
+        Ok(super::util::int_of(len))
     }
 }
 
@@ -155,9 +158,16 @@ impl Operator for BytesConcatOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/concat", == 1);
         let parts = require_array!(eval_expr(&args[0], ctx)?);
-        let mut joined = Vec::new();
+        let mut held = Vec::with_capacity(parts.len());
         for part in parts {
-            joined.extend(decode_value(part, "bytes/concat")?);
+            held.push(match part {
+                Value::Bytes(b) => b,
+                other => orbital_core_base::value::Shared::new(decode_value(other, "bytes/concat")?),
+            });
+        }
+        let mut joined = Vec::with_capacity(held.iter().map(|b| b.len()).sum());
+        for part in &held {
+            joined.extend_from_slice(part);
         }
         Ok(Value::bytes(joined))
     }

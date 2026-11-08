@@ -256,7 +256,7 @@ impl Operator for RoundOp {
         if decimals == 0.0 {
             return Ok(int_or_number(val.round()));
         }
-        let factor = 10f64.powf(decimals);
+        let factor = libm::pow(10f64, decimals);
         Ok(Value::Number((val * factor).round() / factor))
     }
 }
@@ -273,7 +273,7 @@ impl Operator for MathPowOp {
         let base = require_number!(eval_expr(&args[0], ctx)?);
         let exp = require_number!(eval_expr(&args[1], ctx)?);
 
-        Ok(nan_to_null(base.powf(exp)))
+        Ok(nan_to_null(libm::pow(base, exp)))
     }
 }
 
@@ -295,7 +295,7 @@ impl Operator for MathLog10Op {
         require_arity!(args, "log10", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
 
-        Ok(nan_to_null(n.log10()))
+        Ok(nan_to_null(libm::log10(n)))
     }
 }
 
@@ -306,7 +306,7 @@ impl Operator for MathLnOp {
         require_arity!(args, "ln", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
 
-        Ok(nan_to_null(n.ln()))
+        Ok(nan_to_null(libm::log(n)))
     }
 }
 
@@ -474,7 +474,7 @@ impl Operator for MathSinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/sin", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.sin()))
+        Ok(Value::Number(libm::sin(n)))
     }
 }
 
@@ -484,7 +484,7 @@ impl Operator for MathCosOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/cos", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.cos()))
+        Ok(Value::Number(libm::cos(n)))
     }
 }
 
@@ -494,7 +494,7 @@ impl Operator for MathTanOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/tan", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.tan()))
+        Ok(Value::Number(libm::tan(n)))
     }
 }
 
@@ -505,7 +505,7 @@ impl Operator for MathAtan2Op {
         require_arity!(args, "math/atan2", >= 2);
         let y = require_number!(eval_expr(&args[0], ctx)?);
         let x = require_number!(eval_expr(&args[1], ctx)?);
-        Ok(Value::Number(y.atan2(x)))
+        Ok(Value::Number(libm::atan2(y, x)))
     }
 }
 
@@ -515,7 +515,7 @@ impl Operator for MathAsinOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/asin", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(nan_to_null(n.asin()))
+        Ok(nan_to_null(libm::asin(n)))
     }
 }
 
@@ -525,7 +525,7 @@ impl Operator for MathAcosOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/acos", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(nan_to_null(n.acos()))
+        Ok(nan_to_null(libm::acos(n)))
     }
 }
 
@@ -535,7 +535,7 @@ impl Operator for MathAtanOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/atan", 1);
         let n = require_number!(eval_expr(&args[0], ctx)?);
-        Ok(Value::Number(n.atan()))
+        Ok(Value::Number(libm::atan(n)))
     }
 }
 
@@ -546,7 +546,7 @@ impl Operator for MathHypotOp {
         require_arity!(args, "math/hypot", >= 2);
         let a = require_number!(eval_expr(&args[0], ctx)?);
         let b = require_number!(eval_expr(&args[1], ctx)?);
-        Ok(Value::Number(a.hypot(b)))
+        Ok(Value::Number(libm::hypot(a, b)))
     }
 }
 

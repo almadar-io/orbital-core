@@ -284,7 +284,7 @@ impl Operator for VecAngleOp {
         require_arity!(args, "vec/angle", 1);
         let a = eval_vector("vec/angle", "a", &args[0], ctx)?;
         if args.len() == 1 {
-            return Ok(Value::Number(a.y.atan2(a.x)));
+            return Ok(Value::Number(libm::atan2(a.y, a.x)));
         }
         let b = eval_vector("vec/angle", "b", &args[1], ctx)?;
         let la = dot3(&a, &a).sqrt();
@@ -293,7 +293,7 @@ impl Operator for VecAngleOp {
             return Ok(Value::Number(0.0));
         }
         let cos = (dot3(&a, &b) / (la * lb)).clamp(-1.0, 1.0);
-        Ok(Value::Number(cos.acos()))
+        Ok(Value::Number(libm::acos(cos)))
     }
 }
 
@@ -306,7 +306,7 @@ impl Operator for VecRotateOp {
         let with_z = a.has_z;
         let x = a.x;
         let y = a.y;
-        let (s, c) = rad.sin_cos();
+        let (s, c) = (libm::sin(rad), libm::cos(rad));
         Ok(make_vec(x * c - y * s, x * s + y * c, a.z, with_z))
     }
 }

@@ -269,6 +269,67 @@ impl Operator for StrReplacePatternOp {
     }
 }
 
+/// str/find-pattern - Every match of a shared-dialect regex at or after a character offset, as
+/// `{ start, end, text }` in characters (the units of `str/len` and `str/slice`); an empty list when
+/// nothing matches, null for a pattern outside the dialect.
+pub struct StrFindPatternOp;
+impl Operator for StrFindPatternOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "str/find-pattern", >= 2);
+        let text = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let pattern = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let from = match args.get(2) {
+            Some(arg) => {
+                let n = eval_expr(arg, ctx)?.number()?;
+                if n.is_finite() && n > 0.0 {
+                    n.floor() as usize
+                } else {
+                    0
+                }
+            }
+            None => 0,
+        };
+        let Some(regex) = compile_shared_regex(&pattern) else {
+            return Ok(Value::Null);
+        };
+        Ok(Value::array(find_each_match(&regex, &text, from)))
+    }
+}
+
+fn find_each_match(regex: &regex::Regex, text: &str, from_chars: usize) -> Vec<Value> {
+    let Some(start_byte) = text
+        .char_indices()
+        .map(|(b, _)| b)
+        .chain(std::iter::once(text.len()))
+        .nth(from_chars)
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut chars_before = from_chars;
+    let mut counted_to = start_byte;
+    let mut at = start_byte;
+    while at <= text.len() {
+        let Some(found) = regex.find_at(text, at) else {
+            break;
+        };
+        chars_before += text[counted_to..found.start()].chars().count();
+        counted_to = found.start();
+        let len = found.as_str().chars().count();
+        let mut m = ValueMap::default();
+        m.insert("start".into(), super::util::int_of(chars_before));
+        m.insert("end".into(), super::util::int_of(chars_before + len));
+        m.insert("text".into(), Value::string(found.as_str()));
+        out.push(Value::object(m));
+        at = if found.is_empty() {
+            found.end() + text[found.end()..].chars().next().map_or(1, char::len_utf8)
+        } else {
+            found.end()
+        };
+    }
+    out
+}
+
 /// str/replaceAll - Replace all occurrences
 pub struct StrReplaceAllOp;
 impl Operator for StrReplaceAllOp {
@@ -584,7 +645,8 @@ fn case_words(s: &str) -> Vec<String> {
         if c.is_uppercase() && i > 0 {
             let prev = chars[i - 1];
             let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
-            let breaks = prev.is_lowercase() || prev.is_numeric() || (prev.is_uppercase() && next_lower);
+            let breaks =
+                prev.is_lowercase() || prev.is_numeric() || (prev.is_uppercase() && next_lower);
             if breaks && !current.is_empty() {
                 words.push(current.to_lowercase());
                 current = String::new();
@@ -1090,8 +1152,17 @@ mod tests {
             to_int("-9007199254740991"),
             Value::Number(-9_007_199_254_740_991.0)
         );
-        assert!(matches!(to_int("9007199254740993"), Value::Int(9_007_199_254_740_993)), "exact beyond 2^53");
-        assert!(matches!(to_int("-9223372036854775808"), Value::Int(i64::MIN)));
+        assert!(
+            matches!(
+                to_int("9007199254740993"),
+                Value::Int(9_007_199_254_740_993)
+            ),
+            "exact beyond 2^53"
+        );
+        assert!(matches!(
+            to_int("-9223372036854775808"),
+            Value::Int(i64::MIN)
+        ));
     }
 
     #[test]
@@ -1177,16 +1248,91 @@ mod tests {
     #[test]
     fn str_producers_answer_ints_and_concat_prints_ints_and_bytes() {
         assert!(matches!(to_int("42"), Value::Int(42)));
-        assert!(matches!(run(serde_json::json!(["str/len", "héé"])).unwrap(), Value::Int(3)));
-        assert!(matches!(run(serde_json::json!(["str/collate", "a", "b"])).unwrap(), Value::Int(-1)));
-        assert!(matches!(run(serde_json::json!(["str/to-number", "42"])).unwrap(), Value::Number(_)), "control: to-number stays a number");
+        assert!(matches!(
+            run(serde_json::json!(["str/len", "héé"])).unwrap(),
+            Value::Int(3)
+        ));
+        assert!(matches!(
+            run(serde_json::json!(["str/collate", "a", "b"])).unwrap(),
+            Value::Int(-1)
+        ));
+        assert!(
+            matches!(
+                run(serde_json::json!(["str/to-number", "42"])).unwrap(),
+                Value::Number(_)
+            ),
+            "control: to-number stays a number"
+        );
         let mut ctx = BindingContext::default();
         ctx.set_local("i", Value::Int(1152921504606846977));
         ctx.set_local("b", Value::bytes(vec![1, 2]));
-        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/concat", "@i", "-", "@b"])).unwrap();
-        assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::string("1152921504606846977-AQI=".to_string()));
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["str/concat", "@i", "-", "@b"])).unwrap();
+        assert_eq!(
+            eval_expr(&expr, &ctx).unwrap(),
+            Value::string("1152921504606846977-AQI=".to_string())
+        );
         ctx.set_local("n", Value::Int(2));
-        let expr: SExpression = serde_json::from_value(serde_json::json!(["str/repeat", "a", "@n"])).unwrap();
-        assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::string("aa".to_string()));
+        let expr: SExpression =
+            serde_json::from_value(serde_json::json!(["str/repeat", "a", "@n"])).unwrap();
+        assert_eq!(
+            eval_expr(&expr, &ctx).unwrap(),
+            Value::string("aa".to_string())
+        );
+    }
+    fn find_pattern(args: serde_json::Value) -> Value {
+        let mut call = vec![serde_json::json!("str/find-pattern")];
+        call.extend(args.as_array().expect("args").iter().cloned());
+        let expr: SExpression =
+            serde_json::from_value(serde_json::Value::Array(call)).expect("s-expression");
+        eval_expr(&expr, &BindingContext::default()).expect("evaluates")
+    }
+
+    fn found(start: usize, end: usize, text: &str) -> Value {
+        let mut m = ValueMap::default();
+        m.insert("start".into(), super::super::util::int_of(start));
+        m.insert("end".into(), super::super::util::int_of(end));
+        m.insert("text".into(), Value::string(text));
+        Value::object(m)
+    }
+
+    #[test]
+    fn find_pattern_answers_every_match_in_character_offsets() {
+        assert_eq!(
+            find_pattern(serde_json::json!(["é foo é foo", "fo+"])),
+            Value::array(vec![found(2, 5, "foo"), found(8, 11, "foo")])
+        );
+    }
+
+    #[test]
+    fn find_pattern_starts_at_a_character_offset() {
+        assert_eq!(
+            find_pattern(serde_json::json!(["é foo é foo", "fo+", 3])),
+            Value::array(vec![found(8, 11, "foo")])
+        );
+        assert_eq!(
+            find_pattern(serde_json::json!(["abc", "b", 9])),
+            Value::array(vec![])
+        );
+    }
+
+    #[test]
+    fn find_pattern_without_a_match_is_an_empty_list_and_a_bad_pattern_is_null() {
+        assert_eq!(
+            find_pattern(serde_json::json!(["abc", "z"])),
+            Value::array(vec![])
+        );
+        assert_eq!(
+            find_pattern(serde_json::json!(["abc", "(unclosed"])),
+            Value::Null
+        );
+    }
+
+    #[test]
+    fn find_pattern_steps_past_empty_matches() {
+        assert_eq!(
+            find_pattern(serde_json::json!(["aé", "x*"])),
+            Value::array(vec![found(0, 0, ""), found(1, 1, ""), found(2, 2, "")])
+        );
     }
 }
