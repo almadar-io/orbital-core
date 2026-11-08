@@ -598,3 +598,100 @@ fn an_intrinsic_field_of_a_shared_entity_reaches_the_client_in_its_traits_own_fr
     assert_eq!(rows["$shared::Pg"]["tag"], json!("A"), "{rows}");
     assert!(rows.get("B").is_none(), "{rows}");
 }
+
+// The client view sends a session's frames narrowed to the fields the browser reads (EXEC-DIST-8): a server-awaited
+// trait's render reads, and the reads of the steps the browser can run; a server-site effect's arguments and routes
+// are the host's.
+
+fn held_schema() -> OrbitalSchema {
+    let machine = |arms: Json| json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": arms });
+    let fields = |names: &[&str]| {
+        let mut all = vec![json!({ "name": "id", "type": "string" })];
+        all.extend(names.iter().map(|n| json!({ "name": n, "type": "string" })));
+        Json::Array(all)
+    };
+    serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Box", "persistence": "runtime", "fields": fields(&["blob", "label", "guarded", "routed", "chained"]) },
+            "auxiliaryEntities": [
+                { "name": "Pad", "shared": true, "persistence": "runtime", "fields": fields(&["a", "b"]) },
+                { "name": "Pane", "persistence": "runtime", "fields": fields(&["x", "y"]) }
+            ],
+            "traits": [
+                { "name": "Holder", "linkedEntity": "Box",
+                  "stateMachine": machine(json!([
+                      { "from": "idle", "to": "idle", "event": "INIT", "guard": ["=", "@entity.guarded", null], "effects": [
+                          ["call-service", "mailer", "send", { "body": "@entity.blob" }, { "emit": { "success": "TAKEN" } }],
+                          ["emit", "NEXT", {}]] },
+                      { "from": "idle", "to": "idle", "event": "TAKEN", "effects": [["set", "@entity.label", ["str/concat", "@entity.routed", "!"]]] },
+                      { "from": "idle", "to": "idle", "event": "NEXT", "guard": ["!=", "@entity.chained", "stop"], "effects": [] },
+                      { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                          ["set", "@entity.blob", "a-large-held-value"],
+                          ["set", "@entity.label", "shown"],
+                          ["set", "@entity.guarded", "g"],
+                          ["set", "@entity.routed", "r"],
+                          ["set", "@entity.chained", "c"],
+                          ["render-ui", "main", { "type": "typography", "content": "Now @entity.label" }]] }])) },
+                { "name": "PadWriter", "linkedEntity": "Pad",
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "GO", "effects": [["set", "@entity.a", "1"], ["set", "@entity.b", "2"]] }])) },
+                { "name": "PadMirror", "linkedEntity": "Pad", "dispatch": "client",
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "LOOK", "guard": ["=", "@entity.a", "1"], "effects": [] }])) },
+                { "name": "Whole", "linkedEntity": "Pane",
+                  "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "GO", "effects": [
+                      ["set", "@entity.x", "1"], ["set", "@entity.y", "2"],
+                      ["render-ui", "main", { "type": "data-grid", "entity": "@entity" }]] }])) }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn the_client_view_keeps_a_server_traits_held_field_no_browser_step_reads_on_the_host() {
+    let server = EmbeddedServer::new(held_schema()).unwrap();
+    let (full, view) = viewed(&server, "GO", "Holder");
+    assert_eq!(rows(&full)["Holder"]["blob"], json!("a-large-held-value"), "in-process consumers keep every written field");
+    let shown = rows(&view);
+    assert!(shown["Holder"].get("blob").is_none(), "read only by a server-site effect's arguments: {shown}");
+    assert!(shown["Holder"].get("routed").is_none(), "read only by a step a server-site effect's route reaches: {shown}");
+}
+
+#[test]
+fn control_the_client_view_keeps_the_fields_a_render_or_a_browser_step_reads() {
+    let server = EmbeddedServer::new(held_schema()).unwrap();
+    let (_, view) = viewed(&server, "GO", "Holder");
+    let shown = rows(&view);
+    assert_eq!(shown["Holder"]["label"], json!("shown"), "a render reads it, inside text: {shown}");
+    assert_eq!(shown["Holder"]["guarded"], json!("g"), "the INIT guard reads it: {shown}");
+    assert_eq!(shown["Holder"]["chained"], json!("c"), "a step INIT's browser-site emit reaches reads it: {shown}");
+}
+
+#[test]
+fn the_client_view_keeps_only_what_a_client_trait_bound_to_a_shared_frame_reads() {
+    let server = EmbeddedServer::new(held_schema()).unwrap();
+    let (_, view) = viewed(&server, "GO", "PadWriter");
+    let shown = rows(&view);
+    assert_eq!(shown["$shared::Pad"]["a"], json!("1"), "{shown}");
+    assert!(shown["$shared::Pad"].get("b").is_none(), "{shown}");
+}
+
+#[test]
+fn control_a_render_that_reads_the_whole_entity_keeps_every_field() {
+    let server = EmbeddedServer::new(held_schema()).unwrap();
+    let (_, view) = viewed(&server, "GO", "Whole");
+    let shown = rows(&view);
+    assert_eq!((shown["Whole"]["x"].clone(), shown["Whole"]["y"].clone()), (json!("1"), json!("2")), "{shown}");
+}
+
+#[test]
+fn control_an_unversioned_delta_reaches_the_browser_whole() {
+    let server = EmbeddedServer::new(held_schema()).unwrap();
+    let mut full = run(&server, "GO", "Holder");
+    if let Some(delta) = full.frames.as_mut() {
+        delta.session = None;
+    }
+    let view = server.kernel().client_view(full);
+    assert_eq!(rows(&view)["Holder"]["blob"], json!("a-large-held-value"), "a stateless host's browser carries the state back");
+}

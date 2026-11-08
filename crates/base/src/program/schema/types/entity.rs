@@ -290,7 +290,11 @@ pub struct FieldDefinition {
     pub unique: Option<bool>,
 
     /// Default value
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_default"
+    )]
     pub default: Option<SExpression>,
 
     /// Enum values (for enum type)
@@ -747,6 +751,51 @@ impl FieldType {
         })
     }
 }
+
+/// The field types an entity field may declare, as the compiler's field validation accepts
+/// them: the one list the compiler (`VALID_FIELD_TYPES`) and the std lint
+/// `std-orb-lint-entity-field-type` (through `orbLanguage.vocabulary` `fieldTypes`) both read.
+pub const FIELD_TYPE_NAMES: &[&str] = &[
+    "string",
+    "number",
+    "int",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "f32",
+    "f64",
+    "boolean",
+    "date",
+    "datetime",
+    "timestamp",
+    "instant",
+    "email",
+    "url",
+    "phone",
+    "uuid",
+    "image",
+    "money",
+    "file",
+    "bytes",
+    "CallKey",
+    "array",
+    "object",
+    "enum",
+    "relation",
+    "trait",
+    "orbital",
+    "behavior",
+    "slot",
+    "pattern",
+    "node",
+    "event",
+    "union",
+];
 
 /// A nullable occurrence or binding makes the substituted value nullable.
 pub fn compose_nullability(occurrence: Option<bool>, binding: Option<bool>) -> Option<bool> {

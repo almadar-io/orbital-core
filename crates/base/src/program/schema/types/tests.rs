@@ -598,6 +598,20 @@ fn config_field_default_null_round_trips_as_some_null_not_none() {
     assert_eq!(json.get("default"), Some(&serde_json::Value::Null));
 }
 
+/// An entity field's `default: null` is a PRESENT `Null`, not an absent default:
+/// the compiler's default-shape check only runs on `Some(default)`.
+#[test]
+fn entity_field_default_null_deserializes_as_some_null_and_absent_as_none() {
+    let present: FieldDefinition =
+        serde_json::from_str(r#"{"name":"owner","type":"string","default":null}"#).expect("parses");
+    assert_eq!(present.default, Some(SExpression::Null));
+    let absent: FieldDefinition =
+        serde_json::from_str(r#"{"name":"owner","type":"string"}"#).expect("parses");
+    assert_eq!(absent.default, None);
+    let json = serde_json::to_value(&present).expect("serializes");
+    assert_eq!(json.get("default"), Some(&serde_json::Value::Null));
+}
+
 #[test]
 fn retag_callsite_payload_keeps_local_field_as_payload() {
     // `data` IS declared by the child's rendering transition → the binding

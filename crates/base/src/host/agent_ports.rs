@@ -11,9 +11,8 @@
 use std::prelude::v1::*;
 
 use crate::external_inputs::ExternalInput;
-use crate::schema::types::{
-    split_event_address, EntityRef, ListenSource, OrbitalSchema, PayloadField, Persistence,
-};
+pub use crate::payload_check::{find_input_by_address, PayloadIssue, PayloadIssueReason};
+use crate::schema::types::{EntityRef, OrbitalSchema, PayloadField, Persistence};
 use crate::value::{Value, ValueMap};
 
 pub const AGENT_PORT_OPERATORS: [&str; 7] = [
@@ -246,220 +245,15 @@ pub fn plan_inputs(
     ]))
 }
 
-/// The JSON Schema type a declared field type has on the wire, or `None` for a type with no JSON shape.
-fn json_type_of(field_type: &str) -> Option<&'static str> {
-    match field_type {
-        "string" | "date" | "timestamp" | "datetime" | "instant" | "email" | "url" | "phone" | "uuid"
-        | "image" | "bytes" | "callkey" | "CallKey" | "enum" | "trait" | "slot" | "pattern" | "secret" | "event"
-        | "EventAddress" | "field" => Some("string"),
-        "number" => Some("number"),
-        "boolean" => Some("boolean"),
-        "array" => Some("array"),
-        "relation" => Some("string"),
-        "object" | "orbital" | "behavior" => Some("object"),
-        _ => None,
-    }
-}
-
-/// `[T]` is an array of `T`; a to-many relation is a list of ids; anything else is its own element.
-fn field_element_of(field: &PayloadField) -> (bool, &str) {
-    let (is_array, element) = element_of(&field.field_type);
-    let to_many = field.field_type == "relation" && field.relation.as_ref().is_some_and(|r| r.is_to_many());
-    (is_array || to_many, element)
-}
-
-fn element_of(field_type: &str) -> (bool, &str) {
-    if field_type.len() >= 2 && field_type.starts_with('[') && field_type.ends_with(']') {
-        (true, &field_type[1..field_type.len() - 1])
-    } else {
-        (false, field_type)
-    }
-}
-
-/// A declared payload as the JSON Schema of one object: what a tool-calling model fills.
+/// A declared payload as the JSON Schema of one object: what a tool-calling model fills. The schema is the one
+/// `payload_check` owns, carried as a kernel value.
 pub fn payload_schema_to_json_schema(fields: &[PayloadField]) -> Value {
-    let mut properties = ValueMap::default();
-    let mut required: Vec<Value> = Vec::new();
-    for field in fields {
-        if field.properties.as_ref().is_some_and(Vec::is_empty) && field.field_type != "union" {
-            continue;
-        }
-        properties.insert(field.name.clone().into(), payload_field_to_json_schema(field));
-        if field.required == Some(true) {
-            required.push(text(&field.name));
-        }
-    }
-    let mut out = ValueMap::default();
-    out.insert("type".into(), text("object"));
-    if !fields.is_empty() {
-        out.insert("additionalProperties".into(), Value::Bool(false));
-    }
-    out.insert("properties".into(), Value::object(properties));
-    if !required.is_empty() {
-        out.insert("required".into(), Value::array(required));
-    }
-    Value::object(out)
+    through_json(&crate::payload_check::payload_json_schema(fields))
 }
 
-fn payload_field_to_json_schema(field: &PayloadField) -> Value {
-    let (is_array, element) = field_element_of(field);
-    let mut shape = match &field.properties {
-        Some(properties) => payload_schema_to_json_schema(properties),
-        None => {
-            let mut base = ValueMap::default();
-            if let Some(json) = json_type_of(element) {
-                base.insert("type".into(), text(json));
-            }
-            Value::object(base)
-        }
-    };
-    if let (Some(values), Value::Object(map)) = (&field.values, &mut shape) {
-        map.insert(
-            "enum".into(),
-            Value::Array(values.iter().map(|v| text(v)).collect()),
-        );
-    }
-    if is_array {
-        object([("type", text("array")), ("items", shape)])
-    } else {
-        shape
-    }
-}
-
-/// One way a value misses its declared payload.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PayloadIssue {
-    pub path: String,
-    pub reason: &'static str,
-    pub expected: Option<String>,
-}
-
-/// Check a value against a declared payload: required fields, primitive and container types, closed value
-/// sets, declared object shapes (closed) at any depth. An object field without declared properties stays open;
-/// a type with no JSON shape (`node`, an entity name) is not checked beyond its container.
+/// Check a value against a declared payload; the walker is `payload_check`'s, which reads the kernel value directly.
 pub fn payload_issues(fields: &[PayloadField], value: &Value) -> Vec<PayloadIssue> {
-    object_issues(fields, value, "")
-}
-
-fn issue(path: &str, reason: &'static str, expected: Option<String>) -> PayloadIssue {
-    PayloadIssue {
-        path: path.to_string(),
-        reason,
-        expected,
-    }
-}
-
-fn join(at: &str, key: &str) -> String {
-    if at.is_empty() {
-        key.to_string()
-    } else {
-        format!("{at}.{key}")
-    }
-}
-
-fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<PayloadIssue> {
-    let Value::Object(map) = value else {
-        return vec![issue(
-            if at.is_empty() { "." } else { at },
-            "wrong-type",
-            Some("object".to_string()),
-        )];
-    };
-    let mut issues = Vec::new();
-    for field in fields {
-        match map.get(&field.name) {
-            None | Some(Value::Null) => {
-                if field.required == Some(true) {
-                    issues.push(issue(&join(at, &field.name), "missing", None));
-                }
-            }
-            Some(v) => issues.extend(field_issues(field, v, &join(at, &field.name))),
-        }
-    }
-    let allowed = if fields.is_empty() {
-        "(no keys)".to_string()
-    } else {
-        fields
-            .iter()
-            .map(|f| f.name.as_str())
-            .collect::<Vec<_>>()
-            .join(" | ")
-    };
-    for key in map.keys() {
-        if !fields.iter().any(|f| &f.name == key) {
-            issues.push(issue(&join(at, key), "unknown", Some(allowed.clone())));
-        }
-    }
-    issues
-}
-
-fn field_issues(field: &PayloadField, value: &Value, at: &str) -> Vec<PayloadIssue> {
-    let (is_array, element) = field_element_of(field);
-    if is_array || field.field_type == "array" {
-        let Value::Array(items) = value else {
-            return vec![issue(at, "wrong-type", Some(field.field_type.clone()))];
-        };
-        return items
-            .iter()
-            .enumerate()
-            .flat_map(|(i, item)| element_issues(field, element, item, &format!("{at}[{i}]")))
-            .collect();
-    }
-    element_issues(field, element, value, at)
-}
-
-fn element_issues(
-    field: &PayloadField,
-    element: &str,
-    value: &Value,
-    at: &str,
-) -> Vec<PayloadIssue> {
-    if let Some(properties) = &field.properties {
-        if field.field_type != "union" {
-            return object_issues(properties, value, at);
-        }
-        let fits = properties.iter().any(|variant| {
-            element_issues(variant, element_of(&variant.field_type).1, value, at).is_empty()
-        });
-        return if fits {
-            Vec::new()
-        } else {
-            vec![issue(
-                at,
-                "wrong-type",
-                Some(
-                    properties
-                        .iter()
-                        .map(|v| v.field_type.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" | "),
-                ),
-            )]
-        };
-    }
-    let json = if element == "object" {
-        Some("object")
-    } else {
-        json_type_of(element)
-    };
-    let matches = match json {
-        None => true,
-        Some("object") => matches!(value, Value::Object(_)),
-        Some("array") => matches!(value, Value::Array(_)),
-        Some("string") => matches!(value, Value::String(_)) || (element == "bytes" && matches!(value, Value::Bytes(_))),
-        Some("number") => value.is_numeric(),
-        Some("boolean") => matches!(value, Value::Bool(_)),
-        Some(_) => false,
-    };
-    if !matches {
-        return vec![issue(at, "wrong-type", Some(element.to_string()))];
-    }
-    if let Some(values) = &field.values {
-        if !matches!(value, Value::String(s) if values.contains(s)) {
-            return vec![issue(at, "not-one-of", Some(values.join(" | ")))];
-        }
-    }
-    Vec::new()
+    crate::payload_check::payload_issues(fields, value)
 }
 
 fn json_kind(value: &Value) -> &'static str {
@@ -532,11 +326,11 @@ pub fn issues_value(issues: &[PayloadIssue], root: &Value) -> Vec<Value> {
         .map(|found| {
             let mut map = ValueMap::default();
             map.insert("path".into(), text(&found.path));
-            map.insert("reason".into(), text(found.reason));
+            map.insert("reason".into(), text(found.reason.as_str()));
             if let Some(expected) = &found.expected {
                 map.insert("expected".into(), text(expected));
             }
-            if found.reason == "wrong-type" {
+            if found.reason == PayloadIssueReason::WrongType {
                 if let Some(sent) = value_at(root, &found.path) {
                     map.insert("received".into(), text(json_kind(sent)));
                 }
@@ -566,33 +360,6 @@ pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
         }
     }
     out
-}
-
-/// The declared input an address names, resolved from the calling trait's position: `EVENT` is that trait's
-/// own, `Trait.EVENT` a trait of its orbital, `Orbital.Trait.EVENT` any orbital. `*.EVENT` names none.
-pub fn find_input_by_address<'a>(
-    inputs: &'a [ExternalInput],
-    address: &str,
-    caller_orbital: Option<&str>,
-    caller_trait: &str,
-) -> Option<&'a ExternalInput> {
-    let (event, source) = split_event_address(address);
-    let (orbital, trait_name) = match source {
-        Some(ListenSource::Any) => return None,
-        Some(ListenSource::Orbital {
-            orbital,
-            trait_name,
-            ..
-        }) => (Some(orbital), trait_name),
-        Some(ListenSource::Trait { trait_name, .. }) => {
-            (caller_orbital.map(str::to_string), trait_name)
-        }
-        None => (caller_orbital.map(str::to_string), caller_trait.to_string()),
-    };
-    let orbital = orbital?;
-    inputs
-        .iter()
-        .find(|i| i.orbital == orbital && i.trait_name == trait_name && i.event == event)
 }
 
 /// What a `program/dispatch` comes to before the host is asked.
@@ -1101,7 +868,7 @@ mod tests {
         );
         let issues = payload_issues(&fields, &sent(serde_json::json!({ "assignee": {} })));
         assert_eq!(issues.len(), 1, "{issues:?}");
-        assert_eq!((issues[0].path.as_str(), issues[0].reason), ("assignee", "wrong-type"));
+        assert_eq!((issues[0].path.as_str(), issues[0].reason.as_str()), ("assignee", "wrong-type"));
     }
 
     #[test]
@@ -1120,9 +887,37 @@ mod tests {
     }
 
     #[test]
+    fn g_behaviors_018_the_wire_and_the_evaluator_check_one_fixture_identically() {
+        let fields: Vec<PayloadField> = serde_json::from_value(serde_json::json!([
+            { "name": "title", "type": "string", "required": true },
+            { "name": "at", "type": "instant" },
+            { "name": "assignee", "type": "relation", "relation": { "entity": "TeamMember", "cardinality": "one" } },
+            { "name": "members", "type": "relation", "relation": { "entity": "TeamMember", "cardinality": "many" } },
+            { "name": "tags", "type": "[string]", "values": ["new", "sale"] },
+            { "name": "rows", "type": "[object]", "properties": [{ "name": "id", "type": "string", "required": true }] },
+            { "name": "roles", "type": "object", "properties": [] }
+        ]))
+        .expect("fields");
+        let wire_schema = crate::payload_check::payload_json_schema(&fields);
+        assert_eq!(as_json(&payload_schema_to_json_schema(&fields)), norm(wire_schema), "one schema on both paths");
+        let sends = [
+            serde_json::json!({ "title": "t", "at": "2026-11-07T00:00:00Z", "assignee": "m1", "members": ["a"], "tags": ["new"], "rows": [{ "id": "r" }] }),
+            serde_json::json!({ "at": 5, "assignee": {}, "members": [{}], "tags": ["old"], "rows": [{}], "extra": 1 }),
+            serde_json::json!({ "title": null, "members": {}, "tags": "new", "rows": {} }),
+            serde_json::json!([]),
+        ];
+        for sent in sends {
+            let kernel = serde_json::from_value::<Value>(sent.clone()).unwrap();
+            let on_the_wire = serde_json::to_value(crate::payload_check::payload_issues(&fields, &sent)).unwrap();
+            let in_the_kernel = serde_json::to_value(payload_issues(&fields, &kernel)).unwrap();
+            assert_eq!(on_the_wire, in_the_kernel, "{sent}");
+        }
+    }
+
+    #[test]
     fn an_instant_is_text_on_the_wire() {
-        assert_eq!(json_type_of("instant"), Some("string"));
-        assert_eq!(json_type_of("number"), Some("number"));
+        assert_eq!(crate::payload_check::json_type("instant"), Some("string"));
+        assert_eq!(crate::payload_check::json_type("number"), Some("number"));
     }
 
     #[test]

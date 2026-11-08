@@ -298,6 +298,15 @@ operator_kind! {
     CredentialByteLengthOp => CredentialByteLengthOp,
     HmacSha256Op => HmacSha256Op,
     HmacSha256BytesOp => HmacSha256BytesOp,
+    HmacSha1BytesOp => HmacSha1BytesOp,
+    HmacSha384BytesOp => HmacSha384BytesOp,
+    HmacSha512BytesOp => HmacSha512BytesOp,
+    EcdsaP384SignOp => EcdsaP384SignOp,
+    EcdsaP384VerifyOp => EcdsaP384VerifyOp,
+    Ed25519SignOp => Ed25519SignOp,
+    Ed25519VerifyOp => Ed25519VerifyOp,
+    RsaPssSignOp => RsaPssSignOp,
+    RsaPssVerifyOp => RsaPssVerifyOp,
     EcdsaP256SignOp => EcdsaP256SignOp,
     RsaSignOp => RsaSignOp,
     EcdhP256EphemeralOp => EcdhP256EphemeralOp,
@@ -473,13 +482,14 @@ impl OperatorKind {
     }
 
     /// Whether two evaluations of this operator inside one dispatch can differ by drawing entropy: the `prob/*`
-    /// stream and the clock-seeded `math/random`, `math/randomInt` and `array/shuffle`. `@now` and `time/*` read the
+    /// stream and the sealed-entropy `math/random`, `math/randomInt` and `array/shuffle`. `@now` and `time/*` read the
     /// dispatch's one stamp (EXEC-SEED-1) and do not.
     pub fn draws_entropy(&self) -> bool {
         matches!(
             self,
             Self::MathRandomOp
                 | Self::RsaSignOp
+                | Self::RsaPssSignOp
                 | Self::EcdhP256EphemeralOp
                 | Self::MathRandomIntOp
                 | Self::ArrayShuffleOp

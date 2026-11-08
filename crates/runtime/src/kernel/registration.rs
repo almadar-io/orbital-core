@@ -690,6 +690,7 @@ impl RuntimeKernel {
         let refs = Arc::new(super::callsite_capture::embedded_trait_refs(&trait_def));
         self.registry.embedded_trait_refs.write().insert(trait_def.name.clone(), refs);
         self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
+        *self.registry.browser_reads.write() = None;
         Ok(())
     }
 

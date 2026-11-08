@@ -827,8 +827,7 @@ impl Operator for ArrayGroupByOp {
 
         let array = require_array!(arr);
 
-        let mut groups: std::collections::HashMap<String, Vec<Value>> =
-            std::collections::HashMap::new();
+        let mut groups: orbital_core_base::collections::IndexMap<String, Vec<Value>> = Default::default();
 
         // A field-name key (`"stage"`) groups by that field's text; a missing or null key is an error (the program
         // `default`s it), never an implicit group.
@@ -987,21 +986,18 @@ impl Operator for ArrayShuffleOp {
         require_arity!(args, "shuffle", 1);
         let arr = eval_expr(&args[0], ctx)?;
 
-        let mut array = require_array!(arr);
+        let array = require_array!(arr);
 
-        // Fisher-Yates shuffle using simple LCG RNG seeded from the portable clock.
-        let seed = orbital_core_base::time_util::now_millis() as u64;
-
-        let mut rng = seed;
-        let len = array.len();
-        for i in (1..len).rev() {
-            // Simple LCG: next = (a * current + c) mod m
-            rng = rng.wrapping_mul(1103515245).wrapping_add(12345);
-            let j = (rng as usize) % (i + 1);
-            array.swap(i, j);
-        }
-
-        Ok(Value::Array(array))
+        // Fisher-Yates over the sealed-entropy stream (see `math::drawn`); the journal records the input and the order.
+        let journaled = [Value::Array(array.clone())];
+        super::math::drawn(ctx, "array/shuffle", &journaled, |rng| {
+            let mut shuffled = array.clone();
+            for i in (1..shuffled.len()).rev() {
+                let j = super::math::below(rng, i as u64 + 1) as usize;
+                shuffled.swap(i, j);
+            }
+            Value::Array(shuffled)
+        })
     }
 }
 

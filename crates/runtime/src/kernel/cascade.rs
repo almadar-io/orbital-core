@@ -252,49 +252,55 @@ impl RuntimeKernel {
     /// Every event name a pattern prop of the program's effects names: the props whose registry kind is an event
     /// (`event`, `event-ref`, `event-listen`, `event-list`, `event-map`).
     pub(super) fn pattern_event_names(&self) -> HashSet<String> {
-        use orbital_core_base::language::pattern_props::PATTERN_EVENT_NAME_PROPS;
-        fn walk(value: &serde_json::Value, out: &mut HashSet<String>) {
-            match value {
-                serde_json::Value::Object(map) => {
-                    let props = map
-                        .get("type")
-                        .and_then(serde_json::Value::as_str)
-                        .and_then(|pattern| PATTERN_EVENT_NAME_PROPS.get(pattern));
-                    for (prop, (kind, field)) in props.into_iter().flatten() {
-                        let Some(named) = map.get(*prop) else { continue };
-                        match (*kind, named) {
-                            ("event" | "event-ref" | "event-listen", serde_json::Value::String(name)) => {
-                                out.insert(name.clone());
-                            }
-                            ("event-list", serde_json::Value::Array(items)) => out.extend(
-                                items
-                                    .iter()
-                                    .filter_map(|item| item.get(*field).and_then(serde_json::Value::as_str))
-                                    .map(str::to_string),
-                            ),
-                            ("event-map", serde_json::Value::Object(entries)) => out.extend(
-                                entries.values().filter_map(serde_json::Value::as_str).map(str::to_string),
-                            ),
-                            _ => {}
-                        }
-                    }
-                    map.values().for_each(|v| walk(v, out));
-                }
-                serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
-                _ => {}
-            }
-        }
         let mut out = HashSet::new();
+        let mut dynamic = false;
         for def in self.registry.trait_definitions.read().values() {
             let transitions = def.state_machine.transitions.iter().flat_map(|t| t.effects.iter().flatten());
             let ticks = def.ticks.iter().flatten().flat_map(|t| t.effects.iter());
             for effect in transitions.chain(ticks) {
                 if let Ok(json) = serde_json::to_value(effect) {
-                    walk(&json, &mut out);
+                    Self::pattern_event_props(&json, &mut out, &mut dynamic);
                 }
             }
         }
         out
+    }
+
+    /// The event names `value`'s pattern props name (registry kind `event`, `event-ref`, `event-listen`,
+    /// `event-list`, `event-map`); `dynamic` is set when one names its event by an expression or a binding.
+    pub(super) fn pattern_event_props(value: &serde_json::Value, out: &mut HashSet<String>, dynamic: &mut bool) {
+        use orbital_core_base::language::pattern_props::PATTERN_EVENT_NAME_PROPS;
+        let mut name = |named: Option<&serde_json::Value>, out: &mut HashSet<String>| match named {
+            Some(serde_json::Value::String(event)) if !event.starts_with('@') => {
+                out.insert(event.clone());
+            }
+            None | Some(serde_json::Value::Null) => {}
+            Some(_) => *dynamic = true,
+        };
+        match value {
+            serde_json::Value::Object(map) => {
+                let props = map
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|pattern| PATTERN_EVENT_NAME_PROPS.get(pattern));
+                for (prop, (kind, field)) in props.into_iter().flatten() {
+                    let Some(named) = map.get(*prop) else { continue };
+                    match (*kind, named) {
+                        ("event" | "event-ref" | "event-listen", named) => name(Some(named), out),
+                        ("event-list", serde_json::Value::Array(items)) => {
+                            items.iter().for_each(|item| name(item.get(*field), out))
+                        }
+                        ("event-map", serde_json::Value::Object(entries)) => {
+                            entries.values().for_each(|entry| name(Some(entry), out))
+                        }
+                        _ => name(Some(named), out),
+                    }
+                }
+                map.values().for_each(|v| Self::pattern_event_props(v, out, dynamic));
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|v| Self::pattern_event_props(v, out, dynamic)),
+            _ => {}
+        }
     }
 
     /// The orbital that declares `trait_name`.

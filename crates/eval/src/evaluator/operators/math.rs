@@ -370,17 +370,55 @@ impl Operator for MathMapOp {
 // Phase 4.4: Math Extras
 // ============================================================================
 
-/// math/random - Random float 0-1
+/// The stream a `math/random`, `math/randomInt` or `array/shuffle` call draws from. Inside the kernel it is a ChaCha20
+/// stream seeded from the 32 bytes of sealed entropy the kernel draws for the call (EXEC-CRYPTO-2): the seed is never
+/// journaled, the journal records the operator's inputs and answer, and a replay returns the answer without drawing again.
+/// An evaluation with no sealed boundary (a bare evaluator, outside any dispatch) draws from one process-wide ChaCha20
+/// stream, which no replay can reproduce.
+pub(super) fn drawn(
+    ctx: &BindingContext,
+    op: &str,
+    args: &[Value],
+    mut compute: impl FnMut(&mut rand_chacha::ChaCha20Rng) -> Value,
+) -> EvalResult {
+    use rand_chacha::rand_core::SeedableRng;
+    if ctx.has_sealed_outputs() {
+        return ctx.sealed(op, args, |seed| compute(&mut rand_chacha::ChaCha20Rng::from_seed(seed)));
+    }
+    static PROCESS_STREAM: std::sync::OnceLock<std::sync::Mutex<rand_chacha::ChaCha20Rng>> = std::sync::OnceLock::new();
+    let stream = PROCESS_STREAM.get_or_init(|| {
+        let local = 0u8;
+        let mut material = Vec::new();
+        material.extend_from_slice(&orbital_core_base::time_util::now_millis().to_le_bytes());
+        material.extend_from_slice(&(std::ptr::addr_of!(local) as usize).to_le_bytes());
+        material.extend_from_slice(&(std::ptr::addr_of!(PROCESS_STREAM) as usize).to_le_bytes());
+        std::sync::Mutex::new(rand_chacha::ChaCha20Rng::from_seed(orbital_core_base::codec::sha256(&material)))
+    });
+    let mut rng = stream.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    Ok(compute(&mut rng))
+}
+
+/// An unbiased draw in `0..bound` (`bound` at least 1) by rejection.
+pub(super) fn below(rng: &mut rand_chacha::ChaCha20Rng, bound: u64) -> u64 {
+    use rand_chacha::rand_core::RngCore;
+    let threshold = bound.wrapping_neg() % bound;
+    loop {
+        let draw = rng.next_u64();
+        if draw >= threshold {
+            return draw % bound;
+        }
+    }
+}
+
+/// math/random - Random float in [0, 1)
 pub struct MathRandomOp;
 impl Operator for MathRandomOp {
-    fn evaluate(&self, _args: &[SExpression], _ctx: &BindingContext) -> EvalResult {
-        let seed = orbital_core_base::time_util::now_millis() as u64;
-
-        // Simple LCG to generate a float between 0 and 1
-        let rng = seed.wrapping_mul(1103515245).wrapping_add(12345);
-        let random = (rng as f64) / (u64::MAX as f64);
-
-        Ok(Value::Number(random))
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "random", == 0);
+        drawn(ctx, "math/random", &[], |rng| {
+            use rand_chacha::rand_core::RngCore;
+            Value::Number((rng.next_u64() >> 11) as f64 / (1u64 << 53) as f64)
+        })
     }
 }
 
@@ -406,13 +444,15 @@ impl Operator for MathRandomIntOp {
             return Ok(Value::Null);
         }
 
-        let seed = orbital_core_base::time_util::now_millis() as u64;
-
-        let rng = seed.wrapping_mul(1103515245).wrapping_add(12345);
         let range = (i128::from(max) - i128::from(min) + 1) as u128;
-        let result = i128::from(min) + (u128::from(rng) % range) as i128;
-
-        Ok(Value::Int(result as i64))
+        drawn(ctx, "math/randomInt", &[Value::Int(min), Value::Int(max)], |rng| {
+            use rand_chacha::rand_core::RngCore;
+            let offset = match u64::try_from(range) {
+                Ok(bound) => u128::from(below(rng, bound)),
+                Err(_) => u128::from(rng.next_u64()),
+            };
+            Value::Int((i128::from(min) + offset as i128) as i64)
+        })
     }
 }
 

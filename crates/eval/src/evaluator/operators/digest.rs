@@ -99,7 +99,7 @@ impl Operator for Base64ValidOp {
     }
 }
 
-/// hash/sha (bits, data, encoding, input?) - SHA-2 at 256 or 512 bits (FIPS 180-4). Input "text" (default) hashes the
+/// hash/sha (bits, data, encoding, input?) - SHA-2 at 256, 384 or 512 bits, or SHA-1 for bits 1 (FIPS 180-4). Input "text" (default) hashes the
 /// UTF-8 of a string, "bytes" decodes standard padded base64 once and hashes the bytes (the hash/md5 reading). Another bit
 /// count, encoding or input kind, or invalid base64, answers null.
 pub struct HashShaOp;
@@ -122,6 +122,10 @@ impl Operator for HashShaOp {
             digest_or_null(&codec::sha256(&data), &encoding)
         } else if bits == 512.0 {
             digest_or_null(&codec::sha512(&data), &encoding)
+        } else if bits == 384.0 {
+            digest_or_null(&codec::sha384(&data), &encoding)
+        } else if bits == 1.0 {
+            digest_or_null(&codec::sha1(&data), &encoding)
         } else {
             Ok(Value::Null)
         }
@@ -569,29 +573,56 @@ impl Operator for HmacSha256Op {
     }
 }
 
+fn hmac_bytes(args: &[SExpression], ctx: &BindingContext, op: &str, mac: fn(&[u8], &[u8]) -> Vec<u8>) -> EvalResult {
+    require_arity!(args, op, >= 3);
+    require_at_most(args, op, 4)?;
+    let key = bytes_in(&args[0], ctx)?;
+    let message = eval_expr(&args[1], ctx)?;
+    let encoding = string_arg(&args[2], ctx)?;
+    let input = match args.get(3) {
+        Some(arg) => string_arg(arg, ctx)?,
+        None => "text".to_string(),
+    };
+    let Some(key) = key else {
+        return Ok(Value::Null);
+    };
+    let Some(data) = message_bytes(message, &input)? else {
+        return Ok(Value::Null);
+    };
+    digest_text(&mac(&key, &data), &encoding, op)
+}
+
 /// hmac/sha256-bytes (key, message, encoding, input?) - HMAC-SHA256 under a bytes key that is a program value (a derived key
 /// such as a SigV4 chain step). `input` "text" (default) signs the UTF-8 of the message, "bytes" decodes the message as
 /// standard padded base64 first (the hash/sha reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
 pub struct HmacSha256BytesOp;
 impl Operator for HmacSha256BytesOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        const OP: &str = "hmac/sha256-bytes";
-        require_arity!(args, OP, >= 3);
-        require_at_most(args, OP, 4)?;
-        let key = bytes_in(&args[0], ctx)?;
-        let message = eval_expr(&args[1], ctx)?;
-        let encoding = string_arg(&args[2], ctx)?;
-        let input = match args.get(3) {
-            Some(arg) => string_arg(arg, ctx)?,
-            None => "text".to_string(),
-        };
-        let Some(key) = key else {
-            return Ok(Value::Null);
-        };
-        let Some(data) = message_bytes(message, &input)? else {
-            return Ok(Value::Null);
-        };
-        digest_text(&codec::hmac_sha256(&key, &data), &encoding, OP)
+        hmac_bytes(args, ctx, "hmac/sha256-bytes", |key, data| codec::hmac_sha256(key, data).to_vec())
+    }
+}
+
+/// hmac/sha1-bytes (key, message, encoding, input?) - HMAC-SHA1 (RFC 2202), read like hmac/sha256-bytes.
+pub struct HmacSha1BytesOp;
+impl Operator for HmacSha1BytesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        hmac_bytes(args, ctx, "hmac/sha1-bytes", codec::hmac_sha1)
+    }
+}
+
+/// hmac/sha384-bytes (key, message, encoding, input?) - HMAC-SHA384 (RFC 4231), read like hmac/sha256-bytes.
+pub struct HmacSha384BytesOp;
+impl Operator for HmacSha384BytesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        hmac_bytes(args, ctx, "hmac/sha384-bytes", codec::hmac_sha384)
+    }
+}
+
+/// hmac/sha512-bytes (key, message, encoding, input?) - HMAC-SHA512 (RFC 4231), read like hmac/sha256-bytes.
+pub struct HmacSha512BytesOp;
+impl Operator for HmacSha512BytesOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        hmac_bytes(args, ctx, "hmac/sha512-bytes", codec::hmac_sha512)
     }
 }
 
@@ -625,6 +656,54 @@ impl Operator for RsaSignOp {
         ctx.sealed("rsa/sign", &[Value::string(name.clone()), Value::string(message.clone())], |seed| {
             codec::rsa_pkcs1_sha256_sign(pem, message.as_bytes(), seed)
                 .map_or(Value::Null, Value::bytes)
+        })
+    }
+}
+
+/// ecdsa/p384-sign (credential, message) - ECDSA P-384 / SHA-384, RFC 6979 deterministic, 96 raw r||s bytes. The key is a
+/// credential slot holding a PKCS#8 PEM private key. Null when the credential is not held or is not such a key.
+pub struct EcdsaP384SignOp;
+impl Operator for EcdsaP384SignOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ecdsa/p384-sign", == 2);
+        let message = string_arg(&args[1], ctx)?;
+        let Some(pem) = credential_value(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
+        Ok(codec::ecdsa_p384_sha384_sign(pem, message.as_bytes())
+            .map_or(Value::Null, |signature| Value::bytes(signature.to_vec())))
+    }
+}
+
+/// ed25519/sign (credential, message) - Ed25519 (RFC 8032), deterministic, 64 bytes. The key is a credential slot holding the
+/// 32-byte seed as standard padded base64. Null when the credential is not held or is not such a seed.
+pub struct Ed25519SignOp;
+impl Operator for Ed25519SignOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ed25519/sign", == 2);
+        let message = string_arg(&args[1], ctx)?;
+        let Some(held) = credential_value(&args[0], ctx)? else {
+            return Ok(Value::Null);
+        };
+        let seed = codec::base64_decode(held).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());
+        Ok(seed.map_or(Value::Null, |seed| Value::bytes(codec::ed25519_sign(&seed, message.as_bytes()).to_vec())))
+    }
+}
+
+/// rsa-pss/sign (credential, message) - RSASSA-PSS / SHA-256 with a 32-byte salt, blinded; the salt and blinding are the
+/// kernel's sealed entropy, so the journal records the signature and a replay returns it. The key is a credential slot holding a
+/// PKCS#8 PEM private key of at least 2048 bits. Null when the credential is not held or is not such a key.
+pub struct RsaPssSignOp;
+impl Operator for RsaPssSignOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "rsa-pss/sign", == 2);
+        let name = string_arg(&args[0], ctx)?;
+        let message = string_arg(&args[1], ctx)?;
+        let Some(pem) = ctx.secret(&name) else {
+            return Ok(Value::Null);
+        };
+        ctx.sealed("rsa-pss/sign", &[Value::string(name.clone()), Value::string(message.clone())], |seed| {
+            codec::rsa_pss_sha256_sign(pem, message.as_bytes(), seed).map_or(Value::Null, Value::bytes)
         })
     }
 }
@@ -721,6 +800,59 @@ impl Operator for EcdsaP256VerifyOp {
             return Ok(Value::string("invalid"));
         };
         Ok(Value::string(codec::ecdsa_p256_sha256_verify(&x, &y, message.as_bytes(), &signature).as_str()))
+    }
+}
+
+/// rsa-pss/verify (n, e, message, signature) - RSASSA-PSS SHA-256, salt 32; answers the verdict code of rsa/verify
+pub struct RsaPssVerifyOp;
+impl Operator for RsaPssVerifyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "rsa-pss/verify", == 4);
+        let n = bytes_in(&args[0], ctx)?;
+        let e = bytes_in(&args[1], ctx)?;
+        let message = string_arg(&args[2], ctx)?;
+        let signature = bytes_in(&args[3], ctx)?;
+        let (Some(n), Some(e), Some(signature)) = (n, e, signature) else {
+            return Ok(Value::string("invalid"));
+        };
+        Ok(Value::string(codec::rsa_pss_sha256_verify(&n, &e, message.as_bytes(), &signature).as_str()))
+    }
+}
+
+/// ecdsa/p384-verify (x, y, message, signature) - ECDSA P-384 SHA-384 over a raw r||s signature; answers the verdict code
+pub struct EcdsaP384VerifyOp;
+impl Operator for EcdsaP384VerifyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ecdsa/p384-verify", == 4);
+        let x = bytes_in(&args[0], ctx)?;
+        let y = bytes_in(&args[1], ctx)?;
+        let message = string_arg(&args[2], ctx)?;
+        let signature = bytes_in(&args[3], ctx)?;
+        let (Some(x), Some(y), Some(signature)) = (x, y, signature) else {
+            return Ok(Value::string("invalid"));
+        };
+        Ok(Value::string(codec::ecdsa_p384_sha384_verify(&x, &y, message.as_bytes(), &signature).as_str()))
+    }
+}
+
+/// ed25519/verify (publicKey, message, signature) - Ed25519 (RFC 8032) over a 32-byte public key and a 64-byte signature;
+/// answers valid, mismatch (the signature, or a key that is not a curve point, does not verify), length (a key not 32 bytes
+/// or a signature not 64) or invalid (an operand is not canonical padded base64)
+pub struct Ed25519VerifyOp;
+impl Operator for Ed25519VerifyOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "ed25519/verify", == 3);
+        let public = bytes_in(&args[0], ctx)?;
+        let message = string_arg(&args[1], ctx)?;
+        let signature = bytes_in(&args[2], ctx)?;
+        let (Some(public), Some(signature)) = (public, signature) else {
+            return Ok(Value::string("invalid"));
+        };
+        let (Ok(public), Ok(signature)) = (<[u8; 32]>::try_from(public), <[u8; 64]>::try_from(signature)) else {
+            return Ok(Value::string("length"));
+        };
+        let verdict = if codec::ed25519_verify(&public, message.as_bytes(), &signature) { "valid" } else { "mismatch" };
+        Ok(Value::string(verdict))
     }
 }
 
@@ -1420,11 +1552,11 @@ mod tests {
     }
 
     #[test]
-    fn g_orbital_core_108_control_hash_sha_256_and_512_are_answered_and_other_counts_are_null() {
+    fn g_orbital_core_108_control_hash_sha_256_and_512_are_answered_and_unsupported_counts_are_null() {
         assert_eq!(sha256(serde_json::json!(["hash/sha", 256, "abc", "hex"])), ABC);
         assert!(matches!(eval(serde_json::json!(["hash/sha", 512, "abc", "hex"])), Ok(Value::String(_))));
-        assert_eq!(eval(serde_json::json!(["hash/sha", 384, "abc", "hex"])).ok(), Some(Value::Null));
-        assert_eq!(eval(serde_json::json!(["hash/sha", 1, "abc", "hex"])).ok(), Some(Value::Null));
+        assert_eq!(eval(serde_json::json!(["hash/sha", 224, "abc", "hex"])).ok(), Some(Value::Null));
+        assert_eq!(eval(serde_json::json!(["hash/sha", 160, "abc", "hex"])).ok(), Some(Value::Null));
     }
 
     #[test]

@@ -250,7 +250,7 @@ impl RuntimeKernel {
             ContractQuery::FindInputByAddress { address, caller } => {
                 let found = self.registered_programs().iter().find_map(|schema| {
                     let inputs = orbital_core_base::external_inputs::external_inputs_of(schema);
-                    find_input_by_address(&inputs, &address, &caller.orbital, &caller.trait_name)
+                    find_input_by_address(&inputs, &address, Some(caller.orbital.as_str()), &caller.trait_name)
                         .cloned()
                 });
                 json(&found)

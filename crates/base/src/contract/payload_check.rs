@@ -11,11 +11,11 @@ use serde_json::{Map, Value};
 
 /// The declared input a `listens`-addressed event names, resolved from the calling trait's position: `EVENT` is that
 /// trait's own, `Trait.EVENT` a trait of its orbital, `Orbital.Trait.EVENT` any orbital. A `*.EVENT` wildcard names
-/// none. Mirrors the L2 rule in `orbital-compiler` `config_type.rs` `EventRefIndex::check`.
+/// none; so does a trait-relative address without a calling orbital. Mirrors the L2 rule in `orbital-compiler` `config_type.rs` `EventRefIndex::check`.
 pub fn find_input_by_address<'a>(
     inputs: &'a [ExternalInput],
     address: &str,
-    caller_orbital: &str,
+    caller_orbital: Option<&str>,
     caller_trait: &str,
 ) -> Option<&'a ExternalInput> {
     let (event, source) = split_event_address(address);
@@ -26,20 +26,21 @@ pub fn find_input_by_address<'a>(
             trait_name,
             ..
         }) => (orbital.as_str(), trait_name.as_str()),
-        Some(ListenSource::Trait { trait_name, .. }) => (caller_orbital, trait_name.as_str()),
-        None => (caller_orbital, caller_trait),
+        Some(ListenSource::Trait { trait_name, .. }) => (caller_orbital?, trait_name.as_str()),
+        None => (caller_orbital?, caller_trait),
     };
     inputs
         .iter()
         .find(|i| i.orbital == orbital && i.trait_name == trait_name && i.event == event)
 }
 
-fn json_type(declared: &str) -> Option<&'static str> {
+/// The JSON Schema type a declared field type has on the wire, or `None` for a type with no JSON shape.
+pub fn json_type(declared: &str) -> Option<&'static str> {
     match declared {
         "string" | "date" | "timestamp" | "datetime" | "email" | "url" | "phone" | "uuid"
-        | "image" | "bytes" | "enum" | "trait" | "slot" | "pattern" | "secret" | "event"
-        | "EventAddress" | "CallKey" | "field" => Some("string"),
-        "number" | "instant" => Some("number"),
+        | "instant" | "image" | "bytes" | "callkey" | "enum" | "trait" | "slot" | "pattern" | "secret"
+        | "event" | "EventAddress" | "CallKey" | "field" => Some("string"),
+        "number" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),
         "relation" => Some("string"),
@@ -126,6 +127,93 @@ pub enum PayloadIssueReason {
     NotOneOf,
 }
 
+impl PayloadIssueReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PayloadIssueReason::Missing => "missing",
+            PayloadIssueReason::Unknown => "unknown",
+            PayloadIssueReason::WrongType => "wrong-type",
+            PayloadIssueReason::NotOneOf => "not-one-of",
+        }
+    }
+}
+
+/// What a value is, as far as a payload check reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadKind {
+    Null,
+    Bool,
+    Number,
+    Bytes,
+    String,
+    Array,
+    Object,
+    Other,
+}
+
+/// A value a declared payload can be checked against: JSON on the wire, the kernel's own value in the evaluator. The
+/// one walker below reads either, so the two cannot drift.
+pub trait PayloadValue: Sized {
+    fn kind(&self) -> PayloadKind;
+    fn member(&self, key: &str) -> Option<&Self>;
+    fn member_names(&self) -> Vec<&str>;
+    fn items(&self) -> &[Self];
+    fn text(&self) -> Option<&str>;
+}
+
+impl PayloadValue for Value {
+    fn kind(&self) -> PayloadKind {
+        match self {
+            Value::Null => PayloadKind::Null,
+            Value::Bool(_) => PayloadKind::Bool,
+            Value::Number(_) => PayloadKind::Number,
+            Value::String(_) => PayloadKind::String,
+            Value::Array(_) => PayloadKind::Array,
+            Value::Object(_) => PayloadKind::Object,
+        }
+    }
+    fn member(&self, key: &str) -> Option<&Self> {
+        self.get(key)
+    }
+    fn member_names(&self) -> Vec<&str> {
+        self.as_object().map(|m| m.keys().map(String::as_str).collect()).unwrap_or_default()
+    }
+    fn items(&self) -> &[Self] {
+        self.as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+    fn text(&self) -> Option<&str> {
+        self.as_str()
+    }
+}
+
+impl PayloadValue for crate::value::Value {
+    fn kind(&self) -> PayloadKind {
+        use crate::value::Value as K;
+        match self {
+            K::Null => PayloadKind::Null,
+            K::Bool(_) => PayloadKind::Bool,
+            K::Number(_) | K::Int(_) => PayloadKind::Number,
+            K::Bytes(_) => PayloadKind::Bytes,
+            K::String(_) => PayloadKind::String,
+            K::Array(_) => PayloadKind::Array,
+            K::Object(_) | K::Sealed(_) => PayloadKind::Object,
+            K::Lambda(_) => PayloadKind::Other,
+        }
+    }
+    fn member(&self, key: &str) -> Option<&Self> {
+        self.get(key)
+    }
+    fn member_names(&self) -> Vec<&str> {
+        self.as_object().map(|m| m.keys().map(|k| k.as_str()).collect()).unwrap_or_default()
+    }
+    fn items(&self) -> &[Self] {
+        self.as_array().map(Vec::as_slice).unwrap_or(&[])
+    }
+    fn text(&self) -> Option<&str> {
+        self.as_str()
+    }
+}
+
 /// One way a value misses its declared payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PayloadIssue {
@@ -146,7 +234,7 @@ fn issue(path: &str, reason: PayloadIssueReason, expected: Option<String>) -> Pa
 /// Check a value against a declared payload: required fields, primitive and container types, closed value sets,
 /// declared object shapes (closed) at any depth. An object field without declared properties stays open; a type with
 /// no JSON shape (`node`, an entity name) is not checked beyond its container.
-pub fn payload_issues(fields: &[PayloadField], value: &Value) -> Vec<PayloadIssue> {
+pub fn payload_issues<V: PayloadValue>(fields: &[PayloadField], value: &V) -> Vec<PayloadIssue> {
     object_issues(fields, value, "")
 }
 
@@ -158,25 +246,26 @@ fn join(at: &str, key: &str) -> String {
     }
 }
 
-fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<PayloadIssue> {
-    let Value::Object(map) = value else {
+fn object_issues<V: PayloadValue>(fields: &[PayloadField], value: &V, at: &str) -> Vec<PayloadIssue> {
+    if value.kind() != PayloadKind::Object {
         let path = if at.is_empty() { "." } else { at };
         return vec![issue(
             path,
             PayloadIssueReason::WrongType,
             Some("object".into()),
         )];
-    };
+    }
     let mut issues = Vec::new();
     for field in fields {
-        match map.get(&field.name) {
-            None | Some(Value::Null) => {
+        match value.member(&field.name) {
+            None => {
                 if field.required == Some(true) {
-                    issues.push(issue(
-                        &join(at, &field.name),
-                        PayloadIssueReason::Missing,
-                        None,
-                    ));
+                    issues.push(issue(&join(at, &field.name), PayloadIssueReason::Missing, None));
+                }
+            }
+            Some(v) if v.kind() == PayloadKind::Null => {
+                if field.required == Some(true) {
+                    issues.push(issue(&join(at, &field.name), PayloadIssueReason::Missing, None));
                 }
             }
             Some(v) => issues.extend(field_issues(field, v, &join(at, &field.name))),
@@ -191,8 +280,8 @@ fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<Payloa
             .collect::<Vec<_>>()
             .join(" | ")
     };
-    for key in map.keys() {
-        if !fields.iter().any(|f| &f.name == key) {
+    for key in value.member_names() {
+        if !fields.iter().any(|f| f.name == key) {
             issues.push(issue(
                 &join(at, key),
                 PayloadIssueReason::Unknown,
@@ -203,32 +292,33 @@ fn object_issues(fields: &[PayloadField], value: &Value, at: &str) -> Vec<Payloa
     issues
 }
 
-fn field_issues(field: &PayloadField, value: &Value, at: &str) -> Vec<PayloadIssue> {
+fn field_issues<V: PayloadValue>(field: &PayloadField, value: &V, at: &str) -> Vec<PayloadIssue> {
     let (is_array, element) = field_element_of(field);
     if !is_array && field.field_type != "array" {
         return element_issues(field, element, value, at);
     }
-    let Value::Array(items) = value else {
+    if value.kind() != PayloadKind::Array {
         return vec![issue(
             at,
             PayloadIssueReason::WrongType,
             Some(field.field_type.clone()),
         )];
-    };
+    }
     if !is_array {
         return Vec::new();
     }
-    items
+    value
+        .items()
         .iter()
         .enumerate()
         .flat_map(|(i, item)| element_issues(field, element, item, &format!("{at}[{i}]")))
         .collect()
 }
 
-fn element_issues(
+fn element_issues<V: PayloadValue>(
     field: &PayloadField,
     element: &str,
-    value: &Value,
+    value: &V,
     at: &str,
 ) -> Vec<PayloadIssue> {
     if let Some(properties) = &field.properties {
@@ -257,13 +347,14 @@ fn element_issues(
     if crate::sealed::is_sealed_type(element) {
         return vec![issue(at, PayloadIssueReason::WrongType, Some(format!("{element} (made only by the kernel)")))];
     }
+    let kind = value.kind();
     let matches = match json_type(element) {
         None => true,
-        Some("object") => value.is_object(),
-        Some("array") => value.is_array(),
-        Some("string") => value.is_string(),
-        Some("number") => value.is_number(),
-        Some("boolean") => value.is_boolean(),
+        Some("object") => kind == PayloadKind::Object,
+        Some("array") => kind == PayloadKind::Array,
+        Some("string") => kind == PayloadKind::String || (element == "bytes" && kind == PayloadKind::Bytes),
+        Some("number") => kind == PayloadKind::Number,
+        Some("boolean") => kind == PayloadKind::Bool,
         Some(_) => false,
     };
     if !matches {
@@ -274,10 +365,7 @@ fn element_issues(
         )];
     }
     if let Some(values) = &field.values {
-        if !value
-            .as_str()
-            .is_some_and(|s| values.iter().any(|v| v == s))
-        {
+        if !value.text().is_some_and(|s| values.iter().any(|v| v == s)) {
             return vec![issue(
                 at,
                 PayloadIssueReason::NotOneOf,
@@ -540,7 +628,7 @@ mod tests {
             input("TaskOrbital", "Assistant", "ASK"),
         ];
         let find = |address: &str| {
-            find_input_by_address(&inputs, address, "TaskOrbital", "Assistant")
+            find_input_by_address(&inputs, address, Some("TaskOrbital"), "Assistant")
                 .map(|i| i.event.as_str())
         };
         assert_eq!(find("TaskPersistor.DO_CREATE"), Some("DO_CREATE"));

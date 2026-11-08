@@ -134,3 +134,72 @@ fn a_failing_os_op_without_a_failure_route_is_not_routed_top_level_or_nested() {
     assert!(!played_first("BARE_TOP").routed);
     assert!(!played_first("BARE_NESTED").routed);
 }
+
+fn nested_kernel() -> RuntimeKernel {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "NestedApp",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Nest",
+            "entity": { "name": "Doc", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "mode", "type": "string", "default": "normal" }] },
+            "traits": [{
+                "name": "Runner",
+                "linkedEntity": "Doc",
+                "emits": [{ "event": "FOO", "payload": [{ "name": "n", "type": "number" }] }],
+                "stateMachine": {
+                    "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [
+                        { "from": "ready", "to": "ready", "event": "RAN",
+                          "effects": [["let", [["x", 1]], ["do", ["set", "@entity.mode", "ran"], ["emit", "FOO", { "n": "@x" }]]]] },
+                        { "from": "ready", "to": "ready", "event": "IDLE",
+                          "effects": [["let", [["x", 1]], ["when", false, ["set", "@entity.mode", "never"]]]] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap();
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+fn played_nested(event: &str) -> crate::program_machine::PlayedEffect {
+    let result = nested_kernel().process_event("Runner", None, event, Value::Null).unwrap();
+    assert_eq!(result.effect_runs.len(), 1, "{result:?}");
+    crate::program_machine::played_effect(&result.effect_runs[0])
+}
+
+#[test]
+fn a_let_that_ran_an_emit_carries_the_nested_emit_and_is_not_skipped() {
+    use crate::program_machine::PlayedEffectStatus;
+    let played = played_nested("RAN");
+    assert_eq!(played.effect_type, "let");
+    assert_eq!(played.status, PlayedEffectStatus::Executed, "{played:?}");
+    let body = played.nested.as_ref().expect("a compound carries its nested run");
+    assert_eq!(body.len(), 1, "the `do` is the let's one body effect");
+    assert_eq!(body[0].effect_type, "do");
+    assert_eq!(body[0].status, PlayedEffectStatus::Executed);
+    let inner = body[0].nested.as_ref().expect("the do carries its body");
+    assert_eq!(inner.iter().map(|e| e.effect_type.as_str()).collect::<Vec<_>>(), ["set", "emit"]);
+    assert_eq!(inner[1].args[0].as_str(), Some("FOO"));
+    assert_eq!(inner[0].status, PlayedEffectStatus::Executed, "{inner:?}");
+    assert!(inner.iter().all(|e| e.nested.is_none()), "{inner:?}");
+}
+
+#[test]
+fn control_a_let_whose_body_ran_nothing_is_skipped_with_an_empty_nested_trace() {
+    use crate::program_machine::PlayedEffectStatus;
+    let played = played_nested("IDLE");
+    assert_eq!(played.status, PlayedEffectStatus::Skipped, "{played:?}");
+    let body = played.nested.as_ref().expect("a compound carries its nested run");
+    assert_eq!(body.len(), 1);
+    assert_eq!(body[0].effect_type, "when");
+    assert_eq!(body[0].status, PlayedEffectStatus::Skipped);
+    assert_eq!(body[0].nested.as_deref().map(<[_]>::len), Some(0), "the branch not taken ran no body effect");
+    let wire = serde_json::to_value(&played).unwrap();
+    assert!(wire["nested"][0]["nested"].is_array());
+}

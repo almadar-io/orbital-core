@@ -491,6 +491,7 @@ mod tests {
             body: "late".to_string(),
             stderr: None,
             headers: None,
+            exit: None,
         }
     }
 

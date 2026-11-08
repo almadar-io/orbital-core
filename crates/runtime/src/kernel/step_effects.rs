@@ -39,10 +39,12 @@ impl RuntimeKernel {
                     status: EffectRunStatus::Skipped,
                     error: None,
                     routed: false,
+                    nested: is_compound(effect_expr).then(Vec::new),
                 });
                 continue;
             }
             let before = effect_results.len();
+            let mut nested = Vec::new();
             if !run_results.contains_key(&index) {
                 let run = match persist_run(effects, index) {
                     Ok(run) => run,
@@ -91,26 +93,15 @@ impl RuntimeKernel {
                     &evaluator,
                     &mut effect_results,
                     &mut entity_data,
+                    &mut nested,
                 ) {
                     *self.step.render_scopes.write() = outer_scopes;
                     return Err(fault.into());
                 }
             }
             let ran = &effect_results[before..];
-            let failed = ran.iter().find(|r| r.is_failed());
-            let status = if failed.is_some() {
-                EffectRunStatus::Failed
-            } else if ran.iter().any(|r| r.is_executed() || r.is_delegated() || r.is_host_asked()) {
-                EffectRunStatus::Executed
-            } else {
-                EffectRunStatus::Skipped
-            };
-            runs.push(EffectRun {
-                effect: effect_expr.clone(),
-                status,
-                error: failed.and_then(|r| r.error.clone()),
-                routed: failed.is_some_and(|r| r.has_routed_failure()),
-            });
+            let run = effect_run(effect_expr, ran, is_compound(effect_expr).then_some(nested));
+            runs.push(run);
             if failure.is_none() {
                 failure = ran
                     .iter()
@@ -151,6 +142,7 @@ impl RuntimeKernel {
         evaluator: &Evaluator,
         effect_results: &mut Vec<EffectResult>,
         entity_data: &mut PendingSets,
+        nested: &mut Vec<EffectRun>,
     ) -> Result<(), orbital_core_base::language_data::LanguageDataError> {
         let secreted = self.with_operator_credentials(effect_expr, ctx, evaluator);
         let ctx = secreted.as_ref().unwrap_or(ctx);
@@ -188,13 +180,7 @@ impl RuntimeKernel {
                                 }
                             }
                             for body in items.iter().skip(2) {
-                                self.exec_effect_expr(
-                                    body,
-                                    &child_ctx,
-                                    evaluator,
-                                    effect_results,
-                                    entity_data,
-                                )?;
+                                self.trace_child(body, &child_ctx, evaluator, effect_results, entity_data, nested)?;
                                 if effect_results.iter().any(is_thrown_failure) {
                                     break;
                                 }
@@ -202,13 +188,7 @@ impl RuntimeKernel {
                         }
                         "do" => {
                             for body in items.iter().skip(1) {
-                                self.exec_effect_expr(
-                                    body,
-                                    ctx,
-                                    evaluator,
-                                    effect_results,
-                                    entity_data,
-                                )?;
+                                self.trace_child(body, ctx, evaluator, effect_results, entity_data, nested)?;
                                 if effect_results.iter().any(is_thrown_failure) {
                                     break;
                                 }
@@ -224,13 +204,7 @@ impl RuntimeKernel {
                                 };
                                 let branch = if holds { items.get(2) } else { items.get(3) };
                                 if let Some(branch) = branch {
-                                    self.exec_effect_expr(
-                                        branch,
-                                        ctx,
-                                        evaluator,
-                                        effect_results,
-                                        entity_data,
-                                    )?;
+                                    self.trace_child(branch, ctx, evaluator, effect_results, entity_data, nested)?;
                                 }
                             }
                         }
@@ -244,13 +218,7 @@ impl RuntimeKernel {
                                 };
                                 if holds {
                                     for body in items.iter().skip(2) {
-                                        self.exec_effect_expr(
-                                            body,
-                                            ctx,
-                                            evaluator,
-                                            effect_results,
-                                            entity_data,
-                                        )?;
+                                        self.trace_child(body, ctx, evaluator, effect_results, entity_data, nested)?;
                                         if effect_results.iter().any(is_thrown_failure) {
                                             break;
                                         }
@@ -267,6 +235,23 @@ impl RuntimeKernel {
         }
 
         self.exec_leaf_effect(effect_expr, ctx, evaluator, effect_results, entity_data)
+    }
+
+    /// One body effect of a compound, run and recorded under it.
+    fn trace_child(
+        &self,
+        body: &SExpression,
+        ctx: &BindingContext,
+        evaluator: &Evaluator,
+        effect_results: &mut Vec<EffectResult>,
+        entity_data: &mut PendingSets,
+        nested: &mut Vec<EffectRun>,
+    ) -> Result<(), orbital_core_base::language_data::LanguageDataError> {
+        let before = effect_results.len();
+        let mut inner = Vec::new();
+        self.exec_effect_expr(body, ctx, evaluator, effect_results, entity_data, &mut inner)?;
+        nested.push(effect_run(body, &effect_results[before..], is_compound(body).then_some(inner)));
+        Ok(())
     }
 
     /// `ctx` with the value of every credential an operator in `CREDENTIAL_OPERATORS` names in `expr`, resolved through the
@@ -702,6 +687,34 @@ impl RuntimeKernel {
     /// the journal records the operator's output, and a replay returns it without running the operator.
     pub(super) fn sealed_outputs(&self) -> SealedOutputs {
         self.sealed_outputs.clone()
+    }
+}
+
+/// `let` / `do` / `if` / `when`: control flow whose body effects are traced under it.
+fn is_compound(expr: &SExpression) -> bool {
+    matches!(expr, SExpression::Array(items)
+        if matches!(items.first(), Some(SExpression::String(head)) if matches!(head.as_str(), "let" | "do" | "if" | "when")))
+}
+
+/// How one authored effect ran, from the results it produced. A compound ran when its body produced any result
+/// (EXEC-STEP-2: effects run in written order); it is skipped only when no branch ran.
+fn effect_run(effect: &SExpression, ran: &[EffectResult], nested: Option<Vec<EffectRun>>) -> EffectRun {
+    let failed = ran.iter().find(|r| r.is_failed());
+    let status = if failed.is_some() {
+        EffectRunStatus::Failed
+    } else if nested.is_some() {
+        if ran.is_empty() { EffectRunStatus::Skipped } else { EffectRunStatus::Executed }
+    } else if ran.iter().any(|r| r.is_executed() || r.is_delegated() || r.is_host_asked()) {
+        EffectRunStatus::Executed
+    } else {
+        EffectRunStatus::Skipped
+    };
+    EffectRun {
+        effect: effect.clone(),
+        status,
+        error: failed.and_then(|r| r.error.clone()),
+        routed: failed.is_some_and(|r| r.has_routed_failure()),
+        nested,
     }
 }
 

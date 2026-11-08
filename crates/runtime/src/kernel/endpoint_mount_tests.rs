@@ -558,3 +558,103 @@ fn edge_a_route_no_page_matches_delivers_no_mount() {
     let outcomes = k.dispatch_route_mount(Some("/nope"), &k.route_mounts("/"), None, Value::Null).unwrap();
     assert_eq!(ran(&outcomes), ["Reader:INIT"]);
 }
+
+// H1 (G-ORBITAL-SHELL-TYPESCRIPT-106, -107): the kernel's `page_circuit` is the one answer for routing and access, so
+// the web shell's route matcher, nav-stack seed and page-access gate can go. The red tests read the circuit as JSON so
+// they compile before the fields exist; run them with `-- --ignored`.
+
+fn circuit_json(c: &super::page_circuit::PageCircuit) -> serde_json::Value {
+    serde_json::to_value(c).unwrap()
+}
+
+fn nested_paged() -> RuntimeKernel {
+    kernel(
+        serde_json::json!([
+            { "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "RouteT" }] },
+            { "name": "Docs", "path": "/docs", "traits": [{ "ref": "OtherT" }] },
+            { "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "HttpT" }] }
+        ]),
+        &["RouteT", "OtherT", "HttpT"],
+    )
+}
+
+#[test]
+#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-106 (the circuit does not yet carry the matched route's params; the web shell re-matches with matchPath)"]
+fn g_orbital_shell_typescript_106_page_circuit_carries_the_matched_routes_params() {
+    let c = circuit_json(&paged().page_circuit(None, Some("/other/7")).unwrap());
+    assert_eq!(c["params"], serde_json::json!({ "id": "7" }));
+    let c = circuit_json(&paged().page_circuit(None, Some("/")).unwrap());
+    assert_eq!(c["params"], serde_json::json!({}), "a route with no params answers an empty map, never an absent one");
+}
+
+#[test]
+#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-106 (the nav-stack cold-load seed is derived in navStack.ts from the declared page-path hierarchy)"]
+fn g_orbital_shell_typescript_106_page_circuit_names_the_declared_ancestor_pages_of_the_path() {
+    let c = circuit_json(&nested_paged().page_circuit(None, Some("/docs/7")).unwrap());
+    assert_eq!(
+        c["ancestors"],
+        serde_json::json!([{ "path": "/", "page": "Home" }, { "path": "/docs", "page": "Docs" }]),
+        "every declared page whose pattern matches a strict prefix of the path, shallowest first"
+    );
+    let c = circuit_json(&nested_paged().page_circuit(None, Some("/")).unwrap());
+    assert_eq!(c["ancestors"], serde_json::json!([]));
+}
+
+fn gated() -> RuntimeKernel {
+    let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1,
+        "site": { "signIn": "/login" },
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": (["Open", "Mine", "Login"].iter().map(|t| trait_json(t)).collect::<Vec<_>>()),
+            "pages": [
+                { "name": "Home", "path": "/", "isInitial": true, "access": "public", "traits": [{ "ref": "Open" }] },
+                { "name": "Account", "path": "/account/:id", "access": "authenticated", "traits": [{ "ref": "Mine" }] },
+                { "name": "Login", "path": "/login", "access": "public", "traits": [{ "ref": "Login" }] }
+            ]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+#[test]
+#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-107 (an access: authenticated page still mounts for an anonymous session; PageAccessHost gates it in React)"]
+fn g_orbital_shell_typescript_107_an_anonymous_session_is_denied_an_authenticated_page_and_mounts_nothing() {
+    let k = gated();
+    let c = k.page_circuit(None, Some("/account/42")).unwrap();
+    assert!(c.mounts.is_empty(), "EXEC-ENDPOINT-3: a route's traits mount behind the page's access");
+    assert_eq!(
+        circuit_json(&c)["access"],
+        serde_json::json!({ "verdict": "denied", "signIn": "/login", "returnTo": "/account/42" })
+    );
+}
+
+#[test]
+#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-107 (the circuit carries no access verdict for an admitted viewer or a public page)"]
+fn g_orbital_shell_typescript_107_the_circuit_says_admitted_for_a_signed_in_viewer_and_a_public_page() {
+    let k = gated();
+    k.bind_test_identity(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap());
+    let c = circuit_json(&k.page_circuit(None, Some("/account/42")).unwrap());
+    assert_eq!(c["access"], serde_json::json!({ "verdict": "admitted", "viewer": "u1" }));
+    let anonymous = gated();
+    let c = circuit_json(&anonymous.page_circuit(None, Some("/")).unwrap());
+    assert_eq!(c["access"], serde_json::json!({ "verdict": "admitted" }), "a public page admits whoever asks");
+}
+
+#[test]
+fn control_g_orbital_shell_typescript_107_a_signed_in_viewer_mounts_the_authenticated_page_today() {
+    let k = gated();
+    k.bind_test_identity(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap());
+    let c = k.page_circuit(None, Some("/account/42")).unwrap();
+    assert_eq!(c.page.as_deref(), Some("Account"));
+    assert_eq!(names(c.mounts), ["Mine"]);
+}

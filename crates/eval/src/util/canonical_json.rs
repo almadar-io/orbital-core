@@ -48,10 +48,24 @@ pub fn to_canonical_string_pretty<T: serde::Serialize>(value: &T) -> serde_json:
     serde_json::to_string_pretty(&canonical_json(&serde_json::to_value(value)?))
 }
 
+/// [`to_canonical_string_pretty`] without whitespace: the bytes a device bundles and loads.
+pub fn to_canonical_string<T: serde::Serialize>(value: &T) -> serde_json::Result<String> {
+    serde_json::to_string(&canonical_json(&serde_json::to_value(value)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_compact_form_is_the_pretty_form_without_whitespace() {
+        let value = json!({ "b": [1, { "d": 2, "c": "x y" }], "a": null });
+        let compact = to_canonical_string(&value).unwrap();
+        assert_eq!(compact, r#"{"a":null,"b":[1,{"c":"x y","d":2}]}"#);
+        let reparsed: serde_json::Value = serde_json::from_str(&to_canonical_string_pretty(&value).unwrap()).unwrap();
+        assert_eq!(to_canonical_string(&reparsed).unwrap(), compact, "control: same value, same compact bytes");
+    }
 
     #[test]
     fn a_hash_map_serializes_the_same_bytes_every_run() {

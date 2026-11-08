@@ -152,6 +152,8 @@ pub struct EffectRun {
     pub error: Option<String>,
     /// The failure was delivered to the declared `emit.failure` route of the op that failed, which may sit inside a compound effect.
     pub routed: bool,
+    /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order, each traced the same way; `None` for a leaf effect.
+    pub nested: Option<Vec<EffectRun>>,
 }
 
 /// The state a transition ran against: the trait's `@entity` frame before its effects, and the dispatch's `@event` / `@prevEvents` / `@prevStates` view.

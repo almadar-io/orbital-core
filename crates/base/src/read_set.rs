@@ -50,6 +50,9 @@ pub fn note(path: &Path) {
         if open.is_empty() {
             return;
         }
+        if open.iter().all(|set| set.0.contains_key(path)) {
+            return;
+        }
         let stamp = stamp(path);
         for set in open.iter_mut() {
             set.0.entry(path.to_path_buf()).or_insert_with(|| stamp.clone());

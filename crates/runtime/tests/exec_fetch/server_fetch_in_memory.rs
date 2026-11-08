@@ -6,7 +6,7 @@ use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_
 use serde_json::json;
 use std::sync::Arc;
 
-fn run(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> usize {
+fn run_rows(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> Vec<Value> {
     let mut entity = json!({ "name": "Ticket", "persistence": "persistent",
         "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "required": true }] });
     for (k, v) in entity_extra.as_object().unwrap() {
@@ -38,8 +38,13 @@ fn run(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> usize {
     let out = k.dispatch("T", None, "LIST", Value::Null).unwrap();
     out.iter()
         .flat_map(|(_, r)| r.effect_results.iter())
-        .filter_map(|er| er.return_value.as_ref()?.as_array().map(|a| a.len()))
-        .sum()
+        .filter_map(|er| er.return_value.as_ref()?.as_array().cloned())
+        .flatten()
+        .collect()
+}
+
+fn run(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> usize {
+    run_rows(entity_extra, fetch_cfg).len()
 }
 
 #[test]
@@ -56,6 +61,16 @@ fn ordered_fetch_returns_the_seeded_rows() {
         ),
         3
     );
+}
+
+// H1 control (G-ORBITAL-SHELL-TYPESCRIPT-108): the kernel's fetch answer is already in the declared order, so a renderer has nothing to sort.
+#[test]
+fn control_g_orbital_shell_typescript_108_an_ordered_fetch_answers_rows_in_the_declared_order() {
+    let ids: Vec<String> = run_rows(json!({}), json!({ "orderBy": "score:desc", "emit": { "success": "L" } }))
+        .iter()
+        .map(|row| row.get_path("id").and_then(Value::as_str).unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(ids, ["t2", "t1", "t0"]);
 }
 
 #[test]

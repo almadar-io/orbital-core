@@ -84,6 +84,10 @@ pub struct PlayedEffect {
     pub error: Option<String>,
     /// The effect failed and the program routed that failure to its declared `emit.failure` event.
     pub routed: bool,
+    /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order; absent for a leaf effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(type = "Array<PlayedEffect>", optional))]
+    pub nested: Option<Vec<PlayedEffect>>,
 }
 
 /// How a proposition fared on the run.
@@ -449,6 +453,7 @@ pub fn played_effect(run: &EffectRun) -> PlayedEffect {
         status,
         error: run.error.clone(),
         routed,
+        nested: run.nested.as_ref().map(|runs| runs.iter().map(played_effect).collect()),
     }
 }
 
@@ -596,6 +601,7 @@ mod tests {
                 status,
                 error: None,
                 routed,
+                nested: None,
             })
         };
         let routed = run(&routes, EffectRunStatus::Failed);

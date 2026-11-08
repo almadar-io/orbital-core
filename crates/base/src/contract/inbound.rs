@@ -37,6 +37,10 @@ pub struct InboundAnswer {
     /// reads its own (`orb-run` hands a composed program back to the bootloader).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The process exit code a terminal host exits with, when the program says so (`exit`, 0..=255). Absent: the host
+    /// maps `status`. An HTTP host ignores it (and it is not on the HTTP wire).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit: Option<i32>,
 }
 
 /// Every inbound handler the program declares, in schema order.
@@ -92,6 +96,7 @@ pub fn unknown_hook(name: &str) -> InboundAnswer {
         body: error_body(&format!("Unknown hook provider: {name}")),
         stderr: None,
         headers: None,
+        exit: None,
     }
 }
 
@@ -102,6 +107,7 @@ pub fn dispatch_failed(message: &str) -> InboundAnswer {
         body: error_body(message),
         stderr: None,
         headers: None,
+        exit: None,
     }
 }
 
@@ -120,6 +126,7 @@ pub fn cascade_capped(cap: usize, trait_name: &str, event: &str) -> InboundAnswe
         .to_string(),
         stderr: None,
         headers: None,
+        exit: None,
     }
 }
 
@@ -153,6 +160,7 @@ pub fn inbound_unanswered_after(trait_name: &str, event: &str, failures: &[Strin
         body: body.to_string(),
         stderr: None,
         headers: None,
+        exit: None,
     }
 }
 
@@ -186,6 +194,7 @@ pub fn credential_unset(credential: &str) -> InboundAnswer {
         body: error_body(&format!("credential {credential} is not set")),
         stderr: None,
         headers: None,
+        exit: None,
     }
 }
 
@@ -244,7 +253,7 @@ pub fn inbound_only_message(trait_name: &str, event: &str) -> String {
 }
 
 /// The answer a dispatch produced: the first emit of the route's answer event, whose payload is
-/// `{ status, body, stderr? }` (`stderr` absent or null is none). A dispatch that emitted none, or one whose payload is
+/// `{ status, body, stderr?, headers?, exit? }` (`stderr` absent or null is none). A dispatch that emitted none, or one whose payload is
 /// not that shape, is a 500.
 pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a str, &'a Value)>) -> InboundAnswer {
     let Some((_, payload)) = emits.into_iter().find(|(event, _)| *event == route.answer) else {
@@ -266,12 +275,23 @@ pub fn answer_of<'a>(route: &InboundRoute, emits: impl IntoIterator<Item = (&'a 
             .map(Some),
         Some(_) => Err(()),
     };
+    let exit = match payload.get_path("exit") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => match v.as_number() {
+            Some(n) if n.fract() == 0.0 && (0.0..=255.0).contains(&n) => Ok(Some(n as i32)),
+            _ => Err(()),
+        },
+    };
+    let Ok(exit) = exit else {
+        return dispatch_failed("inbound-answer-exit-invalid");
+    };
     match (status, body, stderr, headers) {
         (Some(s), Some(b), Ok(stderr), Ok(headers)) if s.fract() == 0.0 && (100.0..=599.0).contains(&s) => InboundAnswer {
             status: s as u16,
             body: b.to_string(),
             stderr: stderr.map(|v| v.into_inner()),
             headers,
+            exit,
         },
         _ => dispatch_failed("inbound-answer-invalid"),
     }
@@ -500,6 +520,7 @@ mod tests {
                 body: "{\"error\":\"bad-token\"}".into(),
                 stderr: None,
                 headers: None,
+                exit: None,
             }
         );
     }
@@ -526,6 +547,7 @@ mod tests {
                 body: String::new(),
                 stderr: Some("orb x: failed".into()),
                 headers: None,
+                exit: None,
             }
         );
         let null: Value = serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
@@ -538,6 +560,7 @@ mod tests {
                 body: "ok".into(),
                 stderr: None,
                 headers: None,
+                exit: None,
             }
         );
     }
@@ -577,7 +600,7 @@ mod tests {
         let answer: Value = serde_json::from_value(answer).unwrap();
         let other: Value = serde_json::from_value(other).unwrap();
         let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
-        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None, headers: None });
+        assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None, headers: None, exit: None });
     }
 
     #[test]
@@ -594,6 +617,15 @@ mod tests {
         let answer = answer_of_response(&calendar_route(), emitted, None);
         let wire = serde_json::to_value(&answer).unwrap();
         assert_eq!(wire.get("exit"), Some(&json!(3)), "a program's `exit 3` reaches the host; today the field is dropped: {wire}");
+    }
+
+    #[test]
+    fn g_orb_448_an_exit_outside_0_to_255_is_an_invalid_answer() {
+        for bad in [json!(256), json!(-1), json!(1.5), json!("3")] {
+            let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "x", "exit": bad })).unwrap();
+            let emitted = [("PUSH_ANSWERED", &payload)];
+            assert_eq!(answer_of_response(&calendar_route(), emitted, None), dispatch_failed("inbound-answer-exit-invalid"));
+        }
     }
 
     #[test]

@@ -403,6 +403,8 @@ struct Registry {
     /// Per emitting trait and event, the payload fields its contract declares as a sealed type (`Verified`) with that
     /// type's name, built when the trait registers: such a field reaches a host as `{ sealed: <type> }` and no more.
     sealed_emit_fields: Arc<RwLock<HashMap<String, HashMap<String, Vec<(String, String)>>>>>,
+    /// The fields the browser reads of each frame (EXEC-DIST-8), built on first use and dropped when a trait registers.
+    browser_reads: RwLock<Option<Arc<HashMap<String, browser_reads::BrowserFields>>>>,
 }
 
 /// What the program may reach outside the kernel: its egress origins, its os grants, and the credentials of
@@ -769,6 +771,7 @@ impl RuntimeKernel {
                 embed_index: Arc::new(RwLock::new(EmbedIndex::default())),
                 row_shapes: RwLock::new(HashMap::new()),
                 sealed_emit_fields: Arc::default(),
+                browser_reads: RwLock::new(None),
             },
             dispatch_observer: RwLock::new(None),
             entity_source,
@@ -1168,6 +1171,7 @@ pub use mem_table::SharedArena;
 mod mount_ledger;
 mod mounted_tree;
 mod view_record;
+mod browser_reads;
 pub use view_record::{FrameWrite, FramesApplied, FramesResync, PROGRAM_SESSION};
 pub use client_leg::MountPlan;
 pub(crate) use client_leg::chain_needs_server;

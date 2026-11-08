@@ -4296,3 +4296,37 @@ fn json_integers_parse_to_ints_and_decimals_to_numbers() {
     assert!(matches!(fields.get("b"), Some(Value::Number(_))));
     assert!(matches!(fields.get("c"), Some(Value::Int(1152921504606846977))));
 }
+
+// H1 (G-ORBITAL-SHELL-TYPESCRIPT-108, -147): the program orders and groups rows, so the web host's `sortRows` and
+// `groupRows` can go. These two pin what the kernel operators must do first. Run with `-- --ignored`.
+
+#[test]
+fn g_orbital_shell_typescript_108_group_by_a_field_keeps_first_seen_group_order() {
+    let out = eval(r#"["array/groupBy", [{"s": "z"}, {"s": "a"}, {"s": "m"}, {"s": "b"}, {"s": "q"}, {"s": "c"}], "s"]"#);
+    let keys: Vec<String> = out.as_object().expect("object").keys().map(|k| k.to_string()).collect();
+    assert_eq!(keys, ["z", "a", "m", "b", "q", "c"]);
+}
+
+#[test]
+#[ignore = "red by design, owner-decision: G-ORBITAL-SHELL-TYPESCRIPT-108 (the web host's compareCellValues sends empty cells last in both directions; array/sort sends null first ascending, so first descending)"]
+fn g_orbital_shell_typescript_108_sort_by_a_key_puts_rows_missing_it_last_in_both_directions() {
+    let rows = r#"[{"n": 2}, {"k": 1}, {"n": 1}]"#;
+    assert_eq!(
+        eval(&format!(r#"["array/sort", {rows}, "n", "asc"]"#)),
+        eval(r#"[{"n": 1}, {"n": 2}, {"k": 1}]"#),
+        "ascending: the row without `n` comes last"
+    );
+    assert_eq!(
+        eval(&format!(r#"["array/sort", {rows}, "n", "desc"]"#)),
+        eval(r#"[{"n": 2}, {"n": 1}, {"k": 1}]"#),
+        "descending: the row without `n` still comes last"
+    );
+}
+
+#[test]
+fn control_g_orbital_shell_typescript_108_sort_by_a_key_orders_rows_in_the_kernel() {
+    assert_eq!(
+        eval(r#"["array/sort", [{"n": 2}, {"n": 3}, {"n": 1}], "n", "desc"]"#),
+        eval(r#"[{"n": 3}, {"n": 2}, {"n": 1}]"#)
+    );
+}

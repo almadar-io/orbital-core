@@ -18,6 +18,7 @@ parking_lot = { version = "0.12", optional = true }
 sha2 = { version = "0.10", default-features = false }
 xxhash-rust = { version = "0.8.15", default-features = false, features = ["xxh3"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+rand_chacha = { version = "0.3", default-features = false }
 regex = { version = "1.10", default-features = false, features = ["unicode"] }
 quick-xml = { version = "0.38", optional = true }
 saphyr = { version = "=0.0.6", optional = true }

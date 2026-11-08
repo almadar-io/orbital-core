@@ -935,6 +935,9 @@ impl RuntimeKernel {
     /// that trait and paints it itself (EXEC-DIST-4), so a host's paint of it is stale. In-process consumers keep the
     /// full response; call this after [`stamp_emitted_sources`](Self::stamp_emitted_sources).
     pub fn client_view(&self, mut response: EventResponse) -> EventResponse {
+        if let Some(delta) = response.frames.as_mut() {
+            self.browser_frames(delta);
+        }
         if let Some(effects) = response.client_effects_by_trait.as_mut() {
             let defs = self.registry.trait_definitions.read();
             effects.retain(|e| {

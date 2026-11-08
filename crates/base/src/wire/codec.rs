@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 
 use base64::Engine;
 use md5::Md5;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 
 pub fn push_escaped(out: &mut String, byte: u8) {
     out.push('%');
@@ -127,6 +127,15 @@ pub fn sha512(data: &[u8]) -> [u8; 64] {
     Sha512::digest(data).into()
 }
 
+pub fn sha384(data: &[u8]) -> [u8; 48] {
+    Sha384::digest(data).into()
+}
+
+/// SHA-1 (FIPS 180-4), kept for the protocols that still name it (HMAC-SHA1 in TOTP and OAuth 1.0).
+pub fn sha1(data: &[u8]) -> [u8; 20] {
+    sha1::Sha1::digest(data).into()
+}
+
 pub fn md5(data: &[u8]) -> [u8; 16] {
     Md5::digest(data).into()
 }
@@ -181,6 +190,30 @@ pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts a key of any length");
     mac.update(data);
     mac.finalize().into_bytes().into()
+}
+
+/// HMAC-SHA1 (RFC 2104, RFC 2202).
+pub fn hmac_sha1(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<sha1::Sha1>::new_from_slice(key).expect("HMAC accepts a key of any length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// HMAC-SHA384 (RFC 2104, RFC 4231).
+pub fn hmac_sha384(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<Sha384>::new_from_slice(key).expect("HMAC accepts a key of any length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// HMAC-SHA512 (RFC 2104, RFC 4231).
+pub fn hmac_sha512(key: &[u8], data: &[u8]) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    let mut mac = Hmac::<Sha512>::new_from_slice(key).expect("HMAC accepts a key of any length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -456,6 +489,69 @@ pub fn ecdsa_p256_sha256_verify(x: &[u8], y: &[u8], message: &[u8], signature: &
     }
 }
 
+/// ECDSA over P-384 with SHA-384 (FIPS 186-4 section 6.4.2, what JWS ES384 needs) for a public key given as two 48-byte
+/// big-endian coordinates and a raw 96-byte r||s signature. The refusals are those of [`ecdsa_p256_sha256_verify`].
+pub fn ecdsa_p384_sha384_verify(x: &[u8], y: &[u8], message: &[u8], signature: &[u8]) -> EcdsaVerdict {
+    use p384::ecdsa::signature::Verifier;
+    use p384::elliptic_curve::sec1::FromEncodedPoint;
+    use p384::elliptic_curve::PrimeField;
+    if x.len() != 48 || y.len() != 48 || signature.len() != 96 {
+        return EcdsaVerdict::Length;
+    }
+    let (r_bytes, s_bytes) = signature.split_at(48);
+    if r_bytes.iter().all(|b| *b == 0) || s_bytes.iter().all(|b| *b == 0) {
+        return EcdsaVerdict::Range;
+    }
+    let encoded = p384::EncodedPoint::from_affine_coordinates(p384::FieldBytes::from_slice(x), p384::FieldBytes::from_slice(y), false);
+    let Some(point) = Option::<p384::AffinePoint>::from(p384::AffinePoint::from_encoded_point(&encoded)) else {
+        return EcdsaVerdict::Point;
+    };
+    for half in [r_bytes, s_bytes] {
+        if Option::<p384::Scalar>::from(p384::Scalar::from_repr(*p384::FieldBytes::from_slice(half))).is_none() {
+            return EcdsaVerdict::Range;
+        }
+    }
+    let Ok(signature) = p384::ecdsa::Signature::from_slice(signature) else {
+        return EcdsaVerdict::Range;
+    };
+    let Ok(key) = p384::ecdsa::VerifyingKey::from_affine(point) else {
+        return EcdsaVerdict::Point;
+    };
+    if key.verify(message, &signature).is_ok() {
+        EcdsaVerdict::Valid
+    } else {
+        EcdsaVerdict::Mismatch
+    }
+}
+
+/// RSASSA-PSS with SHA-256, MGF1-SHA-256 and a 32-byte salt (RFC 8017 section 8.1.2) over a public key given as big-endian
+/// modulus and exponent. The refusals are those of [`rsa_pkcs1_sha256_verify`].
+pub fn rsa_pss_sha256_verify(n: &[u8], e: &[u8], message: &[u8], signature: &[u8]) -> RsaVerdict {
+    use rsa::signature::Verifier;
+    use rsa::BigUint;
+    if n.len() < RSA_MIN_MODULUS_BYTES || n[0] == 0 || e.is_empty() || e.len() >= n.len() {
+        return RsaVerdict::KeySize;
+    }
+    if signature.len() != n.len() {
+        return RsaVerdict::SignatureLength;
+    }
+    let modulus = BigUint::from_bytes_be(n);
+    if BigUint::from_bytes_be(signature) >= modulus {
+        return RsaVerdict::SignatureRange;
+    }
+    let Ok(public) = rsa::RsaPublicKey::new(modulus, BigUint::from_bytes_be(e)) else {
+        return RsaVerdict::KeySize;
+    };
+    let Ok(signature) = rsa::pss::Signature::try_from(signature) else {
+        return RsaVerdict::SignatureLength;
+    };
+    if rsa::pss::VerifyingKey::<sha2::Sha256>::new(public).verify(message, &signature).is_ok() {
+        RsaVerdict::Valid
+    } else {
+        RsaVerdict::Mismatch
+    }
+}
+
 /// A signing key held as a PEM string, or the closed reason it cannot sign: the PEM is not a PKCS#8 key of the kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignFailure {
@@ -486,6 +582,36 @@ pub fn rsa_pkcs1_sha256_sign(pem: &str, message: &[u8], seed: [u8; 32]) -> Resul
         return Err(SignFailure::Key);
     }
     let signing = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key);
+    let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
+    let signature = signing.try_sign_with_rng(&mut rng, message).map_err(|_| SignFailure::Key)?;
+    Ok(signature.to_vec())
+}
+
+/// The 96-byte raw r||s ECDSA P-384 / SHA-384 signature of `message` under a PKCS#8 PEM private key; the nonce is
+/// deterministic (RFC 6979), like [`ecdsa_p256_sha256_sign`].
+pub fn ecdsa_p384_sha384_sign(pem: &str, message: &[u8]) -> Result<[u8; 96], SignFailure> {
+    use p384::ecdsa::signature::Signer;
+    use p384::pkcs8::DecodePrivateKey;
+    let key = p384::ecdsa::SigningKey::from_pkcs8_pem(pem).map_err(|_| SignFailure::Key)?;
+    let signature: p384::ecdsa::Signature = key.sign(message);
+    let mut raw = [0u8; 96];
+    raw.copy_from_slice(signature.to_bytes().as_slice());
+    Ok(raw)
+}
+
+/// RSASSA-PSS / SHA-256 (MGF1-SHA-256, 32-byte salt, RFC 8017 section 8.1.1) under a PKCS#8 PEM private key. The salt and the
+/// private-operation blinding come from a ChaCha20 stream seeded from `seed`; a modulus under [`RSA_MIN_MODULUS_BYTES`] is
+/// refused.
+pub fn rsa_pss_sha256_sign(pem: &str, message: &[u8], seed: [u8; 32]) -> Result<Vec<u8>, SignFailure> {
+    use rand_chacha::rand_core::SeedableRng;
+    use rsa::pkcs8::DecodePrivateKey;
+    use rsa::signature::{RandomizedSigner, SignatureEncoding};
+    use rsa::traits::PublicKeyParts;
+    let key = rsa::RsaPrivateKey::from_pkcs8_pem(pem).map_err(|_| SignFailure::Key)?;
+    if key.size() < RSA_MIN_MODULUS_BYTES {
+        return Err(SignFailure::Key);
+    }
+    let signing = rsa::pss::BlindedSigningKey::<sha2::Sha256>::new(key);
     let mut rng = rand_chacha::ChaCha20Rng::from_seed(seed);
     let signature = signing.try_sign_with_rng(&mut rng, message).map_err(|_| SignFailure::Key)?;
     Ok(signature.to_vec())
