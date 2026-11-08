@@ -15,8 +15,9 @@
  *        --version 18.0.0 --repo <shell repo root> --out <dir> [--shell python]
  *   node package-program.mjs meta --name orb-shell-python --version 18.0.0 --repo <shell repo root> --out <dir> \
  *        --kind shell --shell python --platforms darwin-arm64,darwin-x64,linux-x64,linux-arm64,windows-x64 *   node package-program.mjs stage --name orb-shell-python --from <cargo target dir> --profile dist --version 18.0.0 \
- *        --repo <shell repo root> --out <dir> --kind shell --shell python [--libc musl|gnu]
- *        every platform from one build tree: strips each binary into <out>/symbols, then the platform packages and meta
+ *        --repo <shell repo root> --out <dir> --kind shell --shell python [--libc musl|gnu] [--generated <dir>,…]
+ *        every platform from one build tree: strips each binary into <out>/symbols, then the platform packages and meta;
+ *        templates take only git-tracked files plus the --generated repo-relative dirs (built outputs such as the web client)
  */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -53,11 +54,28 @@ function write(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-function copyDir(from, to) {
+/**
+ * The files a package may take from a working tree: what git tracks, plus the declared generated dirs (repo-relative),
+ * so a local build's ignored outputs never ship. Absent for a clean checkout, which ships everything it holds.
+ */
+export function trackedFiles(repo, generated) {
+  const tracked = execFileSync('git', ['-C', repo, 'ls-files', '-z'], { maxBuffer: 1024 * 1024 * 256 }).toString().split('\0').filter(Boolean);
+  return { files: new Set(tracked.map((f) => path.join(repo, f))), generated: generated.map((g) => path.join(repo, g)) };
+}
+
+export function shipsFrom(tree, p, isDir) {
+  if (!tree) return true;
+  if (tree.generated.some((g) => p === g || p.startsWith(`${g}${path.sep}`))) return true;
+  return isDir || tree.files.has(p);
+}
+
+function copyDir(from, to, tree) {
   fs.cpSync(from, to, {
     recursive: true,
     // Repo-only dev entries never ship; the scaffold generator skips them too (base/src/backend/shell.rs).
-    filter: (p) => !['node_modules', '.git', 'target', '.turbo', '.gitmodules', '.github', '.githooks', '.vscode', '.idea', '.npmignore'].includes(path.basename(p)),
+    filter: (p) =>
+      !['node_modules', '.git', 'target', '.turbo', '.gitmodules', '.github', '.githooks', '.vscode', '.idea', '.npmignore'].includes(path.basename(p)) &&
+      shipsFrom(tree, p, fs.statSync(p).isDirectory()),
   });
 }
 
@@ -85,18 +103,19 @@ function platform(a) {
   }
   const exe = path.basename(binary);
   const dir = path.join(need(a, 'out'), plat);
+  const tree = a.tree;
   fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
   fs.copyFileSync(binary, path.join(dir, 'bin', exe));
   fs.chmodSync(path.join(dir, 'bin', exe), 0o755);
   if (repo) {
     const templates = path.join(repo, 'templates');
     for (const t of fs.existsSync(templates) ? fs.readdirSync(templates) : []) {
-      copyDir(path.join(templates, t), path.join(dir, 'templates', t));
+      copyDir(path.join(templates, t), path.join(dir, 'templates', t), tree);
     }
     const renderers = path.join(repo, 'renderers');
     for (const r of fs.existsSync(renderers) ? fs.readdirSync(renderers) : []) {
       if (fs.existsSync(path.join(renderers, r, 'package.json'))) {
-        copyDir(path.join(renderers, r), path.join(dir, 'templates', `almadar-renderers-${need(a, 'shell')}`));
+        copyDir(path.join(renderers, r), path.join(dir, 'templates', `almadar-renderers-${need(a, 'shell')}`), tree);
       }
     }
   }
@@ -129,7 +148,7 @@ function platform(a) {
       sha256: createHash('sha256').update(library).digest('hex'),
     });
     fs.copyFileSync(path.join(repo, 'renderers/native/contract.json'), path.join(dir, 'native-gpu/android/contract.json'));
-    copyDir(path.join(repo, 'renderers/native/template'), path.join(dir, 'templates/android-native-gpu'));
+    copyDir(path.join(repo, 'renderers/native/template'), path.join(dir, 'templates/android-native-gpu'), tree);
   }
   if (a['android-native-gpu-mode'] && !a['android-native-gpu']) {
     throw new Error('--android-native-gpu-mode requires --android-native-gpu');
@@ -194,10 +213,11 @@ function stage(a) {
   if (libc !== 'musl' && libc !== 'gnu') throw new Error(`--libc must be musl or gnu, got ${libc}`);
   fs.rmSync(out, { recursive: true, force: true });
   const symbols = path.join(out, 'symbols');
+  const tree = trackedFiles(path.resolve(need(a, 'repo')), (a.generated ?? '').split(',').filter(Boolean));
   for (const plat of Object.keys(PLATFORMS)) {
     const binary = builtBinary(from, profile, name, plat, libc);
     if (!fs.existsSync(binary)) throw new Error(`missing build output ${binary}`);
-    platform({ ...a, _: 'platform', platform: plat, binary, out: path.join(out, 'npm') });
+    platform({ ...a, _: 'platform', platform: plat, binary, out: path.join(out, 'npm'), tree });
     const packaged = path.join(out, 'npm', plat, 'bin', path.basename(binary));
     const pdb = `${name.replaceAll('-', '_')}.pdb`;
     if (PLATFORMS[plat].exe) fs.copyFileSync(path.join(path.dirname(binary), pdb), path.join(path.dirname(packaged), pdb));

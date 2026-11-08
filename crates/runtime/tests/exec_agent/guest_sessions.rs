@@ -822,6 +822,19 @@ fn a_guest_route_open_announces_mount_before_the_page_mounts() {
 }
 
 #[test]
+fn a_guest_runs_a_mount_listener_that_is_also_a_page_seed_before_any_seed_lifecycle() {
+    let mut program = shop_with_mount_seeder(true);
+    let pages = program["orbitals"][0]["pages"].as_array_mut().unwrap();
+    pages.iter_mut().find(|p| p["name"] == "Bg").unwrap()["traits"].as_array_mut().unwrap().retain(|t| t["ref"] != "Seeder");
+    pages.iter_mut().find(|p| p["name"] == "List").unwrap()["traits"] = json!([{ "ref": "ListT" }, { "ref": "Seeder" }]);
+    let (_, after) = open_shop(program, json!({ "route": "/list" }));
+    assert!(
+        painted(&after["got"]).contains(&"List ShopItem".to_string()),
+        "the Seeder's $MOUNT delivery is not held for its own INIT (EXEC-SEED-7 precedes EXEC-SEED-2): {after}"
+    );
+}
+
+#[test]
 fn control_a_guest_without_a_mount_listener_mounts_its_page_on_an_empty_store() {
     let (_, after) = open_shop(shop_with_mount_seeder(false), json!({ "route": "/list" }));
     assert!(painted(&after["got"]).contains(&"none listed".to_string()), "{after}");

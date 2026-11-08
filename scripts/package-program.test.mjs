@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PLATFORMS, args, builtBinary } from './package-program.mjs';
+import { PLATFORMS, args, builtBinary, shipsFrom } from './package-program.mjs';
 
 test('one cargo target dir holds every platform binary at its target triple', () => {
   assert.equal(builtBinary('/t', 'dist', 'orb-shell-typescript', 'linux-arm64', 'musl'), '/t/aarch64-unknown-linux-musl/dist/orb-shell-typescript');
@@ -26,4 +26,16 @@ test('the five platforms keep their npm os and cpu', () => {
 test('arguments come as flag value pairs after the command', () => {
   assert.deepEqual(args(['stage', '--name', 'n', '--from', '/t']), { _: 'stage', name: 'n', from: '/t' });
   assert.throws(() => args(['stage', '--name']), /bad argument --name/);
+});
+
+test('a working tree ships its tracked files and its declared generated dirs, never an ignored build output', () => {
+  const tree = { files: new Set(['/r/renderers/web/src/a.ts']), generated: ['/r/templates/almadar-web-client'] };
+  assert.equal(shipsFrom(tree, '/r/renderers/web/src/a.ts', false), true);
+  assert.equal(shipsFrom(tree, '/r/templates/almadar-web-client/assets/index.js', false), true);
+  assert.equal(shipsFrom(tree, '/r/renderers/web/dist/index.js', false), false);
+  assert.equal(shipsFrom(tree, '/r/templates/almadar-web-client-old/x.js', false), false, 'control: a sibling with the same prefix is not the generated dir');
+});
+
+test('control: a clean checkout with no tree filter ships everything it holds', () => {
+  assert.equal(shipsFrom(undefined, '/r/renderers/web/dist/index.js', false), true);
 });

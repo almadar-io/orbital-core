@@ -167,8 +167,19 @@ impl RuntimeKernel {
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
-        let run = self.run_of_route_mount(route, seeds, entity_id, payload)?;
-        self.run_straight_through(run)
+        let announced = match route {
+            Some(route) => self.route_mount_deliveries(route)?,
+            None => VecDeque::new(),
+        };
+        let mut outcomes = Vec::new();
+        if !announced.is_empty() {
+            let _announcing = Announcing::enter(&self.mount);
+            let mut run = self.run_of_mount(&[], entity_id, Value::Null);
+            run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries: announced }));
+            outcomes.extend(self.run_straight_through(run)?);
+        }
+        outcomes.extend(self.run_straight_through(self.run_of_mount(seeds, entity_id, payload))?);
+        Ok(outcomes)
     }
 
     /// [`Self::dispatch_continuing`] as a resumable dispatch: it runs until it needs I/O it has no
@@ -239,10 +250,12 @@ impl RuntimeKernel {
         }
         let lineage = std::sync::Arc::new(super::mount_barrier::MountLineage::default());
         let mut outcomes = {
+            let _announcing = Announcing::enter(&self.mount);
             let _lineage = super::mount_barrier::enter_lineage(Some(lineage.clone()));
-            drive(self.start_dispatch_announce(announced, entity_id))?
+            let announced = drive(self.start_dispatch_announce(announced, entity_id))?;
+            lineage.wait_settled();
+            announced
         };
-        lineage.wait_settled();
         outcomes.extend(drive(self.start_dispatch_mount(seeds, entity_id, payload))?);
         Ok(outcomes)
     }
@@ -571,5 +584,21 @@ impl RuntimeKernel {
             outcomes,
             error,
         });
+    }
+}
+
+/// The `$MOUNT` window of a route mount: EXEC-SEED-2 holds nothing until it ends, however the announce ends.
+struct Announcing<'a>(&'a RwLock<MountLifecycle>);
+
+impl<'a> Announcing<'a> {
+    fn enter(mount: &'a RwLock<MountLifecycle>) -> Self {
+        mount.write().announcing = true;
+        Self(mount)
+    }
+}
+
+impl Drop for Announcing<'_> {
+    fn drop(&mut self) {
+        self.0.write().announcing = false;
     }
 }

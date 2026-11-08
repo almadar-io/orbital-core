@@ -217,11 +217,14 @@ struct Sessions {
 struct MountLifecycle {
     awaiting: HashSet<String>,
     held: HashMap<String, Vec<CascadeItem>>,
+    /// A route mount's `$MOUNT` work is running: it precedes every seed's lifecycle step (EXEC-SEED-7), so nothing is held.
+    announcing: bool,
 }
 
 impl MountLifecycle {
     fn holds(&self, item: &CascadeItem) -> bool {
-        !orbital_core_base::events::is_bus_excluded_event(&item.event)
+        !self.announcing
+            && !orbital_core_base::events::is_bus_excluded_event(&item.event)
             && self.awaiting.contains(&item.trait_name)
     }
 
