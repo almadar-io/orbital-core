@@ -24,13 +24,20 @@ pub enum GuestIntegrations {
 
 /// Opens a host for each guest program.
 pub trait GuestHosting: Send + Sync {
-    /// A host whose credential source is the opener's under `Live` and holds none under `Mock`.
-    fn open(&self, integrations: GuestIntegrations) -> Arc<dyn GuestHost>;
+    /// A host whose credential source is the opener's under `Live` and holds none under `Mock`. `cwd`, when given, is the
+    /// directory the guest's `cwd` anchor names instead of the opener's (`program/open { cwd }`).
+    fn open(&self, integrations: GuestIntegrations, cwd: Option<&str>) -> Arc<dyn GuestHost>;
 }
 
 /// One guest's host over its own kernel.
 pub trait GuestHost: Send + Sync {
     fn kernel(&self) -> Arc<RuntimeKernel>;
+    /// The value of the environment variable `name` on the host that runs this guest, if it is set.
+    fn environment_of(&self, name: &str) -> Option<String>;
+    /// The value of the credential `name` as this guest's host resolves it, if it holds one.
+    fn credential_of(&self, name: &str) -> Option<String>;
+    /// The `denied` answers the host delivered for this guest's deferred work: message and count.
+    fn deferred_denials(&self) -> Vec<(String, u64)>;
     fn register(&self, schema: OrbitalSchema) -> Result<(), String>;
     /// The route mount of `route` (`$MOUNT` first, its deferred work settled), then `seeds`.
     fn mount(&self, route: Option<&str>, seeds: &[MountSeed], payload: Value) -> Result<DispatchOutcomes, String>;

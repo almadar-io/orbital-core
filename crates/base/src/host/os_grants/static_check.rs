@@ -385,6 +385,7 @@ fn grant_entry(need: &OsRequirement) -> (String, bool) {
                 (KernelKind::Reorder, _) => "kernel: { \"queue\": [reorder] }".to_string(),
                 (KernelKind::Read, _) => "kernel: { \"introspect\": [read] }".to_string(),
                 (KernelKind::Spawn, _) => "kernel: { \"guest\": [spawn] }".to_string(),
+                (KernelKind::Declared, _) => "kernel: { \"guest\": [spawn, declared] }".to_string(),
             },
             true,
         ),

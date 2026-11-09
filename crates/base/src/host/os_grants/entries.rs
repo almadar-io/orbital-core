@@ -264,7 +264,7 @@ impl OsGrants {
                     ),
                 ),
                 Some(target) => {
-                    if let Some(kind) = g.kinds.iter().find(|k| **k != target.kind()) {
+                    if let Some(kind) = g.kinds.iter().find(|k| !target.grants_kind(**k)) {
                         problem(
                             format!("kernel[{i}]"),
                             format!("{:?} grants `{}`, not `{}`", g.target, target.kind().name(), kind.name()),

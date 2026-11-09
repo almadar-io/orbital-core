@@ -444,6 +444,8 @@ struct Sealed {
 pub type IvSource = dyn Fn() -> [u8; 12] + Send + Sync;
 pub type ClockMillis = dyn Fn() -> i64 + Send + Sync;
 
+pub type UnstoredSource = dyn Fn(&str) -> Option<String> + Send + Sync;
+
 pub struct EncryptedCredentialStore {
     rows: Arc<dyn CredentialRows>,
     master: Option<Key>,
@@ -452,6 +454,7 @@ pub struct EncryptedCredentialStore {
     clock: Box<ClockMillis>,
     state: Mutex<State>,
     flights: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    unstored: std::sync::OnceLock<Box<UnstoredSource>>,
 }
 
 #[derive(Default)]
@@ -503,7 +506,18 @@ impl EncryptedCredentialStore {
             clock: Box::new(orbital_core_base::time_util::now_millis),
             state: Mutex::new(State::default()),
             flights: Mutex::new(HashMap::new()),
+            unstored: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Where a grant's inputs (a signing key, a client id or secret) are read when no row holds them: the source order of
+    /// every other credential read. A stored row shadows it.
+    pub fn answer_unstored_from(&self, source: Box<UnstoredSource>) {
+        let _ = self.unstored.set(source);
+    }
+
+    pub(super) fn grant_input(&self, name: &str) -> Option<String> {
+        self.resolve(name, None).or_else(|| self.unstored.get().and_then(|source| source(name)))
     }
 
     /// The same store reading time from `clock` (epoch milliseconds) for token expiry and row stamps.

@@ -142,3 +142,71 @@ fn control_an_emit_fitting_a_qualified_type_is_delivered() {
     let outcomes = qualified_badge_kernel(json!({ "b": { "id": "x" } })).dispatch("Sender", None, "GO", Value::Null).unwrap();
     assert!(outcomes.iter().any(|(name, _)| name == "Sender"), "{outcomes:?}");
 }
+
+fn completing_kernel(sent: Json) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Asker", "linkedEntity": "Note",
+                  "emits": [{ "event": "PING", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
+                    "events": [
+                        { "key": "DONE", "name": "Done", "payloadSchema": [{ "name": "n", "type": "number" }] },
+                        { "key": "FAILED", "name": "Failed", "payloadSchema": [{ "name": "error", "type": "string" }, { "name": "kind", "type": "string" }, { "name": "key", "type": "string" }] }
+                    ],
+                    "transitions": [
+                        { "from": "idle", "to": "done", "event": "DONE", "effects": [["emit", "PING", sent]] },
+                        { "from": "idle", "to": "failed", "event": "FAILED" }
+                    ]
+                } }
+            ]
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::server().register(schema)
+}
+
+fn completing_site() -> orbital_core_runtime::resumable::CallSite {
+    orbital_core_runtime::resumable::CallSite {
+        orbital: None,
+        trait_name: "Asker".to_string(),
+        follow_on: false,
+        entity_id: orbital_core_runtime::process_result::RUNTIME_SINGLETON.to_string(),
+        emit: orbital_core_runtime::resumable::CallRoutes {
+            success: Some("DONE".to_string()),
+            failure: Some("FAILED".to_string()),
+            ..orbital_core_runtime::resumable::CallRoutes::default()
+        },
+    }
+}
+
+fn row_asks(request: &orbital_core_runtime::resumable::IoRequest) -> orbital_core_runtime::resumable::IoAnswer {
+    match request {
+        orbital_core_runtime::resumable::IoRequest::ReadRow { .. } => orbital_core_runtime::resumable::IoAnswer::Row(Ok(Value::Null)),
+        other => panic!("the completion asks only for its row, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_completion_whose_cascade_emits_a_refused_payload_is_not_rerouted_to_its_failure_route() {
+    let k = completing_kernel(json!({ "n": "one" }));
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    assert_eq!((delivered.event.as_str(), delivered.failed), ("DONE", false));
+    assert!(
+        matches!(&delivered.result, Err(orbital_core_runtime::resumable::DispatchError::Kernel(KernelError::PayloadInvalid(m))) if m.contains("PING")),
+        "{:?}",
+        delivered.result.as_ref().err()
+    );
+}
+
+#[test]
+fn control_a_completion_whose_own_payload_breaks_its_route_fires_the_failure_route() {
+    let k = completing_kernel(json!({ "n": 1 }));
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": "one" })).unwrap(), false, &row_asks);
+    assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
+    assert!(delivered.result.is_ok(), "{:?}", delivered.result.as_ref().err());
+}

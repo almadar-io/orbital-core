@@ -442,7 +442,7 @@ impl OsGrants {
         self.kernel.iter().any(|g| {
             g.kinds.contains(&kind)
                 && kernel_target(&g.target).is_some_and(|target| {
-                    target.kind() == kind
+                    target.grants_kind(kind)
                         && match (&target, operator) {
                             (KernelTarget::Apply { .. }, Some(name)) => target.covers(name),
                             (KernelTarget::Apply { .. }, None) => false,

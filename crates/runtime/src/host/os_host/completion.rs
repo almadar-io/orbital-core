@@ -50,6 +50,7 @@ pub(super) enum CompletionTestPhase { BeforeWork, BeforeClaim, Terminal }
 /// The sink a program instance delivers to, and the keys whose completion is still wanted.
 #[derive(Default)]
 pub struct Completions {
+    denials: orbital_core_base::os::OsDenials,
     sink: Mutex<Option<Arc<dyn OsCompletionSink>>>,
     #[cfg(test)]
     test_observer: Mutex<Option<Arc<dyn Fn(&str, u64, CompletionTestPhase) + Send + Sync>>>,
@@ -122,6 +123,11 @@ impl Completions {
         keys
     }
 
+    /// The `denied` answers deferred work delivered.
+    pub fn denials(&self) -> Vec<(String, u64)> {
+        self.denials.entries()
+    }
+
     /// Drop the pending completion of `key`: its outcome is never delivered. `false` when none is pending.
     pub fn cancel(&self, key: &str) -> bool {
         self.live.lock().remove(key).is_some()
@@ -157,6 +163,9 @@ impl Completions {
 
     /// Hand a claimed completion to the sink; the key stays open until the sink's dispatch has run.
     pub(super) fn deliver(&self, key: &str, site: &CallSite, outcome: Result<Value, OsError>) {
+        if let Err(error) = &outcome {
+            self.denials.note(error);
+        }
         self.deliver_with(key, |sink| sink.complete(site, key, outcome));
     }
 
@@ -716,6 +725,17 @@ mod tests {
             Some(&Value::string("k1"))
         );
         assert!(payload.get_path("error").is_some());
+    }
+
+    #[test]
+    fn a_denied_deferred_answer_is_recorded_and_any_other_failure_is_not() {
+        let completions = Completions::default();
+        let sited = site(Some("OK"), Some("BAD"));
+        completions.deliver("a", &sited, Err(OsError::new(OsErrorKind::Denied, "os/read: /x is not granted for Read")));
+        completions.deliver("b", &sited, Err(OsError::new(OsErrorKind::Denied, "os/read: /x is not granted for Read")));
+        completions.deliver("c", &sited, Err(OsError::new(OsErrorKind::Io, "os/read: disk")));
+        completions.deliver("d", &sited, Ok(exited(0.0)));
+        assert_eq!(completions.denials(), vec![("os/read: /x is not granted for Read".to_string(), 2)]);
     }
 
     #[test]

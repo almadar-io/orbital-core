@@ -321,6 +321,7 @@ impl RuntimeKernel {
         match outcome {
             Ok(payload) => EffectResult::executed_with_value(effect.clone(), keyed(payload)),
             Err(error) => {
+                self.grants.denials.note(&error);
                 let mut result = os_failure(effect, &error);
                 result.return_value = result.return_value.take().map(keyed);
                 result

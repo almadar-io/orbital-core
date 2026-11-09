@@ -1149,6 +1149,54 @@ mod oauth_connect {
             assert!(silent.bodies().is_empty());
         }
 
+        fn env_of(pairs: &[(&str, String)]) -> std::collections::HashMap<String, String> {
+            pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+        }
+
+        #[test]
+        fn a_signing_key_held_only_in_the_environment_signs_the_grant_like_any_other_credential() {
+            let account = jwt_fixture()["serviceAccount"].to_string();
+            let (now, _, store) = clocked();
+            now.store(SA_NOW_MS, Ordering::SeqCst);
+            let _credentials = crate::credentials::Credentials::from_env(env_of(&[("SA_KEY", account)]))
+                .with_encrypted_store(Arc::clone(&store))
+                .unwrap();
+            store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap();
+            assert_eq!(store.resolve("SA_TOKEN", None).as_deref(), Some("SA-ACCESS-1"));
+            assert_eq!(store.resolve("SA_KEY", None), None, "the environment key is read, never copied into the store");
+        }
+
+        #[test]
+        fn control_a_stored_signing_key_shadows_the_environment() {
+            let (_, _, store) = sa_store();
+            let _credentials = crate::credentials::Credentials::from_env(env_of(&[("SA_KEY", "not json".to_string())]))
+                .with_encrypted_store(Arc::clone(&store))
+                .unwrap();
+            store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap();
+            assert_eq!(store.resolve("SA_TOKEN", None).as_deref(), Some("SA-ACCESS-1"));
+        }
+
+        #[test]
+        fn control_under_store_source_an_environment_signing_key_is_not_stored() {
+            let account = jwt_fixture()["serviceAccount"].to_string();
+            let (now, _, store) = clocked();
+            now.store(SA_NOW_MS, Ordering::SeqCst);
+            let source = ("ALMADAR_CREDENTIALS_SOURCE", "store".to_string());
+            let _credentials = crate::credentials::Credentials::from_env(env_of(&[("SA_KEY", account), source]))
+                .with_encrypted_store(Arc::clone(&store))
+                .unwrap();
+            let refused = store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap_err();
+            assert!(refused.message.contains("is not stored"), "{}", refused.message);
+        }
+
+        #[test]
+        fn control_a_key_in_neither_place_is_refused() {
+            let (now, _, store) = clocked();
+            now.store(SA_NOW_MS, Ordering::SeqCst);
+            let refused = store.connect(&jwt_grant(None), &Recording::new(vec![(200, SA_TOKEN)])).unwrap_err();
+            assert!(refused.message.contains("is not stored"), "{}", refused.message);
+        }
+
         #[test]
         fn jwt_bearer_begin_then_finish_equals_connect() {
             let (_, via_connect, one) = sa_store();

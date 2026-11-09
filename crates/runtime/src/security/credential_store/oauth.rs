@@ -190,8 +190,8 @@ fn from_grant_error(error: GrantError) -> ConnectFailure {
 
 impl EncryptedCredentialStore {
     /// Exchange `grant.code` at the grant's token endpoint through `transport` and keep the result as an `oauth` row of
-    /// `grant.name` for `grant.principal`. Client credentials are read from this store's own app-wide rows by the names the
-    /// grant carries. A failure persists nothing.
+    /// `grant.name` for `grant.principal`. Client credentials are read from this store's app-wide rows, then its unstored source, by the names
+    /// the grant carries. A failure persists nothing.
     pub fn connect(
         &self,
         grant: &CredentialGrant,
@@ -317,7 +317,7 @@ impl EncryptedCredentialStore {
     }
 
     fn held_text(&self, name: &str, what: &str) -> Result<String, ConnectFailure> {
-        self.resolve(name, None).filter(|value| !value.is_empty()).ok_or_else(|| {
+        self.grant_input(name).filter(|value| !value.is_empty()).ok_or_else(|| {
             failure(
                 ConnectFailureKind::Refused,
                 format!("credential `{name}` ({what}) is not stored"),
@@ -640,7 +640,7 @@ impl EncryptedCredentialStore {
         let client_id = if id_ref.is_empty() && client_auth == ClientAuth::None {
             String::new()
         } else {
-            self.resolve(id_ref, None).ok_or_else(|| {
+            self.grant_input(id_ref).ok_or_else(|| {
                 failure(
                     ConnectFailureKind::Refused,
                     format!("credential `{id_ref}` (the client id) is not stored"),
@@ -649,7 +649,7 @@ impl EncryptedCredentialStore {
         };
         let client_secret = match secret_ref {
             None => None,
-            Some(name) => Some(self.resolve(name, None).ok_or_else(|| {
+            Some(name) => Some(self.grant_input(name).ok_or_else(|| {
                 failure(
                     ConnectFailureKind::Refused,
                     format!("credential `{name}` (the client secret) is not stored"),

@@ -130,10 +130,12 @@ pub enum KernelKind {
     Reorder,
     Read,
     Spawn,
+    /// `guest` only: a live guest keeps every grant it declares (EXEC-CONC-7), unnarrowed.
+    Declared,
 }
 
 named_kinds!(MemKind { Create => "create", Free => "free", Atomic => "atomic" });
-named_kinds!(KernelKind { Call => "call", Reorder => "reorder", Read => "read", Spawn => "spawn" });
+named_kinds!(KernelKind { Call => "call", Reorder => "reorder", Read => "read", Spawn => "spawn", Declared => "declared" });
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
 named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
@@ -338,6 +340,11 @@ pub enum KernelTarget {
 }
 
 impl KernelTarget {
+    /// Whether a grant of this target may name `kind`: its own, and for `guest` also `declared`.
+    pub fn grants_kind(&self, kind: KernelKind) -> bool {
+        kind == self.kind() || (*self == KernelTarget::Guest && kind == KernelKind::Declared)
+    }
+
     /// The one kind a target grants.
     pub fn kind(&self) -> KernelKind {
         match self {

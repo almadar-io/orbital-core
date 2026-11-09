@@ -7,7 +7,7 @@ use std::prelude::v1::*;
 use crate::codec::{ed25519_sign, hex};
 use crate::os_grants::OsGrants;
 use crate::schema::{Orbital, OrbitalSchema, TraitReference};
-use crate::secrets::{credential_slots_in, slot_credential_in, SlotCredential};
+use crate::secrets::declared_credentials_in;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use serde_json::Value as Json;
@@ -227,20 +227,14 @@ fn scan_orbital(orbital: &Orbital) -> Result<OrbitalScan, ManifestBuildError> {
                 orbital: orbital.name.clone(),
                 message: e.to_string(),
             })?;
-        for (slot, slot_value) in credential_slots_in(&value) {
-            match slot_credential_in(slot_value, &value) {
-                SlotCredential::Named(name) => {
-                    scan.credentials.insert(name.to_string());
-                }
-                SlotCredential::None => {}
-                SlotCredential::Computed => {
-                    return Err(ManifestBuildError::ComputedCredential {
-                        orbital: orbital.name.clone(),
-                        slot,
-                    })
-                }
-            }
+        let (named, computed) = declared_credentials_in(&value);
+        if let Some(slot) = computed.into_iter().next() {
+            return Err(ManifestBuildError::ComputedCredential {
+                orbital: orbital.name.clone(),
+                slot,
+            });
         }
+        scan.credentials.extend(named);
     }
     Ok(scan)
 }

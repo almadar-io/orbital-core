@@ -503,6 +503,22 @@ pub fn credential_slots_in(expr: &Value) -> Vec<(String, &Value)> {
     effect_credential_slots(expr)
 }
 
+/// The credentials `trait_def` names, sorted and unique, and the slots whose name is only known at run time.
+pub fn declared_credentials_in(trait_def: &Value) -> (Vec<String>, Vec<String>) {
+    let mut named = Vec::new();
+    let mut computed = Vec::new();
+    for (slot, value) in credential_slots_in(trait_def) {
+        match slot_credential_in(value, trait_def) {
+            SlotCredential::Named(name) => named.push(name.to_string()),
+            SlotCredential::None => {}
+            SlotCredential::Computed => computed.push(slot),
+        }
+    }
+    named.sort();
+    named.dedup();
+    (named, computed)
+}
+
 /// What a credential slot names inside its trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotCredential<'a> {
@@ -926,6 +942,23 @@ pub fn program_credentials(program: &Value) -> Vec<ProgramCredential> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn declared_credentials_name_literals_and_secret_knob_defaults_and_report_computed_slots() {
+        let def = json!({
+            "config": { "key": { "type": "secret", "default": "B_KEY" }, "off": { "type": "secret", "default": "" }, "plain": { "type": "string", "default": "NOT" } },
+            "effects": [
+                ["credential-status", { "credential": "A_KEY", "scope": "app" }],
+                ["credential-status", { "credential": "@config.key", "scope": "app" }],
+                ["credential-status", { "credential": "A_KEY", "scope": "user" }],
+                ["credential-status", { "credential": "@config.off", "scope": "app" }],
+                ["credential-status", { "credential": "@config.plain", "scope": "app" }]
+            ]
+        });
+        let (named, computed) = declared_credentials_in(&def);
+        assert_eq!(named, vec!["A_KEY".to_string(), "B_KEY".to_string()]);
+        assert_eq!(computed.len(), 1, "{computed:?}");
+    }
 
     fn program(config: Value, effects: Value) -> Value {
         json!({ "orbitals": [{ "traits": [{

@@ -33,7 +33,8 @@ impl RuntimeKernel {
 
     /// Dispatch a completion's route event on its row, `answer` answering the asks it makes. A success payload that breaks
     /// its route's declared contract is refused at entry (G-CROSS-335) and the ask still ends: the failure route fires as
-    /// `{ error, kind: invalid, key }`, never nothing.
+    /// `{ error, kind: invalid, key }`, never nothing. A refusal raised by an emit further down the cascade is that
+    /// cascade's error, not the completion's: the route event stands.
     pub fn dispatch_route(
         &self,
         site: &CallSite,
@@ -57,8 +58,11 @@ impl RuntimeKernel {
         let (mut event, mut payload, mut failed) = (event, payload, failed);
         let mut result = run(&event, &payload);
         if let Err(DispatchError::Kernel(KernelError::PayloadInvalid(refusal))) = &result {
+            let entry_refused = self
+                .payload_rejection([(site.trait_name.as_str(), event.as_str())], &payload)
+                .is_some();
             let failure = site.emit.failure.clone().filter(|failure| {
-                site.emit.success.as_deref() == Some(event.as_str()) && *failure != event
+                entry_refused && site.emit.success.as_deref() == Some(event.as_str()) && *failure != event
             });
             tracing::warn!(
                 target: orbital_core_base::logging::ns::RUNTIME_KERNEL,

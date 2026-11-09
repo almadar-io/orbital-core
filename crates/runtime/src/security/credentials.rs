@@ -70,6 +70,10 @@ impl Credentials {
     /// environment counterpart, and the kernel's credential administration asks reach it. The store is warmed here.
     pub fn with_encrypted_store(mut self, store: Arc<EncryptedCredentialStore>) -> Result<Self, String> {
         store.warm()?;
+        if !self.store_source {
+            let env = self.env.clone();
+            store.answer_unstored_from(Box::new(move |name| env.get(name).filter(|value| !value.is_empty()).cloned()));
+        }
         self.encrypted = Some(store);
         Ok(self)
     }

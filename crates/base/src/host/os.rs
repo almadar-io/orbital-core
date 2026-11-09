@@ -461,6 +461,27 @@ pub fn answer_with_declared_bytes(op: OsOp, answer: crate::value::Value) -> Resu
     Ok(Value::Object(fields))
 }
 
+/// The `denied` answers a host or kernel gave, each message once with how often, in first-seen order.
+#[derive(Debug, Default)]
+pub struct OsDenials(crate::sync::Mutex<Vec<(String, u64)>>);
+
+impl OsDenials {
+    pub fn note(&self, error: &OsError) {
+        if error.kind != OsErrorKind::Denied {
+            return;
+        }
+        let mut seen = self.0.lock();
+        match seen.iter_mut().find(|(message, _)| *message == error.message) {
+            Some((_, count)) => *count += 1,
+            None => seen.push((error.message.clone(), 1)),
+        }
+    }
+
+    pub fn entries(&self) -> Vec<(String, u64)> {
+        self.0.lock().clone()
+    }
+}
+
 /// `args` of an `os/send` with the segments of its data operand filled in: a list of `{ bytes, credential, encode? }`
 /// objects becomes the one standard-base64 text of their concatenation, each segment being its standard base64 `bytes`
 /// followed by the value of the credential it names, passed through its `encode` when it has one (an empty name is

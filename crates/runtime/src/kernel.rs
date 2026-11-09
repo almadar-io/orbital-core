@@ -428,6 +428,8 @@ struct Grants {
     os_grants: Arc<RwLock<OsGrantTable>>,
     /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
     managed_credentials: Arc<RwLock<Vec<orbital_core_base::secrets::ProgramCredential>>>,
+    /// The `denied` answers this kernel's programs were given, deferred ones excepted (those are the host's).
+    denials: orbital_core_base::os::OsDenials,
 }
 
 /// Shared runtime kernel.
@@ -839,6 +841,7 @@ impl RuntimeKernel {
                 egress: Arc::new(RwLock::new(Vec::new())),
                 os_grants,
                 managed_credentials: Arc::new(RwLock::new(Vec::new())),
+                denials: Default::default(),
             },
             deliveries: Arc::default(),
             capture_children: Arc::new(RwLock::new(HashMap::new())),

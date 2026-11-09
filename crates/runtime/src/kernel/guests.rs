@@ -20,7 +20,7 @@ use orbital_core_base::agent_ports::AgentPortFailure;
 use orbital_core_base::client_effect::ClientEffect;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::json_value::value_to_json;
-use orbital_core_base::os_grants::{covers, narrow_program_grants, KernelKind, OsGrants};
+use orbital_core_base::os_grants::{covers, narrow_program_grants, union, KernelKind, OsGrants};
 use orbital_core_base::protocols::ProtocolSide;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::sync::RwLock;
@@ -455,6 +455,12 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let cwd = match options.as_ref().and_then(|o| o.get("cwd")) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(path)) if integrations == GuestIntegrations::Live => Some(path.to_string()),
+            Some(Value::String(_)) => return Err(failure("program/open: `cwd` is for a live guest; a mocked guest has no files of its own")),
+            Some(_) => return Err(failure("program/open: `cwd` is a directory path")),
+        };
         let mut granted: Option<OsGrants> = None;
         let mut opener_held: Option<OsGrants> = None;
         if asked_grants.is_some() || asked_arenas.is_some() || keep_declared {
@@ -476,6 +482,18 @@ impl RuntimeKernel {
                     format!("program/open: the guest asks for grants the opening orbital does not hold: {}", missing.join(", ")),
                 )
             })?;
+            if let Some(dir) = &cwd {
+                let asked: OsGrants = serde_json::from_value(serde_json::json!({
+                    "fs": [{ "glob": format!("{dir}/**"), "modes": ["read", "write", "create", "remove"] }]
+                }))
+                .map_err(|e| failure(format!("program/open: `cwd` is not a grantable path: {e}")))?;
+                covers(&held, &asked).map_err(|missing| {
+                    guest_refusal(
+                        orbital_core_base::os::OsErrorKind::Denied,
+                        format!("program/open: the guest's `cwd` needs grants the opening orbital does not hold: {}", missing.join(", ")),
+                    )
+                })?;
+            }
             granted = Some(guest);
             opener_held = Some(held);
         }
@@ -525,12 +543,16 @@ impl RuntimeKernel {
         if integrations == GuestIntegrations::Mock {
             std::iter::once(&mut schema).chain(lazy_programs.values_mut()).for_each(unbind_stores);
         }
-        let host = self.guest_hosting().map(|hosting| hosting.open(integrations));
+        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref()));
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {
             for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
                 match (keep_declared, &opener_held) {
+                    (true, Some(held)) if integrations == GuestIntegrations::Live && held.kernel_allows(KernelKind::Declared, None) => {
+                        let passed = granted.clone().unwrap_or_default();
+                        carried_schema.os_grants = Some(union(&passed, &carried_schema.os_grants.clone().unwrap_or_default()));
+                    }
                     (true, Some(held)) => narrow_program_grants(carried_schema, held, granted.as_ref().unwrap_or(&OsGrants::default())),
                     _ => {
                         carried_schema.os_grants = granted.clone();
@@ -868,7 +890,13 @@ impl RuntimeKernel {
         args: &[Value],
         handle: &Value,
     ) -> Result<Value, AgentPortFailure> {
-        let guest = self.guest(handle, "program/inputs")?.kernel;
+        let session = self.guest(handle, "program/inputs")?;
+        let guest = session.kernel.clone();
+        let asked = |key: &str| match args.first() {
+            Some(Value::Object(map)) => map.get(key).filter(|value| !matches!(value, Value::Null)).cloned(),
+            _ => None,
+        };
+        let (environment, credentials, denials) = (asked("environment"), asked("credentials"), asked("denials"));
         let own: Vec<Value> = args
             .iter()
             .enumerate()
@@ -876,6 +904,9 @@ impl RuntimeKernel {
                 Value::Object(map) if at == 0 => {
                     let mut rest = map.clone();
                     rest.shift_remove("guest");
+                    rest.shift_remove("environment");
+                    rest.shift_remove("credentials");
+                    rest.shift_remove("denials");
                     Value::Object(rest)
                 }
                 other => other.clone(),
@@ -888,8 +919,149 @@ impl RuntimeKernel {
             None,
             "",
         )?;
-        guest.with_runtime_reads(reflection, &own)
+        let mut answer = guest.with_runtime_reads(reflection, &own)?;
+        if let Some(asked) = environment {
+            answer = self.with_guest_environment(answer, &session, &asked)?;
+        }
+        if let Some(asked) = credentials {
+            answer = self.with_guest_credentials(answer, &session, &asked)?;
+        }
+        match denials {
+            None | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => answer = self.with_guest_denials(answer, &session)?,
+            Some(_) => return Err(failure("program/inputs: `denials` is true or false")),
+        }
+        Ok(answer)
     }
+
+    /// The opener may read this guest's declared values, and the guest has a host to read them from.
+    fn declared_reader<'a>(&self, session: &'a GuestSession) -> Result<&'a Arc<dyn super::guest_hosting::GuestHost>, AgentPortFailure> {
+        let held = self.may_spawn_guest("program/inputs")?;
+        if !held.kernel_allows(KernelKind::Declared, None) {
+            return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Denied,
+                "program/inputs: reading a guest's environment, credentials or denials needs the grant kernel: { guest: [declared] }".to_string(),
+            ));
+        }
+        session.host.as_ref().ok_or_else(|| failure("program/inputs: this guest has no host to hold them"))
+    }
+
+    /// `answer` with the credentials the guest's program names: each masked, or the value of the one named.
+    fn with_guest_credentials(&self, answer: Value, session: &GuestSession, asked: &Value) -> Result<Value, AgentPortFailure> {
+        let host = self.declared_reader(session)?;
+        let mut declared = std::collections::BTreeSet::new();
+        let mut computed = std::collections::BTreeSet::new();
+        for schema in session.kernel.registry.schemas.read().values() {
+            for orbital in &schema.orbitals {
+                for reference in &orbital.traits {
+                    let orbital_core_base::schema::types::TraitReference::Inline(definition) = reference else {
+                        computed.insert(format!("{}.{}", orbital.name, reference.trait_name().unwrap_or_default()));
+                        continue;
+                    };
+                    let value = serde_json::to_value(definition).map_err(|error| failure(format!("program/inputs: {error}")))?;
+                    let (named, slots) = orbital_core_base::secrets::declared_credentials_in(&value);
+                    declared.extend(named);
+                    computed.extend(slots.into_iter().map(|slot| format!("{}.{}", orbital.name, slot)));
+                }
+            }
+        }
+        let credentials = match asked {
+            Value::Bool(true) => Value::array(declared.iter().map(|name| masked_entry(name, host.credential_of(name))).collect::<Vec<Value>>()),
+            Value::String(name) if declared.contains(name.as_str()) => record(vec![
+                ("name", Value::string(name.to_string())),
+                ("value", host.credential_of(name).map_or(Value::Null, Value::string)),
+            ]),
+            Value::String(name) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Denied,
+                    format!("program/inputs: the guest's program does not name the credential {}", name.as_str()),
+                ))
+            }
+            _ => return Err(failure("program/inputs: `credentials` is true or a credential's name")),
+        };
+        let mut fields = fields_of(answer);
+        fields.insert("credentials".into(), credentials);
+        fields.insert("computedCredentials".into(), Value::array(computed.into_iter().map(Value::string).collect::<Vec<Value>>()));
+        Ok(Value::object(fields))
+    }
+
+    /// `answer` with every `denied` answer the guest was given, the ones its program handled included.
+    fn with_guest_denials(&self, answer: Value, session: &GuestSession) -> Result<Value, AgentPortFailure> {
+        let host = self.declared_reader(session)?;
+        let mut merged = session.kernel.grants.denials.entries();
+        for (message, count) in host.deferred_denials() {
+            match merged.iter_mut().find(|(seen, _)| *seen == message) {
+                Some((_, total)) => *total += count,
+                None => merged.push((message, count)),
+            }
+        }
+        let denials = merged
+            .into_iter()
+            .map(|(message, count)| record(vec![("message", Value::string(message)), ("count", Value::Number(count as f64))]))
+            .collect::<Vec<Value>>();
+        let mut fields = fields_of(answer);
+        fields.insert("denials".into(), Value::array(denials));
+        Ok(Value::object(fields))
+    }
+
+    /// `answer` with what the guest really holds (`grants`) and its environment: every declared variable masked, or the
+    /// value of the one named. Only an opener holding `kernel: { guest: [declared] }` may read it.
+    fn with_guest_environment(&self, answer: Value, session: &GuestSession, asked: &Value) -> Result<Value, AgentPortFailure> {
+        let host = self.declared_reader(session)?;
+        let declared = session.kernel.grants.os_grants.read().declared();
+        let environment = match asked {
+            Value::Bool(true) => Value::array(
+                declared
+                    .env
+                    .iter()
+                    .map(|name| masked_entry(name, host.environment_of(name)))
+                    .collect::<Vec<Value>>(),
+            ),
+            Value::String(name) if declared.env.iter().any(|n| n.as_str() == name.as_str()) => record(vec![
+                ("name", Value::string(name.to_string())),
+                ("value", host.environment_of(name).map_or(Value::Null, Value::string)),
+            ]),
+            Value::String(name) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Denied,
+                    format!("program/inputs: the guest does not declare the environment variable {}", name.as_str()),
+                ))
+            }
+            _ => return Err(failure("program/inputs: `environment` is true or a variable's name")),
+        };
+        let grants: Value = serde_json::to_value(&declared)
+            .ok()
+            .and_then(|json| serde_json::from_value(json).ok())
+            .unwrap_or(Value::Null);
+        let mut fields = fields_of(answer);
+        fields.insert("environment".into(), environment);
+        fields.insert("grants".into(), grants);
+        Ok(Value::object(fields))
+    }
+}
+
+fn fields_of(answer: Value) -> ValueMap {
+    match answer {
+        Value::Object(map) => (*map).clone(),
+        _ => ValueMap::default(),
+    }
+}
+
+fn record(pairs: Vec<(&str, Value)>) -> Value {
+    let mut fields = ValueMap::default();
+    for (key, value) in pairs {
+        fields.insert(key.into(), value);
+    }
+    Value::object(fields)
+}
+
+/// `{ name, set, tail }`: whether `value` is held and, past 8 characters, its last 4.
+fn masked_entry(name: &str, value: Option<String>) -> Value {
+    let tail: String = match &value {
+        Some(text) if text.chars().count() > 8 => text.chars().skip(text.chars().count() - 4).collect(),
+        _ => String::new(),
+    };
+    record(vec![("name", Value::string(name.to_string())), ("set", Value::Bool(value.is_some())), ("tail", Value::string(tail))])
 }
 
 #[cfg(test)]
