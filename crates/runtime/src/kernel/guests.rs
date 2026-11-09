@@ -126,7 +126,7 @@ pub(crate) fn run_session(
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
     let orbitals = painter_orbitals(&session.kernel, &outcomes);
-    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event))
+    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -202,6 +202,7 @@ fn guest_answer(
     outcomes: &[(String, ProcessEventResult)],
     seed_trait: &str,
     event: &str,
+    access: Option<&super::page_circuit::PageAccessVerdict>,
 ) -> Value {
     let response = EventResponse::from_process_results(outcomes, seed_trait, event);
     let record = |pairs: Vec<(&str, Value)>| {
@@ -265,6 +266,9 @@ fn guest_answer(
     if let Some(rejections) = response.rejections.as_ref().filter(|r| !r.is_empty()) {
         answer.push(("rejections", serde_json::to_value(rejections).map(json_value).unwrap_or(Value::Null)));
     }
+    if let Some(access) = access {
+        answer.push(("access", serde_json::to_value(access).map(json_value).unwrap_or(Value::Null)));
+    }
     record(answer)
 }
 
@@ -314,6 +318,7 @@ struct RoutedPage {
     route: Option<String>,
     mounts: Vec<MountSeed>,
     embedded: std::collections::HashSet<String>,
+    access: super::page_circuit::PageAccessVerdict,
 }
 
 /// The page `route` resolves to in `guest` (`page_circuit`: the `[initial]` or first route page for none).
@@ -325,8 +330,10 @@ fn routed_mounts(
     let circuit = guest
         .page_circuit(None, route)
         .map_err(|e| failure(format!("{op}: {e}")))?;
+    let denied = matches!(circuit.access, super::page_circuit::PageAccessVerdict::Denied { .. });
     Ok(RoutedPage {
-        route: circuit.page.as_ref().and(circuit.route),
+        route: if denied { None } else { circuit.page.as_ref().and(circuit.route) },
+        access: circuit.access,
         mounts: circuit.mounts,
         embedded: circuit.embedded_by.into_iter().collect(),
     })
@@ -461,6 +468,18 @@ impl RuntimeKernel {
             Some(Value::String(_)) => return Err(failure("program/open: `cwd` is for a live guest; a mocked guest has no files of its own")),
             Some(_) => return Err(failure("program/open: `cwd` is a directory path")),
         };
+        let env: Vec<(String, Option<String>)> = match options.as_ref().and_then(|o| o.get("env")) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Object(fields)) => fields
+                .iter()
+                .map(|(name, value)| match value {
+                    Value::Null => Ok((name.to_string(), None)),
+                    Value::String(text) => Ok((name.to_string(), Some(text.to_string()))),
+                    _ => Err(failure("program/open: an `env` value is text, or null for unset")),
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(failure("program/open: `env` is a record of variable names")),
+        };
         let mut granted: Option<OsGrants> = None;
         let mut opener_held: Option<OsGrants> = None;
         if asked_grants.is_some() || asked_arenas.is_some() || keep_declared {
@@ -543,7 +562,13 @@ impl RuntimeKernel {
         if integrations == GuestIntegrations::Mock {
             std::iter::once(&mut schema).chain(lazy_programs.values_mut()).for_each(unbind_stores);
         }
-        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref()));
+        if !env.is_empty() {
+            let held = opener_held.as_ref().ok_or_else(|| failure("program/open: `env` needs the guest grant `declared` or `grants`"))?;
+            if let Some((name, _)) = env.iter().find(|(name, _)| !held.env_allows(name)) {
+                return Err(failure(format!("program/open: `env` names {name}, which the opener holds no grant for")));
+            }
+        }
+        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env));
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {
@@ -609,6 +634,7 @@ impl RuntimeKernel {
             route: resolved,
             mounts: routed,
             embedded,
+            access,
         } = routed_mounts(&guest, route.as_deref(), "program/open")?;
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         for seed in routed {
@@ -646,6 +672,7 @@ impl RuntimeKernel {
             &outcomes,
             &seed_trait,
             "INIT",
+            Some(&access),
         ))
     }
 
@@ -693,7 +720,15 @@ impl RuntimeKernel {
             route: resolved,
             mounts: routed,
             embedded,
+            access,
         } = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
+        if matches!(access, super::page_circuit::PageAccessVerdict::Denied { .. }) {
+            let name = match handle {
+                Value::String(name) => Some(name.as_str()),
+                _ => None,
+            };
+            return Ok(guest_answer(&std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access)));
+        }
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         let fresh: Vec<MountSeed> = {
             let held = session.route.read();
@@ -723,6 +758,7 @@ impl RuntimeKernel {
             &outcomes,
             &seed_trait,
             "INIT",
+            Some(&access),
         ))
     }
 
@@ -748,7 +784,7 @@ impl RuntimeKernel {
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(&session.kernel, &outcomes);
         let seed_trait = outcomes.first().map(|(t, _)| t.clone()).unwrap_or_default();
-        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "");
+        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None);
         // The opener repaints from an item; a pass that painted nothing (a paused clock accumulating) is no item.
         if answer.get("rendered").and_then(Value::as_array).is_none_or(|rendered| rendered.is_empty()) {
             return Ok(GuestTicks::Idle);
@@ -847,7 +883,7 @@ impl RuntimeKernel {
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(guest, &outcomes);
-        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event))
+        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None))
     }
 
     /// The registered traits whose current state handles `event`, in name order.

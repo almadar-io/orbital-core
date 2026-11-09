@@ -38,39 +38,40 @@ impl RuntimeKernel {
                 }
             }
             if let Some(leg) = c.store.take() {
-                let StoreLeg { ask, driver, seed } = *leg;
-                let driven = match self.drive_resumable(driver) {
-                    Ok(progress) => progress,
-                    Err(error) => {
-                        self.observe_dispatch(&c.run, Some(error.to_string()));
-                        return Err(error);
+                let StoreLeg { ask, driver, seed, wait } = *leg;
+                let outcomes = match driver {
+                    None => wait.take_reply().unwrap_or_default(),
+                    Some(driver) => {
+                        let driven = {
+                            let _leg = wait.enter();
+                            self.drive_resumable(driver)
+                        };
+                        match driven {
+                            Err(error) => {
+                                self.observe_dispatch(&c.run, Some(error.to_string()));
+                                return Err(error);
+                            }
+                            Ok(Progress::Await { continuation, requests }) => {
+                                c.pending = requests.clone();
+                                c.store = Some(Box::new(StoreLeg { ask, driver: Some(continuation), seed, wait }));
+                                return Ok(Progress::Await { continuation: c, requests });
+                            }
+                            Ok(Progress::Done(outcomes)) => {
+                                if wait.has_open_work() && !super::store_park::carries_reply(&ask.key, &outcomes) {
+                                    c.store = Some(Box::new(StoreLeg { ask, driver: None, seed, wait }));
+                                    return Ok(Progress::Await { continuation: c, requests: Vec::new() });
+                                }
+                                outcomes
+                            }
+                        }
                     }
                 };
-                match driven {
-                    Progress::Await {
-                        continuation,
-                        requests,
-                    } => {
-                        c.pending = requests.clone();
-                        c.store = Some(Box::new(StoreLeg {
-                            ask,
-                            driver: continuation,
-                            seed,
-                        }));
-                        return Ok(Progress::Await {
-                            continuation: c,
-                            requests,
-                        });
-                    }
-                    Progress::Done(outcomes) => {
-                        let answer = self.store_reply(&ask, &outcomes);
-                        if let Some(origin) = seed {
-                            self.seed_landed(&ask, &answer, &origin);
-                            continue;
-                        }
-                        c.journal.push(Exchange::new(ask.request, answer));
-                    }
+                let answer = self.store_reply(&ask, &outcomes);
+                if let Some(origin) = seed {
+                    self.seed_landed(&ask, &answer, &origin);
+                    continue;
                 }
+                c.journal.push(Exchange::new(ask.request, answer));
             }
             *self.suspended_commit.write() = None;
             // The step committed its transition when it suspended: it replays from the state it left, and a state
@@ -128,10 +129,12 @@ impl RuntimeKernel {
                 if let Some(ask) = end.store_asks.into_iter().next() {
                     match self.store_driver_run(&ask) {
                         Ok(driver) => {
+                            let wait = super::store_park::LegWait::new(&ask.key);
                             c.store = Some(Box::new(StoreLeg {
                                 ask,
-                                driver,
+                                driver: Some(driver),
                                 seed: None,
+                                wait,
                             }))
                         }
                         Err(message) => {
@@ -153,6 +156,7 @@ impl RuntimeKernel {
                 Ok(Flow::More) => {}
                 Ok(Flow::Done) => {
                     self.observe_dispatch(&c.run, None);
+                    super::store_park::offer_reply(&c.run.outcomes);
                     return Ok(Progress::Done(std::mem::take(&mut c.run.outcomes)));
                 }
                 Err(fault) => {
@@ -184,11 +188,10 @@ impl RuntimeKernel {
 
     pub(crate) fn seed_leg_for(&self, origin: String, ask: StoreAsk) -> Option<Box<StoreLeg>> {
         match self.store_driver_run(&ask) {
-            Ok(driver) => Some(Box::new(StoreLeg {
-                ask,
-                driver,
-                seed: Some(origin),
-            })),
+            Ok(driver) => {
+                let wait = super::store_park::LegWait::new(&ask.key);
+                Some(Box::new(StoreLeg { ask, driver: Some(driver), seed: Some(origin), wait }))
+            }
             Err(message) => {
                 tracing::warn!(driver = %ask.driver, %message, "kernel: store seed not sent");
                 if let Some(ensure) = &ask.ensure {

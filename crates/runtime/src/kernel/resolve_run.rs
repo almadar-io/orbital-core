@@ -37,7 +37,11 @@ impl RuntimeKernel {
     ) -> Result<ResolveProgress, DispatchError> {
         let check = |request: &IoRequest, answer: IoAnswer| self.checked_answer(request, answer);
         match continuation.store.as_mut() {
-            Some(leg) => accept_into(&mut leg.driver, replies, &check)?,
+            Some(leg) => {
+                if let Some(driver) = leg.driver.as_mut() {
+                    accept_into(driver, replies, &check)?;
+                }
+            }
             None => continuation
                 .journal
                 .extend(accept_replies(&continuation.pending, replies, &check)?),
@@ -57,8 +61,13 @@ impl RuntimeKernel {
                 }
             }
             let Some(leg) = c.store.take() else { break };
-            let StoreLeg { ask, driver, seed } = *leg;
-            match self.drive_resumable(driver)? {
+            let StoreLeg { ask, driver, seed, wait } = *leg;
+            let driver = driver.expect("a resolve's store leg waits inline, never parked on a reply");
+            let driven = {
+                let _leg = wait.enter();
+                self.drive_resumable(driver)?
+            };
+            match driven {
                 Progress::Await {
                     continuation,
                     requests,
@@ -66,15 +75,20 @@ impl RuntimeKernel {
                     c.pending = requests.clone();
                     c.store = Some(Box::new(StoreLeg {
                         ask,
-                        driver: continuation,
+                        driver: Some(continuation),
                         seed,
+                        wait,
                     }));
                     return Ok(ResolveProgress::Await {
                         continuation: c,
                         requests,
                     });
                 }
-                Progress::Done(outcomes) => {
+                Progress::Done(mut outcomes) => {
+                    if wait.has_open_work() && !super::store_park::carries_reply(&ask.key, &outcomes) {
+                        wait.wait();
+                        outcomes = wait.take_reply().unwrap_or_default();
+                    }
                     let answer = self.store_reply(&ask, &outcomes);
                     match seed {
                         Some(origin) => self.seed_landed(&ask, &answer, &origin),
@@ -98,11 +112,10 @@ impl RuntimeKernel {
             }
             c.journal = end.journal;
             c.store = match self.store_driver_run(&ask) {
-                Ok(driver) => Some(Box::new(StoreLeg {
-                    ask,
-                    driver,
-                    seed: None,
-                })),
+                Ok(driver) => {
+                    let wait = super::store_park::LegWait::new(&ask.key);
+                    Some(Box::new(StoreLeg { ask, driver: Some(driver), seed: None, wait }))
+                }
                 Err(message) => {
                     let answer = Self::store_failed(&ask, message);
                     c.journal.push(Exchange::new(ask.request, answer));

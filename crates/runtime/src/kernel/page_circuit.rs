@@ -3,6 +3,7 @@ use crate::effects::response::MountSeed;
 use orbital_core_base::effect_row::EffectSite;
 use crate::trait_owners::TraitOwners;
 use serde::{Deserialize, Serialize};
+use orbital_core_base::schema::types::PageAccess;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The circuit a client mounts for one page: which page the kernel resolved, what mounts, and the owning
@@ -29,6 +30,26 @@ pub struct PageCircuit {
     pub entities: Vec<String>,
     /// The declared route pages whose pattern matches a strict prefix of the route, shallowest first (the nav-stack cold-load seed).
     pub ancestors: Vec<PageAncestor>,
+    /// Whether this session's viewer may open the page (EXEC-ENDPOINT-3): a denied page mounts nothing.
+    pub access: PageAccessVerdict,
+}
+
+/// The kernel's answer to whether the asking session may open a page.
+#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields, tag = "verdict", rename_all = "camelCase", rename_all_fields = "camelCase"))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "verdict", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum PageAccessVerdict {
+    Admitted {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        viewer: Option<String>,
+    },
+    Denied {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sign_in: Option<String>,
+        return_to: String,
+    },
+    /// A browser kernel that holds no signed-in identity yet: only the server can answer (EXEC-IDENTITY-4).
+    Pending,
 }
 
 /// One ancestor of a route: the concrete prefix and the page declared for it.
@@ -50,6 +71,7 @@ struct RoutePage {
     label: Option<String>,
     is_initial: bool,
     is_not_found: bool,
+    access: Option<PageAccess>,
 }
 
 impl RuntimeKernel {
@@ -70,6 +92,7 @@ impl RuntimeKernel {
                     label: page.label.clone(),
                     is_initial: page.is_initial == Some(true),
                     is_not_found: page.is_not_found == Some(true),
+                    access: page.access,
                 });
             }
         });
@@ -150,6 +173,7 @@ impl RuntimeKernel {
                 traits: Vec::new(),
                 entities: Vec::new(),
                 ancestors: self.route_ancestors(route, &pages),
+                access: PageAccessVerdict::Admitted { viewer: None },
             });
         };
         let owners = TraitOwners::from_kernel(self);
@@ -174,12 +198,14 @@ impl RuntimeKernel {
             .collect();
         let traits: Vec<String> = bound.iter().map(|t| (*t).clone()).collect();
         let entities = self.entities_of(&traits);
+        let access = self.page_access(resolved, route);
+        let mounts = if matches!(access, PageAccessVerdict::Denied { .. }) { Vec::new() } else { self.route_mounts(&resolved.path) };
         Ok(PageCircuit {
             route: Some(route.map_or_else(|| resolved.path.clone(), str::to_string)),
             page: Some(resolved.name.clone()),
             label: resolved.label.clone(),
             not_found,
-            mounts: self.route_mounts(&resolved.path),
+            mounts,
             embedded,
             embedded_by,
             orbital_by_trait,
@@ -187,7 +213,20 @@ impl RuntimeKernel {
             traits,
             entities,
             ancestors: self.route_ancestors(route, &pages),
+            access,
         })
+    }
+
+    fn page_access(&self, page: &RoutePage, route: Option<&str>) -> PageAccessVerdict {
+        let viewer = self.session_identity().map(|subject| subject.to_string());
+        if page.access != Some(PageAccess::Authenticated) || viewer.is_some() {
+            return PageAccessVerdict::Admitted { viewer };
+        }
+        if self.effect_executor.environment().is_client() {
+            return PageAccessVerdict::Pending;
+        }
+        let sign_in = self.registry.schemas.read().values().find_map(|schema| schema.site.as_ref()?.sign_in.clone());
+        PageAccessVerdict::Denied { sign_in, return_to: route.map_or_else(|| page.path.clone(), str::to_string) }
     }
 
     fn route_ancestors(&self, route: Option<&str>, pages: &[RoutePage]) -> Vec<PageAncestor> {

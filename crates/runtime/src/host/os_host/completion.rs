@@ -462,8 +462,19 @@ impl DispatchScope {
             IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
-        self.owners.lock().insert(key.clone(), self.ended.clone());
-        self.ended.keys.lock().push(key.clone());
+        // A store leg's work is awaited by the very dispatch that asked it: its completions wait for this ask to be
+        // registered and for the lane (the step that asked it has parked its TLS state by then), not for that dispatch.
+        let store_leg = crate::kernel::mount_barrier::thread_lineage().filter(|lineage| lineage.store_ask().is_some());
+        let leg_asking = store_leg.as_ref().map(|_| Arc::new(Ended::default()));
+        match &leg_asking {
+            Some(asking) => {
+                self.owners.lock().insert(key.clone(), asking.clone());
+            }
+            None => {
+                self.owners.lock().insert(key.clone(), self.ended.clone());
+                self.ended.keys.lock().push(key.clone());
+            }
+        }
         let answered = inner(request);
         let open = match &answered {
             IoAnswer::ServiceDeferred => true,
@@ -471,10 +482,20 @@ impl DispatchScope {
             _ => false,
         };
         if open {
-            let ticket = if stream { None } else { self.requester.lineage.as_ref().map(|lineage| lineage.ticket()) };
-            self.requesters.lock().insert(key.clone(), (self.requester.clone(), stream, ticket));
+            let requester = match store_leg {
+                Some(leg) => Arc::new(Requester { client_id: self.requester.client_id.clone(), session: self.requester.session.clone(), lineage: Some(leg) }),
+                None => self.requester.clone(),
+            };
+            let ticket = if stream { None } else { requester.lineage.as_ref().map(|lineage| lineage.ticket()) };
+            self.requesters.lock().insert(key.clone(), (requester, stream, ticket));
+        } else if leg_asking.is_some() {
+            self.owners.lock().remove(key);
         } else {
             self.release(key);
+        }
+        if let Some(asking) = leg_asking {
+            *asking.over.lock() = true;
+            asking.ended.notify_all();
         }
         answered
     }
@@ -578,6 +599,13 @@ impl KernelCompletionSink {
             while !*over {
                 owner.ended.wait(&mut over);
             }
+        }
+        let store_leg_work = self.requesters.lock().get(key).is_some_and(|(requester, _, _)| {
+            requester.lineage.as_ref().is_some_and(|lineage| lineage.store_ask().is_some())
+        });
+        if store_leg_work {
+            self.owners.lock().remove(key);
+            kernel.wait_for_lane_turn();
         }
     }
 }

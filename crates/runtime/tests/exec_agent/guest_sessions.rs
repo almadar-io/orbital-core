@@ -1275,3 +1275,74 @@ fn a_guest_holds_an_emit_for_a_page_trait_until_its_init_has_run() {
     assert_eq!(moves, ["INIT", "GOT"], "the counter's GOT waits for its INIT: {opened}");
     assert!(painted(&opened["got"]).contains(&"counted 2".to_string()), "{opened}");
 }
+
+fn gated_shop(sign_in: Option<&str>) -> serde_json::Value {
+    let mut program = shop();
+    if let Some(route) = sign_in {
+        program["site"] = json!({ "signIn": route });
+    }
+    program["orbitals"][0]["pages"][2]["access"] = json!("authenticated");
+    let signer = serde_json::to_value(crate::support::identity::program(&[])).unwrap();
+    let mut orbital = signer["orbitals"][0].clone();
+    orbital["pages"] = json!([{ "name": "SignerBg", "path": "", "protocol": "boot", "traits": [{ "ref": crate::support::identity::SIGNER }] }]);
+    program["orbitals"].as_array_mut().unwrap().push(orbital);
+    program
+}
+
+fn signing_opener() -> RuntimeKernel {
+    opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", "@payload.options", { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "NAV", "effects": [
+            ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route" }, { "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "SIGN", "effects": [
+            ["program/dispatch", "TestSigner.SIGN_IN", { "token": "@payload.token" }, { "guest": "@entity.guest", "emit": emit() }]
+        ] }
+    ]))
+}
+
+#[test]
+fn an_anonymous_guest_is_denied_an_authenticated_page_and_mounts_nothing() {
+    let kernel = signing_opener();
+    shop_event(&kernel, "GO", json!({ "program": gated_shop(Some("/login")), "options": {} }));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/other" }));
+    assert_eq!(after["got"]["access"], json!({ "verdict": "denied", "signIn": "/login", "returnTo": "/other" }), "{after}");
+    assert!(!painted(&after["got"]).contains(&"other ran".to_string()), "a denied page paints nothing: {after}");
+    assert!(after["got"].get("route").is_none(), "a denied navigate names no route: {after}");
+}
+
+#[test]
+fn control_a_public_page_admits_an_anonymous_guest() {
+    let kernel = signing_opener();
+    shop_event(&kernel, "GO", json!({ "program": gated_shop(Some("/login")), "options": {} }));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/list" }));
+    assert_eq!(after["got"]["access"], json!({ "verdict": "admitted" }), "{after}");
+}
+
+#[test]
+fn a_signed_in_guest_is_admitted_to_the_authenticated_page_and_it_mounts() {
+    let kernel = signing_opener();
+    shop_event(&kernel, "GO", json!({ "program": gated_shop(Some("/login")), "options": {} }));
+    shop_event(&kernel, "SIGN", json!({ "token": crate::support::identity::token("u1", json!({})) }));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/other" }));
+    assert_eq!(after["got"]["access"], json!({ "verdict": "admitted", "viewer": "u1" }), "{after}");
+    assert!(painted(&after["got"]).contains(&"other ran".to_string()), "{after}");
+}
+
+#[test]
+fn opening_a_guest_on_an_authenticated_route_denies_it_and_still_runs_boot() {
+    let (_, after) = open_shop(gated_shop(Some("/login")), json!({ "route": "/other" }));
+    assert_eq!(after["got"]["access"], json!({ "verdict": "denied", "signIn": "/login", "returnTo": "/other" }), "{after}");
+    let texts = painted(&after["got"]);
+    assert!(texts.contains(&"boot ran".to_string()) && !texts.contains(&"other ran".to_string()), "{after}");
+}
+
+#[test]
+fn edge_an_app_with_no_sign_in_route_is_denied_with_none_named() {
+    let kernel = signing_opener();
+    shop_event(&kernel, "GO", json!({ "program": gated_shop(None), "options": {} }));
+    let after = shop_event(&kernel, "NAV", json!({ "route": "/other" }));
+    assert_eq!(after["got"]["access"], json!({ "verdict": "denied", "returnTo": "/other" }), "{after}");
+}

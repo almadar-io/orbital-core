@@ -22,7 +22,7 @@ const STDIN_CHUNK: usize = 8 * 1024;
 #[derive(Default)]
 pub struct ProcTable {
     pub(super) children: Arc<Mutex<HashMap<i64, std::process::Child>>>,
-    env: Mutex<HashMap<String, Option<String>>>,
+    pub(super) env: Mutex<HashMap<String, Option<String>>>,
 }
 
 impl ProcTable {

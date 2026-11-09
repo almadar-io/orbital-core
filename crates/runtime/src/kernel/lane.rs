@@ -97,6 +97,10 @@ impl LaneGuard {
         self.turn
     }
 
+    pub(crate) fn is_outermost(&self) -> bool {
+        self.outer
+    }
+
     /// The dispatch parked on an ask: keep the lane for it, detached from any thread. A re-entered guard has
     /// nothing of its own to keep (its holder still runs), so it only steps out. `event` names the parked dispatch.
     pub(crate) fn park(mut self, event: String) -> Option<LaneHold> {

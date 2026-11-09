@@ -729,7 +729,6 @@ fn gated() -> RuntimeKernel {
 }
 
 #[test]
-#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-107 (an access: authenticated page still mounts for an anonymous session; PageAccessHost gates it in React)"]
 fn g_orbital_shell_typescript_107_an_anonymous_session_is_denied_an_authenticated_page_and_mounts_nothing() {
     let k = gated();
     let c = k.page_circuit(None, Some("/account/42")).unwrap();
@@ -741,7 +740,6 @@ fn g_orbital_shell_typescript_107_an_anonymous_session_is_denied_an_authenticate
 }
 
 #[test]
-#[ignore = "red by design: G-ORBITAL-SHELL-TYPESCRIPT-107 (the circuit carries no access verdict for an admitted viewer or a public page)"]
 fn g_orbital_shell_typescript_107_the_circuit_says_admitted_for_a_signed_in_viewer_and_a_public_page() {
     let k = gated();
     k.bind_test_identity(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap());

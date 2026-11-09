@@ -11,6 +11,9 @@ use std::sync::Arc;
 pub struct MountLineage {
     open: Mutex<usize>,
     settled: Condvar,
+    /// The store ask this lineage's work answers (EXEC-STORE-4), and the dispatch that replied to it.
+    store_ask: Option<String>,
+    reply: Mutex<Option<crate::resumable::DispatchOutcomes>>,
 }
 
 impl std::fmt::Debug for MountLineage {
@@ -38,6 +41,33 @@ impl MountLineage {
 
     pub fn open_tickets(&self) -> usize {
         *self.open.lock()
+    }
+
+    /// The lineage of one store ask's driver work.
+    pub fn for_store_ask(key: &str) -> Arc<Self> {
+        Arc::new(Self { store_ask: Some(key.to_string()), ..Self::default() })
+    }
+
+    pub fn store_ask(&self) -> Option<&str> {
+        self.store_ask.as_deref()
+    }
+
+    pub fn offer_reply(&self, outcomes: crate::resumable::DispatchOutcomes) {
+        let _open = self.open.lock();
+        *self.reply.lock() = Some(outcomes);
+        self.settled.notify_all();
+    }
+
+    /// Block until the store ask has a reply or the lineage's work has settled without one.
+    pub fn wait_reply(&self) {
+        let mut open = self.open.lock();
+        while *open > 0 && self.reply.lock().is_none() {
+            self.settled.wait(&mut open);
+        }
+    }
+
+    pub fn take_reply(&self) -> Option<crate::resumable::DispatchOutcomes> {
+        self.reply.lock().take()
     }
 }
 

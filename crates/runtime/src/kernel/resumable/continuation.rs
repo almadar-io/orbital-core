@@ -90,6 +90,21 @@ pub struct DispatchContinuation {
 impl DispatchContinuation {
     pub fn dispatch_id(&self) -> u64 { self.run.dispatch_id() }
 
+    /// The store ask this dispatch is parked on with no host ask open: its driver has ended and owes a reply.
+    pub(crate) fn parked_on_reply(&self) -> Option<&crate::kernel::store_park::LegWait> {
+        let leg = self.store.as_ref()?;
+        match &leg.driver {
+            None => Some(&leg.wait),
+            Some(driver) => driver.parked_on_reply(),
+        }
+    }
+
+    /// The innermost store leg whose host asks are being answered: what they defer is that ask's work.
+    pub(crate) fn answering_leg(&self) -> Option<&crate::kernel::store_park::LegWait> {
+        let leg = self.store.as_ref()?;
+        leg.driver.as_ref().and_then(Self::answering_leg).or(Some(&leg.wait))
+    }
+
     /// The lane turn this parked dispatch holds (EXEC-CONC-0): the token a call made on its behalf carries.
     pub fn turn(&self) -> Option<crate::kernel::LaneTurn> {
         self.lane.as_ref().map(|hold| hold.turn())
@@ -99,7 +114,9 @@ impl DispatchContinuation {
 /// A parked row ask and the driver dispatch that answers it; the driver's own host asks are this dispatch's.
 pub(crate) struct StoreLeg {
     pub(crate) ask: StoreAsk,
-    pub(crate) driver: DispatchContinuation,
+    /// The driver's dispatch; `None` once it has ended and the ask is parked on the reply its deferred work owes.
+    pub(crate) driver: Option<DispatchContinuation>,
+    pub(crate) wait: crate::kernel::store_park::LegWait,
     /// A boot seed of declared `instances` (its registered key): no step asked it, so its answer is checked,
     /// never journaled.
     pub(crate) seed: Option<String>,
@@ -112,7 +129,9 @@ pub(crate) fn accept_into(
     check: &dyn Fn(&IoRequest, IoAnswer) -> IoAnswer,
 ) -> Result<(), ResumeError> {
     if let Some(leg) = c.store.as_mut() {
-        accept_into(&mut leg.driver, replies, check)?;
+        if let Some(driver) = leg.driver.as_mut() {
+            accept_into(driver, replies, check)?;
+        }
     } else {
         let answered = accept_replies(&c.pending, replies, check)?;
         c.journal.extend(answered);

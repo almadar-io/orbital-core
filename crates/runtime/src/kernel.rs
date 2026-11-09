@@ -124,6 +124,7 @@ pub mod dispatch_run;
 pub(crate) mod envelope;
 pub mod inbound;
 pub(crate) mod lane;
+pub(crate) mod store_park;
 pub use lane::LaneTurn;
 pub mod resolve_run;
 pub(crate) use dispatch_run::Fault;
@@ -962,6 +963,11 @@ impl RuntimeKernel {
     /// runs only after the dispatch that asked it has ended (EXEC-CONC-1).
     pub fn wait_for_parked_key(&self, key: &str) {
         self.keyed_parks.wait_settled(key);
+    }
+
+    /// Wait for the dispatch holding the lane now to commit or park, then step aside.
+    pub(crate) fn wait_for_lane_turn(&self) {
+        drop(self.lane.enter(None));
     }
 
     pub fn config(&self) -> &KernelConfig {

@@ -355,10 +355,27 @@ impl RuntimeKernel {
     /// Drive a dispatch entered on `lane`: a dispatch parked on an ask keeps the lane until it commits.
     pub(super) fn drive_entry(
         &self,
-        lane: super::lane::LaneGuard,
-        continuation: DispatchContinuation,
+        mut lane: super::lane::LaneGuard,
+        mut continuation: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        match self.drive_resumable(continuation)? {
+        let driven = loop {
+            match self.drive_resumable(continuation)? {
+                Progress::Await { continuation: parked, requests } if requests.is_empty() && parked.parked_on_reply().is_some() => {
+                    // An in-place nested dispatch cannot give up its holder's lane: its ask ends with no reply.
+                    if lane.is_outermost() {
+                        let wait = parked.parked_on_reply().cloned();
+                        drop(lane);
+                        if let Some(wait) = wait {
+                            wait.wait();
+                        }
+                        lane = self.lane.enter(None)?;
+                    }
+                    continuation = parked;
+                }
+                driven => break driven,
+            }
+        };
+        match driven {
             Progress::Await {
                 mut continuation,
                 requests,

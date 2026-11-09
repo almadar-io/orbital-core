@@ -104,6 +104,19 @@ impl Default for OsHandles {
 }
 
 impl OsHandles {
+    /// What this program instance reads for the environment variable `name`, `None` being unset.
+    pub fn set_env(&self, name: &str, value: Option<String>) {
+        self.process.env.lock().insert(name.to_string(), value);
+    }
+
+    /// The value this program instance reads for the environment variable `name`.
+    pub fn env_value(&self, name: &str) -> Option<String> {
+        if let Some(entry) = self.process.env.lock().get(name) {
+            return entry.clone();
+        }
+        self.anchors.env.get(name).map(str::to_string)
+    }
+
     /// Install the `gpu/` answerer; until one is installed every `gpu/` ask answers `unsupported`.
     pub fn install_gpu(&self, answerer: Arc<dyn orbital_core_base::gpu::GpuAnswerer>) {
         *self.gpu.write() = Some(answerer);

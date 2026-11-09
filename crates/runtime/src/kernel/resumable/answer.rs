@@ -217,7 +217,9 @@ pub(super) fn drive_with(
             Progress::Done(outcomes) => return Ok(outcomes),
             Progress::Await { continuation, requests } => {
                 let context = crate::dispatch_trace::AnswerContext::enter(Some(continuation.dispatch_id()));
+                let leg = continuation.answering_leg().map(|wait| wait.enter());
                 let replies = serve(&requests);
+                drop(leg);
                 drop(context);
                 progress = kernel.resume(continuation, replies)?;
             }

@@ -25,8 +25,9 @@ pub enum GuestIntegrations {
 /// Opens a host for each guest program.
 pub trait GuestHosting: Send + Sync {
     /// A host whose credential source is the opener's under `Live` and holds none under `Mock`. `cwd`, when given, is the
-    /// directory the guest's `cwd` anchor names instead of the opener's (`program/open { cwd }`).
-    fn open(&self, integrations: GuestIntegrations, cwd: Option<&str>) -> Arc<dyn GuestHost>;
+    /// directory the guest's `cwd` anchor names instead of the opener's (`program/open { cwd }`). Each `env` entry is what
+    /// this guest reads for that variable, `None` being unset (`program/open { env }`).
+    fn open(&self, integrations: GuestIntegrations, cwd: Option<&str>, env: &[(String, Option<String>)]) -> Arc<dyn GuestHost>;
 }
 
 /// One guest's host over its own kernel.

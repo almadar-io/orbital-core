@@ -28,6 +28,8 @@ pub const ROWS_WRITTEN: &str = "ROWS_WRITTEN";
 pub const ROWS_INDEXES_ENSURED: &str = "ROWS_INDEXES_ENSURED";
 pub const STORE_UNSUPPORTED: &str = "STORE_UNSUPPORTED";
 pub const STORE_FAILED: &str = "STORE_FAILED";
+/// Every event that answers a store ask: the row replies, a refusal and an ensure's confirmation.
+pub const REPLY_EVENTS: [&str; 8] = [ROW_FOUND, ROWS_LISTED, ROWS_PAGE, ROWS_IDS, ROWS_WRITTEN, ROWS_INDEXES_ENSURED, STORE_UNSUPPORTED, STORE_FAILED];
 
 /// The verb event a driver orbital receives for one row ask.
 #[derive(Debug, Clone, PartialEq)]
