@@ -658,6 +658,75 @@ fn control_a_click_never_reaches_a_listener_of_a_trait_the_control_is_not_inside
     assert!(!painted(&after["got"]).contains(&"Bystander opened".to_string()), "{after}");
 }
 
+/// A kernel whose `GO` opens the diary guest and `READ_GUEST` reads it, with the guest handle kept per session by the test.
+fn session_opener() -> RuntimeKernel {
+    opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "READ_GUEST", "effects": [
+            ["program/inputs", { "guest": "@payload.guest", "state": "Diary" }, { "emit": emit() }]
+        ] }
+    ]))
+}
+
+fn open_in_session(kernel: &RuntimeKernel, session: &str) -> String {
+    let _in_session = kernel.enter_session(session);
+    let payload = serde_json::from_value(json!({ "program": guest() })).unwrap();
+    kernel.dispatch("Opener", None, "GO", payload).unwrap();
+    serde_json::to_value(&kernel.snapshot_trait("Opener", None).entity).unwrap()["guest"].as_str().unwrap().to_string()
+}
+
+fn read_guest(kernel: &RuntimeKernel, session: &str, handle: &str) -> serde_json::Value {
+    let _in_session = kernel.enter_session(session);
+    kernel.dispatch("Opener", None, "READ_GUEST", serde_json::from_value(json!({ "guest": handle })).unwrap()).unwrap();
+    serde_json::to_value(&kernel.snapshot_trait("Opener", None).entity).unwrap()
+}
+
+#[test]
+fn a_guest_ends_with_the_session_that_opened_it() {
+    let kernel = session_opener();
+    let handle = open_in_session(&kernel, "tab-a");
+    kernel.free_session("tab-a");
+    kernel.revive_session("tab-a");
+    let after = read_guest(&kernel, "tab-a", &handle);
+    assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains(&handle)), "{after}");
+}
+
+#[test]
+fn control_ending_one_session_leaves_another_sessions_guest_open() {
+    let kernel = session_opener();
+    let kept = open_in_session(&kernel, "tab-b");
+    open_in_session(&kernel, "tab-a");
+    kernel.free_session("tab-a");
+    let after = read_guest(&kernel, "tab-b", &kept);
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+}
+
+struct AlwaysPending;
+impl orbital_core_runtime::kernel::SessionPending for AlwaysPending {
+    fn pending(&self, _session: &str) -> bool {
+        true
+    }
+}
+
+#[test]
+fn a_guests_ticks_stop_once_the_tab_that_opened_it_is_gone() {
+    let kernel = session_opener();
+    kernel.set_session_pending(Arc::new(AlwaysPending));
+    let stream = kernel.open_session_stream("tab-a");
+    let handle = open_in_session(&kernel, "tab-a");
+    drop(stream);
+    assert!(matches!(kernel.guest_tick_pass(&handle), Ok(orbital_core_runtime::kernel::GuestTicks::Closed)));
+}
+
+#[test]
+fn control_a_guests_ticks_continue_while_its_tab_is_connected() {
+    let kernel = session_opener();
+    kernel.set_session_pending(Arc::new(AlwaysPending));
+    let _stream = kernel.open_session_stream("tab-a");
+    let handle = open_in_session(&kernel, "tab-a");
+    assert!(!matches!(kernel.guest_tick_pass(&handle), Ok(orbital_core_runtime::kernel::GuestTicks::Closed)));
+}
+
 fn paints(name: &str, content: &str) -> serde_json::Value {
     json!({
         "name": name,

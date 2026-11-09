@@ -190,6 +190,7 @@ impl RuntimeKernel {
             run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries: announced }));
             outcomes.extend(self.run_straight_through(run)?);
         }
+        self.declare_boot_mount(route, seeds, &payload);
         outcomes.extend(self.run_straight_through(self.run_of_mount(seeds, entity_id, payload))?);
         Ok(outcomes)
     }
@@ -326,6 +327,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<DispatchRun, KernelError> {
+        self.declare_boot_mount(route, seeds, &payload);
         let mut run = self.run_of_mount(seeds, entity_id, payload);
         if let Some(route) = route {
             let deliveries = self.route_mount_deliveries(route, crumb)?;
@@ -523,6 +525,15 @@ impl RuntimeKernel {
         self.run_of(plans)
     }
 
+    /// A host's boot mount (a server or process kernel, no route, no client mount riding the payload) declares its own seeds, so an earlier seed's
+    /// emit waits for a later seed's lifecycle step (EXEC-SEED-2); a client's mount declares itself through its
+    /// `_awaitingInit` sidecar.
+    fn declare_boot_mount(&self, route: Option<&str>, seeds: &[MountSeed], payload: &Value) {
+        if route.is_none() && payload.get_path("_awaitingInit").is_none() && !self.effect_executor.environment().is_client() {
+            self.mount_traits(seeds.iter().map(|s| s.r#trait.clone()));
+        }
+    }
+
     pub(super) fn run_of_mount(
         &self,
         seeds: &[MountSeed],
@@ -530,9 +541,6 @@ impl RuntimeKernel {
         payload: Value,
     ) -> DispatchRun {
         let targets: Vec<String> = seeds.iter().map(|s| s.r#trait.clone()).collect();
-        // A batch declares its own seeds, so an earlier seed's emit waits for a later seed's lifecycle step (EXEC-SEED-2)
-        // whether or not a viewer declared the mount first (a host's boot mount has none).
-        self.mount_traits(targets.iter().cloned());
         let (payload, awaiting) = take_awaiting_sidecar(payload);
         let mut first = true;
         let mut plans = Vec::new();

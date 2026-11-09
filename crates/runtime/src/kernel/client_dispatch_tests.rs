@@ -1849,3 +1849,50 @@ fn control_client_env_an_emit_nobody_off_the_client_hears_posts_nothing() {
     let dispatch = kernel.dispatch_with_server_leg("App", "Page", None, "TOUCH", Value::Null, None).unwrap();
     assert!(dispatch.server_legs.is_empty());
 }
+
+/// `Worker` is mounted only on `boot` (program-wide); `Viewer` is a `[client]` route trait listening to its `PING`.
+fn program_wide_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "View", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "View", "dispatch": "client",
+                "listens": [{ "event": "PING", "triggers": "PONG", "source": { "kind": "orbital", "orbital": "Jobs", "trait": "Worker" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "PONG" }] }
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Jobs",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Worker", "linkedEntity": "Job",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "PING", { "n": 1 }], ["emit", "NOISE", {}]] }] },
+                "emits": [{ "event": "PING", "scope": "external" }, { "event": "NOISE", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+// EXEC-DIST-9: a program-wide trait's emit reaches every browser only when a client-run trait listens to it.
+#[test]
+fn program_wide_emits_are_the_boot_trait_emits_a_browser_listens_to() {
+    let kernel = server_kernel_with(program_wide_schema());
+    let outcomes = kernel.dispatch("Worker", None, "GO", Value::Null).unwrap();
+    let mut response = kernel.response_for(&outcomes, "Worker", "GO");
+    kernel.stamp_emitted_sources(&mut response);
+    let events: Vec<String> = kernel.program_wide_emits(&response).into_iter().map(|e| e.event).collect();
+    assert_eq!(events, ["PING"], "NOISE is external but no browser listens to it");
+}
+
+#[test]
+fn control_a_route_trait_s_emits_are_not_program_wide() {
+    let kernel = server_kernel_with(program_wide_schema());
+    let outcomes = kernel.dispatch("Viewer", None, "PONG", Value::Null).unwrap();
+    let mut response = kernel.response_for(&outcomes, "Viewer", "PONG");
+    kernel.stamp_emitted_sources(&mut response);
+    assert!(kernel.program_wide_emits(&response).is_empty());
+}

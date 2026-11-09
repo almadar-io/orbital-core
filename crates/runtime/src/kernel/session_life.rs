@@ -25,6 +25,7 @@ struct Life {
 pub(super) struct SessionLives {
     lives: Mutex<HashMap<String, Life>>,
     pending: RwLock<Option<Arc<dyn SessionPending>>>,
+    guests: Arc<RwLock<HashMap<String, guests::GuestSession>>>,
     mounts: Arc<RwLock<mount_ledger::MountLedger>>,
     views: Arc<view_record::ViewRecords>,
     frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
@@ -38,6 +39,7 @@ pub(super) struct SessionLives {
 
 impl SessionLives {
     pub(super) fn new(
+        guests: Arc<RwLock<HashMap<String, guests::GuestSession>>>,
         mounts: Arc<RwLock<mount_ledger::MountLedger>>,
         views: Arc<view_record::ViewRecords>,
         frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
@@ -48,11 +50,12 @@ impl SessionLives {
         themes: Arc<RwLock<HashMap<String, Arc<str>>>>,
         pages: Arc<RwLock<HashMap<String, Arc<str>>>>,
     ) -> Self {
-        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), mounts, views, frames, carried_rows, state_manager, ended, identities, themes, pages }
+        Self { lives: Mutex::new(HashMap::new()), pending: RwLock::new(None), guests, mounts, views, frames, carried_rows, state_manager, ended, identities, themes, pages }
     }
 
     /// Free `session` and mark it ended: a request but a mount to it is refused until a mount revives it.
     pub(super) fn free(&self, session: &str) {
+        self.guests.write().retain(|_, guest| guest.opener_session.as_deref() != Some(session));
         let held = dispatch_scope::drop_session_instances(&self.frames, &self.carried_rows, &self.state_manager, session);
         self.views.drop_session(session);
         self.identities.write().remove(session);
@@ -60,6 +63,11 @@ impl SessionLives {
         self.pages.write().remove(session);
         self.mounts.write().release(session);
         self.ended.write().insert(session.to_string(), held.into_iter().map(String::into_boxed_str).collect());
+    }
+
+    /// Whether every live stream `session` opened has dropped: its tab is gone.
+    pub(super) fn streams_dropped(&self, session: &str) -> bool {
+        self.lives.lock().get(session).is_some_and(|life| life.dropped)
     }
 
     /// Free every session whose streams have all dropped and that is quiet. The freeing happens under the lives lock,

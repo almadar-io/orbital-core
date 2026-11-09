@@ -52,6 +52,8 @@ pub struct GuestSession {
     /// The host a hosted guest runs under (EXEC-CONC-7): its dispatches and mounts go through it.
     pub(crate) host: Option<Arc<dyn super::guest_hosting::GuestHost>>,
     pub(crate) grants: Option<OsGrants>,
+    /// The session that opened the guest; the guest ends with it (EXEC-CONC-7).
+    pub(crate) opener_session: Option<String>,
     arenas: Vec<(i64, Value)>,
     route: Arc<RwLock<GuestRoute>>,
 }
@@ -605,6 +607,7 @@ impl RuntimeKernel {
             source,
             host,
             grants: granted,
+            opener_session: self.thread_session().map(|session| session.to_string()),
             arenas,
             route: Arc::new(RwLock::new(GuestRoute {
                 embedded: embedded.clone(),
@@ -707,6 +710,10 @@ impl RuntimeKernel {
         let Some(session) = self.guests.read().get(handle).cloned() else {
             return Ok(GuestTicks::Closed);
         };
+        // A stream keeps its session alive, so the guest's own must end for a closed tab's session to be freed.
+        if session.opener_session.as_deref().is_some_and(|opener| self.session_lives.streams_dropped(opener)) {
+            return Ok(GuestTicks::Closed);
+        }
         let Some(host) = &session.host else {
             return Err(format!(
                 "program/live: guest {handle} runs in this kernel with no host of its own, so nothing ticks it"
@@ -898,6 +905,7 @@ impl GuestSession {
             source: Some(source),
             host: None,
             grants,
+            opener_session: None,
             arenas: Vec::new(),
             route: Arc::default(),
         }

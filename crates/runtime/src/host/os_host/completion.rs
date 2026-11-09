@@ -598,11 +598,21 @@ impl OsCompletionSink for KernelCompletionSink {
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
         let requester = self.requesters.lock().remove(key).map(|(requester, _, _)| requester).unwrap_or_default();
+        let requester = program_wide_requester(&kernel, site, requester);
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         if let Err(error) = kernel.end_keyed_ask(&site.trait_name, &site.entity_id, key) {
             tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, key, error = %error, "the end of a stream could not settle its row");
         }
     }
+}
+
+/// A completion routed to a trait mounted only on a `boot` endpoint runs in the program session, its one instance's
+/// session, whatever session asked; the asking client still receives its result (EXEC-DIST-9).
+fn program_wide_requester(kernel: &RuntimeKernel, site: &CallSite, requester: Arc<Requester>) -> Arc<Requester> {
+    if requester.session.is_none() || !kernel.program_wide(&site.trait_name) {
+        return requester;
+    }
+    Arc::new(Requester { client_id: requester.client_id.clone(), session: None, lineage: requester.lineage.clone() })
 }
 
 impl KernelCompletionSink {
@@ -643,6 +653,7 @@ impl KernelCompletionSink {
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
         let (requester, _ticket) = self.requester_of(key);
+        let requester = program_wide_requester(&kernel, site, requester);
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         let scope = self.scope(requester.clone());

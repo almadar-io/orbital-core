@@ -13,6 +13,12 @@ impl RuntimeKernel {
         self.mount.write().awaiting.extend(awaiting);
     }
 
+    /// `trait_name` is held in a state a step seeded (`program/step`'s `from`): it is past its lifecycle event, so a
+    /// delivery to it is not held for one (EXEC-SEED-2).
+    pub fn seeded_past_lifecycle(&self, trait_name: &str) {
+        self.mount.write().awaiting.remove(trait_name);
+    }
+
     /// The traits among `traits` that handle a lifecycle event: only those have one to wait for (a mount seeds
     /// exactly them, `mounts_of`), so a trait with none is ready at once and hears its listens.
     fn awaiting_lifecycle<I, S>(&self, traits: I) -> Vec<String>

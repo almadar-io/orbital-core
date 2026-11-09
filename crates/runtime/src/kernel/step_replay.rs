@@ -721,6 +721,9 @@ fn play_step(
     if step["from"].is_string() || seed.is_some() {
         let snapshot = seeded_snapshot(kernel.snapshot_trait(trait_name, None), step["from"].as_str(), seed)?;
         kernel.restore_trait(trait_name, None, snapshot);
+        if step["from"].is_string() {
+            kernel.seeded_past_lifecycle(trait_name);
+        }
     }
     clock.pin(now);
     let payload = match &step["payload"] {

@@ -23,6 +23,12 @@ impl RuntimeKernel {
         guard
     }
 
+    /// Whether `trait_name` is mounted only on a `boot` endpoint: one program-wide instance, stepped in the program
+    /// session whichever session reached it (EXEC-DIST-9).
+    pub fn program_wide(&self, trait_name: &str) -> bool {
+        self.registry.boot_traits.read().contains(trait_name)
+    }
+
     /// Step in the program session from this thread until the guard drops: the deliveries a viewer's dispatch made to
     /// the server's traits run on their one program-wide instance (EXEC-DIST-9).
     pub(super) fn enter_program_session(&self) -> SessionGuard {

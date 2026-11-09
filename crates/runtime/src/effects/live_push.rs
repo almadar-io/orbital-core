@@ -146,6 +146,22 @@ pub struct HostDispatch {
 }
 
 impl LiveBroadcastItem {
+    /// The emits of program-wide traits a browser listens to ([`crate::kernel::RuntimeKernel::program_wide_emits`]): each
+    /// goes to every connection but the request's own (EXEC-DIST-9).
+    pub fn program_wide(emitted: Vec<EmittedEvent>, client_id: Option<&str>) -> Vec<Self> {
+        emitted
+            .into_iter()
+            .map(|emitted| Self {
+                event: emitted.event,
+                payload: emitted.payload,
+                source: emitted.source.unwrap_or_default(),
+                origin_client_id: client_id.map(str::to_string),
+                target: LiveTarget::Peers,
+                dispatch: None,
+            })
+            .collect()
+    }
+
     /// The `persist` effect's success emits of `response`: each goes to every connection but the request's own.
     pub fn persisted(response: &EventResponse, client_id: Option<&str>) -> Vec<Self> {
         response

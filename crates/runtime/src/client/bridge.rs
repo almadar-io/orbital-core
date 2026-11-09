@@ -342,6 +342,7 @@ impl ServerBridge for KernelBridge {
         )
         .map_err(BridgeError::Server)?;
         self.kernel.restore_trait(trait_name, None, snapshot);
+        self.kernel.seeded_past_lifecycle(trait_name);
         Ok(())
     }
 

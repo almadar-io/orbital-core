@@ -500,7 +500,7 @@ pub struct RuntimeKernel {
     /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
     removed_rows: RwLock<Vec<(Option<String>, String)>>,
     /// The guest programs this kernel opened (`program/open`, EXEC-CONC-7), by handle.
-    guests: RwLock<HashMap<String, guests::GuestSession>>,
+    guests: Arc<RwLock<HashMap<String, guests::GuestSession>>>,
     /// The last guest handle number this kernel issued.
     guest_seq: std::sync::atomic::AtomicU64,
     /// The host each guest this kernel opens runs under, when the kernel's own host offers one (EXEC-CONC-7).
@@ -756,7 +756,9 @@ impl RuntimeKernel {
         let introspect = Arc::new(kernel_introspect::StepKernel::new(Arc::clone(&io), Arc::clone(&os_grants)));
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
+        let guests: Arc<RwLock<HashMap<String, guests::GuestSession>>> = Arc::default();
         let session_lives = Arc::new(session_life::SessionLives::new(
+            Arc::clone(&guests),
             Arc::clone(&mount_ledger),
             Arc::clone(&view_records),
             Arc::clone(&frames),
@@ -856,7 +858,7 @@ impl RuntimeKernel {
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
-            guests: RwLock::new(HashMap::new()),
+            guests,
             guest_seq: std::sync::atomic::AtomicU64::new(0),
             guest_hosting: RwLock::new(None),
             renders: Arc::new(RwLock::new(RenderStore::default())),
