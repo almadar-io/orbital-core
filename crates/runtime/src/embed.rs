@@ -447,9 +447,26 @@ impl EmbeddedKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<MountWire, String> {
-        if let Some(route) = route {
-            self.kernel.record_route_page(route)?;
-        }
+        self.dispatch_route_mount_crumbed(route, None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::dispatch_route_mount`] for a route a `(navigate path payload { crumb })` opened: the posted leg carries
+    /// `crumb` beside `route`, so the server's `$MOUNT` delivers it (EXEC-SEED-7).
+    pub fn dispatch_route_mount_crumbed(
+        &self,
+        route: Option<&str>,
+        crumb: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<MountWire, String> {
+        let announced = match route {
+            Some(route) => {
+                self.kernel.record_route_page(route)?;
+                self.announce(route, crumb)?
+            }
+            None => None,
+        };
         let mut dispatched: Vec<(&MountSeed, DispatchWire)> = Vec::new();
         let mut failed = None;
         for seed in seeds {
@@ -477,17 +494,42 @@ impl EmbeddedKernel {
             let mut stateful_legs = self.mount_legs(&dispatched, entity_id, true);
             for posted in [legs.first_mut(), stateful_legs.first_mut()].into_iter().flatten() {
                 posted.leg.route = route.map(str::to_string);
+                posted.leg.crumb = route.and(crumb).map(str::to_string);
             }
             let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire)).into_iter().cloned().collect();
             (legs, stateful_legs, hops)
         };
         Ok(MountWire {
+            announced,
             seeds: dispatched.into_iter().map(|(_, wire)| wire).collect(),
             legs,
             stateful_legs,
             hops,
             failed,
         })
+    }
+
+    /// The browser's own `$MOUNT` for `route` (EXEC-SEED-7): every `[client]` route trait that listens folds against its
+    /// pre-announce frame, and the legs its cascade owes are posted before the mount's.
+    fn announce(&self, route: &str, crumb: Option<&str>) -> Result<Option<DispatchWire>, String> {
+        let Some(dispatch) = self
+            .kernel
+            .announce_with_server_leg(route, crumb, Some(&self.client_id))
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(None);
+        };
+        let orbital = self.owning_orbital(&dispatch.seed.0)?;
+        let mut wire = self.dispatch_wire(orbital, dispatch)?;
+        let browser_run = self.kernel.browser_run_traits();
+        let mut listeners: Vec<String> = Vec::new();
+        for step in &wire.steps {
+            if browser_run.contains(&step.trait_name) && !listeners.contains(&step.trait_name) {
+                listeners.push(step.trait_name.clone());
+            }
+        }
+        wire.fold_seeded = listeners;
+        Ok(Some(wire))
     }
 
     /// The server hops a mount's seeds owe that the host's replay of the mount cannot reach, in seed order: walking back

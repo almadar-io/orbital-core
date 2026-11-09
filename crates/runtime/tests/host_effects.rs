@@ -588,7 +588,7 @@ mod credential_admin_effects {
     }
 
     fn declaring() -> OrbitalSchema {
-        let read = |knob: &str| json!(["hmac/sha256", format!("@config.{knob}"), "x", "hex"]);
+        let read = |knob: &str| json!(["hmac/sha", 256, "credential", format!("@config.{knob}"), "x", "hex"]);
         serde_json::from_value(json!({
             "name": "App",
             "osGrants": { "credentials": ["admin"] },
@@ -766,11 +766,13 @@ mod credential_admin_effects {
             }))
             .unwrap()
         };
-        for (call, name, value, expected) in [
-            (json!(["hash/scrypt", "sk_live_", "@config.salt"]), "SALT_NAME", "00112233445566778899", "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940"),
-            (json!(["hmac/sha256", "@config.salt", "what do ya want for nothing?", "hex"]), "SALT_NAME", "Jefe", "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"),
-            (json!(["hmac/sha256", "@config.salt", "20150830", "hex", "AWS4"]), "SALT_NAME", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "0138c7a6cbd60aa727b2f653a522567439dfb9f3e72b21f9b25941a42f04a7cd"),
-            (json!(["rsa/sign", "@config.salt", "sign me"]), "SALT_NAME", RSA_SIGNING_KEY, RSA_SIGNATURE_OF_SIGN_ME),
+        for (call, name, value, expected, asks) in [
+            (json!(["hash/scrypt", "sk_live_", "@config.salt"]), "SALT_NAME", "00112233445566778899", "010bbcf1a211930bca10afa35c740b1c70dcb058711e165c9918f1137c97b940", true),
+            (json!(["hmac/sha", 256, "credential", "@config.salt", "what do ya want for nothing?", "hex"]), "SALT_NAME", "Jefe", "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", true),
+            (json!(["hmac/sha", 256, "credential", "@config.salt", "20150830", "hex", "text", "AWS4"]), "SALT_NAME", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY", "0138c7a6cbd60aa727b2f653a522567439dfb9f3e72b21f9b25941a42f04a7cd", true),
+            (json!(["hmac/sha", 384, "credential", "@config.salt", "what do ya want for nothing?", "hex"]), "SALT_NAME", "Jefe", "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649", true),
+            (json!(["hmac/sha", 256, "bytes", "SmVmZQ==", "what do ya want for nothing?", "hex"]), "SALT_NAME", "Jefe", "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843", false),
+            (json!(["rsa/sign", "@config.salt", "sign me"]), "SALT_NAME", RSA_SIGNING_KEY, RSA_SIGNATURE_OF_SIGN_ME, true),
         ] {
         let schema = schema_for(call.clone());
         let go = |salt: Option<&'static str>| {
@@ -803,13 +805,15 @@ mod credential_admin_effects {
             (response, seen)
         };
         let (held, seen) = go(Some(value));
-        assert_eq!(seen, vec![(name.to_string(), None)], "{call}");
+        let asked = if asks { vec![(name.to_string(), None)] } else { Vec::new() };
+        assert_eq!(seen, asked, "{call}: a bytes key form never asks the host for a secret");
         let hashed = payload_of(&held, "OK");
         assert_eq!(hashed["hash"], expected, "{call}");
         assert_eq!(hashed["salt"], name, "the program sees the credential's name, never its value");
         assert!(!hashed.to_string().contains(value));
         let (absent, _) = go(None);
-        assert_eq!(payload_of(&absent, "OK")["hash"], Json::Null, "{call}: no value held: the result is null");
+        let unheld = if asks { Json::Null } else { json!(expected) };
+        assert_eq!(payload_of(&absent, "OK")["hash"], unheld, "{call}: no value held: a credential key signs nothing, a bytes key does not need one");
         }
     }
 

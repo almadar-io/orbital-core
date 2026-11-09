@@ -148,7 +148,7 @@ impl RuntimeKernel {
         self.runs_client_traits.store(runs, std::sync::atomic::Ordering::SeqCst);
     }
 
-    pub(crate) fn runs_client_traits(&self) -> bool {
+    pub fn runs_client_traits(&self) -> bool {
         self.runs_client_traits.load(std::sync::atomic::Ordering::SeqCst)
     }
 

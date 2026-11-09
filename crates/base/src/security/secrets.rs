@@ -19,6 +19,7 @@ pub const CREDENTIAL_STATUS_SLOT_INVALID_CODE: &str = "ORB_CREDENTIAL_STATUS_SLO
 pub const SEGMENT_ENCODE_INVALID_CODE: &str = "ORB_OS_SEND_SEGMENT_ENCODE_INVALID";
 pub const SEGMENT_SCOPE_INVALID_CODE: &str = "ORB_OS_SEND_SEGMENT_SCOPE_INVALID";
 pub const CREDENTIAL_PREFIX_INVALID_CODE: &str = "ORB_CREDENTIAL_PREFIX_INVALID";
+pub const CREDENTIAL_KEY_FORM_INVALID_CODE: &str = "ORB_CREDENTIAL_KEY_FORM_INVALID";
 
 /// One breach of the secret-flow rules, located by program path.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +31,8 @@ pub enum SecretFlowViolation {
     SegmentScopeInvalid { path: String },
     /// The `prefix` of a credential operator that is not a literal string.
     CredentialPrefixInvalid { path: String, slot: String },
+    /// The key-form operand of a credential operator that is not one of its literals.
+    CredentialKeyFormInvalid { path: String, slot: String, allowed: String },
     /// An `http` auth credential slot that is not a `secret`-typed knob.
     CredentialNotSecret { path: String, slot: String },
     /// A `secret`-typed knob read anywhere but an auth credential slot.
@@ -43,6 +46,7 @@ impl SecretFlowViolation {
             Self::SegmentEncodeInvalid { .. } => SEGMENT_ENCODE_INVALID_CODE,
             Self::SegmentScopeInvalid { .. } => SEGMENT_SCOPE_INVALID_CODE,
             Self::CredentialPrefixInvalid { .. } => CREDENTIAL_PREFIX_INVALID_CODE,
+            Self::CredentialKeyFormInvalid { .. } => CREDENTIAL_KEY_FORM_INVALID_CODE,
             Self::CredentialNotSecret { .. } => CREDENTIAL_NOT_SECRET_CODE,
             Self::OutsideAuth { .. } => SECRET_OUTSIDE_AUTH_CODE,
         }
@@ -55,6 +59,7 @@ impl SecretFlowViolation {
             | Self::SegmentEncodeInvalid { path }
             | Self::SegmentScopeInvalid { path }
             | Self::CredentialPrefixInvalid { path, .. }
+            | Self::CredentialKeyFormInvalid { path, .. }
             | Self::CredentialStatusSlotInvalid { path } => path,
         }
     }
@@ -81,6 +86,9 @@ impl SecretFlowViolation {
             Self::CredentialPrefixInvalid { slot, .. } => {
                 format!("the `prefix` of `{slot}` is a literal string; a computed prefix would put program data in the key")
             }
+            Self::CredentialKeyFormInvalid { slot, allowed, .. } => {
+                format!("the key form of `{slot}` is one of the literals {allowed}; a computed form would leave the key's source unstated")
+            }
             Self::OutsideAuth { .. } => {
                 "a `secret`-typed knob is read outside an `http` auth credential slot".to_string()
             }
@@ -98,6 +106,7 @@ impl SecretFlowViolation {
             Self::SegmentEncodeInvalid { .. } => "Write the encode as the literal \"base64\", \"uri\" or \"form\"",
             Self::SegmentScopeInvalid { .. } => "Write the scope as the literal \"app\" or \"user\"",
             Self::CredentialPrefixInvalid { .. } => "Write the prefix as a literal string, for example \"AWS4\"",
+            Self::CredentialKeyFormInvalid { .. } => "Write the key form as the literal \"credential\" (a secret knob names the key) or \"bytes\" (the key is a value)",
             Self::OutsideAuth { .. } => {
                 "Secrets are credential names the host resolves; use them only in `http` auth"
             }
@@ -275,6 +284,15 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
             out.push(SecretFlowViolation::CredentialNotSecret {
                 path: path.to_string(),
                 slot: slot.to_string(),
+            });
+        }
+    });
+    each_operator_key_form(expr, &mut |slot, form, operand| {
+        if !matches!(operand, Value::String(text) if form.allowed.contains(&text.as_str())) {
+            out.push(SecretFlowViolation::CredentialKeyFormInvalid {
+                path: path.to_string(),
+                slot: slot.to_string(),
+                allowed: form.allowed.join(", "),
             });
         }
     });
@@ -523,21 +541,45 @@ pub struct CredentialOperand {
     pub slot: &'static str,
     /// The index of the optional literal `prefix` put before the credential value, when the operator takes one.
     pub prefix: Option<usize>,
+    /// The literal operand that says whether `operand` is a credential slot, for an operator that also takes its key as a value.
+    pub when: Option<KeyForm>,
+}
+
+/// A key-form operand of a credential operator: the literal at `operand` is one of `allowed`, and `operand` of the
+/// [`CredentialOperand`] is a credential slot only when it is `credential`.
+pub struct KeyForm {
+    pub operand: usize,
+    pub credential: &'static str,
+    pub allowed: &'static [&'static str],
+}
+
+impl CredentialOperand {
+    /// Whether `operand` of a call form is a credential slot: always without a key form, else when the key-form
+    /// operand (`literal_at` reads the call form's literal operand) is the credential one.
+    pub fn applies<'a>(&self, literal_at: impl Fn(usize) -> Option<&'a str>) -> bool {
+        self.when.as_ref().is_none_or(|form| literal_at(form.operand) == Some(form.credential))
+    }
 }
 
 /// Every operator whose operand is a credential slot (EXEC-SECRET: the host resolves the name at the boundary, never a
 /// program value, never journaled). The kernel, the secret-flow rules and the credential declarations read this one table.
 pub const CREDENTIAL_OPERATORS: &[CredentialOperand] = &[
-    CredentialOperand { operator: "hash/scrypt", operand: 2, slot: "hash/scrypt.salt", prefix: None },
-    CredentialOperand { operator: "hmac/sha256", operand: 1, slot: "hmac/sha256.key", prefix: Some(4) },
-    CredentialOperand { operator: "ecdsa/p256-sign", operand: 1, slot: "ecdsa/p256-sign.key", prefix: None },
-    CredentialOperand { operator: "rsa/sign", operand: 1, slot: "rsa/sign.key", prefix: None },
-    CredentialOperand { operator: "rsa-pss/sign", operand: 1, slot: "rsa-pss/sign.key", prefix: None },
-    CredentialOperand { operator: "ecdsa/p384-sign", operand: 1, slot: "ecdsa/p384-sign.key", prefix: None },
-    CredentialOperand { operator: "ed25519/sign", operand: 1, slot: "ed25519/sign.key", prefix: None },
-    CredentialOperand { operator: "hash/pbkdf2", operand: 1, slot: "hash/pbkdf2.password", prefix: None },
-    CredentialOperand { operator: "hash/md5-credential", operand: 1, slot: "hash/md5-credential.credential", prefix: None },
-    CredentialOperand { operator: "credential/byte-length", operand: 1, slot: "credential/byte-length.credential", prefix: None },
+    CredentialOperand { operator: "hash/scrypt", operand: 2, slot: "hash/scrypt.salt", prefix: None, when: None },
+    CredentialOperand {
+        operator: "hmac/sha",
+        operand: 3,
+        slot: "hmac/sha.key",
+        prefix: Some(7),
+        when: Some(KeyForm { operand: 2, credential: "credential", allowed: &["credential", "bytes"] }),
+    },
+    CredentialOperand { operator: "ecdsa/p256-sign", operand: 1, slot: "ecdsa/p256-sign.key", prefix: None, when: None },
+    CredentialOperand { operator: "rsa/sign", operand: 1, slot: "rsa/sign.key", prefix: None, when: None },
+    CredentialOperand { operator: "rsa-pss/sign", operand: 1, slot: "rsa-pss/sign.key", prefix: None, when: None },
+    CredentialOperand { operator: "ecdsa/p384-sign", operand: 1, slot: "ecdsa/p384-sign.key", prefix: None, when: None },
+    CredentialOperand { operator: "ed25519/sign", operand: 1, slot: "ed25519/sign.key", prefix: None, when: None },
+    CredentialOperand { operator: "hash/pbkdf2", operand: 1, slot: "hash/pbkdf2.password", prefix: None, when: None },
+    CredentialOperand { operator: "hash/md5-credential", operand: 1, slot: "hash/md5-credential.credential", prefix: None, when: None },
+    CredentialOperand { operator: "credential/byte-length", operand: 1, slot: "credential/byte-length.credential", prefix: None, when: None },
 ];
 
 /// The slot name of a credential segment of an `os/send` payload in a [`SecretFlowViolation::CredentialNotSecret`].
@@ -611,25 +653,52 @@ fn each_os_send_segment<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'a Value)) {
     }
 }
 
-/// The credential operand of a call form whose head is in [`CREDENTIAL_OPERATORS`].
-pub fn credential_operand<'a>(items: &'a [Value]) -> Option<(&'static str, &'a Value)> {
+/// The entry of [`CREDENTIAL_OPERATORS`] whose operand is a credential slot in this call form.
+fn credential_entry(items: &[Value]) -> Option<&'static CredentialOperand> {
     let head = items.first().and_then(Value::as_str)?;
-    let entry = CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head)?;
+    CREDENTIAL_OPERATORS
+        .iter()
+        .find(|entry| entry.operator == head && entry.applies(|index| items.get(index).and_then(Value::as_str)))
+}
+
+/// The credential operand of a call form whose head is in [`CREDENTIAL_OPERATORS`] and whose key form, if it has one, is `credential`.
+pub fn credential_operand<'a>(items: &'a [Value]) -> Option<(&'static str, &'a Value)> {
+    let entry = credential_entry(items)?;
     items.get(entry.operand).map(|operand| (entry.slot, operand))
 }
 
 fn credential_operand_index(items: &[Value]) -> Option<usize> {
-    let head = items.first().and_then(Value::as_str)?;
-    CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head).map(|entry| entry.operand)
+    credential_entry(items).map(|entry| entry.operand)
+}
+
+/// Every key-form operand of every operator in [`CREDENTIAL_OPERATORS`] in `expr`, with its slot name and the literals allowed.
+fn each_operator_key_form<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'static str, &'static KeyForm, &'a Value)) {
+    match expr {
+        Value::Array(items) => {
+            let head = items.first().and_then(Value::as_str);
+            for entry in CREDENTIAL_OPERATORS.iter().filter(|entry| Some(entry.operator) == head) {
+                if let Some((form, operand)) = entry.when.as_ref().and_then(|form| Some((form, items.get(form.operand)?))) {
+                    visit(entry.slot, form, operand);
+                }
+            }
+            for item in items {
+                each_operator_key_form(item, visit);
+            }
+        }
+        Value::Object(map) => {
+            for value in map.values() {
+                each_operator_key_form(value, visit);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Every `prefix` operand of every operator in [`CREDENTIAL_OPERATORS`] in `expr`, with its slot name.
 fn each_operator_prefix<'a>(expr: &'a Value, visit: &mut dyn FnMut(&'static str, &'a Value)) {
     match expr {
         Value::Array(items) => {
-            let head = items.first().and_then(Value::as_str);
-            let entry = CREDENTIAL_OPERATORS.iter().find(|entry| Some(entry.operator) == head);
-            if let Some((entry, prefix)) = entry.and_then(|entry| Some((entry, items.get(entry.prefix?)?))) {
+            if let Some((entry, prefix)) = credential_entry(items).and_then(|entry| Some((entry, items.get(entry.prefix?)?))) {
                 visit(entry.slot, prefix);
             }
             for item in items {
@@ -1177,7 +1246,11 @@ mod tests {
         for entry in CREDENTIAL_OPERATORS {
             let call = |operand: &str| {
                 let mut items = vec![json!(entry.operator)];
-                items.extend((1..=entry.operand.max(2)).map(|i| if i == entry.operand { json!(operand) } else { json!("@payload.m") }));
+                items.extend((1..=entry.operand.max(2)).map(|i| match &entry.when {
+                    _ if i == entry.operand => json!(operand),
+                    Some(form) if i == form.operand => json!(form.credential),
+                    _ => json!("@payload.m"),
+                }));
                 json!([["let", [["v", Value::Array(items)]], ["emit", "OK", { "v": "@v" }]]])
             };
             let op = entry.operator;
@@ -1192,15 +1265,32 @@ mod tests {
             assert_eq!(declared.len(), 1, "{op}: the credential the slot names is declared");
             assert_eq!(declared[0].env_var, "SLOT_CREDENTIAL");
         }
-        let leaked = json!([["hmac/sha256", "@config.apiKey", "@config.apiKey", "hex"]]);
+        let leaked = json!([["hmac/sha", 256, "credential", "@config.apiKey", "@config.apiKey", "hex"]]);
         assert_eq!(codes(&program(config(), leaked)), vec![SECRET_OUTSIDE_AUTH_CODE], "the secret as the message leaks it");
-        let control = json!([["hmac/sha256", "@config.apiKey", "@payload.m", "hex"]]);
+        let control = json!([["hmac/sha", 256, "credential", "@config.apiKey", "@payload.m", "hex"]]);
         assert!(codes(&program(config(), control)).is_empty());
     }
 
     #[test]
+    fn hmac_sha_key_form_is_a_literal_and_a_bytes_key_is_never_a_secret_knob() {
+        let call = |form: Value, key: Value| json!([["let", [["v", ["hmac/sha", 256, form, key, "@payload.m", "hex"]]], ["emit", "OK", { "v": "@v" }]]]);
+        assert!(codes(&program(config(), call(json!("bytes"), json!("@payload.k")))).is_empty(), "a bytes key is a value, not a credential slot");
+        assert!(codes(&program(config(), call(json!("bytes"), json!("SmVmZQ==")))).is_empty());
+        assert!(codes(&program(config(), call(json!("credential"), json!("@config.apiKey")))).is_empty(), "control: a secret knob is the credential key");
+        assert_eq!(
+            codes(&program(config(), call(json!("bytes"), json!("@config.apiKey")))),
+            vec![SECRET_OUTSIDE_AUTH_CODE],
+            "a credential value as a bytes key would become program data"
+        );
+        assert_eq!(codes(&program(config(), call(json!("credential"), json!("@payload.k")))), vec![CREDENTIAL_NOT_SECRET_CODE]);
+        for bad in [json!("base64"), json!("Credential"), json!("@payload.form"), json!(7), json!(null)] {
+            assert_eq!(codes(&program(config(), call(bad.clone(), json!("@payload.k")))), vec![CREDENTIAL_KEY_FORM_INVALID_CODE], "{bad}");
+        }
+    }
+
+    #[test]
     fn a_credential_operator_prefix_is_a_literal_string_and_nothing_else() {
-        let call = |prefix: Value| json!([["let", [["v", ["hmac/sha256", "@config.apiKey", "@payload.m", "hex", prefix]]], ["emit", "OK", { "v": "@v" }]]]);
+        let call = |prefix: Value| json!([["let", [["v", ["hmac/sha", 256, "credential", "@config.apiKey", "@payload.m", "hex", "text", prefix]]], ["emit", "OK", { "v": "@v" }]]]);
         for ok in ["AWS4", ""] {
             assert!(codes(&program(config(), call(json!(ok)))).is_empty(), "{ok:?}");
         }

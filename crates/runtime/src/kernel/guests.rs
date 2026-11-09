@@ -9,6 +9,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use super::guest_hosting::GuestIntegrations;
 use super::lazy::{LazyProgram, LazySource};
 use super::RuntimeKernel;
 use crate::config::KernelConfig;
@@ -265,6 +266,46 @@ fn guest_answer(
     record(answer)
 }
 
+/// The client a guest's page is mounted under in the guest's own mount ledger (EXEC-TICK-6): the opener paints that page,
+/// so its traits and the traits it embeds hold their ticks while it is the guest's page, and no others.
+const GUEST_VIEWER: &str = "guest-viewer";
+
+/// `page` (and every trait it embeds) is now the guest's viewed page: the ledger holds exactly those traits.
+/// A guest opened with mocked integrations binds no store driver: every row it reads or writes is its own (EXEC-STORE-4).
+fn unbind_stores(schema: &mut OrbitalSchema) {
+    schema.store = None;
+    for orbital in schema.orbitals.iter_mut() {
+        for entity in std::iter::once(&mut orbital.entity).chain(orbital.auxiliary_entities.iter_mut().flatten()) {
+            if let orbital_core_base::schema::types::EntityRef::Inline(def) = entity {
+                def.store = None;
+            }
+        }
+    }
+}
+
+fn view_page(guest: &RuntimeKernel, page: &[String], embedded: &std::collections::HashSet<String>) {
+    guest.release_client(GUEST_VIEWER);
+    let mut by_orbital: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for name in page.iter().chain(embedded.iter()) {
+        if let Some(orbital) = guest.orbital_of_trait(name) {
+            by_orbital.entry(orbital).or_default().push(name.clone());
+        }
+    }
+    for (orbital, traits) in by_orbital {
+        guest.mount_client(GUEST_VIEWER, &orbital, traits);
+    }
+}
+
+/// What one tick pass of a guest found (`program/live { kind: "guest" }`).
+pub enum GuestTicks {
+    /// The pass painted something: the answer, shaped as a `program/dispatch` answer.
+    Painted(Value),
+    /// Nothing was due, or what ran painted nothing.
+    Idle,
+    /// The guest is closed.
+    Closed,
+}
+
 /// The page a guest route resolves to: the path it resolved to (none when no page matched), its mounts and every trait
 /// another trait on it embeds (`@trait.X`), listed on the page or not: those paint into the embedding trait, never a slot.
 struct RoutedPage {
@@ -401,6 +442,17 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let integrations = match options.as_ref().and_then(|o| o.get("integrations")) {
+            None | Some(Value::Null) => GuestIntegrations::Live,
+            Some(Value::String(word)) if word.as_str() == "live" => GuestIntegrations::Live,
+            Some(Value::String(word)) if word.as_str() == "mock" => GuestIntegrations::Mock,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `integrations` is \"live\" or \"mock\"",
+                ))
+            }
+        };
         let mut granted: Option<OsGrants> = None;
         let mut opener_held: Option<OsGrants> = None;
         if asked_grants.is_some() || asked_arenas.is_some() || keep_declared {
@@ -468,7 +520,10 @@ impl RuntimeKernel {
         }
         let carries_lazy = carried.is_some();
         let mut lazy_programs = carried.unwrap_or_default();
-        let host = self.guest_hosting().map(|hosting| hosting.open());
+        if integrations == GuestIntegrations::Mock {
+            std::iter::once(&mut schema).chain(lazy_programs.values_mut()).for_each(unbind_stores);
+        }
+        let host = self.guest_hosting().map(|hosting| hosting.open(integrations));
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {
@@ -538,6 +593,7 @@ impl RuntimeKernel {
             }
         }
         let outcomes = mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?;
+        view_page(&guest, &page, &embedded);
         let orbitals = painter_orbitals(&guest, &outcomes);
         let handle = format!(
             "guest-{}",
@@ -622,6 +678,7 @@ impl RuntimeKernel {
                 .collect()
         };
         let outcomes = mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?;
+        view_page(guest, &page, &embedded);
         let orbitals = painter_orbitals(guest, &outcomes);
         {
             let mut held = session.route.write();
@@ -642,6 +699,32 @@ impl RuntimeKernel {
             &seed_trait,
             "INIT",
         ))
+    }
+
+    /// `program/live { kind: "guest", guest }`, polled by the host's stream: one tick pass of the hosted guest `handle`
+    /// (EXEC-DIST-14). A guest without a host of its own has no clock to tick on and is refused.
+    pub fn guest_tick_pass(&self, handle: &str) -> Result<GuestTicks, String> {
+        let Some(session) = self.guests.read().get(handle).cloned() else {
+            return Ok(GuestTicks::Closed);
+        };
+        let Some(host) = &session.host else {
+            return Err(format!(
+                "program/live: guest {handle} runs in this kernel with no host of its own, so nothing ticks it"
+            ));
+        };
+        let outcomes = host.tick_pass()?;
+        if outcomes.is_empty() {
+            return Ok(GuestTicks::Idle);
+        }
+        let embedded = session.route.read().embedded.clone();
+        let orbitals = painter_orbitals(&session.kernel, &outcomes);
+        let seed_trait = outcomes.first().map(|(t, _)| t.clone()).unwrap_or_default();
+        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "");
+        // The opener repaints from an item; a pass that painted nothing (a paused clock accumulating) is no item.
+        if answer.get("rendered").and_then(Value::as_array).is_none_or(|rendered| rendered.is_empty()) {
+            return Ok(GuestTicks::Idle);
+        }
+        Ok(GuestTicks::Painted(answer))
     }
 
     /// `program/close guest`: end the guest; `{ closed: true }`.

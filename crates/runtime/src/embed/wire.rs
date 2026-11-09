@@ -112,6 +112,9 @@ pub struct MountLegWire {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MountWire {
+    /// The browser's own `$MOUNT` for the route it opens, to the `[client]` route traits that listen (EXEC-SEED-7): it ran
+    /// before the seeds, and its legs are posted before the mount legs, on every topology. Absent when none listens.
+    pub announced: Option<DispatchWire>,
     pub seeds: Vec<DispatchWire>,
     /// For a host that carries the circuit state (stateless): a leg per orbital whose seeds delegated effects.
     pub legs: Vec<MountLegWire>,

@@ -1393,3 +1393,73 @@ fn control_a_settled_mount_whose_seed_emits_straight_to_the_server_trait_posts_n
     let posts = bridge.posts.lock().clone();
     assert!(posts.iter().all(|(_, e)| e != "LOAD"), "the replay of Link reaches Data itself: {posts:?}");
 }
+
+/// G-ORBITAL-CORE-146 + EXEC-SEED-7: the native client kernel delivers a route's `$MOUNT` to its `[client]` route
+/// listeners before the seeds, and posts the server work their cascade reaches before the mount leg.
+fn mount_announce_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "Trail",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Docs",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Nav", "dispatch": "client", "linkedEntity": "Trail",
+                  "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+                  "emits": [{ "event": "WANT", "scope": "external" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "seen" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "seen", "to": "seen", "event": "INIT" },
+                        { "from": "idle", "to": "seen", "event": "SEEN", "guard": ["=", "@payload.crumb", "Seven"], "effects": [["emit", "WANT", {}]] }] } },
+                { "name": "Data", "linkedEntity": "Person",
+                  "listens": [{ "event": "WANT", "triggers": "LOAD", "source": { "kind": "trait", "trait": "Nav" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["fetch", "Person", {}]] },
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Person", {}]] }] } }
+            ],
+            "pages": [{ "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "Nav" }, { "ref": "Data" }] }]
+        }, {
+            "name": "Trails",
+            "entity": { "name": "Trail", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap()
+}
+
+fn mount_seeds() -> Vec<crate::effects::response::MountSeed> {
+    ["Nav", "Data"]
+        .into_iter()
+        .map(|t| crate::effects::response::MountSeed { r#trait: t.to_string(), event: crate::effects::response::LifecycleEvent::Init })
+        .collect()
+}
+
+#[test]
+fn g_orbital_core_146_a_native_client_mount_announces_to_its_client_listeners_and_posts_their_work_first() {
+    let server = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse::success("")), Ok(EventResponse::success(""))]));
+    let kernel = ClientKernel::new(mount_announce_schema(), Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    kernel.remount(["Nav", "Data"]);
+    let begun = kernel.begin_route_mount_crumbed(Some("/docs/7"), Some("Seven"), &mount_seeds(), Value::Null).unwrap();
+    let (first, local) = begun.locals().next().unwrap();
+    assert_eq!((first, local.states.get("Nav").map(String::as_str)), ("Nav", Some("seen")), "the announce paints first");
+    kernel.settle_mount(&begun).unwrap();
+    let calls = server.calls.lock();
+    let posted: Vec<(Option<&str>, &str, Option<&str>)> =
+        calls.iter().map(|c| (c.target_trait.as_deref(), c.event.as_str(), c.route.as_deref())).collect();
+    assert_eq!(posted.first().copied(), Some((Some("Data"), "LOAD", None)), "the announce's server work leaves before the mount");
+    assert_eq!(posted.get(1).map(|p| p.2), Some(Some("/docs/7")), "the mount leg still names the route for the host's listeners");
+}
+
+#[test]
+fn control_a_native_client_mount_naming_no_route_announces_nothing() {
+    let server = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse::success(""))]));
+    let kernel = ClientKernel::new(mount_announce_schema(), Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    kernel.remount(["Nav", "Data"]);
+    let begun = kernel.begin_route_mount_crumbed(None, None, &mount_seeds(), Value::Null).unwrap();
+    assert_eq!(begun.locals().map(|(t, _)| t).collect::<Vec<_>>(), ["Nav", "Data"], "only the seeds paint");
+    kernel.settle_mount(&begun).unwrap();
+    assert!(server.calls.lock().iter().all(|c| c.event != "LOAD"), "no $MOUNT ran, so nothing asked Data to load");
+}

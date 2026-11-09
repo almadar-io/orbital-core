@@ -1041,3 +1041,82 @@ fn control_a_client_trait_on_no_route_is_the_hosts_and_posts_no_hop() {
         assert!(mount.hops.is_empty(), "{order:?}: {:?}", mount.hops);
     }
 }
+
+// G-ORBITAL-CORE-146 + EXEC-SEED-7: the host leaves a route mount's `$MOUNT` to a `[client]` route trait to the browser
+// (EXEC-ENDPOINT-3a), so the browser kernel delivers it itself, before the seeds; a server trait's stays the host's.
+
+fn mount_announce_schema() -> OrbitalSchema {
+    let listens_mount = |name: &str, mode: Option<&str>, effects: serde_json::Value| {
+        let mut t = json!({
+            "name": name, "linkedEntity": "Trail",
+            "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+            "emits": [{ "event": "WANT", "scope": "external" }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }, { "name": "seen" }],
+                "transitions": [
+                    { "from": "idle", "to": "idle", "event": "INIT" },
+                    { "from": "seen", "to": "seen", "event": "INIT" },
+                    { "from": "idle", "to": "seen", "event": "SEEN", "guard": ["=", "@payload.page", "Doc"], "effects": effects }] } });
+        if let Some(mode) = mode {
+            t["dispatch"] = json!(mode);
+        }
+        t
+    };
+    serde_json::from_value(json!({
+        "name": "trail",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Docs",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                listens_mount("Nav", Some("client"), json!([])),
+                listens_mount("Pusher", Some("client"), json!([["emit", "WANT", {}]])),
+                listens_mount("Watch", None, json!([])),
+                { "name": "Data", "linkedEntity": "Person",
+                  "listens": [{ "event": "WANT", "triggers": "LOAD", "source": { "kind": "trait", "trait": "Pusher" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["fetch", "Person", {}]] },
+                        { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Person", {}]] }] } }
+            ],
+            "pages": [{ "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "Nav" }, { "ref": "Pusher" }, { "ref": "Watch" }, { "ref": "Data" }] }]
+        }, {
+            "name": "Trails",
+            "entity": { "name": "Trail", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap()
+}
+
+fn announce_mount(route: Option<&str>) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(mount_announce_schema(), "c1").unwrap();
+    let order = ["Nav", "Pusher", "Watch", "Data"];
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    k.dispatch_route_mount_crumbed(route, Some("Seven"), &seeds, None, Value::Null).unwrap()
+}
+
+#[test]
+fn g_orbital_core_146_a_browser_kernel_delivers_mount_to_the_client_route_traits_it_runs() {
+    let mount = announce_mount(Some("/docs/7"));
+    let announced = mount.announced.expect("the browser kernel announced the route");
+    assert_eq!(announced.response.states.get("Nav").map(String::as_str), Some("seen"), "the [client] listener ran with the page payload");
+    assert_eq!(announced.response.states.get("Pusher").map(String::as_str), Some("seen"));
+    let targets: Vec<(Option<String>, String)> = announced.server_legs.iter().map(|r| (r.leg.target_trait.clone(), r.leg.event.clone())).collect();
+    assert_eq!(targets, vec![(Some("Data".to_string()), "LOAD".to_string())], "the server work a [client] listener's emit reaches is posted");
+    let nav = mount.seeds.iter().find(|w| w.seed.trait_name == "Nav").unwrap();
+    assert_eq!(nav.response.states.get("Nav").map(String::as_str), Some("seen"), "the seed ran after the announce, from the state it left");
+}
+
+#[test]
+fn control_a_server_trait_mount_stays_the_hosts_and_a_mount_naming_no_route_announces_nothing() {
+    let mount = announce_mount(Some("/docs/7"));
+    let announced = mount.announced.expect("announced");
+    assert!(!announced.response.states.contains_key("Watch"), "the server listener is not delivered in the browser");
+    let first = mount.legs.first().expect("Data's INIT posts the mount leg");
+    assert_eq!(first.leg.route.as_deref(), Some("/docs/7"), "the posted leg names the route, so the host announces to Watch");
+    assert_eq!(first.leg.crumb.as_deref(), Some("Seven"));
+    assert!(announce_mount(None).announced.is_none(), "a mount naming no route delivers no $MOUNT");
+}

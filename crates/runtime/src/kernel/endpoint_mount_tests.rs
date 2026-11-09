@@ -559,6 +559,86 @@ fn edge_a_route_no_page_matches_delivers_no_mount() {
     assert_eq!(ran(&outcomes), ["Reader:INIT"]);
 }
 
+// EXEC-SEED-7: a route mount's `$MOUNT` carries the page's declared ancestors, its declared label, and the crumb of the
+// navigate that opened the route, so a std atom can keep the navigation trail without the host deciding.
+
+fn nav_mount_kernel() -> RuntimeKernel {
+    let watcher = serde_json::json!({
+        "name": "Trail", "linkedEntity": "Note",
+        "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "SEEN" }]
+        }
+    });
+    entity_kernel(serde_json::json!([{
+        "name": "Main", "entity": entity_json("Note", &[]),
+        "traits": [watcher, linked_trait("Reader", "Note", serde_json::json!([["fetch", "Note"]]))],
+        "pages": [
+            { "name": "Home", "path": "/", "traits": [{ "ref": "Reader" }] },
+            { "name": "Docs", "path": "/docs", "label": "Documents", "traits": [{ "ref": "Reader" }] },
+            { "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "Reader" }] }
+        ]
+    }]))
+}
+
+fn nav_mount_kernel_unlabeled() -> RuntimeKernel {
+    entity_kernel(serde_json::json!([{
+        "name": "Main", "entity": entity_json("Note", &[]),
+        "traits": [{
+            "name": "Trail", "linkedEntity": "Note",
+            "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "SEEN" }] }
+        }, linked_trait("Reader", "Note", serde_json::json!([["fetch", "Note"]]))],
+        "pages": [
+            { "name": "Docs", "path": "/docs", "traits": [{ "ref": "Reader" }] },
+            { "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "Reader" }] }
+        ]
+    }]))
+}
+
+fn mount_payload(k: &RuntimeKernel, route: &str, crumb: Option<&str>) -> serde_json::Value {
+    let items = k.route_mount_deliveries(route, crumb).unwrap();
+    assert_eq!(items.len(), 1, "one listener, one delivery");
+    serde_json::to_value(items[0].payload.as_ref()).unwrap()
+}
+
+#[test]
+fn a_route_mounts_mount_carries_the_ancestors_the_label_and_the_crumb() {
+    let k = nav_mount_kernel();
+    let p = mount_payload(&k, "/docs/7", Some("Seven"));
+    assert_eq!(p["ancestors"], serde_json::json!([{ "path": "/docs", "page": "Docs", "label": "Documents" }]), "an ancestor carries its declared label");
+    assert_eq!(p["crumb"], "Seven");
+    let p = mount_payload(&k, "/docs", Some("Mine"));
+    assert_eq!(p["label"], "Documents");
+    assert_eq!(p["crumb"], "Mine");
+}
+
+#[test]
+fn control_a_root_path_has_no_ancestors_a_page_without_a_label_has_none_and_no_crumb_is_absent() {
+    let k = nav_mount_kernel();
+    let p = mount_payload(&k, "/", None);
+    assert_eq!(p["ancestors"], serde_json::json!([]), "a root path has no ancestors");
+    assert!(mount_payload(&k, "/docs/7", None)["ancestors"][0].get("label").is_some());
+    assert!(mount_payload(&nav_mount_kernel_unlabeled(), "/docs/7", None)["ancestors"][0].get("label").is_none(), "an ancestor page with no label has none");
+    let p = mount_payload(&k, "/docs/7", None);
+    assert!(p.get("label").is_none(), "a page that declares no label has no label key, never a guessed one");
+    assert!(p.get("crumb").is_none(), "a mount not opened by a crumbed navigate has no crumb");
+    let p = mount_payload(&k, "/docs/7", Some(""));
+    assert!(p.get("crumb").is_none(), "an empty crumb is no crumb");
+    assert_eq!(p["page"], "Doc");
+}
+
+#[test]
+fn a_crumbed_route_mount_runs_the_listener_and_the_plain_dispatch_stays_crumbless() {
+    let k = nav_mount_kernel();
+    let outcomes = k.dispatch_route_mount_crumbed(Some("/docs/7"), Some("Seven"), &k.route_mounts("/docs/7"), None, Value::Null).unwrap();
+    assert_eq!(ran(&outcomes), ["Trail:SEEN", "Reader:INIT"]);
+    let k = nav_mount_kernel();
+    let outcomes = k.dispatch_route_mount(Some("/docs/7"), &k.route_mounts("/docs/7"), None, Value::Null).unwrap();
+    assert_eq!(ran(&outcomes), ["Trail:SEEN", "Reader:INIT"]);
+}
+
 // H1 (G-ORBITAL-SHELL-TYPESCRIPT-106, -107): the kernel's `page_circuit` is the one answer for routing and access, so
 // the web shell's route matcher, nav-stack seed and page-access gate can go. The red tests read the circuit as JSON so
 // they compile before the fields exist; run them with `-- --ignored`.

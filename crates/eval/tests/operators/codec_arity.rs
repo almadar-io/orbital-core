@@ -46,8 +46,8 @@ fn assert_extra_rejected(op: &str, args: Vec<Json>, expected: &str) {
     assert_arity(op, &extra, arity, &ctx);
 }
 
-/// Each codec's full call and its minimum arity (`hash/sha` takes an optional fourth `input`, `hmac/sha256` an optional
-/// literal `prefix`).
+/// Each codec's full call and its minimum arity (`hash/sha` takes an optional fourth `input`, `hmac/sha` an optional
+/// `input` and a literal `prefix`).
 fn valid_calls() -> [(&'static str, Vec<Json>, usize); 5] {
     [
         ("str/encode-uri-component", vec![json!("a b&c")], 1),
@@ -55,9 +55,9 @@ fn valid_calls() -> [(&'static str, Vec<Json>, usize); 5] {
         ("base64/decode", vec![json!("Zm9vYmFy")], 1),
         ("hash/sha", vec![json!(256), json!("abc"), json!("hex"), json!("text")], 3),
         (
-            "hmac/sha256",
-            vec![json!("Jefe"), json!("what do ya want for nothing?"), json!("hex"), json!("")],
-            3,
+            "hmac/sha",
+            vec![json!(256), json!("credential"), json!("Jefe"), json!("what do ya want for nothing?"), json!("hex"), json!("text"), json!("")],
+            5,
         ),
     ]
 }
@@ -95,10 +95,10 @@ fn hash_sha_rejects_extra_arguments() {
 }
 
 #[test]
-fn hmac_sha256_rejects_extra_arguments() {
+fn hmac_sha_rejects_extra_arguments() {
     assert_extra_rejected(
-        "hmac/sha256",
-        vec![json!("Jefe"), json!("what do ya want for nothing?"), json!("hex"), json!("")],
+        "hmac/sha",
+        vec![json!(256), json!("credential"), json!("Jefe"), json!("what do ya want for nothing?"), json!("hex"), json!("text"), json!("")],
         "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843",
     );
 }

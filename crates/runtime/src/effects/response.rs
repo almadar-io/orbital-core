@@ -222,10 +222,14 @@ pub struct EventRequest {
     /// with the shared `payload` (`bus.ts` `OrbitalEventRequest.mount`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<Vec<MountSeed>>,
-    /// The route a `mount` batch opens: the kernel delivers `$MOUNT { page, route, traits, entities }` to the traits that
+    /// The route a `mount` batch opens: the kernel delivers `$MOUNT { page, route, traits, entities, ancestors, label?, crumb? }` to the traits that
     /// listen for it before the batch's seeds run (EXEC-SEED-7). Absent: a mount that opens no route delivers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub route: Option<String>,
+    /// The crumb of the `(navigate path payload { crumb })` that opened `route`: `$MOUNT` carries it as `crumb`
+    /// (EXEC-SEED-7). Absent: the route was not opened by a crumbed navigate. Meaningful only with `route`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crumb: Option<String>,
     /// Where this leg runs, set by the kernel on every leg it builds (EXEC-DIST-6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residence: Option<LegResidence>,
@@ -240,8 +244,8 @@ pub struct EventRequest {
 }
 
 /// The option keys of a `program/dispatch` event request that become request fields as they are named.
-const DISPATCH_REQUEST_KEYS: [&str; 11] =
-    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "route", "entityByTrait", "framesSince"];
+const DISPATCH_REQUEST_KEYS: [&str; 12] =
+    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "route", "crumb", "entityByTrait", "framesSince"];
 
 /// An empty text, record or list in an event request is absent, as the HTTP routes read it.
 fn dispatch_option_present(value: &serde_json::Value) -> bool {

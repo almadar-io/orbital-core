@@ -288,8 +288,8 @@ impl ServerBridge for KernelBridge {
         let entity_id = request.entity_id.as_deref();
         let payload = request.payload.clone().unwrap_or(Value::Null);
         let outcomes = self.run(
-            || self.kernel.start_dispatch_route_mount(request.route.as_deref(), seeds, entity_id, payload.clone()),
-            || self.kernel.dispatch_route_mount(request.route.as_deref(), seeds, entity_id, payload.clone()),
+            || self.kernel.start_dispatch_route_mount_crumbed(request.route.as_deref(), request.crumb.as_deref(), seeds, entity_id, payload.clone()),
+            || self.kernel.dispatch_route_mount_crumbed(request.route.as_deref(), request.crumb.as_deref(), seeds, entity_id, payload.clone()),
         )?;
         let mut response = EventResponse::from_process_results(&outcomes, &seeds[0].r#trait, seeds[0].event.as_str());
         self.kernel.seal_outcomes(&mut response, &outcomes, entity_id, true);

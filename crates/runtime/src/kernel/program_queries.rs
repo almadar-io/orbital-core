@@ -244,9 +244,10 @@ impl RuntimeKernel {
     }
 
     /// The `$MOUNT` a route mount opens with (EXEC-SEED-7): one delivery to each registered trait that listens for it, in
-    /// listener order, carrying `{ page, route, traits, entities }` from the route's [`PageCircuit`]. Empty when the route
+    /// listener order, carrying `{ page, route, traits, entities, ancestors }` from the route's [`PageCircuit`], its
+    /// declared `label` when the page has one, and the `crumb` of the navigate that opened it. Empty when the route
     /// resolves to no page or nobody listens.
-    pub(super) fn route_mount_deliveries(&self, route: &str) -> Result<VecDeque<CascadeItem>, KernelError> {
+    pub(super) fn route_mount_deliveries(&self, route: &str, crumb: Option<&str>) -> Result<VecDeque<CascadeItem>, KernelError> {
         let circuit = self.page_circuit(None, Some(route)).map_err(KernelError::Internal)?;
         let Some(page) = circuit.page else {
             return Ok(VecDeque::new());
@@ -258,6 +259,28 @@ impl RuntimeKernel {
         payload.insert("route".into(), Value::string(circuit.route.unwrap_or_else(|| route.to_string())));
         payload.insert("traits".into(), names(circuit.traits));
         payload.insert("entities".into(), names(circuit.entities));
+        payload.insert(
+            "ancestors".into(),
+            Value::array(
+                circuit
+                    .ancestors
+                    .into_iter()
+                    .map(|a| {
+                        let mut entry = ValueMap::from_iter([("path".into(), Value::string(a.path)), ("page".into(), Value::string(a.page))]);
+                        if let Some(label) = a.label {
+                            entry.insert("label".into(), Value::string(label));
+                        }
+                        Value::object(entry)
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        if let Some(label) = circuit.label {
+            payload.insert("label".into(), Value::string(label));
+        }
+        if let Some(crumb) = crumb.filter(|c| !c.is_empty()) {
+            payload.insert("crumb".into(), Value::string(crumb));
+        }
         let payload = Value::object(payload);
         let mut out = Vec::new();
         self.collect_listener_targets(

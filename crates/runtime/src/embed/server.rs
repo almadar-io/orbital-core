@@ -770,7 +770,7 @@ impl EmbeddedServer {
                 Progress::Done(Vec::new())
             } else {
                 self.kernel
-                    .start_dispatch_route_mount(request.route.as_deref(), &plan.unseeded, entity_id, payload)
+                    .start_dispatch_route_mount_crumbed(request.route.as_deref(), request.crumb.as_deref(), &plan.unseeded, entity_id, payload)
                     .map_err(dispatch_error)?
             };
             let seed = Seed {

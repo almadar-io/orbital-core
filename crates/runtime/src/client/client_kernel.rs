@@ -196,10 +196,15 @@ impl BegunDispatch {
 /// `mount` leg per owning orbital is still to be posted ([`ClientKernel::settle_mount`]).
 #[derive(Debug, Clone)]
 pub struct BegunMount {
+    /// The browser's own `$MOUNT` for `route`, to the `[client]` route traits that listen; it ran before the seeds and
+    /// its legs are posted before the mount's (EXEC-SEED-7).
+    announced: Option<BegunDispatch>,
     seeds: Vec<(crate::effects::response::MountSeed, BegunDispatch)>,
     flight: Option<Arc<Flight>>,
     /// The route this mount opens: the first posted leg names it, so the server announces its `$MOUNT` once (EXEC-SEED-7).
     route: Option<String>,
+    /// The crumb of the navigate that opened `route`, carried on the first posted leg beside it.
+    crumb: Option<String>,
 }
 
 /// A frame's local tick and emit results, before any server leg is posted.
@@ -230,14 +235,15 @@ impl BegunFrame {
 impl BegunMount {
     /// Each seed's trait and local response, in seed order, ready to paint.
     pub fn locals(&self) -> impl Iterator<Item = (&str, &EventResponse)> {
-        self.seeds
+        self.announced
             .iter()
-            .map(|(seed, begun)| (seed.r#trait.as_str(), &begun.local))
+            .map(|begun| (begun.trait_name.as_str(), &begun.local))
+            .chain(self.seeds.iter().map(|(seed, begun)| (seed.r#trait.as_str(), &begun.local)))
     }
 
     /// The traits awaiting the mount legs.
     pub fn awaiting(&self) -> impl Iterator<Item = &crate::kernel::AwaitingTrait> {
-        self.seeds.iter().flat_map(|(_, begun)| begun.awaiting())
+        self.announced.iter().chain(self.seeds.iter().map(|(_, begun)| begun)).flat_map(|begun| begun.awaiting())
     }
 
     /// Whether [`ClientKernel::settle_mount`] has anything to post.
@@ -668,7 +674,22 @@ impl ClientKernel {
         seeds: &[crate::effects::response::MountSeed],
         payload: Value,
     ) -> Result<BegunMount, BridgeError> {
+        self.begin_route_mount_crumbed(route, None, seeds, payload)
+    }
+
+    /// [`Self::begin_route_mount`] for a route a `(navigate path payload { crumb })` opened.
+    pub fn begin_route_mount_crumbed(
+        &self,
+        route: Option<&str>,
+        crumb: Option<&str>,
+        seeds: &[crate::effects::response::MountSeed],
+        payload: Value,
+    ) -> Result<BegunMount, BridgeError> {
         let _ordered = self.begin_order.lock();
+        let announced = match route {
+            Some(route) => self.begin_announce(route, crumb)?,
+            None => None,
+        };
         let seeds = seeds
             .iter()
             .map(|seed| {
@@ -687,18 +708,46 @@ impl ClientKernel {
             .iter()
             .any(|(_, begun)| begun.has_legs())
             .then(|| self.flights.open());
-        Ok(BegunMount { seeds, flight, route: route.map(str::to_string) })
+        Ok(BegunMount { announced, seeds, flight, route: route.map(str::to_string), crumb: crumb.map(str::to_string) })
+    }
+
+    fn begin_announce(&self, route: &str, crumb: Option<&str>) -> Result<Option<BegunDispatch>, BridgeError> {
+        let Some(dispatch) = self
+            .embedded
+            .kernel()
+            .announce_with_server_leg(route, crumb, Some(self.embedded.client_id()))
+            .map_err(|e| BridgeError::Server(e.to_string()))?
+        else {
+            return Ok(None);
+        };
+        let mut local = dispatch.response.clone();
+        local.emitted_events.clear();
+        let mut begun = BegunDispatch {
+            trait_name: dispatch.seed.0.clone(),
+            entity_id: None,
+            event: dispatch.seed.1.clone(),
+            local,
+            dispatch,
+            flight: None,
+        };
+        if begun.has_legs() {
+            begun.flight = Some(self.flights.open());
+        }
+        Ok(Some(begun))
     }
 
     /// The server half of a mount: the seeds with server work are posted as ONE `mount` leg per
     /// owning orbital (the server replays them in order) and each leg is folded once. A failed
     /// leg rolls back every optimistic seed it carried. JS twin: `postMountLeg`.
     pub fn settle_mount(&self, begun: &BegunMount) -> Result<EventResponse, BridgeError> {
-        let _flight = begun.flight.as_ref().map(Flight::claim).transpose()?;
         let mut settled = EventResponse {
             success: true,
             ..Default::default()
         };
+        if let Some(announced) = begun.announced.as_ref().filter(|a| a.has_legs()) {
+            settled = self.settle_with_base(announced, settled)?;
+        }
+        let _flight = begun.flight.as_ref().map(Flight::claim).transpose()?;
         let mut groups: Vec<(
             &str,
             Option<crate::effects::response::LegResidence>,
@@ -735,6 +784,7 @@ impl ClientKernel {
             let mut request = mount_request(&group, self.embedded.client_id());
             if index == 0 {
                 request.route = begun.route.clone();
+                request.crumb = begun.crumb.clone();
             }
             let rollback = || {
                 for (seed, b) in &group {

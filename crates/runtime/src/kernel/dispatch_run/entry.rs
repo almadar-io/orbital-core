@@ -162,13 +162,25 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.dispatch_route_mount_crumbed(route, None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::dispatch_route_mount`] for a route a `(navigate path payload { crumb })` opened: `$MOUNT` carries `crumb`.
+    pub fn dispatch_route_mount_crumbed(
+        &self,
+        route: Option<&str>,
+        crumb: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
         let _lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
         let announced = match route {
-            Some(route) => self.route_mount_deliveries(route)?,
+            Some(route) => self.route_mount_deliveries(route, crumb)?,
             None => VecDeque::new(),
         };
         let mut outcomes = Vec::new();
@@ -180,6 +192,28 @@ impl RuntimeKernel {
         }
         outcomes.extend(self.run_straight_through(self.run_of_mount(seeds, entity_id, payload))?);
         Ok(outcomes)
+    }
+
+    /// The `$MOUNT` a browser kernel delivers itself when it opens `route` (EXEC-SEED-7): only to the `[client]` route
+    /// traits a browser runs, the listeners a host leaves to it ([`Self::without_browser_listeners`]); every other
+    /// listener's is the host's, from the route the first posted leg names. The first listener served and the outcomes,
+    /// or `None` when no browser-run trait listens.
+    pub(crate) fn announce_browser_run_mount(
+        &self,
+        route: &str,
+        crumb: Option<&str>,
+    ) -> Result<Option<(String, Vec<(String, ProcessEventResult)>)>, KernelError> {
+        let browser_run = self.browser_run_traits();
+        let deliveries: VecDeque<CascadeItem> =
+            self.route_mount_deliveries(route, crumb)?.into_iter().filter(|d| browser_run.contains(&d.trait_name)).collect();
+        let Some(first) = deliveries.front().map(|d| d.trait_name.clone()) else {
+            return Ok(None);
+        };
+        let _lane = self.lane.enter(None)?;
+        let _announcing = Announcing::enter(&self.mount);
+        let mut run = self.run_of_mount(&[], None, Value::Null);
+        run.preamble = Some(Box::new(Preamble { row: None, deliveries }));
+        Ok(Some((first, self.run_straight_through(run)?)))
     }
 
     /// [`Self::dispatch_continuing`] as a resumable dispatch: it runs until it needs I/O it has no
@@ -217,12 +251,24 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        self.start_dispatch_route_mount_crumbed(route, None, seeds, entity_id, payload)
+    }
+
+    /// [`Self::start_dispatch_route_mount`] for a route a `(navigate path payload { crumb })` opened: `$MOUNT` carries `crumb`.
+    pub fn start_dispatch_route_mount_crumbed(
+        &self,
+        route: Option<&str>,
+        crumb: Option<&str>,
+        seeds: &[MountSeed],
+        entity_id: Option<&str>,
+        payload: Value,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
             &payload,
         )?;
-        let run = self.run_of_route_mount(route, seeds, entity_id, payload)?;
+        let run = self.run_of_route_mount(route, crumb, seeds, entity_id, payload)?;
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
@@ -240,7 +286,7 @@ impl RuntimeKernel {
     ) -> Result<DispatchOutcomes, E> {
         let announced = match self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload) {
             Err(error) => return drive(Err(error.into())),
-            Ok(()) => match route.map(|route| self.route_mount_deliveries(route)).transpose() {
+            Ok(()) => match route.map(|route| self.route_mount_deliveries(route, None)).transpose() {
                 Err(error) => return drive(Err(error.into())),
                 Ok(deliveries) => deliveries.unwrap_or_default(),
             },
@@ -275,13 +321,14 @@ impl RuntimeKernel {
     fn run_of_route_mount(
         &self,
         route: Option<&str>,
+        crumb: Option<&str>,
         seeds: &[MountSeed],
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<DispatchRun, KernelError> {
         let mut run = self.run_of_mount(seeds, entity_id, payload);
         if let Some(route) = route {
-            let deliveries = self.route_mount_deliveries(route)?;
+            let deliveries = self.route_mount_deliveries(route, crumb)?;
             if !deliveries.is_empty() {
                 run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries }));
             }

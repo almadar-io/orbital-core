@@ -385,10 +385,12 @@ mod tests {
 
     #[test]
     fn a_credential_operator_lists_its_secret_knob_and_a_program_without_credentials_lists_none() {
-        let hmac = serde_json::json!([["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]]]);
+        let hmac = serde_json::json!([["let", [["sig", ["hmac/sha", 256, "credential", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]]]);
         assert_eq!(manifest_credentials(secret_config(), hmac).unwrap(), expect(&["SIGN_KEY"]));
+        let bytes_key = serde_json::json!([["let", [["sig", ["hmac/sha", 256, "bytes", "@payload.k", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]]]);
+        assert!(manifest_credentials(secret_config(), bytes_key).unwrap().is_empty(), "a bytes key names no credential");
         let both = serde_json::json!([
-            ["let", [["sig", ["hmac/sha256", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]],
+            ["let", [["sig", ["hmac/sha", 256, "credential", "@config.key", "@payload.m", "hex"]]], ["emit", "OK", { "sig": "@sig" }]],
             ["os/send", "@payload.sock", [{ "bytes": ["bytes/from-string", "x"], "credential": "@config.credential" }], { "key": "s" }]
         ]);
         assert_eq!(manifest_credentials(secret_config(), both).unwrap(), expect(&["FOO", "SIGN_KEY"]));

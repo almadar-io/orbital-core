@@ -537,6 +537,68 @@ fn edge_rows_that_do_not_fit_or_name_an_undeclared_entity_refuse_the_open() {
     assert!(misfit["guest"].as_str().unwrap_or_default().is_empty(), "a refused open opens no guest: {misfit}");
 }
 
+/// The listing diary with its notes bound to a `Rows` driver orbital that answers no row verb, by the app default or
+/// the entity's own binding.
+fn store_bound_guest(entity_level: bool) -> serde_json::Value {
+    let mut program = listing_guest();
+    if entity_level {
+        program["orbitals"][0]["entity"]["store"] = json!("Rows");
+    } else {
+        program["store"] = json!("Rows");
+    }
+    program["orbitals"].as_array_mut().unwrap().push(json!({
+        "name": "Rows",
+        "entity": { "name": "RowsRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+        "traits": [{ "name": "RowsDriver", "linkedEntity": "RowsRun", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }]
+    }));
+    program
+}
+
+fn open_store_bound(options: serde_json::Value, entity_level: bool) -> serde_json::Value {
+    let kernel = opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] }
+    ]));
+    let rows = json!([{ "entity": "DiaryNote", "rows": [{ "id": "n1", "text": "Seeded note" }] }]);
+    let payload = serde_json::from_value(json!({ "program": store_bound_guest(entity_level), "rows": rows })).unwrap();
+    kernel.dispatch("Opener", None, "GO", payload).unwrap();
+    entity(&kernel)
+}
+
+#[test]
+fn a_guest_opened_with_mocked_integrations_answers_its_store_bound_rows_from_its_own_store() {
+    for entity_level in [false, true] {
+        let after = open_store_bound(json!({ "rows": "@payload.rows", "integrations": "mock" }), entity_level);
+        assert!(
+            painted(&after["got"]).contains(&"Seeded note".to_string()),
+            "entity-level binding {entity_level}: the mocked guest's fetch answered its own seeded row: {after}"
+        );
+    }
+}
+
+#[test]
+fn control_a_live_guest_keeps_its_store_driver() {
+    for options in [json!({ "rows": "@payload.rows" }), json!({ "rows": "@payload.rows", "integrations": "live" })] {
+        let after = open_store_bound(options.clone(), false);
+        assert!(
+            !painted(&after["got"]).contains(&"Seeded note".to_string()),
+            "{options}: a live guest's notes are its driver's, never read from its own store: {after}"
+        );
+    }
+}
+
+#[test]
+fn edge_integrations_is_live_or_mock() {
+    for word in [json!("fake"), json!(true)] {
+        let after = opened_with(json!({ "integrations": word }));
+        assert!(
+            after["refused"]["error"].as_str().is_some_and(|e| e.contains("`integrations` is \"live\" or \"mock\"")),
+            "{after}"
+        );
+    }
+}
+
 fn paints(name: &str, content: &str) -> serde_json::Value {
     json!({
         "name": name,

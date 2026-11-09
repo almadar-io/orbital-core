@@ -117,7 +117,7 @@ pub enum KernelError {
 pub mod agent_ports;
 mod guests;
 pub mod guest_hosting;
-pub use guests::GuestSession;
+pub use guests::{GuestSession, GuestTicks};
 pub(crate) use guests::run_session as run_guest_session;
 mod guest_controls;
 pub mod dispatch_run;

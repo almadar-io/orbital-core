@@ -405,8 +405,10 @@
     "source": "non-string input"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
       "Hi There",
       "hex"
@@ -415,8 +417,10 @@
     "source": "RFC 4231 test case 1 (key 0x0b x20)"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
       "Hi There",
       "base64"
@@ -425,8 +429,10 @@
     "source": "RFC 4231 test case 1"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "SmVmZQ==",
       "what do ya want for nothing?",
       "hex"
@@ -435,8 +441,10 @@
     "source": "RFC 4231 test case 2"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "SmVmZQ==",
       "what do ya want for nothing?",
       "base64"
@@ -445,8 +453,10 @@
     "source": "RFC 4231 test case 2"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==",
       "x",
       "hex"
@@ -455,8 +465,10 @@
     "source": "RFC 4231 case 4 key (0x01..0x19) with text data, node crypto reference"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "a2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2s=",
       "Test Using Larger Than Block-Size Key - Hash Key First",
       "hex"
@@ -465,8 +477,10 @@
     "source": "key longer than block size (RFC 4231 case 6 shape, text key), node crypto reference"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "",
       "",
       "hex"
@@ -475,8 +489,10 @@
     "source": "empty key and message, node crypto reference"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "aMOpbGxvIHfDtnJsZCDinJMg8J+YgA==",
       "héllo wörld ✓ 😀",
       "hex"
@@ -485,8 +501,10 @@
     "source": "UTF-8 key and message, node crypto reference"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "aw==",
       "m",
       "base32"
@@ -495,8 +513,10 @@
     "source": "unknown encoding"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       1,
       "m",
       "hex"
@@ -753,8 +773,10 @@
     "source": "null input is a type error"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "CwsLCwsLCwsLCwsLCwsLCwsLCws=",
       "SGkgVGhlcmU=",
       "hex",
@@ -764,8 +786,10 @@
     "source": "RFC 4231 test case 1, message as bytes"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "qqqqqqqqqqqqqqqqqqqqqqqqqqo=",
       "3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d0=",
       "hex",
@@ -775,8 +799,10 @@
     "source": "RFC 4231 test case 3 (key 0xaa x20, data 0xdd x50)"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGQ==",
       "zc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc0=",
       "hex",
@@ -786,8 +812,10 @@
     "source": "RFC 4231 test case 4 (key 0x01..0x19, data 0xcd x50)"
   },
   {
-    "op": "hmac/sha256-bytes",
+    "op": "hmac/sha",
     "args": [
+      256,
+      "bytes",
       "SmVmZQ==",
       "%not base64",
       "hex",
@@ -795,5 +823,79 @@
     ],
     "null": true,
     "source": "a message that is not canonical base64 answers null"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      1,
+      "bytes",
+      "SmVmZQ==",
+      "what do ya want for nothing?",
+      "hex"
+    ],
+    "expect": "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+    "source": "RFC 2202 test case 2 (HMAC-SHA1)"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      384,
+      "bytes",
+      "SmVmZQ==",
+      "what do ya want for nothing?",
+      "hex"
+    ],
+    "expect": "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e8e2240ca5e69e2c78b3239ecfab21649",
+    "source": "RFC 4231 test case 2 (HMAC-SHA384)"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      512,
+      "bytes",
+      "SmVmZQ==",
+      "what do ya want for nothing?",
+      "hex"
+    ],
+    "expect": "164b7a7bfcf819e2e395fbe73b56e0a387bd64222e831fd610270cd7ea2505549758bf75c05a994a6d034f65f8f0e6fdcaeab1a34d4a6b4b636e070a38bce737",
+    "source": "RFC 4231 test case 2 (HMAC-SHA512)"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      224,
+      "bytes",
+      "SmVmZQ==",
+      "m",
+      "hex"
+    ],
+    "null": true,
+    "source": "another bit count answers null"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      256,
+      "base64",
+      "SmVmZQ==",
+      "m",
+      "hex"
+    ],
+    "error": true,
+    "source": "keyForm is the literal credential or bytes"
+  },
+  {
+    "op": "hmac/sha",
+    "args": [
+      256,
+      "bytes",
+      "SmVmZQ==",
+      "m",
+      "hex",
+      "text",
+      "AWS4"
+    ],
+    "error": true,
+    "source": "a prefix joins a credential value, the bytes key form takes none"
   }
 ]

@@ -90,6 +90,35 @@ impl RuntimeKernel {
         }))
     }
 
+    /// A browser kernel's own `$MOUNT` for `route` ([`Self::announce_browser_run_mount`]) as one client dispatch: the
+    /// server work its listeners' cascades reach leaves as its legs, posted before the mount's (EXEC-SEED-7).
+    pub fn announce_with_server_leg(
+        &self,
+        route: &str,
+        crumb: Option<&str>,
+        client_id: Option<&str>,
+    ) -> Result<Option<ClientDispatch>, KernelError> {
+        let Some((first, outcomes)) = self.announce_browser_run_mount(route, crumb)? else {
+            return Ok(None);
+        };
+        let event = crate::effects::response::LifecycleEvent::Mount.as_str();
+        let mut response = self.response_for(&outcomes, &first, event);
+        response.fold_rerenders(&self.rerender_stale());
+        Ok(Some(self.finish_client_dispatch(LegSeed {
+            trait_name: &first,
+            event,
+            payload: Value::Null,
+            entity_id: None,
+            client_id,
+            tick: None,
+            mode: DispatchMode::HybridClientOnly,
+            snapshot: None,
+            seed_row: &Value::Null,
+            outcomes: &outcomes,
+            response,
+        })))
+    }
+
     /// Drain the delegated server effects the cascade collected and, for a client-role kernel,
     /// wrap them in the leg that replays `seed.event` on the server. The one body behind
     /// [`Self::dispatch_with_server_leg`] and [`Self::dispatch_tick`].

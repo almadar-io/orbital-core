@@ -12,6 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct PageCircuit {
     pub route: Option<String>,
     pub page: Option<String>,
+    /// The resolved page's declared nav `@label`; absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     pub not_found: bool,
     pub mounts: Vec<MountSeed>,
     pub embedded: Vec<String>,
@@ -34,12 +37,16 @@ pub struct PageCircuit {
 pub struct PageAncestor {
     pub path: String,
     pub page: String,
+    /// The ancestor page's declared nav `@label`; absent when it declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 struct RoutePage {
     name: String,
     path: String,
     traits: Vec<String>,
+    label: Option<String>,
     is_initial: bool,
     is_not_found: bool,
 }
@@ -59,6 +66,7 @@ impl RuntimeKernel {
                         .filter_map(|t| t.trait_name())
                         .map(str::to_string)
                         .collect(),
+                    label: page.label.clone(),
                     is_initial: page.is_initial == Some(true),
                     is_not_found: page.is_not_found == Some(true),
                 });
@@ -131,6 +139,7 @@ impl RuntimeKernel {
             return Ok(PageCircuit {
                 route: route.map(str::to_string),
                 page: None,
+                label: None,
                 not_found,
                 mounts: Vec::new(),
                 embedded: Vec::new(),
@@ -167,6 +176,7 @@ impl RuntimeKernel {
         Ok(PageCircuit {
             route: Some(route.map_or_else(|| resolved.path.clone(), str::to_string)),
             page: Some(resolved.name.clone()),
+            label: resolved.label.clone(),
             not_found,
             mounts: self.route_mounts(&resolved.path),
             embedded,
@@ -185,7 +195,7 @@ impl RuntimeKernel {
         orbital_core_base::route::ancestor_matches(route, &patterns)
             .into_iter()
             .filter_map(|(path, pattern)| {
-                pages.iter().find(|p| p.path == pattern).map(|p| PageAncestor { path, page: p.name.clone() })
+                pages.iter().find(|p| p.path == pattern).map(|p| PageAncestor { path, page: p.name.clone(), label: p.label.clone() })
             })
             .collect()
     }

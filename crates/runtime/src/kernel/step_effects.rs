@@ -266,7 +266,14 @@ impl RuntimeKernel {
         fn collect<'a>(expr: &'a SExpression, out: &mut Vec<&'a SExpression>) {
             if let SExpression::Array(items) = expr {
                 if let Some(SExpression::String(head)) = items.first() {
-                    if let Some(entry) = orbital_core_base::secrets::CREDENTIAL_OPERATORS.iter().find(|entry| entry.operator == head) {
+                    let literal_at = |index: usize| match items.get(index) {
+                        Some(SExpression::String(text)) => Some(text.as_str()),
+                        _ => None,
+                    };
+                    let entry = orbital_core_base::secrets::CREDENTIAL_OPERATORS
+                        .iter()
+                        .find(|entry| entry.operator == head && entry.applies(literal_at));
+                    if let Some(entry) = entry {
                         out.extend(items.get(entry.operand));
                     }
                 }

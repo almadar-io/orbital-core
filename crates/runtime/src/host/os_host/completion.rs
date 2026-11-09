@@ -215,6 +215,12 @@ impl Completions {
                         completions.end_stream(&key, lease, &site);
                         return;
                     }
+                    StreamPoll::Failed(message) => {
+                        if completions.claim_current(&key, lease) {
+                            completions.deliver(&key, &site, Err(OsError::new(OsErrorKind::Invalid, message)));
+                        }
+                        return;
+                    }
                 }
             }
         });
@@ -349,6 +355,8 @@ pub enum StreamPoll {
     Idle,
     /// The source is gone; the stream closes without an event.
     Ended,
+    /// The source cannot go on: the call's `failure` route carries why, and the stream closes.
+    Failed(String),
 }
 
 const STREAM_IDLE: std::time::Duration = std::time::Duration::from_millis(10);
@@ -440,7 +448,9 @@ impl DispatchScope {
     pub fn answer(&self, inner: &dyn Fn(&IoRequest) -> IoAnswer, request: &IoRequest) -> IoAnswer {
         let (key, stream) = match request {
             IoRequest::Os { op, key: Some(key), .. } if op.defers_completion() || op.is_stream() => (key, op.is_stream()),
-            IoRequest::Substrate { key: Some(key), site: Some(_), .. } | IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
+            // A keyed substrate ask routed `onMessage` is a stream (EXEC-QUEUE-13): every item runs in the asking session.
+            IoRequest::Substrate { key: Some(key), site: Some(site), .. } => (key, site.emit.on_message.is_some()),
+            IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         self.owners.lock().insert(key.clone(), self.ended.clone());

@@ -13,9 +13,19 @@ use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 use std::sync::Arc;
 
+/// How a guest reaches the world outside it: `Live` with the opener's credentials and its declared store drivers,
+/// `Mock` with no credentials and every row in the guest's own store (`program/open { integrations }`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum GuestIntegrations {
+    #[default]
+    Live,
+    Mock,
+}
+
 /// Opens a host for each guest program.
 pub trait GuestHosting: Send + Sync {
-    fn open(&self) -> Arc<dyn GuestHost>;
+    /// A host whose credential source is the opener's under `Live` and holds none under `Mock`.
+    fn open(&self, integrations: GuestIntegrations) -> Arc<dyn GuestHost>;
 }
 
 /// One guest's host over its own kernel.
@@ -30,6 +40,9 @@ pub trait GuestHost: Send + Sync {
         event: &str,
         payload: Value,
     ) -> Result<DispatchOutcomes, String>;
+    /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
+    /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
+    fn tick_pass(&self) -> Result<DispatchOutcomes, String>;
 }
 
 impl RuntimeKernel {
