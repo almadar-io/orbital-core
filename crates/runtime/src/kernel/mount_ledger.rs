@@ -85,4 +85,27 @@ impl RuntimeKernel {
     pub fn trait_mounted(&self, trait_name: &str) -> bool {
         self.mount_ledger.read().holds(trait_name)
     }
+
+    /// Whether `trait_name` is listed on, or embedded by a trait listed on, a protocol endpoint page (`boot`, `http`,
+    /// `stdio`): the kernel mounts it when the program starts, with no viewer, for the program's life (EXEC-ENDPOINT-3).
+    pub fn endpoint_mounted(&self, trait_name: &str) -> bool {
+        use orbital_core_base::protocols::{protocol_after_preflight, ProtocolSide};
+        let mut found = false;
+        self.each_inline_page(|page| {
+            if found || !protocol_after_preflight(page.protocol_name()).is_some_and(|spec| spec.side != ProtocolSide::Client) {
+                return;
+            }
+            let listed: Vec<String> = page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string).collect();
+            found = listed.iter().any(|t| t == trait_name) || self.trait_refs_from(&listed).iter().any(|t| t == trait_name);
+        });
+        found
+    }
+
+    /// Whether `tick` of `trait_name` fires on this kernel's clock (EXEC-TICK-6): a `[background]` tick always; any other
+    /// while a client holds its trait or while the trait is endpoint-mounted ([`Self::endpoint_mounted`]).
+    pub fn tick_runs(&self, trait_name: &str, tick: &str) -> bool {
+        self.tick_of(trait_name, tick).is_some_and(|t| t.background)
+            || self.trait_mounted(trait_name)
+            || self.endpoint_mounted(trait_name)
+    }
 }

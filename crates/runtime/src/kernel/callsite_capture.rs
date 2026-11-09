@@ -88,7 +88,7 @@ pub fn references_callsite_payload(def: &TraitDefinition) -> bool {
 }
 
 /// Every `@trait.X` a trait names in its config or state machine, in the order first met, itself excluded.
-pub(super) fn embedded_trait_refs(def: &TraitDefinition) -> Names {
+pub(crate) fn embedded_trait_refs(def: &TraitDefinition) -> Names {
     let mut refs = Names::new();
     if let Some(config) = &def.config {
         trait_refs(&as_json(config), &mut refs);

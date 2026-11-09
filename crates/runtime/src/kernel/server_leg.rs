@@ -68,6 +68,13 @@ impl ServerLegCollector {
         run()
     }
 
+    /// Collect `effect` as `trait_name`'s own server work, outside its effect run: an emit only a server-only orbital
+    /// hears (EXEC-DIST-2).
+    pub fn delegate_as(&self, trait_name: &str, effect: &Effect) {
+        self.effects.lock().push(effect.clone());
+        self.sources.lock().insert(trait_name.to_string());
+    }
+
     /// Take every effect collected since the last drain.
     pub fn drain(&self) -> Vec<Effect> {
         self.drain_attributed().0

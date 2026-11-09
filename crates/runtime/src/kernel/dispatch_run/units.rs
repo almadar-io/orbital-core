@@ -12,6 +12,7 @@ impl RuntimeKernel {
             outcomes,
             locale,
             origin,
+            program_deliveries,
             ..
         } = run;
         let Some(in_flight) = seed.as_mut() else {
@@ -45,6 +46,10 @@ impl RuntimeKernel {
                         *seed = Some(self.begin_announce(row, deliveries));
                         Ok(Flow::More)
                     }
+                    None if !program_deliveries.is_empty() => {
+                        *seed = Some(self.begin_program_deliveries(std::mem::take(program_deliveries)));
+                        Ok(Flow::More)
+                    }
                     None => Ok(Flow::Done),
                 },
             };
@@ -54,7 +59,9 @@ impl RuntimeKernel {
         let committed_from = origin.emits;
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
+        let _program = in_flight.program.then(|| self.enter_program_session());
         let stepped = self.step_seed(in_flight, outcomes);
+        program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
         self.settle_identity(stepped.is_ok());
         self.settle_theme(stepped.is_ok());
         self.settle_mem(stepped.is_ok());
@@ -172,6 +179,13 @@ impl RuntimeKernel {
         Ok(())
     }
 
+    /// The deliveries a viewer's dispatch made to the server's traits, stepped as one seed in the program session.
+    fn begin_program_deliveries(&self, deliveries: VecDeque<CascadeItem>) -> SeedRun {
+        let mut run = self.begin_announce(None, deliveries);
+        run.program = true;
+        run
+    }
+
     /// A run of `$MOUNT` deliveries alone, with no seed of its own to step after them.
     fn begin_announce(&self, row: Option<String>, deliveries: VecDeque<CascadeItem>) -> SeedRun {
         let now = self.step.dispatch_now.read().unwrap_or_else(|| self.clock_now());
@@ -188,6 +202,7 @@ impl RuntimeKernel {
             memory: DispatchMemory::default(),
             stage: Stage::Released(Cascade::new(deliveries)),
             tick: None,
+            program: false,
             span,
         }
     }
@@ -273,6 +288,7 @@ impl RuntimeKernel {
             memory,
             stage,
             tick,
+            program: false,
             span,
         }
     }
@@ -544,6 +560,11 @@ impl RuntimeKernel {
         let Some(mut item) = cascade.queue.pop_front() else {
             return Ok(false);
         };
+        if self.thread_session().is_some() && self.registry.boot_traits.read().contains(&item.trait_name) {
+            debug!(trait_name = %item.trait_name, event = %item.event, "fanout:program-session");
+            self.step.program_inbox.write().push_back(item);
+            return Ok(true);
+        }
         cascade.settle_pass();
         if let Some(job) = item.repaint.clone() {
             self.repaint_unit(eid, cascade, item, job, outcomes)?;

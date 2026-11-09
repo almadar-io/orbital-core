@@ -530,6 +530,9 @@ impl RuntimeKernel {
         payload: Value,
     ) -> DispatchRun {
         let targets: Vec<String> = seeds.iter().map(|s| s.r#trait.clone()).collect();
+        // A batch declares its own seeds, so an earlier seed's emit waits for a later seed's lifecycle step (EXEC-SEED-2)
+        // whether or not a viewer declared the mount first (a host's boot mount has none).
+        self.mount_traits(targets.iter().cloned());
         let (payload, awaiting) = take_awaiting_sidecar(payload);
         let mut first = true;
         let mut plans = Vec::new();
@@ -584,6 +587,7 @@ impl RuntimeKernel {
             locale: self.step.dispatch_locale.read().clone(),
             origin: self.next_dispatch_origin(),
             provisional: None,
+            program_deliveries: VecDeque::new(),
             span,
         }
     }

@@ -63,6 +63,18 @@ impl EmbedIndex {
             }
         }
 
+        // A host can embed a child through a config prop, which the compiler's id map does not list.
+        let mut sorted_hosts: Vec<&str> = trait_definitions.keys().map(String::as_str).collect();
+        sorted_hosts.sort_unstable();
+        for host_name in sorted_hosts {
+            let Some(host) = trait_definitions.get(host_name) else { continue };
+            let mut children = crate::callsite_capture::embedded_trait_refs(host.borrow());
+            children.sort_unstable();
+            for child in children.into_iter().filter(|child| trait_definitions.contains_key(child)) {
+                direct_host.entry(child).or_insert_with(|| host_name.to_string());
+            }
+        }
+
         let bound = trait_definitions.len().max(1);
         let mut host_chain: HashMap<String, Vec<String>> = HashMap::new();
         for trait_name in trait_definitions.keys() {

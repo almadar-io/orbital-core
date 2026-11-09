@@ -135,6 +135,24 @@ fn exec_seed_2_a_routed_delivery_is_held_until_the_receivers_own_lifecycle_event
     assert_eq!(body_state(&served), "seeded", "the client's mount releases what it has since initialized");
 }
 
+/// EXEC-SEED-2 for a mount no viewer declared first (a host's boot mount, G-CROSS-540): the batch declares its own
+/// seeds, so an earlier seed's emit waits for a later seed's lifecycle step.
+#[test]
+fn exec_seed_2_a_mount_batch_declares_its_own_seeds_so_an_earlier_seeds_emit_waits_for_a_later_seeds_lifecycle() {
+    let kernel = mount_kernel();
+    let outcomes = kernel
+        .dispatch_mount(&seeds(&[("Seeder", "INIT"), ("Body", "INIT")]), None, Value::Null)
+        .unwrap();
+    assert_eq!(ran(&outcomes), vec!["Seeder:INIT", "Body:INIT", "Body:SET"]);
+    assert_eq!(body_state(&kernel), "seeded");
+
+    let reversed = mount_kernel();
+    let outcomes = reversed
+        .dispatch_mount(&seeds(&[("Body", "INIT"), ("Seeder", "INIT")]), None, Value::Null)
+        .unwrap();
+    assert_eq!(ran(&outcomes), vec!["Body:INIT", "Seeder:INIT", "Body:SET"], "control: a receiver already initialized hears it at once");
+}
+
 /// EXEC-SEED-4: a mount batch runs each seed's lifecycle in order, syncs the client's mount once, and skips an unregistered seed.
 #[test]
 fn exec_seed_4_a_mount_batch_runs_seeds_in_order_syncs_the_clients_mount_once_and_skips_unknown_traits() {

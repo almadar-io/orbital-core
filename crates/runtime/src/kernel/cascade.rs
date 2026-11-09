@@ -45,6 +45,11 @@ impl RuntimeKernel {
                 let handled = result.is_some_and(|r| {
                     r.executed && self.trait_handles(trait_name, &r.new_state, emitted)
                 });
+                if result.is_some_and(|r| r.executed) && self.heard_off_client(emitted, &source) {
+                    if let Some(collector) = self.server_leg_collector() {
+                        collector.delegate_as(trait_name, &er.effect);
+                    }
+                }
                 let (own_before, fanned_before) = (own.len(), fanned.len());
                 self.emit_followup(
                     trait_name,
@@ -171,6 +176,19 @@ impl RuntimeKernel {
         Ok(match defs.get(trait_name) {
             Some(def) => bind_user_forwards(config_defaults_value(def, &defs), &user),
             None => Value::Null,
+        })
+    }
+
+    /// Whether an orbital the client program leaves out listens for `event` from `source` (`_metadata.serverListens`,
+    /// matched by the delivery's own source rule): only the host can deliver it, so the emitting step is server work.
+    pub(super) fn heard_off_client(&self, event: &str, source: &BusEventSource) -> bool {
+        self.registry.server_listens.read().iter().any(|server| {
+            let (pattern, declared) = match &server.listen.source {
+                Some(declared) => (server.listen.event.clone(), Some(declared.clone())),
+                None => orbital_core_base::schema::types::split_event_address(&server.listen.event),
+            };
+            pattern == event
+                && orbital_core_base::listen_match::matches_listen_source(declared.as_ref(), &server.orbital, source)
         })
     }
 

@@ -1802,3 +1802,50 @@ fn a_server_answer_listing_a_client_trait_idle_leaves_it_loading() {
     assert_eq!(kernel.get_state("Board", None).unwrap().current_state, "loading");
     assert_eq!(kernel.get_state("Retry", None).unwrap().current_state, "running");
 }
+
+/// A route trait that emits `SUBMIT` (heard only by `Jobs`, an orbital the client program leaves out and lists in
+/// `_metadata.serverListens`) and `NOTE` (heard by nobody).
+fn server_listen_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1,
+        "_metadata": { "serverListens": [{ "orbital": "Jobs", "listen": {
+            "event": "SUBMIT", "triggers": "START", "source": { "kind": "orbital", "orbital": "Main", "trait": "Page" }
+        } }] },
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Form", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Page",
+                "linkedEntity": "Form",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "RUN", "effects": [["emit", "SUBMIT", { "n": 1 }]] },
+                        { "from": "idle", "to": "idle", "event": "TOUCH", "effects": [["emit", "NOTE", {}]] }
+                    ]
+                },
+                "emits": [{ "event": "SUBMIT" }, { "event": "NOTE" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Page" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+// EXEC-DIST-2: an emit only a server-only orbital hears is server work, so the step leaves as a leg (G-CROSS).
+#[test]
+fn client_env_an_emit_a_server_only_listener_hears_leaves_as_a_leg() {
+    let (kernel, _collector) = client_kernel_with(server_listen_schema());
+    let dispatch = kernel.dispatch_with_server_leg("App", "Page", None, "RUN", Value::Null, None).unwrap();
+    assert_eq!(dispatch.server_legs.len(), 1, "the step that emits SUBMIT replays on the host");
+    assert_eq!(dispatch.server_legs[0].event, "RUN");
+    assert_eq!(dispatch.server_legs[0].target_trait.as_deref(), Some("Page"));
+}
+
+#[test]
+fn control_client_env_an_emit_nobody_off_the_client_hears_posts_nothing() {
+    let (kernel, _collector) = client_kernel_with(server_listen_schema());
+    let dispatch = kernel.dispatch_with_server_leg("App", "Page", None, "TOUCH", Value::Null, None).unwrap();
+    assert!(dispatch.server_legs.is_empty());
+}

@@ -244,6 +244,9 @@ impl RuntimeKernel {
         if let Some(sites) = schema.metadata.as_ref().and_then(|m| m.operator_sites.as_ref()) {
             orbital_core_base::runs_on::install_operator_sites(sites).map_err(KernelError::Internal)?;
         }
+        if let Some(listens) = schema.metadata.as_ref().and_then(|m| m.server_listens.as_ref()) {
+            self.registry.server_listens.write().extend(listens.iter().cloned());
+        }
         match schema.metadata.as_ref().and_then(|m| m.protocols.clone()) {
             Some(rows) => orbital_core_base::protocols::install_program_protocols(rows).map_err(KernelError::Internal)?,
             None => {
@@ -397,6 +400,8 @@ impl RuntimeKernel {
             *self.registry.trait_homes.write() = homes;
             *self.registry.endpoint_traits.write() = endpoint_traits;
         }
+        let boot_traits = self.boot_only_traits();
+        *self.registry.boot_traits.write() = boot_traits;
         {
             let mut nav = self.presentation.nav_pages.write();
             *nav = merge_nav_items(&nav, nav_items);
@@ -617,9 +622,11 @@ impl RuntimeKernel {
         *fork.registry.schemas.write() = self.registry.schemas.read().clone();
         *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
         *fork.registry.endpoint_traits.write() = self.registry.endpoint_traits.read().clone();
+        *fork.registry.boot_traits.write() = self.registry.boot_traits.read().clone();
         *fork.registry.trait_definitions.write() = self.registry.trait_definitions.read().clone();
         *fork.registry.embedded_trait_refs.write() = self.registry.embedded_trait_refs.read().clone();
         *fork.registry.sealed_emit_fields.write() = self.registry.sealed_emit_fields.read().clone();
+        *fork.registry.server_listens.write() = self.registry.server_listens.read().clone();
         *fork.registry.entity_policies.write() = self.registry.entity_policies.read().clone();
         *fork.registry.embed_index.write() = self.registry.embed_index.read().clone();
         *fork.registry.entity_definitions.write() = self.registry.entity_definitions.read().clone();

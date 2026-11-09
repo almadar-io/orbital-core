@@ -271,6 +271,19 @@ pub struct SchemaMetadata {
     /// The endpoint protocol table, written into a compiled client program for a browser kernel with no installed core.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub protocols: Option<Vec<crate::protocols::ProtocolSpec>>,
+
+    /// The listens of the orbitals a compiled client program leaves out (EXEC-ENDPOINT-5), each with the orbital
+    /// that owns it: a client step whose emit one of them hears owes the host a leg (EXEC-DIST-2).
+    #[serde(rename = "serverListens", default, skip_serializing_if = "Option::is_none")]
+    pub server_listens: Option<Vec<ServerListen>>,
+}
+
+/// One listen of an orbital the client program leaves out, with its owning orbital (its name-only sources are
+/// scoped to it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ServerListen {
+    pub orbital: String,
+    pub listen: ListenDefinition,
 }
 
 /// One `@config.<knob>` → render-ui prop substitution recorded at inline time.

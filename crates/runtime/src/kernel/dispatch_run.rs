@@ -113,6 +113,8 @@ struct SeedRun {
     memory: DispatchMemory,
     stage: Stage,
     tick: Option<TickSeed>,
+    /// Whether this seed steps in the program session: the deliveries a viewer's dispatch made to the server's traits.
+    program: bool,
     /// One event's delivery to one trait, open until its step is done.
     span: tracing::Span,
 }
@@ -135,6 +137,9 @@ pub(crate) struct DispatchRun {
     origin: Origin,
     /// The transition the step in flight committed when it suspended (G-CROSS-259).
     provisional: Option<Box<ProvisionalCommit>>,
+    /// The deliveries this run made from a viewer's session to traits of the server's orbitals: stepped as one more
+    /// seed, in the program session, when everything else is done (EXEC-DIST-9).
+    program_deliveries: VecDeque<CascadeItem>,
     /// Open from the run's start to its end, across every ask it parks on.
     span: tracing::Span,
 }

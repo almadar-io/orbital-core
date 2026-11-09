@@ -28,6 +28,8 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let _dispatch = c.run.span.clone().entered();
         loop {
+            // A store ask the program seed made is answered in the program session too (EXEC-DIST-9).
+            let _program = c.run.seed.as_ref().is_some_and(|seed| seed.program).then(|| self.enter_program_session());
             let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
             if c.store.is_none() {
                 if let Some((origin, ask)) = seeds.pop_front() {

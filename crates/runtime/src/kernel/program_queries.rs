@@ -117,6 +117,20 @@ impl RuntimeKernel {
 
     /// The lifecycle seeds of the kept pages: each page's listed traits, then the traits they embed through `@trait.X`
     /// (mounted with the page, EXEC-EVAL-9), each trait once.
+    /// The traits listed on, or embedded by a trait listed on, a `boot` page and on no other page (EXEC-ENDPOINT-3).
+    pub(super) fn boot_only_traits(&self) -> HashSet<String> {
+        let mut boot = HashSet::new();
+        let mut other = HashSet::new();
+        self.each_inline_page(|page| {
+            let listed: Vec<String> = page.traits.iter().flatten().filter_map(|t| t.trait_name()).map(str::to_string).collect();
+            let embedded = self.trait_refs_from(&listed);
+            let into = if page.protocol_name() == "boot" { &mut boot } else { &mut other };
+            into.extend(listed.into_iter().chain(embedded));
+        });
+        boot.retain(|name| !other.contains(name));
+        boot
+    }
+
     pub(super) fn mounts_of(
         &self,
         keep: impl Fn(&orbital_core_base::schema::types::PageDefinition) -> bool,

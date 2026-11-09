@@ -373,8 +373,9 @@ const CLIENT_UNREAD_PROGRAM_KEYS: [&str; 2] = ["_metadata", "ledger"];
 const CLIENT_UNREAD_TRAIT_KEYS: [&str; 2] = ["effectRow", "sourceEntityDefinition"];
 
 /// The resolved program as a client-role kernel runs it (EXEC-ENDPOINT-5): route pages only — an orbital whose every
-/// page is a protocol endpoint is the server's and is left out, and protocol pages are dropped — without the keys no
-/// client reads, carrying the `_metadata` a kernel without an operator table needs. Every client host (the browser,
+/// page is a protocol endpoint is the server's and is left out (its listens ride `_metadata.serverListens`, so a client
+/// step whose emit one of them hears still posts its leg, EXEC-DIST-2), and protocol pages are dropped — without the
+/// keys no client reads, carrying the `_metadata` a kernel without an operator table needs. Every client host (the browser,
 /// the native desktop) runs this one projection.
 pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
     let mut projected = program.clone();
@@ -384,7 +385,15 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
     for key in CLIENT_UNREAD_PROGRAM_KEYS {
         root.remove(key);
     }
+    let mut server_listens = Vec::new();
     if let Some(orbitals) = root.get_mut("orbitals").and_then(serde_json::Value::as_array_mut) {
+        for orbital in orbitals.iter().filter(|orbital| serves_only_protocol_pages(orbital)) {
+            let name = orbital.get("name").cloned().unwrap_or(serde_json::Value::Null);
+            let traits = orbital.get("traits").and_then(serde_json::Value::as_array).into_iter().flatten();
+            for listen in traits.filter_map(|t| t.get("listens").and_then(serde_json::Value::as_array)).flatten() {
+                server_listens.push(serde_json::json!({ "orbital": name, "listen": listen }));
+            }
+        }
         orbitals.retain(|orbital| !serves_only_protocol_pages(orbital));
         for orbital in orbitals {
             if let Some(pages) = orbital.get_mut("pages").and_then(serde_json::Value::as_array_mut) {
@@ -400,7 +409,10 @@ pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
             }
         }
     }
-    let metadata = client_program_metadata(root.get("orbitals").unwrap_or(&serde_json::Value::Null));
+    let mut metadata = client_program_metadata(root.get("orbitals").unwrap_or(&serde_json::Value::Null));
+    if !server_listens.is_empty() {
+        metadata.insert("serverListens".to_string(), serde_json::Value::Array(server_listens));
+    }
     if !metadata.is_empty() {
         root.insert("_metadata".to_string(), serde_json::Value::Object(metadata));
     }
@@ -639,6 +651,27 @@ mod tests {
         assert_eq!(metadata["operatorSites"], serde_json::json!({ "behavior/resolve": "server" }));
         assert!(metadata.contains_key("dispatchFacts"));
         assert!(metadata["protocols"].as_array().is_some_and(|rows| !rows.is_empty()));
+    }
+
+    #[test]
+    fn a_client_program_carries_the_listens_of_the_orbitals_it_leaves_out() {
+        use serde_json::json;
+        let listen = json!({ "event": "SUBMIT", "triggers": "START", "source": { "kind": "trait", "trait": "Page", "orbital": "Ui" } });
+        let program = json!({ "name": "App", "orbitals": [
+            { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] },
+            { "name": "Jobs", "pages": [{ "name": "Boot", "protocol": "boot" }], "traits": [{ "name": "Runner", "listens": [listen.clone()] }] }
+        ] });
+        let client = client_program(&program);
+        assert_eq!(client["orbitals"].as_array().map(Vec::len), Some(1));
+        assert_eq!(client["_metadata"]["serverListens"], json!([{ "orbital": "Jobs", "listen": listen }]));
+    }
+
+    #[test]
+    fn control_a_client_program_that_leaves_no_orbital_out_carries_no_server_listens() {
+        let program = serde_json::json!({ "name": "App", "orbitals": [
+            { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] }
+        ] });
+        assert!(client_program(&program)["_metadata"].get("serverListens").is_none());
     }
 
     #[test]

@@ -607,6 +607,8 @@
     "nullable": "nullable",
     "operatorSites": "operatorSites",
     "protocols": "protocols",
+    "serverListens": "serverListens",
+    "listen": "listen",
     "record": "record",
     "typeContractVersion": "typeContractVersion",
     "orb": "orb"

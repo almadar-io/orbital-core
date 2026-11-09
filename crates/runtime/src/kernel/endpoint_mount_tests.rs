@@ -476,15 +476,34 @@ fn edge_a_relation_cycle_ends_where_it_closes_and_a_self_relation_is_listed_once
     assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Team", "User"]);
 }
 
-#[test]
-fn control_an_entity_only_a_fetch_effect_names_is_not_a_page_entity() {
-    let k = entity_kernel(serde_json::json!([
+fn fetching_kernel(effects: serde_json::Value) -> RuntimeKernel {
+    entity_kernel(serde_json::json!([
         { "name": "Orders", "entity": entity_json("Order", &[]),
-          "traits": [linked_trait("OrderList", "Order", serde_json::json!([["fetch", "Audit"]]))],
+          "traits": [linked_trait("OrderList", "Order", effects)],
           "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "OrderList" }] }] },
-        { "name": "Audits", "entity": entity_json("Audit", &[]), "traits": [] }
-    ]));
-    assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Order"]);
+        { "name": "Audits", "entity": entity_json("Audit", &[("reviewerId", "Reviewer")]), "traits": [] },
+        { "name": "Reviewers", "entity": entity_json("Reviewer", &[]), "traits": [] }
+    ]))
+}
+
+#[test]
+fn an_entity_a_page_trait_fetches_is_a_page_entity_with_its_relations() {
+    let k = fetching_kernel(serde_json::json!([["fetch", "Audit"]]));
+    assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Audit", "Order", "Reviewer"]);
+}
+
+#[test]
+fn edge_a_fetch_nested_in_a_compound_effect_counts() {
+    let k = fetching_kernel(serde_json::json!([["when", true, ["fetch", "Audit"]]]));
+    assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Audit", "Order", "Reviewer"]);
+}
+
+#[test]
+fn control_a_fetch_of_no_declared_entity_or_a_computed_name_adds_nothing() {
+    for effects in [serde_json::json!([["fetch", "Ghost"]]), serde_json::json!([["fetch", "@config.target"]])] {
+        let k = fetching_kernel(effects.clone());
+        assert_eq!(k.page_circuit(None, Some("/")).unwrap().entities, ["Order"], "{effects}");
+    }
 }
 
 #[test]

@@ -599,6 +599,65 @@ fn edge_integrations_is_live_or_mock() {
     }
 }
 
+/// `Catalog` embeds `Gate` in its render; `Gate` embeds `Button` through a config prop, as a role gate does. `Dialog`
+/// listens for `CREATE` from `Catalog`, `Bystander` for `CREATE` from a trait the button is not inside.
+fn nested_control_guest() -> serde_json::Value {
+    let state = |name: &str, effects: serde_json::Value| json!({ "name": name, "linkedEntity": "Row", "stateMachine": {
+        "states": [{ "name": "idle", "isInitial": true }],
+        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": effects }]
+    } });
+    let mut gate = state("Gate", json!([["render-ui", "main", { "type": "box", "children": ["@config.content"] }]]));
+    gate["config"] = json!({ "content": { "type": "unknown", "default": "@trait.Button" } });
+    let listening = |name: &str, source: &str| json!({
+        "name": name, "linkedEntity": "Row",
+        "listens": [{ "event": "CREATE", "triggers": "OPEN", "source": { "kind": "trait", "trait": source } }],
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+            { "from": "idle", "to": "idle", "event": "INIT" },
+            { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["render-ui", "modal", { "type": "typography", "content": format!("{name} opened") }]] }
+        ] }
+    });
+    json!({
+        "name": "Nested", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Nested",
+            "entity": { "name": "Row", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                state("Catalog", json!([["render-ui", "main", { "type": "box", "children": ["@trait.Gate"] }]])),
+                gate,
+                state("Button", json!([["render-ui", "main", { "type": "button", "action": "CREATE" }]])),
+                listening("Dialog", "Catalog"),
+                listening("Bystander", "Elsewhere"),
+                state("Elsewhere", json!([]))
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Catalog" }, { "ref": "Dialog" }, { "ref": "Bystander" }, { "ref": "Elsewhere" }] }]
+        }]
+    })
+}
+
+fn click_nested(address: &str) -> serde_json::Value {
+    let kernel = opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "CLICK", "effects": [
+            ["program/dispatch", address, {}, { "guest": "@entity.guest", "emit": emit() }]
+        ] }
+    ]));
+    kernel.dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": nested_control_guest() })).unwrap()).unwrap();
+    assert!(entity(&kernel)["guest"].as_str().is_some(), "{}", entity(&kernel));
+    run(&kernel, "CLICK")
+}
+
+#[test]
+fn a_click_inside_a_control_embedded_through_config_bubbles_to_the_trait_a_listener_names() {
+    let after = click_nested("Button.CREATE");
+    assert!(painted(&after["got"]).contains(&"Dialog opened".to_string()), "{after}");
+}
+
+#[test]
+fn control_a_click_never_reaches_a_listener_of_a_trait_the_control_is_not_inside() {
+    let after = click_nested("Button.CREATE");
+    assert!(!painted(&after["got"]).contains(&"Bystander opened".to_string()), "{after}");
+}
+
 fn paints(name: &str, content: &str) -> serde_json::Value {
     json!({
         "name": name,

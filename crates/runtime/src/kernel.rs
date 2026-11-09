@@ -345,6 +345,9 @@ struct StepScope {
     /// The `kernel/queue-front|back` directives the running step staged (event, to the front): applied to the worklist
     /// after the step, dropped when it does not commit.
     queue_directives: RwLock<Vec<(String, bool)>>,
+    /// Deliveries a viewer's dispatch made to a trait of an orbital whose every page is a protocol endpoint: taken into
+    /// the run after each unit and stepped in the program session once the viewer's own work is done (EXEC-DIST-9).
+    program_inbox: RwLock<VecDeque<CascadeItem>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -377,6 +380,9 @@ struct Registry {
     /// The traits of orbitals whose every page is a protocol endpoint (EXEC-ENDPOINT-5): the server's, so a client
     /// session's view record never holds their frames. Rebuilt with `trait_homes`.
     endpoint_traits: Arc<RwLock<HashSet<String>>>,
+    /// The traits mounted on a `boot` endpoint and on no other page: mounted for the program's life with one instance,
+    /// in the program session, whichever session's dispatch delivers to them (EXEC-DIST-9). Rebuilt with `trait_homes`.
+    boot_traits: Arc<RwLock<HashSet<String>>>,
     trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>>,
     /// Each trait's embedded children (`@trait.X` in its config or state machine), read once when it registers;
     /// a definition never changes after registration, so a dispatch never re-walks it.
@@ -408,6 +414,9 @@ struct Registry {
     sealed_emit_fields: Arc<RwLock<HashMap<String, HashMap<String, Vec<(String, String)>>>>>,
     /// The fields the browser reads of each frame (EXEC-DIST-8), built on first use and dropped when a trait registers.
     browser_reads: RwLock<Option<Arc<HashMap<String, browser_reads::BrowserFields>>>>,
+    /// The listens of the orbitals a client program leaves out (`_metadata.serverListens`): a client step whose emit
+    /// one of them hears owes the host a leg (EXEC-DIST-2). Empty on a server kernel, which registers those orbitals.
+    server_listens: Arc<RwLock<Vec<orbital_core_base::schema::types::ServerListen>>>,
 }
 
 /// What the program may reach outside the kernel: its egress origins, its os grants, and the credentials of
@@ -768,6 +777,7 @@ impl RuntimeKernel {
                 schemas: Arc::new(RwLock::new(HashMap::new())),
                 trait_homes: Arc::new(RwLock::new(HashMap::new())),
                 endpoint_traits: Arc::new(RwLock::new(HashSet::new())),
+                boot_traits: Arc::new(RwLock::new(HashSet::new())),
                 trait_definitions,
                 embedded_trait_refs: Arc::new(RwLock::new(HashMap::new())),
                 entity_definitions,
@@ -777,6 +787,7 @@ impl RuntimeKernel {
                 row_shapes: RwLock::new(HashMap::new()),
                 sealed_emit_fields: Arc::default(),
                 browser_reads: RwLock::new(None),
+                server_listens: Arc::default(),
             },
             dispatch_observer: RwLock::new(None),
             entity_source,
@@ -820,6 +831,7 @@ impl RuntimeKernel {
                 theme_change: RwLock::new(None),
                 mem_change,
                 queue_directives: RwLock::new(Vec::new()),
+                program_inbox: RwLock::new(VecDeque::new()),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),

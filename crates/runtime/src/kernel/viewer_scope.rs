@@ -23,6 +23,14 @@ impl RuntimeKernel {
         guard
     }
 
+    /// Step in the program session from this thread until the guard drops: the deliveries a viewer's dispatch made to
+    /// the server's traits run on their one program-wide instance (EXEC-DIST-9).
+    pub(super) fn enter_program_session(&self) -> SessionGuard {
+        let thread = orbital_core_base::sync::current_thread();
+        let outer = self.sessions.session_by_thread.write().remove(&thread);
+        SessionGuard { slot: Arc::clone(&self.sessions.session_by_thread), thread, outer, scratch: None }
+    }
+
     /// The session this thread entered; `None` is the program session (ticks, boot, hooks, in-program asks).
     pub fn thread_session(&self) -> Option<Arc<str>> {
         self.sessions.session_by_thread

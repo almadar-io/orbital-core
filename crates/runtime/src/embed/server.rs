@@ -407,7 +407,7 @@ impl EmbeddedServer {
         let due = clock.due(now_ms, Calendar::local_now);
         let mut by_orbital: BTreeMap<String, Vec<FiredTick>> = BTreeMap::new();
         for (trait_name, tick) in due {
-            if !(self.kernel.trait_mounted(&trait_name) || self.kernel.tick_of(&trait_name, &tick).is_some_and(|t| t.background)) {
+            if !self.kernel.tick_runs(&trait_name, &tick) {
                 continue;
             }
             let Some(orbital) = clock.orbital_of(&trait_name, &tick) else { continue };
@@ -925,18 +925,10 @@ impl EmbeddedServer {
         event: &str,
         session: Option<SessionActive>,
     ) -> Result<ServerProgress, String> {
-        let background = match self.kernel.tick_of(&run.trait_name, &run.tick) {
-            Some(tick) => tick.background,
-            None => {
-                return Ok(ServerProgress::Done(EventResponse::from_discovery(
-                    &[],
-                    &[],
-                    event,
-                    HashMap::new(),
-                )))
-            }
-        };
-        if !background && !self.kernel.trait_mounted(&run.trait_name) {
+        if self.kernel.tick_of(&run.trait_name, &run.tick).is_none() {
+            return Ok(ServerProgress::Done(EventResponse::from_discovery(&[], &[], event, HashMap::new())));
+        }
+        if !self.kernel.tick_runs(&run.trait_name, &run.tick) {
             return Ok(ServerProgress::Done(EventResponse::success("")));
         }
         let progress = self

@@ -1,5 +1,6 @@
 use super::*;
 use crate::effects::response::MountSeed;
+use orbital_core_base::effect_row::EffectSite;
 use crate::trait_owners::TraitOwners;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -200,11 +201,27 @@ impl RuntimeKernel {
             .collect()
     }
 
-    /// The entities `traits` need: each one's linked entity and every entity reached through the declared relation
-    /// fields of those, transitively (a cycle ends where it closes), sorted.
+    /// The declared entities `trait_name`'s transitions fetch by name, compound effects included.
+    fn fetched_entities_of(&self, trait_name: &str, defs: &crate::kernel::relations::EntityDefinitions) -> Vec<String> {
+        let traits = self.registry.trait_definitions.read();
+        let Some(definition) = traits.get(trait_name) else { return Vec::new() };
+        let mut uses = Vec::new();
+        for effect in definition.state_machine.transitions.iter().flat_map(|t| t.effects.iter().flatten()) {
+            effect.collect_effect_uses(EffectSite::Transition, &mut uses);
+        }
+        uses.into_iter()
+            .filter(|used| used.kind == "fetch" && used.resolved)
+            .filter_map(|used| used.resource)
+            .filter(|entity| defs.contains_key(entity))
+            .collect()
+    }
+
+    /// The entities `traits` need: each one's linked entity, each entity they fetch by name, and every entity reached
+    /// through the declared relation fields of those, transitively (a cycle ends where it closes), sorted.
     pub(super) fn entities_of(&self, traits: &[String]) -> Vec<String> {
-        let mut pending: Vec<String> = traits.iter().filter_map(|t| self.linked_entity_of(t)).collect();
         let defs = self.registry.entity_definitions.read();
+        let mut pending: Vec<String> = traits.iter().filter_map(|t| self.linked_entity_of(t)).collect();
+        pending.extend(traits.iter().flat_map(|t| self.fetched_entities_of(t, &defs)));
         let mut reached: BTreeSet<String> = BTreeSet::new();
         while let Some(entity) = pending.pop() {
             if !reached.insert(entity.clone()) {
