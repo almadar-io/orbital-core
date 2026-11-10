@@ -11,6 +11,19 @@ use crate::schema::types::{InboundDeclaration, InboundVerification, OrbitalSchem
 use crate::value::{Value, ValueMap};
 use serde::{Deserialize, Serialize};
 
+/// The first words `orb` answers itself, before any program's `cli-` hook is asked. The bootloader and the std lint
+/// `std-orb-lint-inbound` (through `orbLanguage.vocabulary` `reservedCliWords`) both read this one list.
+pub const RESERVED_CLI_WORDS: &[&str] = &["run", "help", "--help", "-h", "--version", "-V"];
+
+/// The reserved word a `cli-` hook would take, if any: the hook is the word, or begins with it as a whole word.
+pub fn reserved_cli_word(hook: &str) -> Option<&'static str> {
+    let command = hook.strip_prefix("cli-")?;
+    RESERVED_CLI_WORDS
+        .iter()
+        .copied()
+        .find(|word| command == *word || command.strip_prefix(*word).is_some_and(|rest| rest.starts_with('-')))
+}
+
 /// One declared handler: the trait and event a hook name is delivered to, and the event that answers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -313,6 +326,16 @@ pub fn answer_of_response<'a>(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn g_std_177_a_cli_hook_that_is_or_begins_with_a_reserved_word_is_named() {
+        assert_eq!(super::reserved_cli_word("cli-run"), Some("run"));
+        assert_eq!(super::reserved_cli_word("cli-run-foo"), Some("run"));
+        assert_eq!(super::reserved_cli_word("cli-help"), Some("help"));
+        assert_eq!(super::reserved_cli_word("cli-runner"), None, "control: a longer word is not the reserved one");
+        assert_eq!(super::reserved_cli_word("cli-status"), None, "control: an ordinary hook");
+        assert_eq!(super::reserved_cli_word("run"), None, "control: not a cli hook");
+    }
+
     use super::*;
     use serde_json::json;
 

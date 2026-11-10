@@ -312,10 +312,14 @@ impl RuntimeKernel {
             return None;
         }
         let (trait_name, _) = self.step.step_site.read().clone().unwrap_or_default();
-        match self.trait_dispatch_mode(&trait_name) {
-            Some(DispatchMode::HybridClientOnly | DispatchMode::RuntimeOptimistic) => Some(format!(
+        let refusal = || {
+            Some(format!(
                 "fetch: `{entity}` declares `@read server`, so only a server trait reads it; `{trait_name}` runs in the client"
-            )),
+            ))
+        };
+        match self.trait_dispatch_mode(&trait_name) {
+            Some(DispatchMode::HybridClientOnly) => refusal(),
+            Some(DispatchMode::RuntimeOptimistic) if !self.registry.endpoint_traits.read().contains(&trait_name) => refusal(),
             _ => None,
         }
     }

@@ -107,19 +107,27 @@ fn exec_data_3_an_id_carrying_row_of_a_persisted_shared_entity_is_not_folded() {
 }
 
 fn server_read_fetch_errors(waivers: serde_json::Value, dispatch: Option<&str>) -> Vec<String> {
+    server_read_fetch_errors_on(waivers, dispatch, serde_json::Value::Null)
+}
+
+fn server_read_fetch_errors_on(waivers: serde_json::Value, dispatch: Option<&str>, pages: serde_json::Value) -> Vec<String> {
     let mut desk = serde_json::json!({ "name": "Desk", "linkedEntity": "Ticket",
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
             "transitions": [{ "from": "idle", "to": "idle", "event": "LOOK", "effects": [["fetch", "Ticket", {}]] }] } });
     if let Some(mode) = dispatch {
         desk["dispatch"] = serde_json::json!(mode);
     }
-    let kernel = crate::support::TestKernel::server().build(serde_json::json!({
+    let mut program = serde_json::json!({
         "name": "Desk",
         "typeContractVersion": 1, "orbitals": [{ "name": "Tickets",
             "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets", "access_waivers": waivers,
                 "fields": [{ "name": "id", "type": "string" }] },
             "traits": [desk] }]
-    }));
+    });
+    if !pages.is_null() {
+        program["orbitals"][0]["pages"] = pages;
+    }
+    let kernel = crate::support::TestKernel::server().build(program);
     let outcomes = kernel.dispatch("Desk", None, "LOOK", orbital_core_base::value::Value::Null).unwrap();
     outcomes
         .iter()
@@ -135,6 +143,25 @@ fn g_std_218_a_client_run_trait_cannot_fetch_an_entity_only_the_server_reads() {
         let errors = server_read_fetch_errors(serde_json::json!({ "read_server": "looked up before a viewer exists" }), Some(mode));
         assert!(errors.iter().any(|e| e.contains("declares `@read server`")), "{mode}: {errors:?}");
     }
+}
+
+#[test]
+fn exec_fetch_4_an_optimistic_trait_of_the_servers_own_orbital_reads_a_server_read_entity() {
+    let waiver = || serde_json::json!({ "read_server": "looked up before a viewer exists" });
+    for protocol in ["boot", "http"] {
+        let pages = serde_json::json!([{ "name": "Bg", "path": "", "protocol": protocol, "traits": [{ "ref": "Desk" }] }]);
+        let errors = server_read_fetch_errors_on(waiver(), Some("optimistic"), pages);
+        assert!(errors.iter().all(|e| !e.contains("@read server")), "{protocol}: no client program carries this trait: {errors:?}");
+    }
+    let routed = serde_json::json!([
+        { "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Desk" }] },
+        { "name": "Home", "path": "/", "traits": [{ "ref": "Desk" }] }
+    ]);
+    let errors = server_read_fetch_errors_on(waiver(), Some("optimistic"), routed);
+    assert!(errors.iter().any(|e| e.contains("declares `@read server`")), "control, a route page ships the trait to the client: {errors:?}");
+    let client = serde_json::json!([{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Desk" }] }]);
+    let errors = server_read_fetch_errors_on(waiver(), Some("client"), client);
+    assert!(errors.iter().any(|e| e.contains("declares `@read server`")), "control, a [client] trait never runs on the server: {errors:?}");
 }
 
 #[test]

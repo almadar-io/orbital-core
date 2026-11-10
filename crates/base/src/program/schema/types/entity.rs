@@ -800,6 +800,7 @@ pub const FIELD_TYPE_NAMES: &[&str] = &[
     "node",
     "event",
     "union",
+    "tuple",
 ];
 
 /// A nullable occurrence or binding makes the substituted value nullable.
