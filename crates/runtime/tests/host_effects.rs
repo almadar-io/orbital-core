@@ -77,10 +77,19 @@ fn run_on(
 fn drive(
     server: &EmbeddedServer,
     request: EventRequest,
+    host: impl FnMut(&IoRequest) -> IoAnswer,
+) -> (EventResponse, Vec<IoRequest>) {
+    drive_on(server, "Main", request, host)
+}
+
+fn drive_on(
+    server: &EmbeddedServer,
+    orbital: &str,
+    request: EventRequest,
     mut host: impl FnMut(&IoRequest) -> IoAnswer,
 ) -> (EventResponse, Vec<IoRequest>) {
     let mut seen = Vec::new();
-    let mut progress = server.start("Main", request).unwrap();
+    let mut progress = server.start(orbital, request).unwrap();
     loop {
         match progress {
             ServerProgress::Done(response) => return (response, seen),
@@ -947,6 +956,41 @@ mod os_effects {
                 "{egress}"
             );
         }
+    }
+
+    fn second_program(egress: Json) -> OrbitalSchema {
+        let mut schema = serde_json::to_value(schema_with(fetch("https://evil.example.test/x"), json!({}))).unwrap();
+        schema["name"] = json!("Other");
+        schema["egress"] = egress;
+        schema["orbitals"][0]["name"] = json!("Side");
+        schema["orbitals"][0]["traits"][0]["name"] = json!("SideHost");
+        serde_json::from_value(schema).unwrap()
+    }
+
+    #[test]
+    fn g_cross_238_a_second_program_s_egress_does_not_widen_the_first_program_s_fetch() {
+        let server = fetch_server(fetch("https://evil.example.test/x"), json!(["https://api.example.test"]));
+        server.kernel().register_schema(second_program(json!(["https://evil.example.test"]))).unwrap();
+        let (response, seen) = drive(&server, go(None), |request| panic!("an origin only another program declares must not reach the host, asked {request:?}"));
+        assert!(seen.is_empty());
+        assert_eq!(
+            payload_of(&response, "BAD"),
+            json!({ "error": "os/fetch: https://evil.example.test/x is not an origin the program declares in egress", "kind": "denied" })
+        );
+    }
+
+    #[test]
+    fn g_cross_238_control_each_program_still_fetches_the_origin_it_declares() {
+        let server = fetch_server(fetch("https://api.example.test/items"), json!(["https://api.example.test"]));
+        server.kernel().register_schema(second_program(json!(["https://evil.example.test"]))).unwrap();
+        let answer = json!({ "status": 200, "headers": [], "body": "" });
+        let (response, seen) = drive(&server, go(None), |_| IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap())));
+        assert!(matches!(&seen[..], [IoRequest::Os { op: OsOp::Fetch, .. }]), "the first program reaches its own origin, saw {seen:?}");
+        assert_eq!(payload_of(&response, "OK")["status"], json!(200));
+        let request = EventRequest { target_trait: Some("SideHost".to_string()), ..go(None) };
+        let (response, asked) = drive_on(&server, "Side", request, |_| IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap())));
+        assert!(matches!(&asked[..], [IoRequest::Os { op: OsOp::Fetch, .. }]), "the second program reaches the origin it declares, saw {asked:?}");
+        assert_eq!(payload_of(&response, "OK")["status"], json!(200));
     }
 
     #[test]

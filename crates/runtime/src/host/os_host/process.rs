@@ -137,11 +137,48 @@ fn detach(cmd: &mut Command) {
 }
 
 #[cfg(windows)]
-fn detach(cmd: &mut Command) {
+const DETACH_FLAGS: u32 = 0x0000_0200 | 0x0000_0008;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Priority {
+    Normal,
+    Low,
+}
+
+/// A low child runs ten nice steps below this process (Unix) or in the below-normal class (Windows), so the
+/// scheduler serves this process first when they compete for CPU.
+#[cfg(unix)]
+fn set_priority(cmd: &mut Command, priority: Priority) {
+    use std::os::unix::process::CommandExt;
+    if priority == Priority::Normal {
+        return;
+    }
+    // SAFETY: getpriority(PRIO_PROCESS, 0) names this process and cannot fail, so its result is the niceness.
+    let target = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) } + 10;
+    // SAFETY: setpriority is async-signal-safe and touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::setpriority(libc::PRIO_PROCESS, 0, target) == -1 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(windows)]
+fn creation_flags(cmd: &mut Command, detached: bool, priority: Priority) {
     use std::os::windows::process::CommandExt;
-    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS);
+    const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
+    let mut flags = 0;
+    if detached {
+        flags |= DETACH_FLAGS;
+    }
+    if priority == Priority::Low {
+        flags |= BELOW_NORMAL_PRIORITY_CLASS;
+    }
+    cmd.creation_flags(flags);
 }
 
 fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
@@ -164,7 +201,7 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     };
     if let Some(m) = opts {
         for key in m.keys() {
-            if !["cwd", "env", "stdin", "stdout", "stderr", "detached"].contains(&key.as_str()) {
+            if !["cwd", "env", "stdin", "stdout", "stderr", "detached", "priority"].contains(&key.as_str()) {
                 return Err(invalid(op, format!("unknown option {key}")));
             }
         }
@@ -195,6 +232,12 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(invalid(op, "detached must be a boolean")),
+    };
+    let priority = match opts.and_then(|m| m.get("priority")) {
+        None | Some(Value::Null) => Priority::Normal,
+        Some(Value::String(p)) if p.as_str() == "normal" => Priority::Normal,
+        Some(Value::String(p)) if p.as_str() == "low" => Priority::Low,
+        Some(_) => return Err(invalid(op, "priority must be \"normal\" or \"low\"")),
     };
     if detached && [stdin_mode, stdout_mode, stderr_mode].contains(&Mode::Pipe) {
         return Err(invalid(op, "a detached child takes no piped stream"));
@@ -257,9 +300,15 @@ fn spawn(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-    if detached {
-        detach(&mut cmd);
+    #[cfg(unix)]
+    {
+        if detached {
+            detach(&mut cmd);
+        }
+        set_priority(&mut cmd, priority);
     }
+    #[cfg(windows)]
+    creation_flags(&mut cmd, detached, priority);
     let mut child = cmd.spawn().map_err(|e| io_error(op, &e))?;
     let pid = i64::from(child.id());
     let fds = &host.handles.fs.fds;

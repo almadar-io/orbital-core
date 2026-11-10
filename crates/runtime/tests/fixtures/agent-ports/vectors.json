@@ -21,7 +21,10 @@
               "name": "title",
               "type": "string"
             }
-          ]
+          ],
+          "access_waivers": {
+            "read": "the shared vectors read these entities"
+          }
         },
         "auxiliaryEntities": [
           {
@@ -32,7 +35,10 @@
                 "name": "id",
                 "type": "string"
               }
-            ]
+            ],
+            "access_waivers": {
+              "read": "the shared vectors read these entities"
+            }
           }
         ],
         "traits": [

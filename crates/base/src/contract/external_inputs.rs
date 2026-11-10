@@ -78,13 +78,14 @@ pub fn find_external_input(
         .find(|i| i.orbital == orbital && i.trait_name == trait_name && i.event == event)
 }
 
-/// The entities a `call-service` provider acting as the caller may read: every persisted entity, once, in schema
-/// order (each orbital's primary entity, then its auxiliaries). Rows stay filtered by each entity's `@read` policy at
-/// read time.
+/// The entities a `call-service` provider acting as the caller may read: each persisted entity that declares who reads
+/// it (an `@read` policy, or `@read none` with its reason), once, in schema order (each orbital's primary entity, then
+/// its auxiliaries). An entity that states neither is not offered. Rows stay filtered by the `@read` policy at read time.
 pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for def in crate::policy::inline_entity_defs(schema) {
-        if def.persistence == Some(crate::schema::types::Persistence::Runtime) || out.contains(&def.name) {
+        let declares_read = def.read_policy.is_some() || def.access_waivers.as_ref().is_some_and(|waivers| waivers.read.is_some());
+        if def.persistence == Some(crate::schema::types::Persistence::Runtime) || !declares_read || out.contains(&def.name) {
             continue;
         }
         out.push(def.name.clone());
@@ -102,7 +103,7 @@ mod tests {
             "name": "App",
             "orbitals": [{
                 "name": "TaskOrbital",
-                "entity": { "name": "Task", "collection": "tasks", "persistence": "persistent",
+                "entity": { "name": "Task", "collection": "tasks", "persistence": "persistent", "access_waivers": { "read": "test" },
                             "fields": [{ "name": "id", "type": "string", "required": true }] },
                 "traits": [{
                     "name": "TaskPersistor",
@@ -169,10 +170,10 @@ mod tests {
             "name": "App",
             "orbitals": [{
                 "name": "A",
-                "entity": { "name": "Scratch", "persistence": "runtime", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                "entity": { "name": "Scratch", "persistence": "runtime", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] },
                 "auxiliaryEntities": [
-                    { "name": "Note", "collection": "notes", "fields": [{ "name": "id", "type": "string", "required": true }] },
-                    { "name": "Note", "collection": "notes", "fields": [{ "name": "id", "type": "string", "required": true }] }
+                    { "name": "Note", "collection": "notes", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] },
+                    { "name": "Note", "collection": "notes", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] }
                 ],
                 "traits": [], "pages": []
             }]
@@ -183,11 +184,11 @@ mod tests {
             "name": "App",
             "orbitals": [
                 { "name": "TaskOrbital",
-                  "entity": { "name": "Task", "collection": "tasks", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] },
-                  "auxiliaryEntities": [{ "name": "Comment", "collection": "comments", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] }],
+                  "entity": { "name": "Task", "collection": "tasks", "persistence": "persistent", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] },
+                  "auxiliaryEntities": [{ "name": "Comment", "collection": "comments", "persistence": "persistent", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] }],
                   "traits": [], "pages": [] },
                 { "name": "ProjectOrbital",
-                  "entity": { "name": "Project", "collection": "projects", "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] },
+                  "entity": { "name": "Project", "collection": "projects", "persistence": "persistent", "access_waivers": { "read": "test" }, "fields": [{ "name": "id", "type": "string", "required": true }] },
                   "traits": [], "pages": [] }
             ]
         }))
@@ -195,5 +196,33 @@ mod tests {
         assert_eq!(readable_entities_of(&two), vec!["Task".to_string(), "Comment".to_string(), "Project".to_string()]);
         s.orbitals.clear();
         assert!(readable_entities_of(&s).is_empty());
+    }
+
+    #[test]
+    fn g_cross_051_only_an_entity_that_declares_who_reads_it_is_readable() {
+        let entity = |name: &str, extra: serde_json::Value| {
+            let mut def = json!({ "name": name, "collection": name.to_lowercase(), "persistence": "persistent", "fields": [{ "name": "id", "type": "string", "required": true }] });
+            def.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap());
+            def
+        };
+        let s: OrbitalSchema = serde_json::from_value(json!({
+            "name": "App",
+            "orbitals": [{
+                "name": "A",
+                "entity": entity("Scoped", json!({ "read_policy": ["=", "@entity.ownerId", "@user.id"] })),
+                "auxiliaryEntities": [
+                    entity("Public", json!({ "access_waivers": { "read": "a public catalogue" } })),
+                    entity("Silent", json!({})),
+                    entity("WriteOnly", json!({ "access_waivers": { "create": "anyone may submit" } }))
+                ],
+                "traits": [], "pages": []
+            }]
+        }))
+        .unwrap();
+        assert_eq!(
+            readable_entities_of(&s),
+            vec!["Scoped".to_string(), "Public".to_string()],
+            "a declared @read or a declared read waiver; an entity that states neither, or waives only another operation, is not offered"
+        );
     }
 }

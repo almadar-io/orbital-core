@@ -429,6 +429,8 @@ struct Registry {
 struct Grants {
     /// The `egress` origins the registered programs declare: the only hosts the `http` effect may reach.
     egress: Arc<RwLock<Vec<String>>>,
+    /// Each orbital's `egress`: the origins its own program declares, which is all its `os/fetch` may reach.
+    egress_by_orbital: Arc<RwLock<HashMap<String, Vec<String>>>>,
     /// The `os/` grants the registered programs declare, held per orbital.
     os_grants: Arc<RwLock<OsGrantTable>>,
     /// The credentials of the program a host names this kernel the console of ([`Self::set_managed_program`]).
@@ -846,6 +848,7 @@ impl RuntimeKernel {
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
+                egress_by_orbital: Arc::new(RwLock::new(HashMap::new())),
                 os_grants,
                 managed_credentials: Arc::new(RwLock::new(Vec::new())),
                 denials: Default::default(),

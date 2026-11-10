@@ -340,26 +340,9 @@ pub fn issues_value(issues: &[PayloadIssue], root: &Value) -> Vec<Value> {
         .collect()
 }
 
-/// The persisted entities of a program, once, in schema order: the inline entities of every orbital
-/// that are not `[runtime]`. Twin of `readableEntitiesOf` (`@almadar/core`).
+/// The entities a program offers for reading: [`crate::external_inputs::readable_entities_of`], the one rule.
 pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for orbital in &schema.orbitals {
-        let primary = std::iter::once(&orbital.entity);
-        let auxiliary = orbital.auxiliary_entities.iter().flatten();
-        for entity in primary.chain(auxiliary) {
-            let EntityRef::Inline(definition) = entity else {
-                continue;
-            };
-            if definition.persistence == Some(Persistence::Runtime)
-                || out.contains(&definition.name)
-            {
-                continue;
-            }
-            out.push(definition.name.clone());
-        }
-    }
-    out
+    crate::external_inputs::readable_entities_of(schema)
 }
 
 /// What a `program/dispatch` comes to before the host is asked.

@@ -721,7 +721,7 @@ impl RuntimeKernel {
         orbital: Option<&str>,
     ) -> Option<Result<Value, OsError>> {
         match op {
-            OsOp::Fetch => self.fetch_refusal(op, args).map(Err),
+            OsOp::Fetch => self.fetch_refusal(op, args, orbital).map(Err),
             OsOp::TlsUpgrade => Some(self.tls_handshake(op, args, orbital)),
             OsOp::TcpConnect if args.len() > 2 => Some(self.tls_handshake(op, args, orbital)),
             OsOp::Send | OsOp::Recv | OsOp::Close => {
@@ -735,13 +735,18 @@ impl RuntimeKernel {
         }
     }
 
-    /// The kernel's policy for an `os/fetch`: the url must be text and its origin one the programs declare in `egress`.
+    /// The kernel's policy for an `os/fetch`: the url must be text and its origin one the asking orbital's own program
+    /// declares in `egress`. An ask no orbital makes is held to the union the deployment unit declares.
     /// `None` lets the host perform the fetch.
-    fn fetch_refusal(&self, op: OsOp, args: &[Value]) -> Option<OsError> {
+    fn fetch_refusal(&self, op: OsOp, args: &[Value], orbital: Option<&str>) -> Option<OsError> {
         let Some(Value::String(url)) = args.get(1) else {
             return Some(fail(op, OsErrorKind::Invalid, "the url must be text"));
         };
-        if orbital_core_base::http_wire::origin_allowed(url, &self.grants.egress.read()) {
+        let allowed = match orbital.and_then(|name| self.grants.egress_by_orbital.read().get(name).cloned()) {
+            Some(own) => orbital_core_base::http_wire::origin_allowed(url, &own),
+            None => orbital_core_base::http_wire::origin_allowed(url, &self.grants.egress.read()),
+        };
+        if allowed {
             return None;
         }
         Some(fail(op, OsErrorKind::Denied, &format!("{url} is not an origin the program declares in egress")))

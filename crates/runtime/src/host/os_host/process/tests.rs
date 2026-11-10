@@ -108,6 +108,41 @@ fn a_detached_child_runs_in_its_own_session_and_an_attached_one_in_ours() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_low_priority_child_runs_ten_nice_steps_below_us_and_a_normal_one_at_ours() {
+    let (g, h) = (grants(), OsHandles::default());
+    let start = |priority: Option<&str>| {
+        let mut args = sh("exec sleep 30", &[]);
+        if let Some(p) = priority {
+            args.push(opts(vec![("priority", s(p))]));
+        }
+        int(field(&call(&g, &h, OsOp::Spawn, args).expect("spawn"), "pid"))
+    };
+    let (low, normal, unset) = (start(Some("low")), start(Some("normal")), start(None));
+    let nice = |pid: i64| unsafe { libc::getpriority(libc::PRIO_PROCESS, pid as libc::id_t) };
+    let ours = unsafe { libc::getpriority(libc::PRIO_PROCESS, 0) };
+    assert!(ours <= 9, "the test runs with room for ten nice steps (ours = {ours})");
+    assert_eq!(nice(low), ours + 10, "a low child runs ten nice steps below us");
+    assert_eq!(nice(normal), ours, "control: normal keeps ours");
+    assert_eq!(nice(unset), ours, "control: no priority keeps ours");
+    for pid in [low, normal, unset] {
+        call(&g, &h, OsOp::Kill, vec![Value::Number(pid as f64), s("KILL")]).expect("kill");
+    }
+}
+
+#[test]
+fn edge_priority_is_normal_or_low_only() {
+    let (g, h) = (grants(), OsHandles::default());
+    for bad in [s("high"), Value::Number(5.0), Value::Bool(true)] {
+        let mut args = sh("true", &[]);
+        args.push(opts(vec![("priority", bad)]));
+        let refused = call(&g, &h, OsOp::Spawn, args).expect_err("only normal or low");
+        assert_eq!(refused.kind, OsErrorKind::Invalid);
+        assert!(refused.message.contains("priority must be \"normal\" or \"low\""), "{}", refused.message);
+    }
+}
+
 #[test]
 fn edge_a_detached_child_takes_no_pipe_and_detached_must_be_a_boolean() {
     let (g, h) = (grants(), OsHandles::default());
