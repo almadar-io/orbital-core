@@ -264,7 +264,85 @@ fn bytes_digest(bytes: &Shared<Vec<u8>>) -> u128 {
     digest
 }
 
-/// A bytes value folds in its length and its own xxh3-128 ([`bytes_digest`]).
+/// Arrays and objects with at least this many entries keep their digest by allocation ([`container_digest`]).
+const CONTAINER_MEMO_MIN: usize = 8;
+
+struct ContainerDigests {
+    arrays: HashMap<usize, (Weak<Vec<EvalValue>>, u128)>,
+    objects: HashMap<usize, (Weak<orbital_core_base::value::ValueMap>, u128)>,
+    prune_at: usize,
+}
+
+static CONTAINER_DIGESTS: LazyLock<Mutex<ContainerDigests>> =
+    LazyLock::new(|| Mutex::new(ContainerDigests { arrays: HashMap::new(), objects: HashMap::new(), prune_at: 4096 }));
+
+#[cfg(test)]
+thread_local! {
+    static CONTAINER_DIGESTS_COMPUTED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn container_digests_computed() -> usize {
+    CONTAINER_DIGESTS_COMPUTED.with(std::cell::Cell::get)
+}
+
+fn prune_container_digests(memo: &mut ContainerDigests) {
+    if memo.arrays.len() + memo.objects.len() > memo.prune_at {
+        memo.arrays.retain(|_, (held, _)| held.strong_count() > 0);
+        memo.objects.retain(|_, (held, _)| held.strong_count() > 0);
+        memo.prune_at = ((memo.arrays.len() + memo.objects.len()) * 2).max(4096);
+    }
+}
+
+/// The xxh3-128 of a wide array's canonical encoding, digested once per allocation: a value is written only through
+/// `Shared`'s copy-on-write, which moves it to a new allocation while this memo's weak handle exists, so a held
+/// address always names the content that was digested. A table that grows by one row digests the new row only.
+fn array_digest(items: &Shared<Vec<EvalValue>>) -> u128 {
+    let held: &Vec<EvalValue> = items;
+    let at = held as *const Vec<EvalValue> as usize;
+    if let Some((weak, digest)) = CONTAINER_DIGESTS.lock().arrays.get(&at) {
+        if weak.upgrade().is_some_and(|live| (&*live as *const Vec<EvalValue> as usize) == at) {
+            return *digest;
+        }
+    }
+    let mut h = Xxh3::new();
+    items.iter().for_each(|v| digest_value(&mut h, v));
+    let digest = h.digest128();
+    #[cfg(test)]
+    CONTAINER_DIGESTS_COMPUTED.with(|count| count.set(count.get() + 1));
+    let mut memo = CONTAINER_DIGESTS.lock();
+    memo.arrays.insert(at, (Shared::downgrade(items), digest));
+    prune_container_digests(&mut memo);
+    digest
+}
+
+/// [`array_digest`] for a wide object: its keys sorted, each with its value.
+fn object_digest(map: &Shared<orbital_core_base::value::ValueMap>) -> u128 {
+    let held: &orbital_core_base::value::ValueMap = map;
+    let at = held as *const orbital_core_base::value::ValueMap as usize;
+    if let Some((weak, digest)) = CONTAINER_DIGESTS.lock().objects.get(&at) {
+        if weak.upgrade().is_some_and(|live| (&*live as *const orbital_core_base::value::ValueMap as usize) == at) {
+            return *digest;
+        }
+    }
+    let mut h = Xxh3::new();
+    let mut keys: Vec<&str> = map.keys().map(|k| k.as_str()).collect();
+    keys.sort();
+    for k in keys {
+        digest_str(&mut h, k);
+        digest_value(&mut h, &map[k]);
+    }
+    let digest = h.digest128();
+    #[cfg(test)]
+    CONTAINER_DIGESTS_COMPUTED.with(|count| count.set(count.get() + 1));
+    let mut memo = CONTAINER_DIGESTS.lock();
+    memo.objects.insert(at, (Shared::downgrade(map), digest));
+    prune_container_digests(&mut memo);
+    digest
+}
+
+/// A bytes value folds in its length and its own xxh3-128 ([`bytes_digest`]); a wide array or object folds in its
+/// length and its own ([`array_digest`], [`object_digest`]).
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
         EvalValue::Lambda(_) | EvalValue::Sealed(_) => {
@@ -284,10 +362,20 @@ fn digest_value(h: &mut Xxh3, value: &EvalValue) {
             h.update(b"s");
             digest_str(h, s);
         }
+        EvalValue::Array(items) if items.len() >= CONTAINER_MEMO_MIN => {
+            h.update(b"A");
+            digest_len(h, items.len());
+            h.update(&array_digest(items).to_le_bytes());
+        }
         EvalValue::Array(items) => {
             h.update(b"a");
             digest_len(h, items.len());
             items.iter().for_each(|v| digest_value(h, v));
+        }
+        EvalValue::Object(map) if map.len() >= CONTAINER_MEMO_MIN => {
+            h.update(b"O");
+            digest_len(h, map.len());
+            h.update(&object_digest(map).to_le_bytes());
         }
         EvalValue::Object(map) => {
             h.update(b"o");
@@ -615,6 +703,53 @@ mod tests {
         assert_eq!(Arc::strong_count(&second), 2, "B's field digest is still held after A stepped");
         assert!(visits.contains("A", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&first))])));
         assert!(!visits.contains("A", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&second))])), "control: the identity still reads the value");
+    }
+
+    fn wide(seed: i64) -> EValue {
+        EValue::Array((0..CONTAINER_MEMO_MIN as i64).map(|i| EValue::Int(seed + i)).collect::<Vec<_>>().into())
+    }
+
+    #[test]
+    fn a_wide_container_is_one_value_by_content_whatever_holds_it() {
+        let mut visits = DispatchVisits::default();
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &frame(&wide(1))));
+        assert!(visits.contains("T", "E", "s", &EValue::Null, &frame(&wide(1))), "an equal wide array in a new allocation");
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&wide(2))), "control: another wide array is another frame");
+        let narrow = |n: i64| ev(json!([n, n + 1]));
+        assert!(visits.insert("T", "E", "s", &EValue::Null, &frame(&narrow(1))));
+        assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&wide(1 << 20))), "control: a narrow array is not a wide one");
+    }
+
+    #[test]
+    fn a_wide_container_written_in_place_is_digested_again() {
+        let mut items: Shared<Vec<EValue>> = (0..CONTAINER_MEMO_MIN as i64).map(EValue::Int).collect::<Vec<_>>().into();
+        let before = payload_digest(&EValue::Array(items.clone()));
+        items.push(EValue::Int(-1));
+        let after = payload_digest(&EValue::Array(items.clone()));
+        assert_ne!(before, after, "the only handle wrote through copy-on-write: the memo does not answer for the old content");
+        items.pop();
+        assert_eq!(payload_digest(&EValue::Array(items)), before, "control: back to the first content is the first digest");
+    }
+
+    #[test]
+    fn a_grown_container_digests_only_what_is_new() {
+        let rows: Vec<EValue> = (0..64).map(|i| wide(i * 100)).collect();
+        let held = EValue::Array(rows.clone().into());
+        let before = container_digests_computed();
+        payload_digest(&held);
+        let first = container_digests_computed() - before;
+        assert_eq!(first, 65, "the table and each of its 64 wide rows, once");
+        let mut grown = rows.clone();
+        grown.push(wide(999_000));
+        let grown = EValue::Array(grown.into());
+        let before = container_digests_computed();
+        let a = payload_digest(&grown);
+        assert_eq!(container_digests_computed() - before, 2, "the new table and its one new row: the 64 held rows keep their digests");
+        let before = container_digests_computed();
+        assert_eq!(payload_digest(&grown), a);
+        assert_eq!(container_digests_computed() - before, 0, "control: the same allocation again digests nothing");
+        let rebuilt: Vec<EValue> = (0..64).map(|i| wide(i * 100)).chain([wide(999_000)]).collect();
+        assert_eq!(payload_digest(&EValue::Array(rebuilt.into())), a, "control: equal content in new allocations is the same digest");
     }
 
     #[test]

@@ -417,6 +417,14 @@ enum Arguments {
     Refused,
 }
 
+/// The payload a `program/dispatch` names: an object, its JSON text, or nothing (`{}`); text that is not a JSON object is refused.
+pub fn dispatch_arguments(raw: Option<&Value>) -> Result<Value, String> {
+    match arguments_of(raw)? {
+        Arguments::Payload(payload) => Ok(payload),
+        Arguments::Refused => Err("program/dispatch: the arguments are not a JSON object".to_string()),
+    }
+}
+
 fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
     match raw {
         None | Some(Value::Null) => Ok(Arguments::Payload(Value::object(ValueMap::default()))),

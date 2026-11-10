@@ -859,7 +859,8 @@ impl RuntimeKernel {
                 )))
             }
         };
-        let payload = self.copy_into(&session, &args.get(1).cloned().unwrap_or(Value::Null))?;
+        let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
+        let payload = self.copy_into(&session, &given)?;
         let keyed = self.io.keyed_call();
         if keyed || session.grants.is_some() {
             if keyed {

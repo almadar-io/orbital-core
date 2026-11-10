@@ -1118,36 +1118,22 @@ fn merge_entity(base: &Value, set: &Value) -> Value {
 /// stage) and a `:param` page are not entries. Twin of `appNavItems` in `@almadar/runtime`
 /// `render-sigils.ts`; empty when there is none.
 fn app_nav_items(schema: &OrbitalSchema) -> Vec<Value> {
-    let mut seen = std::collections::HashSet::new();
-    let mut items = Vec::new();
-    for orbital in &schema.orbitals {
-        for page in orbital
-            .pages
-            .iter()
-            .flatten()
-            .filter_map(orbital_core_base::schema::types::PageRef::as_inline)
-        {
-            let Some(label) = &page.label else { continue };
-            if page.path.contains(':') || !seen.insert(page.path.clone()) {
-                continue;
-            }
+    orbital_core_base::schema::types::nav_entries(schema.orbitals.iter().flat_map(|orbital| orbital.pages.iter().flatten()))
+        .into_iter()
+        .map(|entry| {
             let mut item = ValueMap::from_iter([
-                ("href".into(), Value::string(page.path.clone())),
-                ("label".into(), Value::string(label.clone())),
+                ("href".into(), Value::string(entry.href)),
+                ("label".into(), Value::string(entry.label)),
             ]);
-            if let Some(icon) = &page.icon {
-                item.insert("icon".into(), Value::string(icon.clone()));
+            if let Some(icon) = entry.icon {
+                item.insert("icon".into(), Value::string(icon));
             }
-            if let Some(roles) = &page.roles {
-                item.insert(
-                    "roles".into(),
-                    Value::Array(roles.iter().cloned().map(Value::string).collect()),
-                );
+            if let Some(roles) = entry.roles {
+                item.insert("roles".into(), Value::Array(roles.into_iter().map(Value::string).collect()));
             }
-            items.push(Value::object(item));
-        }
-    }
-    items
+            Value::object(item)
+        })
+        .collect()
 }
 
 /// The app-wide `@pages` after registering another program: earlier entries first, a later entry whose

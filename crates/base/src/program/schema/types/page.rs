@@ -99,6 +99,70 @@ pub struct PageDefinition {
     pub translation_of: Option<String>,
 }
 
+/// One `@pages` nav entry: a root route page that declares its nav `@label`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NavEntry {
+    pub href: String,
+    pub label: String,
+    pub icon: Option<String>,
+    pub roles: Option<Vec<String>>,
+}
+
+/// `@pages` of the pages given, in their order: each inline route page that declares a nav `@label` and has no
+/// `:param` in its path, once per path (the first wins). A page reference is no entry: it is resolved before here.
+pub fn nav_entries<'a>(pages: impl IntoIterator<Item = &'a PageRef>) -> Vec<NavEntry> {
+    let mut seen = std::collections::HashSet::new();
+    let mut entries = Vec::new();
+    for page in pages.into_iter().filter_map(PageRef::as_inline).filter(|page| page.is_route()) {
+        let Some(label) = &page.label else { continue };
+        if page.path.contains(':') || !seen.insert(page.path.clone()) {
+            continue;
+        }
+        entries.push(NavEntry { href: page.path.clone(), label: label.clone(), icon: page.icon.clone(), roles: page.roles.clone() });
+    }
+    entries
+}
+
+#[cfg(test)]
+mod nav_entry_tests {
+    use super::*;
+
+    fn pages(json: serde_json::Value) -> Vec<PageRef> {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn g_orb_282_nav_entries_are_the_labelled_root_route_pages_once_per_path_in_order() {
+        let listed = pages(serde_json::json!([
+            { "name": "Home", "path": "/", "label": "Home", "icon": "home" },
+            { "name": "Team", "path": "/team", "label": "Team", "roles": ["admin"] },
+            { "name": "TeamAgain", "path": "/team", "label": "Team twice" },
+            { "name": "Detail", "path": "/team/:id", "label": "Member" },
+            { "name": "Hidden", "path": "/hidden" },
+            "Other.pages.Linked"
+        ]));
+        let entries = nav_entries(&listed);
+        assert_eq!(
+            entries,
+            vec![
+                NavEntry { href: "/".into(), label: "Home".into(), icon: Some("home".into()), roles: None },
+                NavEntry { href: "/team".into(), label: "Team".into(), icon: None, roles: Some(vec!["admin".into()]) },
+            ],
+            "a second page on one path, a :param page, an unlabelled page and a page reference are no entries"
+        );
+    }
+
+    #[test]
+    fn g_orb_282_a_page_of_another_protocol_is_no_nav_entry() {
+        let listed = pages(serde_json::json!([
+            { "name": "Boot", "path": "/boot", "protocol": "boot", "label": "Boot" },
+            { "name": "Home", "path": "/", "label": "Home" }
+        ]));
+        let hrefs: Vec<String> = nav_entries(&listed).into_iter().map(|entry| entry.href).collect();
+        assert_eq!(hrefs, vec!["/".to_string()], "control: the route page beside it is listed");
+    }
+}
+
 impl PageDefinition {
     pub fn is_route(&self) -> bool {
         self.protocol.is_none()
