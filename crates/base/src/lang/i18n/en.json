@@ -743,6 +743,7 @@
     "bytes/to-string": "bytes/to-string",
     "bytes/valid-utf8": "bytes/valid-utf8",
     "bytes/write-uint": "bytes/write-uint",
+    "bytes/xor": "bytes/xor",
     "call-service": "call-service",
     "cancel-call": "cancel-call",
     "credential-connect": "credential-connect",

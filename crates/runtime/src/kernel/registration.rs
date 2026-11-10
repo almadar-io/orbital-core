@@ -509,7 +509,9 @@ impl RuntimeKernel {
                     if def.persistence == Some(Persistence::Runtime) {
                         self.io.claim_runtime(&def.name);
                     }
-                    if def.persistence != Some(Persistence::Runtime) && !def.browser {
+                    // A client kernel never runs a store driver: its rows are the copy the server sent (EXEC-STORE-4).
+                    let client = self.effect_executor.environment() == RuntimeEnvironment::Client;
+                    if def.persistence != Some(Persistence::Runtime) && !def.browser && !client {
                         if let Some(driver) = def.store.as_ref().or(schema.store.as_ref()) {
                             self.io.bind_store(&def.name, driver);
                             self.declare_store_capabilities(schema, &def.name, driver);

@@ -359,6 +359,64 @@ fn a_bound_entitys_fetch_reads_the_row_its_driver_answers() {
     assert!(!control.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{control:?}");
 }
 
+// EXEC-DIST-9 + EXEC-STORE-4: a driver mounted only on a `boot` page answers a viewer session's ask in the ask's
+// frame, including the deliveries it makes to itself before it replies (std-firestore's FS_SEND, G-CROSS-564).
+fn two_step_driver_program(boot: bool) -> OrbitalSchema {
+    let mut program = store_program_json(true, false, None);
+    let driver = &mut program["orbitals"][1]["traits"][0]["stateMachine"];
+    driver["states"].as_array_mut().unwrap().push(serde_json::json!({ "name": "busy" }));
+    driver["events"].as_array_mut().unwrap().push(serde_json::json!({ "key": "RD_NEXT", "name": "RD_NEXT" }));
+    let transitions = driver["transitions"].as_array_mut().unwrap();
+    transitions.retain(|t| t["event"] != "ROW_READ");
+    transitions.push(serde_json::json!({ "from": "ready", "to": "busy", "event": "ROW_READ",
+        "effects": [["emit", "RD_NEXT", { "key": "@payload.key", "id": "@payload.id" }]] }));
+    transitions.push(serde_json::json!({ "from": "busy", "to": "ready", "event": "RD_NEXT",
+        "effects": [["emit", "ROW_FOUND", { "key": "@payload.key", "row": { "id": "@payload.id", "used": false } }]] }));
+    program["orbitals"][0]["pages"] = serde_json::json!([{ "name": "Home", "path": "/", "traits": [{ "ref": "Desk" }] }]);
+    if boot {
+        program["orbitals"][1]["pages"] = serde_json::json!([{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "RowsDriver" }] }]);
+    }
+    serde_json::from_value(program).unwrap()
+}
+
+fn look_in_session(boot: bool) -> Vec<serde_json::Value> {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    kernel.register_schema(two_step_driver_program(boot)).unwrap();
+    assert_eq!(kernel.program_wide("RowsDriver"), boot);
+    let host_rows = InMemoryEntityCache::new();
+    let _viewer = kernel.enter_session("tab-a");
+    let payload: Value = serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap();
+    let progress = kernel.start_dispatch("Desk", None, "LOOK", payload, None, None).unwrap();
+    let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
+        BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)
+    })
+    .unwrap();
+    EventResponse::from_process_results(&outcomes, "Desk", "LOOK")
+        .effect_results
+        .iter()
+        .flatten()
+        .map(|r| serde_json::to_value(r).unwrap())
+        .collect()
+}
+
+#[test]
+fn a_boot_mounted_driver_answers_a_viewer_sessions_ask_after_a_delivery_to_itself() {
+    let seen = look_in_session(true);
+    assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
+    let fetched = seen.iter().find(|r| r["effect"] == "fetch").unwrap();
+    assert_eq!(fetched["data"], serde_json::json!([{ "id": "t1", "used": false }]), "{seen:?}");
+}
+
+#[test]
+fn control_a_route_less_driver_answers_the_same_ask_after_a_delivery_to_itself() {
+    let seen = look_in_session(false);
+    assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
+}
+
 // `persist delete … { where: (fn row …) }`: ONE conditional op; a row the guard rejects is `not-found` (EXEC-STEP-8).
 fn guarded_take(id: &str, guarded: bool) -> serde_json::Value {
     let program = store_program_seeded(false, false);

@@ -800,7 +800,7 @@ impl EncryptedCredentialStore {
                 ));
             }
             let refresh = self
-                .resolve(source, None)
+                .grant_input(source)
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| {
                     failure(

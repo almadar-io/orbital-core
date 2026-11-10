@@ -173,6 +173,23 @@ impl Operator for BytesConcatOp {
     }
 }
 
+/// bytes/xor (data, key) - data XOR key repeated cyclically; an empty key answers null
+pub struct BytesXorOp;
+impl Operator for BytesXorOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "bytes/xor", == 2);
+        let mut data = bytes_arg(&args[0], ctx, "bytes/xor")?;
+        let key = bytes_arg(&args[1], ctx, "bytes/xor")?;
+        if key.is_empty() {
+            return Ok(Value::Null);
+        }
+        for (byte, k) in data.iter_mut().zip(key.iter().cycle()) {
+            *byte ^= k;
+        }
+        Ok(Value::bytes(data))
+    }
+}
+
 /// bytes/equals - same decoded bytes, compared in constant time (the one `constant_time_eq_bytes`)
 pub struct BytesEqualsOp;
 impl Operator for BytesEqualsOp {
@@ -375,6 +392,44 @@ mod tests {
             Err(e) => assert!(e.to_string().contains("invalid"), "{e}"),
             Ok(v) => panic!("expected an error, got {v:?}"),
         }
+    }
+
+    #[test]
+    fn xor_cycles_the_key_over_the_data() {
+        assert_eq!(wire(serde_json::json!(["bytes/xor", "", "AQID"])), "", "empty data");
+        assert_eq!(
+            wire(serde_json::json!(["bytes/xor", "AQI=", "/w=="])),
+            "/v0=",
+            "a key shorter than the data repeats; [1,2] ^ [255]"
+        );
+        assert_eq!(
+            wire(serde_json::json!(["bytes/xor", "AQ==", "AQIDBA=="])),
+            "AA==",
+            "a key longer than the data uses its head"
+        );
+        for tail in 1..=3 {
+            let data: Vec<u8> = (0..(8 + tail)).map(|i| (i * 37 + 5) as u8).collect();
+            let key = [0xA5u8, 0x5A, 0x0F, 0xF0];
+            let expected: Vec<u8> = data.iter().enumerate().map(|(i, b)| b ^ key[i % 4]).collect();
+            let form = serde_json::json!(["bytes/xor", codec::base64_encode(&data), codec::base64_encode(&key)]);
+            assert_eq!(wire(form), codec::base64_encode(&expected), "tail of {tail}");
+        }
+    }
+
+    #[test]
+    fn xor_twice_with_a_four_byte_key_is_the_identity() {
+        let data = codec::base64_encode(b"a WebSocket payload of 23");
+        let key = codec::base64_encode(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        let once = wire(serde_json::json!(["bytes/xor", data, key]));
+        assert_ne!(once, data);
+        assert_eq!(wire(serde_json::json!(["bytes/xor", once, key])), data);
+    }
+
+    #[test]
+    fn xor_with_an_empty_key_answers_null_and_bad_arguments_are_refused() {
+        assert_eq!(eval(serde_json::json!(["bytes/xor", "AQID", ""])).unwrap(), Value::Null);
+        fails_invalid(serde_json::json!(["bytes/xor", "%%", "AQ=="]));
+        fails_kind(serde_json::json!(["bytes/xor", "AQID", 7]));
     }
 
     #[test]

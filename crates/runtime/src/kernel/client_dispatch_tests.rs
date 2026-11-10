@@ -744,6 +744,42 @@ fn edge_a_program_without_locales_accepts_any_viewer_locale() {
     assert!(kernel.enter_locale(Some("en")).is_ok());
 }
 
+/// `Note` is persistent and bound to the store driver `Rows`, an orbital the browser never runs (EXEC-STORE-4).
+fn store_bound_response_schema() -> OrbitalSchema {
+    let mut schema = serde_json::to_value(server_response_schema()).unwrap();
+    schema["orbitals"][0]["entity"]["persistence"] = serde_json::json!("persistent");
+    schema["orbitals"][0]["entity"]["store"] = serde_json::json!("Rows");
+    schema["orbitals"].as_array_mut().unwrap().push(serde_json::json!({
+        "name": "Rows",
+        "entity": { "name": "RowsRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+        "traits": [{ "name": "RowsDriver", "linkedEntity": "RowsRun",
+            "stateMachine": { "states": [{ "name": "ready", "isInitial": true }], "transitions": [] } }]
+    }));
+    serde_json::from_value(schema).unwrap()
+}
+
+fn note_response() -> EventResponse {
+    let mut row = ValueMap::default();
+    row.insert("id".into(), Value::string("n-1"));
+    let mut data = HashMap::new();
+    data.insert("Note".to_string(), vec![Value::object(row)]);
+    EventResponse { success: true, transitioned: true, data: Some(data), ..Default::default() }
+}
+
+#[test]
+fn a_client_kernel_keeps_the_rows_the_server_sent_for_a_store_bound_entity() {
+    let (kernel, _) = client_kernel_with(store_bound_response_schema());
+    kernel.apply_server_response(&note_response(), &HashSet::new()).unwrap();
+    assert!(kernel.entity_source().read("Note", "n-1").unwrap().is_object());
+}
+
+#[test]
+fn control_a_server_kernel_answers_a_store_bound_entity_only_through_its_driver() {
+    let kernel = server_kernel_with(store_bound_response_schema());
+    let refused = kernel.apply_server_response(&note_response(), &HashSet::new()).unwrap_err();
+    assert!(refused.to_string().contains("answered only on the resumable path"), "{refused}");
+}
+
 #[test]
 fn apply_server_response_merges_data_and_states() {
     let kernel = server_kernel_with(server_response_schema());

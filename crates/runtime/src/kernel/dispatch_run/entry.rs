@@ -613,6 +613,7 @@ impl RuntimeKernel {
             origin: self.next_dispatch_origin(),
             provisional: None,
             program_deliveries: VecDeque::new(),
+            program: false,
             span,
         }
     }

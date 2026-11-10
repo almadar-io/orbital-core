@@ -379,6 +379,7 @@ operator_dispatch! {
         "bytes/concat" => K::BytesConcatOp,
         "bytes/equals" => K::BytesEqualsOp,
         "bytes/index-of" => K::BytesIndexOfOp,
+        "bytes/xor" => K::BytesXorOp,
         "bytes/at" => K::BytesAtOp,
         "bytes/read-uint" => K::BytesReadUintOp,
         "bytes/read-int" => K::BytesReadIntOp,

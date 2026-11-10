@@ -162,6 +162,8 @@
 {"operator":"bytes/write-uint","position":0,"expr":["bytes/write-uint",4660,2,"be"]},
 {"operator":"bytes/write-uint","position":1,"expr":["bytes/write-uint",4660,2,"be"]},
 {"operator":"bytes/write-uint","position":2,"expr":["bytes/write-uint",4660,2,"be"]},
+{"operator":"bytes/xor","position":0,"expr":["bytes/xor","aGk=","AQID"]},
+{"operator":"bytes/xor","position":1,"expr":["bytes/xor","aGk=","AQID"]},
 {"operator":"csv/parse","position":0,"expr":["csv/parse","name,age\nAda,36"]},
 {"operator":"default","position":0,"expr":["default",5,0]},
 {"operator":"default","position":1,"expr":["default",5,0]},

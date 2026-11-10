@@ -274,6 +274,7 @@ operator_kind! {
     BytesEqualsOp => BytesEqualsOp,
     BytesValidUtf8Op => BytesValidUtf8Op,
     BytesIndexOfOp => BytesIndexOfOp,
+    BytesXorOp => BytesXorOp,
     BytesAtOp => BytesAtOp,
     BytesReadUintOp => BytesReadUintOp,
     BytesReadIntOp => BytesReadIntOp,

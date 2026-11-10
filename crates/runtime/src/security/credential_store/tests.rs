@@ -1447,6 +1447,46 @@ mod oauth_connect {
             assert_eq!(store.resolve("DRIVE_USER", None), None);
         }
 
+        #[test]
+        fn a_refresh_token_held_only_in_the_environment_is_exchanged_like_a_stored_one() {
+            let (_, _, store) = clocked();
+            let _credentials = crate::credentials::Credentials::from_env(env_of(&[("DRIVE_REFRESH", "env-refresh-0001".to_string())]))
+                .with_encrypted_store(Arc::clone(&store))
+                .unwrap();
+            let post = Recording::new(vec![(200, KEPT)]);
+            store.connect(&stored_refresh_grant(), &post).unwrap();
+            assert!(post.bodies()[0].starts_with("grant_type=refresh_token&refresh_token=env-refresh-0001&"), "{}", post.bodies()[0]);
+            assert_eq!(store.resolve("DRIVE_USER", None).as_deref(), Some("ACCESS-3"));
+            assert_eq!(store.resolve("DRIVE_REFRESH", None), None, "the environment token is read, never copied into the store");
+        }
+
+        #[test]
+        fn control_a_stored_refresh_token_shadows_the_environment() {
+            let (_, _, store) = clocked();
+            store.set("google", "DRIVE_REFRESH", "stored-refresh-0001", None).unwrap();
+            let _credentials = crate::credentials::Credentials::from_env(env_of(&[("DRIVE_REFRESH", "env-refresh-0001".to_string())]))
+                .with_encrypted_store(Arc::clone(&store))
+                .unwrap();
+            let post = Recording::new(vec![(200, KEPT)]);
+            store.connect(&stored_refresh_grant(), &post).unwrap();
+            assert!(post.bodies()[0].contains("refresh_token=stored-refresh-0001&"), "{}", post.bodies()[0]);
+        }
+
+        #[test]
+        fn control_under_store_source_an_environment_refresh_token_is_not_stored() {
+            let (_, _, store) = clocked();
+            let source = ("ALMADAR_CREDENTIALS_SOURCE", "store".to_string());
+            let _credentials =
+                crate::credentials::Credentials::from_env(env_of(&[("DRIVE_REFRESH", "env-refresh-0001".to_string()), source]))
+                    .with_encrypted_store(Arc::clone(&store))
+                    .unwrap();
+            let silent = Recording::new(vec![]);
+            let refused = store.connect(&stored_refresh_grant(), &silent).unwrap_err();
+            assert_eq!(refused.kind, ConnectFailureKind::InvalidGrant);
+            assert!(refused.message.contains("(the refresh token) is not stored"), "{}", refused.message);
+            assert!(silent.bodies().is_empty());
+        }
+
         fn request(json: Value) -> Result<CredentialGrant, crate::credential_admin::ConnectFailure> {
             CredentialGrant::from_request(&serde_json::from_value(json).unwrap(), Some("viewer-1"))
         }
