@@ -235,6 +235,11 @@ impl EntityDefinition {
 pub struct AccessWaivers {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub read: Option<String>,
+    /// `@read server "<reason>"`: no viewer predicate scopes these rows because the server program reads them before a
+    /// viewer exists. Only a server-side fetch of a trait reads them; they are never in an agent's read set and a
+    /// client-run trait's fetch of them is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

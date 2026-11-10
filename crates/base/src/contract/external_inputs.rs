@@ -213,7 +213,8 @@ mod tests {
                 "auxiliaryEntities": [
                     entity("Public", json!({ "access_waivers": { "read": "a public catalogue" } })),
                     entity("Silent", json!({})),
-                    entity("WriteOnly", json!({ "access_waivers": { "create": "anyone may submit" } }))
+                    entity("WriteOnly", json!({ "access_waivers": { "create": "anyone may submit" } })),
+                    entity("ServerOnly", json!({ "access_waivers": { "read_server": "looked up before a viewer exists" } }))
                 ],
                 "traits": [], "pages": []
             }]
@@ -222,7 +223,7 @@ mod tests {
         assert_eq!(
             readable_entities_of(&s),
             vec!["Scoped".to_string(), "Public".to_string()],
-            "a declared @read or a declared read waiver; an entity that states neither, or waives only another operation, is not offered"
+            "a declared @read or a declared read waiver; an entity that states neither, waives only another operation, or is read by the server only (G-STD-218), is not offered"
         );
     }
 }

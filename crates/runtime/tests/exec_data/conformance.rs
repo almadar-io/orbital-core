@@ -105,3 +105,42 @@ fn exec_data_3_an_id_carrying_row_of_a_persisted_shared_entity_is_not_folded() {
     let (_, seen_b) = read_with_carried(&control, json!({ "id": "b", "fromB": "client-B" }));
     assert_eq!(seen_b.as_deref(), Some("client-B"), "control, not shared: the carried copy folds");
 }
+
+fn server_read_fetch_errors(waivers: serde_json::Value, dispatch: Option<&str>) -> Vec<String> {
+    let mut desk = serde_json::json!({ "name": "Desk", "linkedEntity": "Ticket",
+        "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "LOOK", "effects": [["fetch", "Ticket", {}]] }] } });
+    if let Some(mode) = dispatch {
+        desk["dispatch"] = serde_json::json!(mode);
+    }
+    let kernel = crate::support::TestKernel::server().build(serde_json::json!({
+        "name": "Desk",
+        "typeContractVersion": 1, "orbitals": [{ "name": "Tickets",
+            "entity": { "name": "Ticket", "persistence": "persistent", "collection": "tickets", "access_waivers": waivers,
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [desk] }]
+    }));
+    let outcomes = kernel.dispatch("Desk", None, "LOOK", orbital_core_base::value::Value::Null).unwrap();
+    outcomes
+        .iter()
+        .flat_map(|(_, r)| r.effect_results.iter())
+        .filter(|e| e.is_failed())
+        .filter_map(|e| e.error.clone())
+        .collect()
+}
+
+#[test]
+fn g_std_218_a_client_run_trait_cannot_fetch_an_entity_only_the_server_reads() {
+    for mode in ["client", "optimistic"] {
+        let errors = server_read_fetch_errors(serde_json::json!({ "read_server": "looked up before a viewer exists" }), Some(mode));
+        assert!(errors.iter().any(|e| e.contains("declares `@read server`")), "{mode}: {errors:?}");
+    }
+}
+
+#[test]
+fn g_std_218_control_a_server_trait_reads_it_and_an_open_waiver_stays_open_to_a_client_trait() {
+    let server = server_read_fetch_errors(serde_json::json!({ "read_server": "looked up before a viewer exists" }), None);
+    assert!(server.iter().all(|e| !e.contains("@read server")), "the server program's own trait reads it: {server:?}");
+    let open = server_read_fetch_errors(serde_json::json!({ "read": "a public catalogue" }), Some("client"));
+    assert!(open.iter().all(|e| !e.contains("@read server")), "an open-read waiver refuses nobody: {open:?}");
+}

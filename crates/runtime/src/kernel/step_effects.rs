@@ -302,6 +302,24 @@ impl RuntimeKernel {
         held
     }
 
+    /// Why the running step may not fetch `entity`: it declares `@read server` and the step's trait runs in the client
+    /// (`[client]` or `[optimistic]`). `None` for every other fetch.
+    fn server_read_refusal(&self, entity: &str) -> Option<String> {
+        let server_only = self.registry.entity_definitions.read().get(entity).is_some_and(|def| {
+            def.access_waivers.as_ref().is_some_and(|waivers| waivers.read_server.is_some())
+        });
+        if !server_only {
+            return None;
+        }
+        let (trait_name, _) = self.step.step_site.read().clone().unwrap_or_default();
+        match self.trait_dispatch_mode(&trait_name) {
+            Some(DispatchMode::HybridClientOnly | DispatchMode::RuntimeOptimistic) => Some(format!(
+                "fetch: `{entity}` declares `@read server`, so only a server trait reads it; `{trait_name}` runs in the client"
+            )),
+            _ => None,
+        }
+    }
+
     /// Execute a single leaf effect (`set`/`render-ui`/`emit`/`fetch`/…) via the
     /// canonical effect handler, capturing Set-effect data.
     pub(super) fn exec_leaf_effect(
@@ -317,6 +335,13 @@ impl RuntimeKernel {
         let Some(effect) = orbital_core_base::effect_types::parse_effect(effect_expr)? else {
             return Ok(());
         };
+        if let Effect::Fetch { entity_type, .. } = &effect {
+            if let Some(refusal) = self.server_read_refusal(entity_type) {
+                tracing::error!(site = %self.effect_site(), entity = %entity_type, "kernel: fetch of a server-read entity refused");
+                effect_results.push(EffectResult::failed(effect.clone(), &refusal));
+                return Ok(());
+            }
+        }
         match &effect {
             Effect::Set { path, value } => {
                 let Some(evaluated_value) =
