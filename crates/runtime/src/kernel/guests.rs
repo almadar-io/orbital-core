@@ -439,6 +439,16 @@ impl RuntimeKernel {
             Some(Value::Object(options)) => Some(options.clone()),
             _ => None,
         };
+        let give_program = match options.as_ref().and_then(|o| o.get("program").cloned()) {
+            None => false,
+            Some(Value::Bool(give)) => give,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `program` is true or false",
+                ))
+            }
+        };
         let asked_grants = options.as_ref().and_then(|o| o.get("grants").cloned());
         let asked_arenas = options.as_ref().and_then(|o| o.get("arenas").cloned());
         let keep_declared = match options.as_ref().and_then(|o| o.get("declared").cloned()) {
@@ -482,8 +492,14 @@ impl RuntimeKernel {
         };
         let mut granted: Option<OsGrants> = None;
         let mut opener_held: Option<OsGrants> = None;
-        if asked_grants.is_some() || asked_arenas.is_some() || keep_declared {
+        if asked_grants.is_some() || asked_arenas.is_some() || keep_declared || give_program {
             let held = self.may_spawn_guest("program/open")?;
+            if give_program && !held.kernel_allows(KernelKind::Program, None) {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Denied,
+                    "program/open: `program` needs the grant kernel: { \"guest\": [spawn, program] }",
+                ));
+            }
             let guest: OsGrants = serde_json::from_value(value_to_json(
                 asked_grants
                     .as_ref()
@@ -568,7 +584,7 @@ impl RuntimeKernel {
                 return Err(failure(format!("program/open: `env` names {name}, which the opener holds no grant for")));
             }
         }
-        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env));
+        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {

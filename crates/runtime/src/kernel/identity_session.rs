@@ -11,8 +11,9 @@ use orbital_core_base::viewer::{is_identity_effect, SIGN_IN};
 /// What a session's `@user` is once it took part in the identity effects.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum IdentityBinding {
-    /// `user` is a `[runtime]` identity's `@user`, kept in the binding so it is freed with the session; `None` reads
-    /// the `[persistent]` identity's row from its store.
+    /// `user` is the session's `@user`: a `[runtime]` identity's row, kept in the binding so it is freed with the
+    /// session, or the `[persistent]` identity's row as last read, held until the kernel writes that entity; `None`
+    /// reads the persistent row from its store.
     Subject { subject: Arc<str>, user: Option<Value> },
     Anonymous,
 }
@@ -142,7 +143,16 @@ impl RuntimeKernel {
                     return Err(Fault::Suspended);
                 }
                 let row = found.map_err(KernelError::Internal)?;
-                Ok(subject_user(&subject, row.as_deref()))
+                let user = subject_user(&subject, row.as_deref());
+                if row.is_some() {
+                    let key = self.identity_key();
+                    if let Some(IdentityBinding::Subject { subject: held, user: slot }) = self.sessions.identities.write().get_mut(&*key) {
+                        if *held == subject && slot.is_none() {
+                            *slot = Some(user.clone());
+                        }
+                    }
+                }
+                Ok(user)
             }
         }
     }
@@ -259,13 +269,12 @@ impl RuntimeKernel {
                 return Err(Refusal::Suspended);
             }
             match found {
-                Ok(Some(_)) => {}
+                Ok(Some(row)) => Some(subject_user(&subject, Some(&row))),
                 Ok(None) => {
                     return Err(refused("no-identity", format!("{} has no row for subject {subject}", decl.name)));
                 }
                 Err(error) => return Err(refused("store", error)),
             }
-            None
         };
         self.stage_identity(IdentityBinding::Subject { subject: Arc::from(subject.as_str()), user });
         Ok(subject)

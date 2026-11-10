@@ -31,6 +31,7 @@ fn bound_executor(port: &Arc<IoPort>) -> EffectExecutor {
         entity_policies: Arc::default(),
         entity_definitions: Arc::default(),
         written: Arc::default(),
+            identities: Arc::default(),
     });
     EffectExecutor::server()
         .with_fetch_handler(rows.clone())

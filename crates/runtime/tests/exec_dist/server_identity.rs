@@ -434,3 +434,110 @@ fn a_program_session_identity_bound_to_a_store_is_read_by_a_driver_that_reads_no
     let read = frames(&finish(&server, programwide("READ", json!({})), &[]));
     assert_eq!(read["Gate"]["who"], json!("user-1"), "{read}");
 }
+
+// EXEC-IDENTITY-1: a persistent identity's row is read once and held in the session's binding, read again only after
+// the kernel writes that identity entity (owner ruling 2026-11-10: a store-bound row read per step flooded Firestore).
+// A tick in the program session belongs to no viewer and reads the anonymous viewer.
+fn held_identity_schema() -> OrbitalSchema {
+    let mut schema = serde_json::to_value(schema("persistent")).unwrap();
+    let gate = &mut schema["orbitals"][0]["traits"][0];
+    gate["stateMachine"]["transitions"].as_array_mut().unwrap().push(json!(
+        { "from": "idle", "to": "idle", "event": "PROMOTE", "effects": [["persist", "update", "Person", "@user.id", { "role": "owner" }]] }));
+    schema["orbitals"].as_array_mut().unwrap().push(json!({ "name": "Probes",
+        "entity": { "name": "Seen", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "who", "type": "string" }, { "name": "role", "type": "string" }] },
+        "traits": [{ "name": "Probe", "linkedEntity": "Seen",
+            "ticks": [{ "name": "beat", "interval": 1000, "effects": [["set", "@entity.who", "@user.id"]] }],
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "LOOK", "effects": [["set", "@entity.who", "@user.id"], ["set", "@entity.role", "@user.role"]] }] } }] }));
+    serde_json::from_value(schema).unwrap()
+}
+
+struct Counted {
+    kernel: orbital_core_runtime::kernel::RuntimeKernel,
+    rows: orbital_core_runtime::entity_source::InMemoryEntityCache,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Counted {
+    fn new() -> Counted {
+        use orbital_core_runtime::entity_source::EntitySource;
+        let kernel = orbital_core_runtime::kernel::RuntimeKernel::new(
+            orbital_core_base::effect_types::RuntimeEnvironment::Server,
+            std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()) as std::sync::Arc<dyn EntitySource>,
+            orbital_core_runtime::config::KernelConfig::default(),
+        );
+        kernel.register_schema(held_identity_schema()).unwrap();
+        let rows = orbital_core_runtime::entity_source::InMemoryEntityCache::new();
+        rows.create("Person", &serde_json::from_value(person("user-1", "admin")).unwrap()).unwrap();
+        Counted { kernel, rows, reads: Default::default() }
+    }
+
+    fn run(&self, event: &str, payload: serde_json::Value) {
+        let target = if event == "LOOK" { "Probe" } else { "Gate" };
+        let progress = self.kernel.start_dispatch(target, None, event, serde_json::from_value(payload).unwrap(), None, None).unwrap();
+        orbital_core_runtime::resumable::drive_blocking(&self.kernel, progress, &|request| {
+            if matches!(request, IoRequest::ReadRow { entity_type, .. } if entity_type == "Person") {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            orbital_core_runtime::resumable::BlockingHost { source: &self.rows, service: None, substrate: None }.answer(request)
+        })
+        .unwrap();
+    }
+
+    fn tick(&self) {
+        let progress = self.kernel.start_dispatch_tick("Probe", None, "beat").unwrap();
+        orbital_core_runtime::resumable::drive_blocking(&self.kernel, progress, &|request| {
+            orbital_core_runtime::resumable::BlockingHost { source: &self.rows, service: None, substrate: None }.answer(request)
+        })
+        .unwrap();
+    }
+
+    fn reads(&self) -> usize {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn gate(&self) -> serde_json::Value {
+        serde_json::to_value(&self.kernel.snapshot_trait("Probe", None).entity).unwrap()
+    }
+}
+
+#[test]
+fn a_persistent_identity_row_is_held_after_sign_in_and_not_read_again_per_step() {
+    let held = Counted::new();
+    let _tab = held.kernel.enter_session("tab-a");
+    held.run("SIGN_IN", credential("rs256_valid"));
+    let after_sign_in = held.reads();
+    for _ in 0..3 {
+        held.run("LOOK", json!({}));
+    }
+    assert_eq!(held.reads(), after_sign_in, "three steps read the held row, not the store");
+    assert_eq!(held.gate()["role"], json!("admin"));
+}
+
+#[test]
+fn control_a_write_to_the_identity_entity_reads_the_row_again() {
+    let held = Counted::new();
+    let _tab = held.kernel.enter_session("tab-a");
+    held.run("SIGN_IN", credential("rs256_valid"));
+    held.run("PROMOTE", json!({}));
+    let after_write = held.reads();
+    held.run("LOOK", json!({}));
+    assert_eq!(held.gate()["role"], json!("owner"), "the step reads the written row");
+    assert!(held.reads() > after_write, "the held row was dropped by the write and read once more");
+}
+
+#[test]
+fn a_program_session_tick_reads_the_anonymous_viewer_though_the_program_session_signed_in() {
+    let held = Counted::new();
+    held.run("SIGN_IN", credential("rs256_valid"));
+    held.tick();
+    assert_eq!(held.gate()["who"], json!("anonymous"), "a program-session tick belongs to no viewer");
+}
+
+#[test]
+fn control_a_program_session_event_reads_the_signed_in_identity() {
+    let held = Counted::new();
+    held.run("SIGN_IN", credential("rs256_valid"));
+    held.run("LOOK", json!({}));
+    assert_eq!(held.gate()["who"], json!("user-1"));
+}

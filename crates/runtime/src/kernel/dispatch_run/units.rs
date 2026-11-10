@@ -60,8 +60,9 @@ impl RuntimeKernel {
         let committed_from = origin.emits;
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
+        let viewerless_tick = in_flight.tick.is_some() && self.thread_session().is_none();
         let _program = (in_flight.program || *program).then(|| self.enter_program_session());
-        let _seam = program.then(|| self.enter_store_seam());
+        let _seam = (*program || viewerless_tick).then(|| self.enter_store_seam());
         let stepped = self.step_seed(in_flight, outcomes);
         program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
         self.settle_identity(stepped.is_ok());
@@ -633,7 +634,7 @@ impl RuntimeKernel {
         let visit = (!item.completion)
             .then(|| visited.visit_digested(&item.trait_name, &item.event, &from, item.payload_digest(), &VisitFrame::of(&frame)));
         if visit.as_ref().is_some_and(|v| visited.seen(v)) {
-            debug!(trait_name = %item.trait_name, event = %item.event, from = %from, "fanout:visited-skip");
+            info!(trait_name = %item.trait_name, event = %item.event, from = %from, "EXEC-QUEUE-4: delivery skipped, an identical (trait, event, from-state, payload, frame) was already processed in this dispatch");
             return Ok(true);
         }
         let view = memory.view(&keyed_rows::memory_scope(&item.trait_name, eid, keyed), &item.delivery);

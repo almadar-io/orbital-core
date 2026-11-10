@@ -11,11 +11,25 @@ pub(super) struct EntitySourceHandler {
     pub(super) entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>>,
     /// Entity types the kernel has written since the render store last heard (EXEC-RENDER-3).
     pub(super) written: Arc<orbital_core_base::sync::Mutex<BTreeSet<String>>>,
+    /// The sessions' identity bindings: a write to the persistent `[identity]` entity drops each held row (EXEC-IDENTITY-1).
+    pub(super) identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>>,
 }
 
 impl EntitySourceHandler {
     pub(super) fn note_write(&self, entity_type: &str) {
         self.written.lock().insert(entity_type.to_string());
+        let persistent_identity = self
+            .entity_definitions
+            .read()
+            .get(entity_type)
+            .is_some_and(|def| def.identity && def.persistence != Some(orbital_core_base::schema::Persistence::Runtime));
+        if persistent_identity {
+            for binding in self.identities.write().values_mut() {
+                if let identity_session::IdentityBinding::Subject { user, .. } = binding {
+                    *user = None;
+                }
+            }
+        }
     }
 }
 

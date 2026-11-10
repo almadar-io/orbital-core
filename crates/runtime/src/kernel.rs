@@ -195,8 +195,9 @@ struct Sessions {
     /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
     /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
-    /// Threads stepping a store driver's run (EXEC-STORE-4): the store seam has no viewer, so `@user` there is the
-    /// anonymous viewer whichever session holds an identity (set by [`SeamGuard`](dispatch_scope::SeamGuard)).
+    /// Threads stepping work that belongs to no viewer: a store driver's run (EXEC-STORE-4) and a tick in the program
+    /// session (EXEC-IDENTITY-1). `@user` there is the anonymous viewer whichever session holds an identity (set by
+    /// [`SeamGuard`](dispatch_scope::SeamGuard)).
     seam_threads: Arc<RwLock<HashSet<orbital_core_base::sync::ThreadKey>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
     /// `@user` of a session with no bound identity.
@@ -712,12 +713,14 @@ impl RuntimeKernel {
         let sealed_outputs = sealed_from(Arc::clone(&io));
         let entity_definitions: Arc<RwLock<HashMap<String, Arc<EntityDefinition>>>> =
             Arc::new(RwLock::new(HashMap::new()));
+        let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
         let entity_handler = Arc::new(EntitySourceHandler {
             source: entity_source.clone(),
             io: io.clone(),
             entity_policies: entity_policies.clone(),
             entity_definitions: entity_definitions.clone(),
             written: Arc::default(),
+            identities: Arc::clone(&identities),
         });
         let trait_definitions: Arc<RwLock<HashMap<String, Arc<TraitDefinition>>>> = Arc::new(RwLock::new(HashMap::new()));
         let mode_table = Arc::clone(&trait_definitions);
@@ -752,7 +755,6 @@ impl RuntimeKernel {
         let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
-        let identities: Arc<RwLock<HashMap<String, identity_session::IdentityBinding>>> = Arc::default();
         let themes: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
         let pages: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
         let mem: Arc<RwLock<mem_table::MemTable>> = Arc::default();

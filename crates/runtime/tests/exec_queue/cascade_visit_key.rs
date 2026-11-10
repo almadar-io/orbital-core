@@ -489,3 +489,43 @@ fn control_a_dispatch_of_many_passes_under_the_total_is_not_cut() {
     let (steps, cut) = passer_run(&passer(true), 50);
     assert!(steps > CROSS_TRAIT_CASCADE_CAP && steps < CROSS_TRAIT_DISPATCH_CAP && !cut, "{steps} {cut}");
 }
+
+/// G-CROSS-569: `Caller` asks `Store`, `Store` answers, and `Caller`'s continuation asks `Store` again in the same dispatch.
+fn ask_twice(second_doc: &str) -> usize {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Caller",
+                  "listens": [{ "event": "ANSWER", "triggers": "GOT", "source": { "kind": "trait", "trait": "Store" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "asking" }, { "name": "done" }],
+                    "transitions": [
+                        { "from": "idle", "to": "asking", "event": "GO", "effects": [["emit", "ASK", { "doc": "d" }]] },
+                        { "from": "asking", "to": "done", "event": "GOT", "effects": [["emit", "ASK", { "doc": second_doc }]] }
+                    ] } },
+                { "name": "Store",
+                  "listens": [{ "event": "ASK", "triggers": "LOOKUP", "source": { "kind": "trait", "trait": "Caller" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "LOOKUP", "effects": [["emit", "ANSWER", {}]] }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    let kernel = crate::support::TestKernel::server().register(schema);
+    let outcomes = kernel.dispatch("Caller", None, "GO", Value::Null).unwrap();
+    outcomes.iter().filter(|(t, r)| t == "Store" && r.executed).count()
+}
+
+#[test]
+fn a_second_identical_ask_from_a_continuation_is_collapsed_by_exec_queue_4() {
+    assert_eq!(ask_twice("d"), 1, "same trait, event, from-state, payload and an unmoved frame is one delivery");
+}
+
+#[test]
+fn control_a_second_ask_with_another_payload_is_delivered() {
+    assert_eq!(ask_twice("e"), 2);
+}

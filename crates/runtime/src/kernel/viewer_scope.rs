@@ -37,7 +37,8 @@ impl RuntimeKernel {
         SessionGuard { slot: Arc::clone(&self.sessions.session_by_thread), thread, outer, scratch: None }
     }
 
-    /// Step a store driver's run from this thread until the guard drops: the seam reads no viewer (EXEC-STORE-4).
+    /// Step work that belongs to no viewer from this thread until the guard drops: a store driver's run (EXEC-STORE-4) or
+    /// a program-session tick (EXEC-IDENTITY-1); its `@user` is the anonymous viewer.
     pub(super) fn enter_store_seam(&self) -> SeamGuard {
         let thread = orbital_core_base::sync::current_thread();
         let entered = self.sessions.seam_threads.write().insert(thread);

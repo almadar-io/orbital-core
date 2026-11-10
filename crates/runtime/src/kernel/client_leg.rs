@@ -1047,6 +1047,7 @@ impl RuntimeKernel {
             defs.get(name)
                 .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
         };
+        let browser_listener = |name: &str| client_run(name) && !self.program_wide(name);
         let external = defs
             .get(emitter)
             .and_then(|d| d.emits.as_ref())
@@ -1062,23 +1063,26 @@ impl RuntimeKernel {
                 .listener_manager
                 .matching(&emitted.event, source)
                 .iter()
-                .any(|l| client_run(&l.trait_name));
+                .any(|l| browser_listener(&l.trait_name));
         heard.then_some(true)
     }
 
     /// The emits of `response` whose emitter is program-wide (mounted only on `boot`, EXEC-DIST-9) and that a client-run
     /// trait listens to: such work belongs to no client, so the host sends them to every browser, which delivers each
-    /// to its own listeners. Nothing a browser cannot hear leaves (EXEC-DIST-8).
+    /// to its own listeners. A boot-only trait never runs in a browser, so its listen is not one a browser hears
+    /// (EXEC-DIST-8).
     pub fn program_wide_emits(&self, response: &EventResponse) -> Vec<orbital_core_base::bus_event::EmittedEvent> {
         let defs = self.registry.trait_definitions.read();
-        let client_run = |name: &str| defs.get(name).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited);
+        let browser_run = |name: &str| {
+            !self.program_wide(name) && defs.get(name).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+        };
         response
             .emitted_events
             .iter()
             .filter(|emitted| {
                 let Some(source) = emitted.source.as_ref() else { return false };
                 source.r#trait.as_deref().is_some_and(|emitter| self.program_wide(emitter))
-                    && self.listener_manager.matching(&emitted.event, source).iter().any(|l| client_run(&l.trait_name))
+                    && self.listener_manager.matching(&emitted.event, source).iter().any(|l| browser_run(&l.trait_name))
             })
             .cloned()
             .collect()

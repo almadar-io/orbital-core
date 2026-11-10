@@ -1886,7 +1886,7 @@ fn control_client_env_an_emit_nobody_off_the_client_hears_posts_nothing() {
     assert!(dispatch.server_legs.is_empty());
 }
 
-/// `Worker` is mounted only on `boot` (program-wide); `Viewer` is a `[client]` route trait listening to its `PING`.
+/// `Worker` and `Relay` are mounted only on `boot` (program-wide, `Relay` hears NOISE); `Viewer` is a `[client]` route trait listening to its `PING`.
 fn program_wide_schema() -> OrbitalSchema {
     serde_json::from_value(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
@@ -1906,8 +1906,12 @@ fn program_wide_schema() -> OrbitalSchema {
                 "name": "Worker", "linkedEntity": "Job",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "PING", { "n": 1 }], ["emit", "NOISE", {}]] }] },
                 "emits": [{ "event": "PING", "scope": "external" }, { "event": "NOISE", "scope": "external" }]
+            }, {
+                "name": "Relay", "linkedEntity": "Job", "dispatch": "client",
+                "listens": [{ "event": "NOISE", "triggers": "HEARD", "source": { "kind": "orbital", "orbital": "Jobs", "trait": "Worker" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "HEARD" }] }
             }],
-            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }] }]
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }, { "ref": "Relay" }] }]
         }]
     }))
     .unwrap()
@@ -1921,7 +1925,7 @@ fn program_wide_emits_are_the_boot_trait_emits_a_browser_listens_to() {
     let mut response = kernel.response_for(&outcomes, "Worker", "GO");
     kernel.stamp_emitted_sources(&mut response);
     let events: Vec<String> = kernel.program_wide_emits(&response).into_iter().map(|e| e.event).collect();
-    assert_eq!(events, ["PING"], "NOISE is external but no browser listens to it");
+    assert_eq!(events, ["PING"], "NOISE is external and a boot-only Relay listens, but no browser runs Relay");
 }
 
 #[test]
