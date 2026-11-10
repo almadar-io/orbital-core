@@ -195,6 +195,9 @@ struct Sessions {
     /// The session a request's thread dispatches in (set by [`SessionGuard`]): a frame belongs to the session whose
     /// dispatch made it (EXEC-DIST-9). A thread with none is in the program session.
     session_by_thread: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    /// Threads stepping a store driver's run (EXEC-STORE-4): the store seam has no viewer, so `@user` there is the
+    /// anonymous viewer whichever session holds an identity (set by [`SeamGuard`](dispatch_scope::SeamGuard)).
+    seam_threads: Arc<RwLock<HashSet<orbital_core_base::sync::ThreadKey>>>,
     scratch_sessions: std::sync::atomic::AtomicU64,
     /// `@user` of a session with no bound identity.
     anonymous: Value,
@@ -806,6 +809,7 @@ impl RuntimeKernel {
             introspect,
             sessions: Sessions {
                 session_by_thread,
+                seam_threads: Arc::default(),
                 scratch_sessions: std::sync::atomic::AtomicU64::new(0),
                 anonymous: identity_session::anonymous_user(),
                 identities,

@@ -967,6 +967,7 @@ impl RuntimeKernel {
         if let Some(delta) = response.frames.as_mut() {
             self.browser_frames(delta);
         }
+        self.browser_rows(&mut response);
         if let Some(effects) = response.client_effects_by_trait.as_mut() {
             let defs = self.registry.trait_definitions.read();
             effects.retain(|e| {
@@ -989,6 +990,44 @@ impl RuntimeKernel {
             })
             .collect();
         response
+    }
+
+    /// The fetched rows the browser can use: an entity's rows stay when a browser-run trait fetched them or is bound to
+    /// that entity; the rows only server-run traits fetched are the host's, dropped from `data` and from their fetch
+    /// results. Rows of an entity with no recorded fetcher stay.
+    fn browser_rows(&self, response: &mut EventResponse) {
+        if response.fetched_by.is_empty() {
+            return;
+        }
+        let defs = self.registry.trait_definitions.read();
+        let client_run = |name: &str| defs.get(name).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited);
+        let bound: HashSet<&str> = defs
+            .values()
+            .filter(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+            .filter_map(|d| d.linked_entity.as_deref())
+            .collect();
+        let held: HashSet<String> = response
+            .fetched_by
+            .iter()
+            .filter(|(entity, fetchers)| !bound.contains(entity.as_str()) && !fetchers.iter().any(|t| client_run(t)))
+            .map(|(entity, _)| entity.clone())
+            .collect();
+        if held.is_empty() {
+            return;
+        }
+        if let Some(data) = response.data.as_mut() {
+            data.retain(|entity, _| !held.contains(entity));
+            if data.is_empty() {
+                response.data = None;
+            }
+        }
+        for result in response.effect_results.iter_mut().flatten() {
+            if result.effect == crate::effects::response::ServerEffectKind::Fetch
+                && result.entity_type.as_ref().is_some_and(|entity| held.contains(entity))
+            {
+                result.data = None;
+            }
+        }
     }
 
     /// `Some(true)` when the browser hears `emitted` by a rule that needs no program scan, `None` when only a pattern

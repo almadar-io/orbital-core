@@ -515,3 +515,61 @@ fn the_browser_view_carries_no_render_of_a_client_only_trait_and_keeps_the_other
     let view = server.client_view(full);
     assert!(painted(&view).iter().all(|t| t != "Frame" && t != "Stage"), "{:?}", painted(&view));
 }
+
+// EXEC-DIST-8: the rows a server-run trait fetched are the host's; the browser view carries them only when a browser-run
+// trait fetched them or is bound to their entity (G-CROSS-565).
+fn fetched_rows_schema(reader_dispatch: &str, view_entity: &str) -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "rows",
+        "typeContractVersion": 1, "orbitals": [
+            { "name": "Events",
+              "entity": { "name": "Event", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }],
+                  "instances": [{ "id": "e1" }, { "id": "e2" }] },
+              "traits": [{ "name": "Reader", "linkedEntity": "Event", "dispatch": reader_dispatch,
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "READ", "effects": [["fetch", "Event", {}]] }] } }] },
+            { "name": "Board",
+              "entity": { "name": "BoardRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+              "traits": [{ "name": "View", "linkedEntity": view_entity, "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] } }] }
+        ]
+    }))
+    .unwrap()
+}
+
+fn read_view(reader_dispatch: &str, view_entity: &str) -> EventResponse {
+    let server = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Server, ..KernelConfig::default() },
+    );
+    server.register_schema(fetched_rows_schema(reader_dispatch, view_entity)).unwrap();
+    let outcomes = server.dispatch("Reader", None, "READ", Value::Null).unwrap();
+    let full = EventResponse::from_process_results(&outcomes, "Reader", "READ");
+    assert_eq!(full.data.as_ref().and_then(|d| d.get("Event")).map(Vec::len), Some(2), "the host's own response keeps the rows: {full:?}");
+    server.client_view(full)
+}
+
+fn fetch_rows_sent(view: &EventResponse) -> usize {
+    view.effect_results.iter().flatten().filter_map(|r| r.data.as_ref()).filter_map(Value::as_array).map(Vec::len).sum()
+}
+
+#[test]
+fn rows_only_a_server_trait_fetched_stay_off_the_browser() {
+    let view = read_view("server", "BoardRun");
+    assert!(view.data.as_ref().is_none_or(|d| !d.contains_key("Event")), "{view:?}");
+    assert_eq!(fetch_rows_sent(&view), 0, "the fetch result carries no rows either: {view:?}");
+}
+
+#[test]
+fn control_rows_a_browser_run_trait_fetched_reach_the_browser() {
+    let view = read_view("optimistic", "BoardRun");
+    assert_eq!(view.data.as_ref().and_then(|d| d.get("Event")).map(Vec::len), Some(2), "{view:?}");
+}
+
+#[test]
+fn control_rows_of_an_entity_a_browser_run_trait_is_bound_to_reach_the_browser() {
+    let view = read_view("server", "Event");
+    assert_eq!(view.data.as_ref().and_then(|d| d.get("Event")).map(Vec::len), Some(2), "{view:?}");
+}

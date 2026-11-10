@@ -140,8 +140,9 @@ pub(crate) struct DispatchRun {
     /// The deliveries this run made from a viewer's session to traits of the server's orbitals: stepped as one more
     /// seed, in the program session, when everything else is done (EXEC-DIST-9).
     program_deliveries: VecDeque<CascadeItem>,
-    /// Whether the whole run steps in the program session: a store ask answered by a driver mounted only on `boot`
-    /// (EXEC-DIST-9), whichever session asked.
+    /// Whether the whole run steps in the program session: a store driver answering an ask (EXEC-STORE-4), whichever
+    /// session asked. The driver is the store seam, with no viewer of its own: in the asking session its steps would read
+    /// that session's `@user`, a store ask of its own when the identity is store-bound.
     program: bool,
     /// Open from the run's start to its end, across every ask it parks on.
     span: tracing::Span,

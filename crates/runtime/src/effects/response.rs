@@ -402,6 +402,11 @@ pub struct EventResponse {
     /// Fetched pages delivered by reference (`deliver: ids`), keyed by entity name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_refs: Option<HashMap<String, orbital_core_base::row_set::RowSetRef>>,
+    /// The traits whose fetches gave each entity's rows in `data`: the host's own record, never sent, from which the
+    /// browser view keeps only the rows a browser can use (EXEC-DIST-8).
+    #[serde(skip)]
+    #[cfg_attr(test, ts(skip))]
+    pub fetched_by: HashMap<String, Vec<String>>,
     /// What this response changes in the frames the client holds, against the kernel's view record (EXEC-DIST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frames: Option<crate::effects::frame_delta::FrameDelta>,
@@ -922,6 +927,10 @@ impl EventResponse {
                             data.entry(entity_type.clone())
                                 .or_default()
                                 .extend(rows.iter().cloned());
+                            let fetchers = merged.fetched_by.entry(entity_type.clone()).or_default();
+                            if !fetchers.iter().any(|t| t == trait_name) {
+                                fetchers.push(trait_name.to_string());
+                            }
                         } else if let Some(reference) = er
                             .return_value
                             .as_ref()

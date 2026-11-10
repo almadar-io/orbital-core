@@ -61,6 +61,7 @@ impl RuntimeKernel {
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
         let _program = (in_flight.program || *program).then(|| self.enter_program_session());
+        let _seam = program.then(|| self.enter_store_seam());
         let stepped = self.step_seed(in_flight, outcomes);
         program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
         self.settle_identity(stepped.is_ok());

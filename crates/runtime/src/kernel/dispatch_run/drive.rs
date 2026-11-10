@@ -31,6 +31,7 @@ impl RuntimeKernel {
             // A store ask the program seed made is answered in the program session too (EXEC-DIST-9).
             let _program = (c.run.program || c.run.seed.as_ref().is_some_and(|seed| seed.program))
                 .then(|| self.enter_program_session());
+            let _seam = c.run.program.then(|| self.enter_store_seam());
             let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
             if c.store.is_none() {
                 if let Some((origin, ask)) = seeds.pop_front() {
@@ -276,7 +277,7 @@ impl RuntimeKernel {
             None,
         ));
         driver.seeds = Some(Default::default());
-        driver.run.program = self.program_wide(target);
+        driver.run.program = true;
         Ok(driver)
     }
 

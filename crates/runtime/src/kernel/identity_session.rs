@@ -120,6 +120,9 @@ impl RuntimeKernel {
     /// The `@user` of the session this thread dispatches in (EXEC-IDENTITY-1): its bound `[identity]` row (read like any
     /// row, so a store read may suspend the run), else the anonymous viewer.
     pub(super) fn session_user(&self) -> Result<Value, Fault> {
+        if self.sessions.seam_threads.read().contains(&orbital_core_base::sync::current_thread()) {
+            return Ok(self.sessions.anonymous.clone());
+        }
         let binding = {
             let bound = self.sessions.identities.read();
             if bound.is_empty() {

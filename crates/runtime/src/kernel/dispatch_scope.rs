@@ -36,6 +36,21 @@ pub(super) fn sealed_from(io: Arc<IoPort>) -> SealedOutputs {
 }
 
 /// Holds a request thread's session; dropping it restores the outer one, and a scratch session's frames go with it.
+/// A thread steps a store driver's run until the guard drops (EXEC-STORE-4): its `@user` is the anonymous viewer.
+pub struct SeamGuard {
+    pub(super) slot: Arc<RwLock<HashSet<orbital_core_base::sync::ThreadKey>>>,
+    pub(super) thread: orbital_core_base::sync::ThreadKey,
+    pub(super) entered: bool,
+}
+
+impl Drop for SeamGuard {
+    fn drop(&mut self) {
+        if self.entered {
+            self.slot.write().remove(&self.thread);
+        }
+    }
+}
+
 pub struct SessionGuard {
     pub(super) slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
     pub(super) thread: orbital_core_base::sync::ThreadKey,

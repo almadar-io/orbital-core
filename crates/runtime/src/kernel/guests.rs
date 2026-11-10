@@ -762,8 +762,8 @@ impl RuntimeKernel {
         ))
     }
 
-    /// `program/live { kind: "guest", guest }`, polled by the host's stream: one tick pass of the hosted guest `handle`
-    /// (EXEC-DIST-14). A guest without a host of its own has no clock to tick on and is refused.
+    /// `program/live { kind: "guest", guest }`, polled by the host's stream: one tick pass of the hosted guest `handle`,
+    /// with what its deferred completions moved, painted and emitted since the last pass (EXEC-DIST-14, EXEC-CONC-7). A guest without a host of its own has no clock to tick on and is refused.
     pub fn guest_tick_pass(&self, handle: &str) -> Result<GuestTicks, String> {
         let Some(session) = self.guests.read().get(handle).cloned() else {
             return Ok(GuestTicks::Closed);
@@ -785,8 +785,9 @@ impl RuntimeKernel {
         let orbitals = painter_orbitals(&session.kernel, &outcomes);
         let seed_trait = outcomes.first().map(|(t, _)| t.clone()).unwrap_or_default();
         let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None);
-        // The opener repaints from an item; a pass that painted nothing (a paused clock accumulating) is no item.
-        if answer.get("rendered").and_then(Value::as_array).is_none_or(|rendered| rendered.is_empty()) {
+        // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
+        let empty = |field: &str| answer.get(field).and_then(Value::as_array).is_none_or(|items| items.is_empty());
+        if empty("rendered") && empty("emitted") {
             return Ok(GuestTicks::Idle);
         }
         Ok(GuestTicks::Painted(answer))

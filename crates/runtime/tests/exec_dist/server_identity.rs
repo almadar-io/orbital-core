@@ -378,3 +378,59 @@ fn exec_identity_1_a_runtime_identity_row_belongs_to_its_session_and_is_freed_wi
     assert_eq!(rig.viewer("tab-a").0, json!("anonymous"), "the freed session's identity row is gone");
     assert_eq!(rig.viewer("tab-b").0, json!("user-1"), "control: another session of the same subject keeps its own row");
 }
+
+// EXEC-STORE-4 + EXEC-IDENTITY-1: a persistent identity bound to a `.lolo` store driver. Every step reads `@user`, and
+// that read is a store ask; the driver answering it steps in the program session, so it never asks for the identity
+// it is reading (a viewer-session driver re-asked for it without end: the launchpad's stack overflow on std-kflow
+// sign-in, 2026-11-10).
+fn store_bound_identity_schema(driver_page: Option<&str>) -> OrbitalSchema {
+    let mut schema = serde_json::to_value(schema("persistent")).unwrap();
+    schema["orbitals"][0]["entity"]["store"] = json!("Rows");
+    let row = json!({ "id": "@payload.id", "role": "admin", "email": "row@example.com" });
+    let mut rows = json!({ "name": "Rows",
+        "entity": { "name": "RowsRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+        "traits": [{ "name": "RowsDriver", "linkedEntity": "RowsRun",
+            "stateMachine": { "states": [{ "name": "ready", "isInitial": true }, { "name": "busy" }],
+                "events": [{ "key": "ROW_READ", "name": "ROW_READ" }, { "key": "RD_NEXT", "name": "RD_NEXT" }],
+                "transitions": [
+                    { "from": "ready", "to": "busy", "event": "ROW_READ", "effects": [["emit", "RD_NEXT", { "key": "@payload.key", "id": "@payload.id" }]] },
+                    { "from": "busy", "to": "ready", "event": "RD_NEXT", "effects": [["emit", "ROW_FOUND", { "key": "@payload.key", "row": row }]] }
+                ] } }] });
+    if let Some(protocol) = driver_page {
+        rows["pages"] = json!([{ "name": "Bg", "path": "", "protocol": protocol, "traits": [{ "ref": "RowsDriver" }] }]);
+    }
+    schema["orbitals"].as_array_mut().unwrap().push(rows);
+    serde_json::from_value(schema).unwrap()
+}
+
+fn signed_in_read(driver_page: Option<&str>) -> serde_json::Value {
+    let server = EmbeddedServer::new(store_bound_identity_schema(driver_page)).unwrap();
+    let outcome = frames(&finish(&server, request("SIGN_IN", "tab-a", credential("rs256_valid")), &[]))["Sink"]["outcome"].clone();
+    assert_eq!(outcome, json!("user-1"), "the driver answered the sign-in's identity read");
+    frames(&finish(&server, request("READ", "tab-a", json!({})), &[]))
+}
+
+#[test]
+fn a_store_bound_identity_is_read_by_a_driver_that_never_asks_for_it_again() {
+    let read = signed_in_read(None);
+    assert_eq!(read["Gate"]["who"], json!("user-1"), "{read}");
+    assert_eq!(read["Gate"]["role"], json!("admin"), "{read}");
+}
+
+#[test]
+fn control_a_boot_mounted_driver_answers_the_same_identity_read() {
+    let read = signed_in_read(Some("boot"));
+    assert_eq!(read["Gate"]["who"], json!("user-1"), "{read}");
+}
+
+// A guest is signed in through `program/dispatch` with no client session, so its identity is the program session's
+// own: the store driver answering its identity read must still read no viewer (the launchpad crash of 07:27).
+#[test]
+fn a_program_session_identity_bound_to_a_store_is_read_by_a_driver_that_reads_no_viewer() {
+    let server = EmbeddedServer::new(store_bound_identity_schema(None)).unwrap();
+    let programwide = |event: &str, payload: serde_json::Value| EventRequest { client_id: None, ..request(event, "unused", payload) };
+    let outcome = frames(&finish(&server, programwide("SIGN_IN", credential("rs256_valid")), &[]))["Sink"]["outcome"].clone();
+    assert_eq!(outcome, json!("user-1"), "the driver answered the sign-in's identity read");
+    let read = frames(&finish(&server, programwide("READ", json!({})), &[]));
+    assert_eq!(read["Gate"]["who"], json!("user-1"), "{read}");
+}

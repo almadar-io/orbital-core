@@ -86,12 +86,12 @@ impl<'a> VisitFrame<'a> {
 /// A set of deliveries under the `dispatch_visit_key` identity. Steps are filed by
 /// `(trait, event, from)` and each visit keeps only the xxh3-128 of its canonical payload and
 /// frame, so a long loop over a large entity does not retain a copy of every frame it passed.
-/// A frame field's digest is kept for the value the field holds, so a field a step left
-/// unchanged is not digested again.
+/// A frame field's digest is kept per trait for the value the field holds, so a field a step left
+/// unchanged is not digested again and two traits with one field name do not evict each other.
 #[derive(Debug, Default)]
 pub struct DispatchVisits {
     steps: HashMap<String, HashSet<u128>>,
-    fields: HashMap<String, (Arc<EvalValue>, u128)>,
+    fields: HashMap<String, HashMap<String, (Arc<EvalValue>, u128)>>,
 }
 
 /// One step's identity, computed once: its `(trait, event, from)` and the digest of its payload and frame. A step asks
@@ -113,7 +113,7 @@ impl DispatchVisits {
     pub fn visit_digested(&mut self, trait_name: &str, event: &str, from: &str, payload: u128, frame: &VisitFrame<'_>) -> Visit {
         Visit {
             step: format!("{trait_name}\u{0}{event}\u{0}{from}"),
-            digest: self.visit_digest(payload, frame),
+            digest: self.visit_digest(trait_name, payload, frame),
         }
     }
 
@@ -139,7 +139,7 @@ impl DispatchVisits {
 
     /// xxh3-128 over an injective encoding of the canonical payload and the frame: a field enters as the digest of
     /// its canonical value, so equal frames still digest equal and differing ones differ.
-    fn visit_digest(&mut self, payload: u128, frame: &VisitFrame<'_>) -> u128 {
+    fn visit_digest(&mut self, trait_name: &str, payload: u128, frame: &VisitFrame<'_>) -> u128 {
         let mut h = Xxh3::new();
         h.update(&payload.to_le_bytes());
         match frame {
@@ -155,15 +155,15 @@ impl DispatchVisits {
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
                 for (name, value) in sorted {
                     digest_str(&mut h, name);
-                    h.update(&self.field_digest(name, value).to_le_bytes());
+                    h.update(&self.field_digest(trait_name, name, value).to_le_bytes());
                 }
             }
         }
         h.digest128()
     }
 
-    fn field_digest(&mut self, name: &str, value: &Arc<EvalValue>) -> u128 {
-        if let Some((held, digest)) = self.fields.get(name) {
+    fn field_digest(&mut self, trait_name: &str, name: &str, value: &Arc<EvalValue>) -> u128 {
+        if let Some((held, digest)) = self.fields.get(trait_name).and_then(|fields| fields.get(name)) {
             if Arc::ptr_eq(held, value) {
                 return *digest;
             }
@@ -171,7 +171,14 @@ impl DispatchVisits {
         let mut h = Xxh3::new();
         digest_value(&mut h, value);
         let digest = h.digest128();
-        self.fields.insert(name.to_string(), (Arc::clone(value), digest));
+        match self.fields.get_mut(trait_name) {
+            Some(fields) => {
+                fields.insert(name.to_string(), (Arc::clone(value), digest));
+            }
+            None => {
+                self.fields.insert(trait_name.to_string(), HashMap::from([(name.to_string(), (Arc::clone(value), digest))]));
+            }
+        }
         digest
     }
 }
@@ -593,6 +600,21 @@ mod tests {
         assert_eq!(Arc::strong_count(&large), 2, "the digest cache holds the one value it digested, no copy per step");
         assert!(visits.contains("T", "E", "s", &EValue::Null, &fields(&step(1))));
         assert!(!visits.contains("T", "E", "s", &EValue::Null, &frame(&EValue::Null)), "control: no fields is another frame");
+    }
+
+    #[test]
+    fn two_traits_with_one_field_name_keep_a_digest_each() {
+        let mut visits = DispatchVisits::default();
+        let first = Arc::new(ev(json!({ "rows": [1, 2, 3] })));
+        let second = Arc::new(ev(json!({ "rows": [4, 5, 6] })));
+        for _ in 0..2 {
+            visits.insert("A", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&first))]));
+            visits.insert("B", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&second))]));
+        }
+        assert_eq!(Arc::strong_count(&first), 2, "A's field digest is still held after B stepped");
+        assert_eq!(Arc::strong_count(&second), 2, "B's field digest is still held after A stepped");
+        assert!(visits.contains("A", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&first))])));
+        assert!(!visits.contains("A", "E", "s", &EValue::Null, &fields(&[("program", Arc::clone(&second))])), "control: the identity still reads the value");
     }
 
     #[test]
