@@ -742,8 +742,12 @@ impl RuntimeKernel {
         let Some(Value::String(url)) = args.get(1) else {
             return Some(fail(op, OsErrorKind::Invalid, "the url must be text"));
         };
-        let allowed = match orbital.and_then(|name| self.grants.egress_by_orbital.read().get(name).cloned()) {
-            Some(own) => orbital_core_base::http_wire::origin_allowed(url, &own),
+        let own = orbital.and_then(|name| {
+            let schemas = self.registry.schemas.read();
+            schemas.values().find(|program| program.orbitals.iter().any(|o| o.name == name)).cloned()
+        });
+        let allowed = match own {
+            Some(program) => orbital_core_base::http_wire::origin_allowed(url, program.egress.as_deref().unwrap_or(&[])),
             None => orbital_core_base::http_wire::origin_allowed(url, &self.grants.egress.read()),
         };
         if allowed {

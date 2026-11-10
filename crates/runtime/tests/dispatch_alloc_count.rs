@@ -364,7 +364,9 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // G-ORB-553, not bisected), 2026-10-28.
 // 10293 -> 8971: `ValueMap` keys are interned `Shared<String>` names (R3, G-ORBITAL-CORE-070, 2026-10-29).
 // 8971 -> 8972: +1, unattributed. Measured 2026-10-29: `OirType::erased()` is not on the dispatch path (same count with a per-call allocating or a shared name), so the earlier attribution to it was wrong.
-const PINNED_REPLAY: usize = 8972;
+// 8972 -> 8975: +3, measured 2026-11-10 with and without the S1 kernel edits (same count), so it predates them; most likely
+// the visit key's per-allocation digest memo for a wide list (A3 close, 72dec79), not bisected.
+const PINNED_REPLAY: usize = 8975;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

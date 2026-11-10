@@ -236,13 +236,6 @@ impl RuntimeKernel {
                 }
             }
         }
-        {
-            let declared = schema.egress.clone().unwrap_or_default();
-            let mut by_orbital = self.grants.egress_by_orbital.write();
-            for orbital in &schema.orbitals {
-                by_orbital.insert(orbital.name.clone(), declared.clone());
-            }
-        }
         self.grants.os_grants.write().register(&schema);
         self.install_messages(&schema);
         self.note_kernel_grants(&schema);
@@ -647,7 +640,6 @@ impl RuntimeKernel {
         *fork.registry.entity_definitions.write() = self.registry.entity_definitions.read().clone();
         *fork.registry.entity_defaults.write() = self.registry.entity_defaults.read().clone();
         *fork.grants.egress.write() = self.grants.egress.read().clone();
-        *fork.grants.egress_by_orbital.write() = self.grants.egress_by_orbital.read().clone();
         *fork.grants.os_grants.write() = self.grants.os_grants.read().clone();
         fork.copy_kernel_grants(self);
         *fork.presentation.theme_presets.write() = self.presentation.theme_presets.read().clone();
