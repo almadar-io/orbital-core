@@ -80,6 +80,46 @@ fn a_row_whose_field_contradicts_its_declaration_fails_the_fetch() {
     assert!(!events.iter().any(|e| e == "LOADED"), "{events:?}");
 }
 
+/// The events a fetch answers with when the host runs the query itself and returns `rows` as a page (G-ORBITAL-CORE-160).
+fn answered_by_page(effect: serde_json::Value, rows: serde_json::Value) -> Vec<String> {
+    let mut schema = serde_json::to_value(schema()).unwrap();
+    schema["orbitals"][0]["entity"]["fields"].as_array_mut().unwrap().push(json!({ "name": "createdAt", "type": "instant" }));
+    schema["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"] = json!([effect]);
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    kernel.register_schema(serde_json::from_value(schema).unwrap()).unwrap();
+    let rows: Vec<Value> = serde_json::from_value(rows).unwrap();
+    let progress = kernel.start_dispatch("Browse", None, "LOAD", Value::Null, None, None).unwrap();
+    let outcomes = drive_blocking(&kernel, progress, &|request| match request {
+        IoRequest::QueryRows { .. } => IoAnswer::Page(Ok(orbital_core_runtime::row_query::RowPage { rows: rows.clone(), total: rows.len() })),
+        IoRequest::ListRows { .. } => IoAnswer::Rows(Ok(rows.iter().cloned().map(Arc::new).collect())),
+        IoRequest::ReadRow { .. } => IoAnswer::Row(Ok(rows.first().cloned().unwrap_or(Value::Null))),
+        other => panic!("unexpected ask {other:?}"),
+    })
+    .unwrap();
+    outcomes.iter().filter_map(|(_, result)| result.event.clone()).collect()
+}
+
+#[test]
+fn a_misfit_row_in_a_queried_page_or_a_row_read_answers_the_failure_event() {
+    let routes = json!({ "success": "LOADED", "failure": "LOAD_FAILED" });
+    let stale = json!([{ "id": "n1", "createdAt": 1762732800000i64 }]);
+    for effect in [
+        json!(["fetch", "Note", { "limit": 10, "emit": routes }]),
+        json!(["fetch", "Note", { "filter": ["=", "@entity.count", 1], "limit": 10, "emit": routes }]),
+        json!(["fetch", "Note", { "id": "n1", "emit": routes }]),
+    ] {
+        let events = answered_by_page(effect.clone(), stale.clone());
+        assert!(events.iter().any(|e| e == "LOAD_FAILED"), "{effect}: {events:?}");
+        assert!(!events.iter().any(|e| e == "LOADED"), "{effect}: {events:?}");
+        let fits = answered_by_page(effect.clone(), json!([{ "id": "n1", "count": 1, "createdAt": "2026-11-10T00:00:00.000Z" }]));
+        assert!(fits.iter().any(|e| e == "LOADED") && !fits.iter().any(|e| e == "LOAD_FAILED"), "control {effect}: {fits:?}");
+    }
+}
+
 #[test]
 fn a_list_field_is_checked_element_by_element() {
     let events = answered(json!([{ "id": "n1", "count": 1, "tags": ["a", 2] }]));

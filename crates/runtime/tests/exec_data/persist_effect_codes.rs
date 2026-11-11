@@ -359,6 +359,34 @@ fn a_bound_entitys_fetch_reads_the_row_its_driver_answers() {
     assert!(!control.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{control:?}");
 }
 
+// G-ORBITAL-CORE-160: a row a store driver answers that does not fit its declaration fails the fetch on its failure route.
+#[test]
+fn a_misfit_row_from_a_store_driver_answers_the_fetchs_failure_event() {
+    let mut program = store_program_json(true, false, None);
+    let read = &mut program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"][0]["effects"][0][2]["row"];
+    assert_eq!(read["used"], serde_json::json!(false), "the driver's ROW_READ answer");
+    read["used"] = serde_json::json!("yes");
+    let seen = store_run_program(serde_json::from_value(program).unwrap(), true, "LOOK", "t1").0;
+    assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "UNSEEN"), "the failure route fires: {seen:?}");
+    assert!(!seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
+    let control = store_run(true, "LOOK", "t1");
+    assert!(control.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "control: a fitting row succeeds: {control:?}");
+
+    let listing = |used: serde_json::Value| {
+        let mut program = store_program_json(true, false, None);
+        let desk = &mut program["orbitals"][0]["traits"][0]["stateMachine"];
+        desk["events"].as_array_mut().unwrap().push(serde_json::json!({ "key": "LIST", "name": "LIST" }));
+        desk["transitions"].as_array_mut().unwrap().push(serde_json::json!({ "from": "idle", "to": "idle", "event": "LIST",
+            "effects": [["fetch", "Ticket", { "limit": 10, "emit": { "success": "SEEN", "failure": "UNSEEN" } }]] }));
+        program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"][2]["effects"][0][2]["rows"][0]["used"] = used;
+        store_run_program(serde_json::from_value(program).unwrap(), true, "LIST", "t1").0
+    };
+    let listed = listing(serde_json::json!(7));
+    assert!(listed.iter().any(|r| r["effect"] == "emit" && r["target"] == "UNSEEN"), "a listed misfit row fails the fetch: {listed:?}");
+    let fits = listing(serde_json::json!(false));
+    assert!(fits.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "control: {fits:?}");
+}
+
 // EXEC-DIST-9 + EXEC-STORE-4: a driver mounted only on a `boot` page answers a viewer session's ask in the ask's
 // frame, including the deliveries it makes to itself before it replies (std-firestore's FS_SEND, G-CROSS-564).
 fn two_step_driver_program(boot: bool) -> OrbitalSchema {

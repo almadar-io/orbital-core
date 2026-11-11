@@ -210,6 +210,49 @@ fn exec_eval_4_control_well_typed_navigate_params_do_not_fail() {
     assert_eq!(effect_failed(&response), None);
 }
 
+// G-ORBITAL-CORE-166: a navigate's path and crumb are operands like its params: a call is evaluated, never dropped.
+#[test]
+fn a_navigate_whose_path_is_a_call_reaches_the_client_as_the_evaluated_route() {
+    let response = run(schema(vec![json!(["navigate", ["str/concat", "/items/", ["object/get", { "first": "a1" }, "first", ""]]])]));
+    assert_eq!(effect_failed(&response), None);
+    assert_eq!(painted(&response, "Broken"), vec![r#"["navigate","/items/a1"]"#.to_string()]);
+}
+
+#[test]
+fn control_a_navigate_whose_path_is_a_literal_reaches_the_client() {
+    let response = run(schema(vec![json!(["navigate", "/items"])]));
+    assert_eq!(effect_failed(&response), None);
+    assert_eq!(painted(&response, "Broken"), vec![r#"["navigate","/items"]"#.to_string()]);
+}
+
+#[test]
+fn a_navigate_whose_crumb_is_a_call_carries_the_evaluated_crumb() {
+    let response = run(schema(vec![json!(["navigate", "/items", null, { "crumb": ["str/concat", "Item ", "a1"] }])]));
+    assert_eq!(effect_failed(&response), None);
+    assert_eq!(painted(&response, "Broken"), vec![r#"["navigate","/items",null,{"crumb":"Item a1"}]"#.to_string()]);
+}
+
+#[test]
+fn control_a_navigate_whose_crumb_is_a_literal_carries_it() {
+    let response = run(schema(vec![json!(["navigate", "/items", null, { "crumb": "Item a1" }])]));
+    assert_eq!(painted(&response, "Broken"), vec![r#"["navigate","/items",null,{"crumb":"Item a1"}]"#.to_string()]);
+}
+
+#[test]
+fn a_navigate_whose_path_does_not_evaluate_to_text_is_the_effects_failure_and_goes_nowhere() {
+    let response = run(schema(vec![json!(["navigate", ["object/get", { "first": "a1" }, "missing"]])]));
+    let error = effect_failed(&response).expect("an effect-failed rejection");
+    assert!(error.contains("navigate"), "{error}");
+    assert_eq!(painted(&response, "Broken"), Vec::<String>::new());
+}
+
+#[test]
+fn a_navigate_whose_path_call_is_mistyped_is_the_effects_failure_and_goes_nowhere() {
+    let response = run(schema(vec![json!(["navigate", ["str/concat", "/items/", ["array/filter", "not-a-list", ["fn", "x", true]]]])]));
+    assert!(effect_failed(&response).is_some());
+    assert_eq!(painted(&response, "Broken"), Vec::<String>::new());
+}
+
 // G-ORBITAL-CORE-089: a `let` whose binding value throws fails as the `let` (EXEC-EVAL-4); its body never runs with
 // the name unbound.
 #[test]
