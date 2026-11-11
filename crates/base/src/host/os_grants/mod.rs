@@ -65,6 +65,8 @@ pub enum SysKind {
     Processes,
     /// `os/kill` of the host's own pid: a program ending or signalling its own process (P-022, a served program's restart).
     SelfSignal,
+    /// `os/kill` of a process the program did not spawn, owned by the user it runs as (owner ruling 2026-11-11).
+    ProcessSignal,
 }
 
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
@@ -155,6 +157,7 @@ named_kinds!(SysKind {
     Identity => "identity",
     Processes => "processes",
     SelfSignal => "self-signal",
+    ProcessSignal => "process-signal",
 });
 named_kinds!(DesktopKind {
     Notify => "notify",
@@ -184,8 +187,9 @@ pub enum OsGrantNeed {
     },
     Sys { access: SysKind },
     /// A signal sent to the process at `pid`: it is the program's own process when that value is its own pid, which
-    /// the kernel allows only under `sys: [self-signal]`. Never a requirement (a spawned child needs no grant); the
-    /// grant is possibly used by any call whose `pid` is not a literal number.
+    /// the kernel allows only under `sys: [self-signal]`, and a process the program did not spawn only under
+    /// `sys: [process-signal]`. Never a requirement (a spawned child needs no grant); both grants are possibly used
+    /// by any call whose `pid` is not a literal number.
     SelfSignal { pid: usize },
     Desktop { access: DesktopKind },
     Kv { access: KvMode, store: usize },

@@ -122,6 +122,7 @@ fn sys_label(kind: SysKind) -> &'static str {
         SysKind::Identity => "identity",
         SysKind::Processes => "processes",
         SysKind::SelfSignal => "self-signal",
+        SysKind::ProcessSignal => "process-signal",
     }
 }
 
@@ -384,19 +385,52 @@ pub(super) struct Iface {
     running: bool,
 }
 
-/// One row of `os/process-list`. Memory and CPU time are `None` when the host refuses them for a process the
-/// asker does not own; `args` is empty when the arguments are not readable.
+/// One row of `os/process-list`. `user` is the owner as the platform names it (a user id on Unix, a SID on
+/// Windows) and `own` whether that is the asker. Memory, CPU time and the start time are `None` when the host
+/// refuses them for a process the asker does not own; `args` is empty when the arguments are not readable.
 pub(super) struct Process {
     pid: u32,
     ppid: u32,
     name: String,
     command: String,
     args: Vec<String>,
-    user: u32,
+    user: String,
+    own: bool,
     rss_bytes: Option<f64>,
     cpu_seconds: Option<f64>,
-    started_at: f64,
+    started_at: Option<f64>,
 }
+
+/// Whether the running process `pid` belongs to the user the program runs as; `None` when there is no such process.
+#[cfg(unix)]
+pub(super) fn process_is_own(pid: u32) -> Option<bool> {
+    native::process_owner(pid).map(|owner| owner == unsafe { libc::getuid() })
+}
+
+#[cfg(windows)]
+pub(super) fn process_is_own(pid: u32) -> Option<bool> {
+    windows::process_is_own(pid)
+}
+
+#[cfg(windows)]
+pub(super) fn terminate(op: OsOp, pid: u32) -> Result<(), OsError> {
+    windows::terminate(op, pid)
+}
+
+/// A Windows file time (100 ns ticks since 1601) as seconds since 1970.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn filetime_unix_seconds(ticks: u64) -> f64 {
+    ticks as f64 / 1e7 - 11_644_473_600.0
+}
+
+/// A span of Windows file-time ticks (100 ns each) as seconds.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn filetime_seconds(ticks: u64) -> f64 {
+    ticks as f64 / 1e7
+}
+
+#[cfg(windows)]
+mod windows;
 
 /// `KERN_PROCARGS2` of one process: the argument count, the executable path, NUL padding, then the arguments.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -450,6 +484,60 @@ mod native {
         procargs2(&raw)
     }
 
+    pub(super) fn process_owner(pid: u32) -> Option<u32> {
+        let mut short: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(libc::pid_t::try_from(pid).ok()?, libc::PROC_PIDT_SHORTBSDINFO, 0, (&mut short as *mut libc::proc_bsdshortinfo).cast(), size)
+        };
+        (got == size).then_some(short.pbsi_uid)
+    }
+
+    /// `sizeof(struct kinfo_proc)`; its first field is the start time (`kp_proc.p_starttime`, a `timeval`).
+    const KINFO_PROC_SIZE: usize = 648;
+
+    /// A process the asker does not own: no memory, CPU time or arguments; a process that has ended has no row.
+    fn other_users_process(pid: libc::pid_t, listed: u32) -> Option<Process> {
+        let mut short: libc::proc_bsdshortinfo = unsafe { std::mem::zeroed() };
+        let short_size = std::mem::size_of::<libc::proc_bsdshortinfo>() as libc::c_int;
+        let got = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO, 0, (&mut short as *mut libc::proc_bsdshortinfo).cast(), short_size)
+        };
+        if got != short_size {
+            return None;
+        }
+        let mut entry = [0u8; KINFO_PROC_SIZE];
+        let mut len = entry.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let read = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 4, entry.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+        };
+        if read != 0 || len != KINFO_PROC_SIZE {
+            return None;
+        }
+        let seconds = i64::from_ne_bytes(*entry.first_chunk::<8>()?);
+        let micros = i32::from_ne_bytes(*entry[8..].first_chunk::<4>()?);
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let path_len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        Some(Process {
+            pid: listed,
+            ppid: short.pbsi_ppid,
+            // The short name fills its field with no terminator when it is as long as the field.
+            name: String::from_utf8_lossy(&short.pbsi_comm.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect::<Vec<u8>>()).into_owned(),
+            command: usize::try_from(path_len)
+                .ok()
+                .map(|n| String::from_utf8_lossy(&path[..n]).into_owned())
+                .unwrap_or_default(),
+            args: Vec::new(),
+            user: short.pbsi_uid.to_string(),
+            own: short.pbsi_uid == unsafe { libc::getuid() },
+            rss_bytes: None,
+            cpu_seconds: None,
+            started_at: Some(seconds as f64 + f64::from(micros) / 1e6),
+        })
+    }
+
+    #[allow(deprecated)]
     pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
         let pid_size = std::mem::size_of::<libc::pid_t>();
         let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
@@ -470,6 +558,7 @@ mod native {
             return Err(err(op, OsErrorKind::Io, "the host gave no time base"));
         }
         let nanos_per_tick = f64::from(timebase.numer) / f64::from(timebase.denom);
+        let me = unsafe { libc::getuid() };
         let mut out = Vec::with_capacity(pids.len());
         for pid in pids {
             let Ok(listed) = u32::try_from(pid) else { continue };
@@ -478,8 +567,12 @@ mod native {
             let got = unsafe {
                 libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut bsd as *mut libc::proc_bsdinfo).cast(), bsd_size)
             };
-            // A process that ended since the listing, or one the host describes to nobody (pid 0), has no row.
+            // The full record is the owner's and root's alone: another user's process is read through the short
+            // record and the kernel's process entry, which every user may ask for.
             if got != bsd_size {
+                if let Some(other) = other_users_process(pid, listed) {
+                    out.push(other);
+                }
                 continue;
             }
             let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
@@ -501,11 +594,12 @@ mod native {
                 name: if long_name.is_empty() { c_text(&bsd.pbi_comm) } else { long_name },
                 command,
                 args: process_args(pid),
-                user: bsd.pbi_uid,
+                user: bsd.pbi_uid.to_string(),
+                own: bsd.pbi_uid == me,
                 rss_bytes: measured.then_some(task.pti_resident_size as f64),
                 cpu_seconds: measured
                     .then_some((task.pti_total_user + task.pti_total_system) as f64 * nanos_per_tick / 1e9),
-                started_at: bsd.pbi_start_tvsec as f64 + bsd.pbi_start_tvusec as f64 / 1e6,
+                started_at: Some(bsd.pbi_start_tvsec as f64 + bsd.pbi_start_tvusec as f64 / 1e6),
             });
         }
         Ok(out)
@@ -728,7 +822,18 @@ mod native {
 mod native {
     use super::*;
 
-    #[cfg(not(unix))]
+    #[cfg(unix)]
+    pub(super) fn process_owner(pid: u32) -> Option<u32> {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(format!("/proc/{pid}")).ok().map(|owner| owner.uid())
+    }
+
+    #[cfg(windows)]
+    pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
+        super::windows::processes(op)
+    }
+
+    #[cfg(not(any(unix, windows)))]
     pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
         Err(unsupported(op, "the process table is not readable on this host"))
     }
@@ -761,10 +866,11 @@ mod native {
                 name: stat.name,
                 command,
                 args,
-                user: owner.uid(),
+                user: owner.uid().to_string(),
+                own: owner.uid() == unsafe { libc::getuid() },
                 rss_bytes: Some(stat.rss_pages as f64 * page),
                 cpu_seconds: Some((stat.user_ticks + stat.system_ticks) as f64 / ticks),
-                started_at: boot + stat.start_ticks as f64 / ticks,
+                started_at: Some(boot + stat.start_ticks as f64 / ticks),
             });
         }
         Ok(out)

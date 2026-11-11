@@ -328,10 +328,11 @@ fn every_sysinfo_op_returns_its_closed_shape_or_unsupported() {
                     ("name", Shape::Str),
                     ("command", Shape::Str),
                     ("args", Shape::StrList),
-                    ("user", Shape::Num),
+                    ("user", Shape::Str),
+                    ("own", Shape::Bool),
                     ("rssBytes", Shape::NumOrNull),
                     ("cpuSeconds", Shape::NumOrNull),
-                    ("startedAt", Shape::Num),
+                    ("startedAt", Shape::NumOrNull),
                 ]),
             )]),
         ),
@@ -630,7 +631,7 @@ fn the_first_percent_is_read_from_tool_output() {
     assert_eq!(first_percent("%"), None);
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn the_process_list_holds_this_process_with_its_parent_memory_and_start() {
     let listed = ask(all_sys(), OsOp::ProcessList, &[]).expect("process list");
@@ -660,11 +661,12 @@ fn the_process_list_holds_this_process_with_its_parent_memory_and_start() {
     assert!(started > 0.0 && started <= now + 1.0, "started {started} now {now}");
     let Value::Array(args) = field(own, "args") else { panic!("args") };
     assert!(!args.is_empty(), "this process's own arguments are readable");
+    assert_eq!(field(own, "own"), Value::Bool(true), "this process is the asker's own");
     let Value::String(command) = field(own, "command") else { panic!("command") };
-    assert!(command.starts_with('/'), "{command}");
+    assert!(Path::new(command.as_str()).is_absolute(), "{command}");
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[test]
 fn control_every_listed_process_has_a_distinct_pid() {
     let listed = ask(all_sys(), OsOp::ProcessList, &[]).expect("process list");
@@ -714,4 +716,31 @@ fn a_procargs_buffer_gives_the_arguments_after_the_executable_path_and_its_paddi
     let mut bare = 1i32.to_ne_bytes().to_vec();
     bare.extend_from_slice(b"/usr/bin/orb\0\0");
     assert!(procargs2(&bare).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_process_list_holds_the_processes_of_other_users_too() {
+    let listed = ask(all_sys(), OsOp::ProcessList, &[]).expect("process list");
+    let Value::Array(processes) = field(&listed, "processes") else {
+        panic!("processes")
+    };
+    let first: Vec<&Value> = processes
+        .iter()
+        .filter(|p| field(p, "pid") == Value::Number(1.0))
+        .collect();
+    assert_eq!(first.len(), 1, "process 1 is listed whoever asks");
+    assert_eq!(field(first[0], "user"), Value::string("0".to_string()));
+    #[cfg(unix)]
+    assert_eq!(field(first[0], "own"), Value::Bool(unsafe { libc::getuid() } == 0), "process 1 is root's");
+    let Value::String(name) = field(first[0], "name") else { panic!("name") };
+    assert!(!name.is_empty());
+}
+
+#[test]
+fn a_windows_file_time_is_read_as_seconds_since_1970_and_a_span_as_seconds() {
+    assert_eq!(filetime_unix_seconds(116_444_736_000_000_000), 0.0);
+    assert_eq!(filetime_unix_seconds(133_756_704_000_000_000), 1_731_196_800.0);
+    assert_eq!(filetime_seconds(25_000_000), 2.5);
+    assert_eq!(filetime_seconds(0), 0.0);
 }

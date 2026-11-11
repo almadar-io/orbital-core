@@ -56,10 +56,11 @@ pub(super) fn process_list(op: OsOp) -> Result<Value, OsError> {
                 ("name", text(p.name)),
                 ("command", text(p.command)),
                 ("args", Value::Array(p.args.into_iter().map(text).collect())),
-                ("user", num(f64::from(p.user))),
+                ("user", text(p.user)),
+                ("own", Value::Bool(p.own)),
                 ("rssBytes", p.rss_bytes.map_or(Value::Null, num)),
                 ("cpuSeconds", p.cpu_seconds.map_or(Value::Null, num)),
-                ("startedAt", num(p.started_at)),
+                ("startedAt", p.started_at.map_or(Value::Null, num)),
             ])
         })
         .collect();

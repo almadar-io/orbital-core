@@ -81,7 +81,7 @@ pub struct OirModule {
     /// else the first.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub locales: Vec<String>,
-    /// App site modifiers (`origin`, `icon`, `siteName`, `signIn`).
+    /// App site modifiers (`origin`, `icon`, `siteName`, `signIn`, `entries`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<crate::schema::types::SiteMeta>,
     /// Named struct/union types discovered while resolving entity/payload

@@ -64,6 +64,7 @@
     "icon": "icon",
     "siteName": "siteName",
     "signIn": "signIn",
+    "entries": "entries",
     "authenticated": "authenticated",
     "index": "index",
     "noindex": "noindex",

@@ -481,36 +481,82 @@ fn signal_number(value: &Value, op: OsOp) -> Result<i32, OsError> {
     }
 }
 
-/// Whether a program may signal `pid`: a process it spawned, or its own process (`own`) under the explicit
-/// `sys: [self-signal]` grant (owner ruling 2026-11-03, EXEC-CONC-6).
-fn may_signal(pid: i64, own: i64, spawned: bool, grants: &OsGrants, op: OsOp) -> Result<(), OsError> {
+/// The lowest pid a program may signal under `sys: [process-signal]`: below it are the system's own processes
+/// (process 1 on Unix; the idle process and `System`, pid 4, on Windows) and, on Unix, process groups.
+#[cfg(not(windows))]
+const LOWEST_SIGNALLED_PID: i64 = 2;
+#[cfg(windows)]
+const LOWEST_SIGNALLED_PID: i64 = 5;
+
+/// Whether a program may signal `pid`: a process it spawned; its own process (`own`) under the explicit
+/// `sys: [self-signal]` grant (owner ruling 2026-11-03, EXEC-CONC-6); or, under `sys: [process-signal]`, another
+/// process owned by the user the program runs as (`owned`: whether it is, `None` when no such process exists).
+/// The system's own processes and a process group are never signalled (owner ruling 2026-11-11).
+fn may_signal(
+    pid: i64,
+    own: i64,
+    spawned: bool,
+    owned: Option<bool>,
+    grants: &OsGrants,
+    op: OsOp,
+) -> Result<(), OsError> {
+    use orbital_core_base::os_grants::SysKind;
     if spawned {
         return Ok(());
     }
     if pid == own {
-        if grants.sys_allows(orbital_core_base::os_grants::SysKind::SelfSignal) {
+        if grants.sys_allows(SysKind::SelfSignal) {
             return Ok(());
         }
         return Err(denied(op, "signalling its own process needs the sys grant self-signal"));
     }
-    Err(err(OsErrorKind::Closed, op, format!("pid {pid} is not a spawned process")))
+    if !grants.sys_allows(SysKind::ProcessSignal) {
+        return Err(err(
+            OsErrorKind::Closed,
+            op,
+            format!("pid {pid} is not a spawned process; signalling another process needs the sys grant process-signal"),
+        ));
+    }
+    if pid < LOWEST_SIGNALLED_PID {
+        return Err(denied(op, &format!("pid {pid} is never signalled")));
+    }
+    match owned {
+        None => Err(err(OsErrorKind::Closed, op, format!("pid {pid} is not a running process"))),
+        Some(false) => Err(denied(op, &format!("pid {pid} belongs to another user"))),
+        Some(true) => Ok(()),
+    }
 }
 
 fn kill(args: &[Value], host: &OsHost<'_>) -> Result<Value, OsError> {
     let op = OsOp::Kill;
     let pid = arg_i64(args, 0, op)?;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     {
-        let signal = signal_number(args.get(1).unwrap_or(&Value::Null), op)?;
         let spawned = host.handles.process.children.lock().contains_key(&pid);
-        may_signal(pid, i64::from(std::process::id()), spawned, host.grants, op)?;
-        let target = libc::pid_t::try_from(pid).map_err(|_| invalid(op, "pid out of range"))?;
-        if unsafe { libc::kill(target, signal) } != 0 {
-            return Err(io_error(op, &std::io::Error::last_os_error()));
+        let owned = u32::try_from(pid).ok().and_then(super::sys::process_is_own);
+        #[cfg(unix)]
+        {
+            let signal = signal_number(args.get(1).unwrap_or(&Value::Null), op)?;
+            may_signal(pid, i64::from(std::process::id()), spawned, owned, host.grants, op)?;
+            let target = libc::pid_t::try_from(pid).map_err(|_| invalid(op, "pid out of range"))?;
+            if unsafe { libc::kill(target, signal) } != 0 {
+                return Err(io_error(op, &std::io::Error::last_os_error()));
+            }
+        }
+        #[cfg(windows)]
+        {
+            // Windows has no signals: TERM and KILL both end the process, and no other signal has a meaning there.
+            let signal = arg_str(args, 1, op)?;
+            if !matches!(signal, "TERM" | "KILL") {
+                return Err(err(OsErrorKind::Unsupported, op, format!("signal {signal} is not available on Windows; TERM and KILL end the process")));
+            }
+            may_signal(pid, i64::from(std::process::id()), spawned, owned, host.grants, op)?;
+            let target = u32::try_from(pid).map_err(|_| invalid(op, "pid out of range"))?;
+            super::sys::terminate(op, target)?;
         }
         Ok(object(vec![]))
     }
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = (pid, host);
         Err(err(

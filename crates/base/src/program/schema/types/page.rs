@@ -276,6 +276,10 @@ pub struct SiteMeta {
     /// Route an `access: authenticated` page sends a non-admitted viewer to.
     #[serde(rename = "signIn", default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<String>,
+    /// Route paths a viewer reaches from outside the app (a URL the CLI, an email or another app opens), so no
+    /// link inside the app has to lead to them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<String>,
 }
 
 impl SiteMeta {

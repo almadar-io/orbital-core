@@ -118,7 +118,7 @@ pub struct OrbitalSchema {
     #[serde(rename = "publicDir", default, skip_serializing_if = "Option::is_none")]
     pub public_dir: Option<String>,
 
-    /// Site modifiers (`origin`, `icon`, `siteName`, `signIn`) from the app bracket.
+    /// Site modifiers (`origin`, `icon`, `siteName`, `signIn`, `entries`) from the app bracket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub site: Option<SiteMeta>,
 

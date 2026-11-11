@@ -727,20 +727,21 @@ pub(super) fn kv_need(args: &[SExpression], store: usize, mode: KvMode, deferred
         .collect())
 }
 
-/// The grants a call may use without requiring them: `sys self-signal` for a call whose operator-table `self-signal`
-/// need has a pid that is not a literal number (a pid held in data may be the program's own, which a literal cannot be
-/// told to be). Read by the unused-grant analysis only; a requirement is never derived from it.
+/// The grants a call may use without requiring them: `sys self-signal` and `sys process-signal` for a call whose
+/// operator-table `self-signal` need has a pid that is not a literal number (a pid held in data may be the program's
+/// own, or a process it did not spawn, which a literal cannot be told to be). Read by the unused-grant analysis only; a requirement is never derived from it.
 pub fn os_possible_uses(op: OsOp, args: &[SExpression]) -> Vec<OsRequirement> {
     let Ok(needs) = super::try_os_grant_needs(op) else {
         return Vec::new();
     };
     needs
         .iter()
-        .filter_map(|need| match need {
-            OsGrantNeed::SelfSignal { pid } if !matches!(args.get(*pid), Some(SExpression::Number(_)) | None) => {
-                Some(OsRequirement::Sys { kind: SysKind::SelfSignal })
-            }
-            _ => None,
+        .flat_map(|need| match need {
+            OsGrantNeed::SelfSignal { pid } if !matches!(args.get(*pid), Some(SExpression::Number(_)) | None) => vec![
+                OsRequirement::Sys { kind: SysKind::SelfSignal },
+                OsRequirement::Sys { kind: SysKind::ProcessSignal },
+            ],
+            _ => Vec::new(),
         })
         .collect()
 }

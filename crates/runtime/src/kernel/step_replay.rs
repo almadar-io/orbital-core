@@ -477,7 +477,9 @@ pub fn with_step_config(
 
 /// A replayed step's host answer: an os/* ask the step's `answers` script is answered from them (a deferring op's
 /// answer waits for the dispatch to end and arrives as its completion); any other keyed os/* ask is left pending (its
-/// answer event is a later step's to play, G-ORB-459); a credential ask is answered from the step's `credentials`; every
+/// answer event is a later step's to play, G-ORB-459); a `cancel-call` succeeds, since a replay leaves every keyed call
+/// pending and withdrawing one leaves nothing to stop, as a live host answers a key with no call in flight; a credential
+/// ask is answered from the step's `credentials`; every
 /// other ask is answered as a kernel with no host answers it.
 pub fn step_answer(
     kernel: &RuntimeKernel,
@@ -504,6 +506,7 @@ pub fn step_answer(
             site: Some(_),
             ..
         } => IoAnswer::ServiceDeferred,
+        IoRequest::CancelCall { .. } => IoAnswer::Cancelled(Ok(())),
         IoRequest::Secret { .. } => BlockingHost {
             source: kernel.entity_source().as_ref(),
             service: None,
@@ -1295,6 +1298,21 @@ mod tests {
         assert_eq!(report.steps[0].states["Modes"], "NORMAL", "nothing moved");
         assert_eq!(report.steps[1].outcomes[0].new_state, "VISUAL", "control: the next step ran");
         assert_eq!(report.steps[1].outcomes[0].failure, None);
+    }
+
+    #[test]
+    fn a_replayed_cancel_call_withdraws_the_pending_call_and_succeeds() {
+        const CANCELLING: &str = r#"{"name":"CancelApp","typeContractVersion":1,"orbitals":[{"name":"Timer","entity":{"name":"Clock","persistence":"runtime","fields":[{"name":"id","type":"string"},{"name":"key","type":"string","default":"k"}]},"pages":[],"traits":[{"name":"Timeout","linkedEntity":"Clock","stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"running"}],"transitions":[
+            {"from":"running","to":"idle","event":"CANCEL","effects":[["cancel-call","@entity.key"]]},
+            {"from":"running","to":"idle","event":"BAD","effects":[["cancel-call",1]]}
+        ]}}]}]}"#;
+        let report = play_on(CANCELLING, serde_json::json!([{ "trait": "Timeout", "from": "running", "event": "CANCEL" }])).unwrap();
+        let outcome = &report["steps"][0]["outcomes"][0];
+        assert_eq!(outcome["newState"], "idle");
+        assert_eq!(outcome["effects"][0]["status"], "executed", "{outcome}");
+        assert_eq!(outcome["failure"], serde_json::Value::Null);
+        let control = play_on(CANCELLING, serde_json::json!([{ "trait": "Timeout", "from": "running", "event": "BAD" }])).unwrap();
+        assert_ne!(control["steps"][0]["outcomes"][0]["effects"][0]["status"], "executed", "control: a key that is not text is not cancelled");
     }
 
     #[test]

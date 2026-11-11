@@ -947,17 +947,59 @@ fn stdin_unkeyed_control_a_short_stdin_returns_everything() {
 fn a_program_signals_its_own_process_only_under_the_self_signal_grant() {
     use orbital_core_base::os_grants::SysKind;
     let none = grants();
-    let error = may_signal(42, 42, false, &none, OsOp::Kill).expect_err("own pid without the grant");
+    let error = may_signal(42, 42, false, None, &none, OsOp::Kill).expect_err("own pid without the grant");
     assert!(error.message.contains("self-signal"), "{error:?}");
     let granted = OsGrants { sys: vec![SysKind::SelfSignal], ..grants() };
-    assert!(may_signal(42, 42, false, &granted, OsOp::Kill).is_ok());
+    assert!(may_signal(42, 42, false, None, &granted, OsOp::Kill).is_ok());
 }
 
 #[test]
 fn control_a_spawned_child_needs_no_self_signal_grant_and_a_stranger_is_refused_even_with_it() {
     use orbital_core_base::os_grants::SysKind;
-    assert!(may_signal(7, 42, true, &grants(), OsOp::Kill).is_ok(), "a child, as before");
+    assert!(may_signal(7, 42, true, None, &grants(), OsOp::Kill).is_ok(), "a child, as before");
     let granted = OsGrants { sys: vec![SysKind::SelfSignal], ..grants() };
-    let error = may_signal(7, 42, false, &granted, OsOp::Kill).expect_err("another process");
+    let error = may_signal(7, 42, false, Some(true), &granted, OsOp::Kill).expect_err("another process");
     assert!(error.message.contains("not a spawned process"), "{error:?}");
+}
+
+#[test]
+fn another_process_of_the_same_user_is_signalled_only_under_the_process_signal_grant() {
+    use orbital_core_base::os_grants::SysKind;
+    let error = may_signal(7, 42, false, Some(true), &grants(), OsOp::Kill).expect_err("no grant");
+    assert!(error.message.contains("process-signal"), "{error:?}");
+    let granted = OsGrants { sys: vec![SysKind::ProcessSignal], ..grants() };
+    assert!(may_signal(7, 42, false, Some(true), &granted, OsOp::Kill).is_ok());
+}
+
+#[test]
+fn control_the_process_signal_grant_never_reaches_another_user_process_one_a_group_or_the_program_itself() {
+    use orbital_core_base::os_grants::SysKind;
+    let granted = OsGrants { sys: vec![SysKind::ProcessSignal], ..grants() };
+    let other = may_signal(7, 42, false, Some(false), &granted, OsOp::Kill).expect_err("another user's process");
+    assert_eq!(other.kind, OsErrorKind::Denied, "{other:?}");
+    assert!(other.message.contains("another user"), "{other:?}");
+    for pid in [1, 0, -1, -7] {
+        let error = may_signal(pid, 42, false, Some(true), &granted, OsOp::Kill).expect_err("never signalled");
+        assert_eq!(error.kind, OsErrorKind::Denied, "pid {pid}: {error:?}");
+    }
+    let gone = may_signal(7, 42, false, None, &granted, OsOp::Kill).expect_err("no such process");
+    assert_eq!(gone.kind, OsErrorKind::Closed, "{gone:?}");
+    let own = may_signal(42, 42, false, Some(true), &granted, OsOp::Kill).expect_err("its own process");
+    assert!(own.message.contains("self-signal"), "{own:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_process_this_program_did_not_spawn_is_stopped_under_the_grant_and_refused_without_it() {
+    use orbital_core_base::os_grants::SysKind;
+    let mut stranger = std::process::Command::new("/bin/sleep").arg("60").spawn().expect("sleep");
+    let pid = Value::Number(f64::from(stranger.id()));
+    let handles = OsHandles::default();
+    let refused = call(&grants(), &handles, OsOp::Kill, vec![pid.clone(), Value::string("TERM".to_string())]).expect_err("no grant");
+    assert!(refused.message.contains("process-signal"), "{refused:?}");
+    assert!(stranger.try_wait().expect("wait").is_none(), "still running after the refusal");
+    let granted = OsGrants { sys: vec![SysKind::ProcessSignal], ..grants() };
+    call(&granted, &handles, OsOp::Kill, vec![pid, Value::string("TERM".to_string())]).expect("signalled");
+    let status = stranger.wait().expect("reaped");
+    assert!(!status.success(), "ended by the signal");
 }
