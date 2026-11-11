@@ -12,10 +12,10 @@ fn navigate_carries_crumb_options() {
         .build();
 
     let effect = Effect::Navigate {
-        path: "/notes/:id".to_string(),
+        path: Value::string("/notes/:id"),
         params: None,
-        options: Some(orbital_core_base::client_effect::NavigateOptions {
-            crumb: Some("@payload.title".to_string()),
+        options: Some(orbital_core_base::effect_types::NavigateOperands {
+            crumb: Some(Value::string("@payload.title")),
         }),
     };
 
@@ -25,7 +25,7 @@ fn navigate_carries_crumb_options() {
     };
     assert_eq!(
         options.and_then(|o| o.crumb),
-        Some("My Note".to_string()),
+        Some(Value::string("My Note")),
         "the crumb must resolve from @payload.title, not stay the literal token"
     );
 }
@@ -60,14 +60,14 @@ fn navigate_path_of(path: &str, payload: ValueMap) -> String {
         .payload(Value::object(payload))
         .build();
     let effect = Effect::Navigate {
-        path: path.to_string(),
+        path: Value::string(path),
         params: None,
         options: None,
     };
     let Ok(Effect::Navigate { path, .. }) = resolve_effect_bindings(effect, &ctx) else {
         panic!("expected resolved navigate effect");
     };
-    path
+    path.to_string_value()
 }
 
 #[test]

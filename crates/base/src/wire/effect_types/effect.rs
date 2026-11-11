@@ -2,6 +2,13 @@
 
 use super::*;
 
+/// A `navigate`'s third argument as written: its `crumb` is an operand like the path.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NavigateOperands {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crumb: Option<Value>,
+}
+
 /// Typed effect variants
 ///
 /// Effects are the side-effects produced by state machine transitions.
@@ -118,13 +125,13 @@ pub enum Effect {
 
     /// Navigate to a route (client-only)
     Navigate {
-        path: String,
+        /// The route as written: text, a binding or a call. It is text once the effect's bindings resolve.
+        path: Value,
         params: Option<ValueMap>,
-        /// `{ crumb?: string }` — the optional third `navigate` argument
-        /// (`(navigate path params { crumb: ... })`). Mirrors the wire's
-        /// `NavigateOptions` (`super::client_effect`).
+        /// The optional third `navigate` argument (`(navigate path params { crumb: ... })`), which the wire
+        /// carries as `NavigateOptions` (`super::client_effect`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        options: Option<crate::client_effect::NavigateOptions>,
+        options: Option<NavigateOperands>,
     },
 
     /// Pop the navigation stack and return to the previous entry (client-only)

@@ -91,7 +91,7 @@ impl FetchDeliver {
 mod effect;
 mod result;
 mod parse;
-pub use effect::{Effect, CLIENT_EFFECT_KINDS};
+pub use effect::{Effect, NavigateOperands, CLIENT_EFFECT_KINDS};
 pub use parse::{is_known_effect_name, parse_effect, strip_trailing_emit_options};
 pub use result::{BatchFailure, EffectOutcome, EffectResult, LogLevel, PersistOperation};
 

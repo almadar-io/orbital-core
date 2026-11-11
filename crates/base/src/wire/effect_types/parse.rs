@@ -8,7 +8,7 @@ use super::*;
 /// - `["emit", "EVENT_NAME", { payload }]`
 /// - `["persist", "create", "Entity", data]`
 /// - `["render-ui", "slot", { content }]`
-/// - `["navigate", "/path"]`
+/// - `["navigate", "/path"]`, `["navigate", ["str/concat", "/items/", "@payload.id"]]`
 /// - `["set", "@path", value]`
 ///
 /// `Ok(None)` is a malformed effect; `Err` is an installed operator table that does not carry an `os/` operation
@@ -537,10 +537,7 @@ pub(super) fn parse_render_ui(args: &[SExpression]) -> Option<Effect> {
 }
 
 pub(super) fn parse_navigate(args: &[SExpression]) -> Option<Effect> {
-    if args.is_empty() {
-        return None;
-    }
-    let path = args[0].as_str()?.to_string();
+    let path = Value::from(args.first()?.clone());
     let params = args.get(1).and_then(|e| {
         if let Value::Object(obj) = Value::from(e.clone()) {
             Some(obj.into_inner())
@@ -550,11 +547,7 @@ pub(super) fn parse_navigate(args: &[SExpression]) -> Option<Effect> {
     });
     let options = args.get(2).and_then(|e| {
         if let Value::Object(obj) = Value::from(e.clone()) {
-            let crumb = obj
-                .get("crumb")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            Some(crate::client_effect::NavigateOptions { crumb })
+            Some(NavigateOperands { crumb: obj.get("crumb").cloned() })
         } else {
             None
         }

@@ -35,10 +35,15 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             params,
             options,
         } => Effect::Navigate {
-            path: ctx
-                .resolve_value_checked(&Value::string(path))?
-                .into_owned()
-                .to_string_value(),
+            path: match ctx.resolve_value_checked(&path)?.into_owned() {
+                route @ Value::String(_) => route,
+                other => {
+                    return Err(EvalError::InvalidArgument(format!(
+                        "navigate: the path is {}, not text",
+                        other.to_string_value()
+                    )))
+                }
+            },
             params: params
                 .map(|p| {
                     p.iter()
@@ -46,13 +51,16 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
                         .collect::<Result<_, EvalError>>()
                 })
                 .transpose()?,
-            options: options.map(|o| orbital_core_base::client_effect::NavigateOptions {
-                crumb: o.crumb.map(|c| {
-                    ctx.resolve_value(&Value::string(c))
-                        .into_owned()
-                        .to_string_value()
-                }),
-            }),
+            options: options
+                .map(|o| {
+                    Ok::<_, EvalError>(orbital_core_base::effect_types::NavigateOperands {
+                        crumb: o
+                            .crumb
+                            .map(|c| Ok::<_, EvalError>(Value::string(ctx.resolve_value_checked(&c)?.into_owned().to_string_value())))
+                            .transpose()?,
+                    })
+                })
+                .transpose()?,
         },
         Effect::CallService {
             service,

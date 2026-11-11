@@ -114,7 +114,7 @@ fn client_kind_matches_kinds() {
             content: Value::Null,
         },
         Effect::Navigate {
-            path: "/".into(),
+            path: Value::string("/"),
             params: None,
             options: None,
         },

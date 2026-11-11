@@ -182,9 +182,9 @@ impl ClientEffect {
                 params,
                 options,
             } => Some(ClientEffect::Navigate {
-                path: path.clone(),
+                path: path.to_string_value(),
                 params: params.as_ref().map(|p| Value::object(p.clone())),
-                options: options.clone(),
+                options: options.as_ref().map(|o| NavigateOptions { crumb: o.crumb.as_ref().map(Value::to_string_value) }),
             }),
             Effect::NavigateBack => Some(ClientEffect::NavigateBack),
             _ => None,
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn from_effect_navigate() {
         let effect = Effect::Navigate {
-            path: "/notes".to_string(),
+            path: Value::string("/notes"),
             params: None,
             options: None,
         };
@@ -513,10 +513,10 @@ mod tests {
     #[test]
     fn from_effect_navigate_carries_crumb_options() {
         let effect = Effect::Navigate {
-            path: "/notes/:id".to_string(),
+            path: Value::string("/notes/:id"),
             params: None,
-            options: Some(NavigateOptions {
-                crumb: Some("My Note".to_string()),
+            options: Some(crate::effect_types::NavigateOperands {
+                crumb: Some(Value::string("My Note")),
             }),
         };
         let client = ClientEffect::from_effect(&effect).unwrap();

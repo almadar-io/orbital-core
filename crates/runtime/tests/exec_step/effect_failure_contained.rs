@@ -210,7 +210,7 @@ fn exec_eval_4_control_well_typed_navigate_params_do_not_fail() {
     assert_eq!(effect_failed(&response), None);
 }
 
-// G-ORBITAL-CORE-166: a navigate's path and crumb are operands like its params: a call is evaluated, never dropped.
+// G-ORBITAL-CORE-169 (EXEC-EVAL-4): a navigate's path and crumb are operands like its params: a call is evaluated, never dropped.
 #[test]
 fn a_navigate_whose_path_is_a_call_reaches_the_client_as_the_evaluated_route() {
     let response = run(schema(vec![json!(["navigate", ["str/concat", "/items/", ["object/get", { "first": "a1" }, "first", ""]]])]));

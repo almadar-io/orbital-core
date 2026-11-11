@@ -374,12 +374,12 @@ impl EffectExecutor {
 
     pub(super) fn do_navigate(
         &self,
-        path: &str,
+        path: &Value,
         params: Option<&ValueMap>,
-        options: Option<orbital_core_base::client_effect::NavigateOptions>,
+        options: Option<orbital_core_base::effect_types::NavigateOperands>,
     ) -> EffectResult {
         let effect = Effect::Navigate {
-            path: path.to_string(),
+            path: path.clone(),
             params: params.cloned(),
             options,
         };
@@ -390,7 +390,10 @@ impl EffectExecutor {
         }
 
         if let Some(handler) = &self.navigation_handler {
-            match handler.navigate(path, params) {
+            let Some(route) = path.as_str() else {
+                return EffectResult::failed(effect, "navigate: the path is not text");
+            };
+            match handler.navigate(route, params) {
                 Ok(()) => EffectResult::executed(effect),
                 Err(e) => EffectResult::failed(effect, &e),
             }

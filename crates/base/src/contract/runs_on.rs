@@ -897,7 +897,7 @@ mod tests {
         use crate::effect_types::Effect;
         let forwarded = [
             Effect::RenderUi { slot: "main".into(), content: crate::value::Value::Null },
-            Effect::Navigate { path: "/a".into(), params: None, options: None },
+            Effect::Navigate { path: crate::value::Value::string("/a"), params: None, options: None },
             Effect::NavigateBack,
         ];
         let mut names: Vec<&str> = forwarded.iter().map(Effect::operator).collect();

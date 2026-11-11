@@ -477,7 +477,7 @@ fn test_navigate_client_only() {
     let server_executor = EffectExecutor::server();
 
     let effect = Effect::Navigate {
-        path: "/users".to_string(),
+        path: Value::string("/users"),
         params: None,
         options: None,
     };
