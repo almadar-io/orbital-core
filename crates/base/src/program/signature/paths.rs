@@ -39,6 +39,9 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             may_be_absent |= next.is_optional();
             here = language_value(unwrap_optional(&next)).clone();
         }
+        if matches!(here, OirType::File) {
+            here = OirType::Struct { fields: crate::ir::file_value_fields().into(), additional: None };
+        }
         match &here {
             OirType::Struct { fields, additional } => match fields.iter().find(|f| f.name == segment) {
                 Some(field) => {
@@ -102,7 +105,6 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             }
             OirType::Row { .. }
             | OirType::TypeRef { .. }
-            | OirType::File
             | OirType::Orbital
             | OirType::Behavior
             | OirType::Reference { .. } => return Path::Opaque,

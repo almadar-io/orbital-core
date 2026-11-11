@@ -394,6 +394,48 @@ pub trait TargetTypeRenderer {
     }
 }
 
+/// The names a backend gives the declarations it hoists for inline field types (`<Owner><Field>`). One instance spans
+/// every file of one generated namespace: it starts from the names the program itself declares and hands each
+/// (owner, field) position a name none of them, and no other position, holds. The same position always gets the same
+/// name, so a reference site asks again instead of rebuilding the name.
+#[derive(Debug, Default)]
+pub struct HoistedTypeNames {
+    taken: core::cell::RefCell<std::collections::BTreeSet<String>>,
+    assigned: core::cell::RefCell<std::collections::BTreeMap<(String, String), String>>,
+}
+
+impl HoistedTypeNames {
+    pub fn new(declared: impl IntoIterator<Item = String>) -> Self {
+        Self { taken: core::cell::RefCell::new(declared.into_iter().collect()), assigned: Default::default() }
+    }
+
+    /// The name of the declaration hoisted for `field` of `owner`: `<owner><Field>`, or that with the first counter
+    /// from 2 that makes it free.
+    pub fn child(&self, owner: &str, field: &str) -> String {
+        self.suffixed(owner, field, &crate::str_utils::split_to_pascal_case(field))
+    }
+
+    /// As [`Self::child`] for a position whose suffix is not the field's own name; `key` tells the positions of one
+    /// owner apart.
+    pub fn suffixed(&self, owner: &str, key: &str, suffix: &str) -> String {
+        let key = (owner.to_string(), key.to_string());
+        if let Some(name) = self.assigned.borrow().get(&key) {
+            return name.clone();
+        }
+        let base = format!("{owner}{suffix}");
+        let mut taken = self.taken.borrow_mut();
+        let mut name = base.clone();
+        let mut n = 2usize;
+        while taken.contains(&name) {
+            name = format!("{base}{n}");
+            n += 1;
+        }
+        taken.insert(name.clone());
+        self.assigned.borrow_mut().insert(key, name.clone());
+        name
+    }
+}
+
 /// Walk `ty`, dispatching each node to `r`. `enum_values` is the immediate
 /// field's sidecar and reaches only the `String`/`Enum` leaves; every recursive
 /// arm recurses with `None` (the sidecar applies at the field position, not to
@@ -527,6 +569,16 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hoisted_name_avoids_declared_names_and_other_positions_and_is_stable() {
+        let names = HoistedTypeNames::new(["LessonVisualizationType".to_string()]);
+        assert_eq!(names.child("LessonVisualization", "type"), "LessonVisualizationType2", "the program declares the plain name");
+        assert_eq!(names.child("LessonVisualization", "type"), "LessonVisualizationType2", "the same position asks again and gets the same name");
+        assert_eq!(names.child("Lesson", "visualizationType"), "LessonVisualizationType3", "another position that concatenates to the same name");
+        assert_eq!(names.child("Lesson", "title"), "LessonTitle", "control: a free name is unchanged");
+        assert_eq!(HoistedTypeNames::default().child("LessonVisualization", "type"), "LessonVisualizationType", "control: nothing declared");
+    }
 
     /// A `String`-valued renderer that tags every node with its kind. It lets
     /// the characterization tests pin exactly which trait method the walker

@@ -42,7 +42,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | Isatty | TtySize => OsFamily::Process,
         TcpConnect | TcpListen | TlsUpgrade | Send | Recv | UdpBind | Sendto | Recvfrom
         | DnsResolve | Shutdown | WatchPort | Fetch => OsFamily::Net,
-        ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo
+        ClockMonotonic | Uid | Gid | Username | GroupOf | WatchCron | CpuUsage | MemoryInfo | ProcessList
         | Uptime | LoadAvg | Hostname | Uname | DiskUsage | Mounts | DiskIo | NetworkInterfaces
         | NetworkStats | NetworkConnected | DefaultGateway | BatteryStatus | AcPower
         | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
@@ -160,6 +160,7 @@ os_ops! {
     WatchCron => ("os/watch-cron", Stream),
     CpuUsage => ("os/cpu-usage", Single),
     MemoryInfo => ("os/memory-info", Single),
+    ProcessList => ("os/process-list", Single),
     Uptime => ("os/uptime", Single),
     LoadAvg => ("os/load-avg", Single),
     Hostname => ("os/hostname", Single),
@@ -595,7 +596,7 @@ mod tests {
             );
             assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
-        assert_eq!(OsOp::ALL.len(), 128);
+        assert_eq!(OsOp::ALL.len(), 129);
         assert_eq!(OsOp::from_name("http"), None);
     }
 

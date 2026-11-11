@@ -81,6 +81,17 @@ pub const EFFECT_SITES: &[(&str, RunsOn)] = &[
     ("send-server", RunsOn::Client),
 ];
 
+/// The `client` effects a server kernel that runs them ships to the client to carry out (EXEC-DIST): exactly the
+/// effects [`crate::client_effect::ClientEffect::from_effect`] gives a wire tuple. Every other `client` effect has no
+/// one to run it on a server. Twin of the registry's `forwardedToClient`; `runs_on_drift.rs` fails the build when
+/// they disagree.
+pub const FORWARDED_TO_CLIENT: &[&str] = &["navigate", "navigate-back", "render-ui"];
+
+/// Whether a server kernel ships `operator` to the client instead of running it.
+pub fn forwarded_to_client(operator: &str) -> bool {
+    FORWARDED_TO_CLIENT.contains(&operator)
+}
+
 /// Data effects whose site follows their target entity's residence: the index
 /// of the argument naming the entity. Twin of the registry's
 /// `entityArgPosition`; `runs_on_drift.rs` fails the build when they disagree.
@@ -878,6 +889,28 @@ mod tests {
         assert_eq!(known_site("program/print", &none, Some(None)), Some(RunsOn::Any));
         let bad = std::collections::BTreeMap::from([("x/y".to_string(), "sideways".to_string())]);
         assert!(install_operator_sites(&bad).unwrap_err().contains("not client, server or any"));
+    }
+
+    #[test]
+    fn the_forwarded_effects_are_the_ones_the_kernel_gives_a_client_tuple() {
+        use crate::client_effect::ClientEffect;
+        use crate::effect_types::Effect;
+        let forwarded = [
+            Effect::RenderUi { slot: "main".into(), content: crate::value::Value::Null },
+            Effect::Navigate { path: "/a".into(), params: None, options: None },
+            Effect::NavigateBack,
+        ];
+        let mut names: Vec<&str> = forwarded.iter().map(Effect::operator).collect();
+        names.sort_unstable();
+        assert_eq!(names, FORWARDED_TO_CLIENT);
+        for effect in &forwarded {
+            assert!(ClientEffect::from_effect(effect).is_some(), "{} has a client tuple", effect.operator());
+            assert_eq!(runs_on(effect.operator()), RunsOn::Client, "a forwarded effect is a client effect");
+        }
+        let emit = Effect::Emit { event: "X".into(), payload: crate::value::Value::Null };
+        assert!(ClientEffect::from_effect(&emit).is_none() && !forwarded_to_client(emit.operator()), "control: emit is not forwarded");
+        assert!(!forwarded_to_client("send-server"), "control: a client effect with no tuple is not forwarded");
+        assert_eq!(runs_on("send-server"), RunsOn::Client);
     }
 
     #[test]

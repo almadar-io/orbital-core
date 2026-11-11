@@ -23,6 +23,7 @@ fn all_sys() -> OsGrants {
             SysKind::Network,
             SysKind::PowerState,
             SysKind::Identity,
+            SysKind::Processes,
         ],
         ..OsGrants::default()
     }
@@ -112,6 +113,7 @@ fn every_sysinfo_op_is_denied_without_the_sys_grant_and_a_wrong_kind_is_not_enou
     let ops = [
         (OsOp::CpuUsage, SysKind::Cpu),
         (OsOp::MemoryInfo, SysKind::Memory),
+        (OsOp::ProcessList, SysKind::Processes),
         (OsOp::Uptime, SysKind::Cpu),
         (OsOp::LoadAvg, SysKind::Cpu),
         (OsOp::Hostname, SysKind::Identity),
@@ -314,6 +316,24 @@ fn every_sysinfo_op_returns_its_closed_shape_or_unsupported() {
                 ("used", Shape::Num),
                 ("usedPercent", Shape::Num),
             ]),
+        ),
+        (
+            OsOp::ProcessList,
+            vec![],
+            Shape::Obj(&[(
+                "processes",
+                Shape::List(&[
+                    ("pid", Shape::Num),
+                    ("ppid", Shape::Num),
+                    ("name", Shape::Str),
+                    ("command", Shape::Str),
+                    ("args", Shape::StrList),
+                    ("user", Shape::Num),
+                    ("rssBytes", Shape::NumOrNull),
+                    ("cpuSeconds", Shape::NumOrNull),
+                    ("startedAt", Shape::Num),
+                ]),
+            )]),
         ),
         (OsOp::Uptime, vec![], Shape::Obj(&[("seconds", Shape::Num)])),
         (
@@ -608,4 +628,90 @@ fn the_first_percent_is_read_from_tool_output() {
     );
     assert_eq!(first_percent("no percent here"), None);
     assert_eq!(first_percent("%"), None);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_process_list_holds_this_process_with_its_parent_memory_and_start() {
+    let listed = ask(all_sys(), OsOp::ProcessList, &[]).expect("process list");
+    let Value::Array(processes) = field(&listed, "processes") else {
+        panic!("processes")
+    };
+    let me = f64::from(std::process::id());
+    let own: Vec<&Value> = processes
+        .iter()
+        .filter(|p| field(p, "pid") == Value::Number(me))
+        .collect();
+    assert_eq!(own.len(), 1, "this process is listed once");
+    let own = own[0];
+    let (Value::Number(ppid), Value::Number(rss), Value::Number(cpu), Value::Number(started)) = (
+        field(own, "ppid"),
+        field(own, "rssBytes"),
+        field(own, "cpuSeconds"),
+        field(own, "startedAt"),
+    ) else {
+        panic!("this process's own figures are readable")
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs_f64();
+    assert!(ppid > 0.0 && rss > 0.0 && cpu >= 0.0);
+    assert!(started > 0.0 && started <= now + 1.0, "started {started} now {now}");
+    let Value::Array(args) = field(own, "args") else { panic!("args") };
+    assert!(!args.is_empty(), "this process's own arguments are readable");
+    let Value::String(command) = field(own, "command") else { panic!("command") };
+    assert!(command.starts_with('/'), "{command}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_every_listed_process_has_a_distinct_pid() {
+    let listed = ask(all_sys(), OsOp::ProcessList, &[]).expect("process list");
+    let Value::Array(processes) = field(&listed, "processes") else {
+        panic!("processes")
+    };
+    let pids: std::collections::BTreeSet<u64> = processes
+        .iter()
+        .map(|p| match field(p, "pid") {
+            Value::Number(n) => n as u64,
+            _ => panic!("pid"),
+        })
+        .collect();
+    assert!(processes.len() > 1 && pids.len() == processes.len());
+}
+
+#[test]
+fn a_proc_stat_line_is_read_past_a_name_that_holds_spaces_and_parentheses() {
+    let stat = "4242 (my (odd) proc) S 17 4242 4242 0 -1 4194304 100 0 0 0 250 50 0 0 20 0 3 0 12000 1000000 2048 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 2 0 0 0 0 0\n";
+    let read = procfs::process_stat(stat).expect("stat");
+    assert_eq!(read.name, "my (odd) proc");
+    assert_eq!((read.ppid, read.user_ticks, read.system_ticks, read.start_ticks, read.rss_pages), (17, 250, 50, 12000, 2048));
+    assert!(procfs::process_stat("4242 no-name S 17\n").is_none());
+    assert!(procfs::process_stat("4242 (short) S 17 1 1\n").is_none());
+}
+
+#[test]
+fn a_proc_cmdline_is_split_on_its_nul_separators() {
+    assert_eq!(procfs::cmdline(b"/usr/bin/orb\0serve\0dist/app.orb\0"), vec!["/usr/bin/orb", "serve", "dist/app.orb"]);
+    assert_eq!(procfs::cmdline(b"a b\0\0c\0"), vec!["a b", "", "c"]);
+    assert!(procfs::cmdline(b"").is_empty());
+}
+
+#[test]
+fn the_boot_time_is_read_from_proc_stat() {
+    assert_eq!(procfs::boot_time("cpu 1 2 3 4\nbtime 1762800000\nprocesses 9\n"), Some(1_762_800_000.0));
+    assert_eq!(procfs::boot_time("cpu 1 2 3 4\n"), None);
+}
+
+#[test]
+fn a_procargs_buffer_gives_the_arguments_after_the_executable_path_and_its_padding() {
+    let mut raw = 2i32.to_ne_bytes().to_vec();
+    raw.extend_from_slice(b"/usr/bin/orb\0\0\0\0orb\0serve\0HOME=/Users/a\0");
+    assert_eq!(procargs2(&raw), vec!["orb", "serve"]);
+    assert!(procargs2(&[1, 0]).is_empty());
+    assert!(procargs2(&1i32.to_ne_bytes()).is_empty());
+    let mut bare = 1i32.to_ne_bytes().to_vec();
+    bare.extend_from_slice(b"/usr/bin/orb\0\0");
+    assert!(procargs2(&bare).is_empty());
 }

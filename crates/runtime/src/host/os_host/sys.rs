@@ -102,6 +102,7 @@ fn sys_kind(op: OsOp) -> Option<SysKind> {
         Uid | Gid | Username | GroupOf | Hostname | Uname => Some(SysKind::Identity),
         CpuUsage | Uptime | LoadAvg => Some(SysKind::Cpu),
         MemoryInfo => Some(SysKind::Memory),
+        ProcessList => Some(SysKind::Processes),
         DiskUsage | Mounts | DiskIo => Some(SysKind::Disk),
         NetworkInterfaces | NetworkStats | NetworkConnected | DefaultGateway => {
             Some(SysKind::Network)
@@ -119,6 +120,7 @@ fn sys_label(kind: SysKind) -> &'static str {
         SysKind::Network => "network",
         SysKind::PowerState => "power-state",
         SysKind::Identity => "identity",
+        SysKind::Processes => "processes",
         SysKind::SelfSignal => "self-signal",
     }
 }
@@ -195,6 +197,51 @@ mod procfs {
         let total = total?;
         let available = available.unwrap_or(free + buffers + cached);
         Some((total as f64 * 1024.0, available as f64 * 1024.0))
+    }
+
+    /// The fields `os/process-list` reads from `/proc/<pid>/stat`.
+    #[derive(Debug, PartialEq)]
+    pub(super) struct ProcessStat {
+        pub(super) name: String,
+        pub(super) ppid: u32,
+        pub(super) user_ticks: u64,
+        pub(super) system_ticks: u64,
+        pub(super) start_ticks: u64,
+        pub(super) rss_pages: u64,
+    }
+
+    /// The name is everything between the first `(` and the last `)`: it may itself hold spaces and parentheses.
+    pub(super) fn process_stat(stat: &str) -> Option<ProcessStat> {
+        let open = stat.find('(')?;
+        let close = stat.rfind(')')?;
+        if close < open {
+            return None;
+        }
+        let rest: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+        // `rest[0]` is field 3 (state); ppid is field 4, utime 14, stime 15, starttime 22, rss 24.
+        let field = |n: usize| rest.get(n - 3).and_then(|v| v.parse::<u64>().ok());
+        Some(ProcessStat {
+            name: stat[open + 1..close].to_string(),
+            ppid: u32::try_from(field(4)?).ok()?,
+            user_ticks: field(14)?,
+            system_ticks: field(15)?,
+            start_ticks: field(22)?,
+            rss_pages: field(24)?,
+        })
+    }
+
+    /// `/proc/<pid>/cmdline`: the arguments, each ended by a NUL.
+    pub(super) fn cmdline(raw: &[u8]) -> Vec<String> {
+        let body = raw.strip_suffix(&[0]).unwrap_or(raw);
+        if body.is_empty() {
+            return Vec::new();
+        }
+        body.split(|b| *b == 0).map(|arg| String::from_utf8_lossy(arg).into_owned()).collect()
+    }
+
+    /// The boot time in seconds since the epoch (`btime` of `/proc/stat`).
+    pub(super) fn boot_time(stat: &str) -> Option<f64> {
+        stat.lines().find_map(|line| line.strip_prefix("btime ")?.trim().parse::<f64>().ok())
     }
 
     pub(super) fn uptime(raw: &str) -> Option<f64> {
@@ -337,10 +384,132 @@ pub(super) struct Iface {
     running: bool,
 }
 
+/// One row of `os/process-list`. Memory and CPU time are `None` when the host refuses them for a process the
+/// asker does not own; `args` is empty when the arguments are not readable.
+pub(super) struct Process {
+    pid: u32,
+    ppid: u32,
+    name: String,
+    command: String,
+    args: Vec<String>,
+    user: u32,
+    rss_bytes: Option<f64>,
+    cpu_seconds: Option<f64>,
+    started_at: f64,
+}
+
+/// `KERN_PROCARGS2` of one process: the argument count, the executable path, NUL padding, then the arguments.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn procargs2(raw: &[u8]) -> Vec<String> {
+    let Some((count, rest)) = raw.split_first_chunk::<4>() else {
+        return Vec::new();
+    };
+    let count = usize::try_from(i32::from_ne_bytes(*count)).unwrap_or(0);
+    let Some(path_end) = rest.iter().position(|b| *b == 0) else {
+        return Vec::new();
+    };
+    let after_path = &rest[path_end..];
+    let Some(first) = after_path.iter().position(|b| *b != 0) else {
+        return Vec::new();
+    };
+    after_path[first..]
+        .split(|b| *b == 0)
+        .take(count)
+        .map(|arg| String::from_utf8_lossy(arg).into_owned())
+        .collect()
+}
+
 #[cfg(target_os = "macos")]
 mod native {
     use super::*;
     use std::ffi::{c_void, CStr, CString};
+
+    fn process_args(pid: libc::pid_t) -> Vec<String> {
+        let mut argmax: libc::c_int = 0;
+        let mut len = std::mem::size_of::<libc::c_int>();
+        let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+        let sized = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 2, (&mut argmax as *mut libc::c_int).cast(), &mut len, std::ptr::null_mut(), 0)
+        };
+        let Ok(capacity) = usize::try_from(argmax) else {
+            return Vec::new();
+        };
+        if sized != 0 || capacity == 0 {
+            return Vec::new();
+        }
+        let mut raw = vec![0u8; capacity];
+        let mut len = raw.len();
+        let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid];
+        let read = unsafe {
+            libc::sysctl(mib.as_mut_ptr(), 3, raw.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0)
+        };
+        if read != 0 {
+            return Vec::new();
+        }
+        raw.truncate(len);
+        procargs2(&raw)
+    }
+
+    pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
+        let pid_size = std::mem::size_of::<libc::pid_t>();
+        let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+        let Ok(count) = usize::try_from(count) else {
+            return Err(io_error(op, &std::io::Error::last_os_error()));
+        };
+        // Processes may start between the two asks: leave room for them.
+        let mut pids: Vec<libc::pid_t> = vec![0; count + 64];
+        let filled = unsafe {
+            libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * pid_size) as libc::c_int)
+        };
+        let Ok(filled) = usize::try_from(filled) else {
+            return Err(io_error(op, &std::io::Error::last_os_error()));
+        };
+        pids.truncate(filled);
+        let mut timebase = libc::mach_timebase_info { numer: 0, denom: 0 };
+        if unsafe { libc::mach_timebase_info(&mut timebase) } != 0 || timebase.denom == 0 {
+            return Err(err(op, OsErrorKind::Io, "the host gave no time base"));
+        }
+        let nanos_per_tick = f64::from(timebase.numer) / f64::from(timebase.denom);
+        let mut out = Vec::with_capacity(pids.len());
+        for pid in pids {
+            let Ok(listed) = u32::try_from(pid) else { continue };
+            let mut bsd: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+            let bsd_size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+            let got = unsafe {
+                libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut bsd as *mut libc::proc_bsdinfo).cast(), bsd_size)
+            };
+            // A process that ended since the listing, or one the host describes to nobody (pid 0), has no row.
+            if got != bsd_size {
+                continue;
+            }
+            let mut task: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+            let task_size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+            let measured = unsafe {
+                libc::proc_pidinfo(pid, libc::PROC_PIDTASKINFO, 0, (&mut task as *mut libc::proc_taskinfo).cast(), task_size)
+            } == task_size;
+            let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+            let path_len = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+            let command = usize::try_from(path_len)
+                .ok()
+                .map(|n| String::from_utf8_lossy(&path[..n]).into_owned())
+                .unwrap_or_default();
+            let c_text = |raw: &[libc::c_char]| unsafe { CStr::from_ptr(raw.as_ptr()) }.to_string_lossy().into_owned();
+            let long_name = c_text(&bsd.pbi_name);
+            out.push(Process {
+                pid: listed,
+                ppid: bsd.pbi_ppid,
+                name: if long_name.is_empty() { c_text(&bsd.pbi_comm) } else { long_name },
+                command,
+                args: process_args(pid),
+                user: bsd.pbi_uid,
+                rss_bytes: measured.then_some(task.pti_resident_size as f64),
+                cpu_seconds: measured
+                    .then_some((task.pti_total_user + task.pti_total_system) as f64 * nanos_per_tick / 1e9),
+                started_at: bsd.pbi_start_tvsec as f64 + bsd.pbi_start_tvusec as f64 / 1e6,
+            });
+        }
+        Ok(out)
+    }
 
     fn sysctl_into<T>(op: OsOp, name: &str, value: &mut T) -> Result<(), OsError> {
         let cname =
@@ -558,6 +727,48 @@ mod native {
 #[cfg(not(target_os = "macos"))]
 mod native {
     use super::*;
+
+    #[cfg(not(unix))]
+    pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
+        Err(unsupported(op, "the process table is not readable on this host"))
+    }
+
+    #[cfg(unix)]
+    pub(super) fn processes(op: OsOp) -> Result<Vec<Process>, OsError> {
+        use std::os::unix::fs::MetadataExt;
+        let boot = procfs::boot_time(&read_small(op, "/proc/stat")?)
+            .ok_or_else(|| err(op, OsErrorKind::Io, "/proc/stat has no btime"))?;
+        let (ticks, page) = unsafe { (libc::sysconf(libc::_SC_CLK_TCK), libc::sysconf(libc::_SC_PAGESIZE)) };
+        if ticks <= 0 || page <= 0 {
+            return Err(err(op, OsErrorKind::Io, "the host gave no clock tick or page size"));
+        }
+        let (ticks, page) = (ticks as f64, page as f64);
+        let mut out = Vec::new();
+        for entry in dir_names(op, "/proc")? {
+            let Ok(pid) = entry.parse::<u32>() else { continue };
+            // A process that ended since the listing has no stat file and no row.
+            let Some(raw) = read_trimmed(&format!("/proc/{pid}/stat")) else { continue };
+            let stat = procfs::process_stat(&raw)
+                .ok_or_else(|| err(op, OsErrorKind::Io, format!("/proc/{pid}/stat is not in the expected format")))?;
+            let Ok(owner) = std::fs::metadata(format!("/proc/{pid}")) else { continue };
+            let args = std::fs::read(format!("/proc/{pid}/cmdline")).map(|raw| procfs::cmdline(&raw)).unwrap_or_default();
+            let command = std::fs::read_link(format!("/proc/{pid}/exe"))
+                .map(|path| path.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            out.push(Process {
+                pid,
+                ppid: stat.ppid,
+                name: stat.name,
+                command,
+                args,
+                user: owner.uid(),
+                rss_bytes: Some(stat.rss_pages as f64 * page),
+                cpu_seconds: Some((stat.user_ticks + stat.system_ticks) as f64 / ticks),
+                started_at: boot + stat.start_ticks as f64 / ticks,
+            });
+        }
+        Ok(out)
+    }
 
     pub(super) fn cpu_percent(op: OsOp) -> Result<f64, OsError> {
         procfs::cpu_percent(&read_small(op, "/proc/stat")?).ok_or_else(|| {
@@ -879,6 +1090,7 @@ pub(super) fn answer(
         OsOp::WatchCron => Err(unsupported(op, "streaming host not implemented")),
         OsOp::CpuUsage => cpu_usage(op),
         OsOp::MemoryInfo => memory_info(op),
+        OsOp::ProcessList => process_list(op),
         OsOp::Uptime => uptime(op),
         OsOp::LoadAvg => load_avg(op),
         OsOp::Hostname => hostname(op),

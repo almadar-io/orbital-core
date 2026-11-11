@@ -61,6 +61,8 @@ pub enum SysKind {
     Network,
     PowerState,
     Identity,
+    /// `os/process-list`: every process of the machine, with its command line.
+    Processes,
     /// `os/kill` of the host's own pid: a program ending or signalling its own process (P-022, a served program's restart).
     SelfSignal,
 }
@@ -151,6 +153,7 @@ named_kinds!(SysKind {
     Network => "network",
     PowerState => "power-state",
     Identity => "identity",
+    Processes => "processes",
     SelfSignal => "self-signal",
 });
 named_kinds!(DesktopKind {

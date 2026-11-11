@@ -89,7 +89,8 @@ fn exec_eval_3a_sort_orders_by_key_and_direction() {
     assert!(eval(json!(["array/sort", [1, 3, 2], null, "bogus"])).is_err(), "a dir other than asc or desc is an error");
     assert_eq!(eval(json!(["array/sort", [1, 3, 2], null, "desc"])), Ok(value(json!([3, 2, 1]))), "control: desc is descending");
     assert_eq!(eval(json!(["array/sort", [1, 3, 2], null, "asc"])), Ok(value(json!([1, 2, 3]))), "control: asc is ascending");
-    assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, {}, { "k": 1 }], "k"])), Ok(value(json!([{}, { "k": 1 }, { "k": 2 }]))), "a missing field is null, ordered first");
+    assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, {}, { "k": 1 }], "k"])), Ok(value(json!([{ "k": 1 }, { "k": 2 }, {}]))), "a missing field is null, ordered last");
+    assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, {}, { "k": 1 }], "k", "desc"])), Ok(value(json!([{ "k": 2 }, { "k": 1 }, {}]))), "control: last when descending too");
     assert_eq!(eval(json!(["array/sort", [{ "k": 2 }, { "k": 1 }], ""])), Ok(value(json!([{ "k": 2 }, { "k": 1 }]))), "an empty key sorts the elements, and objects are equal");
     let stable = json!([{ "k": 1, "i": "a" }, { "k": 0, "i": "b" }, { "k": 1, "i": "c" }]);
     assert_eq!(eval(json!(["array/sort", stable, "k", "desc"])), Ok(value(json!([{ "k": 1, "i": "a" }, { "k": 1, "i": "c" }, { "k": 0, "i": "b" }]))), "stable when descending");
@@ -98,10 +99,11 @@ fn exec_eval_3a_sort_orders_by_key_and_direction() {
 
 /// EXEC-EVAL-3a: the list holds one element type; unlike element types are a type error, never coerced.
 #[test]
-fn exec_eval_3a_sort_refuses_unlike_element_types_and_orders_nulls_first() {
+fn exec_eval_3a_sort_refuses_unlike_element_types_and_orders_nulls_last() {
     assert!(is_type_mismatch(&eval(json!(["array/sort", [3, "a", true]]))), "unlike element types are a type error");
     assert!(is_type_mismatch(&eval(json!(["array/sort", ["10", 9, "2"]]))), "a number never coerces into a string");
-    assert_eq!(eval(json!(["array/sort", ["b", null, "a"]])), Ok(value(json!([null, "a", "b"]))), "control: one type with nulls sorts, nulls first");
+    assert_eq!(eval(json!(["array/sort", ["b", null, "a"]])), Ok(value(json!(["a", "b", null]))), "control: one type with nulls sorts, nulls last");
+    assert_eq!(eval(json!(["array/sort", ["b", null, "a"], null, "desc"])), Ok(value(json!(["b", "a", null]))), "control: nulls last when descending");
 }
 
 /// EXEC-EVAL-7: a condition is a boolean; a list or an object there is a type error, never read by truthiness.

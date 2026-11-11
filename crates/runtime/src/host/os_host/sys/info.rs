@@ -46,6 +46,26 @@ pub(super) fn memory_info(op: OsOp) -> Result<Value, OsError> {
     ]))
 }
 
+pub(super) fn process_list(op: OsOp) -> Result<Value, OsError> {
+    let list = native::processes(op)?
+        .into_iter()
+        .map(|p| {
+            object([
+                ("pid", num(f64::from(p.pid))),
+                ("ppid", num(f64::from(p.ppid))),
+                ("name", text(p.name)),
+                ("command", text(p.command)),
+                ("args", Value::Array(p.args.into_iter().map(text).collect())),
+                ("user", num(f64::from(p.user))),
+                ("rssBytes", p.rss_bytes.map_or(Value::Null, num)),
+                ("cpuSeconds", p.cpu_seconds.map_or(Value::Null, num)),
+                ("startedAt", num(p.started_at)),
+            ])
+        })
+        .collect();
+    Ok(object([("processes", Value::Array(list))]))
+}
+
 pub(super) fn uptime(op: OsOp) -> Result<Value, OsError> {
     Ok(object([("seconds", num(native::uptime_seconds(op)?))]))
 }

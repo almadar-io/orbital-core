@@ -742,7 +742,40 @@ fn play_step(
     credentials.hold(BTreeMap::new());
     drop(viewing);
     clock.pin(None);
-    let outcomes = outcomes.map_err(|e| format!("step {i} dispatch failed: {e}"))?;
+    let outcomes = match outcomes {
+        Ok(outcomes) => outcomes,
+        Err(refusal) => {
+            let snapshot = kernel.snapshot_trait(trait_name, None);
+            let orbital = kernel
+                .orbital_of_trait(trait_name)
+                .ok_or_else(|| format!("step {i}: the trait \"{trait_name}\" belongs to no orbital"))?;
+            partial.push(StepOutcome {
+                trait_name: trait_name.to_string(),
+                executed: false,
+                previous_state: snapshot.state.clone(),
+                new_state: snapshot.state,
+                emits: Vec::new(),
+                fired_arm: None,
+                guards: Vec::new(),
+                effects: Vec::new(),
+                failure: Some(refusal),
+                orbital,
+                event: event.to_string(),
+                ensures: Vec::new(),
+            });
+            return Ok(StepResult {
+                outcomes: std::mem::take(partial),
+                states: kernel
+                    .trait_snapshot(None)
+                    .into_iter()
+                    .map(|(name, (state, _))| (name, state))
+                    .collect(),
+                entities: serde_json::Map::new(),
+                entity_after: serde_json::to_value(snapshot.entity).unwrap_or(serde_json::Value::Null),
+                pending_asks: kernel.pending_asks(),
+            });
+        }
+    };
     if !unused.is_empty() {
         return Err(format!("step {i}: no ask took {}", unused.join(", ")));
     }
@@ -1215,6 +1248,53 @@ mod tests {
         let outside = play_refusable(MODES, serde_json::json!([{ "event": "KEY" }])).unwrap_err();
         assert_eq!(outside.trait_name, None);
         assert!(outside.outcomes.is_empty());
+    }
+
+    #[test]
+    fn a_refused_dispatch_is_that_steps_result_and_the_later_steps_still_run() {
+        let schema: OrbitalSchema = serde_json::from_str(MODES).unwrap();
+        let clock = StepClock::new();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig {
+                clock: Some(clock.dispatch_clock()),
+                ..Default::default()
+            },
+        );
+        let defs = trait_definitions(&schema);
+        kernel.register_schema(schema).unwrap();
+        let (credentials, answers) = (StepCredentials::new(), StepAnswers::new());
+        let steps = serde_json::json!([
+            { "trait": "Modes", "from": "NORMAL", "event": "KEY", "payload": { "key": "i" } },
+            { "trait": "Modes", "from": "NORMAL", "event": "KEY", "payload": { "key": "v" } }
+        ]);
+        let report = play_steps(
+            &kernel,
+            &clock,
+            &credentials,
+            &answers,
+            &defs,
+            steps.as_array().unwrap(),
+            false,
+            &mut |t, e, p, _| {
+                if serde_json::to_value(&p).unwrap()["key"] == "i" {
+                    Err("Payload validation failed for event 'KEY': key (wrong-type)".to_string())
+                } else {
+                    replay_dispatch(&kernel, &credentials, &answers, t, e, p)
+                }
+            },
+        )
+        .expect("a refused dispatch is a step result, not a refused replay");
+        let refused = &report.steps[0].outcomes;
+        assert_eq!(refused.len(), 1);
+        assert_eq!(refused[0].trait_name, "Modes");
+        assert!(!refused[0].executed);
+        assert_eq!(refused[0].failure.as_deref(), Some("Payload validation failed for event 'KEY': key (wrong-type)"));
+        assert_eq!((refused[0].previous_state.as_str(), refused[0].new_state.as_str()), ("NORMAL", "NORMAL"));
+        assert_eq!(report.steps[0].states["Modes"], "NORMAL", "nothing moved");
+        assert_eq!(report.steps[1].outcomes[0].new_state, "VISUAL", "control: the next step ran");
+        assert_eq!(report.steps[1].outcomes[0].failure, None);
     }
 
     #[test]

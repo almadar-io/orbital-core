@@ -353,6 +353,9 @@ pub struct EmbeddedOperator {
     /// Execution site of an effect operator (`client`/`server`/`any`); absent on pure ones. Pinned to `crate::effects::runs_on` by `tests/runs_on_drift.rs`.
     #[serde(rename = "runsOn", default)]
     pub runs_on: Option<String>,
+    /// A `client` effect a server kernel ships to the client to carry out (`forwardedToClient` in the operator table). Pinned to `crate::runs_on::FORWARDED_TO_CLIENT` by `tests/runs_on_drift.rs`.
+    #[serde(rename = "forwardedToClient", default)]
+    pub forwarded_to_client: bool,
     /// Argument naming a data effect's target entity; the effect runs where that entity's rows live. Pinned to `crate::effects::ENTITY_ARGS` by `tests/runs_on_drift.rs`.
     #[serde(rename = "entityArgPosition", default)]
     pub entity_arg_position: Option<usize>,

@@ -3762,3 +3762,18 @@ fn a_declared_int_is_the_checked_integer_primitive_never_a_nominal_type() {
     );
 }
 
+
+#[test]
+fn a_file_value_reads_its_declared_fields_and_refuses_others() {
+    let record = OirType::Struct {
+        fields: vec![OirField::new("file", OirType::File)].into(),
+        additional: None,
+    };
+    let at = |path: &str| type_at_path(&record, &path.split('.').map(str::to_string).collect::<Vec<_>>());
+    assert_eq!(at("file.url"), Some(OirType::String));
+    assert_eq!(at("file.name"), Some(OirType::String));
+    assert_eq!(at("file.mimeType"), Some(OirType::String));
+    assert_eq!(at("file.sizeBytes"), Some(OirType::Number));
+    assert!(matches!(walk_path(&record, "file.nope"), Path::Missing), "control: a field the file shape does not declare");
+    assert!(matches!(walk_path(&record, "file.url.x"), Path::Impossible), "control: past a scalar");
+}

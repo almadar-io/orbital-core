@@ -979,6 +979,7 @@
     "os/path-relative": "os/path-relative",
     "os/pid": "os/pid",
     "os/ppid": "os/ppid",
+    "os/process-list": "os/process-list",
     "os/read": "os/read",
     "os/read-file": "os/read-file",
     "os/readlink": "os/readlink",
