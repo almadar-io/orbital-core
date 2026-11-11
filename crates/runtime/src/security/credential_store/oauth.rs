@@ -13,10 +13,10 @@ use crate::credential_admin::{
     ConnectFailure, ConnectFailureKind, CredentialGrant, CredentialStanding,
 };
 use orbital_core_base::credential_grant::{
-    assertion_jwt, authorization_code_request, json_token_refresh_request, json_token_request,
-    jwt_bearer_request, parse_json_token_response, parse_token_response, refresh_token_request,
-    AssertionSpec, ClientAuth, CodeExchange, GrantError, GrantErrorKind, JsonTokenSpec,
-    RefreshExchange,
+    assertion_jwt, authorization_code_request, client_credentials_request, json_token_refresh_request,
+    json_token_request, jwt_bearer_request, parse_json_token_response, parse_token_response,
+    refresh_token_request, AssertionSpec, ClientAuth, ClientCredentialsSpec, CodeExchange, GrantError,
+    GrantErrorKind, JsonTokenSpec, RefreshExchange,
 };
 
 const OAUTH_SERVICE: &str = "oauth";
@@ -102,6 +102,16 @@ enum Exchange {
         client_id_ref: String,
         client_secret_ref: String,
     },
+    ClientMint {
+        name: String,
+        principal: Option<String>,
+        token_endpoint: String,
+        spec: ClientCredentialsSpec,
+        scopes: Vec<String>,
+        client_id_ref: String,
+        client_secret_ref: String,
+        client_auth: ClientAuth,
+    },
 }
 
 impl Drop for ExchangeTicket {
@@ -149,6 +159,8 @@ pub(super) struct OauthRecord {
     json_token: Option<JsonTokenSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     refresh_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    client_credentials: Option<ClientCredentialsSpec>,
 }
 
 impl OauthRecord {
@@ -207,7 +219,7 @@ impl EncryptedCredentialStore {
     pub fn connect_begin(&self, grant: &CredentialGrant) -> Result<PendingExchange, ConnectFailure> {
         if !matches!(
             grant.grant.as_str(),
-            "authorization_code" | "refresh_token" | "jwt-bearer" | "json-token"
+            "authorization_code" | "refresh_token" | "jwt-bearer" | "json-token" | "client-credentials"
         ) {
             return Err(failure(
                 ConnectFailureKind::Refused,
@@ -268,6 +280,29 @@ impl EncryptedCredentialStore {
                     spec,
                     &grant.client_id,
                     secret_ref,
+                )
+            }
+            "client-credentials" => {
+                let spec = grant.client_credentials.as_ref().ok_or_else(|| {
+                    failure(
+                        ConnectFailureKind::Refused,
+                        "credential-connect: grant `client-credentials` carries no request shape",
+                    )
+                })?;
+                let secret_ref = grant.client_secret.as_deref().ok_or_else(|| {
+                    failure(
+                        ConnectFailureKind::Refused,
+                        "credential-connect: grant `client-credentials` needs clientSecret",
+                    )
+                })?;
+                self.client_mint_pending(
+                    &grant.name,
+                    grant.principal.as_deref(),
+                    &grant.token_endpoint,
+                    spec,
+                    &grant.scopes,
+                    (&grant.client_id, secret_ref),
+                    grant.client_auth,
                 )
             }
             _ => self.code_begin(grant),
@@ -383,6 +418,45 @@ impl EncryptedCredentialStore {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn client_mint_pending(
+        &self,
+        name: &str,
+        principal: Option<&str>,
+        token_endpoint: &str,
+        spec: &ClientCredentialsSpec,
+        scopes: &[String],
+        refs: (&str, &str),
+        client_auth: ClientAuth,
+    ) -> Result<PendingExchange, ConnectFailure> {
+        let (client_id, client_secret) = self.resolve_client(refs.0, Some(refs.1), client_auth)?;
+        let made = client_credentials_request(spec, scopes, &client_id, client_secret.as_deref(), client_auth)
+            .map_err(from_grant_error)?;
+        let endpoint = if made.query.is_empty() {
+            token_endpoint.to_string()
+        } else {
+            let joiner = if token_endpoint.contains('?') { '&' } else { '?' };
+            format!("{token_endpoint}{joiner}{}", made.query)
+        };
+        Ok(PendingExchange {
+            endpoint,
+            headers: made.request.headers,
+            body: made.request.body,
+            ticket: ExchangeTicket {
+                exchange: Exchange::ClientMint {
+                    name: name.to_string(),
+                    principal: principal.map(str::to_string),
+                    token_endpoint: token_endpoint.to_string(),
+                    spec: spec.clone(),
+                    scopes: scopes.to_vec(),
+                    client_id_ref: refs.0.to_string(),
+                    client_secret_ref: refs.1.to_string(),
+                    client_auth,
+                },
+            },
+        })
+    }
+
     fn json_refresh_pending(
         &self,
         name: &str,
@@ -461,6 +535,7 @@ impl EncryptedCredentialStore {
                     scopes: Vec::new(),
                     json_token: None,
                     refresh_source: None,
+                    client_credentials: None,
                 };
                 self.persist_record(name, principal.as_deref(), token.label.as_deref(), record)?;
                 Ok(CredentialStanding {
@@ -507,6 +582,7 @@ impl EncryptedCredentialStore {
                     scopes: Vec::new(),
                     json_token: None,
                     refresh_source: source.clone(),
+                    client_credentials: None,
                 };
                 if let (Some(source), Some(rotated)) = (source, &token.refresh) {
                     if rotated.expose() != refresh {
@@ -540,6 +616,36 @@ impl EncryptedCredentialStore {
                     scopes: scopes.clone(),
                     json_token: None,
                     refresh_source: None,
+                    client_credentials: None,
+                };
+                self.persist_record(name, principal.as_deref(), None, record)?;
+                Ok(CredentialStanding::of(true))
+            }
+            Exchange::ClientMint {
+                name,
+                principal,
+                token_endpoint,
+                spec,
+                scopes,
+                client_id_ref,
+                client_secret_ref,
+                client_auth,
+            } => {
+                let token = parse_token_response(status, body, (self.clock)()).map_err(from_grant_error)?;
+                let record = OauthRecord {
+                    v: RECORD_VERSION,
+                    access: token.access.expose().clone(),
+                    refresh: None,
+                    expires_at: token.expires_at,
+                    token_endpoint: token_endpoint.clone(),
+                    client_id_ref: client_id_ref.clone(),
+                    client_secret_ref: Some(client_secret_ref.clone()),
+                    client_auth: *client_auth,
+                    assertion: None,
+                    scopes: scopes.clone(),
+                    json_token: None,
+                    refresh_source: None,
+                    client_credentials: Some(spec.clone()),
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -566,6 +672,7 @@ impl EncryptedCredentialStore {
                     scopes: Vec::new(),
                     json_token: Some(spec.clone()),
                     refresh_source: None,
+                    client_credentials: None,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -606,6 +713,7 @@ impl EncryptedCredentialStore {
                     scopes: Vec::new(),
                     json_token: Some(spec.clone()),
                     refresh_source: None,
+                    client_credentials: None,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -761,6 +869,22 @@ impl EncryptedCredentialStore {
                 .assertion_pending(name, principal, &record.token_endpoint, spec, &record.scopes)
                 .map(RefreshStart::Exchange);
         }
+        if let Some(spec) = &record.client_credentials {
+            let Some(secret_ref) = record.client_secret_ref.as_deref() else {
+                return Ok(RefreshStart::Resolved(None));
+            };
+            return self
+                .client_mint_pending(
+                    name,
+                    principal,
+                    &record.token_endpoint,
+                    spec,
+                    &record.scopes,
+                    (&record.client_id_ref, secret_ref),
+                    record.client_auth,
+                )
+                .map(RefreshStart::Exchange);
+        }
         if let Some(spec) = &record.json_token {
             let (Some(refresh), Some(secret_ref)) = (record.refresh.clone(), record.client_secret_ref.as_deref()) else {
                 return Ok(RefreshStart::Resolved(None));
@@ -830,7 +954,7 @@ impl EncryptedCredentialStore {
                 format!("credential `{}` holds no connection to refresh", grant.name),
             ));
         };
-        if record.assertion.is_some() || record.json_token.is_some() {
+        if record.assertion.is_some() || record.json_token.is_some() || record.client_credentials.is_some() {
             return Err(failure(
                 ConnectFailureKind::Refused,
                 "credential-connect: the credential was not granted by an OAuth refresh-token grant",

@@ -672,6 +672,7 @@ mod oauth_connect {
             refresh_credential: None,
             assertion: None,
             json_token: None,
+            client_credentials: None,
         }
     }
 
@@ -1074,6 +1075,7 @@ mod oauth_connect {
                     ttl_seconds: 3600,
                 }),
                 json_token: None,
+                client_credentials: None,
             }
         }
 
@@ -1235,6 +1237,7 @@ mod oauth_connect {
                     refresh_endpoint: Some("https://bank.example/token/refresh/".to_string()),
                     refresh_body_field: Some("refresh".to_string()),
                 }),
+                client_credentials: None,
             }
         }
 
@@ -1298,6 +1301,84 @@ mod oauth_connect {
             assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
             assert!(silent.bodies().is_empty());
             assert_eq!(store.resolve("BANK_ACCESS", None), None);
+        }
+
+        fn zoom_grant() -> CredentialGrant {
+            CredentialGrant {
+                name: "ZOOM_TOKEN".to_string(),
+                principal: None,
+                token_endpoint: "https://zoom.example/oauth/token".to_string(),
+                grant: "client-credentials".to_string(),
+                code: "".into(),
+                redirect_uri: String::new(),
+                verifier: None,
+                client_id: "ZOOM_ID".to_string(),
+                client_secret: Some("ZOOM_SECRET".to_string()),
+                client_auth: ClientAuth::Basic,
+                scopes: vec![],
+                refresh_credential: None,
+                assertion: None,
+                json_token: None,
+                client_credentials: Some(orbital_core_base::credential_grant::ClientCredentialsSpec {
+                    grant_type: "account_credentials".to_string(),
+                    params: vec![orbital_core_base::credential_grant::TokenParam { name: "account_id".to_string(), value: "acc1".to_string() }],
+                    params_in: orbital_core_base::credential_grant::ParamsIn::Query,
+                }),
+            }
+        }
+
+        const ZOOM_TOKEN_1: &str = r#"{"access_token":"ZOOM-ACCESS-1","token_type":"bearer","expires_in":3600}"#;
+        const ZOOM_TOKEN_2: &str = r#"{"access_token":"ZOOM-ACCESS-2","token_type":"bearer","expires_in":3600}"#;
+
+        fn zoom_store() -> (Arc<AtomicI64>, Arc<MemoryCredentialRows>, Arc<EncryptedCredentialStore>) {
+            let (now, rows, store) = clocked();
+            store.set("zoom", "ZOOM_ID", "cid", None).unwrap();
+            store.set("zoom", "ZOOM_SECRET", "sec", None).unwrap();
+            (now, rows, store)
+        }
+
+        #[test]
+        fn a_client_credentials_grant_posts_its_declared_shape_and_mints_again_on_expiry() {
+            let (now, rows, store) = zoom_store();
+            let post = Recording::new(vec![(200, ZOOM_TOKEN_1)]);
+            assert_eq!(store.connect(&zoom_grant(), &post).unwrap(), CredentialStanding { connected: true, label: None });
+            let seen = post.seen.lock().unwrap();
+            assert_eq!((seen[0].0.as_str(), seen[0].2.as_str()), ("https://zoom.example/oauth/token?account_id=acc1", "grant_type=account_credentials"));
+            assert!(seen[0].1.contains(&("Authorization".to_string(), "Basic Y2lkOnNlYw==".to_string())));
+            drop(seen);
+            assert_eq!(store.resolve("ZOOM_TOKEN", None).as_deref(), Some("ZOOM-ACCESS-1"));
+            let idle = Recording::new(vec![]);
+            assert_eq!(store.resolve_fresh("ZOOM_TOKEN", None, Some(&idle)).unwrap().as_deref(), Some("ZOOM-ACCESS-1"));
+            assert!(idle.bodies().is_empty());
+            expire(&now);
+            let renewal = Recording::new(vec![(200, ZOOM_TOKEN_2)]);
+            assert_eq!(store.resolve_fresh("ZOOM_TOKEN", None, Some(&renewal)).unwrap().as_deref(), Some("ZOOM-ACCESS-2"));
+            let seen = renewal.seen.lock().unwrap();
+            assert_eq!((seen[0].0.as_str(), seen[0].2.as_str()), ("https://zoom.example/oauth/token?account_id=acc1", "grant_type=account_credentials"));
+            drop(seen);
+            assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("ZOOM-ACCESS") || row.to_string().contains("\"sec\"")), "rows hold ciphertext only");
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("ZOOM_TOKEN", None).as_deref(), Some("ZOOM-ACCESS-2"));
+        }
+
+        #[test]
+        fn client_credentials_failures_are_typed_post_nothing_without_a_client_and_refuse_the_refresh_grant() {
+            let (_, _, store) = zoom_store();
+            let mut missing = zoom_grant();
+            missing.client_secret = Some("NO_SUCH_SECRET".to_string());
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&missing, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
+            let denied = Recording::new(vec![(401, r#"{"error":"invalid_client"}"#)]);
+            assert_eq!(store.connect(&zoom_grant(), &denied).unwrap_err().kind, ConnectFailureKind::InvalidClient);
+            assert_eq!(store.resolve("ZOOM_TOKEN", None), None);
+            store.connect(&zoom_grant(), &Recording::new(vec![(200, ZOOM_TOKEN_1)])).unwrap();
+            let mut refresh = zoom_grant();
+            refresh.grant = "refresh_token".to_string();
+            refresh.client_credentials = None;
+            assert_eq!(store.connect(&refresh, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
         }
 
         fn stored_refresh_grant() -> CredentialGrant {
@@ -1536,9 +1617,41 @@ mod oauth_connect {
         }
 
         #[test]
+        fn the_client_credentials_grant_names_its_shape_and_refuses_a_malformed_one() {
+            use orbital_core_base::credential_grant::{ClientCredentialsSpec, ParamsIn, TokenParam};
+            let zoom = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "client-credentials",
+                "clientId": "@config.i", "clientSecret": "@config.s", "clientAuth": "basic", "grantType": "account_credentials",
+                "params": [{ "name": "account_id", "value": "acc1" }], "paramsIn": "query" });
+            let parsed = request(zoom.clone()).unwrap();
+            assert_eq!(parsed.client_auth, ClientAuth::Basic);
+            assert_eq!(parsed.client_credentials, Some(ClientCredentialsSpec {
+                grant_type: "account_credentials".to_string(),
+                params: vec![TokenParam { name: "account_id".to_string(), value: "acc1".to_string() }],
+                params_in: ParamsIn::Query,
+            }));
+            let plain = json!({ "credential": "@config.t", "tokenEndpoint": "https://o/t", "grant": "client-credentials",
+                "clientId": "@config.i", "clientSecret": "@config.s", "clientAuth": "body", "scopes": ["a"] });
+            let parsed = request(plain).unwrap();
+            assert_eq!(parsed.client_credentials, Some(ClientCredentialsSpec {
+                grant_type: "client_credentials".to_string(),
+                params: vec![],
+                params_in: ParamsIn::Body,
+            }));
+            assert_eq!(parsed.scopes, vec!["a".to_string()]);
+            for (key, value) in [("paramsIn", json!("header")), ("params", json!([{ "name": "a" }])), ("params", json!("a=b")), ("clientAuth", json!("none")), ("signingKey", json!("k")), ("code", json!("x"))] {
+                let mut bad = zoom.clone();
+                bad[key] = value;
+                assert_eq!(request(bad).unwrap_err().kind, ConnectFailureKind::Refused, "{key}");
+            }
+            let mut no_secret = zoom;
+            no_secret.as_object_mut().unwrap().remove("clientSecret");
+            assert_eq!(request(no_secret).unwrap_err().kind, ConnectFailureKind::Refused);
+        }
+
+        #[test]
         fn the_new_grants_survive_the_wire_round_trip_the_node_and_wasm_hosts_use() {
             use crate::embed::wire::CredentialGrantWire;
-            for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant()] {
+            for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant(), zoom_grant()] {
                 let wire = serde_json::to_string(&CredentialGrantWire::from(&ask)).unwrap();
                 let back: CredentialGrant = serde_json::from_str::<CredentialGrantWire>(&wire).unwrap().into();
                 assert_eq!(back, ask);

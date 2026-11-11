@@ -113,6 +113,7 @@ fn a_connect_ask_in_the_journal_shows_neither_the_code_nor_the_verifier() {
         refresh_credential: None,
         assertion: None,
         json_token: None,
+        client_credentials: None,
     };
     let ask = IoRequest::CredentialConnect { grant: Box::new(grant) };
     let answer = answer_ports(None, &ask);

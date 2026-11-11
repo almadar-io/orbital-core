@@ -142,6 +142,85 @@ pub struct JsonTokenSpec {
     pub refresh_body_field: Option<String>,
 }
 
+/// Where a client-credentials grant's declared parameters travel: in the form body, or in the token endpoint's query.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParamsIn {
+    Body,
+    Query,
+}
+
+/// One declared, non-secret parameter of a client-credentials request.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenParam {
+    pub name: String,
+    pub value: String,
+}
+
+/// An RFC 6749 §4.4 client-credentials request declared by the program: the `grant_type` value it sends
+/// (`client_credentials`, or the one a provider names), extra parameters and where they travel. The client
+/// authenticates with its id and secret, in the body or as HTTP Basic.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientCredentialsSpec {
+    pub grant_type: String,
+    #[serde(default)]
+    pub params: Vec<TokenParam>,
+    pub params_in: ParamsIn,
+}
+
+/// A client-credentials request: the form POST and the query its declared parameters add to the endpoint (empty when
+/// they travel in the body).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientCredentialsRequest {
+    pub query: String,
+    pub request: FormRequest,
+}
+
+const RESERVED_TOKEN_PARAMS: &[&str] = &["grant_type", "scope", "client_id", "client_secret"];
+
+pub fn client_credentials_request(
+    spec: &ClientCredentialsSpec,
+    scopes: &[String],
+    client_id: &str,
+    client_secret: Option<&str>,
+    client_auth: ClientAuth,
+) -> Result<ClientCredentialsRequest, GrantError> {
+    if spec.grant_type.is_empty() {
+        return Err(refused("a client-credentials grant names the grant_type it sends"));
+    }
+    if client_auth == ClientAuth::None {
+        return Err(refused("a client-credentials grant authenticates its client in the body or as basic"));
+    }
+    if let Some(param) = spec
+        .params
+        .iter()
+        .find(|param| param.name.is_empty() || RESERVED_TOKEN_PARAMS.contains(&param.name.as_str()))
+    {
+        return Err(GrantError::new(
+            GrantErrorKind::Refused,
+            format!("a client-credentials parameter may not be named `{}`", param.name),
+        ));
+    }
+    let mut pairs = vec![("grant_type".to_string(), spec.grant_type.clone())];
+    if !scopes.is_empty() {
+        pairs.push(("scope".to_string(), scopes.join(" ")));
+    }
+    let declared: Vec<(String, String)> = spec.params.iter().map(|param| (param.name.clone(), param.value.clone())).collect();
+    let query = match spec.params_in {
+        ParamsIn::Body => {
+            pairs.extend(declared);
+            String::new()
+        }
+        ParamsIn::Query => form_urlencode(&declared),
+    };
+    let request = client_form(pairs, client_id, client_secret, client_auth)?;
+    Ok(ClientCredentialsRequest { query, request })
+}
+
 pub const JWT_BEARER_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 
 fn json_text(text: &str) -> String {
@@ -833,6 +912,49 @@ mod tests {
             let error = parse_json_token_response(&gocardless(), false, 200, body, 0).unwrap_err();
             assert_eq!(error.kind, GrantErrorKind::Malformed, "{body}");
             assert!(!error.message.contains("SECRET-A"));
+        }
+    }
+    fn zoom_like() -> ClientCredentialsSpec {
+        ClientCredentialsSpec {
+            grant_type: "account_credentials".into(),
+            params: vec![TokenParam { name: "account_id".into(), value: "acc_1-2".into() }],
+            params_in: ParamsIn::Query,
+        }
+    }
+
+    #[test]
+    fn a_client_credentials_request_with_query_params_and_basic_auth_is_byte_exact() {
+        let made = client_credentials_request(&zoom_like(), &[], "cid", Some("sec"), ClientAuth::Basic).unwrap();
+        assert_eq!(made.query, "account_id=acc_1-2");
+        assert_eq!(made.request.body, "grant_type=account_credentials");
+        assert_eq!(header(&made.request, "Authorization"), Some("Basic Y2lkOnNlYw=="));
+        assert_eq!(header(&made.request, "Content-Type"), Some("application/x-www-form-urlencoded"));
+    }
+
+    #[test]
+    fn control_the_standard_grant_carries_its_params_scope_and_client_in_the_body() {
+        let spec = ClientCredentialsSpec {
+            grant_type: "client_credentials".into(),
+            params: vec![TokenParam { name: "audience".into(), value: "api".into() }],
+            params_in: ParamsIn::Body,
+        };
+        let made = client_credentials_request(&spec, &["a".to_string(), "b".to_string()], "cid", Some("sec"), ClientAuth::Body).unwrap();
+        assert_eq!(made.query, "");
+        assert_eq!(made.request.body, "grant_type=client_credentials&scope=a+b&audience=api&client_id=cid&client_secret=sec");
+        assert_eq!(header(&made.request, "Authorization"), None);
+    }
+
+    #[test]
+    fn a_client_credentials_spec_that_could_not_authenticate_or_overrides_a_reserved_name_is_refused() {
+        let refuse = |spec: &ClientCredentialsSpec, secret: Option<&str>, auth: ClientAuth| {
+            client_credentials_request(spec, &[], "cid", secret, auth).unwrap_err().kind
+        };
+        assert_eq!(refuse(&zoom_like(), None, ClientAuth::Basic), GrantErrorKind::Refused);
+        assert_eq!(refuse(&zoom_like(), Some("sec"), ClientAuth::None), GrantErrorKind::Refused);
+        assert_eq!(refuse(&ClientCredentialsSpec { grant_type: String::new(), ..zoom_like() }, Some("sec"), ClientAuth::Basic), GrantErrorKind::Refused);
+        for reserved in ["grant_type", "scope", "client_id", "client_secret", ""] {
+            let spec = ClientCredentialsSpec { params: vec![TokenParam { name: reserved.into(), value: "x".into() }], ..zoom_like() };
+            assert_eq!(refuse(&spec, Some("sec"), ClientAuth::Basic), GrantErrorKind::Refused, "{reserved}");
         }
     }
 }

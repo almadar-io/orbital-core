@@ -209,6 +209,8 @@ pub struct CredentialGrantWire {
     pub assertion: Option<AssertionSpec>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub json_token: Option<JsonTokenSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_credentials: Option<ClientCredentialsSpec>,
 }
 
 impl From<&CredentialGrant> for CredentialGrantWire {
@@ -228,6 +230,7 @@ impl From<&CredentialGrant> for CredentialGrantWire {
             refresh_credential: grant.refresh_credential.clone(),
             assertion: grant.assertion.clone(),
             json_token: grant.json_token.clone(),
+            client_credentials: grant.client_credentials.clone(),
         }
     }
 }
@@ -249,6 +252,7 @@ impl From<CredentialGrantWire> for CredentialGrant {
             refresh_credential: wire.refresh_credential,
             assertion: wire.assertion,
             json_token: wire.json_token,
+            client_credentials: wire.client_credentials,
         }
     }
 }

@@ -76,12 +76,13 @@ impl CredentialStanding {
     }
 }
 
-pub use orbital_core_base::credential_grant::{AssertionSpec, ClientAuth, JsonTokenSpec};
+pub use orbital_core_base::credential_grant::{AssertionSpec, ClientAuth, ClientCredentialsSpec, JsonTokenSpec, ParamsIn, TokenParam};
 
 /// One `credential-connect` ask: the grant the host's credential store performs. `name`, `client_id`, `client_secret`,
 /// `refresh_credential` and the assertion's `signing_key` name credentials the store resolves; `code` and `verifier` are the
 /// single-use values, which never print. `grant` is `authorization_code`, `refresh_token` (the credential's own refresh
-/// token, or the one `refresh_credential` names), `jwt-bearer` (`assertion`) or `json-token` (`json_token`).
+/// token, or the one `refresh_credential` names), `jwt-bearer` (`assertion`), `json-token` (`json_token`) or
+/// `client-credentials` (`client_credentials`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CredentialGrant {
     pub name: String,
@@ -98,6 +99,7 @@ pub struct CredentialGrant {
     pub refresh_credential: Option<String>,
     pub assertion: Option<AssertionSpec>,
     pub json_token: Option<JsonTokenSpec>,
+    pub client_credentials: Option<ClientCredentialsSpec>,
 }
 
 /// Why a `credential-connect` did not connect.
@@ -151,6 +153,7 @@ pub const NO_CONNECT: &str = "this host holds no credential store that can conne
 const AUTH_CODE_KEYS: &[&str] = &["code", "redirectUri", "verifier"];
 const CLIENT_KEYS: &[&str] = &["clientId", "clientSecret", "clientAuth"];
 const ASSERTION_KEYS: &[&str] = &["signingKey", "subject", "audience", "ttlSeconds"];
+const CLIENT_CREDENTIALS_KEYS: &[&str] = &["grantType", "params", "paramsIn"];
 const JSON_TOKEN_KEYS: &[&str] = &[
     "clientIdField", "clientSecretField", "accessField", "refreshField", "expiresInField", "refreshEndpoint",
     "refreshBodyField",
@@ -172,7 +175,7 @@ impl CredentialGrant {
                 "credential", "scope", "tokenEndpoint", "grant", "code", "redirectUri", "verifier", "clientId",
                 "clientSecret", "clientAuth", "scopes", "refreshCredential", "signingKey", "subject", "audience",
                 "ttlSeconds", "clientIdField", "clientSecretField", "accessField", "refreshField", "expiresInField",
-                "refreshEndpoint", "refreshBodyField",
+                "refreshEndpoint", "refreshBodyField", "grantType", "params", "paramsIn",
             ],
             WHAT,
         )
@@ -199,6 +202,7 @@ impl CredentialGrant {
             "refresh_token" => [AUTH_CODE_KEYS, CLIENT_KEYS, &["scopes", "refreshCredential"]].concat(),
             "jwt-bearer" => [ASSERTION_KEYS, &["scopes"]].concat(),
             "json-token" => [JSON_TOKEN_KEYS, &["clientId", "clientSecret"]].concat(),
+            "client-credentials" => [CLIENT_CREDENTIALS_KEYS, CLIENT_KEYS, &["scopes"]].concat(),
             other => return Err(refused(format!("grant `{other}` is not supported"))),
         };
         for key in fields.keys() {
@@ -207,7 +211,7 @@ impl CredentialGrant {
                 return Err(refused(format!("`{key}` is not a key of grant `{grant}`")));
             }
         }
-        let uses_client = matches!(grant.as_str(), "authorization_code" | "refresh_token");
+        let uses_client = matches!(grant.as_str(), "authorization_code" | "refresh_token" | "client-credentials");
         let client_auth = if uses_client {
             match text("clientAuth")?.as_str() {
                 "body" => ClientAuth::Body,
@@ -264,6 +268,41 @@ impl CredentialGrant {
         } else {
             None
         };
+        let client_credentials = if grant == "client-credentials" {
+            if client_auth == ClientAuth::None {
+                return Err(refused("grant `client-credentials` authenticates its client: clientAuth must be body or basic".to_string()));
+            }
+            let params = match fields.get("params") {
+                None => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|item| match item {
+                        Value::Object(pair) if pair.len() == 2 => match (pair.get("name").and_then(Value::as_str), pair.get("value").and_then(Value::as_str)) {
+                            (Some(name), Some(value)) => Some(TokenParam { name: name.to_string(), value: value.to_string() }),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(|| refused("params must be a list of { name, value } text pairs".to_string()))?,
+                Some(_) => return Err(refused("params must be a list of { name, value } text pairs".to_string())),
+            };
+            let params_in = match optional("paramsIn")?.as_deref() {
+                None | Some("body") => ParamsIn::Body,
+                Some("query") => ParamsIn::Query,
+                Some(_) => return Err(refused("paramsIn must be body or query".to_string())),
+            };
+            if !fields.contains_key("clientSecret") {
+                return Err(refused("grant `client-credentials` needs clientSecret".to_string()));
+            }
+            Some(ClientCredentialsSpec {
+                grant_type: optional("grantType")?.unwrap_or_else(|| "client_credentials".to_string()),
+                params,
+                params_in,
+            })
+        } else {
+            None
+        };
         let client_id = if grant == "jwt-bearer" || (uses_client && client_auth == ClientAuth::None) {
             optional("clientId")?.unwrap_or_default()
         } else {
@@ -290,6 +329,7 @@ impl CredentialGrant {
             refresh_credential,
             assertion,
             json_token,
+            client_credentials,
         })
     }
 }
