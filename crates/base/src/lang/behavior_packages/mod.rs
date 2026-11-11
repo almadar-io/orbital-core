@@ -58,7 +58,9 @@ impl BehaviorPackage {
     }
 
     pub fn registry_is_locked(&self) -> bool {
-        self.sidecars.iter().any(|sidecar| sidecar.cache_path.as_path() == self.registry.root())
+        self.sidecars
+            .iter()
+            .any(|sidecar| sidecar.cache_path.as_path() == self.registry.root())
     }
 }
 
@@ -230,7 +232,10 @@ pub fn index_registry_source(
     let mut visited = HashSet::new();
     let mut stack = vec![source.root().to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let io = |source| DiscoverError::Io { path: dir.clone(), source };
+        let io = |source| DiscoverError::Io {
+            path: dir.clone(),
+            source,
+        };
         let canonical = fs::canonicalize(&dir).map_err(io)?;
         if !visited.insert(canonical) {
             continue;
@@ -249,14 +254,20 @@ pub fn index_registry_source(
             })?;
             let is_dir = if file_type.is_symlink() {
                 fs::metadata(&path)
-                    .map_err(|source| DiscoverError::Io { path: path.clone(), source })?
+                    .map_err(|source| DiscoverError::Io {
+                        path: path.clone(),
+                        source,
+                    })?
                     .is_dir()
             } else {
                 file_type.is_dir()
             };
             if is_dir {
                 stack.push(path);
-            } else if path.extension().is_some_and(|ext| ext == source.extension()) {
+            } else if path
+                .extension()
+                .is_some_and(|ext| ext == source.extension())
+            {
                 if let Some(name) = path.file_stem().and_then(|name| name.to_str()) {
                     insert_registry_path(&mut index, name.to_string(), path)?;
                 }
@@ -272,11 +283,13 @@ fn insert_registry_path(
     path: PathBuf,
 ) -> Result<(), DiscoverError> {
     match index.entry(name) {
-        std::collections::hash_map::Entry::Occupied(entry) => Err(DiscoverError::DuplicateBehaviorName {
-            name: entry.key().clone(),
-            path_a: entry.get().clone(),
-            path_b: path,
-        }),
+        std::collections::hash_map::Entry::Occupied(entry) => {
+            Err(DiscoverError::DuplicateBehaviorName {
+                name: entry.key().clone(),
+                path_a: entry.get().clone(),
+                path_b: path,
+            })
+        }
         std::collections::hash_map::Entry::Vacant(entry) => {
             entry.insert(path);
             Ok(())
@@ -300,7 +313,8 @@ pub fn index_registry_sources<'a>(
     Ok(index)
 }
 
-/// Node-style walk-up from `start_dir`: keeps installed behavior packages,
+/// Node-style walk-up from `start_dir`: the behavior package `start_dir` sits in comes first (Node's
+/// self-reference, so a checkout or a staged copy resolves its own behaviors), then installed behavior packages,
 /// nearest wins per package name. `user_store` is always the final rung —
 /// consulted after every ancestor `node_modules`, regardless of whether a
 /// `package.json` exists above `start_dir` — so it is the lowest-precedence
@@ -326,9 +340,14 @@ pub fn discover_with_cache(
 ) -> Result<Vec<BehaviorPackage>, DiscoverError> {
     use std::sync::{Mutex, OnceLock};
     type Key = (PathBuf, PathBuf, PathBuf);
-    static MEMO: OnceLock<Mutex<HashMap<Key, (DiscoveryStamp, Vec<BehaviorPackage>)>>> = OnceLock::new();
+    static MEMO: OnceLock<Mutex<HashMap<Key, (DiscoveryStamp, Vec<BehaviorPackage>)>>> =
+        OnceLock::new();
     let memo = MEMO.get_or_init(Default::default);
-    let key = (start_dir.to_path_buf(), user_store.to_path_buf(), cache_dir.to_path_buf());
+    let key = (
+        start_dir.to_path_buf(),
+        user_store.to_path_buf(),
+        cache_dir.to_path_buf(),
+    );
     if let Some((stamp, packages)) = memo.lock().ok().and_then(|m| m.get(&key).cloned()) {
         if stamp.is_current() {
             return Ok(packages);
@@ -368,6 +387,11 @@ impl DiscoveryStamp {
             let modified = Self::modified(&rung);
             entries.push((rung, modified));
         }
+        if let Some(scope) = package_scope(start_dir) {
+            let manifest = scope.join("package.json");
+            let modified = Self::modified(&manifest);
+            entries.push((manifest, modified));
+        }
         for package in packages {
             for file in ["package.json", "sidecars.lock.json"] {
                 let path = package.root.join(file);
@@ -379,7 +403,9 @@ impl DiscoveryStamp {
     }
 
     pub fn is_current(&self) -> bool {
-        self.0.iter().all(|(path, modified)| Self::modified(path) == *modified)
+        self.0
+            .iter()
+            .all(|(path, modified)| Self::modified(path) == *modified)
     }
 }
 
@@ -424,10 +450,28 @@ fn discover_uncached(
 ) -> Result<Vec<BehaviorPackage>, DiscoverError> {
     let mut found: Vec<BehaviorPackage> = Vec::new();
     let mut names_seen: HashSet<String> = HashSet::new();
-    let mut language = InstalledLanguage { ask: language, got: None };
+    let mut language = InstalledLanguage {
+        ask: language,
+        got: None,
+    };
 
+    if let Some(scope) = package_scope(start_dir) {
+        read_package_dir(
+            &scope,
+            cache_dir,
+            &mut language,
+            &mut found,
+            &mut names_seen,
+        )?;
+    }
     for node_modules in node_modules_dirs(start_dir, user_store) {
-        scan_node_modules(&node_modules, cache_dir, &mut language, &mut found, &mut names_seen)?;
+        scan_node_modules(
+            &node_modules,
+            cache_dir,
+            &mut language,
+            &mut found,
+            &mut names_seen,
+        )?;
     }
 
     check_prefix_conflicts(&found)?;
@@ -440,10 +484,7 @@ fn discover_uncached(
 /// The shared node-style walk-up rungs: each ancestor's `node_modules`, then
 /// the user store's `node_modules` last. Nearest-first order, one definition
 /// shared by `discover` and `find_npm_package`.
-pub fn node_modules_dirs(
-    start_dir: &Path,
-    user_store: &Path,
-) -> impl Iterator<Item = PathBuf> {
+pub fn node_modules_dirs(start_dir: &Path, user_store: &Path) -> impl Iterator<Item = PathBuf> {
     let mut dirs: Vec<PathBuf> = start_dir
         .ancestors()
         .map(|dir| dir.join("node_modules"))
@@ -602,43 +643,72 @@ fn scan_node_modules(
         if !meta.is_dir() {
             continue;
         }
-
-        let package_json_path = dir_path.join("package.json");
-        if !package_json_path.is_file() {
-            continue;
-        }
-        let raw = fs::read_to_string(&package_json_path).map_err(|e| DiscoverError::Io {
-            path: package_json_path.clone(),
-            source: e,
-        })?;
-        let value: Value = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                return Err(DiscoverError::InvalidPackageJson {
-                    path: package_json_path.clone(),
-                    reason: format!("invalid JSON: {e}"),
-                })
-            }
-        };
-        let Some(obj) = value.as_object() else {
-            continue;
-        };
-        let orb = match obj.get("orb") {
-            Some(Value::Object(o)) if is_behavior_block(o) => o,
-            _ => continue,
-        };
-
-        let name = require_str(obj, "name", &package_json_path)?;
-        if names_seen.contains(&name) {
-            continue;
-        }
-
-        let package = build_package(&name, obj, orb, &dir_path, &package_json_path, cache_dir, language)?;
-        names_seen.insert(name);
-        found.push(package);
+        read_package_dir(&dir_path, cache_dir, language, found, names_seen)?;
     }
 
     Ok(())
+}
+
+/// Keeps the behavior package whose `package.json` sits in `dir_path`, unless one of the same name was already found;
+/// a directory with no `package.json`, or one that declares no behavior block, is skipped.
+fn read_package_dir(
+    dir_path: &Path,
+    cache_dir: &Path,
+    language: &mut InstalledLanguage<'_>,
+    found: &mut Vec<BehaviorPackage>,
+    names_seen: &mut HashSet<String>,
+) -> Result<(), DiscoverError> {
+    let package_json_path = dir_path.join("package.json");
+    if !package_json_path.is_file() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&package_json_path).map_err(|e| DiscoverError::Io {
+        path: package_json_path.clone(),
+        source: e,
+    })?;
+    let value: Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(DiscoverError::InvalidPackageJson {
+                path: package_json_path.clone(),
+                reason: format!("invalid JSON: {e}"),
+            })
+        }
+    };
+    let Some(obj) = value.as_object() else {
+        return Ok(());
+    };
+    let orb = match obj.get("orb") {
+        Some(Value::Object(o)) if is_behavior_block(o) => o,
+        _ => return Ok(()),
+    };
+
+    let name = require_str(obj, "name", &package_json_path)?;
+    if names_seen.contains(&name) {
+        return Ok(());
+    }
+
+    let package = build_package(
+        &name,
+        obj,
+        orb,
+        dir_path,
+        &package_json_path,
+        cache_dir,
+        language,
+    )?;
+    names_seen.insert(name);
+    found.push(package);
+    Ok(())
+}
+
+/// The package scope `start_dir` sits in, as Node defines it: the nearest ancestor (or `start_dir` itself) holding a
+/// `package.json`.
+fn package_scope(start_dir: &Path) -> Option<PathBuf> {
+    start_dir
+        .ancestors()
+        .find(|dir| dir.join("package.json").is_file())
+        .map(Path::to_path_buf)
 }
 
 /// The `orb` fields only a behavior package declares. Discovery keys on
@@ -664,7 +734,11 @@ fn build_package(
     let prefix = require_str(orb, "prefix", package_json_path)?;
     let registry_rel = optional_str(orb, "registry", package_json_path)?;
     let source_rel = optional_str(orb, "source", package_json_path)?;
-    let range = require_str(orb, crate::language_data::LANGUAGE_RANGE_FIELD, package_json_path)?;
+    let range = require_str(
+        orb,
+        crate::language_data::LANGUAGE_RANGE_FIELD,
+        package_json_path,
+    )?;
     let installed = language.get()?;
     match language_satisfies(&range, &installed) {
         Ok(true) => {}
@@ -734,13 +808,11 @@ fn build_package(
         RegistrySource::Materialized(_) => "registry",
         RegistrySource::Live(_) => "source",
     };
-    for (field, path, locked) in [
-        (
-            registry_field,
-            &registry.root().to_path_buf(),
-            registry_locked,
-        ),
-    ] {
+    for (field, path, locked) in [(
+        registry_field,
+        &registry.root().to_path_buf(),
+        registry_locked,
+    )] {
         if !locked && !path.exists() {
             return Err(DiscoverError::MissingDeclaredPath {
                 package: name.to_string(),
@@ -849,7 +921,6 @@ fn check_prefix_conflicts(found: &[BehaviorPackage]) -> Result<(), DiscoverError
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests;

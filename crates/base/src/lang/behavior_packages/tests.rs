@@ -968,3 +968,105 @@ fn discovery_refuses_a_language_range_that_is_not_semver() {
     let err = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap_err();
     assert!(matches!(err, DiscoverError::InvalidPackageJson { .. }), "{err:?}");
 }
+
+/// A live behavior package laid out at `dir` itself (a checkout or a staged copy), not under a `node_modules`.
+fn package_at(dir: &Path, name: &str, prefix: &str, version: &str) {
+    fs::create_dir_all(dir.join("behaviors/lolo")).unwrap();
+    let pkg_json = serde_json::json!({
+        "name": name,
+        "version": version,
+        "orb": { "prefix": prefix, "source": "behaviors/lolo", "language": "^1.2" }
+    });
+    fs::write(
+        dir.join("package.json"),
+        serde_json::to_string_pretty(&pkg_json).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_behavior_package_resolves_itself_before_the_user_store_copy() {
+    let tmp = TestTempDir::new("self-before-store");
+    let store = tmp.path().join("store");
+    fake_package(
+        &store.join("node_modules"),
+        "pkg-a",
+        "pkg-a-prefix",
+        "1.0.0",
+    );
+    let stage = tmp.path().join("stage");
+    package_at(&stage, "pkg-a", "pkg-a-prefix", "2.0.0");
+    let start = stage.join("behaviors/lolo");
+
+    let packages = discover(&start, &store).unwrap();
+    let pkg = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    assert_eq!(pkg.version, "2.0.0");
+    assert_eq!(pkg.root, fs::canonicalize(&stage).unwrap());
+}
+
+#[test]
+fn control_a_non_behavior_package_scope_still_resolves_the_user_store_copy() {
+    let tmp = TestTempDir::new("plain-scope-store");
+    let store = tmp.path().join("store");
+    fake_package(
+        &store.join("node_modules"),
+        "pkg-a",
+        "pkg-a-prefix",
+        "1.0.0",
+    );
+    let app = tmp.path().join("app");
+    fs::create_dir_all(&app).unwrap();
+    fs::write(
+        app.join("package.json"),
+        r#"{"name":"app","version":"1.0.0"}"#,
+    )
+    .unwrap();
+
+    let packages = discover(&app, &store).unwrap();
+    let pkg = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    assert_eq!(pkg.version, "1.0.0");
+}
+
+#[test]
+fn edge_only_the_nearest_package_scope_counts_so_a_plain_package_inside_shadows_the_outer_one() {
+    let tmp = TestTempDir::new("nearest-scope");
+    let store = tmp.path().join("store");
+    fake_package(
+        &store.join("node_modules"),
+        "pkg-a",
+        "pkg-a-prefix",
+        "1.0.0",
+    );
+    let stage = tmp.path().join("stage");
+    package_at(&stage, "pkg-a", "pkg-a-prefix", "2.0.0");
+    let inner = stage.join("tools");
+    fs::create_dir_all(&inner).unwrap();
+    fs::write(
+        inner.join("package.json"),
+        r#"{"name":"tools","version":"1.0.0"}"#,
+    )
+    .unwrap();
+
+    let packages = discover(&inner, &store).unwrap();
+    let pkg = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    assert_eq!(pkg.version, "1.0.0");
+}
+
+#[test]
+fn edge_the_package_itself_wins_over_an_installed_copy_in_its_own_node_modules() {
+    let tmp = TestTempDir::new("self-before-local");
+    let store = tmp.path().join("store");
+    let stage = tmp.path().join("stage");
+    package_at(&stage, "pkg-a", "pkg-a-prefix", "2.0.0");
+    fake_package(
+        &stage.join("node_modules"),
+        "pkg-a",
+        "pkg-a-prefix",
+        "1.0.0",
+    );
+
+    let packages = discover(&stage, &store).unwrap();
+    let pkg = packages.iter().find(|p| p.name == "pkg-a").unwrap();
+    assert_eq!(pkg.version, "2.0.0");
+    assert_eq!(pkg.root, fs::canonicalize(&stage).unwrap());
+}
