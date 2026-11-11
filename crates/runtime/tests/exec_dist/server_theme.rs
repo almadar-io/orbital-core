@@ -11,6 +11,20 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
 
 fn schema() -> OrbitalSchema {
+    schema_with(json!("gazette-light"), json!(["ink-wash-dark", "scandi-light"]))
+}
+
+/// An app whose own theme is inline (`brand`, light and dark) and whose `themes` list defines a second one
+/// (`brand-serif`, light only) beside a registry key.
+fn own_themes_schema() -> OrbitalSchema {
+    schema_with(
+        json!({ "name": "brand", "tokens": { "colors": { "primary": "#111111" } },
+                "variants": { "dark": { "colors": { "primary": "#eeeeee" } } } }),
+        json!(["scandi-light", { "name": "brand-serif", "tokens": { "colors": { "primary": "#222222" } } }]),
+    )
+}
+
+fn schema_with(theme: serde_json::Value, themes: serde_json::Value) -> OrbitalSchema {
     let set = |extra: serde_json::Value| {
         let mut effects = vec![json!(["theme/set", "@payload.key", { "emit": { "success": "SET_OK", "failure": "SET_FAIL" } }])];
         if let serde_json::Value::Array(more) = extra {
@@ -20,8 +34,8 @@ fn schema() -> OrbitalSchema {
     };
     serde_json::from_value(json!({
         "name": "App",
-        "theme": "gazette-light",
-        "themes": ["ink-wash-dark", "scandi-light"],
+        "theme": theme,
+        "themes": themes,
         "typeContractVersion": 1, "orbitals": [
             { "name": "Main",
               "entity": { "name": "Pick", "persistence": "runtime",
@@ -99,7 +113,11 @@ struct Rig {
 
 impl Rig {
     fn new() -> Rig {
-        Rig { server: EmbeddedServer::new(schema()).unwrap() }
+        Rig::with(schema())
+    }
+
+    fn with(schema: OrbitalSchema) -> Rig {
+        Rig { server: EmbeddedServer::new(schema).unwrap() }
     }
 
     fn respond(&self, event: &str, client: &str, payload: serde_json::Value) -> EventResponse {
@@ -292,4 +310,30 @@ fn control_deltas_folded_in_order_leave_the_newest_theme() {
         client.apply_server_response(&set, &HashSet::new()).unwrap();
     }
     assert_eq!(client.kernel().session_theme().as_deref(), Some("ink-wash-dark"));
+}
+
+#[test]
+fn theme_set_binds_a_theme_the_app_defines_in_its_themes_list() {
+    let rig = Rig::with(own_themes_schema());
+    assert_eq!(rig.theme("tab-a"), json!("brand-light"), "control: an unbound session reads the app's own theme");
+    assert_eq!(rig.outcome("SET", "tab-a", json!({ "key": "brand-serif-light" })), json!("brand-serif-light"));
+    assert_eq!(rig.theme("tab-a"), json!("brand-serif-light"));
+    assert_eq!(rig.theme("tab-b"), json!("brand-light"), "control: another session keeps the app's theme");
+}
+
+#[test]
+fn theme_set_binds_either_mode_of_the_apps_own_inline_theme() {
+    let rig = Rig::with(own_themes_schema());
+    assert_eq!(rig.outcome("SET", "tab-a", json!({ "key": "brand-dark" })), json!("brand-dark"));
+    assert_eq!(rig.theme("tab-a"), json!("brand-dark"));
+    assert_eq!(rig.outcome("SET", "tab-a", json!({ "key": "brand-light" })), json!("brand-light"));
+    assert_eq!(rig.theme("tab-a"), json!("brand-light"));
+}
+
+#[test]
+fn theme_set_refuses_a_mode_an_inline_theme_does_not_define() {
+    let rig = Rig::with(own_themes_schema());
+    assert_eq!(rig.outcome("SET", "tab-a", json!({ "key": "brand-serif-dark" })), json!("undeclared-theme"));
+    assert_eq!(rig.theme("tab-a"), json!("brand-light"));
+    assert_eq!(rig.outcome("SET", "tab-a", json!({ "key": "scandi-light" })), json!("scandi-light"), "control: the list's registry key still binds");
 }

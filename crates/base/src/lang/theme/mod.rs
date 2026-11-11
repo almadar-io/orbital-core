@@ -172,20 +172,57 @@ pub fn theme_keys(definition: &ThemeDefinition) -> Vec<String> {
     keys
 }
 
+/// Every theme a program declares, in order: the app's `theme`, each orbital's
+/// `theme`, then the app's `themes`.
+pub fn declared_themes(schema: &OrbitalSchema) -> impl Iterator<Item = &ThemeRef> {
+    schema
+        .theme
+        .iter()
+        .chain(schema.orbitals.iter().filter_map(|o| o.theme.as_ref()))
+        .chain(schema.themes.iter().flatten())
+}
+
+/// The `[data-theme]` keys a program ships a stylesheet for, which are the keys
+/// `theme/set` may bind: a registry key as written, and each mode a theme the
+/// program defines inline has ([`theme_keys`]).
+pub fn declared_theme_keys(schema: &OrbitalSchema) -> Vec<String> {
+    declared_themes(schema)
+        .flat_map(|theme| match theme {
+            ThemeRef::Reference(key) if key.is_empty() => Vec::new(),
+            ThemeRef::Reference(key) => vec![key.clone()],
+            ThemeRef::Inline(definition) => theme_keys(definition),
+        })
+        .collect()
+}
+
+/// Resolve a bound `key`: the theme one of `schemas` defines inline under that
+/// base, else the preset.
+pub fn resolve_declared_key<'a>(
+    schemas: impl IntoIterator<Item = &'a OrbitalSchema>,
+    presets: &ThemePresets,
+    key: &str,
+) -> ResolvedTheme {
+    let (base, mode) = split_theme_key(key);
+    let own = schemas
+        .into_iter()
+        .flat_map(declared_themes)
+        .find_map(|theme| theme.as_inline().filter(|definition| definition.name == base));
+    match own {
+        Some(definition) => build_resolved(&definition.name, mode, definition, presets),
+        None => resolve_preset_key(presets, key),
+    }
+}
+
 /// Writes into `schema.themeDefinitions` the presets the program references
 /// (app and orbital `theme` keys, the app's `themes`) plus the runtime default, from `presets`, so
 /// a kernel resolves `@currentTheme` from the program alone. An inline theme
 /// needs no entry; an unknown key carries nothing (it resolves as before).
 pub fn carry_theme_definitions(schema: &mut OrbitalSchema, presets: &ThemePresets) {
-    let mut bases: Vec<String> = schema
-        .theme
-        .iter()
-        .chain(schema.orbitals.iter().filter_map(|o| o.theme.as_ref()))
+    let mut bases: Vec<String> = declared_themes(schema)
         .filter_map(|t| match t {
             ThemeRef::Reference(key) if !key.is_empty() => Some(split_theme_key(key).0),
             _ => None,
         })
-        .chain(schema.themes.iter().flatten().map(|key| split_theme_key(key).0))
         .chain(std::iter::once(DEFAULT_THEME_BASE.to_string()))
         .collect();
     bases.sort();

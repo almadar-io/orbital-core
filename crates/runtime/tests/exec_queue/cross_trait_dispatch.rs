@@ -547,6 +547,35 @@ fn a_call_carrying_a_parked_dispatchs_turn_is_refused_not_hung() {
     assert_eq!(added(&kernel.dispatch_in_turn(turn, "Counter", None, "BUMP", Value::Null).unwrap()), vec![serde_json::json!(2.0)]);
 }
 
+// G-CROSS-549: a blocking host answers a parked dispatch's ask on the thread that drives it; a dispatch it starts
+// there to produce the answer (an unkeyed `program/dispatch`) is the holder's own nested work and re-enters.
+#[test]
+fn a_dispatch_started_while_answering_a_parked_dispatchs_ask_in_place_re_enters_the_lane() {
+    use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
+    let (kernel, store) = lane_kernel();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn({
+        let kernel = kernel.clone();
+        move || {
+            let nested = std::cell::RefCell::new(None);
+            let progress = kernel.start_dispatch("Counter", None, "ASK", Value::Null, None, None).unwrap();
+            let outcomes = drive_blocking(&kernel, progress, &|request| match request {
+                IoRequest::CallService { .. } => {
+                    *nested.borrow_mut() = Some(kernel.dispatch("Counter", None, "READ", Value::Null).map(|o| added(&o)));
+                    IoAnswer::Service(Ok(Value::Null))
+                }
+                other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+            });
+            tx.send((nested.into_inner(), outcomes.map(|o| added(&o)).map_err(|e| format!("{e:?}")))).unwrap();
+        }
+    });
+    let (nested, outer) = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the in-place nested dispatch waited behind the parked dispatch it answers");
+    assert_eq!(nested.map(|n| n.map_err(|e| format!("{e:?}"))), Some(Ok(vec![serde_json::json!(0.0)])), "the nested dispatch ran before the asker's write");
+    assert_eq!(outer, Ok(vec![serde_json::json!(1.0)]), "the asking dispatch finished after its answer");
+}
+
 #[test]
 fn control_an_untokened_call_on_the_thread_that_parked_a_dispatch_waits_its_turn() {
     use orbital_core_runtime::resumable::IoAnswer;

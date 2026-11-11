@@ -105,6 +105,11 @@ impl DispatchContinuation {
         leg.driver.as_ref().and_then(Self::answering_leg).or(Some(&leg.wait))
     }
 
+    /// Mark this thread as answering the parked dispatch's ask in place: a turnless dispatch it starts re-enters the lane.
+    pub(crate) fn answering_lane(&self) -> Option<crate::kernel::lane::AnsweringScope> {
+        self.lane.as_ref().and_then(|hold| hold.answering())
+    }
+
     /// The lane turn this parked dispatch holds (EXEC-CONC-0): the token a call made on its behalf carries.
     pub fn turn(&self) -> Option<crate::kernel::LaneTurn> {
         self.lane.as_ref().map(|hold| hold.turn())

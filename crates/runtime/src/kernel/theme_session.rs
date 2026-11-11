@@ -6,8 +6,7 @@
 use super::step_effects::push_with_completion;
 use super::*;
 use crate::effects::frame_delta::FrameTheme;
-use orbital_core_base::schema::types::ThemeRef;
-use orbital_core_base::theme::resolve_preset_key;
+use orbital_core_base::theme::{declared_theme_keys, resolve_declared_key};
 use orbital_core_base::viewer::{is_theme_effect, THEME_SET};
 
 /// The session key of the program session (ticks, boot, hooks).
@@ -50,20 +49,11 @@ impl RuntimeKernel {
         };
     }
 
-    /// The registry theme keys the registered programs declare: each app's `theme` and `themes`, and each orbital's
-    /// own `theme`. Only these ship a stylesheet (ORB_THEME_UNDECLARED), so only these may be bound.
+    /// The theme keys the registered programs declare: each app's `theme` and `themes`, and each orbital's own
+    /// `theme`, a registry key as written and each mode of a theme defined inline. Only these ship a stylesheet
+    /// (ORB_THEME_UNDECLARED), so only these may be bound.
     fn declared_theme_keys(&self) -> Vec<String> {
-        let schemas = self.registry.schemas.read();
-        let mut keys = Vec::new();
-        for schema in schemas.values() {
-            let refs = schema.theme.iter().chain(schema.orbitals.iter().filter_map(|orbital| orbital.theme.as_ref()));
-            keys.extend(refs.filter_map(|theme| match theme {
-                ThemeRef::Reference(key) if !key.is_empty() => Some(key.clone()),
-                _ => None,
-            }));
-            keys.extend(schema.themes.iter().flatten().cloned());
-        }
-        keys
+        self.registry.schemas.read().values().flat_map(|schema| declared_theme_keys(schema)).collect()
     }
 
     /// The app-level theme a session with no bound key reads.
@@ -79,7 +69,8 @@ impl RuntimeKernel {
     /// `@currentTheme` from the session's bound key, when one is bound: it overrides every declared theme.
     pub(super) fn session_resolved_theme(&self) -> Option<ResolvedTheme> {
         let key = self.session_theme()?;
-        Some(resolve_preset_key(&self.presentation.theme_presets.read(), &key))
+        let schemas = self.registry.schemas.read();
+        Some(resolve_declared_key(schemas.values().map(|schema| &**schema), &self.presentation.theme_presets.read(), &key))
     }
 
     /// `theme/set` and `theme/clear` (`runsOn: any`): the kernel the step runs on binds the key for its session, so a

@@ -78,11 +78,12 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeRef>,
 
-    /// The registry themes the program switches to inside a page (a sub-frame's
-    /// `data-theme`), beyond its app and orbital themes. Authored as
-    /// `themes: [<key>, …]` in the `.lolo` app header.
+    /// The themes the program switches to (a sub-frame's `data-theme`, or the
+    /// whole app through `theme/set`), beyond its app and orbital themes: a
+    /// registry key, or a theme the program defines inline. Authored as
+    /// `themes: [<key> | { … }, …]` in the `.lolo` app header.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub themes: Option<Vec<String>>,
+    pub themes: Option<Vec<ThemeRef>>,
 
     /// The theme presets this program references plus the runtime default,
     /// written by `orb` when it compiles the program for a runtime, so a kernel

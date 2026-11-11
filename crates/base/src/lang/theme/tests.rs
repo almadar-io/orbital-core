@@ -273,7 +273,7 @@ fn carries_the_themes_a_program_switches_to() {
         Some(ThemeRef::Reference("clay-light".to_string())),
         vec![minimal_orbital("A", None)],
     );
-    schema.themes = Some(vec!["aqua-dark".to_string(), "clay-dark".to_string()]);
+    schema.themes = Some(vec![key("aqua-dark"), key("clay-dark")]);
     carry_theme_definitions(&mut schema, &presets());
     assert_eq!(carried(&schema), vec!["aqua", "clay", DEFAULT_THEME_BASE]);
 }
@@ -284,7 +284,7 @@ fn control_switched_to_themes_never_become_the_resolved_theme() {
         Some(ThemeRef::Reference("clay-light".to_string())),
         vec![minimal_orbital("A", None)],
     );
-    schema.themes = Some(vec!["aqua-dark".to_string()]);
+    schema.themes = Some(vec![key("aqua-dark")]);
     assert_eq!(
         resolve_theme(&schema, Some("A"), &presets(), None).base,
         "clay"
@@ -363,5 +363,86 @@ fn a_program_paints_its_declared_themes_or_the_default_preset() {
         painted.iter().map(|t| t.name.as_str()).collect::<Vec<_>>(),
         vec!["clay"],
         "a declared theme replaces the default"
+    );
+}
+
+fn key(k: &str) -> ThemeRef {
+    ThemeRef::Reference(k.to_string())
+}
+
+fn own_theme(name: &str, dark: bool) -> ThemeDefinition {
+    let mut theme = serde_json::json!({ "name": name, "tokens": { "colors": { "primary": "#111111", "accent": "#222222" } } });
+    if dark {
+        theme["variants"] = serde_json::json!({ "dark": { "colors": { "primary": "#eeeeee" } } });
+    }
+    serde_json::from_value(theme).expect("an inline theme parses")
+}
+
+fn own_themes_schema() -> OrbitalSchema {
+    let mut schema = minimal_schema(
+        Some(ThemeRef::Inline(own_theme("brand", true))),
+        vec![minimal_orbital("A", Some(key("clay-light")))],
+    );
+    schema.themes = Some(vec![key("aqua-dark"), ThemeRef::Inline(own_theme("brand-serif", false))]);
+    schema
+}
+
+#[test]
+fn a_themes_list_reads_a_theme_the_program_defines_beside_a_registry_key() {
+    let themes: Vec<ThemeRef> = serde_json::from_value(serde_json::json!([
+        "aqua-dark",
+        { "name": "brand-serif", "tokens": { "colors": { "primary": "#111111" } } }
+    ]))
+    .expect("a mixed themes list parses");
+    assert_eq!(themes[0].as_reference(), Some("aqua-dark"));
+    assert_eq!(themes[1].as_inline().map(|d| d.name.as_str()), Some("brand-serif"));
+    assert_eq!(
+        serde_json::to_value(&themes).unwrap()[0],
+        serde_json::json!("aqua-dark"),
+        "control: a key stays a bare string on the wire"
+    );
+}
+
+#[test]
+fn declared_keys_are_each_registry_key_as_written_and_each_mode_an_inline_theme_defines() {
+    assert_eq!(
+        declared_theme_keys(&own_themes_schema()),
+        vec!["brand-light", "brand-dark", "clay-light", "aqua-dark", "brand-serif-light"]
+    );
+}
+
+#[test]
+fn control_an_inline_theme_without_a_dark_variant_declares_no_dark_key() {
+    assert!(!declared_theme_keys(&own_themes_schema()).contains(&"brand-serif-dark".to_string()));
+}
+
+#[test]
+fn carries_only_the_registry_themes_of_a_list_that_also_defines_its_own() {
+    let mut schema = own_themes_schema();
+    carry_theme_definitions(&mut schema, &presets());
+    assert_eq!(carried(&schema), vec!["aqua", "clay", DEFAULT_THEME_BASE]);
+}
+
+#[test]
+fn a_bound_key_of_a_theme_the_program_defines_resolves_to_that_themes_tokens() {
+    let schema = own_themes_schema();
+    let color = |key: &str, token: &str| {
+        let resolved = resolve_declared_key([&schema], &presets(), key);
+        assert_eq!(resolved.key, key);
+        resolved.tokens.colors.as_ref().and_then(|c| c.get(token)).cloned()
+    };
+    assert_eq!(color("brand-serif-light", "primary"), Some("#111111".to_string()));
+    assert_eq!(color("brand-dark", "primary"), Some("#eeeeee".to_string()));
+    assert_eq!(color("brand-dark", "accent"), Some("#222222".to_string()), "the dark variant fills its gaps from the base");
+}
+
+#[test]
+fn control_a_bound_key_no_inline_theme_defines_resolves_from_the_presets() {
+    let schema = own_themes_schema();
+    let resolved = resolve_declared_key([&schema], &presets(), "aqua-dark");
+    assert_eq!((resolved.base.as_str(), resolved.mode), ("aqua", ThemeMode::Dark));
+    assert_eq!(
+        resolved.tokens.colors,
+        resolve_preset_key(&presets(), "aqua-dark").tokens.colors
     );
 }

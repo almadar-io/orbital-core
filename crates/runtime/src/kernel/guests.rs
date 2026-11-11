@@ -227,6 +227,17 @@ fn guest_answer(
             _ => None,
         })
         .collect();
+    let navigations: Vec<Value> = response
+        .client_effects_by_trait
+        .iter()
+        .flatten()
+        .filter_map(|step| match &step.effect {
+            ClientEffect::Navigate { path, .. } => {
+                Some(record(vec![("trait", Value::string(step.trait_name.clone())), ("path", Value::string(path.clone()))]))
+            }
+            _ => None,
+        })
+        .collect();
     let emitted: Vec<Value> = response
         .emitted_events
         .iter()
@@ -254,6 +265,9 @@ fn guest_answer(
         ("emitted", Value::array(emitted)),
         ("outcomes", Value::array(moved)),
     ];
+    if !navigations.is_empty() {
+        answer.push(("navigations", Value::array(navigations)));
+    }
     if let Some(guest) = guest {
         answer.push(("guest", Value::string(guest.to_string())));
     }

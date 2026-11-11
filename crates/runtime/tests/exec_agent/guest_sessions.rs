@@ -40,7 +40,8 @@ fn guest() -> serde_json::Value {
                         { "from": "ready", "to": "ready", "event": "ADD", "effects": [
                             ["persist", "create", "DiaryNote", { "text": "@payload.text" }],
                             ["render-ui", "main", { "type": "typography", "content": "A note was added" }]
-                        ] }
+                        ] },
+                        { "from": "ready", "to": "ready", "event": "LEAVE", "effects": [["navigate", "/diary"]] }
                     ]
                 }
             }],
@@ -111,6 +112,9 @@ fn opened() -> (RuntimeKernel, String, serde_json::Value) {
         open_transition(),
         { "from": "idle", "to": "idle", "event": "ADD", "effects": [
             ["program/dispatch", "Diary.DiaryList.ADD", { "text": "hello" }, { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "LEAVE", "effects": [
+            ["program/dispatch", "Diary.DiaryList.LEAVE", {}, { "guest": "@entity.guest", "emit": emit() }]
         ] },
         { "from": "idle", "to": "idle", "event": "READ", "effects": [
             ["program/inputs", { "guest": "@entity.guest", "state": "Diary" }, { "emit": emit() }]
@@ -203,6 +207,15 @@ fn a_guest_dispatch_advances_the_guest_and_answers_its_states_paint_and_outcomes
         (Some("DiaryList"), Some("ADD"), Some("ready"), Some("ready")),
         "{after}"
     );
+}
+
+#[test]
+fn a_guest_step_that_navigates_answers_the_route_it_asked_for() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "LEAVE");
+    assert_eq!(after["got"]["navigations"], json!([{ "trait": "DiaryList", "path": "/diary" }]), "{after}");
+    let added = run(&kernel, "ADD");
+    assert!(added["got"].get("navigations").is_none(), "control: a step that navigates nowhere names no route: {added}");
 }
 
 #[test]

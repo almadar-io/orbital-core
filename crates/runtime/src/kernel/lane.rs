@@ -3,7 +3,9 @@
 //! queue). Each holding is a [`LaneTurn`]. A call carrying the holder's turn re-enters while the holder runs and is
 //! refused ([`KernelError::LaneHeldByParkedDispatch`]) while it is parked: it would otherwise wait on itself. A call
 //! carrying no turn waits its FIFO turn, whatever thread it runs on, except an in-place call made on the thread the
-//! running holder occupies (a blocking host answering an ask with a nested dispatch), which re-enters.
+//! running holder occupies (a blocking host answering an ask with a nested dispatch), which re-enters. The same holds
+//! while the holder is parked and its ask is being answered in place ([`LaneHold::answering`]): a turnless dispatch
+//! started on the answering thread is the holder's own nested work and re-enters (G-CROSS-549).
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -27,6 +29,8 @@ struct LaneState {
     depth: usize,
     /// The event of the holder while it is parked on an ask.
     parked: Option<String>,
+    /// The thread answering the parked holder's ask in place; `None` when no answer is being produced.
+    answering_on: Option<ThreadId>,
 }
 
 #[derive(Default)]
@@ -44,7 +48,16 @@ impl DispatchLane {
         let mut s = self.state.lock();
         if s.held {
             let holder = LaneTurn(s.serving);
-            let in_place = turn.is_none() && s.running_on == Some(orbital_core_base::sync::current_thread());
+            let here = Some(orbital_core_base::sync::current_thread());
+            if turn.is_none() && s.parked.is_some() && s.answering_on == here {
+                s.depth += 1;
+                return Ok(LaneGuard {
+                    lane: Some(self.clone()),
+                    turn: holder,
+                    outer: false,
+                });
+            }
+            let in_place = turn.is_none() && s.running_on == here;
             if turn == Some(holder) || in_place {
                 if let Some(event) = &s.parked {
                     return Err(KernelError::LaneHeldByParkedDispatch {
@@ -80,6 +93,7 @@ impl DispatchLane {
         s.running_on = None;
         s.depth = 0;
         s.parked = None;
+        s.answering_on = None;
         s.serving += 1;
         self.turn.notify_all();
     }
@@ -127,7 +141,7 @@ impl Drop for LaneGuard {
         let Some(lane) = self.lane.take() else { return };
         let mut s = lane.state.lock();
         s.depth -= 1;
-        if s.depth == 0 {
+        if s.depth == 0 && s.parked.is_none() {
             lane.release(&mut s);
         }
     }
@@ -145,17 +159,41 @@ impl LaneHold {
         self.turn
     }
 
+    /// The parked dispatch's ask is being answered on this thread until the scope drops.
+    pub(crate) fn answering(&self) -> Option<AnsweringScope> {
+        let lane = self.lane.clone()?;
+        let here = orbital_core_base::sync::current_thread();
+        lane.state.lock().answering_on = Some(here);
+        Some(AnsweringScope { lane, thread: here })
+    }
+
     pub(crate) fn resume(mut self) -> LaneGuard {
         let lane = self.lane.take().expect("a parked lane hold");
         let mut s = lane.state.lock();
         s.running_on = Some(orbital_core_base::sync::current_thread());
         s.depth = 1;
         s.parked = None;
+        s.answering_on = None;
         drop(s);
         LaneGuard {
             lane: Some(lane),
             turn: self.turn,
             outer: true,
+        }
+    }
+}
+
+/// The span in which one thread answers a parked dispatch's ask in place.
+pub(crate) struct AnsweringScope {
+    lane: Arc<DispatchLane>,
+    thread: ThreadId,
+}
+
+impl Drop for AnsweringScope {
+    fn drop(&mut self) {
+        let mut s = self.lane.state.lock();
+        if s.answering_on == Some(self.thread) {
+            s.answering_on = None;
         }
     }
 }
