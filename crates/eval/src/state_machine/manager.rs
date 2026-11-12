@@ -191,7 +191,7 @@ impl StateMachineManager {
         if result.executed {
             if let Some(new_state) = &result.new_state {
                 let state = states.get_mut(&instance_id).unwrap();
-                state.transition_to(new_state);
+                state.transition_to_at(new_state, ctx.now_millis() as i64);
             }
         }
 

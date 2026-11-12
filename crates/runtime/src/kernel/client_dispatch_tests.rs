@@ -1936,3 +1936,74 @@ fn control_a_route_trait_s_emits_are_not_program_wide() {
     kernel.stamp_emitted_sources(&mut response);
     assert!(kernel.program_wide_emits(&response).is_empty());
 }
+
+fn host_painted_shelf_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string", "required": true }] },
+            "traits": [{
+                "name": "Shelf",
+                "linkedEntity": "Item",
+                "stateMachine": {
+                    "states": [{ "name": "loading", "isInitial": true }, { "name": "browsing" }],
+                    "events": [{ "key": "INIT", "name": "Init" }, { "key": "LOADED", "name": "Loaded" }, { "key": "OPEN", "name": "Open" }],
+                    "transitions": [
+                        { "from": "loading", "to": "loading", "event": "INIT", "effects": [["render-ui", "main", { "type": "typography", "content": "loading" }]] },
+                        { "from": "loading", "to": "browsing", "event": "LOADED", "effects": [["render-ui", "main", { "type": "data-list", "entity": "@payload.data" }]] },
+                        { "from": "browsing", "to": "browsing", "event": "OPEN", "guard": ["=", 1, 2], "effects": [["render-ui", "main", { "type": "typography", "content": "detail" }]] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn host_paint(content: serde_json::Value) -> EventResponse {
+    EventResponse {
+        success: true,
+        states: HashMap::from([("Shelf".to_string(), "browsing".to_string())]),
+        client_effects_by_trait: Some(vec![crate::effects::response::ClientEffectByTrait {
+            trait_name: "Shelf".to_string(),
+            effect: orbital_core_base::client_effect::ClientEffect::RenderUi { slot: "main".to_string(), config: serde_json::from_value(content).unwrap() },
+            event: None,
+            from_state: None,
+            callsite_payload: None,
+            repaint: None,
+        }]),
+        ..Default::default()
+    }
+}
+
+fn repainted_main(outcomes: &[(String, ProcessEventResult)]) -> Vec<serde_json::Value> {
+    outcomes
+        .iter()
+        .flat_map(|(_, result)| result.effect_results.iter())
+        .filter_map(|er| match &er.effect {
+            Effect::RenderUi { slot, content } if slot == "main" => Some(orbital_core_base::json_value::value_to_json(content)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// EXEC-STEP-5 with EXEC-RENDER-4, on a client: a slot the host painted (a server leg's render) is what the slot holds, so
+/// a step that does not fire repaints that, never the entering transition's render evaluated against the new event's payload.
+#[test]
+fn an_unfired_step_on_a_client_repaints_what_the_host_painted() {
+    let (kernel, _) = client_kernel_with(host_painted_shelf_schema());
+    let rows = serde_json::json!({ "type": "data-list", "entity": [{ "id": "a" }, { "id": "b" }] });
+    kernel.apply_server_response(&host_paint(rows.clone()), &HashSet::new()).unwrap();
+    let click: Value = serde_json::from_value(serde_json::json!({ "id": "a" })).unwrap();
+    let outcomes = kernel.dispatch("Shelf", None, "OPEN", click).unwrap();
+    assert!(outcomes.iter().all(|(_, result)| !result.executed), "control: the guard refuses, so the step does not fire");
+    assert_eq!(repainted_main(&outcomes), [rows], "the list keeps its rows");
+}
+
+#[test]
+fn control_an_unfired_step_on_a_client_the_host_never_painted_shows_the_entering_render() {
+    let (kernel, _) = client_kernel_with(host_painted_shelf_schema());
+    let outcomes = kernel.dispatch("Shelf", None, "OPEN", Value::Null).unwrap();
+    assert_eq!(repainted_main(&outcomes), [serde_json::json!({ "type": "typography", "content": "loading" })]);
+}

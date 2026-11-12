@@ -297,7 +297,8 @@ impl RuntimeKernel {
 
             // EXEC-STEP-5: a step that does not fire repaints the slots the state renders into; each shows what it
             // holds now (EXEC-RENDER-4), and a trait that has painted nothing shows the entering transition's render.
-            let held = self.renders.read().held(trait_name, entity_id);
+            // What a slot holds is the kernel's own render or, on a client, what the host painted there since.
+            let held = self.renders.read().shown(trait_name, entity_id);
             let sources = state_render_sources(&trait_def, &current_state.current_state)?
                 .into_iter()
                 .map(|(slot, content)| (slot, content, None))

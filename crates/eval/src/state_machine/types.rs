@@ -69,6 +69,13 @@ impl TraitState {
         self.entered_at = orbital_core_base::time_util::now_millis();
     }
 
+    /// [`Self::transition_to`] stamped with the dispatch's own `now`, so a state's age reads the same clock as the
+    /// ticks that test it (EXEC-TICK-8).
+    pub fn transition_to_at(&mut self, new_state: &str, now_ms: i64) {
+        self.current_state = new_state.to_string();
+        self.entered_at = now_ms;
+    }
+
     /// Update entity data
     pub fn set_entity_data(&mut self, data: Value) {
         self.entity_data = Some(data);

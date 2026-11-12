@@ -96,21 +96,25 @@ impl RuntimeKernel {
                 KernelError::Internal(format!("tick '{tick_name}' not found on '{trait_name}'"))
             })?;
 
-        let current_state = {
+        let (current_state, entered_at) = {
             let mut state_manager = self.state_manager.write();
             let state_key = self.state_key(Some(state_entity));
-            state_manager
+            let state = state_manager
                 .get_or_create_state(trait_name, state_key.as_deref())
-                .map_err(|e| KernelError::Internal(e.to_string()))?
-                .current_state
-                .clone()
+                .map_err(|e| KernelError::Internal(e.to_string()))?;
+            (state.current_state.clone(), state.entered_at)
         };
 
-        // `appliesTo` lists the trait states the tick runs in; none listed = every state.
-        if tick
-            .applies_to
-            .as_ref()
-            .is_some_and(|states| !states.is_empty() && !states.contains(&current_state))
+        // `appliesTo` lists the trait states the tick runs in; none listed = every state. A tick with `afterEntryMs`
+        // also waits until its row has been in that state that long (EXEC-TICK-8).
+        let too_soon = tick
+            .after_entry_ms
+            .is_some_and(|bound| (stamp.now as i64).saturating_sub(entered_at) < bound as i64);
+        if too_soon
+            || tick
+                .applies_to
+                .as_ref()
+                .is_some_and(|states| !states.is_empty() && !states.contains(&current_state))
         {
             return Ok(ProcessEventResult {
                 event: None,

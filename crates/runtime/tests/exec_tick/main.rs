@@ -7,6 +7,7 @@ mod conformance;
 mod frame_browser_leg;
 mod frame_mounted_ticks;
 mod server_tick;
+mod tick_after_entry;
 mod tick_applies_to_states;
 mod tick_browser_leg;
 mod tick_own_arm;

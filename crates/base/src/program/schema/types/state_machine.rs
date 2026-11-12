@@ -261,6 +261,10 @@ pub struct TickDefinition {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub while_visible: bool,
+
+    /// Runs only once its row has been in its current state this many milliseconds (a state's `for Ns`, EXEC-TICK-8).
+    #[serde(rename = "afterEntryMs", default, skip_serializing_if = "Option::is_none")]
+    pub after_entry_ms: Option<u64>,
 }
 
 impl TickDefinition {
