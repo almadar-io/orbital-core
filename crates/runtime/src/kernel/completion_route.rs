@@ -58,11 +58,10 @@ impl RuntimeKernel {
         let (mut event, mut payload, mut failed) = (event, payload, failed);
         let mut result = run(&event, &payload);
         if let Err(DispatchError::Kernel(KernelError::PayloadInvalid(refusal))) = &result {
-            let entry_refused = self
-                .payload_rejection([(site.trait_name.as_str(), event.as_str())], &payload)
-                .is_some();
+            // A refused success completion reaches the asker's failure route, whether its own payload or a payload its
+            // cascade emits broke a declared contract: the asker always hears an answer (owner 2026-11-12, G-CROSS-581).
             let failure = site.emit.failure.clone().filter(|failure| {
-                entry_refused && site.emit.success.as_deref() == Some(event.as_str()) && *failure != event
+                site.emit.success.as_deref() == Some(event.as_str()) && *failure != event
             });
             tracing::warn!(
                 target: orbital_core_base::logging::ns::RUNTIME_KERNEL,

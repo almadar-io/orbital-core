@@ -8,6 +8,7 @@ mod call_service_site;
 mod cascade_visit_key;
 mod cross_trait_dispatch;
 mod delivery_payload;
+mod envelope_listen_guard;
 mod dispatch_roots;
 mod emit_marked_dispatched;
 mod listen_source_identity;

@@ -833,8 +833,9 @@ impl RuntimeKernel {
 
     /// A mount's plan (EXEC-DIST-9), the one decision every host runs a mount through: of the traits the request
     /// carries a copy of, only those whose state the ended session held (`restored`) are restored — seeded at their
-    /// carried `from` state and row, their lifecycle event not run. Every other seed runs its lifecycle event from the
-    /// trait's own state; a carried copy of it is the client's own step and is ignored.
+    /// carried `from` state and row, their lifecycle event not run, unless the ended session left one waiting on a
+    /// deferred ask: that one hears its lifecycle event from the restored state. Every other seed runs its lifecycle
+    /// event from the trait's own state; a carried copy of it is the client's own step and is ignored.
     pub fn prepare_mount(
         &self,
         restored: &std::collections::BTreeSet<String>,
@@ -860,8 +861,23 @@ impl RuntimeKernel {
             let restored_traits: Vec<TraitFrom> = traits.into_iter().flatten().filter(|t| carried.contains(&t.r#trait)).cloned().collect();
             self.seed_leg(&restored_traits, Some(&restored_rows), entity_id);
         }
+        // A restored trait still waiting on an ask the ended session deferred will never hear its answer: its stale
+        // asks are dropped and it hears its lifecycle event from the restored state (owner 2026-11-12, G-CROSS-388).
+        let row = self.session_eid(entity_id.unwrap_or(RUNTIME_SINGLETON));
+        let orphaned: HashSet<String> = {
+            let mut asks = self.deferred_asks.write();
+            carried
+                .iter()
+                .filter(|name| asks.remove(&((*name).clone(), row.clone())).is_some_and(|list| !list.is_empty()))
+                .cloned()
+                .collect()
+        };
         MountPlan {
-            unseeded: seeds.iter().filter(|seed| !carried.contains(&seed.r#trait)).cloned().collect(),
+            unseeded: seeds
+                .iter()
+                .filter(|seed| !carried.contains(&seed.r#trait) || orphaned.contains(&seed.r#trait))
+                .cloned()
+                .collect(),
             restored_rows,
         }
     }

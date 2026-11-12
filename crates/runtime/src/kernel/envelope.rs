@@ -169,6 +169,13 @@ impl RuntimeKernel {
     /// result order then listener registration order. A refusal is recorded on the emit's result as a
     /// [`DeliveryRefused`]; the returned message is the step's failure when nothing the emitter's listens would
     /// hear the `DELIVERY_REJECTED`. `None` also when the step is suspended on an unanswered ask.
+    /// A host-dispatched event's fan-out to listeners in other units: one envelope each, as [`Self::deliver_remote_emits`]
+    /// sends an emit's; the refusal message when one refused and nothing listens for the rejection.
+    pub(super) fn deliver_remote_seed(&self, trait_name: &str, event: &str, payload: &Value) -> Option<String> {
+        let mut seed = [EffectResult::executed(Effect::Emit { event: event.to_string(), payload: payload.clone() })];
+        self.deliver_remote_emits(trait_name, false, &mut seed)
+    }
+
     pub(super) fn deliver_remote_emits(
         &self,
         trait_name: &str,
@@ -241,6 +248,7 @@ impl RuntimeKernel {
                     ),
                     causal_id: causal,
                     hop,
+                    listen: listener.guard.as_ref().map(|_| orbital_core_base::envelope::EnvelopeListen { event: event.clone(), payload: payload.clone() }),
                 };
                 ordinal += 1;
                 let refusal = if hop > HOP_CAP {

@@ -2117,6 +2117,7 @@ fn sample_envelope() -> Envelope {
         payload: Value::Bool(true),
         causal_id: "c".into(),
         hop: 3,
+        listen: None,
     }
 }
 
@@ -2240,6 +2241,36 @@ fn a_cross_unit_emit_is_one_deliver_ask_with_its_hop_causal_id_and_a_replay_stab
     assert_ne!(second[0].id, envelope.id, "the next dispatch has its own id");
 }
 
+/// The `Receiver` of [`placed_program`] with its listens replaced by `listens`.
+fn placed_with_listens(listens: Json) -> Json {
+    let mut program = placed_program(api_web(), false);
+    program["orbitals"][1]["traits"][0]["listens"] = listens;
+    program
+}
+
+// G-ORB-325 (owner 2026-11-12): the dispatched event itself reaches a listener in another unit, as an emit does.
+#[test]
+fn a_dispatched_event_reaches_a_listener_placed_in_another_unit() {
+    let program = placed_with_listens(json!([{ "event": "GO", "triggers": "GOT", "source": { "kind": "orbital", "orbital": "Src", "trait": "Sender" } }]));
+    let (kernel, store) = placed_kernel(&program, Some("api"));
+    let (_, asked) = go(&kernel, &store, &accept_all);
+    assert!(asked.iter().any(|e| e.event == "GOT" && e.to.trait_name.as_deref() == Some("Receiver")), "{asked:?}");
+}
+
+// G-ORB-325: a guarded remote listener's envelope carries the emit it heard, so the receiver can judge the guard.
+#[test]
+fn a_guarded_remote_listeners_envelope_carries_the_emit_it_heard() {
+    let program = placed_with_listens(json!([{ "event": "PING", "triggers": "GOT", "guard": ["=", "@payload.n", 1], "source": { "kind": "orbital", "orbital": "Src", "trait": "Sender" } }]));
+    let (kernel, store) = placed_kernel(&program, Some("api"));
+    let (_, asked) = go(&kernel, &store, &accept_all);
+    let heard = asked.first().and_then(|e| e.listen.clone()).expect("the envelope carries the heard emit");
+    assert_eq!(heard.event, "PING");
+    assert_eq!(j(&heard.payload), json!({ "n": 1.0 }));
+    let (plain_kernel, plain_store) = placed_kernel(&placed_program(api_web(), false), Some("api"));
+    let (_, plain) = go(&plain_kernel, &plain_store, &accept_all);
+    assert!(plain.iter().all(|e| e.listen.is_none()), "control: an unguarded listener's envelope stays as it was");
+}
+
 #[test]
 fn control_same_unit_no_deployment_and_no_unit_keep_the_emit_on_the_local_worklist() {
     let same_unit = json!({ "api": ["Src", "Dst"] });
@@ -2266,6 +2297,7 @@ fn the_hop_cap_allows_sixteen_and_refuses_the_seventeenth() {
         payload: Value::Null,
         causal_id: "root".into(),
         hop,
+        listen: None,
     };
     let run = |hop: u32| {
         let (kernel, store) = placed_kernel(&program, Some("api"));
@@ -2305,6 +2337,7 @@ fn arrival(id: &str, instance: &str, orbital: &str, trait_name: Option<&str>) ->
         payload: Value::Null,
         causal_id: "c".into(),
         hop: 1,
+        listen: None,
     }
 }
 

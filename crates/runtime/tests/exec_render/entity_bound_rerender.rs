@@ -460,3 +460,48 @@ fn control_a_host_answer_that_paints_nothing_leaves_the_bound_render_to_follow_t
     assert_eq!(hud.len(), 1, "{:?}", paints(&folded));
     assert_eq!(hud[0]["content"].as_f64(), Some(7.0));
 }
+
+/// G-ORBITAL-CORE-148 (owner 2026-11-12): a kernel running client traits for a browser (a hosted guest,
+/// EXEC-ENDPOINT-3a) repaints a paint whose entity changed, as a client kernel does; std-learn-transport's own tick
+/// sets the field its own caption reads.
+fn guest_like_kernel(runs_client_traits: bool) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "guest", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Steps", "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "steps", "type": "number", "default": 0 }] },
+            "traits": [trait_of("Transport", "Steps", json!([
+                arm("INIT", json!([render("main", text("Step @entity.steps"))])),
+                arm("TICKED", json!([["set", "@entity.steps", ["+", "@entity.steps", 1]]]))
+            ]), json!([]))]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig::default(),
+    );
+    k.register_schema(schema).unwrap();
+    k.set_runs_client_traits(runs_client_traits);
+    k.dispatch("Transport", None, "INIT", Value::Null).unwrap();
+    k.dispatch("Transport", None, "TICKED", Value::Null).unwrap();
+    k
+}
+
+#[test]
+fn a_kernel_running_client_traits_repaints_a_paint_whose_entity_changed() {
+    let stale = guest_like_kernel(true).rerender_stale();
+    let caption: Vec<Json> = stale
+        .iter()
+        .filter(|r| r.trait_name == "Transport")
+        .flat_map(|r| r.effects.iter())
+        .map(|e| serde_json::to_value(e).unwrap())
+        .collect();
+    assert!(serde_json::to_string(&caption).unwrap().contains("Step 1"), "{caption:?}");
+}
+
+#[test]
+fn control_a_plain_server_kernel_repaints_nothing() {
+    assert!(guest_like_kernel(false).rerender_stale().is_empty());
+}

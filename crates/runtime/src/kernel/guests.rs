@@ -126,7 +126,7 @@ pub(crate) fn run_session(
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
     let orbitals = painter_orbitals(&session.kernel, &outcomes);
-    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None))
+    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -203,8 +203,10 @@ fn guest_answer(
     seed_trait: &str,
     event: &str,
     access: Option<&super::page_circuit::PageAccessVerdict>,
+    rerenders: &[super::Rerender],
 ) -> Value {
-    let response = EventResponse::from_process_results(outcomes, seed_trait, event);
+    let mut response = EventResponse::from_process_results(outcomes, seed_trait, event);
+    response.fold_rerenders(rerenders);
     let record = |pairs: Vec<(&str, Value)>| {
         let mut fields = ValueMap::default();
         for (key, value) in pairs {
@@ -722,6 +724,7 @@ impl RuntimeKernel {
             &seed_trait,
             "INIT",
             Some(&access),
+            &[],
         ))
     }
 
@@ -776,7 +779,7 @@ impl RuntimeKernel {
                 Value::String(name) => Some(name.as_str()),
                 _ => None,
             };
-            return Ok(guest_answer(&std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access)));
+            return Ok(guest_answer(&std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access), &[]));
         }
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         let fresh: Vec<MountSeed> = {
@@ -808,6 +811,7 @@ impl RuntimeKernel {
             &seed_trait,
             "INIT",
             Some(&access),
+            &[],
         ))
     }
 
@@ -833,7 +837,10 @@ impl RuntimeKernel {
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(&session.kernel, &outcomes);
         let seed_trait = outcomes.first().map(|(t, _)| t.clone()).unwrap_or_default();
-        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None);
+        // A tick that changed a field an earlier paint reads repaints it: the guest stands in for the browser
+        // (EXEC-ENDPOINT-3a), so its kernel resolves those paints (owner 2026-11-12, G-ORBITAL-CORE-148).
+        let rerenders = session.kernel.rerender_stale();
+        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
         // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
         let empty = |field: &str| answer.get(field).and_then(Value::as_array).is_none_or(|items| items.is_empty());
         if empty("rendered") && empty("emitted") {
@@ -934,7 +941,7 @@ impl RuntimeKernel {
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(guest, &outcomes);
-        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None))
+        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
     }
 
     /// The registered traits whose current state handles `event`, in name order.

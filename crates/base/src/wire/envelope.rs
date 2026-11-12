@@ -37,6 +37,19 @@ pub struct Envelope {
     pub payload: Value,
     pub causal_id: String,
     pub hop: u32,
+    /// The emit the receiving listener heard, when that listener has a `when` guard: the receiver judges its own guard
+    /// against it before it dispatches (EXEC-QUEUE-9, owner 2026-11-12, G-ORB-325).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-export", ts(optional))]
+    pub listen: Option<EnvelopeListen>,
+}
+
+/// The emitted event and its payload as the source raised it, before any listen mapping.
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnvelopeListen {
+    pub event: String,
+    pub payload: Value,
 }
 
 /// Why an envelope was not taken.

@@ -56,12 +56,13 @@ impl RuntimeKernel {
     /// Repaint every mounted trait whose last `render-ui` reads an entity that has changed since
     /// it was resolved. Which leaves read the entity is declared in the source: a leaf holding
     /// `@entity` and no `@payload` (the web's `RenderBindingMarker`); everything else stays at
-    /// the value it was flushed with. Only a client-role kernel repaints, and only for an entity
+    /// the value it was flushed with. Only a client-role kernel, or one running client traits for a browser, repaints, and only for an entity
     /// the client owns (`[runtime]`, `[shared]`, browser-stored or unbound; the web's
     /// `clientResolvesRenderBindings`), since a persistent entity's bindings are server-resolved.
     /// A trait changed by several writes appears once; a second call with nothing new is empty.
     pub fn rerender_stale(&self) -> Vec<Rerender> {
-        if !self.effect_executor.environment().is_client() {
+        // A kernel that runs client traits for a browser (a hosted guest, EXEC-ENDPOINT-3a) repaints as the client would.
+        if !self.effect_executor.environment().is_client() && !self.runs_client_traits() {
             return Vec::new();
         }
         self.flush_row_writes();

@@ -216,6 +216,13 @@ impl RuntimeKernel {
                     failure = Some(refused);
                 }
             }
+            // A host dispatch's seed reaches a listener placed in another unit as an envelope, as an emit does, sent in
+            // the step like its emits (EXEC-QUEUE-9, owner 2026-11-12, G-ORB-325).
+            if !follow_on {
+                if let Some(refused) = self.deliver_remote_seed(trait_name, event_name, &payload) {
+                    failure.get_or_insert(refused);
+                }
+            }
             // Read before the frame write below and before the suspension check, so a read that suspends replays the
             // step like any other answer it waits for.
             let entity_after = self

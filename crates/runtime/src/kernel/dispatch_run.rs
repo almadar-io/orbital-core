@@ -188,11 +188,42 @@ impl RuntimeKernel {
             Ok(admitted) => admitted,
             Err(verdict) => return verdict,
         };
+        // The receiving listener's `when` guard, judged here against the emit it heard (EXEC-QUEUE-9): a guard that
+        // does not pass takes the envelope and runs nothing, as a local listen does (owner 2026-11-12, G-ORB-325).
+        if !self.envelope_listen_passes(&envelope) {
+            tracing::debug!(envelope = %envelope.id, event = %envelope.event, "envelope:listen-guard-blocked");
+            return EnvelopeVerdict::Accepted;
+        }
         let run = self.run_of_envelope(envelope.event.clone(), envelope.payload.clone(), admitted);
         match self.run_straight_through(run) {
             Ok(_) => EnvelopeVerdict::Accepted,
             Err(error) => Self::envelope_down(&envelope, &error),
         }
+    }
+
+    /// Whether the listener `envelope` was sent to passes its `when` guard; an envelope naming no heard emit, or a
+    /// listener with no guard, passes.
+    fn envelope_listen_passes(&self, envelope: &Envelope) -> bool {
+        let (Some(listen), Some(source_trait), Some(target)) =
+            (&envelope.listen, envelope.from.trait_name.as_deref(), envelope.to.trait_name.as_deref())
+        else {
+            return true;
+        };
+        let source = self.emit_source(source_trait);
+        let Some(guard) = self
+            .listener_manager
+            .matching(&listen.event, &source)
+            .into_iter()
+            .find(|l| l.trait_name == target && l.triggers == envelope.event)
+            .and_then(|l| l.guard)
+        else {
+            return true;
+        };
+        let Ok(config) = self.listener_config(target) else {
+            return false;
+        };
+        let from = self.current_state_name(target, None);
+        super::listen_guard_passes(&guard, &listen.payload, &from, config, &crate::kernel::DispatchView::default())
     }
 
     fn envelope_down(envelope: &Envelope, error: &KernelError) -> EnvelopeVerdict {

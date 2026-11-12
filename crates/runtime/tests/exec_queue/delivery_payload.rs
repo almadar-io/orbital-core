@@ -96,6 +96,7 @@ fn envelope(id: &str, payload: Json) -> orbital_core_base::envelope::Envelope {
         payload: serde_json::from_value(payload).unwrap(),
         causal_id: "c".into(),
         hop: 1,
+        listen: None,
     }
 }
 
@@ -191,16 +192,15 @@ fn row_asks(request: &orbital_core_runtime::resumable::IoRequest) -> orbital_cor
     }
 }
 
+// G-CROSS-581 (owner 2026-11-12): a refusal its cascade raises also reaches the asker's failure route.
 #[test]
-fn a_completion_whose_cascade_emits_a_refused_payload_is_not_rerouted_to_its_failure_route() {
+fn a_completion_whose_cascade_emits_a_refused_payload_is_rerouted_to_its_failure_route() {
     let k = completing_kernel(json!({ "n": "one" }));
     let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
-    assert_eq!((delivered.event.as_str(), delivered.failed), ("DONE", false));
-    assert!(
-        matches!(&delivered.result, Err(orbital_core_runtime::resumable::DispatchError::Kernel(KernelError::PayloadInvalid(m))) if m.contains("PING")),
-        "{:?}",
-        delivered.result.as_ref().err()
-    );
+    assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
+    assert!(delivered.result.is_ok(), "{:?}", delivered.result.as_ref().err());
+    let error = delivered.payload.get_path("error").and_then(Value::as_str).unwrap_or_default().to_string();
+    assert!(error.contains("PING"), "the failure names the refused emit: {error}");
 }
 
 #[test]

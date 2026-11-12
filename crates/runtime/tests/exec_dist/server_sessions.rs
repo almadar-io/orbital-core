@@ -20,7 +20,9 @@ fn schema() -> OrbitalSchema {
                         { "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.name", "fresh"]] },
                         { "from": "idle", "to": "idle", "event": "SET", "effects": [["set", "@entity.name", "@payload.name"]] },
                         { "from": "idle", "to": "idle", "event": "LOOK", "effects": [["set", "@entity.seen", "@entity.name"]] },
-                        { "from": "idle", "to": "idle", "event": "ASK", "effects": [["call-service", "svc", "work", {}]] }
+                        { "from": "idle", "to": "idle", "event": "ASK", "effects": [["call-service", "svc", "work", {}]] },
+                        { "from": "idle", "to": "idle", "event": "ASK_LATER", "effects": [["call-service", "svc", "work", {}, { "key": "work", "emit": { "success": "WORKED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "WORKED", "effects": [] }
                     ] } }]
         }]
     }))
@@ -142,6 +144,27 @@ fn exec_dist_9_control_a_mount_reviving_with_no_carried_copy_runs_the_lifecycle_
     server.close_session_stream(stream);
     done(server.start("Main", mount("tab-a", None)).unwrap());
     assert_eq!(name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())), json!("fresh"));
+}
+
+/// G-CROSS-388 (owner 2026-11-12): a trait the ended session left waiting on a deferred ask never hears its answer, so
+/// the mount that revives the session runs its lifecycle event from the restored state.
+#[test]
+fn exec_dist_9_a_revived_trait_whose_deferred_ask_died_with_its_session_hears_its_lifecycle() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    let stream = server.open_session_stream("tab-a");
+    done(server.start("Main", request("SET", "tab-a", Some("app"))).unwrap());
+    let ServerProgress::Await { flight, requests } = server.start("Main", request("ASK_LATER", "tab-a", None)).unwrap() else {
+        panic!("the keyed call asks the host");
+    };
+    let deferred = requests.into_iter().map(|p| IoReply { id: p.id, answer: IoAnswer::ServiceDeferred }).collect();
+    done(server.resume(flight, deferred).unwrap());
+    server.close_session_stream(stream);
+    done(server.start("Main", mount("tab-a", Some("kept"))).unwrap());
+    assert_eq!(
+        name_in(&done(server.start("Main", request("LOOK", "tab-a", None)).unwrap())),
+        json!("fresh"),
+        "INIT ran from the restored state, so the chain restarts instead of waiting forever"
+    );
 }
 
 /// G-CROSS-357: a page's first stream opened and dropped before its first mount, so the session ended holding nothing; the
