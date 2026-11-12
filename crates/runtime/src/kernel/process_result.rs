@@ -154,6 +154,8 @@ pub struct EffectRun {
     pub effect: SExpression,
     pub status: EffectRunStatus,
     pub error: Option<String>,
+    /// The typed reason a failed effect carries (a persist refused by its policy answers `Denied`); never read from `error`.
+    pub code: Option<orbital_core_base::bus_event::ServerEffectCode>,
     /// The failure was delivered to the declared `emit.failure` route of the op that failed, which may sit inside a compound effect.
     pub routed: bool,
     /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order, each traced the same way; `None` for a leaf effect.

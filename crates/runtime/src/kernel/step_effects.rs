@@ -38,6 +38,7 @@ impl RuntimeKernel {
                     effect: effect_expr.clone(),
                     status: EffectRunStatus::Skipped,
                     error: None,
+                    code: None,
                     routed: false,
                     nested: is_compound(effect_expr).then(Vec::new),
                 });
@@ -749,6 +750,7 @@ fn effect_run(effect: &SExpression, ran: &[EffectResult], nested: Option<Vec<Eff
         effect: effect.clone(),
         status,
         error: failed.and_then(|r| r.error.clone()),
+        code: failed.and_then(|r| r.code),
         routed: failed.is_some_and(|r| r.has_routed_failure()),
         nested,
     }

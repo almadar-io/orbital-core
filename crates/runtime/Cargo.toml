@@ -34,6 +34,7 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 ureq = { version = "2.9", default-features = false, features = ["json"], optional = true }
 libloading = { version = "0.8", optional = true }
 libffi = { version = "5.2", optional = true }
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "flac", "pcm", "ogg", "vorbis", "aac", "isomp4"], optional = true }
 orbital-core-base = { path = "../base", default-features = false }
 orbital-core-eval = { path = "../eval", default-features = false }
 
@@ -57,6 +58,7 @@ std = [
     "dep:web-time",
     "url/std",
     "dep:getrandom",
+    "dep:symphonia",
 ]
 # The raw-socket store drivers (Redis, their TLS stream): a server-role capability the browser kernel build leaves out.
 wire-drivers = ["std"]

@@ -338,6 +338,7 @@ mod tests {
         ("mem/atomic-store", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("mem/atomic-add", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("mem/atomic-cas", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("audio/decode", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("kernel/queue-front", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("kernel/queue-back", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("ffi/call", "needs a foreign library; answered by the native host's ffi feature, exercised in its own tests"),

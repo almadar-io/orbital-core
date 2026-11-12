@@ -1,11 +1,13 @@
 //! The native host's [`CredentialTransport`]: one form POST to an https token endpoint over the kernel's sans-I/O TLS
 //! stream on a plain `TcpStream`. The endpoint's origin must be in the program's declared `egress`, every address it
-//! resolves to must be public, and a redirect is a failure. No error text carries a header, a body or a token.
+//! resolves to must be public, and a redirect is a failure. The one other request is a `metadata` exchange: a plain GET to
+//! the kernel's metadata token address, which no program names. No error text carries a header, a body or a token.
 use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use orbital_core_base::credential_grant::{is_metadata_endpoint, METADATA_ORIGIN};
 use orbital_core_base::http_wire::{check_header, is_public_address, origin_allowed, split_url};
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::secret::Secret;
@@ -89,10 +91,11 @@ fn public_addresses(target: &Target) -> Result<Vec<SocketAddr>, TransportError> 
 fn request_bytes(
     target: &Target,
     headers: &[(String, String)],
-    body: &str,
+    body: Option<&str>,
 ) -> Result<Vec<u8>, TransportError> {
-    let mut head = format!("POST {} HTTP/1.1\r\n", target.path);
-    let authority = if target.port == 443 {
+    let method = if body.is_some() { "POST" } else { "GET" };
+    let mut head = format!("{method} {} HTTP/1.1\r\n", target.path);
+    let authority = if target.port == 443 || (body.is_none() && target.port == 80) {
         target.host.clone()
     } else {
         format!("{}:{}", target.host, target.port)
@@ -110,12 +113,12 @@ fn request_bytes(
         }
         head.push_str(&format!("{name}: {value}\r\n"));
     }
-    head.push_str(&format!(
-        "Content-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    ));
+    if let Some(body) = body {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("Connection: close\r\n\r\n");
     let mut bytes = head.into_bytes();
-    bytes.extend_from_slice(body.as_bytes());
+    bytes.extend_from_slice(body.unwrap_or_default().as_bytes());
     Ok(bytes)
 }
 
@@ -383,9 +386,67 @@ impl CredentialTransport for TlsFormTransport {
         body: &str,
     ) -> Result<(u16, String), TransportError> {
         let target = target_of(endpoint, &(self.egress)())?;
-        let request = request_bytes(&target, headers, body)?;
+        let request = request_bytes(&target, headers, Some(body))?;
         let addrs = public_addresses(&target)?;
         exchange(&target, addrs, &request)
+    }
+
+    fn metadata_get(&self, endpoint: &str, headers: &[(String, String)]) -> Result<(u16, String), TransportError> {
+        let target = metadata_target(endpoint)?;
+        let request = request_bytes(&target, headers, None)?;
+        let addrs: Vec<SocketAddr> = (target.host.as_str(), target.port)
+            .to_socket_addrs()
+            .map_err(|e| refuse(format!("could not resolve {}: {e}", target.host)))?
+            .collect();
+        plain_exchange(&target, addrs, &request)
+    }
+}
+
+fn metadata_target(endpoint: &str) -> Result<Target, TransportError> {
+    if !is_metadata_endpoint(endpoint) {
+        return Err(refuse("a metadata exchange goes only to the kernel's metadata token address"));
+    }
+    Ok(Target {
+        host: METADATA_ORIGIN.trim_start_matches("http://").to_string(),
+        port: 80,
+        path: endpoint[METADATA_ORIGIN.len()..].to_string(),
+    })
+}
+
+fn plain_exchange(target: &Target, addrs: Vec<SocketAddr>, request: &[u8]) -> Result<(u16, String), TransportError> {
+    let mut stream = None;
+    let mut last = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    let Some(mut stream) = stream else {
+        return Err(refuse(match last {
+            Some(e) => format!("could not connect to {}: {e}", target.host),
+            None => format!("{} has no addresses", target.host),
+        }));
+    };
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT))
+        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
+        .map_err(|e| refuse(format!("socket: {e}")))?;
+    stream.write_all(request).map_err(|e| refuse(format!("could not send to {}: {e}", target.host)))?;
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut buf).map_err(|e| refuse(format!("could not read from {}: {e}", target.host)))?;
+        if n == 0 {
+            return parse_response(&raw)?.ok_or_else(|| refuse("the metadata server closed before a complete response"));
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if let Some(done) = parse_response(&raw)? {
+            return Ok(done);
+        }
     }
 }
 
@@ -404,6 +465,36 @@ mod tests {
 
     fn refused(result: Result<(u16, String), TransportError>) -> String {
         result.expect_err("the transport must refuse").0
+    }
+
+    #[test]
+    fn a_metadata_get_refuses_every_address_but_the_kernel_one_before_any_connection() {
+        let transport = TlsFormTransport::new(egress(&["http://metadata.google.internal", "https://auth.example.com"]));
+        for other in [
+            "https://auth.example.com/token",
+            "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal/computeMetadata/v1/instance/attributes/",
+            "http://metadata.google.internal.example.com/computeMetadata/v1/instance/service-accounts/default/token",
+        ] {
+            let message = transport.metadata_get(other, &[]).expect_err(other).0;
+            assert!(message.contains("only to the kernel's metadata token address"), "{other}: {message}");
+        }
+    }
+
+    #[test]
+    fn the_metadata_request_is_a_bodiless_get_with_the_flavor_header_and_a_post_keeps_its_length() {
+        let endpoint = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=a";
+        let target = metadata_target(endpoint).unwrap();
+        assert_eq!((target.host.as_str(), target.port), ("metadata.google.internal", 80));
+        let headers = vec![("Metadata-Flavor".to_string(), "Google".to_string())];
+        let get = String::from_utf8(request_bytes(&target, &headers, None).unwrap()).unwrap();
+        assert_eq!(
+            get,
+            "GET /computeMetadata/v1/instance/service-accounts/default/token?scopes=a HTTP/1.1\r\nHost: metadata.google.internal\r\nMetadata-Flavor: Google\r\nConnection: close\r\n\r\n"
+        );
+        let post_target = Target { host: "auth.example.com".to_string(), port: 443, path: "/token".to_string() };
+        let post = String::from_utf8(request_bytes(&post_target, &[], Some("a=b")).unwrap()).unwrap();
+        assert_eq!(post, "POST /token HTTP/1.1\r\nHost: auth.example.com\r\nContent-Length: 3\r\nConnection: close\r\n\r\na=b");
     }
 
     #[test]
@@ -483,12 +574,12 @@ mod tests {
             path: "/t".into(),
         };
         let owned = [("Content-Length".to_string(), "1".to_string())];
-        assert!(request_bytes(&target, &owned, "")
+        assert!(request_bytes(&target, &owned, Some(""))
             .unwrap_err()
             .0
             .contains("belongs to the transport"));
         let bad = [("X".to_string(), "a\r\nb".to_string())];
-        assert!(request_bytes(&target, &bad, "").is_err());
+        assert!(request_bytes(&target, &bad, Some("")).is_err());
     }
 
     #[test]

@@ -497,8 +497,28 @@ pub fn render_type<R: TargetTypeRenderer + ?Sized>(
             r.optional(inner, inner_out)
         }
         OirType::Struct { fields, additional } => r.struct_ty(fields, additional.as_deref()),
-        OirType::Union { variants } => r.union_ty(variants),
+        OirType::Union { variants } => r.union_ty(&decode_order(variants)),
     }
+}
+
+/// A union's arms in the order a decoder that takes the first arm that fits must try them (an untagged serde enum, a
+/// Swift or Kotlin decoder): each record arm before every record arm with fewer fields, so `{x, y, z}` is not read as
+/// `{x, y}`; every other arm stays where it was declared.
+pub fn decode_order(variants: &[OirField]) -> Vec<OirField> {
+    let width = |arm: &OirField| match &arm.field_type {
+        OirType::Struct { fields, .. } => Some(fields.len()),
+        _ => None,
+    };
+    let mut records: Vec<&OirField> = variants.iter().filter(|arm| width(arm).is_some()).collect();
+    records.sort_by_key(|arm| std::cmp::Reverse(width(arm)));
+    let mut records = records.into_iter();
+    variants
+        .iter()
+        .map(|arm| match width(arm) {
+            Some(_) => records.next().unwrap_or(arm).clone(),
+            None => arm.clone(),
+        })
+        .collect()
 }
 
 /// Classify `ty` under renderer `r`, dispatching the IDENTICAL `match` as
@@ -562,7 +582,7 @@ pub fn classify_type<R: TargetTypeRenderer + ?Sized>(
             r.classify_optional(inner, inner_cls)
         }
         OirType::Struct { fields, additional } => r.classify_struct_ty(fields, additional.as_deref()),
-        OirType::Union { variants } => r.classify_union_ty(variants),
+        OirType::Union { variants } => r.classify_union_ty(&decode_order(variants)),
     }
 }
 

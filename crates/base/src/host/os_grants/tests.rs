@@ -2254,6 +2254,7 @@ fn every_os_operation_reads_its_needs_from_the_operator_table_at_arguments_that_
         "mem/release",
         "mem/write",
         "mem/freeze",
+        "audio/decode",
         "gpu/device-close",
         "gpu/buffer-create",
         "gpu/texture-create",
@@ -3648,6 +3649,28 @@ mod static_check {
         schema.orbitals.iter().find(|o| o.name == name).and_then(|o| o.os_grants.as_ref())
     }
 
+    // G-ORBITAL-CORE-165: a composed gpu grant stays whole on an orbital whose submit builds its command list from data.
+    #[test]
+    fn a_composed_gpu_grant_stays_whole_where_the_submitted_commands_are_computed() {
+        let gpu = json!({ "gpu": [{ "target": "device:16777216", "kinds": ["open", "compute", "readback"] }] });
+        let calls = |commands: serde_json::Value| json!([["gpu/device-open", 16777216], ["gpu/submit", "@entity.device", commands]]);
+        let kinds = |commands: serde_json::Value| -> serde_json::Value {
+            let schema = pruned(vec![orbital("Vortex", gpu.clone(), None, calls(commands), json!({}))], &[]);
+            serde_json::to_value(grants_of(&schema, "Vortex").expect("a gpu grant").gpu.clone()).expect("gpu")
+        };
+        assert_eq!(kinds(json!("@entity.commands")), json!([{ "target": "device:16777216", "kinds": ["open", "compute", "readback"] }]));
+        assert_eq!(
+            kinds(json!(["array/concat", [{ "compute": {} }], ["if", false, [{ "read": {} }], []]])),
+            json!([{ "target": "device:16777216", "kinds": ["open", "compute", "readback"] }]),
+            "the fluid demos' shape: a list built by array/concat"
+        );
+        assert_eq!(
+            kinds(json!([{ "compute": {} }])),
+            json!([{ "target": "device:16777216", "kinds": ["open", "compute"] }]),
+            "control: a literal command list keeps only what it names"
+        );
+    }
+
     // EXEC-GRANTS-2: a grant composition copied onto an orbital stays only where a call of that orbital uses it.
     #[test]
     fn a_composed_grant_lands_only_on_the_orbital_whose_call_uses_it() {
@@ -4014,4 +4037,23 @@ fn union_adds_the_passed_set_to_the_narrowed_one_without_duplicates() {
     let a = grants_of(json!({ "env": ["HOME"] }));
     let b = grants_of(json!({ "env": ["HOME", "AUTH_EMULATOR_HOST"] }));
     assert_eq!(union(&a, &b), grants_of(json!({ "env": ["HOME", "AUTH_EMULATOR_HOST"] })));
+}
+
+#[test]
+fn a_computed_gpu_command_list_may_use_every_command_kind() {
+    let gpu = |kind| OsRequirement::Gpu { kind };
+    assert_eq!(
+        os_possible_uses(OsOp::GpuSubmit, &exprs(json!(["@device", "@entity.commands"]))),
+        vec![gpu(GpuKind::Compute), gpu(GpuKind::Render), gpu(GpuKind::Readback)]
+    );
+    assert_eq!(
+        os_possible_uses(OsOp::GpuSubmit, &exprs(json!(["@device", [{"compute": {}}]]))),
+        Vec::new(),
+        "control: a literal list names what it needs, so it may use nothing more"
+    );
+    assert_eq!(
+        os_possible_uses(OsOp::GpuSubmit, &exprs(json!(["@device", ["array/concat", [{"compute": {}}], "@entity.more"]]))),
+        vec![gpu(GpuKind::Compute), gpu(GpuKind::Render), gpu(GpuKind::Readback)],
+        "a list a call builds is not a literal"
+    );
 }

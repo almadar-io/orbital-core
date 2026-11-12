@@ -14,7 +14,7 @@ use crate::credential_admin::{
 };
 use orbital_core_base::credential_grant::{
     assertion_jwt, authorization_code_request, client_credentials_request, json_token_refresh_request,
-    json_token_request, jwt_bearer_request, parse_json_token_response, parse_token_response,
+    json_token_request, jwt_bearer_request, metadata_token_request, parse_json_token_response, parse_token_response,
     refresh_token_request, AssertionSpec, ClientAuth, ClientCredentialsSpec, CodeExchange, GrantError,
     GrantErrorKind, JsonTokenSpec, RefreshExchange,
 };
@@ -26,8 +26,8 @@ const RECORD_VERSION: u8 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransportError(pub String);
 
-/// The host's one network capability the store needs: a form POST to an https token endpoint, answering the status and
-/// the body. No redirects are followed.
+/// The host's network capability the store needs: a form POST to an https token endpoint, and the GET of the kernel's
+/// metadata token address, each answering the status and the body. No redirects are followed.
 pub trait CredentialTransport: Send + Sync {
     fn post_form(
         &self,
@@ -35,11 +35,24 @@ pub trait CredentialTransport: Send + Sync {
         headers: &[(String, String)],
         body: &str,
     ) -> Result<(u16, String), TransportError>;
+
+    /// The GET of a `metadata` exchange. `endpoint` is always the kernel's metadata token address; a transport must
+    /// refuse any other.
+    fn metadata_get(&self, endpoint: &str, headers: &[(String, String)]) -> Result<(u16, String), TransportError>;
+}
+
+/// How a host sends an exchange: a form POST to the token endpoint, or the metadata server's GET (no body).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ExchangeKind {
+    Form,
+    Metadata,
 }
 
 /// What a host sends for one token exchange, and the ticket that [`EncryptedCredentialStore::connect_finish`] needs to
 /// persist its outcome. The ticket never leaves the process; a wasm host holds it behind an opaque handle.
 pub struct PendingExchange {
+    pub kind: ExchangeKind,
     pub endpoint: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
@@ -48,7 +61,7 @@ pub struct PendingExchange {
 
 impl std::fmt::Debug for PendingExchange {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PendingExchange").field("endpoint", &self.endpoint).finish_non_exhaustive()
+        f.debug_struct("PendingExchange").field("kind", &self.kind).field("endpoint", &self.endpoint).finish_non_exhaustive()
     }
 }
 
@@ -112,6 +125,11 @@ enum Exchange {
         client_secret_ref: String,
         client_auth: ClientAuth,
     },
+    Metadata {
+        name: String,
+        principal: Option<String>,
+        scopes: Vec<String>,
+    },
 }
 
 impl Drop for ExchangeTicket {
@@ -161,6 +179,8 @@ pub(super) struct OauthRecord {
     refresh_source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     client_credentials: Option<ClientCredentialsSpec>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    metadata: bool,
 }
 
 impl OauthRecord {
@@ -219,7 +239,7 @@ impl EncryptedCredentialStore {
     pub fn connect_begin(&self, grant: &CredentialGrant) -> Result<PendingExchange, ConnectFailure> {
         if !matches!(
             grant.grant.as_str(),
-            "authorization_code" | "refresh_token" | "jwt-bearer" | "json-token" | "client-credentials"
+            "authorization_code" | "refresh_token" | "jwt-bearer" | "json-token" | "client-credentials" | "metadata"
         ) {
             return Err(failure(
                 ConnectFailureKind::Refused,
@@ -305,7 +325,25 @@ impl EncryptedCredentialStore {
                     grant.client_auth,
                 )
             }
+            "metadata" => Ok(self.metadata_pending(&grant.name, grant.principal.as_deref(), &grant.scopes)),
             _ => self.code_begin(grant),
+        }
+    }
+
+    fn metadata_pending(&self, name: &str, principal: Option<&str>, scopes: &[String]) -> PendingExchange {
+        let (endpoint, headers) = metadata_token_request(scopes);
+        PendingExchange {
+            kind: ExchangeKind::Metadata,
+            endpoint,
+            headers,
+            body: String::new(),
+            ticket: ExchangeTicket {
+                exchange: Exchange::Metadata {
+                    name: name.to_string(),
+                    principal: principal.map(str::to_string),
+                    scopes: scopes.to_vec(),
+                },
+            },
         }
     }
 
@@ -325,6 +363,7 @@ impl EncryptedCredentialStore {
         })
         .map_err(from_grant_error)?;
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint: grant.token_endpoint.clone(),
             headers: request.headers,
             body: request.body,
@@ -374,6 +413,7 @@ impl EncryptedCredentialStore {
         let assertion = signed.map_err(from_grant_error)?;
         let request = jwt_bearer_request(assertion.expose());
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint: token_endpoint.to_string(),
             headers: request.headers,
             body: request.body,
@@ -402,6 +442,7 @@ impl EncryptedCredentialStore {
         let client_secret = self.held_text(client_secret_ref, "the client secret")?;
         let request = json_token_request(spec, &client_id, &client_secret);
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint: token_endpoint.to_string(),
             headers: request.headers,
             body: request.body,
@@ -439,6 +480,7 @@ impl EncryptedCredentialStore {
             format!("{token_endpoint}{joiner}{}", made.query)
         };
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint,
             headers: made.request.headers,
             body: made.request.body,
@@ -476,6 +518,7 @@ impl EncryptedCredentialStore {
             ));
         };
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint: endpoint.clone(),
             headers: request.headers,
             body: request.body,
@@ -498,9 +541,11 @@ impl EncryptedCredentialStore {
         pending: PendingExchange,
         transport: &dyn CredentialTransport,
     ) -> Result<CredentialStanding, ConnectFailure> {
-        let (status, body) = transport
-            .post_form(&pending.endpoint, &pending.headers, &pending.body)
-            .map_err(|error| failure(ConnectFailureKind::Transport, error.0))?;
+        let sent = match pending.kind {
+            ExchangeKind::Form => transport.post_form(&pending.endpoint, &pending.headers, &pending.body),
+            ExchangeKind::Metadata => transport.metadata_get(&pending.endpoint, &pending.headers),
+        };
+        let (status, body) = sent.map_err(|error| failure(ConnectFailureKind::Transport, error.0))?;
         self.connect_finish(pending.ticket, status, &body)
     }
 
@@ -536,6 +581,7 @@ impl EncryptedCredentialStore {
                     json_token: None,
                     refresh_source: None,
                     client_credentials: None,
+                    metadata: false,
                 };
                 self.persist_record(name, principal.as_deref(), token.label.as_deref(), record)?;
                 Ok(CredentialStanding {
@@ -583,6 +629,7 @@ impl EncryptedCredentialStore {
                     json_token: None,
                     refresh_source: source.clone(),
                     client_credentials: None,
+                    metadata: false,
                 };
                 if let (Some(source), Some(rotated)) = (source, &token.refresh) {
                     if rotated.expose() != refresh {
@@ -617,6 +664,7 @@ impl EncryptedCredentialStore {
                     json_token: None,
                     refresh_source: None,
                     client_credentials: None,
+                    metadata: false,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -646,6 +694,28 @@ impl EncryptedCredentialStore {
                     json_token: None,
                     refresh_source: None,
                     client_credentials: Some(spec.clone()),
+                    metadata: false,
+                };
+                self.persist_record(name, principal.as_deref(), None, record)?;
+                Ok(CredentialStanding::of(true))
+            }
+            Exchange::Metadata { name, principal, scopes } => {
+                let token = parse_token_response(status, body, (self.clock)()).map_err(from_grant_error)?;
+                let record = OauthRecord {
+                    v: RECORD_VERSION,
+                    access: token.access.expose().clone(),
+                    refresh: None,
+                    expires_at: token.expires_at,
+                    token_endpoint: String::new(),
+                    client_id_ref: String::new(),
+                    client_secret_ref: None,
+                    client_auth: ClientAuth::None,
+                    assertion: None,
+                    scopes: scopes.clone(),
+                    json_token: None,
+                    refresh_source: None,
+                    client_credentials: None,
+                    metadata: true,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -673,6 +743,7 @@ impl EncryptedCredentialStore {
                     json_token: Some(spec.clone()),
                     refresh_source: None,
                     client_credentials: None,
+                    metadata: false,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -714,6 +785,7 @@ impl EncryptedCredentialStore {
                     json_token: Some(spec.clone()),
                     refresh_source: None,
                     client_credentials: None,
+                    metadata: false,
                 };
                 self.persist_record(name, principal.as_deref(), None, record)?;
                 Ok(CredentialStanding::of(true))
@@ -864,6 +936,9 @@ impl EncryptedCredentialStore {
         let Some((record, label)) = self.held_record(name, principal) else {
             return Ok(RefreshStart::Resolved(None));
         };
+        if record.metadata {
+            return Ok(RefreshStart::Exchange(self.metadata_pending(name, principal, &record.scopes)));
+        }
         if let Some(spec) = &record.assertion {
             return self
                 .assertion_pending(name, principal, &record.token_endpoint, spec, &record.scopes)
@@ -954,7 +1029,7 @@ impl EncryptedCredentialStore {
                 format!("credential `{}` holds no connection to refresh", grant.name),
             ));
         };
-        if record.assertion.is_some() || record.json_token.is_some() || record.client_credentials.is_some() {
+        if record.metadata || record.assertion.is_some() || record.json_token.is_some() || record.client_credentials.is_some() {
             return Err(failure(
                 ConnectFailureKind::Refused,
                 "credential-connect: the credential was not granted by an OAuth refresh-token grant",
@@ -1007,6 +1082,7 @@ impl EncryptedCredentialStore {
         })
         .map_err(from_grant_error)?;
         Ok(PendingExchange {
+            kind: ExchangeKind::Form,
             endpoint: token_endpoint.to_string(),
             headers: request.headers,
             body: request.body,

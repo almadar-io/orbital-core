@@ -36,6 +36,7 @@ pub mod array;
 pub mod bit;
 pub mod bytes;
 pub mod mem;
+pub mod signal;
 pub mod kernel;
 pub mod cast;
 pub mod csv;
@@ -68,6 +69,7 @@ pub use array::*;
 pub use bit::*;
 pub use bytes::*;
 pub use mem::*;
+pub use signal::*;
 pub use kernel::*;
 pub use cast::*;
 pub use csv::*;
@@ -267,6 +269,8 @@ operator_dispatch! {
 
         // Phase 2.5: Time Operations
         "time/today" => K::TimeTodayOp,
+        "time/toDate" => K::TimeToDateOp,
+        "time/toInstant" => K::TimeToInstantOp,
         "time/add" => K::TimeAddOp,
         "time/subtract" => K::TimeSubtractOp,
         "time/diff" => K::TimeDiffOp,
@@ -388,6 +392,9 @@ operator_dispatch! {
         "mem/read-uint" => K::MemReadUintOp,
         "mem/read-int" => K::MemReadIntOp,
         "mem/length" => K::MemLengthOp,
+        "signal/frames" => K::SignalFramesOp,
+        "signal/envelope" => K::SignalEnvelopeOp,
+        "signal/autocorrelate" => K::SignalAutocorrelateOp,
         "kernel/worklist" => K::KernelWorklistOp,
         "kernel/frame" => K::KernelFrameOp,
         "kernel/stamp" => K::KernelStampOp,

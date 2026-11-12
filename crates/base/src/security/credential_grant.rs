@@ -319,6 +319,29 @@ pub fn jwt_bearer_request(assertion: &str) -> FormRequest {
     }
 }
 
+/// The origin of the Google metadata server. The kernel owns this address: no program names it, and it is the only
+/// non-public, non-https target a credential exchange may reach.
+pub const METADATA_ORIGIN: &str = "http://metadata.google.internal";
+const METADATA_TOKEN_PATH: &str = "/computeMetadata/v1/instance/service-accounts/default/token";
+
+/// Whether `endpoint` is the kernel's metadata token address (any query), the one a `metadata` exchange is sent to.
+pub fn is_metadata_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .strip_prefix(METADATA_ORIGIN)
+        .and_then(|rest| rest.strip_prefix(METADATA_TOKEN_PATH))
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('?'))
+}
+
+/// The `metadata` grant's GET: the access token of the account the process runs as, from the metadata server, for
+/// `scopes` (comma-joined, as the server reads them). The endpoint carries the query; there is no body.
+pub fn metadata_token_request(scopes: &[String]) -> (String, Vec<(String, String)>) {
+    let mut endpoint = format!("{METADATA_ORIGIN}{METADATA_TOKEN_PATH}");
+    if !scopes.is_empty() {
+        endpoint.push_str(&format!("?scopes={}", form_urlencode_value(&scopes.join(","))));
+    }
+    (endpoint, vec![("Metadata-Flavor".to_string(), "Google".to_string())])
+}
+
 fn json_headers() -> Vec<(String, String)> {
     vec![
         ("Content-Type".to_string(), "application/json".to_string()),
@@ -956,5 +979,40 @@ mod tests {
             let spec = ClientCredentialsSpec { params: vec![TokenParam { name: reserved.into(), value: "x".into() }], ..zoom_like() };
             assert_eq!(refuse(&spec, Some("sec"), ClientAuth::Basic), GrantErrorKind::Refused, "{reserved}");
         }
+    }
+
+    #[test]
+    fn the_metadata_request_asks_the_kernel_address_with_the_flavor_header_and_comma_joined_scopes() {
+        let (endpoint, headers) = metadata_token_request(&["https://www.googleapis.com/auth/datastore".to_string(), "b c".to_string()]);
+        assert_eq!(
+            endpoint,
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdatastore%2Cb+c"
+        );
+        assert_eq!(headers, vec![("Metadata-Flavor".to_string(), "Google".to_string())]);
+        let (bare, _) = metadata_token_request(&[]);
+        assert_eq!(bare, "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token");
+        assert!(is_metadata_endpoint(&endpoint) && is_metadata_endpoint(&bare));
+    }
+
+    #[test]
+    fn only_the_kernel_metadata_token_address_is_a_metadata_endpoint() {
+        for other in [
+            "https://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal.evil.example/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity",
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/tokenx",
+            "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://metadata.google.internal:8080/computeMetadata/v1/instance/service-accounts/default/token",
+        ] {
+            assert!(!is_metadata_endpoint(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn the_metadata_server_reply_reads_as_a_bearer_grant_with_no_refresh_token() {
+        let grant = parse_token_response(200, r#"{"access_token":"ya29.x","expires_in":3599,"token_type":"Bearer"}"#, 1_000).unwrap();
+        assert_eq!(grant.access.expose(), "ya29.x");
+        assert_eq!(grant.refresh, None);
+        assert_eq!(grant.expires_at, Some(1_000 + 3_599_000 - EXPIRY_SKEW_MS));
     }
 }

@@ -203,8 +203,12 @@ impl CredentialGrant {
             "jwt-bearer" => [ASSERTION_KEYS, &["scopes"]].concat(),
             "json-token" => [JSON_TOKEN_KEYS, &["clientId", "clientSecret"]].concat(),
             "client-credentials" => [CLIENT_CREDENTIALS_KEYS, CLIENT_KEYS, &["scopes"]].concat(),
+            "metadata" => vec!["scopes"],
             other => return Err(refused(format!("grant `{other}` is not supported"))),
         };
+        if grant == "metadata" && fields.contains_key("tokenEndpoint") {
+            return Err(refused("grant `metadata` names no tokenEndpoint: the kernel owns the metadata server's address".to_string()));
+        }
         for key in fields.keys() {
             let shared = ["credential", "scope", "tokenEndpoint", "grant"].contains(&key.as_str());
             if !shared && !allowed.contains(&key.as_str()) {
@@ -303,7 +307,7 @@ impl CredentialGrant {
         } else {
             None
         };
-        let client_id = if grant == "jwt-bearer" || (uses_client && client_auth == ClientAuth::None) {
+        let client_id = if grant == "jwt-bearer" || grant == "metadata" || (uses_client && client_auth == ClientAuth::None) {
             optional("clientId")?.unwrap_or_default()
         } else {
             text("clientId")?
@@ -317,7 +321,7 @@ impl CredentialGrant {
         Ok(Self {
             name: slot.name,
             principal,
-            token_endpoint: text("tokenEndpoint")?,
+            token_endpoint: if grant == "metadata" { String::new() } else { text("tokenEndpoint")? },
             grant,
             code: Secret::new(code),
             redirect_uri,

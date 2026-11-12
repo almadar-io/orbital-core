@@ -47,6 +47,8 @@ pub enum WidenKind {
     StringToDate,
     /// String-kind value parsed into a DateTime.
     StringToDateTime,
+    /// An instant (a UTC moment from the clock) is a datetime; nothing is converted.
+    InstantToDateTime,
     /// Any scalar renders as a node ("any rendered value is a ReactNode").
     ScalarToNode,
     /// A semantic string domain (email, url, phone, uuid, image) is a string.

@@ -82,6 +82,9 @@ pub struct PlayedEffect {
     pub status: PlayedEffectStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The typed failure reason (`denied`, `not-found`, …); absent when the effect did not fail with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<orbital_core_base::bus_event::ServerEffectCode>,
     /// The effect failed and the program routed that failure to its declared `emit.failure` event.
     pub routed: bool,
     /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order; absent for a leaf effect.
@@ -452,6 +455,7 @@ pub fn played_effect(run: &EffectRun) -> PlayedEffect {
         args,
         status,
         error: run.error.clone(),
+        code: run.code,
         routed,
         nested: run.nested.as_ref().map(|runs| runs.iter().map(played_effect).collect()),
     }
@@ -600,6 +604,7 @@ mod tests {
                 effect: effect.clone(),
                 status,
                 error: None,
+                code: None,
                 routed,
                 nested: None,
             })

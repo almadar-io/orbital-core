@@ -162,6 +162,25 @@ fn a_persist_refused_by_its_policy_fires_failure_with_the_denied_code_from_the_t
     assert_eq!(persist.code, Some(orbital_core_base::bus_event::ServerEffectCode::Denied));
 }
 
+fn played_persist(k: &RuntimeKernel, event: &str) -> orbital_core_runtime::program_machine::PlayedEffect {
+    let outcomes = k.dispatch("Notes", None, event, Value::Null).unwrap();
+    orbital_core_runtime::program_machine::played_effect(&outcomes[0].1.effect_runs[0])
+}
+
+#[test]
+fn a_played_persist_refused_by_its_policy_answers_the_denied_code() {
+    let played = played_persist(&guarded_kernel(), "CREATE_REFUSED");
+    assert_eq!(played.code, Some(orbital_core_base::bus_event::ServerEffectCode::Denied), "{played:?}");
+    assert_eq!(serde_json::to_value(&played).unwrap()["code"], json!("denied"));
+}
+
+#[test]
+fn control_a_played_persist_the_policy_admits_answers_no_code() {
+    let played = played_persist(&guarded_kernel(), "CREATE_OK");
+    assert_eq!(played.code, None, "{played:?}");
+    assert!(serde_json::to_value(&played).unwrap().get("code").is_none());
+}
+
 #[test]
 fn control_a_policy_that_admits_the_row_carries_no_code() {
     let out = send(&guarded_kernel(), "CREATE_OK");

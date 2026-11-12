@@ -484,5 +484,77 @@
     ],
     "source": "a number is not a point in time",
     "error": true
+  },
+  {
+    "expr": [
+      "time/toDate",
+      "2026-11-12T23:30:00Z"
+    ],
+    "expect": "2026-11-12"
+  },
+  {
+    "expr": [
+      "time/toDate",
+      "2026-11-13T01:00:00+02:00"
+    ],
+    "expect": "2026-11-12"
+  },
+  {
+    "expr": [
+      "time/toDate",
+      "2026-11-12"
+    ],
+    "expect": "2026-11-12"
+  },
+  {
+    "expr": [
+      "time/toDate",
+      "not a time"
+    ],
+    "error": true
+  },
+  {
+    "expr": [
+      "time/isSame",
+      [
+        "time/toDate",
+        "2026-11-12T08:00:00Z"
+      ],
+      "2026-11-12",
+      "day"
+    ],
+    "expect": true
+  },
+  {
+    "expr": [
+      "time/toInstant",
+      "2026-11-12"
+    ],
+    "expect": "2026-11-12T00:00:00.000Z"
+  },
+  {
+    "expr": [
+      "time/toInstant",
+      "2026-11-12T10:30:00+02:00"
+    ],
+    "expect": "2026-11-12T08:30:00.000Z"
+  },
+  {
+    "expr": [
+      "time/toInstant",
+      "not a time"
+    ],
+    "error": true
+  },
+  {
+    "expr": [
+      "time/isAfter",
+      [
+        "time/toInstant",
+        "2026-11-13"
+      ],
+      "2026-11-12T23:00:00Z"
+    ],
+    "expect": true
   }
 ]

@@ -50,7 +50,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
         MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
         ArenaNew | ArenaDrop | Alloc | Free | Borrow | Release | MemWrite | Freeze | AtomicLoad | AtomicStore
-        | AtomicAdd | AtomicCas => OsFamily::Mem,
+        | AtomicAdd | AtomicCas | AudioDecode => OsFamily::Mem,
         QueueFront | QueueBack => OsFamily::Kernel,
         FfiCall => OsFamily::Ffi,
         GpuDeviceOpen | GpuDeviceClose | GpuBufferCreate | GpuTextureCreate | GpuSamplerCreate | GpuQueryCreate
@@ -205,6 +205,7 @@ os_ops! {
     AtomicStore => ("mem/atomic-store", Single),
     AtomicAdd => ("mem/atomic-add", Single),
     AtomicCas => ("mem/atomic-cas", Single),
+    AudioDecode => ("audio/decode", Single),
     QueueFront => ("kernel/queue-front", Single),
     QueueBack => ("kernel/queue-back", Single),
     FfiCall => ("ffi/call", Single),
@@ -582,7 +583,7 @@ mod tests {
         for op in OsOp::ALL {
             assert_eq!(OsOp::from_name(op.name()), Some(*op));
             assert_eq!(op.name().starts_with("kv/"), op.is_kv());
-            assert_eq!(op.name().starts_with("mem/"), family_of(*op) == OsFamily::Mem);
+            assert_eq!(op.name().starts_with("mem/") || *op == OsOp::AudioDecode, family_of(*op) == OsFamily::Mem);
             assert_eq!(op.name().starts_with("kernel/"), family_of(*op) == OsFamily::Kernel);
             assert_eq!(op.name().starts_with("ffi/"), family_of(*op) == OsFamily::Ffi);
             assert_eq!(op.name().starts_with("gpu/"), family_of(*op) == OsFamily::Gpu);
@@ -592,11 +593,12 @@ mod tests {
                     || op.name().starts_with("kernel/")
                     || op.name().starts_with("ffi/")
                     || op.name().starts_with("gpu/")
+                    || *op == OsOp::AudioDecode
                     || op.is_kv()
             );
             assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
-        assert_eq!(OsOp::ALL.len(), 129);
+        assert_eq!(OsOp::ALL.len(), 130);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -695,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn the_mem_family_is_exactly_the_twelve_kernel_owned_mem_ops() {
+    fn the_mem_family_is_exactly_the_thirteen_kernel_owned_mem_ops() {
         let mem: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Mem).map(|op| op.name()).collect();
         assert_eq!(
             mem,
@@ -711,11 +713,12 @@ mod tests {
                 "mem/atomic-load",
                 "mem/atomic-store",
                 "mem/atomic-add",
-                "mem/atomic-cas"
+                "mem/atomic-cas",
+                "audio/decode"
             ]
         );
         assert!(OsOp::ALL.iter().filter(|op| op.is_kernel_owned()).all(|op| {
-            op == &OsOp::TlsUpgrade || op.name().starts_with("mem/") || op.name().starts_with("kernel/")
+            op == &OsOp::TlsUpgrade || op == &OsOp::AudioDecode || op.name().starts_with("mem/") || op.name().starts_with("kernel/")
         }));
         assert!(!OsOp::ReadFile.is_kernel_owned(), "control: a host-answered op");
         assert!(OsOp::Alloc.runs_on_any_host() && !OsOp::ReadFile.runs_on_any_host());

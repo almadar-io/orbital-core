@@ -229,6 +229,26 @@ impl Operator for TimeTodayOp {
     }
 }
 
+/// time/toDate - the UTC calendar day of a moment, as a date (a date answers itself)
+pub struct TimeToDateOp;
+impl Operator for TimeToDateOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/toDate", 1);
+        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let day = 24.0 * 60.0 * 60.0 * 1000.0;
+        render_moment((m.ms / day).floor() * day, Shape::Date)
+    }
+}
+
+/// time/toInstant - a moment as a UTC instant; a date is its midnight UTC
+pub struct TimeToInstantOp;
+impl Operator for TimeToInstantOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/toInstant", 1);
+        render_moment(Moment::of(&eval_expr(&args[0], ctx)?)?.ms, Shape::DateTime)
+    }
+}
+
 pub struct TimeNowOp;
 impl Operator for TimeNowOp {
     fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {

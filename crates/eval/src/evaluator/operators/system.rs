@@ -24,7 +24,7 @@ use time::*;
 pub use time::{
     TimeAddOp, TimeDayOp, TimeDiffOp, TimeDurationOp, TimeFormatOp, TimeHourOp, TimeIsAfterOp,
     TimeIsBeforeOp, TimeIsBetweenOp, TimeIsFutureOp, TimeIsPastOp, TimeIsSameOp, TimeIsTodayOp,
-    TimeMinuteOp, TimeMonthOp, TimeNowOp, TimeParseOp, TimeSecondOp, TimeSubtractOp, TimeTodayOp,
+    TimeMinuteOp, TimeMonthOp, TimeNowOp, TimeParseOp, TimeSecondOp, TimeSubtractOp, TimeToDateOp, TimeToInstantOp, TimeTodayOp,
     TimeUnit, TimeValidOp, TimeWeekdayOp, TimeYearOp, TIME_UNIT_VOCABULARY,
 };
 pub(crate) use time::instant_value;

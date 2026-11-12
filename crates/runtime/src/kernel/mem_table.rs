@@ -3,6 +3,7 @@
 //! size a checked sum. A step works on a staged copy of the table that takes hold when the step commits, so a step that
 //! parks and replays allocates once and handle ids stay deterministic. Handles are sealed values only this module mints.
 
+use super::audio_decode::{self, Pcm};
 use super::*;
 use orbital_core_base::os::OsOp;
 use orbital_core_base::os_grants::{MemKind, OsRequirement};
@@ -351,6 +352,30 @@ impl MemTable {
             "block",
             sealed(BLOCK, [("id", Value::Int(id)), ("arena", Value::Int(arena)), ("length", Value::Int(length_int))]),
         )]))
+    }
+
+    /// One block of the arena holding the decoded samples as f32 little-endian bytes, with the answer record.
+    fn alloc_pcm(&mut self, arena: i64, pcm: &Pcm) -> Result<Value, OsError> {
+        let data: Vec<u8> = pcm.samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+        let length = u64::try_from(data.len()).map_err(|_| refuse(OsErrorKind::Invalid, "the decoded audio is too large"))?;
+        let answer = self.alloc(arena, length, 4)?;
+        let block = answer.get("block").cloned().ok_or_else(|| refuse(OsErrorKind::Invalid, "the allocation answered no block"))?;
+        let id = handle(Some(&block), BLOCK)?;
+        let entry = self.blocks.get_mut(&id).ok_or_else(|| closed("block", id))?;
+        match &mut entry.data {
+            BlockData::Local(bytes) => *bytes = Arc::new(data),
+            BlockData::Shared(shared) => {
+                let mut bytes = shared.bytes.lock();
+                let range = span(bytes.len(), 0, data.len(), "write")?;
+                bytes.get_mut(range).ok_or_else(|| refuse(OsErrorKind::Invalid, "the write is outside the block"))?.copy_from_slice(&data);
+            }
+        }
+        Ok(record([
+            ("block", block),
+            ("sampleRate", Value::Int(i64::from(pcm.sample_rate))),
+            ("channels", Value::Int(i64::from(pcm.channels))),
+            ("frames", as_int64(pcm.frames)?.into()),
+        ]))
     }
 
     fn free(&mut self, id: i64) -> Result<Value, OsError> {
@@ -712,6 +737,7 @@ impl RuntimeKernel {
                 | OsOp::AtomicStore
                 | OsOp::AtomicAdd
                 | OsOp::AtomicCas
+                | OsOp::AudioDecode
         ) {
             return None;
         }
@@ -814,6 +840,24 @@ impl RuntimeKernel {
                 self.with_staged_mem(|table| table.freeze(block))
             }
             OsOp::AtomicLoad | OsOp::AtomicStore | OsOp::AtomicAdd | OsOp::AtomicCas => self.answer_atomic(op, args, orbital),
+            OsOp::AudioDecode => {
+                let arena = handle(args.first(), ARENA)?;
+                let source = args.get(1).ok_or_else(|| refuse(OsErrorKind::Invalid, "the data must be bytes"))?;
+                let encoded = if source.is_sealed_as(BORROW) {
+                    self.borrow_bytes(source, false)?
+                } else {
+                    source.bytes_view().map_err(|e| refuse(OsErrorKind::Invalid, format!("the data must be bytes: {e}")))?.into_owned()
+                };
+                let mono = match args.get(2) {
+                    None | Some(Value::Null) => false,
+                    Some(options) => match options.get("mono") {
+                        None | Some(Value::Null) => false,
+                        Some(flag) => flag.as_bool().ok_or_else(|| refuse(OsErrorKind::Invalid, "mono must be a boolean"))?,
+                    },
+                };
+                let pcm = audio_decode::decode(&encoded, mono)?;
+                self.with_staged_mem(|table| table.alloc_pcm(arena, &pcm))
+            }
             _ => Err(refuse(OsErrorKind::Unsupported, "not a mem op")),
         }
     }
@@ -856,5 +900,94 @@ mod tests {
         MemTable::default().adopt(arena).unwrap();
         let borrow = committed.borrow(block, false).unwrap_err();
         assert_eq!(borrow.kind, OsErrorKind::Invalid, "once a guest holds the arena a live block is reached only through atomics");
+    }
+
+    fn wav(rate: u32, channels: u16, samples: &[i16]) -> Vec<u8> {
+        let data_len = (samples.len() * 2) as u32;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_len).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16u32.to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&channels.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * u32::from(channels) * 2).to_le_bytes());
+        out.extend_from_slice(&(channels * 2).to_le_bytes());
+        out.extend_from_slice(&16u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+        out
+    }
+
+    fn decoded(table: &mut MemTable, arena: i64, encoded: &[u8], mono: bool) -> Result<(Value, Vec<f32>), OsError> {
+        let pcm = audio_decode::decode(encoded, mono)?;
+        let answer = table.alloc_pcm(arena, &pcm)?;
+        let block = handle(answer.get("block"), BLOCK)?;
+        let borrow = table.borrow(block, false)?;
+        let borrow_id = handle(borrow.get("borrow"), BORROW)?;
+        let length = table.length(borrow.get("borrow").unwrap())?;
+        let bytes = table.read(borrow_id, 0, u64::try_from(length).unwrap())?;
+        let floats = bytes.chunks_exact(4).map(|chunk| f32::from_le_bytes(<[u8; 4]>::try_from(chunk).unwrap())).collect();
+        Ok((answer, floats))
+    }
+
+    fn bump(table: &mut MemTable, capacity: u64) -> i64 {
+        let arena = table.arena_new(ArenaKind::Bump, capacity, None).unwrap();
+        handle(arena.get("arena"), ARENA).unwrap()
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_stereo_wav_decodes_into_a_block_of_f32_samples() {
+        let pcm = [0i16, 16384, -16384, 32767, 8192, -8192];
+        let mut table = MemTable::default();
+        let arena = bump(&mut table, 1024);
+        let (answer, floats) = decoded(&mut table, arena, &wav(8000, 2, &pcm), false).unwrap();
+        assert_eq!(answer.get("sampleRate"), Some(&Value::Int(8000)));
+        assert_eq!(answer.get("channels"), Some(&Value::Int(2)));
+        assert_eq!(answer.get("frames"), Some(&Value::Int(3)));
+        assert_eq!(floats.len(), pcm.len(), "block length is frames * channels * 4 bytes");
+        for (got, want) in floats.iter().zip(pcm) {
+            assert!((got - f32::from(want) / 32768.0).abs() < 1e-4, "{got} vs {want}");
+        }
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn mono_averages_the_channels_into_one() {
+        let pcm = [0i16, 16384, -16384, 16384];
+        let mut table = MemTable::default();
+        let arena = bump(&mut table, 1024);
+        let (answer, floats) = decoded(&mut table, arena, &wav(8000, 2, &pcm), true).unwrap();
+        assert_eq!(answer.get("channels"), Some(&Value::Int(1)));
+        assert_eq!(answer.get("frames"), Some(&Value::Int(2)));
+        assert_eq!(floats.len(), 2);
+        assert!((floats[0] - 0.25).abs() < 1e-4 && floats[1].abs() < 1e-4, "{floats:?}");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn garbage_and_a_full_arena_answer_invalid() {
+        let mut table = MemTable::default();
+        let arena = bump(&mut table, 1024);
+        assert_eq!(decoded(&mut table, arena, b"this is not audio at all, nor a container", false).unwrap_err().kind, OsErrorKind::Invalid);
+        let small = bump(&mut table, 8);
+        let room = decoded(&mut table, small, &wav(8000, 2, &[1, 2, 3, 4]), false).unwrap_err();
+        assert_eq!(room.kind, OsErrorKind::Invalid, "{}", room.message);
+        assert!(room.message.contains("no room"), "{}", room.message);
+        assert!(decoded(&mut table, arena, &wav(8000, 1, &[1, 2]), false).is_ok(), "control: the same data fits a big arena");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_dropped_arena_answers_closed() {
+        let mut table = MemTable::default();
+        let arena = bump(&mut table, 1024);
+        table.arena_drop(arena).unwrap();
+        assert_eq!(decoded(&mut table, arena, &wav(8000, 1, &[1, 2]), false).unwrap_err().kind, OsErrorKind::Closed);
     }
 }

@@ -457,6 +457,13 @@ fn sub_date_family_and_scalars() {
     );
     assert_eq!(sub(&Date, &DateTime), None);
     assert_eq!(sub(&DateTime, &Date), None);
+    assert_eq!(
+        sub(&Instant, &DateTime),
+        Some(C::Widen(WidenKind::InstantToDateTime)),
+        "an instant is a datetime (owner 2026-11-12, G-ORBITAL-CORE-152)"
+    );
+    assert_eq!(sub(&DateTime, &Instant), None, "control: only the clock makes an instant");
+    assert_eq!(sub(&Instant, &Date), None, "control: an instant is not a calendar day");
     assert_eq!(sub(&Boolean, &Date), None);
 }
 

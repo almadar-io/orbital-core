@@ -1187,6 +1187,7 @@ mod session_life;
 mod identity_session;
 mod theme_session;
 mod mem_table;
+mod audio_decode;
 mod ffi_call;
 mod gpu_call;
 mod completion_route;

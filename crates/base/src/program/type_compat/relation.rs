@@ -395,6 +395,7 @@ impl Relation<'_> {
             },
             OirType::DateTime => match src {
                 _ if is_string_kind(src) => Some(Coercion::Widen(WidenKind::StringToDateTime)),
+                OirType::Instant => Some(Coercion::Widen(WidenKind::InstantToDateTime)),
                 _ => None,
             },
             OirType::Email | OirType::Url | OirType::Phone | OirType::Uuid | OirType::Image => {

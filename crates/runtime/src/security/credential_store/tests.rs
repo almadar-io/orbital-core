@@ -644,6 +644,9 @@ mod oauth_connect {
             self.seen.lock().unwrap().push((endpoint.to_string(), headers.to_vec(), body.to_string()));
             self.reply.clone()
         }
+        fn metadata_get(&self, _: &str, _: &[(String, String)]) -> Result<(u16, String), TransportError> {
+            panic!("an unexpected metadata GET");
+        }
     }
 
     const GOOD: &str = r#"{"access_token":"ACCESS-TOKEN-7777","token_type":"Bearer","refresh_token":"REFRESH-TOKEN-8888","expires_in":3600}"#;
@@ -838,6 +841,9 @@ mod oauth_connect {
                 let mut replies = self.replies.lock().unwrap();
                 assert!(!replies.is_empty(), "an unexpected extra refresh");
                 replies.remove(0)
+            }
+            fn metadata_get(&self, _: &str, _: &[(String, String)]) -> Result<(u16, String), TransportError> {
+                panic!("an unexpected metadata GET");
             }
         }
 
@@ -1036,7 +1042,15 @@ mod oauth_connect {
                 assert!(!replies.is_empty(), "an unexpected extra post");
                 Ok(replies.remove(0))
             }
+            fn metadata_get(&self, endpoint: &str, headers: &[(String, String)]) -> Result<(u16, String), TransportError> {
+                self.seen.lock().unwrap().push((endpoint.to_string(), headers.to_vec(), METADATA_GET.to_string()));
+                let mut replies = self.replies.lock().unwrap();
+                assert!(!replies.is_empty(), "an unexpected extra metadata GET");
+                Ok(replies.remove(0))
+            }
         }
+
+        const METADATA_GET: &str = "<metadata GET>";
 
         fn jwt_fixture() -> Value {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/security/jwt-bearer.json");
@@ -1381,6 +1395,102 @@ mod oauth_connect {
             assert!(silent.bodies().is_empty());
         }
 
+        fn metadata_grant() -> CredentialGrant {
+            CredentialGrant {
+                name: "FIRESTORE_TOKEN".to_string(),
+                principal: None,
+                token_endpoint: String::new(),
+                grant: "metadata".to_string(),
+                code: "".into(),
+                redirect_uri: String::new(),
+                verifier: None,
+                client_id: String::new(),
+                client_secret: None,
+                client_auth: ClientAuth::None,
+                scopes: vec!["https://www.googleapis.com/auth/datastore".to_string()],
+                refresh_credential: None,
+                assertion: None,
+                json_token: None,
+                client_credentials: None,
+            }
+        }
+
+        const METADATA_URL: &str =
+            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token?scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdatastore";
+        const META_TOKEN_1: &str = r#"{"access_token":"META-ACCESS-1","expires_in":3599,"token_type":"Bearer"}"#;
+        const META_TOKEN_2: &str = r#"{"access_token":"META-ACCESS-2","expires_in":3599,"token_type":"Bearer"}"#;
+
+        #[test]
+        fn a_metadata_grant_gets_the_kernel_address_and_mints_again_on_expiry() {
+            let (now, rows, store) = clocked();
+            let get = Recording::new(vec![(200, META_TOKEN_1)]);
+            assert_eq!(store.connect(&metadata_grant(), &get).unwrap(), CredentialStanding { connected: true, label: None });
+            let seen = get.seen.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, METADATA_URL);
+            assert_eq!(seen[0].1, vec![("Metadata-Flavor".to_string(), "Google".to_string())]);
+            assert_eq!(seen[0].2, METADATA_GET, "a metadata exchange is a GET, never a form post");
+            drop(seen);
+            assert_eq!(store.resolve("FIRESTORE_TOKEN", None).as_deref(), Some("META-ACCESS-1"));
+            let idle = Recording::new(vec![]);
+            assert_eq!(store.resolve_fresh("FIRESTORE_TOKEN", None, Some(&idle)).unwrap().as_deref(), Some("META-ACCESS-1"));
+            assert!(idle.bodies().is_empty(), "a token that is not due is answered without asking the server");
+            expire(&now);
+            let renewal = Recording::new(vec![(200, META_TOKEN_2)]);
+            assert_eq!(store.resolve_fresh("FIRESTORE_TOKEN", None, Some(&renewal)).unwrap().as_deref(), Some("META-ACCESS-2"));
+            assert_eq!(renewal.seen.lock().unwrap()[0].0, METADATA_URL, "the renewal asks the same address with the same scopes");
+            assert!(!rows.list().unwrap().iter().any(|row| row.to_string().contains("META-ACCESS")), "rows hold ciphertext only");
+            let restarted = EncryptedCredentialStore::new(rows, Some(&"ab".repeat(32)), None);
+            restarted.warm().unwrap();
+            assert_eq!(restarted.resolve("FIRESTORE_TOKEN", None).as_deref(), Some("META-ACCESS-2"));
+        }
+
+        #[test]
+        fn the_metadata_exchange_is_the_only_one_a_host_sends_as_a_get() {
+            let (_, _, store) = zoom_store();
+            let metadata = store.connect_begin(&metadata_grant()).unwrap();
+            assert_eq!((metadata.kind, metadata.endpoint.as_str(), metadata.body.as_str()), (crate::credential_store::ExchangeKind::Metadata, METADATA_URL, ""));
+            let form = store.connect_begin(&zoom_grant()).unwrap();
+            assert_eq!(form.kind, crate::credential_store::ExchangeKind::Form);
+            let mut unscoped = metadata_grant();
+            unscoped.scopes = vec![];
+            assert_eq!(
+                store.connect_begin(&unscoped).unwrap().endpoint,
+                "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"
+            );
+        }
+
+        #[test]
+        fn metadata_failures_are_typed_keep_nothing_and_refuse_the_refresh_grant() {
+            let (_, _, store) = clocked();
+            let not_json = Recording::new(vec![(404, "Not Found")]);
+            assert_eq!(store.connect(&metadata_grant(), &not_json).unwrap_err().kind, ConnectFailureKind::Malformed);
+            let no_token = Recording::new(vec![(200, r#"{"expires_in":3599,"token_type":"Bearer"}"#)]);
+            assert_eq!(store.connect(&metadata_grant(), &no_token).unwrap_err().kind, ConnectFailureKind::Malformed);
+            assert_eq!(store.resolve("FIRESTORE_TOKEN", None), None, "a failed exchange keeps nothing");
+            store.connect(&metadata_grant(), &Recording::new(vec![(200, META_TOKEN_1)])).unwrap();
+            let mut refresh = metadata_grant();
+            refresh.grant = "refresh_token".to_string();
+            refresh.token_endpoint = "https://o/t".to_string();
+            let silent = Recording::new(vec![]);
+            assert_eq!(store.connect(&refresh, &silent).unwrap_err().kind, ConnectFailureKind::Refused);
+            assert!(silent.bodies().is_empty());
+        }
+
+        #[test]
+        fn the_metadata_grant_names_only_scopes_and_never_an_endpoint() {
+            let ask = json!({ "credential": "@config.t", "grant": "metadata", "scopes": ["https://www.googleapis.com/auth/datastore"] });
+            let parsed = request(ask.clone()).unwrap();
+            assert_eq!((parsed.grant.as_str(), parsed.token_endpoint.as_str(), parsed.client_id.as_str()), ("metadata", "", ""));
+            assert_eq!(parsed.scopes, vec!["https://www.googleapis.com/auth/datastore".to_string()]);
+            assert!(request(json!({ "credential": "@config.t", "grant": "metadata" })).unwrap().scopes.is_empty());
+            for (key, value) in [("tokenEndpoint", json!("http://metadata.google.internal/x")), ("clientId", json!("c")), ("signingKey", json!("k")), ("audience", json!("a"))] {
+                let mut bad = ask.clone();
+                bad[key] = value;
+                assert_eq!(request(bad).unwrap_err().kind, ConnectFailureKind::Refused, "{key}");
+            }
+        }
+
         fn stored_refresh_grant() -> CredentialGrant {
             let mut ask = grant(None, ClientAuth::Body);
             ask.name = "DRIVE_USER".to_string();
@@ -1651,7 +1761,7 @@ mod oauth_connect {
         #[test]
         fn the_new_grants_survive_the_wire_round_trip_the_node_and_wasm_hosts_use() {
             use crate::embed::wire::CredentialGrantWire;
-            for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant(), zoom_grant()] {
+            for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant(), zoom_grant(), metadata_grant()] {
                 let wire = serde_json::to_string(&CredentialGrantWire::from(&ask)).unwrap();
                 let back: CredentialGrant = serde_json::from_str::<CredentialGrantWire>(&wire).unwrap().into();
                 assert_eq!(back, ask);
