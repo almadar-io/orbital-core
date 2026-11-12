@@ -138,6 +138,7 @@ impl RuntimeKernel {
                 effect_runs: Vec::new(),
                 cascade_dropped: Vec::new(),
                 cascade_cut: None,
+                collapsed: Vec::new(),
                 consumed_emits: Vec::new(),
                 emit_source: BusEventSource::default(),
                 failure: None,
@@ -203,6 +204,7 @@ impl RuntimeKernel {
                     effect_runs: Vec::new(),
                     cascade_dropped: Vec::new(),
                     cascade_cut: None,
+                    collapsed: Vec::new(),
                     consumed_emits: Vec::new(),
                     emit_source: BusEventSource::default(),
                     failure: None,
@@ -263,6 +265,7 @@ impl RuntimeKernel {
             effect_runs: Vec::new(),
             cascade_dropped: Vec::new(),
             cascade_cut: None,
+            collapsed: Vec::new(),
             consumed_emits: Vec::new(),
             emit_source: {
                 let mut source = self.emit_source(trait_name);

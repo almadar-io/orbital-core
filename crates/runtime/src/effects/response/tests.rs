@@ -242,6 +242,7 @@ fn empty_result(new_state: &str, executed: bool) -> ProcessEventResult {
         effect_runs: Vec::new(),
         cascade_dropped: Vec::new(),
         cascade_cut: None,
+        collapsed: Vec::new(),
         consumed_emits: Vec::new(),
         emit_source: Default::default(),
         failure: None,

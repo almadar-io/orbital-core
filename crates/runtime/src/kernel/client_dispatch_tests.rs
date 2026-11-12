@@ -928,6 +928,7 @@ fn already_delivered_from_includes_local_emits_and_seed() {
         effect_runs: Vec::new(),
         cascade_dropped: Vec::new(),
         cascade_cut: None,
+        collapsed: Vec::new(),
         consumed_emits: Vec::new(),
         emit_source: orbital_core_base::bus_event::BusEventSource::from_trait("Persistor"),
         failure: None,

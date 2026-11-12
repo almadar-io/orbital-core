@@ -1120,3 +1120,94 @@ fn control_a_server_trait_mount_stays_the_hosts_and_a_mount_naming_no_route_anno
     assert_eq!(first.leg.crumb.as_deref(), Some("Seven"));
     assert!(announce_mount(None).announced.is_none(), "a mount naming no route delivers no $MOUNT");
 }
+
+// G-STD-268 + EXEC-SEED-7: a route whose page mounts only `[client]` traits still posts a route-only leg when a server
+// trait listens for its `$MOUNT`, so the server announces the route; the leg opens no session.
+
+fn client_only_route_schema(with_seeder: bool) -> OrbitalSchema {
+    let mut traits = vec![
+        json!({ "name": "Shell", "dispatch": "client",
+          "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] } }),
+        json!({ "name": "Data", "linkedEntity": "Person",
+          "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["fetch", "Person", {}]] }] } }),
+    ];
+    if with_seeder {
+        traits.push(json!({ "name": "Seeder", "linkedEntity": "Person",
+          "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+          "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }, { "name": "seen" }],
+            "transitions": [
+                { "from": "idle", "to": "idle", "event": "INIT" },
+                { "from": "idle", "to": "seen", "event": "SEEN" },
+                { "from": "seen", "to": "seen", "event": "SEEN" }] } }));
+    }
+    serde_json::from_value(json!({
+        "name": "shell",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Home",
+            "entity": { "name": "Person", "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": traits,
+            "pages": [{ "name": "Landing", "path": "/landing", "traits": [{ "ref": "Shell" }] },
+                      { "name": "Mixed", "path": "/mixed", "traits": [{ "ref": "Shell" }, { "ref": "Data" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn landing_mount(route: &str, order: &[&str], with_seeder: bool) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(client_only_route_schema(with_seeder), "c1").unwrap();
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    k.dispatch_route_mount_crumbed(Some(route), None, &seeds, None, Value::Null).unwrap()
+}
+
+#[test]
+fn g_std_268_a_route_mounting_only_client_traits_posts_a_route_only_leg_the_server_announces() {
+    let mount = landing_mount("/landing", &["Shell"], true);
+    assert_eq!(mount.legs.len(), 1, "one route-only leg");
+    assert_eq!(mount.stateful_legs.len(), 1);
+    for posted in [&mount.legs[0], &mount.stateful_legs[0]] {
+        assert_eq!(posted.leg.mount.as_ref().map(Vec::len), Some(0), "a mount of no traits");
+        assert_eq!(posted.leg.route.as_deref(), Some("/landing"));
+        assert_eq!(posted.orbital, "Home");
+    }
+    let server = orbital_core_runtime::embed::EmbeddedServer::new(client_only_route_schema(true)).unwrap();
+    let progress = server.start("Home", mount.legs[0].leg.clone()).unwrap();
+    let response = match progress {
+        orbital_core_runtime::embed::ServerProgress::Done(response) => response,
+        orbital_core_runtime::embed::ServerProgress::Await { requests, .. } => panic!("the announcement asked the host: {requests:?}"),
+        orbital_core_runtime::embed::ServerProgress::Queued { ticket } => panic!("queued {ticket}"),
+    };
+    assert!(response.success, "{:?}", response.error);
+    assert_eq!(response.states.get("Seeder").map(String::as_str), Some("seen"), "the server trait heard $MOUNT");
+}
+
+#[test]
+fn control_a_route_with_a_server_trait_posts_exactly_one_ordinary_leg() {
+    let mount = landing_mount("/mixed", &["Shell", "Data"], true);
+    assert_eq!(mount.legs.len(), 1);
+    assert_eq!(mount.stateful_legs.len(), 1);
+    let names: Vec<&str> = mount.stateful_legs[0].seeds.iter().map(|s| s.trait_name.as_str()).collect();
+    assert_eq!(names, vec!["Data"], "the leg is the server trait's mount, not a route-only leg");
+    assert_eq!(mount.legs[0].leg.route.as_deref(), Some("/mixed"));
+}
+
+#[test]
+fn control_a_route_only_leg_opens_no_session() {
+    let mount = landing_mount("/landing", &["Shell"], true);
+    let server = orbital_core_runtime::embed::EmbeddedServer::new(client_only_route_schema(true)).unwrap();
+    let before = server.kernel().frame_sessions();
+    server.start("Home", mount.legs[0].leg.clone()).unwrap();
+    assert_eq!(server.kernel().frame_sessions(), before, "the route-only leg admitted no session");
+}
+
+#[test]
+fn control_a_client_only_route_nobody_listens_to_posts_nothing() {
+    let mount = landing_mount("/landing", &["Shell"], false);
+    assert!(mount.legs.is_empty() && mount.stateful_legs.is_empty());
+}

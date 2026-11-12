@@ -783,6 +783,21 @@ impl EmbeddedServer {
             };
             return self.settle(progress, seed, None, session);
         }
+        if let (Some(route), Some([])) = (request.route.as_deref(), request.mount.as_deref()) {
+            let progress = self
+                .kernel
+                .start_dispatch_route_mount_crumbed(Some(route), request.crumb.as_deref(), &[], entity_id, payload)
+                .map_err(dispatch_error)?;
+            let seed = Seed {
+                trait_name: String::new(),
+                event: request.event.clone(),
+                tick: true,
+                entity_id: entity_id.map(str::to_string),
+                mount: false,
+                carried_rows: None,
+            };
+            return self.settle(progress, seed, None, session);
+        }
         if request.target_trait.is_none() {
             if let Some(declared) = request.traits.as_ref() {
                 return self.start_declared(declared, entity_id, &request, payload, session);

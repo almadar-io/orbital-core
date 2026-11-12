@@ -94,6 +94,10 @@ pub struct ProcessEventResult {
     /// worklist ran.
     pub cascade_cut: Option<CascadeCut>,
 
+    /// Deliveries this dispatch skipped under EXEC-QUEUE-4 because an identical (trait, event, from-state, payload, frame)
+    /// was already processed, carried on the last outcome processed before the skip; empty when none was.
+    pub collapsed: Vec<CollapsedVisit>,
+
     /// Positions in `effect_results` of the `emit`s this dispatch consumed itself: the emitter's own
     /// arm for the event, or a listener target. The response marks them `source.dispatched`.
     pub consumed_emits: Vec<usize>,
@@ -228,6 +232,14 @@ pub struct RuntimeStats {
 
     /// Number of cached/stored entities.
     pub cached_entities: usize,
+}
+
+/// A delivery EXEC-QUEUE-4 skipped as an exact repeat within one dispatch: the trait and event it was for and its payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CollapsedVisit {
+    pub trait_name: String,
+    pub event: String,
+    pub payload: std::sync::Arc<Value>,
 }
 
 /// The delivery a dispatch did not run because it reached its step cap: the cap and the trait and event it stopped at.

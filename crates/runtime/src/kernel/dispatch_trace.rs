@@ -27,7 +27,21 @@ pub struct TraceTransition {
     pub guard_results: Vec<TraceGuard>,
     pub effects: Vec<TraceEffect>,
     pub emits: Vec<TraceEmit>,
+    #[serde(default)]
+    pub collapsed: Vec<TraceCollapsed>,
     pub failure: Option<String>,
+}
+
+/// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the dispatch: the trait and event it was for and its payload.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TraceCollapsed {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+    #[cfg_attr(test, ts(type = "JsonValue"))]
+    pub payload: serde_json::Value,
 }
 
 #[cfg_attr(test, derive(ts_rs::TS))]
@@ -118,6 +132,15 @@ pub fn transition_of(
                     })
                 }
                 _ => None,
+            })
+            .collect(),
+        collapsed: result
+            .collapsed
+            .iter()
+            .map(|c| TraceCollapsed {
+                trait_name: c.trait_name.clone(),
+                event: c.event.clone(),
+                payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
             })
             .collect(),
         failure: result.failure.clone(),

@@ -496,6 +496,18 @@ impl EmbeddedKernel {
                 posted.leg.route = route.map(str::to_string);
                 posted.leg.crumb = route.and(crumb).map(str::to_string);
             }
+            if let Some(route) = route {
+                if legs.is_empty() || stateful_legs.is_empty() {
+                    if let Some(listener) = self.kernel.route_server_mount_listener(route).map_err(|e| e.to_string())? {
+                        let orbital = self.owning_orbital(&listener)?.to_string();
+                        for posted in [(&mut legs), (&mut stateful_legs)] {
+                            if posted.is_empty() {
+                                posted.push(self.route_only_leg(&orbital, route, crumb, entity_id));
+                            }
+                        }
+                    }
+                }
+            }
             let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire)).into_iter().cloned().collect();
             (legs, stateful_legs, hops)
         };
@@ -560,6 +572,22 @@ impl EmbeddedKernel {
         (0..dispatch.server_legs.len())
             .filter(|i| is_unreachable_hop(&dispatch.seed.0, &steps, &dispatch.server_legs[*i], &browser_run, &seeds))
             .collect()
+    }
+
+    /// The leg a route posts when its page mounts no trait the server runs but a server trait listens for its `$MOUNT`
+    /// (EXEC-SEED-7): a mount of no traits that names the route, which the server announces and never opens a session for.
+    fn route_only_leg(&self, orbital: &str, route: &str, crumb: Option<&str>, entity_id: Option<&str>) -> MountLegWire {
+        let mut leg = mount_leg_request(Vec::new(), &[], None, entity_id.map(str::to_string), &self.client_id);
+        leg.route = Some(route.to_string());
+        leg.crumb = crumb.map(str::to_string);
+        MountLegWire {
+            orbital: orbital.to_string(),
+            seeds: Vec::new(),
+            leg,
+            already_delivered: Vec::new(),
+            awaiting: Vec::new(),
+            fold_seeded: Vec::new(),
+        }
     }
 
     fn mount_legs(

@@ -276,7 +276,7 @@ impl ServerBridge for KernelBridge {
         orbital: &str,
         request: &EventRequest,
     ) -> Result<EventResponse, BridgeError> {
-        let Some(seeds) = request.mount.as_ref().filter(|seeds| !seeds.is_empty()) else {
+        let Some(seeds) = request.mount.as_ref().filter(|seeds| !seeds.is_empty() || request.route.is_some()) else {
             return self.send_event_with_options(
                 orbital,
                 &request.event,
@@ -291,7 +291,8 @@ impl ServerBridge for KernelBridge {
             || self.kernel.start_dispatch_route_mount_crumbed(request.route.as_deref(), request.crumb.as_deref(), seeds, entity_id, payload.clone()),
             || self.kernel.dispatch_route_mount_crumbed(request.route.as_deref(), request.crumb.as_deref(), seeds, entity_id, payload.clone()),
         )?;
-        let mut response = EventResponse::from_process_results(&outcomes, &seeds[0].r#trait, seeds[0].event.as_str());
+        let (seed_trait, seed_event) = seeds.first().map(|seed| (seed.r#trait.as_str(), seed.event.as_str())).unwrap_or(("", request.event.as_str()));
+        let mut response = EventResponse::from_process_results(&outcomes, seed_trait, seed_event);
         self.kernel.seal_outcomes(&mut response, &outcomes, entity_id, true);
         Ok(response)
     }

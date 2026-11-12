@@ -262,14 +262,22 @@ impl RuntimeKernel {
     /// declared `label` when the page has one, and the `crumb` of the navigate that opened it. Empty when the route
     /// resolves to no page or nobody listens.
     pub(super) fn route_mount_deliveries(&self, route: &str, crumb: Option<&str>) -> Result<VecDeque<CascadeItem>, KernelError> {
+        let (page, deliveries) = self.route_mount_targets(route, crumb)?;
+        if let Some(page) = page {
+            self.record_session_page(&page);
+        }
+        Ok(deliveries)
+    }
+
+    /// The `$MOUNT` deliveries `route` would make, and the page it resolves to, without recording that page.
+    fn route_mount_targets(&self, route: &str, crumb: Option<&str>) -> Result<(Option<String>, VecDeque<CascadeItem>), KernelError> {
         let circuit = self.page_circuit(None, Some(route)).map_err(KernelError::Internal)?;
         let Some(page) = circuit.page else {
-            return Ok(VecDeque::new());
+            return Ok((None, VecDeque::new()));
         };
-        self.record_session_page(&page);
         let names = |list: Vec<String>| Value::array(list.into_iter().map(Value::string).collect::<Vec<_>>());
         let mut payload = ValueMap::default();
-        payload.insert("page".into(), Value::string(page));
+        payload.insert("page".into(), Value::string(page.clone()));
         payload.insert("route".into(), Value::string(circuit.route.unwrap_or_else(|| route.to_string())));
         payload.insert("traits".into(), names(circuit.traits));
         payload.insert("entities".into(), names(circuit.entities));
@@ -305,7 +313,19 @@ impl RuntimeKernel {
             &[],
             &mut out,
         );
-        Ok(out.into())
+        Ok((Some(page), out.into()))
+    }
+
+    /// The first trait a host runs that listens for `route`'s `$MOUNT` (EXEC-SEED-7): a listener a browser does not run, so
+    /// the route's announcement is the server's. `None` when the route resolves to no page or no such listener exists.
+    pub fn route_server_mount_listener(&self, route: &str) -> Result<Option<String>, KernelError> {
+        let browser_run = self.browser_run_traits();
+        Ok(self
+            .route_mount_targets(route, None)?
+            .1
+            .into_iter()
+            .map(|delivery| delivery.trait_name)
+            .find(|name| !browser_run.contains(name)))
     }
 
     /// What mounts when a client opens `route_path`: the traits of the route pages its most specific

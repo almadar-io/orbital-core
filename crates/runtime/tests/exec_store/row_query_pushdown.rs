@@ -860,8 +860,19 @@ fn host_page(_entity: &str, query: &RowQuery) -> Result<RowPage, String> {
     Ok(host.query_page("Ticket", query).unwrap_rows())
 }
 
+/// The query a kernel narrows a declined one to: the same predicates, ordered by `id`, no window, no count.
+fn is_narrowed(query: &RowQuery) -> bool {
+    query.filter.is_some()
+        && query.policy.is_some()
+        && query.order.as_ref().is_some_and(|o| o.field == "id" && o.direction == orbital_core_base::row_set::RowDirection::Asc)
+        && query.limit.is_none()
+        && query.offset.is_none()
+        && query.nearest.is_none()
+        && query.total == Some(orbital_core_base::row_set::RowTotalMode::None)
+}
+
 #[test]
-fn a_host_that_declines_the_query_falls_back_to_a_listing() {
+fn a_host_that_declines_the_query_and_its_narrowing_falls_back_to_a_listing() {
     let k = host_kernel();
     k.set_query_capabilities("Ticket", QueryCapabilities::full());
     let host = seeded();
@@ -870,24 +881,68 @@ fn a_host_that_declines_the_query_falls_back_to_a_listing() {
         _ => None,
     });
     let log = data_requests(&log);
-    assert!(matches!(log[0], IoRequest::QueryRows { .. }), "{log:?}");
-    assert!(matches!(log[1], IoRequest::ListRows { .. }), "{log:?}");
+    assert!(matches!(log[0], IoRequest::QueryRows { query, .. } if query.limit == Some(2)), "{log:?}");
+    assert!(matches!(log[1], IoRequest::QueryRows { query, .. } if is_narrowed(query)), "{log:?}");
+    assert!(matches!(log[2], IoRequest::ListRows { .. }), "{log:?}");
+    assert_eq!(log.len(), 3, "{log:?}");
     assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
 }
 
 #[test]
-fn a_query_outside_the_capabilities_is_never_sent() {
+fn a_declined_query_is_narrowed_to_its_predicates_and_the_kernel_orders_and_windows_what_matches() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let host = seeded();
+    let (log, out) = fly(&k, "LIST", &host, &|r| match r {
+        IoRequest::QueryRows { query, .. } if !is_narrowed(query) => Some(IoAnswer::QueryUnsupported("order-field".into())),
+        _ => None,
+    });
+    let log = data_requests(&log);
+    assert_eq!(log.len(), 2, "the declined query and its narrowing, never a listing: {log:?}");
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    assert!(matches!(log[1], IoRequest::QueryRows { query, .. } if is_narrowed(query)), "{log:?}");
+    assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"], "score:desc, limit 2, owner u1 only, open only");
+}
+
+#[test]
+fn a_declined_nearest_query_is_narrowed_and_the_kernel_ranks_what_matches() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let host = seeded_vectors();
+    let (log, out) = fly(&k, "NEAREST", &host, &|r| match r {
+        IoRequest::QueryRows { query, .. } if query.nearest.is_some() => Some(IoAnswer::QueryUnsupported("nearest".into())),
+        _ => None,
+    });
+    let log = data_requests(&log);
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    assert!(matches!(log.last(), Some(IoRequest::QueryRows { query, .. }) if is_narrowed(query)), "{log:?}");
+    assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"], "nearest to [1,0] among open rows of u1");
+}
+
+#[test]
+fn a_query_outside_the_capabilities_is_never_sent_and_its_narrowing_is() {
     let k = host_kernel();
     let mut caps = QueryCapabilities::full();
     caps.window = false;
     k.set_query_capabilities("Ticket", caps);
     let (log, out) = fly(&k, "LIST", &seeded(), &|_| None);
-    assert!(
-        data_requests(&log)
-            .iter()
-            .all(|r| matches!(r, IoRequest::ListRows { .. })),
-        "{log:?}"
-    );
+    let log = data_requests(&log);
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::QueryRows { query, .. } if query.limit.is_some())), "{log:?}");
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    assert!(log.iter().any(|r| matches!(r, IoRequest::QueryRows { query, .. } if is_narrowed(query))), "{log:?}");
+    assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
+}
+
+#[test]
+fn control_a_store_that_cannot_order_by_id_is_listed_as_before() {
+    use orbital_core_runtime::row_query::RowOrderableFields;
+    let k = host_kernel();
+    let mut caps = QueryCapabilities::full();
+    caps.orderable_fields = RowOrderableFields::Listed { fields: vec!["score".to_string()] };
+    caps.window = false;
+    k.set_query_capabilities("Ticket", caps);
+    let (log, out) = fly(&k, "LIST", &seeded(), &|_| None);
+    assert!(data_requests(&log).iter().any(|r| matches!(r, IoRequest::ListRows { .. })), "{log:?}");
     assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
 }
 

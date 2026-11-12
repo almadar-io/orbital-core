@@ -198,6 +198,20 @@ pub struct StepOutcome {
     pub orbital: String,
     pub event: String,
     pub ensures: Vec<PlayedEnsures>,
+    #[serde(default)]
+    pub collapsed: Vec<StepCollapsed>,
+}
+
+/// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the step's dispatch: the trait and event it was for and its payload.
+#[cfg_attr(test, derive(ts_rs::TS))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StepCollapsed {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    pub event: String,
+    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    pub payload: serde_json::Value,
 }
 
 /// A keyed ask the host deferred and no event has ended: the operator and arguments as the kernel dispatched them,
@@ -307,6 +321,15 @@ pub fn outcome_report(
         orbital,
         event: event.to_string(),
         ensures,
+        collapsed: r
+            .collapsed
+            .iter()
+            .map(|c| StepCollapsed {
+                trait_name: c.trait_name.clone(),
+                event: c.event.clone(),
+                payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
+            })
+            .collect(),
     }
 }
 
@@ -765,6 +788,7 @@ fn play_step(
                 orbital,
                 event: event.to_string(),
                 ensures: Vec::new(),
+                collapsed: Vec::new(),
             });
             return Ok(StepResult {
                 outcomes: std::mem::take(partial),

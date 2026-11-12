@@ -529,3 +529,38 @@ fn a_second_identical_ask_from_a_continuation_is_collapsed_by_exec_queue_4() {
 fn control_a_second_ask_with_another_payload_is_delivered() {
     assert_eq!(ask_twice("e"), 2);
 }
+
+fn collapsed_visits(kernel: &RuntimeKernel, payload: Json) -> Vec<(String, String, Json)> {
+    let payload: Value = serde_json::from_value(payload).unwrap();
+    kernel
+        .dispatch("Fanner", None, "STEP", payload)
+        .unwrap()
+        .iter()
+        .flat_map(|(_, r)| r.collapsed.iter())
+        .map(|c| (c.trait_name.clone(), c.event.clone(), serde_json::to_value(&*c.payload).unwrap()))
+        .collect()
+}
+
+#[test]
+fn a_skipped_repeat_is_reported_on_the_dispatch_outcomes() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "effects": [["emit", "STEP_NEXT", { "k": 1 }]] }]),
+        one_state(),
+    );
+    assert_eq!(
+        collapsed_visits(&kernel, json!({ "k": 1 })),
+        vec![("Fanner".to_string(), "STEP".to_string(), json!({ "k": 1 }))]
+    );
+}
+
+#[test]
+fn control_a_distinct_second_ask_is_not_reported_as_collapsed() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "guard": [">", "@payload.remaining", 0],
+                 "effects": [["emit", "STEP_NEXT", { "remaining": ["-", "@payload.remaining", 1] }]] }]),
+        one_state(),
+    );
+    assert!(collapsed_visits(&kernel, json!({ "remaining": 3 })).is_empty());
+}

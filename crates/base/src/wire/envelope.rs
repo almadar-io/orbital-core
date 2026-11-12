@@ -211,6 +211,7 @@ mod tests {
             payload: Value::Bool(true),
             causal_id: "c".into(),
             hop: 2,
+            listen: None,
         };
         let text = serde_json::to_string(&envelope).unwrap();
         assert!(
