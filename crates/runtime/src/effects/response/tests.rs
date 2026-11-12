@@ -268,6 +268,101 @@ fn control_an_unfired_step_is_no_hop() {
     assert!(TransitionHop::of_outcomes(&[("Modes".to_string(), blocked)]).is_empty());
 }
 
+fn bulk_value(rows: usize) -> Value {
+    let rows: Vec<serde_json::Value> = (0..rows).map(|i| serde_json::json!({ "id": format!("u{i}"), "name": "unit" })).collect();
+    serde_json::from_value(serde_json::Value::Array(rows)).expect("rows parse")
+}
+
+fn persist_create(rows: usize) -> Effect {
+    Effect::Persist {
+        operation: orbital_core_base::effect_types::PersistOperation::Create,
+        entity_type: "Unit".to_string(),
+        data: bulk_value(rows),
+        id: Some("u0".to_string()),
+        emit: None,
+        guard: None,
+    }
+}
+
+fn persist_batch(rows: usize) -> Effect {
+    Effect::PersistBatch { ops: bulk_value(rows), emit: None }
+}
+
+fn result_with(effects: Vec<EffectResult>) -> ProcessEventResult {
+    let mut result = empty_result("idle", true);
+    result.effects_executed = effects.len();
+    result.effect_results = effects;
+    result
+}
+
+#[test]
+fn control_an_unreleased_result_holds_its_persist_rows() {
+    let result = result_with(vec![
+        EffectResult::executed(persist_create(500)),
+        EffectResult::executed(persist_batch(500)),
+    ]);
+    assert!(matches!(&result.effect_results[0].effect, Effect::Persist { data, .. } if !data.is_null()));
+    assert!(matches!(&result.effect_results[1].effect, Effect::PersistBatch { ops, .. } if !ops.is_null()));
+}
+
+#[test]
+fn a_released_result_no_longer_holds_a_persists_data() {
+    let released = result_with(vec![EffectResult::executed(persist_create(500))]).released();
+    let Effect::Persist { data, .. } = &released.effect_results[0].effect else {
+        panic!("the persist stays in the results");
+    };
+    assert!(data.is_null(), "the row data of a finished persist is not kept for the whole dispatch");
+}
+
+#[test]
+fn a_released_result_no_longer_holds_a_persist_batchs_rows() {
+    let released = result_with(vec![EffectResult::executed(persist_batch(500))]).released();
+    let Effect::PersistBatch { ops, .. } = &released.effect_results[0].effect else {
+        panic!("the batch stays in the results");
+    };
+    assert!(ops.is_null(), "the rows of a finished batch are not kept for the whole dispatch");
+}
+
+#[test]
+fn a_released_zero_row_batch_stays_a_batch_with_no_rows() {
+    let released = result_with(vec![EffectResult::executed(persist_batch(0))]).released();
+    let Effect::PersistBatch { ops, .. } = &released.effect_results[0].effect else {
+        panic!("the batch stays in the results");
+    };
+    assert!(ops.is_null() || ops.as_array().is_some_and(|rows| rows.is_empty()));
+    assert_eq!(released.effect_results.len(), 1);
+}
+
+#[test]
+fn a_released_result_keeps_what_a_later_reader_needs_of_a_persist() {
+    let mut persist = EffectResult::executed(persist_create(500));
+    persist.entity_type = Some("Unit".to_string());
+    let released = result_with(vec![persist, EffectResult::executed(persist_batch(3))]).released();
+    assert_eq!(released.effects_executed, 2);
+    let first = &released.effect_results[0];
+    assert!(first.is_executed());
+    assert_eq!(first.entity_type.as_deref(), Some("Unit"));
+    assert!(matches!(
+        &first.effect,
+        Effect::Persist { operation: orbital_core_base::effect_types::PersistOperation::Create, entity_type, id: Some(id), .. }
+            if entity_type == "Unit" && id == "u0"
+    ));
+    assert!(released.effect_results[1].is_executed());
+    let response = EventResponse::from_process_results(&[("Units".to_string(), released)], "Units", "LOAD");
+    let reported = response.effect_results.expect("both persists are reported");
+    assert_eq!(reported.len(), 2);
+    assert_eq!(reported[0].entity_type.as_deref(), Some("Unit"));
+    assert_eq!(reported[0].action.as_deref(), Some("create"));
+    assert_eq!(reported[1].action.as_deref(), Some("batch"));
+}
+
+#[test]
+fn control_a_released_delegated_persist_keeps_its_rows_for_the_leg_that_runs_it() {
+    let delegated = EffectResult::delegated(persist_create(500), orbital_core_base::effect_types::RuntimeEnvironment::Server);
+    let released = result_with(vec![delegated]).released();
+    assert!(matches!(&released.effect_results[0].effect, Effect::Persist { data, .. } if !data.is_null()));
+}
+
 #[test]
 fn success_and_error_constructors_compile_and_default() {
     let ok = EventResponse::success("browsing");

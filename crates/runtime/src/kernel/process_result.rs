@@ -124,11 +124,15 @@ impl ProcessEventResult {
     }
 
     /// The result as a dispatch keeps it among its outcomes: each `set` names its path, and the value it wrote is the one
-    /// in `entity_data`, so a long cascade does not hold a second copy of every value it set.
+    /// in `entity_data`, and a persist or batch the host did not take over keeps its operation but not its rows, so a long cascade does not hold a second copy of either.
     pub fn released(mut self) -> Self {
         for result in &mut self.effect_results {
-            if let Effect::Set { value, .. } = &mut result.effect {
-                *value = Value::Null;
+            let delegated = result.is_delegated();
+            match &mut result.effect {
+                Effect::Set { value, .. } => *value = Value::Null,
+                Effect::Persist { data, .. } if !delegated => *data = Value::Null,
+                Effect::PersistBatch { ops, .. } if !delegated => *ops = Value::Null,
+                _ => {}
             }
         }
         self
