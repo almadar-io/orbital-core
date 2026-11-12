@@ -463,6 +463,16 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let seed_writer = match options.as_ref().and_then(|o| o.get("seed")) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) if !name.as_str().is_empty() => Some(name.to_string()),
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `seed` names the guest's seed-writer trait",
+                ))
+            }
+        };
         let asked_grants = options.as_ref().and_then(|o| o.get("grants").cloned());
         let asked_arenas = options.as_ref().and_then(|o| o.get("arenas").cloned());
         let keep_declared = match options.as_ref().and_then(|o| o.get("declared").cloned()) {
@@ -643,6 +653,15 @@ impl RuntimeKernel {
             None => guest
                 .register_schema(schema)
                 .map_err(|e| failure(format!("program/open: {e}")))?,
+        }
+        if let Some(name) = seed_writer {
+            if !guest.registry.trait_definitions.read().contains_key(&name) {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    format!("program/open: `seed` names `{name}`, which is not a trait of the program"),
+                ));
+            }
+            guest.set_seed_writer(Some(name));
         }
         if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
             seed_guest_rows(&guest, rows, "program/open")?;

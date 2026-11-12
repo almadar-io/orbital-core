@@ -473,6 +473,9 @@ pub struct RuntimeKernel {
     stateful: std::sync::atomic::AtomicBool,
     /// No browser runs this kernel's `[client]` traits, so it runs them itself ([`RuntimeKernel::set_runs_client_traits`]).
     runs_client_traits: std::sync::atomic::AtomicBool,
+    /// The trait a guest's opener named as its seed writer (`program/open { seed }`): its `persist create` is not held
+    /// to the entity's `@create` policy (EXEC-CONC-7).
+    seed_writer: orbital_core_base::sync::Mutex<Option<String>>,
     /// The program's declared locales (the first is the default) and merged message catalogs.
     i18n: Arc<RwLock<KernelI18n>>,
     /// The program's placement, the envelope ids accepted per sender and the dispatch origin in flight (EXEC-QUEUE-9).
@@ -831,6 +834,7 @@ impl RuntimeKernel {
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             stateful: std::sync::atomic::AtomicBool::new(false),
             runs_client_traits: std::sync::atomic::AtomicBool::new(false),
+            seed_writer: orbital_core_base::sync::Mutex::new(None),
             i18n: Arc::new(RwLock::new(KernelI18n::default())),
             step: StepScope {
                 dispatch_now: Arc::new(RwLock::new(None)),

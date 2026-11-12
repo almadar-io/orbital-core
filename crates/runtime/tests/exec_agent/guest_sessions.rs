@@ -218,6 +218,82 @@ fn a_guest_step_that_navigates_answers_the_route_it_asked_for() {
     assert!(added["got"].get("navigations").is_none(), "control: a step that navigates nowhere names no route: {added}");
 }
 
+fn policed_guest() -> serde_json::Value {
+    let writer = |name: &str, event: &str| {
+        json!({
+            "name": name, "linkedEntity": "Note",
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }, { "name": "wrote" }, { "name": "refused" }],
+                "transitions": [
+                    { "from": "idle", "to": "idle", "event": event, "effects": [
+                        ["persist", "create", "Note", { "title": "a row" }, { "emit": { "success": "WROTE", "failure": "NOT_WRITTEN" } }]
+                    ] },
+                    { "from": "idle", "to": "wrote", "event": "WROTE", "effects": [] },
+                    { "from": "idle", "to": "refused", "event": "NOT_WRITTEN", "effects": [] }
+                ]
+            }
+        })
+    };
+    json!({
+        "name": "Notes",
+        "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Notes",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "create_policy": ["=", "@user.role", "manager"],
+                        "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
+            "traits": [writer("Seeder", "SEED"), writer("Writer", "WRITE")],
+            "pages": [{ "name": "NotesPage", "path": "/notes", "traits": [{ "ref": "Seeder" }, { "ref": "Writer" }] }]
+        }]
+    })
+}
+
+/// A guest opened with `options`, then `event` (`SEED`, `WRITE`, or none) sent to its trait: the opener's entity after it.
+fn policed(options: serde_json::Value, event: &str) -> serde_json::Value {
+    let kernel = opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "SEED", "effects": [
+            ["program/dispatch", "Notes.Seeder.SEED", {}, { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "WRITE", "effects": [
+            ["program/dispatch", "Notes.Writer.WRITE", {}, { "guest": "@entity.guest", "emit": emit() }]
+        ] }
+    ]));
+    let program: Value = serde_json::from_value(json!({ "program": policed_guest() })).unwrap();
+    kernel.dispatch("Opener", None, "GO", program).unwrap();
+    if !event.is_empty() {
+        kernel.dispatch("Opener", None, event, Value::Null).unwrap();
+    }
+    entity(&kernel)
+}
+
+#[test]
+fn a_guests_declared_seed_trait_creates_rows_its_viewer_may_not() {
+    let seeded = policed(json!({ "seed": "Seeder" }), "SEED");
+    assert_eq!(seeded["got"]["states"]["Seeder"], "wrote", "{seeded}");
+}
+
+#[test]
+fn control_without_a_seed_trait_the_create_policy_refuses_the_same_write() {
+    let plain = policed(json!({}), "SEED");
+    assert_eq!(plain["got"]["states"]["Seeder"], "refused", "{plain}");
+}
+
+#[test]
+fn control_another_trait_of_a_seeded_guest_is_still_held_to_the_create_policy() {
+    let other = policed(json!({ "seed": "Seeder" }), "WRITE");
+    assert_eq!(other["got"]["states"]["Writer"], "refused", "{other}");
+}
+
+#[test]
+fn edge_a_seed_that_names_no_trait_of_the_program_is_refused() {
+    let unknown = policed(json!({ "seed": "Nobody" }), "");
+    assert!(unknown["refused"].to_string().contains("seed"), "{unknown}");
+    let wrong = policed(json!({ "seed": 7 }), "");
+    assert!(wrong["refused"].to_string().contains("seed"), "{wrong}");
+}
+
 #[test]
 fn a_guest_keeps_its_state_between_dispatches_and_inputs_reads_it() {
     let (kernel, _, _) = opened();

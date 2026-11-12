@@ -360,6 +360,7 @@ impl EffectExecutor {
             guard: None,
         };
         let batch_failure = |k: usize, b: &BatchOp, detail: &str, code: Option<ServerEffectCode>| {
+            error!(entity_type = %b.entity, operation = %b.action, index = k, error = %detail, "Persist batch refused");
             let failed = EffectResult::failed(
                 effect.clone(),
                 &format!(

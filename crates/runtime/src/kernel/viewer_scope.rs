@@ -174,6 +174,15 @@ impl RuntimeKernel {
         self.runs_client_traits.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Name the one trait whose `persist create` skips the `@create` policy: the seed writer a guest's opener declared.
+    pub fn set_seed_writer(&self, trait_name: Option<String>) {
+        *self.seed_writer.lock() = trait_name;
+    }
+
+    pub(crate) fn is_seed_writer(&self, trait_name: &str) -> bool {
+        self.seed_writer.lock().as_deref() == Some(trait_name)
+    }
+
     /// Why a server-role host refuses `request` before it is admitted, the one admission every host calls: a `locale`
     /// the program does not declare (EXEC-DIST-12), and, once [`Self::set_stateful`], circuit state on a request that
     /// is not a delegated leg (EXEC-DIST-11). A host strips and checks nothing itself.

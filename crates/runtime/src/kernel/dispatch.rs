@@ -65,6 +65,7 @@ impl RuntimeKernel {
         );
 
         self.ensure_trait_loaded(trait_name)?;
+        let _seed_writes = crate::effects::executor::SeedWriteScope::enter(self.is_seed_writer(trait_name));
         self.settle_deferred_asks(trait_name, entity_id, event_name, &payload);
         let trait_def = self
             .registry.trait_definitions

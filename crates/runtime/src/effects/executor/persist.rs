@@ -108,6 +108,7 @@ impl EffectExecutor {
         };
         PersistScope {
             policy: match operation {
+                PersistOperation::Create if SeedWriteScope::active() => None,
                 PersistOperation::Create | PersistOperation::Upsert => policies.create.clone(),
                 PersistOperation::Update => policies.update.clone(),
                 PersistOperation::Delete => policies.delete.clone(),
@@ -645,5 +646,29 @@ impl EffectExecutor {
         } else {
             EffectResult::noop(effect, "no persistence handler configured")
         }
+    }
+}
+
+thread_local! {
+    static SEED_WRITE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The step of a guest's declared seed writer (`program/open { seed }`): while it is entered on this thread a
+/// `persist create` carries no `@create` policy. Nested scopes restore the outer one.
+pub struct SeedWriteScope(bool);
+
+impl SeedWriteScope {
+    pub fn enter(seed_writer: bool) -> Self {
+        Self(SEED_WRITE.with(|scope| scope.replace(seed_writer)))
+    }
+
+    pub(super) fn active() -> bool {
+        SEED_WRITE.with(std::cell::Cell::get)
+    }
+}
+
+impl Drop for SeedWriteScope {
+    fn drop(&mut self) {
+        SEED_WRITE.with(|scope| scope.set(self.0));
     }
 }

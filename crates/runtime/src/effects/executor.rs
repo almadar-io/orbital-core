@@ -368,6 +368,7 @@ mod persist_types;
 use in_memory::*;
 use persist_types::*;
 pub use in_memory::InMemoryPersistence;
+pub(crate) use persist::SeedWriteScope;
 pub(crate) use persist_types::page_ordered_rows;
 
 #[cfg(test)]
