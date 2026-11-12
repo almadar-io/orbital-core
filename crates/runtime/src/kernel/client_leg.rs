@@ -1104,6 +1104,13 @@ impl RuntimeKernel {
             .collect()
     }
 
+    /// Whether a browser runs `trait_name`: no browser runs a store driver orbital's trait (EXEC-STORE-4) or a boot-only
+    /// program-wide one (EXEC-DIST-9), so a host never pushes their dispatches.
+    pub fn browser_runs(&self, trait_name: &str) -> bool {
+        !self.program_wide(trait_name)
+            && !self.orbital_of_trait(trait_name).is_some_and(|orbital| self.io.is_store_driver(&orbital))
+    }
+
     /// The payload a deferred completion's push carries to the browser (EXEC-QUEUE-10): the payload when the completing
     /// trait runs on the client, `Null` (no payload) when it runs on the server.
     pub fn browser_completion_payload(&self, trait_name: &str, payload: &Value) -> Value {

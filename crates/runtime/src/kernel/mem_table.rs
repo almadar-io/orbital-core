@@ -971,6 +971,19 @@ mod tests {
 
     #[cfg(feature = "std")]
     #[test]
+    fn an_mp3_decodes_gapless_so_its_samples_sit_where_the_browser_plays_them() {
+        // lame-encoded 22.05 kHz mono, one second, a click at sample 11025; ffmpeg and browsers trim the LAME delay.
+        let mp3 = include_bytes!("../../tests/fixtures/click-at-half-second.mp3");
+        let mut table = MemTable::default();
+        let arena = bump(&mut table, 1 << 20);
+        let (answer, floats) = decoded(&mut table, arena, mp3, true).unwrap();
+        assert_eq!(answer.get("frames"), Some(&Value::Int(22050)), "edge: encoder delay and padding are trimmed");
+        let first = floats.iter().position(|s| s.abs() > 0.25).unwrap();
+        assert!((11020..=11030).contains(&first), "click at {first}, expected about 11025");
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
     fn garbage_and_a_full_arena_answer_invalid() {
         let mut table = MemTable::default();
         let arena = bump(&mut table, 1024);

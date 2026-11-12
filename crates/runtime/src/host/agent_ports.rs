@@ -129,6 +129,16 @@ pub fn guest_failure(kind: orbital_core_base::os::OsErrorKind, message: impl Int
     crate::effects::executor::SubstrateFailure { message, errors: vec![Value::object(issue)] }
 }
 
+/// The failure of an ask the kernel found no host for (EXEC-STEP-7): its typed issue names kind `unavailable`, the
+/// spelling a host's own refusal uses for "the host has no such action" (EXEC-DIST-13).
+pub fn no_host_failure(message: impl Into<String>) -> crate::effects::executor::SubstrateFailure {
+    let message = message.into();
+    let mut issue = ValueMap::default();
+    issue.insert("kind".into(), Value::string("unavailable".to_string()));
+    issue.insert("message".into(), Value::string(message.clone()));
+    crate::effects::executor::SubstrateFailure { message, errors: vec![Value::object(issue)] }
+}
+
 /// The `kind` a [`guest_failure`] names, from its typed issues.
 pub fn guest_failure_kind(errors: &[Value]) -> Option<Value> {
     errors.first().and_then(|issue| issue.get("kind")).filter(|kind| kind.as_str().is_some()).cloned()

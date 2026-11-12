@@ -128,10 +128,7 @@ impl BlockingHost<'_> {
             }),
             IoRequest::Substrate { op, args, .. } => IoAnswer::Substrate(match self.substrate {
                 Some(handler) => handler.run(op, args),
-                None => Err(SubstrateFailure {
-                    message: format!("no substrate host configured for {op}"),
-                    errors: Vec::new(),
-                }),
+                None => Err(crate::agent_ports::no_host_failure(format!("no substrate host configured for {op}"))),
             }),
             IoRequest::Guest { .. } => IoAnswer::Substrate(Err(crate::agent_ports::guest_failure(
                 OsErrorKind::Unsupported,

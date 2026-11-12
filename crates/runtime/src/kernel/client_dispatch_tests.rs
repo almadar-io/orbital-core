@@ -1918,6 +1918,27 @@ fn program_wide_schema() -> OrbitalSchema {
     .unwrap()
 }
 
+// EXEC-STORE-4 / EXEC-DIST-9: a host pushes a dispatch only for a trait a browser runs.
+#[test]
+fn a_store_driver_orbitals_trait_is_not_browser_run() {
+    let kernel = server_kernel_with(store_bound_response_schema());
+    assert!(!kernel.browser_runs("RowsDriver"));
+}
+
+#[test]
+fn a_boot_only_trait_is_not_browser_run() {
+    let kernel = server_kernel_with(program_wide_schema());
+    assert!(!kernel.browser_runs("Worker"));
+}
+
+#[test]
+fn control_a_page_mounted_trait_is_browser_run_in_both_dispatch_modes() {
+    let kernel = server_kernel_with(program_wide_schema());
+    assert!(kernel.browser_runs("Viewer"), "dispatch: client");
+    let server_mode = server_kernel_with(server_response_schema());
+    assert!(server_mode.browser_runs("Listener"), "server-dispatched, not boot-only");
+}
+
 // EXEC-DIST-9: a program-wide trait's emit reaches every browser only when a client-run trait listens to it.
 #[test]
 fn program_wide_emits_are_the_boot_trait_emits_a_browser_listens_to() {

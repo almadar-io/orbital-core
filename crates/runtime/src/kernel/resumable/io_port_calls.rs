@@ -596,10 +596,7 @@ impl SubstrateHandler for IoPort {
         }) {
             Asked::Direct => match &self.substrate {
                 Some(handler) => handler.run(op, args),
-                None => Err(SubstrateFailure {
-                    message: format!("no substrate host configured for {op}"),
-                    errors: Vec::new(),
-                }),
+                None => Err(crate::agent_ports::no_host_failure(format!("no substrate host configured for {op}"))),
             },
             Asked::Answer(IoAnswer::Substrate(out)) => out,
             Asked::Answer(IoAnswer::ServiceDeferred) => {

@@ -15,6 +15,8 @@ use crate::program_machine::{
 use crate::resumable::{
     drive_blocking, BlockingHost, CallSite, DispatchOutcomes, IoAnswer, IoRequest, PortHost,
 };
+use orbital_core_base::client_effect::ClientEffect;
+use orbital_core_base::host_ask::{route, RelayedAnswer, RelayedAsk};
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use crate::secret_source::SecretSource;
 use orbital_core_base::dispatch_mode::DispatchMode;
@@ -67,14 +69,23 @@ impl SecretSource for StepCredentials {
     }
 }
 
-/// The host answers a replayed step scripts in its `answers` (G-CROSS-468): each is one `os/` ask's answer as a host gives
-/// it, plain ids and all, so the kernel unwraps, mints, budgets and routes exactly as it does live. An ask takes the first
-/// unused answer naming its operator; one no answer names stays pending, as without answers. A deferring op's answer is
-/// delivered as its completion once the dispatch that asked has ended, through [`RuntimeKernel::dispatch_route`].
+/// The host answers a replayed step scripts in its `answers` (G-CROSS-468): each is one ask's answer as a host gives
+/// it. An `os/` answer is plain ids and all, so the kernel unwraps, mints, budgets and routes exactly as it does live; an
+/// answer naming a client host ask (`runsOn: client`, G-STD-370) returns through the ask's declared completion as the web
+/// host returns it (EXEC-DIST-13). An ask takes the first unused answer naming its operator; one no answer names stays
+/// pending, as without answers. A deferring op's answer is delivered as its completion once the dispatch that asked has
+/// ended, through [`RuntimeKernel::dispatch_route`]; a host ask's answer is delivered the same way.
 #[derive(Default)]
 pub struct StepAnswers {
-    scripted: Mutex<Vec<(OsOp, Option<Result<Value, OsError>>)>>,
+    scripted: Mutex<Vec<(usize, OsOp, Option<Result<Value, OsError>>)>>,
+    host: Mutex<Vec<(usize, String, Option<RelayedAnswer>)>>,
     deferred: Mutex<Vec<(CallSite, String, Result<Value, OsError>)>>,
+}
+
+#[derive(Default)]
+struct ScriptedAnswers {
+    os: Vec<(usize, OsOp, Result<Value, OsError>)>,
+    host: Vec<(usize, String, RelayedAnswer)>,
 }
 
 impl StepAnswers {
@@ -82,23 +93,31 @@ impl StepAnswers {
         Self::default()
     }
 
-    fn hold(&self, scripted: Vec<(OsOp, Result<Value, OsError>)>) {
-        *self.scripted.lock() = scripted.into_iter().map(|(op, outcome)| (op, Some(outcome))).collect();
+    fn hold(&self, scripted: ScriptedAnswers) {
+        *self.scripted.lock() = scripted.os.into_iter().map(|(n, op, outcome)| (n, op, Some(outcome))).collect();
+        *self.host.lock() = scripted.host.into_iter().map(|(n, op, outcome)| (n, op, Some(outcome))).collect();
         self.deferred.lock().clear();
     }
 
     fn take(&self, op: OsOp) -> Option<Result<Value, OsError>> {
-        self.scripted.lock().iter_mut().find(|(named, outcome)| *named == op && outcome.is_some()).and_then(|(_, outcome)| outcome.take())
+        self.scripted.lock().iter_mut().find(|(_, named, outcome)| *named == op && outcome.is_some()).and_then(|(_, _, outcome)| outcome.take())
+    }
+
+    fn take_host(&self, op: &str) -> Option<RelayedAnswer> {
+        self.host.lock().iter_mut().find(|(_, named, outcome)| named == op && outcome.is_some()).and_then(|(_, _, outcome)| outcome.take())
     }
 
     fn unused(&self) -> Vec<String> {
-        self.scripted
+        let mut left: Vec<(usize, String)> = self
+            .scripted
             .lock()
             .iter()
-            .enumerate()
-            .filter(|(_, (_, outcome))| outcome.is_some())
-            .map(|(n, (op, _))| format!("answers[{n}] ({})", op.name()))
-            .collect()
+            .filter(|(_, _, outcome)| outcome.is_some())
+            .map(|(n, op, _)| (*n, op.name().to_string()))
+            .collect();
+        left.extend(self.host.lock().iter().filter(|(_, _, outcome)| outcome.is_some()).map(|(n, op, _)| (*n, op.clone())));
+        left.sort_by_key(|(n, _)| *n);
+        left.into_iter().map(|(n, op)| format!("answers[{n}] ({op})")).collect()
     }
 
     fn take_deferred(&self) -> Vec<(CallSite, String, Result<Value, OsError>)> {
@@ -106,36 +125,70 @@ impl StepAnswers {
     }
 }
 
-fn scripted_answers(i: usize, answers: &serde_json::Value, live: bool) -> Result<Vec<(OsOp, Result<Value, OsError>)>, String> {
+fn scripted_answers(i: usize, answers: &serde_json::Value, live: bool) -> Result<ScriptedAnswers, String> {
     let list = match answers {
-        serde_json::Value::Null => return Ok(Vec::new()),
+        serde_json::Value::Null => return Ok(ScriptedAnswers::default()),
         serde_json::Value::Array(_) if live => return Err(format!("step {i}: `answers` apply to a replay with no live host only")),
         serde_json::Value::Array(list) => list,
         _ => return Err(format!("step {i}: `answers` must be a list of host answers")),
     };
-    list.iter()
-        .enumerate()
-        .map(|(n, answer)| {
-            let at = format!("step {i}: answers[{n}]");
-            let fields = answer.as_object().ok_or_else(|| format!("{at} must be an object"))?;
-            if let Some(extra) = fields.keys().find(|k| !["operator", "ok", "error"].contains(&k.as_str())) {
-                return Err(format!("{at}: unknown key `{extra}`"));
-            }
-            let name = fields.get("operator").and_then(serde_json::Value::as_str).ok_or_else(|| format!("{at}: `operator` must be an os operator name"))?;
-            let op = OsOp::from_name(name).ok_or_else(|| format!("{at}: `{name}` is not an os operator"))?;
+    let mut scripted = ScriptedAnswers::default();
+    for (n, answer) in list.iter().enumerate() {
+        let at = format!("step {i}: answers[{n}]");
+        let fields = answer.as_object().ok_or_else(|| format!("{at} must be an object"))?;
+        if let Some(extra) = fields.keys().find(|k| !["operator", "ok", "error"].contains(&k.as_str())) {
+            return Err(format!("{at}: unknown key `{extra}`"));
+        }
+        let name = fields.get("operator").and_then(serde_json::Value::as_str).ok_or_else(|| format!("{at}: `operator` must be an os operator or client host ask name"))?;
+        let error_parts = |error: &serde_json::Value| {
+            (
+                error.get("kind").and_then(serde_json::Value::as_str).map(str::to_string),
+                error.get("message").and_then(serde_json::Value::as_str).map(str::to_string),
+            )
+        };
+        if let Some(op) = OsOp::from_name(name) {
             let outcome = match (fields.get("ok"), fields.get("error")) {
                 (Some(ok), None) => Ok(to_value(ok).map_err(|e| format!("{at}: {e}"))?),
-                (None, Some(error)) => {
-                    let kind = error.get("kind").and_then(serde_json::Value::as_str).and_then(OsErrorKind::from_name);
-                    let message = error.get("message").and_then(serde_json::Value::as_str);
-                    match (kind, message) {
-                        (Some(kind), Some(message)) => Err(OsError::new(kind, message)),
-                        _ => return Err(format!("{at}: `error` must be {{ kind: <an os error kind>, message: <string> }}")),
-                    }
-                }
+                (None, Some(error)) => match error_parts(error) {
+                    (Some(kind), Some(message)) => match OsErrorKind::from_name(&kind) {
+                        Some(kind) => Err(OsError::new(kind, message)),
+                        None => return Err(format!("{at}: `error` must be {{ kind: <an os error kind>, message: <string> }}")),
+                    },
+                    _ => return Err(format!("{at}: `error` must be {{ kind: <an os error kind>, message: <string> }}")),
+                },
                 _ => return Err(format!("{at}: give exactly one of `ok` or `error`")),
             };
-            Ok((op, outcome))
+            scripted.os.push((n, op, outcome));
+        } else if orbital_core_base::runs_on::runs_on_known(name) == Some(orbital_core_base::runs_on::RunsOn::Client) {
+            let outcome = match (fields.get("ok"), fields.get("error")) {
+                (Some(ok), None) => RelayedAnswer::Ok { ok: to_value(ok).map_err(|e| format!("{at}: {e}"))? },
+                (None, Some(error)) => match error_parts(error) {
+                    (Some(kind), Some(message)) => RelayedAnswer::Refused { error: message, kind },
+                    _ => return Err(format!("{at}: `error` must be {{ kind: <string>, message: <string> }}")),
+                },
+                _ => return Err(format!("{at}: give exactly one of `ok` or `error`")),
+            };
+            scripted.host.push((n, name.to_string(), outcome));
+        } else {
+            return Err(format!("{at}: `{name}` is not an os operator or a client host ask"));
+        }
+    }
+    Ok(scripted)
+}
+
+/// The client host asks a dispatch's effects made, as a viewer would relay them, in the order they ran.
+fn host_asks(outcomes: &DispatchOutcomes) -> Vec<RelayedAsk> {
+    outcomes
+        .iter()
+        .flat_map(|(trait_name, r)| {
+            r.effect_results.iter().filter_map(move |er| {
+                match ClientEffect::from_result_in(er, Some((trait_name.as_str(), crate::process_result::frame_row(&r.entity_id)))) {
+                    Some(ClientEffect::HostAsk { op, args, completion }) if er.is_host_asked() && op != "cancel-call" => {
+                        Some(RelayedAsk { op, args, completion })
+                    }
+                    _ => None,
+                }
+            })
         })
         .collect()
 }
@@ -557,8 +610,8 @@ pub fn step_answer(
     }
 }
 
-/// The dispatch of a replay with no live host: asks answered by [`step_answer`], then each scripted deferring answer
-/// delivered as its completion, in the order the asks were made, until none is left.
+/// The dispatch of a replay with no live host: asks answered by [`step_answer`], then each scripted deferring answer and
+/// each scripted client host answer delivered as its completion, in the order the asks were made, until none is left.
 pub fn replay_dispatch(
     kernel: &RuntimeKernel,
     credentials: &StepCredentials,
@@ -573,19 +626,42 @@ pub fn replay_dispatch(
         .and_then(|progress| drive_blocking(kernel, progress, &answer))
         .map_err(|e| e.to_string())?;
     let mut completions = Vec::new();
+    let mut asks = host_asks(&dispatched);
     loop {
         let deferred = answers.take_deferred();
-        if deferred.is_empty() {
+        let answered: Vec<_> = std::mem::take(&mut asks)
+            .into_iter()
+            .filter_map(|ask| answers.take_host(&ask.op).map(|outcome| (ask, outcome)))
+            .collect();
+        if deferred.is_empty() && answered.is_empty() {
             break;
         }
         for (site, key, outcome) in deferred {
             let Some((event, payload, failed)) = kernel.completion_route(&site, &key, outcome) else { continue };
             let delivered = kernel.dispatch_route(&site, &key, event, payload, failed, &answer);
+            if let Ok(hops) = &delivered.result {
+                asks.extend(host_asks(hops));
+            }
             completions.push(StepCompletion {
                 event: delivered.event,
                 payload: delivered.payload,
                 failed: delivered.failed,
                 outcomes: delivered.result.map_err(|e| e.to_string()),
+            });
+        }
+        for (ask, outcome) in answered {
+            let (Some((event, payload)), Some(completion)) = (route(&ask, &outcome), ask.completion.as_ref()) else { continue };
+            let hops = kernel
+                .start_dispatch(&completion.trait_name, completion.entity_id.as_deref(), &event, payload.clone(), None, None)
+                .and_then(|progress| drive_blocking(kernel, progress, &answer));
+            if let Ok(hops) = &hops {
+                asks.extend(host_asks(hops));
+            }
+            completions.push(StepCompletion {
+                event,
+                payload,
+                failed: matches!(outcome, RelayedAnswer::Refused { .. }),
+                outcomes: hops.map_err(|e| e.to_string()),
             });
         }
     }
@@ -765,10 +841,12 @@ fn play_step(
         .transpose()
         .map_err(|e| format!("step {i}: {e}"))?;
     credentials.hold(held);
+    kernel.effect_executor().set_asks_viewer(!scripted.host.is_empty());
     answers.hold(scripted);
     let outcomes = dispatch(trait_name, event, payload, settle_ms);
     let unused = answers.unused();
-    answers.hold(Vec::new());
+    answers.hold(ScriptedAnswers::default());
+    kernel.effect_executor().set_asks_viewer(false);
     credentials.hold(BTreeMap::new());
     drop(viewing);
     clock.pin(None);
@@ -1105,6 +1183,72 @@ mod tests {
         ]))
         .unwrap_err();
         assert!(error.contains("no ask took answers[2] (gpu/submit)"), "{error}");
+    }
+
+    const CONSENT: &str = r#"{"name":"ConsentApp","typeContractVersion":1,"orbitals":[{"name":"Consents","entity":{"name":"Grant","persistence":"runtime","fields":[{"name":"id","type":"string"},{"name":"seen","type":"string","default":""}]},"pages":[],"traits":[{"name":"Caller","linkedEntity":"Grant","stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"granted"},{"name":"failed"}],"transitions":[
+        {"from":"idle","to":"idle","event":"GO","effects":[["audio/clock",{"authorizeUrl":"https://idp.example/authorize"},{"key":"c1","emit":{"success":"GRANTED","failure":"FAILED"}}]]},
+        {"from":"idle","to":"idle","event":"GO_SUCCESS_ONLY","effects":[["audio/clock",{"authorizeUrl":"https://idp.example/authorize"},{"key":"c2","emit":{"success":"GRANTED"}}]]},
+        {"from":"idle","to":"granted","event":"GRANTED","effects":[["set","@entity.seen",["str/concat","@payload.code","-","@payload.key"]]]},
+        {"from":"idle","to":"failed","event":"FAILED","effects":[["set","@entity.seen",["str/concat","@payload.kind","-","@payload.error","-","@payload.key"]]]}
+    ]}}]}]}"#;
+
+    fn consent_on_the_client() {
+        let sites = std::collections::BTreeMap::from([("audio/clock".to_string(), "client".to_string())]);
+        orbital_core_base::runs_on::install_operator_sites(&sites).unwrap();
+    }
+
+    fn consent_step(event: &str, answer: serde_json::Value) -> Result<serde_json::Value, String> {
+        consent_on_the_client();
+        play_on(CONSENT, serde_json::json!([{ "trait": "Caller", "event": event, "answers": [answer] }]))
+    }
+
+    #[test]
+    fn a_host_ask_answer_fires_the_success_route_with_its_fields_and_the_key() {
+        let report = consent_step("GO", serde_json::json!({ "operator": "audio/clock", "ok": { "code": "abc" } })).unwrap();
+        assert_eq!(last_state(&report), "granted", "{report}");
+        assert_eq!(report["steps"][0]["entityAfter"]["seen"], "abc-c1", "{report}");
+    }
+
+    #[test]
+    fn a_host_ask_answer_with_an_error_fires_the_failure_route_with_its_kind() {
+        let report = consent_step("GO", serde_json::json!({ "operator": "audio/clock", "error": { "kind": "unavailable", "message": "no popup" } })).unwrap();
+        assert_eq!(last_state(&report), "failed", "{report}");
+        assert_eq!(report["steps"][0]["entityAfter"]["seen"], "unavailable-no popup-c1", "{report}");
+    }
+
+    #[test]
+    fn control_a_host_ask_with_no_answer_fails_unavailable_as_a_step_with_no_host() {
+        consent_on_the_client();
+        let report = play_on(CONSENT, serde_json::json!([{ "trait": "Caller", "event": "GO", "answers": [] }])).unwrap();
+        assert_eq!(last_state(&report), "failed", "{report}");
+        assert!(report["steps"][0]["entityAfter"]["seen"].as_str().unwrap_or("").starts_with("unavailable-"), "{report}");
+    }
+
+    #[test]
+    fn a_host_ask_answer_for_an_outcome_the_ask_declared_no_route_for_fires_nothing() {
+        let report = consent_step("GO_SUCCESS_ONLY", serde_json::json!({ "operator": "audio/clock", "error": { "kind": "invalid", "message": "x" } })).unwrap();
+        assert_eq!(last_state(&report), "idle", "{report}");
+        assert!(report["steps"][0]["entityAfter"]["seen"].as_str().unwrap_or("").is_empty(), "no route fired: {report}");
+    }
+
+    #[test]
+    fn a_host_ask_answer_no_ask_takes_refuses_the_step() {
+        let error = consent_step("GO", serde_json::json!({ "operator": "audio/clock", "ok": { "code": "a" } }))
+            .and_then(|_| {
+                consent_on_the_client();
+                play_on(CONSENT, serde_json::json!([{ "trait": "Caller", "event": "GO", "answers": [
+                    { "operator": "audio/clock", "ok": { "code": "a" } },
+                    { "operator": "audio/clock", "ok": { "code": "b" } }
+                ] }]))
+            })
+            .unwrap_err();
+        assert!(error.contains("no ask took answers[1] (audio/clock)"), "{error}");
+    }
+
+    #[test]
+    fn a_host_ask_answer_naming_an_operator_that_is_neither_os_nor_client_is_refused() {
+        let error = consent_step("GO", serde_json::json!({ "operator": "str/concat", "ok": {} })).unwrap_err();
+        assert!(error.contains("is not an os operator or a client host ask"), "{error}");
     }
 
     #[test]

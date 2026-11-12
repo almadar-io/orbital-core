@@ -295,6 +295,11 @@ impl IoPort {
         (recorded == entity_type && bare(row) == bare(fields)).then(|| id.to_string())
     }
 
+    /// Whether `orbital` is the driver orbital of any `[store: Driver]` binding.
+    pub(crate) fn is_store_driver(&self, orbital: &str) -> bool {
+        self.store_drivers.read().values().any(|driver| driver == orbital)
+    }
+
     pub(crate) fn store_bound(&self, entity_type: &str) -> bool {
         self.store_drivers.read().contains_key(entity_type)
     }

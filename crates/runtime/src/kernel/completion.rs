@@ -141,12 +141,24 @@ pub(super) fn substrate_completion_emit(
         ),
         EffectOutcome::Failed => (
             emit.failure.clone()?,
-            error_payload(result, result.return_value.clone()),
+            substrate_failure_payload(result),
         ),
         EffectOutcome::NoOp(_) | EffectOutcome::Delegated(_) | EffectOutcome::HostAsked => return None,
     };
     let payload = with_key(payload, key);
     Some(EffectResult::executed(Effect::Emit { event, payload }))
+}
+
+/// A substrate failure's payload: `{ error, errors? }`, plus the `kind` its first typed issue names, so a kernel-found
+/// "no host" failure reads like a host's refusal (EXEC-STEP-7, EXEC-DIST-13).
+fn substrate_failure_payload(result: &EffectResult) -> Value {
+    let mut payload = error_payload(result, result.return_value.clone());
+    if let (Value::Object(fields), Some(Value::Array(issues))) = (&mut payload, &result.return_value) {
+        if let Some(kind) = crate::agent_ports::guest_failure_kind(issues) {
+            fields.insert("kind".into(), kind);
+        }
+    }
+    payload
 }
 
 pub(super) fn error_payload(result: &EffectResult, errors: Option<Value>) -> Value {
@@ -342,6 +354,18 @@ mod absent_not_null_tests {
             &emitted(persist_completion_emit(&routes(), &delete, &done, &ctx)),
             "persist delete without id",
         );
+    }
+
+    #[test]
+    fn no_host_failure_routes_kind_unavailable() {
+        let effect = Effect::Custom { name: "audio/schedule".into(), args: Vec::new(), key: None, emit: None };
+        let failure = crate::agent_ports::no_host_failure("no substrate host configured for audio/schedule");
+        let mut failed = EffectResult::failed(effect, &failure.message);
+        failed.return_value = Some(Value::array(failure.errors));
+        let payload = emitted(substrate_completion_emit(&routes(), &failed, None));
+        let fields = payload.as_object().expect("an object payload");
+        assert_eq!(fields.get("kind"), Some(&Value::string("unavailable".to_string())));
+        assert_eq!(fields.get("error"), Some(&Value::string("no substrate host configured for audio/schedule".to_string())));
     }
 
     #[test]

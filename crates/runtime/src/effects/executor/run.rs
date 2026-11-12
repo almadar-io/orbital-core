@@ -521,16 +521,19 @@ impl EffectExecutor {
                 };
             }
             if self.environment.is_server() {
-                return EffectResult::failed(
-                    effect,
-                    &format!("no substrate host configured for {name}"),
-                );
+                let failure = crate::agent_ports::no_host_failure(format!("no substrate host configured for {name}"));
+                let mut result = EffectResult::failed(effect, &failure.message);
+                result.return_value = Some(Value::array(failure.errors));
+                return result;
             }
             return EffectResult::noop(effect, "substrate operators run on the server leg");
         }
 
         let reason = format!("no executor for effect `{name}` on this host");
         tracing::error!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, op = name, "{reason}");
-        EffectResult::failed(effect, &reason)
+        let failure = crate::agent_ports::no_host_failure(reason);
+        let mut result = EffectResult::failed(effect, &failure.message);
+        result.return_value = Some(Value::array(failure.errors));
+        result
     }
 }

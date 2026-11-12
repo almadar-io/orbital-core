@@ -39,7 +39,7 @@ pub(super) fn decode(bytes: &[u8], mono: bool) -> Result<Pcm, OsError> {
         .format(
             &Hint::new(),
             source,
-            &FormatOptions::default(),
+            &FormatOptions { enable_gapless: true, ..FormatOptions::default() },
             &MetadataOptions::default(),
         )
         .map_err(invalid)?;

@@ -900,7 +900,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 32, 5, 4, 12, 2, 1, 11]);
+        assert_eq!(counts, [32, 18, 12, 32, 5, 4, 13, 2, 1, 11]);
     }
 
     #[test]
