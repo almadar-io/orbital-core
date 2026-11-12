@@ -347,6 +347,20 @@ pub(super) fn leaf_failure(
     }
 }
 
+/// A declined `query` reduced to its predicates, ordered by `id`: what a store that filters can answer when it
+/// cannot order, window, rank or count as asked. The kernel orders, windows and ranks the rows it returns.
+pub fn narrowed_query(query: &RowQuery) -> RowQuery {
+    RowQuery {
+        policy: query.policy.clone(),
+        filter: query.filter.clone(),
+        order: Some(RowOrder { field: "id".to_string(), direction: RowDirection::Asc }),
+        offset: None,
+        limit: None,
+        total: Some(RowTotalMode::None),
+        nearest: None,
+    }
+}
+
 /// Why a host with `capabilities` cannot run `query` as a push-down, or `None` when it can. The first
 /// failing check wins: leaves, combinators, value kinds, order field (`createdAt` when none is authored), window,
 /// exact total.

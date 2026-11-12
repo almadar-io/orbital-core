@@ -23,7 +23,7 @@ use crate::kernel::KernelError;
 use orbital_core_base::os::{OsError, OsErrorKind, OsOp};
 use orbital_core_base::tab::{TabAsk, TabFailure, TabFailureKind};
 use crate::process_result::ProcessEventResult;
-use crate::row_query::{apply_write_batch_across, guard_unsupported_reason, query_unsupported_reason, touched_ids, CreateIds, QueryCapabilities, RowCommit, RowCommitWrite, RowTable, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
+use crate::row_query::{apply_write_batch_across, guard_unsupported_reason, narrowed_query, query_unsupported_reason, touched_ids, CreateIds, QueryCapabilities, RowCommit, RowCommitWrite, RowTable, QueryRun, RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome, ScanControl, WriteCapabilities};
 use orbital_core_base::row_set::{RowQuery, RowSetRef};
 use orbital_core_base::sync::{Mutex, MutexGuard, RwLock};
 use std::collections::{HashMap, HashSet};

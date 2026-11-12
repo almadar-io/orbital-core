@@ -1181,7 +1181,7 @@ mod derived_fields {
         let plain = InMemoryEntityCache::new();
         indexed.declare_indexes(
             "Person",
-            &[orbital_core_base::schema::types::EntityIndex { fields: vec!["emailKey".to_string()], order_by: None }],
+            &[orbital_core_base::schema::types::EntityIndex { fields: vec!["emailKey".to_string()], order_by: None, nearest: None }],
         );
         for id in ["p1", "p2", "p3", "p4"] {
             let row = persistence.read("Person", id).unwrap();

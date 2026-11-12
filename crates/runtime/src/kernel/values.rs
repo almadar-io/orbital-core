@@ -59,7 +59,12 @@ pub(crate) fn sexpr_to_value(sexpr: &SExpression) -> Value {
         SExpression::Number(n) => Value::Number(*n),
         SExpression::Bool(b) => Value::Bool(*b),
         SExpression::Null => Value::Null,
-        SExpression::Array(items) => Value::Array(items.iter().map(sexpr_to_value).collect()),
+        SExpression::Array(items) => Value::Array(
+            orbital_core_base::schema::sexpr::strip_literal_list_marker(items)
+                .iter()
+                .map(sexpr_to_value)
+                .collect(),
+        ),
         SExpression::Object(obj) => {
             let map: ValueMap = obj
                 .iter()

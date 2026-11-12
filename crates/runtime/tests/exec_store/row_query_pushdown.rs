@@ -1522,16 +1522,20 @@ fn the_kernel_computes_nearest_over_a_listing_when_the_store_lacks_the_capabilit
         "{log:?}"
     );
     assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
-    // control: a store declaring every query form but nearest is listed too, with the same answer
+    // a store declaring every query form but nearest is asked the query's narrowing, never listed: same answer
     let k = host_kernel();
     let mut caps = QueryCapabilities::full();
     caps.nearest = None;
     k.set_query_capabilities("Ticket", caps);
-    let (log, out) = fly(&k, "NEAREST", &seeded_vectors(), &|_| None);
+    let (log, out) = fly(&k, "NEAREST", &seeded_vectors(), &|r| match r {
+        IoRequest::QueryRows { query, project: RowProjection::Rows, .. } => {
+            Some(IoAnswer::Page(Ok(seeded_vectors().query_page("Ticket", query).unwrap_rows())))
+        }
+        _ => None,
+    });
+    let data = data_requests(&log);
     assert!(
-        data_requests(&log)
-            .iter()
-            .all(|r| matches!(r, IoRequest::ListRows { .. })),
+        data.len() == 1 && matches!(data[0], IoRequest::QueryRows { query, .. } if is_narrowed(query)),
         "{log:?}"
     );
     assert_eq!(listed(&out.unwrap()), vec!["v1", "v3"]);
@@ -1667,6 +1671,7 @@ fn index(fields: &[&str], order_by: Option<&str>) -> orbital_core_base::schema::
     orbital_core_base::schema::types::EntityIndex {
         fields: fields.iter().map(|f| f.to_string()).collect(),
         order_by: order_by.map(str::to_string),
+        nearest: None,
     }
 }
 

@@ -316,21 +316,24 @@ pub(super) fn compile_expr(
                         scope.clone()
                     };
                     // The evaluator stops at the first truthy operand of an or (falsy of an and), so an operand
-                    // after a constant that decides the chain is never evaluated and need not compile.
+                    // after a constant that decides the chain is never evaluated and need not compile. A constant
+                    // that does not decide it changes nothing, so it is dropped: a store sees only field predicates.
                     let decides = head == "or";
                     let mut of = Vec::with_capacity(args.len());
                     for a in args {
-                        let compiled = compile_expr(a, ctx, required, exact, &inner)?;
-                        let stops = matches!(compiled, RowPredicate::Const { value } if value == decides);
-                        of.push(compiled);
-                        if stops {
-                            return Ok(RowPredicate::Const { value: decides });
+                        match compile_expr(a, ctx, required, exact, &inner)? {
+                            RowPredicate::Const { value } if value == decides => {
+                                return Ok(RowPredicate::Const { value: decides })
+                            }
+                            RowPredicate::Const { .. } => {}
+                            compiled => of.push(compiled),
                         }
                     }
-                    Ok(if head == "and" {
-                        RowPredicate::All { of }
-                    } else {
-                        RowPredicate::Any { of }
+                    Ok(match (of.len(), head == "and") {
+                        (0, _) => RowPredicate::Const { value: !decides },
+                        (1, _) => of.pop().expect("one operand"),
+                        (_, true) => RowPredicate::All { of },
+                        (_, false) => RowPredicate::Any { of },
                     })
                 }
                 "not" if args.len() == 1 => Ok(RowPredicate::Not {

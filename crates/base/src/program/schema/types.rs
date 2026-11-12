@@ -315,7 +315,7 @@ mod state_machine;
 mod page;
 pub use entity::{
     compose_nullability, tuple_slots_of, AccessWaivers, AssetAspect, AssetDimension, Cardinality,
-    EntityDefinition, EntityIndex, FieldDefinition, FieldProjection, FieldType, FIELD_TYPE_NAMES, OnDelete,
+    EntityDefinition, EntityIndex, IndexNearest, FieldDefinition, FieldProjection, FieldType, FIELD_TYPE_NAMES, OnDelete,
     Persistence, RelationDefinition, SemanticAssetRef, TagReading, TypeVarName, UnionVariantChoice,
     VisualStyle, FRAMEWORK_STAMPED_FIELDS,
 };

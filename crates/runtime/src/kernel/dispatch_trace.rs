@@ -27,8 +27,9 @@ pub struct TraceTransition {
     pub guard_results: Vec<TraceGuard>,
     pub effects: Vec<TraceEffect>,
     pub emits: Vec<TraceEmit>,
-    #[serde(default)]
-    pub collapsed: Vec<TraceCollapsed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub collapsed: Option<Vec<TraceCollapsed>>,
     pub failure: Option<String>,
 }
 
@@ -134,15 +135,17 @@ pub fn transition_of(
                 _ => None,
             })
             .collect(),
-        collapsed: result
-            .collapsed
-            .iter()
-            .map(|c| TraceCollapsed {
-                trait_name: c.trait_name.clone(),
-                event: c.event.clone(),
-                payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
-            })
-            .collect(),
+        collapsed: (!result.collapsed.is_empty()).then(|| {
+            result
+                .collapsed
+                .iter()
+                .map(|c| TraceCollapsed {
+                    trait_name: c.trait_name.clone(),
+                    event: c.event.clone(),
+                    payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
+                })
+                .collect()
+        }),
         failure: result.failure.clone(),
     }
 }

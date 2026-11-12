@@ -151,8 +151,8 @@ impl EntitySource for IoPort {
             return self.source_for(entity_type).query_page(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
-        if let Some(capabilities) = capabilities {
-            match query_unsupported_reason(&capabilities, query) {
+        if let Some(capabilities) = &capabilities {
+            match query_unsupported_reason(capabilities, query) {
                 Some(reason) => self.notice(
                     "kernel.fetch.pushdown-fallback",
                     entity_type,
@@ -186,7 +186,7 @@ impl EntitySource for IoPort {
             }
         }
         let mut run = QueryRun::new(query);
-        if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
+        if let Err(e) = self.fallback_scan(entity_type, capabilities.as_ref(), query, &mut |row| run.visit(row)) {
             return QueryAnswer::Failed(e);
         }
         run.finish().into()
@@ -200,9 +200,9 @@ impl EntitySource for IoPort {
             return self.source_for(entity_type).query_ids(entity_type, query);
         }
         let capabilities = self.query_capabilities.read().get(entity_type).cloned();
-        if let Some(capabilities) = capabilities {
+        if let Some(capabilities) = &capabilities {
             let reason = if capabilities.ids_only == Some(true) {
-                query_unsupported_reason(&capabilities, query).map(|r| r.as_str())
+                query_unsupported_reason(capabilities, query).map(|r| r.as_str())
             } else {
                 Some("ids-only")
             };
@@ -230,7 +230,7 @@ impl EntitySource for IoPort {
             }
         }
         let mut run = QueryRun::new(query);
-        if let Err(e) = self.scan(entity_type, &mut |row| run.visit(row)) {
+        if let Err(e) = self.fallback_scan(entity_type, capabilities.as_ref(), query, &mut |row| run.visit(row)) {
             return QueryAnswer::Failed(e);
         }
         run.finish_ids().into()
@@ -301,7 +301,55 @@ impl EntitySource for IoPort {
     }
 
     fn declare_indexes(&self, entity_type: &str, indexes: &[orbital_core_base::schema::types::EntityIndex]) {
+        self.index_paths.write().insert(entity_type.to_string(), indexes.to_vec());
         self.source.declare_indexes(entity_type, indexes);
         self.memory.declare_indexes(entity_type, indexes);
+    }
+}
+
+impl IoPort {
+    /// The rows a query the store could not run is answered over: the store's answer to the query's narrowing
+    /// when the store can run that (EXEC-FETCH-1), every row otherwise.
+    fn fallback_scan(
+        &self,
+        entity_type: &str,
+        capabilities: Option<&QueryCapabilities>,
+        query: &RowQuery,
+        visit: &mut dyn FnMut(&Arc<Value>) -> ScanControl,
+    ) -> Result<(), String> {
+        let narrowed = narrowed_query(query);
+        let runnable = capabilities.is_some_and(|c| query_unsupported_reason(c, &narrowed).is_none());
+        if runnable && narrowed != *query {
+            let page = match self.ask(|| IoRequest::QueryRows {
+                entity_type: entity_type.to_string(),
+                query: narrowed.clone(),
+                project: RowProjection::Rows,
+            }) {
+                Asked::Direct => match self.source_for(entity_type).query_page(entity_type, &narrowed) {
+                    QueryAnswer::Rows(page) => Some(page),
+                    QueryAnswer::Declined(_) => None,
+                    QueryAnswer::Failed(e) => return Err(e),
+                },
+                Asked::Answer(IoAnswer::Page(page)) => {
+                    let page = page?;
+                    echo_checked(entity_type, &narrowed, &page)?;
+                    Some(page)
+                }
+                Asked::Answer(IoAnswer::QueryUnsupported(detail)) => {
+                    self.notice("kernel.fetch.pushdown-fallback", entity_type, "host-declined-narrowed", &detail);
+                    None
+                }
+                Asked::Answer(_) | Asked::Withheld => return Err(self.withheld_error()),
+            };
+            if let Some(page) = page {
+                for row in page.rows {
+                    if matches!(visit(&Arc::new(row)), ScanControl::Stop) {
+                        break;
+                    }
+                }
+                return Ok(());
+            }
+        }
+        self.scan(entity_type, visit)
     }
 }

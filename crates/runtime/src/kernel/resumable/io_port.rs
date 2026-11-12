@@ -49,6 +49,8 @@ pub(crate) struct IoPort {
     pub(super) store_drivers: RwLock<HashMap<String, String>>,
     /// Entity type -> the `[persistent: tbl]` collection it declares; sent to its store driver (EXEC-STORE-4).
     pub(super) collections: RwLock<HashMap<String, String>>,
+    /// The `@index` paths each entity declares; a driver verb carries them (EXEC-STORE-6).
+    pub(super) index_paths: RwLock<HashMap<String, Vec<orbital_core_base::schema::types::EntityIndex>>>,
     pub(super) store_seq: std::sync::atomic::AtomicU64,
     /// Where a sealed operator's fresh entropy comes from; never journaled.
     pub(super) entropy: Arc<dyn Fn() -> Result<[u8; 32], String> + Send + Sync>,
@@ -103,6 +105,7 @@ impl IoPort {
             memory: crate::entity_source::InMemoryEntityCache::new(),
             store_drivers: RwLock::new(HashMap::new()),
             collections: RwLock::new(HashMap::new()),
+            index_paths: RwLock::new(HashMap::new()),
             store_seq: std::sync::atomic::AtomicU64::new(0),
             entropy: Arc::new(fresh_entropy),
             call_scope: None,
@@ -243,6 +246,11 @@ impl IoPort {
     }
 
     /// The collection `entity_type` declares, when it declares one.
+    /// The `@index` paths `entity_type` declares, empty when none.
+    pub(crate) fn index_paths_of(&self, entity_type: &str) -> Vec<orbital_core_base::schema::types::EntityIndex> {
+        self.index_paths.read().get(entity_type).cloned().unwrap_or_default()
+    }
+
     pub(crate) fn collection_of(&self, entity_type: &str) -> Option<String> {
         self.collections.read().get(entity_type).cloned()
     }
@@ -287,7 +295,7 @@ impl IoPort {
         (recorded == entity_type && bare(row) == bare(fields)).then(|| id.to_string())
     }
 
-    pub(super) fn store_bound(&self, entity_type: &str) -> bool {
+    pub(crate) fn store_bound(&self, entity_type: &str) -> bool {
         self.store_drivers.read().contains_key(entity_type)
     }
 

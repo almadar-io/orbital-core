@@ -21,10 +21,16 @@ impl EffectExecutor {
             entity_policies: None,
             trait_modes: None,
             host_streams: Arc::default(),
+            asks_viewer: Arc::default(),
         }
     }
 
     /// Set where a trait name's dispatch mode is read, which places a trace subscription (EXEC-DIST-14).
+    /// List this kernel's client host asks for the opener's viewer instead of running them as substrate asks (a guest).
+    pub fn set_asks_viewer(&self, asks: bool) {
+        self.asks_viewer.store(asks, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub fn with_trait_modes(mut self, modes: Arc<TraitModes>) -> Self {
         self.trait_modes = Some(modes);
         self

@@ -33,6 +33,15 @@ impl EffectExecutor {
         if self.environment.is_client() && !matches!(effect, Effect::Custom { .. }) && runs_on(effect.operator()) == RunsOn::Server {
             return self.delegate_to_server(effect.clone());
         }
+        if !self.environment.is_client() && self.asks_viewer.load(std::sync::atomic::Ordering::SeqCst) {
+            if let Effect::Custom { name, .. } = effect {
+                if orbital_core_base::runs_on::runs_on_known(name) == Some(RunsOn::Client)
+                    && !orbital_core_base::runs_on::is_identity_ask(name)
+                {
+                    return self.ask_client_host(effect.clone());
+                }
+            }
+        }
         if self.environment.is_client() && matches!(effect, Effect::Custom { .. }) {
             match orbital_core_base::runs_on::runs_on_known(effect.operator()) {
                 Some(RunsOn::Server) => return self.delegate_to_server(effect.clone()),
@@ -222,6 +231,13 @@ impl EffectExecutor {
     /// client effect, which answers it. The host's answer is no part of this dispatch, so an effect that routes a
     /// completion (`emit`, a key) has nowhere to deliver it and fails by name.
     pub(super) fn ask_client_host(&self, effect: Effect) -> EffectResult {
+        if let Effect::Custom { name, args, .. } = &effect {
+            if name == "program/host-ask" {
+                if let Err(reason) = orbital_core_base::host_ask::relayed(args.first()) {
+                    return EffectResult::failed(effect.clone(), &reason);
+                }
+            }
+        }
         if let Effect::Custom { name, args, key, emit } = &effect {
             if orbital_core_base::runs_on::is_trace_subscription(name, args) {
                 let key = key.as_ref().and_then(Value::as_str).filter(|k| !k.is_empty());

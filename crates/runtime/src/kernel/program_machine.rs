@@ -6,7 +6,7 @@ use std::prelude::v1::*;
 use crate::embed::eval_wire::EvalStepWire;
 use crate::process_result::{EffectRun, EffectRunStatus, ProcessEventResult};
 use crate::propositions::{judge_propositions, PropositionObservation, PropositionVerdict};
-use crate::step_replay::PendingAsk;
+use crate::step_replay::{PendingAsk, StepCollapsed};
 use orbital_core_base::schema::types::TraitDefinition;
 use orbital_core_base::schema::SExpression;
 use orbital_core_base::value::Value;
@@ -187,6 +187,9 @@ pub struct PlayedResult {
     pub pending_asks: Vec<PendingAsk>,
     /// Every trait the request's event moved, the requested one among them.
     pub outcomes: Vec<PlayedOutcome>,
+    /// Deliveries the request's dispatch skipped as exact repeats (EXEC-QUEUE-4), from every trait its event moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collapsed: Option<Vec<StepCollapsed>>,
 }
 
 /// One trait the played request's cascade moved.

@@ -334,6 +334,9 @@ pub struct EffectExecutor {
     trait_modes: Option<Arc<TraitModes>>,
     /// The keys of the trace streams this client kernel handed its host, which a `cancel-call` of them reaches.
     host_streams: Arc<orbital_core_base::sync::Mutex<std::collections::HashSet<String>>>,
+    /// This kernel stands in for a browser that is not there (a guest session): its client host asks are listed for
+    /// the opener's viewer to answer, as a browser kernel lists them for its host (EXEC-ENDPOINT-3a).
+    asks_viewer: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The dispatch mode of the registered trait a name names; `None` when no such trait is registered.

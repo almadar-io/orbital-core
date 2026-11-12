@@ -550,7 +550,7 @@ fn a_skipped_repeat_is_reported_on_the_dispatch_outcomes() {
     );
     assert_eq!(
         collapsed_visits(&kernel, json!({ "k": 1 })),
-        vec![("Fanner".to_string(), "STEP".to_string(), json!({ "k": 1 }))]
+        vec![("Fanner".to_string(), "STEP".to_string(), json!({ "k": 1.0 }))]
     );
 }
 

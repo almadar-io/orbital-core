@@ -190,6 +190,54 @@ fn a_host_ask_that_cannot_return_its_completion_fails_by_name_instead_of_losing_
     assert!(plain.is_host_asked(), "control: the same ask with no key is handed to the host: {plain:?}");
 }
 
+// A viewer relays a guest's client host ask (program/host-ask): its own host answers it, routed to the relay's emit.
+fn guest_ask(op: &str) -> String {
+    let completion = orbital_core_base::client_effect::HostAskCompletion { trait_name: "Clock".into(), success: Some("TICKED".into()), ..Default::default() };
+    orbital_core_base::host_ask::write(op, &[], Some(&completion))
+}
+
+#[test]
+fn a_relayed_ask_is_handed_to_the_host_with_the_guests_ask_text_and_the_relays_completion() {
+    use orbital_core_base::client_effect::{ClientEffect, HostAskCompletion};
+    let text = guest_ask("audio/clock");
+    let relay = serde_json::json!(["program/host-ask", text, { "emit": { "success": "ANSWERED", "failure": "REFUSED" } }]);
+    let (asks, statuses) = host_asks(&host_ask_kernel(true, relay), Value::Null);
+    assert_eq!(asks, vec![ClientEffect::HostAsk {
+        op: "program/host-ask".into(),
+        args: vec![Value::String(text.into())],
+        completion: Some(HostAskCompletion { trait_name: "Chrome".into(), success: Some("ANSWERED".into()), failure: Some("REFUSED".into()), ..HostAskCompletion::default() }),
+    }]);
+    assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed]);
+}
+
+#[test]
+fn a_relay_of_an_identity_ask_a_non_client_op_or_foreign_text_is_refused_by_name() {
+    let exec = EffectExecutor::new(RuntimeEnvironment::Client);
+    let relay = |text: String| Effect::Custom { name: "program/host-ask".into(), args: vec![Value::String(text.into())], key: None, emit: None };
+    let identity = exec.execute(&relay(guest_ask("auth/sign-out")), &BindingContext::new());
+    assert!(identity.is_failed() && identity.error.as_deref().is_some_and(|e| e.contains("auth/sign-out is not an ask a viewer answers")), "{identity:?}");
+    let server = exec.execute(&relay(guest_ask("os/read-file")), &BindingContext::new());
+    assert!(server.is_failed() && server.error.as_deref().is_some_and(|e| e.contains("not a client host ask")), "{server:?}");
+    let foreign = exec.execute(&relay("not an ask".to_string()), &BindingContext::new());
+    assert!(foreign.is_failed() && foreign.error.as_deref().is_some_and(|e| e.contains("not one a guest wrote")), "{foreign:?}");
+    let control = exec.execute(&relay(guest_ask("audio/stop-music")), &BindingContext::new());
+    assert!(control.is_host_asked(), "control: a guest's client ask relays: {control:?}");
+}
+
+// EXEC-ENDPOINT-3a: a guest kernel stands in for its browser, so it lists its client asks for the viewer.
+#[test]
+fn a_guest_kernel_lists_its_client_asks_for_the_viewer_but_never_its_identity_asks() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let guest = host_ask_kernel(false, serde_json::json!(["audio/play-sound", "footstep"]));
+    guest.set_runs_client_traits(true);
+    assert_eq!(host_asks(&guest, Value::Null).0, vec![ClientEffect::HostAsk { op: "audio/play-sound".into(), args: vec![Value::String("footstep".to_string().into())], completion: None }]);
+    let identity = host_ask_kernel(false, serde_json::json!(["auth/sign-out"]));
+    identity.set_runs_client_traits(true);
+    assert!(host_asks(&identity, Value::Null).0.is_empty(), "the guest's sign-out is its own, never the viewer's");
+    let plain = host_ask_kernel(false, serde_json::json!(["audio/play-sound", "footstep"]));
+    assert!(host_asks(&plain, Value::Null).0.is_empty(), "control: a server kernel that is no guest lists no ask");
+}
+
 fn sign_in(options: serde_json::Value) -> serde_json::Value {
     serde_json::json!(["auth/sign-in", { "method": "email", "email": "@payload.email", "password": "pw" }, options])
 }

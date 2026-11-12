@@ -328,6 +328,13 @@ pub fn install_operator_sites(sites: &std::collections::BTreeMap<String, String>
     Ok(())
 }
 
+/// Whether `operator` is one of the program's own identity asks (the operator table's `std-auth` category): a guest
+/// answers those itself and never hands them to the viewer watching it.
+pub fn is_identity_ask(operator: &str) -> bool {
+    crate::language_data::operator_data().is_ok()
+        && crate::language::registry::get_operator(operator).is_some_and(|op| op.category == "std-auth")
+}
+
 /// The site of `operator`, or `None` when neither the kernel's own tables, the installed program sites nor an
 /// installed operator table can place it: a client kernel then refuses the effect instead of guessing `Any`.
 pub fn runs_on_known(operator: &str) -> Option<RunsOn> {

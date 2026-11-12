@@ -198,8 +198,9 @@ pub struct StepOutcome {
     pub orbital: String,
     pub event: String,
     pub ensures: Vec<PlayedEnsures>,
-    #[serde(default)]
-    pub collapsed: Vec<StepCollapsed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub collapsed: Option<Vec<StepCollapsed>>,
 }
 
 /// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the step's dispatch: the trait and event it was for and its payload.
@@ -321,15 +322,16 @@ pub fn outcome_report(
         orbital,
         event: event.to_string(),
         ensures,
-        collapsed: r
-            .collapsed
-            .iter()
-            .map(|c| StepCollapsed {
-                trait_name: c.trait_name.clone(),
-                event: c.event.clone(),
-                payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
-            })
-            .collect(),
+        collapsed: (!r.collapsed.is_empty()).then(|| {
+            r.collapsed
+                .iter()
+                .map(|c| StepCollapsed {
+                    trait_name: c.trait_name.clone(),
+                    event: c.event.clone(),
+                    payload: serde_json::to_value(&*c.payload).unwrap_or(serde_json::Value::Null),
+                })
+                .collect()
+        }),
     }
 }
 
@@ -436,6 +438,8 @@ pub fn played_steps(
                     entity_after: step.map_or(serde_json::Value::Null, |s| s.entity_after.clone()),
                     pending_asks: step.map_or_else(Vec::new, |s| s.pending_asks.clone()),
                     outcomes,
+                    collapsed: Some(moved.iter().flat_map(|o| o.collapsed.iter().flatten().cloned()).collect::<Vec<_>>())
+                        .filter(|c| !c.is_empty()),
                 },
             })
         })
@@ -788,7 +792,7 @@ fn play_step(
                 orbital,
                 event: event.to_string(),
                 ensures: Vec::new(),
-                collapsed: Vec::new(),
+                collapsed: None,
             });
             return Ok(StepResult {
                 outcomes: std::mem::take(partial),
@@ -1402,6 +1406,7 @@ mod tests {
         assert!(fired.transition_fired);
         assert_eq!(fired.state.after.as_deref(), Some("INSERT"));
         assert_eq!(fired.outcomes.len(), 1);
+        assert!(fired.collapsed.is_none(), "control: no repeat, nothing collapsed");
         assert_eq!(fired.entity_after["count"], serde_json::json!(1.0));
         assert_eq!(played[0].orbital, "Editor");
         assert_eq!(played[0].seeds.now, Some(5.0));

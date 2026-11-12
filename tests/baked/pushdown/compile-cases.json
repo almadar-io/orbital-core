@@ -1505,7 +1505,7 @@
     },
     {
       "name": "const-compare-false-or",
-      "why": "a constant comparison that is false is a false operand, the rest of the or still compiles",
+      "why": "a constant comparison that is false decides nothing in an or, so it is dropped and the one operand left is the predicate",
       "bindings": {
         "payload": {
           "value": "open"
@@ -1533,19 +1533,10 @@
       "expect": {
         "compiled": {
           "filter": {
-            "kind": "any",
-            "of": [
-              {
-                "kind": "const",
-                "value": false
-              },
-              {
-                "kind": "compare",
-                "field": "status",
-                "op": "==",
-                "value": "open"
-              }
-            ]
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
           }
         }
       }
@@ -1682,6 +1673,134 @@
       },
       "expect": {
         "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "const-compare-true-and",
+      "why": "a constant comparison that is true decides nothing in an and, so it is dropped",
+      "bindings": {
+        "payload": {
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "=",
+            "@payload.value",
+            "open"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-false-or-keeps-two-operands",
+      "why": "dropping the false constant leaves an any of the two field comparisons",
+      "bindings": {
+        "payload": {
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "done"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "any",
+            "of": [
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "open"
+              },
+              {
+                "kind": "compare",
+                "field": "status",
+                "op": "==",
+                "value": "done"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-or-of-only-false-constants",
+      "why": "an or whose every operand is a false constant is false",
+      "bindings": {
+        "payload": {
+          "value": "open"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            "@payload.value",
+            ""
+          ],
+          [
+            "=",
+            "@payload.value",
+            "x"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": false
+          }
+        }
       }
     }
   ]

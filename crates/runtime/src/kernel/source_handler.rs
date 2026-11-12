@@ -259,9 +259,6 @@ impl EntitySourceHandler {
             .and_then(|p| p.read.clone());
         let mut tier = "interpreted";
         let mut compiled: Option<FetchPage> = None;
-        // The rows a declined query's narrowing returned: every row its predicates admit, which the kernel then
-        // orders, windows and ranks exactly as it does a listing.
-        let mut candidates: Option<Vec<Value>> = None;
         // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`.
         let default_order = default_row_order();
         let plain_order = match order {
@@ -303,17 +300,6 @@ impl EntitySourceHandler {
                         QueryAnswer::Declined(reason) => {
                             log_store_declined(entity_type, &reason);
                             tier = "interpreted";
-                            let narrowed = narrowed_query(&query);
-                            if narrowed != query {
-                                match self.source.query_page(entity_type, &narrowed) {
-                                    QueryAnswer::Rows(page) => {
-                                        tier = "narrowed";
-                                        candidates = Some(page.rows);
-                                    }
-                                    QueryAnswer::Declined(reason) => log_store_declined(entity_type, &reason),
-                                    QueryAnswer::Failed(message) => return Err(message),
-                                }
-                            }
                         }
                         QueryAnswer::Failed(message) => return Err(message),
                     }
@@ -348,15 +334,12 @@ impl EntitySourceHandler {
                         Err(_) if self.io.suspended() => Vec::new(),
                         Err(failure) => return Err(failure),
                     },
-                    None => match candidates {
-                        Some(rows) => rows,
-                        None => self
-                            .source
-                            .list(entity_type)?
-                            .iter()
-                            .map(|row| (**row).clone())
-                            .collect(),
-                    },
+                    None => self
+                        .source
+                        .list(entity_type)?
+                        .iter()
+                        .map(|row| (**row).clone())
+                        .collect(),
                 };
                 tracing::debug!(
                     target: orbital_core_base::logging::ns::RUNTIME_FETCH,
@@ -543,24 +526,6 @@ impl FetchHandler for EntitySourceHandler {
             total: page.total,
             query,
         })
-    }
-}
-
-/// A declined query reduced to what any store that filters can answer: the same policy and filter, ordered by `id`
-/// (every store orders by its keys), with no window, no count and no `nearest`. The kernel orders, windows and ranks
-/// the rows it returns, as it does a listing, so only the rows the predicates admit cross the host boundary.
-fn narrowed_query(query: &RowQuery) -> RowQuery {
-    RowQuery {
-        policy: query.policy.clone(),
-        filter: query.filter.clone(),
-        order: Some(RowOrder {
-            field: "id".to_string(),
-            direction: RowDirection::Asc,
-        }),
-        offset: None,
-        limit: None,
-        total: Some(RowTotalMode::None),
-        nearest: None,
     }
 }
 

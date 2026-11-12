@@ -240,6 +240,19 @@ fn guest_answer(
             _ => None,
         })
         .collect();
+    let host_asks: Vec<Value> = response
+        .client_effects_by_trait
+        .iter()
+        .flatten()
+        .filter_map(|step| match &step.effect {
+            ClientEffect::HostAsk { op, args, completion } => Some(record(vec![
+                ("trait", Value::string(step.trait_name.clone())),
+                ("op", Value::string(op.clone())),
+                ("ask", Value::string(orbital_core_base::host_ask::write(op, args, completion.as_ref()))),
+            ])),
+            _ => None,
+        })
+        .collect();
     let emitted: Vec<Value> = response
         .emitted_events
         .iter()
@@ -269,6 +282,9 @@ fn guest_answer(
     ];
     if !navigations.is_empty() {
         answer.push(("navigations", Value::array(navigations)));
+    }
+    if !host_asks.is_empty() {
+        answer.push(("hostAsks", Value::array(host_asks)));
     }
     if let Some(guest) = guest {
         answer.push(("guest", Value::string(guest.to_string())));
@@ -843,7 +859,7 @@ impl RuntimeKernel {
         let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
         // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
         let empty = |field: &str| answer.get(field).and_then(Value::as_array).is_none_or(|items| items.is_empty());
-        if empty("rendered") && empty("emitted") {
+        if empty("rendered") && empty("emitted") && empty("hostAsks") {
             return Ok(GuestTicks::Idle);
         }
         Ok(GuestTicks::Painted(answer))
@@ -882,6 +898,11 @@ impl RuntimeKernel {
             }
         }
         let guest = &session.kernel;
+        if let Some(Value::Object(form)) = args.first() {
+            if form.contains_key("ask") {
+                return self.answer_guest_ask(&session, handle, form, args);
+            }
+        }
         let Some(Value::String(address)) = args.first() else {
             return Err(failure(
                 "program/dispatch: a guest address is `Orbital.Trait.EVENT` or `Trait.EVENT`",
@@ -901,6 +922,51 @@ impl RuntimeKernel {
         };
         let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
         let payload = self.copy_into(&session, &given)?;
+        self.run_in_guest(&session, handle, targets, event, payload, args)
+    }
+
+    /// `program/dispatch { ask, answer | refuse } { guest }`: return a host's answer to a client ask the guest made, as a
+    /// browser host returns it (EXEC-DIST-13): the ask's success or failure route fires on the trait that asked.
+    /// `refuse` is an opener with no viewer to ask: the failure route fires with kind `unavailable`.
+    fn answer_guest_ask(
+        &self,
+        session: &GuestSession,
+        handle: &Value,
+        form: &ValueMap,
+        args: &[Value],
+    ) -> Result<Value, AgentPortFailure> {
+        use orbital_core_base::host_ask::{answer, route, RelayedAnswer, RelayedAsk};
+        let text = |name: &str| form.get(name).and_then(Value::as_str);
+        let ask: RelayedAsk = text("ask")
+            .ok_or_else(|| failure("program/dispatch: ask is the text a guest answer carried"))
+            .and_then(|t| serde_json::from_str(t).map_err(|e| failure(format!("program/dispatch: the ask is not one a guest wrote: {e}"))))?;
+        let outcome = match (text("answer"), text("refuse")) {
+            (Some(given), None) => answer(given).map_err(failure)?,
+            (None, Some(reason)) => RelayedAnswer::Refused { error: reason.to_string(), kind: "unavailable".to_string() },
+            _ => return Err(failure("program/dispatch: an ask is returned with exactly one of answer or refuse")),
+        };
+        if ask.completion.as_ref().is_some_and(|c| c.entity_id.is_some()) {
+            return Err(failure("program/dispatch: the ask was made on a row frame, which a guest's viewer cannot return to yet"));
+        }
+        let Some((event, payload)) = route(&ask, &outcome) else {
+            return Ok(guest_answer(&std::collections::HashMap::new(), None, None, &session.route.read().embedded.clone(), &[], "", "", None, &[]));
+        };
+        let target = ask.completion.map(|c| c.trait_name).unwrap_or_default();
+        let payload = self.copy_into(session, &payload)?;
+        self.run_in_guest(session, handle, vec![target], &event, payload, args)
+    }
+
+    /// Dispatch `event` to `targets` in the guest as its client would, on the lane the call's key decides.
+    fn run_in_guest(
+        &self,
+        session: &GuestSession,
+        handle: &Value,
+        targets: Vec<String>,
+        event: &str,
+        payload: Value,
+        args: &[Value],
+    ) -> Result<Value, AgentPortFailure> {
+        let guest = &session.kernel;
         let keyed = self.io.keyed_call();
         if keyed || session.grants.is_some() {
             if keyed {

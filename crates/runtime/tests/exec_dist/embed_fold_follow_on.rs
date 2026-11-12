@@ -332,3 +332,72 @@ fn a_host_emit_reaches_a_client_only_listener_with_no_init_arm() {
 fn control_a_host_emit_reaches_a_client_only_listener_with_an_init_arm() {
     assert_eq!(host_answered_resolve(&finder(true), &["Find", "Match", "Resolver"]), "resolving");
 }
+
+/// G-CROSS-438: `Figures` (`[client]`) zeroes its count on INIT and takes the loaded count from `FIGURES_READ`, which the server
+/// trait `Fetcher` emits from its own INIT.
+fn figures() -> EmbeddedKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "home",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Home",
+            "entity": { "name": "Figure", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "count", "type": "number" }] },
+            "traits": [
+                { "name": "Figures", "linkedEntity": "Figure", "dispatch": "client",
+                  "listens": [{ "event": "FIGURES_READ", "triggers": "ITEMS_LOADED", "source": { "kind": "trait", "trait": "Fetcher" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "zeroed" }, { "name": "loaded" }],
+                    "transitions": [
+                        { "from": "idle", "to": "zeroed", "event": "INIT", "effects": [["set", "@entity.count", 0]] },
+                        { "from": "loaded", "to": "zeroed", "event": "INIT", "effects": [["set", "@entity.count", 0]] },
+                        { "from": "idle", "to": "loaded", "event": "ITEMS_LOADED", "effects": [["set", "@entity.count", "@payload.count"]] },
+                        { "from": "zeroed", "to": "loaded", "event": "ITEMS_LOADED", "effects": [["set", "@entity.count", "@payload.count"]] }] } },
+                { "name": "Fetcher", "linkedEntity": "Figure",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "FIGURES_READ", { "count": 3 }]] }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    EmbeddedKernel::new(schema, "c1").unwrap()
+}
+
+fn host_read() -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "FIGURES_READ".to_string(),
+            payload: Some(serde_json::from_value(json!({ "count": 3 })).unwrap()),
+            source: Some(BusEventSource { r#trait: Some("Fetcher".to_string()), ..Default::default() }),
+        }],
+        ..Default::default()
+    }
+}
+
+fn init_seed(t: &str) -> orbital_core_runtime::effects::MountSeed {
+    orbital_core_runtime::effects::MountSeed { r#trait: t.to_string(), event: orbital_core_runtime::effects::LifecycleEvent::Init }
+}
+
+fn figures_after(first: &[&str], then: &[&str]) -> String {
+    let k = figures();
+    k.mount(["Figures", "Fetcher"].iter().map(|t| t.to_string()).collect());
+    let run = |names: &[&str]| {
+        let seeds: Vec<_> = names.iter().map(|t| init_seed(t)).collect();
+        k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+    };
+    run(first);
+    k.apply_server_response(&host_read(), &HashSet::new()).unwrap();
+    run(then);
+    k.get_state("Figures", None)
+}
+
+/// EXEC-SEED-2 on the client kernel: the host's answer reaches a mounted `[client]` trait only after its own INIT, so INIT never
+/// overwrites the loaded count (the answer here lands before `Figures` has been seeded).
+#[test]
+fn a_host_emit_that_lands_before_the_client_traits_init_is_held_until_that_init_has_run() {
+    assert_eq!(figures_after(&["Fetcher"], &["Figures"]), "loaded");
+}
+
+#[test]
+fn control_a_host_emit_that_lands_after_the_client_traits_init_is_delivered_at_once() {
+    assert_eq!(figures_after(&["Figures", "Fetcher"], &[]), "loaded");
+}

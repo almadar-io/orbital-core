@@ -76,6 +76,8 @@ struct QueryVerb<'a> {
     collection: Option<String>,
     query: &'a RowQuery,
     project: RowProjection,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    indexes: Vec<EntityIndex>,
 }
 
 #[derive(Serialize)]
@@ -84,6 +86,8 @@ struct WriteVerb<'a> {
     batch: &'a RowWriteBatch,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     collections: BTreeMap<&'a str, String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    indexes: BTreeMap<&'a str, Vec<EntityIndex>>,
 }
 
 #[derive(Serialize)]
@@ -131,11 +135,15 @@ fn to_value<T: Serialize>(record: &T) -> Value {
 /// write reaches a driver as a one-op `WriteRows` batch, never as `CreateRow`/`WriteRow`/`DeleteRow`.
 /// `collection_of` gives the `[persistent: tbl]` collection an entity declares: the read, list and query verbs
 /// carry it as `collection`, a write verb as `collections` (entity type -> collection) for the entities of its
-/// ops that declare one; both are absent when none is declared.
+/// ops that declare one; both are absent when none is declared. `indexes_of` gives an entity's declared `@index`
+/// paths: a query verb carries its entity's as `indexes`, a write verb `indexes` (entity type -> paths) for the
+/// entities of its ops that declare any, since a driver ask runs on a fresh driver row and keeps nothing between
+/// asks (EXEC-STORE-4, EXEC-STORE-6).
 pub fn verb_for(
     request: &IoRequest,
     key: &str,
     collection_of: &dyn Fn(&str) -> Option<String>,
+    indexes_of: &dyn Fn(&str) -> Vec<EntityIndex>,
 ) -> Option<DriverVerb> {
     let (event, payload) = match request {
         IoRequest::ReadRow { entity_type, id } => (
@@ -167,6 +175,7 @@ pub fn verb_for(
                 collection: collection_of(entity_type),
                 query,
                 project: *project,
+                indexes: indexes_of(entity_type),
             }),
         ),
         IoRequest::WriteRows { batch } => {
@@ -178,7 +187,13 @@ pub fn verb_for(
                     collection_of(entity).map(|collection| (entity, collection))
                 })
                 .collect();
-            (ROWS_WRITE, to_value(&WriteVerb { key, batch, collections }))
+            let indexes = batch
+                .ops
+                .iter()
+                .map(|op| op.entity_type())
+                .filter_map(|entity| Some((entity, indexes_of(entity))).filter(|(_, paths)| !paths.is_empty()))
+                .collect();
+            (ROWS_WRITE, to_value(&WriteVerb { key, batch, collections, indexes }))
         }
         _ => return None,
     };
@@ -213,7 +228,7 @@ pub fn answer_for(
     event: &str,
     payload: &Value,
 ) -> Result<IoAnswer, ReplyError> {
-    let verb = verb_for(request, "", &|_| None).ok_or(ReplyError::NotARowAsk)?.event;
+    let verb = verb_for(request, "", &|_| None, &|_| Vec::new()).ok_or(ReplyError::NotARowAsk)?.event;
     let failed = || decode::<FailedReply>(event, payload).map(|r| r.message);
     let mismatch = || ReplyError::Mismatch {
         verb,
@@ -318,12 +333,16 @@ mod tests {
 
     #[test]
     fn a_read_ask_is_a_keyed_row_read_verb() {
-        let verb = verb_for(&read(), "k1", &|_| None).unwrap();
+        let verb = verb_for(&read(), "k1", &|_| None, &no_paths).unwrap();
         assert_eq!(verb.event, ROW_READ);
         assert_eq!(
             value_to_json(&verb.payload),
             serde_json::json!({"key": "k1", "entityType": "Ticket", "id": "t1"})
         );
+    }
+
+    fn no_paths(_: &str) -> Vec<EntityIndex> {
+        Vec::new()
     }
 
     fn declared(entity: &str) -> Option<String> {
@@ -332,12 +351,12 @@ mod tests {
 
     #[test]
     fn every_row_verb_names_the_declared_collection_beside_the_entity_type() {
-        let read = verb_for(&read(), "k", &declared).unwrap();
+        let read = verb_for(&read(), "k", &declared, &no_paths).unwrap();
         assert_eq!(
             value_to_json(&read.payload),
             serde_json::json!({"key": "k", "entityType": "Ticket", "collection": "tickets_tbl", "id": "t1"})
         );
-        let list = verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &declared).unwrap();
+        let list = verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &declared, &no_paths).unwrap();
         assert_eq!(
             value_to_json(&list.payload),
             serde_json::json!({"key": "k", "entityType": "Ticket", "collection": "tickets_tbl"})
@@ -347,23 +366,54 @@ mod tests {
             query: RowQuery::default(),
             project: RowProjection::Ids,
         };
-        let query = verb_for(&query, "k", &declared).unwrap();
+        let query = verb_for(&query, "k", &declared, &no_paths).unwrap();
         assert_eq!(value_to_json(&query.payload)["collection"], "tickets_tbl");
         assert_eq!(value_to_json(&query.payload)["entityType"], "Ticket");
-        let write = verb_for(&take(false), "k", &declared).unwrap();
+        let write = verb_for(&take(false), "k", &declared, &no_paths).unwrap();
         assert_eq!(
             value_to_json(&write.payload)["collections"],
             serde_json::json!({"Ticket": "tickets_tbl"})
         );
     }
 
+    fn paths(entity: &str) -> Vec<EntityIndex> {
+        if entity == "Ticket" {
+            vec![EntityIndex {
+                fields: vec!["kind".to_string()],
+                order_by: None,
+                nearest: Some(orbital_core_base::schema::types::IndexNearest { field: "embedding".to_string(), dimension: 3 }),
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    #[test]
+    fn the_query_and_write_verbs_carry_the_declared_index_paths_of_their_entities() {
+        let query = IoRequest::QueryRows { entity_type: "Ticket".into(), query: RowQuery::default(), project: RowProjection::Rows };
+        let expected = serde_json::json!([{ "fields": ["kind"], "nearest": { "field": "embedding", "dimension": 3 } }]);
+        let query = verb_for(&query, "k", &declared, &paths).unwrap();
+        assert_eq!(value_to_json(&query.payload)["indexes"], expected);
+        let write = verb_for(&take(false), "k", &declared, &paths).unwrap();
+        assert_eq!(value_to_json(&write.payload)["indexes"], serde_json::json!({ "Ticket": expected }));
+    }
+
+    #[test]
+    fn control_an_entity_declaring_no_index_paths_carries_no_indexes_field() {
+        let query = IoRequest::QueryRows { entity_type: "Ticket".into(), query: RowQuery::default(), project: RowProjection::Rows };
+        for verb in [verb_for(&query, "k", &declared, &no_paths).unwrap(), verb_for(&take(false), "k", &declared, &no_paths).unwrap()] {
+            let payload = value_to_json(&verb.payload);
+            assert!(!payload.as_object().unwrap().contains_key("indexes"), "{payload}");
+        }
+    }
+
     #[test]
     fn control_an_entity_declaring_no_collection_carries_no_collection_field() {
         let other = |_: &str| None;
         for verb in [
-            verb_for(&read(), "k", &other).unwrap(),
-            verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &other).unwrap(),
-            verb_for(&take(false), "k", &other).unwrap(),
+            verb_for(&read(), "k", &other, &no_paths).unwrap(),
+            verb_for(&IoRequest::ListRows { entity_type: "Ticket".into() }, "k", &other, &no_paths).unwrap(),
+            verb_for(&take(false), "k", &other, &no_paths).unwrap(),
         ] {
             let payload = value_to_json(&verb.payload);
             let object = payload.as_object().unwrap();
@@ -373,7 +423,7 @@ mod tests {
 
     #[test]
     fn the_ensure_indexes_verb_names_the_declared_collection_beside_the_entity_type() {
-        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None }];
+        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None, nearest: None }];
         let verb = ensure_verb("Ticket", &indexes, "k", declared("Ticket"));
         assert_eq!(verb.event, ROWS_ENSURE_INDEXES);
         assert_eq!(
@@ -384,7 +434,7 @@ mod tests {
 
     #[test]
     fn control_an_ensure_indexes_verb_for_an_undeclared_collection_carries_no_collection_field() {
-        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None }];
+        let indexes = [EntityIndex { fields: vec!["status".to_string()], order_by: None, nearest: None }];
         let verb = ensure_verb("Note", &indexes, "k", declared("Note"));
         let payload = value_to_json(&verb.payload);
         assert!(!payload.as_object().unwrap().contains_key("collection"), "{payload}");
@@ -393,7 +443,7 @@ mod tests {
 
     #[test]
     fn a_guarded_take_reaches_the_driver_as_one_conditional_op() {
-        let verb = verb_for(&take(true), "k2", &|_| None).unwrap();
+        let verb = verb_for(&take(true), "k2", &|_| None, &no_paths).unwrap();
         assert_eq!(verb.event, ROWS_WRITE);
         assert_eq!(
             value_to_json(&verb.payload),
@@ -414,10 +464,11 @@ mod tests {
                 id: "1".into()
             },
             "k",
-            &|_| None
+            &|_| None,
+            &no_paths
         )
         .is_none());
-        assert!(verb_for(&IoRequest::CancelCall { key: "k".into() }, "k", &|_| None).is_none());
+        assert!(verb_for(&IoRequest::CancelCall { key: "k".into() }, "k", &|_| None, &no_paths).is_none());
     }
 
     #[test]

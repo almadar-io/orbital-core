@@ -68,7 +68,7 @@ fn a_row_ask_on_a_store_bound_entity_is_a_store_ask_never_a_host_request() {
     assert_eq!(end.store_asks.len(), 1);
     assert_eq!(end.store_asks[0].driver, "Rows");
     assert_eq!(end.store_asks[0].request, IoRequest::ReadRow { entity_type: "Ticket".into(), id: "t1".into() });
-    assert!(crate::store_driver::verb_for(&end.store_asks[0].request, &end.store_asks[0].key, &|_| None).is_some());
+    assert!(crate::store_driver::verb_for(&end.store_asks[0].request, &end.store_asks[0].key, &|_| None, &|_| Vec::new()).is_some());
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn a_create_without_an_id_on_a_bound_entity_is_minted_a_uuid_from_the_journaled_
     let id = id_of(&end.store_asks[0].request);
     assert!(is_uuid_v4(&id), "{id}");
     assert_ne!(id, "Ticket-1");
-    let verb = crate::store_driver::verb_for(&end.store_asks[0].request, &end.store_asks[0].key, &|_| None).unwrap();
+    let verb = crate::store_driver::verb_for(&end.store_asks[0].request, &end.store_asks[0].key, &|_| None, &|_| Vec::new()).unwrap();
     assert_eq!(orbital_core_base::json_value::value_to_json(&verb.payload)["batch"]["ops"][0]["data"]["id"], id.as_str());
     let created = Exchange::new(
         end.store_asks[0].request.clone(),

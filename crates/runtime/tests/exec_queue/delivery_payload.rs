@@ -210,3 +210,50 @@ fn control_a_completion_whose_own_payload_breaks_its_route_fires_the_failure_rou
     assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
     assert!(delivered.result.is_ok(), "{:?}", delivered.result.as_ref().err());
 }
+
+fn completing_kernel_running(done_effects: Json) -> RuntimeKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+            "traits": [
+                { "name": "Asker", "linkedEntity": "Note",
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }, { "name": "failed" }],
+                    "events": [
+                        { "key": "DONE", "name": "Done", "payloadSchema": [{ "name": "n", "type": "number" }] },
+                        { "key": "FAILED", "name": "Failed", "payloadSchema": [{ "name": "error", "type": "string" }, { "name": "kind", "type": "string" }, { "name": "key", "type": "string" }] }
+                    ],
+                    "transitions": [
+                        { "from": "idle", "to": "done", "event": "DONE", "effects": done_effects },
+                        { "from": "idle", "to": "failed", "event": "FAILED" }
+                    ]
+                } }
+            ]
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::server().register(schema)
+}
+
+// G-STD-360 (owner 2026-11-12): a success step whose effect cannot evaluate is undone and the asker hears its failure route.
+#[test]
+fn a_completion_whose_step_effect_fails_is_undone_and_rerouted_to_its_failure_route() {
+    let k = completing_kernel_running(json!([["set", "@entity.n", ["+", 1, "x"]]]));
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
+    let error = delivered.payload.get_path("error").and_then(Value::as_str).unwrap_or_default().to_string();
+    assert!(error.contains("DONE"), "the failure names the failed step: {error}");
+    let snapshot = k.snapshot_trait("Asker", Some(orbital_core_runtime::process_result::RUNTIME_SINGLETON));
+    assert_eq!(snapshot.state, "failed", "the failure route ran from the waiting state");
+}
+
+#[test]
+fn control_a_completion_whose_step_effects_run_stays_on_its_success_route() {
+    let k = completing_kernel_running(json!([["set", "@entity.n", ["+", 1, 2]]]));
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    assert_eq!((delivered.event.as_str(), delivered.failed), ("DONE", false));
+    let snapshot = k.snapshot_trait("Asker", Some(orbital_core_runtime::process_result::RUNTIME_SINGLETON));
+    assert_eq!(snapshot.state, "done");
+}

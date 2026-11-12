@@ -458,19 +458,32 @@ impl RuntimeKernel {
     /// The driver orbital's declared `queryCapabilities`/`writeCapabilities` config (EXEC-STORE-4) are what its
     /// bound entity's push-down honours, the same declaration a host store makes.
     pub(super) fn declare_store_capabilities(&self, schema: &OrbitalSchema, entity_type: &str, driver: &str) {
-        let Some(config) = schema
-            .orbitals
-            .iter()
-            .find(|o| o.name == driver)
-            .and_then(|o| o.config.as_ref())
-        else {
+        let Some(orbital) = schema.orbitals.iter().find(|o| o.name == driver) else {
             return;
         };
+        // A driver declares its capabilities on the driver orbital or on the trait that answers the row verbs.
+        let traits: Vec<Arc<TraitDefinition>> =
+            orbital.traits.iter().filter_map(|t| self.resolve_trait_definition(t, schema)).collect();
+        let configs: Vec<_> = orbital
+            .config
+            .iter()
+            .chain(traits.iter().filter_map(|def| def.config.as_ref()))
+            .collect();
+        tracing::debug!(
+            target: orbital_core_base::logging::ns::RUNTIME_FETCH,
+            driver,
+            entity = entity_type,
+            traits = orbital.traits.len(),
+            resolved = traits.len(),
+            declares = configs.iter().any(|c| c.contains_key("queryCapabilities")),
+            "kernel: store driver capabilities"
+        );
         let declared = |key: &str| {
-            config
-                .get(key)
+            configs
+                .iter()
+                .find_map(|config| config.get(key))
                 .and_then(|field| field.default.as_ref())
-                .map(|value| serde_json::to_value(value).map_err(|e| e.to_string()))
+                .map(|value| serde_json::to_value(sexpr_to_value(value)).map_err(|e| e.to_string()))
         };
         if let Some(value) = declared("queryCapabilities") {
             match value.and_then(|v| {

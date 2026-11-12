@@ -947,15 +947,26 @@ impl RuntimeKernel {
     }
 
     /// Declare what the host's query push-down honours for `entity_type`. A host that declares nothing is
-    /// never sent a query: the kernel lists the table and runs the query itself.
+    /// never sent a query: the kernel lists the table and runs the query itself. An entity a store driver binds
+    /// keeps what its driver declares: its rows never reach the host's store (EXEC-STORE-4).
     pub fn set_query_capabilities(&self, entity_type: &str, capabilities: QueryCapabilities) {
-        self.io.set_query_capabilities(entity_type, capabilities);
+        if !self.io.store_bound(entity_type) {
+            self.io.set_query_capabilities(entity_type, capabilities);
+        }
+    }
+
+    /// What a fetch of `entity_type` may push down: the binding store driver's declaration, else the host's.
+    pub fn query_capabilities(&self, entity_type: &str) -> Option<QueryCapabilities> {
+        self.io.query_capabilities_of(entity_type)
     }
 
     /// Declare what the host's conditional writes honour for `entity_type`. A host that declares nothing is
-    /// never sent `WriteRows`: the kernel reads the row, tests the policy and writes it itself.
+    /// never sent `WriteRows`: the kernel reads the row, tests the policy and writes it itself. An entity a store
+    /// driver binds keeps what its driver declares.
     pub fn set_write_capabilities(&self, entity_type: &str, capabilities: WriteCapabilities) {
-        self.io.set_write_capabilities(entity_type, capabilities);
+        if !self.io.store_bound(entity_type) {
+            self.io.set_write_capabilities(entity_type, capabilities);
+        }
     }
 
     /// Access the entity source.

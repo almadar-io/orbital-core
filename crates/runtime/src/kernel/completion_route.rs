@@ -56,6 +56,16 @@ impl RuntimeKernel {
             .and_then(|progress| drive_blocking(self, progress, answer))
         };
         let (mut event, mut payload, mut failed) = (event, payload, failed);
+        let failure_route = site.emit.failure.clone().filter(|failure| {
+            site.emit.success.as_deref() == Some(event.as_str()) && *failure != event
+        });
+        let before = failure_route.as_ref().map(|_| {
+            let mut snapshot = self.snapshot_trait(&site.trait_name, Some(site.entity_id.as_str()));
+            if snapshot.state.is_empty() {
+                snapshot.state = self.get_initial_state(&site.trait_name).unwrap_or_default();
+            }
+            snapshot
+        });
         let mut result = run(&event, &payload);
         if let Err(DispatchError::Kernel(KernelError::PayloadInvalid(refusal))) = &result {
             // A refused success completion reaches the asker's failure route, whether its own payload or a payload its
@@ -82,6 +92,29 @@ impl RuntimeKernel {
                     "key".into(),
                     Value::string(program_call_key(key).to_string()),
                 );
+                (event, payload, failed) = (failure, Value::object(fields), true);
+                result = run(&event, &payload);
+            }
+        } else if let (Ok(outcomes), Some(failure), Some(before)) = (&result, failure_route, before) {
+            // A success step whose own effect threw (EXEC-STEP-7) is undone and the asker hears its failure route from
+            // the state it waited in (owner 2026-11-12, G-STD-360); writes already handed to a store stand.
+            let thrown = outcomes
+                .iter()
+                .filter(|(name, _)| *name == site.trait_name)
+                .flat_map(|(_, step)| step.effect_results.iter())
+                .find(|er| super::completion::is_thrown_failure(er))
+                .map(|er| er.error.clone().unwrap_or_default());
+            if let Some(error) = thrown {
+                tracing::warn!(
+                    target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
+                    trait_name = %site.trait_name, event = %event, error = %error,
+                    "a completion's success step failed; undone and routed to its failure route",
+                );
+                self.restore_trait(&site.trait_name, Some(site.entity_id.as_str()), before);
+                let mut fields = ValueMap::default();
+                fields.insert("error".into(), Value::string(format!("{event} failed: {error}")));
+                fields.insert("kind".into(), Value::string(OsErrorKind::Invalid.as_str().to_string()));
+                fields.insert("key".into(), Value::string(program_call_key(key).to_string()));
                 (event, payload, failed) = (failure, Value::object(fields), true);
                 result = run(&event, &payload);
             }

@@ -498,6 +498,10 @@ fn a_bound_entitys_guarded_take_sends_the_compiled_guard_to_its_driver() {
 // EXEC-STORE-6: an entity that declares `@index` paths bound to a driver whose `queryCapabilities.indexes` is
 // `runtime` or `deploy` has them sent to the driver once, as one ROWS_ENSURE_INDEXES, before its first row ask.
 fn indexed_store_program(realization: Option<&str>, ensure_fails: bool) -> OrbitalSchema {
+    serde_json::from_value(indexed_store_json(realization, ensure_fails)).unwrap()
+}
+
+fn indexed_store_json(realization: Option<&str>, ensure_fails: bool) -> serde_json::Value {
     let mut program = store_program_json(true, false, Some(true));
     program["orbitals"][0]["entity"]["fields"]
         .as_array_mut()
@@ -523,7 +527,7 @@ fn indexed_store_program(realization: Option<&str>, ensure_fails: bool) -> Orbit
     driver["transitions"].as_array_mut().unwrap().push(
         serde_json::json!({ "from": "ready", "to": "ready", "event": "ROWS_ENSURE_INDEXES", "effects": effects }),
     );
-    serde_json::from_value(program).unwrap()
+    program
 }
 
 /// The effect results of each event, in order, and every request the host was asked, over one kernel.
@@ -582,6 +586,35 @@ fn a_runtime_driver_is_sent_the_declared_paths_once_before_the_first_row_ask() {
 fn a_deploy_driver_is_sent_the_declared_paths_too() {
     let (_, asked) = run_events(indexed_store_program(Some("deploy"), false), &["LOOK"]);
     assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+}
+
+#[test]
+fn a_driver_declaring_its_capabilities_on_its_driver_trait_is_sent_the_declared_paths() {
+    let mut program = indexed_store_json(Some("deploy"), false);
+    let mut config = program["orbitals"][1]["config"].take();
+    // Lowering quotes a list whose head reads as an operator: `compareOps: ["==", "<"]` is `["list", "==", "<"]`.
+    config["queryCapabilities"]["default"]["compareOps"] = serde_json::json!(["list", "==", "<"]);
+    program["orbitals"][1]["traits"][0]["config"] = config;
+    let (_, asked) = run_events(serde_json::from_value(program).unwrap(), &["LOOK"]);
+    assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+}
+
+#[test]
+fn a_host_declaration_never_replaces_the_capabilities_a_store_driver_declares_for_its_entity() {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        Default::default(),
+    );
+    kernel.register_schema(indexed_store_program(Some("deploy"), false)).unwrap();
+    let declared = kernel.query_capabilities("Ticket").expect("the driver's declaration");
+    let mut host = orbital_core_runtime::row_query::QueryCapabilities::full();
+    host.indexes = None;
+    host.window = false;
+    kernel.set_query_capabilities("Ticket", host.clone());
+    assert_eq!(kernel.query_capabilities("Ticket"), Some(declared), "the store-bound entity keeps the driver's");
+    kernel.set_query_capabilities("Mirror", host.clone());
+    assert_eq!(kernel.query_capabilities("Mirror"), Some(host), "control: an entity no driver binds takes the host's");
 }
 
 #[test]

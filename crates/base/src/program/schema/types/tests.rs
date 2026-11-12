@@ -160,6 +160,27 @@ fn a_field_derived_expression_round_trips_and_skips_when_absent() {
 }
 
 #[test]
+fn a_nearest_index_round_trips_its_vector_field_and_dimension() {
+    use serde_json::json;
+    let entity = json!({
+        "name": "Chunk",
+        "fields": [{ "name": "kind", "type": "string" }],
+        "indexes": [{ "fields": ["kind"], "nearest": { "field": "embedding", "dimension": 1536 } }, { "fields": [], "nearest": { "field": "embedding", "dimension": 1536 } }]
+    });
+    let e: super::EntityDefinition = serde_json::from_value(entity.clone()).unwrap();
+    let indexes = e.indexes.as_ref().expect("indexes parsed");
+    let nearest = indexes[0].nearest.as_ref().expect("nearest parsed");
+    assert_eq!((nearest.field.as_str(), nearest.dimension), ("embedding", 1536));
+    assert!(indexes[1].fields.is_empty());
+    assert_eq!(serde_json::to_value(&e).unwrap()["indexes"], entity["indexes"]);
+    let unknown = json!({ "name": "A", "fields": [], "indexes": [{ "fields": [], "nearest": { "field": "v", "dimension": 3, "metric": "dot" } }] });
+    assert!(
+        serde_json::from_value::<super::EntityDefinition>(unknown).is_err(),
+        "control: an unknown nearest key is refused"
+    );
+}
+
+#[test]
 fn entity_indexes_round_trip_camel_case_and_skip_when_absent() {
     use serde_json::json;
     let entity = json!({

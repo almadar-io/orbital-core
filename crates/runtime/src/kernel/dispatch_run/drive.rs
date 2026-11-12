@@ -240,7 +240,7 @@ impl RuntimeKernel {
                 &ask.key,
                 self.io.collection_of(&ensure.entity_type),
             ),
-            None => crate::store_driver::verb_for(&ask.request, &ask.key, &|entity| self.io.collection_of(entity)).ok_or_else(|| {
+            None => crate::store_driver::verb_for(&ask.request, &ask.key, &|entity| self.io.collection_of(entity), &|entity| self.io.index_paths_of(entity)).ok_or_else(|| {
                 format!(
                     "store driver {}: {:?} is not a row ask a driver answers",
                     ask.driver, ask.request

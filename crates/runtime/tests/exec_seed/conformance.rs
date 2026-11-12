@@ -182,3 +182,55 @@ fn exec_seed_4_a_mount_batch_runs_seeds_in_order_syncs_the_clients_mount_once_an
         .unwrap();
     assert_eq!(body_state(&partial), "idle", "control: with no seed for Body its held delivery stays held");
 }
+
+fn figures_kernel() -> RuntimeKernel {
+    TestKernel::server().build(json!({
+        "name": "Home",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Home",
+            "entity": { "name": "Figure", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "count", "type": "number" }] },
+            "traits": [
+                { "name": "Figures", "linkedEntity": "Figure", "dispatch": "client",
+                  "listens": [{ "event": "FIGURES_READ", "triggers": "ITEMS_LOADED", "source": { "kind": "trait", "trait": "Fetcher" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "zeroed" }, { "name": "loaded" }],
+                      "transitions": [
+                          { "from": "idle", "to": "zeroed", "event": "INIT", "effects": [["set", "@entity.count", 0]] },
+                          { "from": "loaded", "to": "zeroed", "event": "INIT", "effects": [["set", "@entity.count", 0]] },
+                          { "from": "idle", "to": "loaded", "event": "ITEMS_LOADED", "effects": [["set", "@entity.count", "@payload.count"]] },
+                          { "from": "zeroed", "to": "loaded", "event": "ITEMS_LOADED", "effects": [["set", "@entity.count", "@payload.count"]] }
+                      ] } },
+                { "name": "Fetcher", "linkedEntity": "Figure",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                      "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["emit", "FIGURES_READ", { "count": 3 }]] }] } }
+            ]
+        }]
+    }))
+}
+
+fn figures_count(outcomes: &Outcomes) -> Option<f64> {
+    outcomes
+        .iter()
+        .rev()
+        .find(|(t, r)| t == "Figures" && r.executed)
+        .and_then(|(_, r)| r.entity_data.to_value().get_path("count").and_then(|v| v.as_number()))
+}
+
+/// EXEC-SEED-2 (G-CROSS-438): a `[client]` trait whose INIT zeroes a field never has the loaded count overwritten, whichever seed the
+/// batch lists first: the emitting server trait's event is held until the receiver's own INIT has run.
+#[test]
+fn exec_seed_2_a_client_trait_keeps_the_count_a_server_trait_emits_during_the_mount_whichever_seed_runs_first() {
+    let emitter_first = figures_kernel();
+    let outcomes = emitter_first
+        .dispatch_mount(&seeds(&[("Fetcher", "INIT"), ("Figures", "INIT")]), None, Value::Null)
+        .unwrap();
+    assert_eq!(ran(&outcomes), vec!["Fetcher:INIT", "Figures:INIT", "Figures:ITEMS_LOADED"], "the emit waits for Figures' INIT");
+    assert_eq!(figures_count(&outcomes), Some(3.0));
+    assert_eq!(emitter_first.get_state("Figures", None).map(|s| s.current_state).as_deref(), Some("loaded"));
+
+    let receiver_first = figures_kernel();
+    let outcomes = receiver_first
+        .dispatch_mount(&seeds(&[("Figures", "INIT"), ("Fetcher", "INIT")]), None, Value::Null)
+        .unwrap();
+    assert_eq!(ran(&outcomes), vec!["Figures:INIT", "Fetcher:INIT", "Figures:ITEMS_LOADED"], "control: the receiver's INIT already ran, the emit is delivered at once");
+    assert_eq!(figures_count(&outcomes), Some(3.0));
+}

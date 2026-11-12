@@ -86,7 +86,7 @@ mod run;
 mod writes;
 mod compile;
 pub use capabilities::{
-    guard_unsupported_reason, query_unsupported_reason, GuardCapabilities, IndexRealization,
+    guard_unsupported_reason, narrowed_query, query_unsupported_reason, GuardCapabilities, IndexRealization,
     OperatorValueKinds, QueryCapabilities, QueryUnsupportedReason, RowCombinator, RowLeafKind,
     RowOperator, RowOrderableFields, RowValueKind, WriteCapabilities,
 };

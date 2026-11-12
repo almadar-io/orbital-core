@@ -168,6 +168,7 @@ impl RuntimeKernel {
     /// instead of leaving them to a browser (EXEC-ENDPOINT-3a).
     pub fn set_runs_client_traits(&self, runs: bool) {
         self.runs_client_traits.store(runs, std::sync::atomic::Ordering::SeqCst);
+        self.effect_executor.set_asks_viewer(runs);
     }
 
     pub fn runs_client_traits(&self) -> bool {

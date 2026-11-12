@@ -130,13 +130,24 @@ pub struct EntityDefinition {
 }
 
 /// One declared access path: the equality `fields` in order, and the `orderBy` string a `fetch` takes
-/// (`"field"` / `"field:desc"`); absent means EXEC-FETCH-1's default order.
+/// (`"field"` / `"field:desc"`); absent means EXEC-FETCH-1's default order. With `nearest` it is a vector path:
+/// a `fetch`'s `nearest` over that field, pre-filtered by equality on `fields` (EXEC-FETCH-2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct EntityIndex {
     pub fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nearest: Option<IndexNearest>,
+}
+
+/// The vector of a `nearest` index path: the `[number]` field and the length of every vector stored in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexNearest {
+    pub field: String,
+    pub dimension: u32,
 }
 
 /// Twin of `@almadar/core`'s entity asset metadata.
