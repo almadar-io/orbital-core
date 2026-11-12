@@ -11,6 +11,7 @@ pub mod localize;
 pub mod packs;
 pub mod tables;
 pub mod translate;
+pub mod ui;
 
 #[cfg(test)]
 pub mod orb_keys_test;

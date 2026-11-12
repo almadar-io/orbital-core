@@ -208,15 +208,21 @@ impl RuntimeKernel {
         })
     }
 
-    /// `@locale` and its catalog for `i18n/t`: the dispatch's locale, else the viewer's, else the first declared.
-    pub(super) fn with_viewer_i18n(&self, builder: BindingContextBuilder) -> BindingContextBuilder {
+    /// The locale `i18n/t` and `@locale` resolve to now: the dispatch's, else the viewer's, else the first declared.
+    pub fn effective_locale(&self) -> Option<String> {
         let i18n = self.i18n.read();
-        let locale = self
-            .step.dispatch_locale
+        self.step
+            .dispatch_locale
             .read()
             .clone()
             .or_else(|| i18n.viewer.clone())
-            .or_else(|| i18n.locales.first().cloned());
+            .or_else(|| i18n.locales.first().cloned())
+    }
+
+    /// `@locale` and its catalog for `i18n/t`: the dispatch's locale, else the viewer's, else the first declared.
+    pub(super) fn with_viewer_i18n(&self, builder: BindingContextBuilder) -> BindingContextBuilder {
+        let locale = self.effective_locale();
+        let i18n = self.i18n.read();
         match locale {
             Some(locale) => {
                 let messages = i18n.catalogs.get(&locale).cloned().unwrap_or_default();

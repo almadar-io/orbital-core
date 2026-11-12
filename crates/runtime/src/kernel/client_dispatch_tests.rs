@@ -732,6 +732,16 @@ fn the_viewer_locale_paints_a_dispatch_that_names_none() {
 }
 
 #[test]
+fn the_effective_locale_reads_what_the_viewer_set_else_the_first_declared() {
+    let kernel = server_kernel_with(i18n_schema(true));
+    assert_eq!(kernel.effective_locale().as_deref(), Some("en"), "control: unset answers the first declared");
+    kernel.set_viewer_locale(Some("ar".into())).unwrap();
+    assert_eq!(kernel.effective_locale().as_deref(), Some("ar"));
+    let _locale = kernel.enter_locale(Some("en")).unwrap();
+    assert_eq!(kernel.effective_locale().as_deref(), Some("en"), "a dispatch's own locale wins, as for i18n/t");
+}
+
+#[test]
 fn edge_an_undeclared_viewer_locale_is_refused() {
     let kernel = server_kernel_with(i18n_schema(true));
     assert!(kernel.set_viewer_locale(Some("fr".into())).is_err());
