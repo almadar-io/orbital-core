@@ -411,16 +411,12 @@ impl RuntimeKernel {
     /// The envelope this trait stamps on its emits: `{ orbital, trait }` plus the ids the schema carries.
     pub(super) fn emit_source(&self, trait_name: &str) -> BusEventSource {
         let mut source = BusEventSource::from_trait(trait_name);
+        let schemas = self.registry.schemas.read();
         let homes = self.registry.trait_homes.read();
         let Some((schema, index)) = homes.get(trait_name) else {
             return source;
         };
-        if let Some(orbital) = self
-            .registry.schemas
-            .read()
-            .get(schema)
-            .and_then(|s| s.orbitals.get(*index))
-        {
+        if let Some(orbital) = schemas.get(schema).and_then(|s| s.orbitals.get(*index)) {
             source.orbital = Some(orbital.name.clone());
             source.orbital_id = orbital.id.clone();
             let found = orbital

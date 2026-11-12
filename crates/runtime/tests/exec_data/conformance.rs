@@ -37,13 +37,60 @@ fn exec_data_1_a_seeder_stamps_absent_or_blank_timestamps_and_keeps_authored_one
         { "title": "dated", "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "" }
     ]))
     .unwrap();
-    let now = "2026-10-26T00:00:00Z";
-    let rows = orbital_core_runtime::instance_rows("Note", &instances, now);
+    let now = "2026-10-26T00:00:00.000Z";
+    let now_ms = 1_792_972_800_000.0;
+    let fields: Vec<orbital_core_base::schema::FieldDefinition> =
+        serde_json::from_value(json!([{ "name": "createdAt", "type": "string" }, { "name": "updatedAt", "type": "string" }])).unwrap();
+    let rows = orbital_core_runtime::instance_rows("Note", &fields, &instances, now_ms);
 
     assert_eq!(rows[0].get_path("createdAt"), Some(&Value::from(now)), "absent is the seeding instant");
     assert_eq!(rows[0].get_path("updatedAt"), Some(&Value::from(now)));
     assert_eq!(rows[1].get_path("createdAt"), Some(&Value::from("2020-01-01T00:00:00Z")), "an authored value is kept");
     assert_eq!(rows[1].get_path("updatedAt"), Some(&Value::from(now)), "blank is the seeding instant");
+}
+
+#[test]
+fn exec_data_1_a_seeder_stamp_follows_the_declared_field_type() {
+    let field = |ty: &str| -> Vec<orbital_core_base::schema::FieldDefinition> {
+        serde_json::from_value(json!([{ "name": "createdAt", "type": ty }, { "name": "updatedAt", "type": ty }])).unwrap()
+    };
+    let instances: Vec<orbital_core_base::schema::sexpr::SObject> =
+        serde_json::from_value(json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
+    let now_ms = 1_792_972_800_000.0;
+    let stamp = |ty: &str| orbital_core_runtime::instance_rows("Note", &field(ty), &instances, now_ms);
+
+    let numeric = stamp("number");
+    assert_eq!(numeric[0].get_path("createdAt"), Some(&Value::from(now_ms)), "number is epoch ms");
+    assert_eq!(numeric[0].get_path("updatedAt"), Some(&Value::from(now_ms)));
+    assert_eq!(numeric[1].get_path("createdAt"), Some(&Value::from(5.0)), "an authored number is kept");
+    assert_eq!(stamp("int")[0].get_path("createdAt"), Some(&Value::from(now_ms)), "int is epoch ms");
+    assert_eq!(stamp("date")[0].get_path("createdAt"), Some(&Value::from("2026-10-26")), "date is the calendar day");
+    for ty in ["instant", "datetime", "string"] {
+        assert_eq!(
+            stamp(ty)[0].get_path("createdAt"),
+            Some(&Value::from("2026-10-26T00:00:00.000Z")),
+            "{ty} is the ISO timestamp"
+        );
+    }
+}
+
+#[test]
+fn exec_data_1_a_seeder_stamps_only_a_declared_timestamp_field() {
+    let instances: Vec<orbital_core_base::schema::sexpr::SObject> =
+        serde_json::from_value(json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
+    let now_ms = 1_792_972_800_000.0;
+
+    let rows = orbital_core_runtime::instance_rows("Note", &[], &instances, now_ms);
+    assert_eq!(rows[0].get_path("createdAt"), None, "undeclared createdAt gets no stamp");
+    assert_eq!(rows[0].get_path("updatedAt"), None, "undeclared updatedAt gets no stamp");
+    assert_eq!(rows[1].get_path("createdAt"), Some(&Value::from(5.0)), "an authored value is kept even when undeclared");
+    assert_eq!(rows[1].get_path("updatedAt"), None);
+
+    let only_created: Vec<orbital_core_base::schema::FieldDefinition> =
+        serde_json::from_value(json!([{ "name": "createdAt", "type": "number" }])).unwrap();
+    let rows = orbital_core_runtime::instance_rows("Note", &only_created, &instances, now_ms);
+    assert_eq!(rows[0].get_path("createdAt"), Some(&Value::from(now_ms)), "control: the declared field is stamped");
+    assert_eq!(rows[0].get_path("updatedAt"), None, "control: the undeclared sibling is not");
 }
 
 fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {

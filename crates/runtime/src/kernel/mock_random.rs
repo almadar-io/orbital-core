@@ -17,6 +17,12 @@ pub fn iso_from_ms(ms: f64) -> String {
     )
 }
 
+/// `YYYY-MM-DD` for epoch milliseconds.
+pub fn date_from_ms(ms: f64) -> String {
+    let (y, m, d) = civil_from_days((ms as i64).div_euclid(86_400_000));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = z.div_euclid(146_097);

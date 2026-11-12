@@ -23,9 +23,9 @@ impl RuntimeKernel {
     /// trait's singleton instance is in one of them, so the tick will fire. A tick naming no state runs in every
     /// state and is never pending (EXEC-INBOUND awaited answer).
     pub fn pending_background_ticks(&self) -> Vec<(String, String)> {
-        let defs = self.registry.trait_definitions.read();
+        let defs: Vec<Arc<TraitDefinition>> = self.registry.trait_definitions.read().values().cloned().collect();
         let mut pending = Vec::new();
-        for def in defs.values() {
+        for def in &defs {
             let Some(state) = self.get_state(&def.name, None) else {
                 continue;
             };

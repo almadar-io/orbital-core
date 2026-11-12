@@ -267,9 +267,9 @@ impl RuntimeKernel {
             return bound;
         }
         let mode = *self.presentation.theme_mode.read();
+        let schemas = self.registry.schemas.read();
         let homes = self.registry.trait_homes.read();
         if let Some((schema_name, index)) = homes.get(trait_name) {
-            let schemas = self.registry.schemas.read();
             if let Some(schema) = schemas.get(schema_name) {
                 if let Some(orbital) = schema.orbitals.get(*index) {
                     return resolve_theme(

@@ -546,8 +546,12 @@ impl RuntimeKernel {
         for orbital in &schema.orbitals {
             if let EntityRef::Inline(entity_def) = &orbital.entity {
                 if let Some(instances) = &entity_def.instances {
-                    let now = crate::mock_random::iso_from_ms(self.clock_now());
-                    let rows = crate::instances::instance_rows(&entity_def.name, instances, &now);
+                    let rows = crate::instances::instance_rows(
+                        &entity_def.name,
+                        &entity_def.fields,
+                        instances,
+                        self.clock_now(),
+                    );
                     if let Some(seed) = self.io.store_seed(&entity_def.name, rows.clone()) {
                         self.store_seeds.lock().push_back(seed);
                         continue;

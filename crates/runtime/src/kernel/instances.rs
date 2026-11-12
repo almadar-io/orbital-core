@@ -2,19 +2,22 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use orbital_core_base::schema::{FieldDefinition, FieldType};
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
 
 fn is_blank(value: &Value) -> bool {
-    value.as_str().is_none_or(str::is_empty)
+    value.is_null() || value.as_str().is_some_and(str::is_empty)
 }
 
 /// An entity's authored `instances` as stored rows: an id-less instance takes the next
-/// `<Entity> Id N`, and absent timestamps are `now`.
+/// `<Entity> Id N`, and absent timestamps are `now` in the representation the declared field type asks for:
+/// epoch milliseconds for `number`/`int`, the calendar day for `date`, ISO text otherwise. An undeclared timestamp field gets no stamp.
 pub fn instance_rows(
     entity_name: &str,
+    fields: &[FieldDefinition],
     instances: &[orbital_core_base::schema::sexpr::SObject],
-    now_iso: &str,
+    now_ms: f64,
 ) -> Vec<Value> {
     let mut minted = 0;
     instances
@@ -32,8 +35,17 @@ pub fn instance_rows(
                 );
             }
             for key in ["createdAt", "updatedAt"] {
-                if row.get(key).is_none_or(is_blank) {
-                    row.insert(key.to_string().into(), Value::string(now_iso.to_string()));
+                let declared = fields
+                    .iter()
+                    .find(|f| f.name.as_deref() == Some(key))
+                    .map(|f| &f.field_type);
+                if let Some(declared) = declared.filter(|_| row.get(key).is_none_or(is_blank)) {
+                    let stamp = match declared {
+                        FieldType::Number | FieldType::Int => Value::from(now_ms),
+                        FieldType::Date => Value::string(crate::mock_random::date_from_ms(now_ms)),
+                        _ => Value::string(crate::mock_random::iso_from_ms(now_ms)),
+                    };
+                    row.insert(key.to_string().into(), stamp);
                 }
             }
             Value::object(row)

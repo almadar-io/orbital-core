@@ -82,7 +82,7 @@
     { "name": "bad signal", "op": "os/kill", "args": [{ "$var": "sleeper" }, "NOPE"], "expect": { "error": { "kind": "invalid", "message": "os/kill: signal must be one of TERM, KILL, INT, HUP, QUIT, USR1, USR2, STOP, CONT" } } },
     { "name": "kill", "op": "os/kill", "args": [{ "$var": "sleeper" }, "TERM"], "expect": { "ok": {} } },
     { "name": "wait for the signal", "op": "os/wait", "args": [{ "$var": "sleeper" }], "expect": { "ok": { "signal": 15 } } },
-    { "name": "kill an unknown pid", "op": "os/kill", "args": [999999, "TERM"], "expect": { "error": { "kind": "closed", "message": "os/kill: pid 999999 is not a spawned process" } } },
+    { "name": "kill an unknown pid", "op": "os/kill", "args": [999999, "TERM"], "expect": { "error": { "kind": "closed", "message": "os/kill: pid 999999 is not a spawned process; signalling another process needs the sys grant process-signal" } } },
     { "name": "pid", "op": "os/pid", "args": [], "expect": { "ok": { "pid": { "$number": true } } } },
     { "name": "getenv not granted", "op": "os/getenv", "args": ["PATH"], "expect": { "error": { "kind": "denied", "message": "os/getenv: environment PATH is not granted" } } },
     { "name": "setenv", "op": "os/setenv", "args": ["FOO", "bar"], "expect": { "ok": {} } },

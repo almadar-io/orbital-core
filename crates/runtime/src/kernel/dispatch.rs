@@ -434,8 +434,8 @@ impl RuntimeKernel {
     ) -> Vec<crate::payload_validation::PayloadFailure> {
         use orbital_core_base::ir::types::declared_alias_shape;
         let entities = self.registry.entity_definitions.read();
-        let homes = self.registry.trait_homes.read();
         let schemas = self.registry.schemas.read();
+        let homes = self.registry.trait_homes.read();
         let home = homes.get(trait_name).and_then(|(name, index)| schemas.get(name).map(|program| (program, *index)));
         let resolve = |name: &str| {
             let alias = home.and_then(|(program, index)| {

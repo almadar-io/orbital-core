@@ -131,3 +131,59 @@ fn g_std_249_a_tick_naming_no_state_is_never_pending() {
     start(&kernel);
     assert!(kernel.pending_background_ticks().is_empty(), "a tick that runs in every state is not a scheduled wait");
 }
+
+// G-ORBITAL-CORE-173: a registration waiting to write the trait table must not wedge a dispatch and the idle check
+// (`pending_background_ticks`), which took the trait table and the state table in opposite orders.
+#[test]
+fn g_orbital_core_173_registering_while_a_dispatch_and_the_idle_check_run_never_deadlocks() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let kernel = Arc::new(kernel(json!(["running"])));
+    let stop = Arc::new(AtomicBool::new(false));
+    let idle = {
+        let (kernel, stop) = (kernel.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                kernel.pending_background_ticks();
+            }
+        })
+    };
+    let dispatching = {
+        let (kernel, stop) = (kernel.clone(), stop.clone());
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                let _ = kernel.process_event("Clock", Some("singleton"), "START", Value::Null);
+            }
+        })
+    };
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let registering = {
+        let kernel = kernel.clone();
+        std::thread::spawn(move || {
+            for index in 0..400 {
+                let name = format!("Extra{index}");
+                let schema: OrbitalSchema = serde_json::from_value(json!({
+                    "name": name, "typeContractVersion": 1, "orbitals": [{
+                        "name": name,
+                        "entity": { "name": name, "fields": [{ "name": "id", "type": "string" }] },
+                        "traits": [{
+                            "name": name, "linkedEntity": name,
+                            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
+                        }]
+                    }]
+                }))
+                .unwrap();
+                kernel.register_schema(schema).unwrap();
+            }
+            done_tx.send(()).unwrap();
+        })
+    };
+    let finished = done_rx.recv_timeout(Duration::from_secs(30)).is_ok();
+    stop.store(true, Ordering::Relaxed);
+    assert!(finished, "registering schemas deadlocked against a dispatch and the idle check");
+    registering.join().unwrap();
+    idle.join().unwrap();
+    dispatching.join().unwrap();
+}
