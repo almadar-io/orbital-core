@@ -9,6 +9,7 @@ mod client_core_server_resolve;
 mod client_fetch_success_emit;
 mod client_only_ignores_host_state;
 mod client_stateful_leg;
+mod client_wildcard_server_listen;
 mod embed_fold_follow_on;
 mod embed_host_posting;
 mod fold_host_ran_listeners;

@@ -249,3 +249,9 @@ pub struct CascadeCut {
     pub trait_name: String,
     pub event: String,
 }
+
+impl CascadeCut {
+    pub fn message(&self) -> String {
+        format!("cascade-cap: the dispatch reached its {}-step cap before {} handled {}, so the work behind it never ran", self.cap, self.trait_name, self.event)
+    }
+}

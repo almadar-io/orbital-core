@@ -107,6 +107,37 @@ fn a_chain_stopped_at_the_cap_names_the_dropped_trait_on_the_response() {
 }
 
 #[test]
+fn a_chain_stopped_at_the_cap_is_rejected_cascade_capped() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "effects": [["emit", "STEP_NEXT", { "n": ["+", "@payload.n", 1] }]] }]),
+        one_state(),
+    );
+    let response = fanner_response(&kernel, json!({ "n": 0 }));
+    let rejections = response.rejections.as_ref().expect("a cut chain is a rejection");
+    assert_eq!(rejections.len(), 1, "{rejections:?}");
+    assert_eq!(rejections[0].code, orbital_core_runtime::effects::response::TransitionRejectionCode::CascadeCapped);
+    assert_eq!(rejections[0].trait_name.as_deref(), Some("Fanner"));
+    assert_eq!(rejections[0].event.as_deref(), Some("STEP"));
+    let error = rejections[0].error.as_deref().unwrap();
+    assert!(error.contains("cascade-cap") && error.contains("2000"), "{error}");
+    assert_eq!(serde_json::to_value(&response).unwrap()["rejections"][0]["code"], "cascade-capped");
+}
+
+#[test]
+fn control_a_chain_that_ends_under_the_cap_is_not_rejected() {
+    let kernel = fanner(
+        json!([{ "from": "searching", "to": "searching", "event": "STEP",
+                 "guard": [">", "@payload.remaining", 0],
+                 "effects": [["emit", "STEP_NEXT", { "remaining": ["-", "@payload.remaining", 1] }]] }]),
+        one_state(),
+    );
+    let response = fanner_response(&kernel, json!({ "remaining": 3 }));
+    assert_eq!(response.rejections, None);
+    assert_eq!(response.cascade_truncated, None);
+}
+
+#[test]
 fn control_an_exact_repeat_cycle_is_not_truncation() {
     let kernel = fanner(
         json!([{ "from": "searching", "to": "searching", "event": "STEP",

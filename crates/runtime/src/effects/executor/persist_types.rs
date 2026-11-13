@@ -21,6 +21,7 @@ pub(super) struct PersistScope {
     pub(super) intrinsic: Vec<String>,
     pub(super) derived: Vec<(String, orbital_core_base::schema::sexpr::SExpression)>,
     pub(super) field_updates: Vec<(String, orbital_core_base::schema::types::FieldUpdate)>,
+    pub(super) create_server: Option<String>,
 }
 
 /// One evaluated persist, ready to be sent to the store as a conditional write.

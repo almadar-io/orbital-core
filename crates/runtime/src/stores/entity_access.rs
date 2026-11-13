@@ -186,6 +186,8 @@ pub struct EntityAccessPolicies {
     /// This entity's fields that carry their own `@update` (a predicate, or `server`), in declaration order: the
     /// entity's own declaration, never inherited from a sibling on the same collection.
     pub field_updates: Vec<(String, FieldUpdate)>,
+    /// `@create server`: the reason only a program-session step creates the entity's rows.
+    pub create_server: Option<String>,
 }
 
 impl EntityAccessPolicies {
@@ -197,6 +199,7 @@ impl EntityAccessPolicies {
         !self.inherited
             && (self.read.is_some()
                 || self.create.is_some()
+                || self.create_server.is_some()
                 || self.update.is_some()
                 || self.delete.is_some())
     }
@@ -253,6 +256,7 @@ pub fn resolve_collection_inheritance(table: &mut EntityAccessTable) {
         );
         policies.read = source.read.clone();
         policies.create = source.create.clone();
+        policies.create_server = source.create_server.clone();
         policies.update = source.update.clone();
         policies.delete = source.delete.clone();
         policies.inherited = true;
@@ -449,6 +453,16 @@ pub fn changes_only_server_fields(changed: &[String], rules: &[(String, FieldUpd
                 .iter()
                 .any(|(field, rule)| field == name && matches!(rule, FieldUpdate::Server(_)))
         })
+}
+
+/// A create of an entity declared `@create server`: refused unless `program_step`.
+pub fn check_server_create(create_server: Option<&str>, program_step: bool, entity_type: &str) -> Result<(), AccessDenied> {
+    match create_server {
+        Some(reason) if !program_step => Err(AccessDenied(format!(
+            "@Create denied: `{entity_type}` rows are created only by a program-session step ({reason})"
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Check the fields a write changes against their own `@update`. `existing` is the row before the write

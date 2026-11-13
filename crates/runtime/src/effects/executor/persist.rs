@@ -119,6 +119,10 @@ impl EffectExecutor {
             intrinsic: policies.intrinsic_fields.clone(),
             derived: policies.derived_fields.clone(),
             field_updates: policies.field_updates.clone(),
+            create_server: match operation {
+                PersistOperation::Create | PersistOperation::Upsert if !SeedWriteScope::active() => policies.create_server.clone(),
+                _ => None,
+            },
         }
     }
 
@@ -221,6 +225,8 @@ impl EffectExecutor {
                 missing.join(", ")
             ));
         }
+        crate::entity_access::check_server_create(scope.create_server.as_deref(), ProgramStepScope::active(), entity_type)
+            .map_err(|denied| Self::refused(denied, code))?;
         check_mutation_access(
             PersistOperation::Create,
             data,

@@ -189,7 +189,7 @@ fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Val
     let (Some(host), true) = (&session.host, session.split) else {
         return Err(guest_refusal(
             orbital_core_base::os::OsErrorKind::Invalid,
-            "program/dispatch: a wire leg goes only to a guest opened with `split: true`",
+            "program/dispatch: an events request goes only to a guest opened with `split: true`",
         ));
     };
     let Value::Object(options) = leg else {
@@ -974,7 +974,8 @@ impl RuntimeKernel {
         let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
         let payload = self.copy_into(&session, &given)?;
         let leg = match args.get(2) {
-            Some(Value::Object(options)) if options.get("wire") == Some(&Value::Bool(true)) => {
+            // An events request names its orbital, as a served program/dispatch request does; `wire` picks its shape.
+            Some(Value::Object(options)) if options.contains_key("orbital") => {
                 let mut leg = options.clone();
                 leg.shift_remove("guest");
                 Some(Value::object(leg))

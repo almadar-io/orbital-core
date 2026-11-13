@@ -689,7 +689,7 @@ impl RuntimeKernel {
                     dropped.push(name);
                 }
             }
-            tracing::warn!(
+            tracing::error!(
                 target: orbital_core_base::logging::ns::RUNTIME_KERNEL,
                 cap,
                 dropped = ?dropped,

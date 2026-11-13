@@ -1905,6 +1905,75 @@ mod field_updates {
         assert!(executor.execute(&same, &viewer("u1", "member")).is_executed(), "control: an upsert that keeps every ruled field passes");
     }
 
+    fn invite_executor(create_server: bool) -> (EffectExecutor, Arc<InMemoryPersistence>) {
+        let store = Arc::new(InMemoryPersistence::new());
+        let mut table = EntityAccessTable::new();
+        table.insert(
+            "Invite".to_string(),
+            EntityAccessPolicies {
+                create_server: create_server.then(|| "created when an invite is accepted".to_string()),
+                ..Default::default()
+            },
+        );
+        (EffectExecutor::server().with_persistence(store.clone()).with_entity_policies(Arc::new(RwLock::new(table))), store)
+    }
+
+    fn create_invite(id: &str) -> Effect {
+        Effect::Persist {
+            operation: PersistOperation::Create,
+            entity_type: "Invite".to_string(),
+            data: v(json!({ "id": id, "name": "Ada" })),
+            id: None,
+            emit: None,
+            guard: None,
+        }
+    }
+
+    #[test]
+    fn a_viewer_session_cannot_create_a_server_created_row_and_a_program_step_can() {
+        let (executor, store) = invite_executor(true);
+        let denied = executor.execute(&create_invite("i1"), &viewer("u1", "admin"));
+        assert!(denied.is_failed() && denied.code == Some(ServerEffectCode::Denied), "{denied:?}");
+        assert!(format!("{denied:?}").contains("@Create denied"), "{denied:?}");
+        assert!(store.find("Invite", "i1").unwrap().is_none());
+        let upsert = Effect::Persist {
+            operation: PersistOperation::Upsert,
+            entity_type: "Invite".to_string(),
+            data: v(json!({ "id": "i2", "name": "Ada" })),
+            id: None,
+            emit: None,
+            guard: None,
+        };
+        let refused = executor.execute(&upsert, &viewer("u1", "admin"));
+        assert!(refused.is_failed() && refused.code == Some(ServerEffectCode::Denied), "{refused:?}");
+        assert!(format!("{refused:?}").contains("@Create denied"), "{refused:?}");
+        let batch = Effect::PersistBatch { ops: v(json!([["create", "Invite", { "id": "i3", "name": "Ada" }]])), emit: None };
+        let batched = executor.execute(&batch, &viewer("u1", "admin"));
+        assert!(batched.is_failed(), "{batched:?}");
+        assert!(store.find("Invite", "i2").unwrap().is_none() && store.find("Invite", "i3").unwrap().is_none());
+        let _step = crate::effects::executor::ProgramStepScope::enter();
+        let created = executor.execute(&create_invite("i1"), &BindingContext::new());
+        assert!(created.is_executed(), "{created:?}");
+        assert!(store.find("Invite", "i1").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_seed_write_creates_a_server_created_row() {
+        let (executor, store) = invite_executor(true);
+        let _seed = crate::effects::executor::SeedWriteScope::enter(true);
+        let created = executor.execute(&create_invite("i1"), &BindingContext::new());
+        assert!(created.is_executed(), "{created:?}");
+        assert!(store.find("Invite", "i1").unwrap().is_some());
+    }
+
+    #[test]
+    fn control_an_entity_without_create_server_is_created_by_a_viewer() {
+        let (executor, store) = invite_executor(false);
+        let created = executor.execute(&create_invite("i1"), &viewer("u1", "member"));
+        assert!(created.is_executed(), "{created:?}");
+        assert!(store.find("Invite", "i1").unwrap().is_some());
+    }
+
     #[test]
     fn a_pushed_batch_reads_the_row_first_when_an_op_names_a_ruled_field() {
         let (_, store) = executor(true);

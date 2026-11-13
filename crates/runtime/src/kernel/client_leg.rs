@@ -320,13 +320,15 @@ impl RuntimeKernel {
                     let mut covered: HashSet<&str> = HashSet::new();
                     let mut legs = Vec::new();
                     for (i, (t, r, emitter)) in steps.iter().enumerate() {
-                        if emitter.as_deref().is_some_and(|e| covered.contains(e)) {
-                            if !client_only(t) {
-                                covered.insert(t.as_str());
-                                continue;
-                            }
+                        let emitter_covered = emitter.as_deref().is_some_and(|e| covered.contains(e));
+                        if emitter_covered && !client_only(t) {
+                            covered.insert(t.as_str());
+                            continue;
                         }
-                        if emitter.is_none() || client_only(t) || !reaches_server(i) {
+                        // A client-only step is posted only for its own server work (an emit only a server-only
+                        // orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
+                        let own_server_work = !emitter_covered && delegating_traits.contains(t.as_str());
+                        if emitter.is_none() || (client_only(t) && !own_server_work) || !reaches_server(i) {
                             continue;
                         }
                         covered.insert(t.as_str());

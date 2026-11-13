@@ -174,6 +174,7 @@ impl RuntimeKernel {
 
     /// Every registered seed not yet landed, each under a fresh ask key: a run writes them before its first step,
     /// even while another run's leg for one awaits the host (seeds are creates; `duplicate-id` is their no-op).
+    /// A failed ensure is not registered any more: its entity's writes answer the recorded failure until the program registers again.
     pub(crate) fn pending_store_seeds(&self) -> std::collections::VecDeque<(String, StoreAsk)> {
         self.store_seeds
             .lock()
@@ -203,6 +204,7 @@ impl RuntimeKernel {
                         &ensure.entity_type,
                         Some(format!("store driver {} could not ensure the indexes of {}: {message}", ask.driver, ensure.entity_type)),
                     );
+                    self.store_seeds.lock().retain(|registered| registered.key != origin);
                 }
                 None
             }
@@ -221,7 +223,6 @@ impl RuntimeKernel {
                             ask.driver, ensure.entity_type
                         )),
                     );
-                    return;
                 }
                 _ => self.io.set_index_failure(&ensure.entity_type, None),
             }

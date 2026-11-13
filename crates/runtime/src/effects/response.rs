@@ -464,6 +464,8 @@ pub enum TransitionRejectionCode {
     /// A slot's repaint for an entity change failed to resolve (a call in its props threw); the slot keeps its last
     /// paint.
     RepaintFailed,
+    /// The dispatch reached its step cap; the deliveries behind the named one never ran.
+    CascadeCapped,
 }
 
 /// Mirrors `@almadar/core` `TransitionRejection`: why a trait (or the whole request)
@@ -854,6 +856,19 @@ impl EventResponse {
                     transition: None,
                     guard: None,
                     error: Some(error.clone()),
+                    slot: None,
+                });
+            }
+            if let Some(cut) = &result.cascade_cut {
+                rejections.push(TransitionRejection {
+                    code: TransitionRejectionCode::CascadeCapped,
+                    trait_name: Some(cut.trait_name.clone()),
+                    from: None,
+                    event: Some(cut.event.clone()),
+                    states_declaring_event: None,
+                    transition: None,
+                    guard: None,
+                    error: Some(cut.message()),
                     slot: None,
                 });
             }

@@ -912,6 +912,9 @@ fn play_step(
             .unwrap_or_default();
         partial.push(outcome_report(t, orbital, event, ensures, r));
     }
+    if let Some(cut) = outcomes.iter().find_map(|(_, r)| r.cascade_cut.as_ref()) {
+        return Err(format!("step {i}: {}", cut.message()));
+    }
     let outcomes = std::mem::take(partial);
     let states = kernel
         .trait_snapshot(None)
@@ -1089,6 +1092,34 @@ mod tests {
         });
         let program: Vec<_> = lines.lock().unwrap().iter().filter(|(target, ..)| target == "almadar:program").cloned().collect();
         (report["steps"][0]["outcomes"][0]["effects"][0].clone(), program)
+    }
+
+    const CHAIN: &str = r#"{"name":"ChainApp","typeContractVersion":1,"orbitals":[{"name":"Main","entity":{"name":"Item","persistence":"runtime","fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Fanner","linkedEntity":"Item","listens":[{"event":"STEP_NEXT","triggers":"STEP","source":{"kind":"trait","trait":"Fanner"}}],"stateMachine":{"states":[{"name":"searching","isInitial":true}],"transitions":[
+        {"from":"searching","to":"searching","event":"STEP","effects":[["emit","STEP_NEXT",{"n":["+","@payload.n",1]}]]}
+    ]}}]}]}"#;
+
+    const BOUNDED_CHAIN: &str = r#"{"name":"ChainApp","typeContractVersion":1,"orbitals":[{"name":"Main","entity":{"name":"Item","persistence":"runtime","fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Fanner","linkedEntity":"Item","listens":[{"event":"STEP_NEXT","triggers":"STEP","source":{"kind":"trait","trait":"Fanner"}}],"stateMachine":{"states":[{"name":"searching","isInitial":true}],"transitions":[
+        {"from":"searching","to":"searching","event":"STEP","guard":[">","@payload.remaining",0],"effects":[["emit","STEP_NEXT",{"remaining":["-","@payload.remaining",1]}]]}
+    ]}}]}]}"#;
+
+    #[test]
+    fn a_step_cut_at_the_cap_refuses_the_replay() {
+        let refusal = play_refusable(CHAIN, serde_json::json!([
+            { "trait": "Fanner", "event": "STEP", "payload": { "n": 0 } }
+        ]))
+        .unwrap_err();
+        assert!(!refusal.success);
+        assert!(refusal.error.contains("cascade-cap") && refusal.error.contains("2000"), "{}", refusal.error);
+        assert!(!refusal.outcomes.is_empty());
+    }
+
+    #[test]
+    fn control_a_step_under_the_cap_reports_success() {
+        let report = play_refusable(BOUNDED_CHAIN, serde_json::json!([
+            { "trait": "Fanner", "event": "STEP", "payload": { "remaining": 3 } }
+        ]))
+        .unwrap();
+        assert_eq!(report["success"], serde_json::json!(true), "{report}");
     }
 
     #[test]

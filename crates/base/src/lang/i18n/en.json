@@ -315,6 +315,7 @@
     "content": "content",
     "create": "create",
     "create_policy": "create_policy",
+    "create_server": "create_server",
     "createdAt": "createdAt",
     "curName": "curName",
     "customPatterns": "customPatterns",

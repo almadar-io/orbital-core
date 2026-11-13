@@ -2093,3 +2093,54 @@ fn a_viewer_session_cannot_write_a_server_field_but_the_program_session_step_it_
     kernel.dispatch("Viewer", None, "ASK", Value::Null).unwrap();
     assert_eq!(member_team(&cache), Value::string("t-program"), "the program-session step wrote it");
 }
+
+/// `Viewer` (a `[client]` route trait) creates an `Invite` itself on `TRY`, and on `ASK` emits `CLAIM`, which `Claimer` (mounted
+/// only on `boot`, so the program session steps it) turns into the same create.
+fn server_create_schema() -> OrbitalSchema {
+    let invite = || serde_json::json!({ "name": "Invite", "persistence": "persistent", "collection": "invites",
+        "access_waivers": { "create_server": "created when an invite is accepted, after the server checks it" },
+        "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
+    let create = |event: &str, id: &str| serde_json::json!({ "from": "idle", "to": "idle", "event": event, "effects": [["persist", "create", "Invite", { "id": id, "name": "Ada" }]] });
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": invite(),
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "Invite", "dispatch": "client",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    create("TRY", "i-viewer"),
+                    { "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "CLAIM", {}]] }] },
+                "emits": [{ "event": "CLAIM", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Jobs",
+            "entity": invite(),
+            "traits": [{
+                "name": "Claimer", "linkedEntity": "Invite",
+                "listens": [{ "event": "CLAIM", "triggers": "CLAIMED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [create("CLAIMED", "i-program")] }
+            }],
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_viewer_session_cannot_create_a_server_created_row_but_the_program_session_step_it_asked_for_can() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_create_schema()).unwrap();
+    let _session = kernel.enter_session("s1");
+    let tried = kernel.dispatch("Viewer", None, "TRY", Value::Null).unwrap();
+    assert!(tried.iter().all(|(_, r)| r.effect_results.iter().all(|e| !e.is_executed())), "{tried:?}");
+    assert!(
+        tried.iter().flat_map(|(_, r)| r.effect_results.iter()).any(|e| e.code == Some(crate::effects::response::ServerEffectCode::Denied)),
+        "the viewer's create is denied: {tried:?}"
+    );
+    assert!(cache.find("Invite", "i-viewer").unwrap().is_none(), "the viewer's own create is refused");
+    kernel.dispatch("Viewer", None, "ASK", Value::Null).unwrap();
+    assert!(cache.find("Invite", "i-program").unwrap().is_some(), "the program-session step created it");
+}

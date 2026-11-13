@@ -253,6 +253,9 @@ pub struct AccessWaivers {
     pub read_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub create: Option<String>,
+    /// `@create server "<reason>"`: no viewer creates these rows; only a step of the program session does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create_server: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

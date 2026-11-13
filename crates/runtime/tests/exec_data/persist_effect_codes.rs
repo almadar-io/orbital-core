@@ -660,3 +660,36 @@ fn a_failed_ensure_fails_the_first_row_ask_with_the_named_error_and_scans_nothin
     let text = serde_json::to_string(&results[0]).unwrap();
     assert!(text.contains("could not ensure the indexes of Ticket: cannot create index"), "{text}");
 }
+
+/// A failing ensure that still mirrors its batch, so the host sees each time the driver ran the ensure verb.
+fn counted_failing_ensure_program() -> OrbitalSchema {
+    let mut program = indexed_store_json(Some("runtime"), true);
+    let transitions = program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap();
+    let ensure = transitions.iter_mut().find(|t| t["event"] == "ROWS_ENSURE_INDEXES").unwrap();
+    ensure["effects"] = serde_json::json!([
+        ["persist", "create", "Mirror", { "id": "@payload.key", "batch": { "entityType": "@payload.entityType", "indexes": "@payload.indexes" } }],
+        ["emit", "STORE_FAILED", { "key": "@payload.key", "message": "cannot create index" }]
+    ]);
+    serde_json::from_value(program).unwrap()
+}
+
+/// The ensure verb ran once per `ensured` mirror batch the host was asked to create.
+#[test]
+fn a_failed_ensure_is_asked_once() {
+    let (results, asked) = run_events(counted_failing_ensure_program(), &["TAKE", "TAKE", "TAKE"]);
+    assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+    for result in &results {
+        let text = serde_json::to_string(result).unwrap();
+        assert!(text.contains("could not ensure the indexes"), "{text}");
+    }
+}
+
+#[test]
+fn control_a_successful_ensure_is_asked_once_and_writes_pass() {
+    let (results, asked) = run_events(indexed_store_program(Some("runtime"), false), &["TAKE", "TAKE", "TAKE"]);
+    assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
+    for result in &results {
+        let text = serde_json::to_string(result).unwrap();
+        assert!(!text.contains("could not ensure the indexes") && !result.is_empty(), "{text}");
+    }
+}

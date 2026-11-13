@@ -151,10 +151,7 @@ impl RuntimeKernel {
                 out.push(format!("{trait_name}: {message}"));
             }
             if let Some(cut) = &result.cascade_cut {
-                out.push(format!(
-                    "{}: cascade-cap: the dispatch reached its {}-step cap before {} handled {}, so the work behind it never ran",
-                    trait_name, cut.cap, cut.trait_name, cut.event
-                ));
+                out.push(format!("{}: {}", trait_name, cut.message()));
             }
         }
         out
