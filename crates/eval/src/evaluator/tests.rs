@@ -1760,6 +1760,13 @@ fn test_time_diff() {
 }
 
 #[test]
+fn time_epoch_ms_is_the_instant_in_epoch_milliseconds() {
+    assert_eq!(eval(r#"["time/epoch-ms", "1970-01-01T00:00:01Z"]"#), Value::Number(1000.0));
+    assert_eq!(eval(r#"["time/epoch-ms", "2024-01-01T00:00:00Z"]"#), Value::Number(1_704_067_200_000.0));
+    assert!(eval_err(r#"["time/epoch-ms", 1000]"#).contains("Type mismatch"), "control: a number is not a time");
+}
+
+#[test]
 fn test_time_is_before() {
     assert_eq!(eval(r#"["time/isBefore", "2024-01-01", "2024-01-02"]"#), Value::Bool(true));
     assert_eq!(eval(r#"["time/isBefore", "2024-01-02", "2024-01-01"]"#), Value::Bool(false));

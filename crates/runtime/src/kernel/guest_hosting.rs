@@ -55,6 +55,12 @@ pub trait GuestHost: Send + Sync {
     /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
     /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
     fn tick_pass(&self) -> Result<DispatchOutcomes, String>;
+    /// The dispatches this guest's host ran on its own for a viewer since the last call (a completion that ran in a
+    /// viewer's session), each `{ clientId, orbitalName, request, response }` as the host's live stream carries it: a
+    /// split guest's viewer folds them as it folds a served app's host-run dispatches (EXEC-DIST-8).
+    fn take_host_dispatches(&self) -> Vec<Value> {
+        Vec::new()
+    }
 }
 
 impl RuntimeKernel {

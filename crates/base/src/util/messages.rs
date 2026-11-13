@@ -10,6 +10,8 @@ use std::prelude::v1::*;
 use serde_json::Value;
 
 pub const TRANSLATE_OP: &str = "i18n/t";
+/// The active locale's reading direction: render-time like `i18n/t`.
+pub const DIRECTION_OP: &str = "i18n/direction";
 pub const NAMESPACE_SEPARATOR: char = ':';
 
 /// Why a key could not be qualified.
@@ -727,7 +729,7 @@ fn scan(value: &Value, path: &str, out: &mut Vec<String>) {
             if items.first().and_then(Value::as_str) == Some("render-ui") {
                 return;
             }
-            if items.first().and_then(Value::as_str) == Some(TRANSLATE_OP) {
+            if matches!(items.first().and_then(Value::as_str), Some(TRANSLATE_OP | DIRECTION_OP)) {
                 out.push(path.to_string());
                 return;
             }
@@ -757,6 +759,14 @@ mod render_only_tests {
     fn control_inside_render_ui_is_allowed() {
         let p = program(json!({ "effects": [["render-ui", "main", { "content": ["i18n/t", "a:b"], "dir": "@locale" }]] }));
         assert!(render_only_violations(&p).is_empty());
+    }
+
+    #[test]
+    fn the_locale_direction_outside_render_ui_is_reported() {
+        let p = program(json!({ "effects": [["set", "@entity.dir", ["i18n/direction"]]] }));
+        assert_eq!(render_only_violations(&p).len(), 1);
+        let ok = program(json!({ "effects": [["render-ui", "main", { "type": "canvas", "direction": ["i18n/direction"] }]] }));
+        assert!(render_only_violations(&ok).is_empty(), "control: inside render-ui");
     }
 
     #[test]

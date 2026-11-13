@@ -28,6 +28,18 @@ impl Operator for I18nTOp {
     }
 }
 
+/// `i18n/direction`: the reading direction of the active locale (`rtl` or `ltr`), null until the host sets a locale.
+pub struct I18nDirectionOp;
+impl Operator for I18nDirectionOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "i18n/direction", == 0);
+        Ok(match ctx.locale.as_str() {
+            Some(locale) => Value::string(orbital_core_base::messages::locale_direction(locale)),
+            None => Value::Null,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use orbital_core_base::schema::sexpr::SExpression;
@@ -51,6 +63,20 @@ mod tests {
 
     fn call(json: serde_json::Value) -> SExpression {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn the_direction_of_the_active_locale() {
+        for (locale, dir) in [("ar", "rtl"), ("he", "rtl"), ("en", "ltr"), ("sl", "ltr")] {
+            let v = eval_expr(&call(serde_json::json!(["i18n/direction"])), &ctx(locale, &[])).unwrap();
+            assert_eq!(v, Value::string(dir), "{locale}");
+        }
+    }
+
+    #[test]
+    fn edge_with_no_locale_set_the_direction_is_null() {
+        let none = BindingContextBuilder::new().build();
+        assert_eq!(eval_expr(&call(serde_json::json!(["i18n/direction"])), &none).unwrap(), Value::Null);
     }
 
     #[test]

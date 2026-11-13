@@ -22,7 +22,7 @@ pub use formatting::{FormatOrdinalOp, FormatPluralOp};
 pub use lambda::{BehaviorApplyOp, BehaviorRefOp, FnOp, QuasiquoteOp, QuoteOp, UnquoteOp};
 use time::*;
 pub use time::{
-    TimeAddOp, TimeDayOp, TimeDiffOp, TimeDurationOp, TimeFormatOp, TimeHourOp, TimeIsAfterOp,
+    TimeAddOp, TimeDayOp, TimeDiffOp, TimeDurationOp, TimeEpochMsOp, TimeFormatOp, TimeHourOp, TimeIsAfterOp,
     TimeIsBeforeOp, TimeIsBetweenOp, TimeIsFutureOp, TimeIsPastOp, TimeIsSameOp, TimeIsTodayOp,
     TimeMinuteOp, TimeMonthOp, TimeNowOp, TimeParseOp, TimeSecondOp, TimeSubtractOp, TimeToDateOp, TimeToInstantOp, TimeTodayOp,
     TimeUnit, TimeValidOp, TimeWeekdayOp, TimeYearOp, TIME_UNIT_VOCABULARY,

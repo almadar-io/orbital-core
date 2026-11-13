@@ -898,7 +898,8 @@ impl RuntimeKernel {
             ));
         };
         let outcomes = host.tick_pass()?;
-        if outcomes.is_empty() {
+        let dispatches = host.take_host_dispatches();
+        if outcomes.is_empty() && dispatches.is_empty() {
             return Ok(GuestTicks::Idle);
         }
         let embedded = session.route.read().embedded.clone();
@@ -907,10 +908,13 @@ impl RuntimeKernel {
         // A tick that changed a field an earlier paint reads repaints it: the guest stands in for the browser
         // (EXEC-ENDPOINT-3a), so its kernel resolves those paints (owner 2026-11-12, G-ORBITAL-CORE-148).
         let rerenders = session.kernel.rerender_stale();
-        let answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
+        let mut answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
+        if let Value::Object(fields) = &mut answer {
+            fields.insert("dispatches".into(), Value::Array(dispatches.into()));
+        }
         // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
         let empty = |field: &str| answer.get(field).and_then(Value::as_array).is_none_or(|items| items.is_empty());
-        if empty("rendered") && empty("emitted") && empty("hostAsks") {
+        if empty("rendered") && empty("emitted") && empty("hostAsks") && empty("dispatches") {
             return Ok(GuestTicks::Idle);
         }
         Ok(GuestTicks::Painted(answer))

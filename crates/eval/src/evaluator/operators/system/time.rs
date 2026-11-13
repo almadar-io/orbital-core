@@ -349,6 +349,16 @@ impl Operator for TimeDiffOp {
     }
 }
 
+/// time/epoch-ms - a time as milliseconds since the Unix epoch, a number
+pub struct TimeEpochMsOp;
+impl Operator for TimeEpochMsOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "time/epoch-ms", == 1);
+        let moment = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        Ok(crate::evaluator::operators::util::int_or_number(moment.ms))
+    }
+}
+
 /// time/isBefore
 pub struct TimeIsBeforeOp;
 impl Operator for TimeIsBeforeOp {
