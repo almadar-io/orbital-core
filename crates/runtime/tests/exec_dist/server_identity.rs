@@ -542,36 +542,63 @@ fn control_a_program_session_event_reads_the_signed_in_identity() {
     assert_eq!(held.gate()["who"], json!("user-1"));
 }
 
-// EXEC-FIELD-3: a sign-in a program-wide trait makes while it serves a viewer's delivery signs that viewer's session in.
+// EXEC-IDENTITY-3: `identity/sign-in verified session` and `identity/sign-out session` name the client session they bind; only a
+// program-session step may name one. Without a session they bind the session the step runs in.
 fn boot_signer_schema() -> OrbitalSchema {
+    let routes = || json!({ "emit": { "success": "IN_OK", "failure": "IN_FAIL" } });
+    let verify = json!(["jws/verify", "@payload.token", [], { "issuer": "firebase-auth-emulator@example.com", "audience": "test", "allowUnsigned": true }]);
     serde_json::from_value(json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
-            "entity": { "name": "Seen", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "who", "type": "string" }] },
+            "entity": { "name": "Seen", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "who", "type": "string" }, { "name": "kind", "type": "string" }] },
             "traits": [{
                 "name": "Viewer", "linkedEntity": "Seen",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
-                    { "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "SIGN", { "token": "@payload.token" }]] },
+                    { "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "SIGN", { "token": "@payload.token", "session": "@payload.session" }]] },
+                    { "from": "idle", "to": "idle", "event": "OUT", "effects": [["emit", "SIGN_OUT", { "session": "@payload.session" }]] },
+                    { "from": "idle", "to": "idle", "event": "SELF", "effects": [["let", [["v", verify.clone()]], ["identity/sign-in", "@v", "@payload.session", routes()]]] },
+                    { "from": "idle", "to": "idle", "event": "IN_FAIL", "effects": [["set", "@entity.kind", "@payload.kind"]] },
                     { "from": "idle", "to": "idle", "event": "WHO", "effects": [["set", "@entity.who", "@user.id"]] }] },
-                "emits": [{ "event": "SIGN", "scope": "external" }]
+                "emits": [{ "event": "SIGN", "scope": "external" }, { "event": "SIGN_OUT", "scope": "external" }]
             }],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
         }, {
             "name": "Auth",
-            "entity": { "name": "Person", "identity": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "entity": { "name": "Person", "identity": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "kind", "type": "string" }, { "name": "failedFor", "type": "string" }] },
             "traits": [{
                 "name": "Signer", "linkedEntity": "Person",
-                "listens": [{ "event": "SIGN", "triggers": "SIGN_ASKED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "listens": [
+                    { "event": "SIGN", "triggers": "SIGN_ASKED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } },
+                    { "event": "SIGN_OUT", "triggers": "OUT_ASKED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
-                    { "from": "idle", "to": "idle", "event": "SIGN_ASKED", "effects": [
-                        ["let", [["v", ["jws/verify", "@payload.token", [], { "issuer": "firebase-auth-emulator@example.com", "audience": "test", "allowUnsigned": true }]]],
-                            ["identity/sign-in", "@v"]]] }] }
+                    { "from": "idle", "to": "idle", "event": "SIGN_ASKED", "guard": ["!=", "@payload.session", ""],
+                      "effects": [["let", [["v", verify.clone()]], ["identity/sign-in", "@v", "@payload.session", routes()]]] },
+                    { "from": "idle", "to": "idle", "event": "SIGN_ASKED", "guard": ["=", "@payload.session", ""],
+                      "effects": [["let", [["v", verify]], ["identity/sign-in", "@v", routes()]]] },
+                    { "from": "idle", "to": "idle", "event": "OUT_ASKED", "effects": [["identity/sign-out", "@payload.session", routes()]] },
+                    { "from": "idle", "to": "idle", "event": "IN_FAIL", "effects": [["set", "@entity.kind", "@payload.kind"], ["set", "@entity.failedFor", "@payload.session"]] }] }
             }],
             "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Signer" }] }]
         }]
     }))
     .unwrap()
+}
+
+fn boot_signer() -> orbital_core_runtime::kernel::RuntimeKernel {
+    let kernel = orbital_core_runtime::kernel::RuntimeKernel::new(
+        orbital_core_base::effect_types::RuntimeEnvironment::Server,
+        std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
+        Default::default(),
+    );
+    kernel.register_schema(boot_signer_schema()).unwrap();
+    kernel
+}
+
+fn ask_in(kernel: &orbital_core_runtime::kernel::RuntimeKernel, from: &str, event: &str, session: &str) {
+    let _session = kernel.enter_session(from);
+    let payload: Value = serde_json::from_value(json!({ "token": crate::support::identity::token("ada", json!({})), "session": session })).unwrap();
+    kernel.dispatch("Viewer", None, event, payload).unwrap();
 }
 
 fn who(kernel: &orbital_core_runtime::kernel::RuntimeKernel, session: Option<&str>) -> serde_json::Value {
@@ -580,20 +607,62 @@ fn who(kernel: &orbital_core_runtime::kernel::RuntimeKernel, session: Option<&st
     serde_json::to_value(&kernel.snapshot_trait("Viewer", None).entity).unwrap()["who"].clone()
 }
 
+fn refusal(kernel: &orbital_core_runtime::kernel::RuntimeKernel, trait_name: &str, session: Option<&str>) -> serde_json::Value {
+    let _session = session.map(|s| kernel.enter_session(s));
+    serde_json::to_value(&kernel.snapshot_trait(trait_name, None).entity).unwrap()["kind"].clone()
+}
+
 #[test]
-fn exec_field_3_a_sign_in_made_by_a_program_wide_trait_for_a_viewers_delivery_binds_that_viewers_session() {
-    let kernel = orbital_core_runtime::kernel::RuntimeKernel::new(
-        orbital_core_base::effect_types::RuntimeEnvironment::Server,
-        std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
-        Default::default(),
-    );
-    kernel.register_schema(boot_signer_schema()).unwrap();
-    {
-        let _session = kernel.enter_session("tab-1");
-        let payload: Value = serde_json::from_value(json!({ "token": crate::support::identity::token("ada", json!({})) })).unwrap();
-        kernel.dispatch("Viewer", None, "ASK", payload).unwrap();
-    }
-    assert_eq!(who(&kernel, Some("tab-1")), json!("ada"), "the viewer who asked is signed in");
+fn exec_identity_3_a_program_session_step_naming_a_session_binds_that_session() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-1", "ASK", "tab-1");
+    assert_eq!(who(&kernel, Some("tab-1")), json!("ada"), "the named session is signed in");
     assert_eq!(who(&kernel, Some("tab-2")), json!("anonymous"), "control: another session is not");
     assert_eq!(who(&kernel, None), json!("anonymous"), "control: the program session is not");
+}
+
+#[test]
+fn exec_identity_3_a_program_session_step_may_bind_a_session_other_than_the_one_that_asked() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-1", "ASK", "tab-2");
+    assert_eq!(who(&kernel, Some("tab-2")), json!("ada"));
+    assert_eq!(who(&kernel, Some("tab-1")), json!("anonymous"));
+}
+
+#[test]
+fn control_a_sign_in_naming_no_session_binds_the_session_the_step_runs_in_never_the_asker() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-1", "ASK", "");
+    assert_eq!(who(&kernel, Some("tab-1")), json!("anonymous"), "nothing implicit: the asker is not bound");
+    assert_eq!(who(&kernel, None), json!("ada"), "the program session the step ran in is");
+}
+
+#[test]
+fn exec_identity_3_a_viewers_own_step_naming_a_session_is_refused() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-1", "SELF", "tab-2");
+    assert_eq!(refusal(&kernel, "Viewer", Some("tab-1")), json!("not-program-session"));
+    assert_eq!(who(&kernel, Some("tab-2")), json!("anonymous"));
+    assert_eq!(who(&kernel, Some("tab-1")), json!("anonymous"));
+}
+
+#[test]
+fn edge_an_ended_session_is_refused_and_bound_to_nothing() {
+    let kernel = boot_signer();
+    kernel.free_session("tab-2");
+    ask_in(&kernel, "tab-1", "ASK", "tab-2");
+    assert_eq!(refusal(&kernel, "Signer", None), json!("session-ended"));
+    let entity = { serde_json::to_value(&kernel.snapshot_trait("Signer", None).entity).unwrap() };
+    assert_eq!(entity["failedFor"], json!("tab-2"), "the failure names the session it was for");
+    assert!(kernel.session_ended("tab-2"), "the ended session stays ended");
+}
+
+#[test]
+fn exec_identity_3_a_sign_out_naming_a_session_signs_that_session_out() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-1", "ASK", "tab-1");
+    ask_in(&kernel, "tab-3", "ASK", "tab-3");
+    ask_in(&kernel, "tab-3", "OUT", "tab-1");
+    assert_eq!(who(&kernel, Some("tab-1")), json!("anonymous"));
+    assert_eq!(who(&kernel, Some("tab-3")), json!("ada"), "control: the session that asked stays signed in");
 }

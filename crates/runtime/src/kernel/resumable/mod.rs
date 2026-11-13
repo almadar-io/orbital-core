@@ -47,7 +47,7 @@ use answer::*;
 pub(crate) use answer::{accept_replies, os_completion_cancelled};
 pub use answer::{answer_batch, answer_ports, drive_blocking, drive_concurrent};
 pub use asks::{
-    completion_event, host_call_key, program_call_key, substrate_completion_event, CallRoutes, CallSite,
+    call_key_session, completion_event, host_call_key, program_call_key, substrate_completion_event, CallRoutes, CallSite,
     CallVerdict, GuestKernel, IoAnswer, IoRequest, ModelFailure, ModelFailureKind, PageFacts, RequestId,
 };
 pub(crate) use continuation::{accept_into, StoreLeg};

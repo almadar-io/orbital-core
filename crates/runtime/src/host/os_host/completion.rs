@@ -427,6 +427,9 @@ pub struct Requester {
     pub session: Option<Arc<str>>,
     /// The route mount whose `$MOUNT` work the dispatch is part of (EXEC-SEED-7): its deferred asks hold tickets.
     pub lineage: Option<Arc<crate::kernel::mount_barrier::MountLineage>>,
+    /// The client session that asked for the program-session step which made the ask (EXEC-FIELD-3): its completion
+    /// reads that viewer as `@user`. `None` outside such a step.
+    pub asker: Option<Arc<str>>,
 }
 
 /// Each deferred key's requester, whether the key is a stream (kept until a new ask reuses the key), and the lineage
@@ -482,10 +485,7 @@ impl DispatchScope {
             _ => false,
         };
         if open {
-            let requester = match store_leg {
-                Some(leg) => Arc::new(Requester { client_id: self.requester.client_id.clone(), session: self.requester.session.clone(), lineage: Some(leg) }),
-                None => self.requester.clone(),
-            };
+            let requester = self.requester_of_ask(key, store_leg);
             let ticket = if stream { None } else { requester.lineage.as_ref().map(|lineage| lineage.ticket()) };
             self.requesters.lock().insert(key.clone(), (requester, stream, ticket));
         } else if leg_asking.is_some() {
@@ -498,6 +498,25 @@ impl DispatchScope {
             asking.ended.notify_all();
         }
         answered
+    }
+
+    /// Who asked for `key`: the dispatch's client, in the session of the step that made the ask, which the kernel wrote
+    /// into the key ([`crate::resumable::host_call_key`]); a key the kernel did not scope keeps the dispatch's session.
+    fn requester_of_ask(&self, key: &str, store_leg: Option<Arc<crate::kernel::mount_barrier::MountLineage>>) -> Arc<Requester> {
+        let session = match crate::resumable::call_key_session(key) {
+            Some(stepped) => stepped.map(Arc::<str>::from),
+            None => self.requester.session.clone(),
+        };
+        let asker = match (&session, &self.requester.session) {
+            (None, Some(dispatch)) => Some(Arc::clone(dispatch)),
+            _ => None,
+        };
+        let lineage = store_leg.or_else(|| self.requester.lineage.clone());
+        let same = session == self.requester.session && asker.is_none() && lineage.as_ref().map(Arc::as_ptr) == self.requester.lineage.as_ref().map(Arc::as_ptr);
+        if same {
+            return self.requester.clone();
+        }
+        Arc::new(Requester { client_id: self.requester.client_id.clone(), session, lineage, asker })
     }
 
     fn release(&self, key: &str) {
@@ -546,6 +565,7 @@ impl KernelCompletionSink {
             client_id: client_id.map(str::to_string),
             session: kernel.as_ref().and_then(|kernel| kernel.thread_session()),
             lineage: crate::kernel::mount_barrier::thread_lineage(),
+            asker: None,
         }))
     }
 
@@ -649,7 +669,7 @@ fn program_wide_requester(kernel: &RuntimeKernel, site: &CallSite, requester: Ar
     if requester.session.is_none() || !kernel.program_wide(&site.trait_name) {
         return requester;
     }
-    Arc::new(Requester { client_id: requester.client_id.clone(), session: None, lineage: requester.lineage.clone() })
+    Arc::new(Requester { client_id: requester.client_id.clone(), session: None, lineage: requester.lineage.clone(), asker: requester.asker.clone().or_else(|| requester.session.clone()) })
 }
 
 impl KernelCompletionSink {
@@ -690,12 +710,11 @@ impl KernelCompletionSink {
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
         let (requester, _ticket) = self.requester_of(key);
-        let asked = requester.session.clone();
         let requester = program_wide_requester(&kernel, site, requester);
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
-        // A program-wide trait steps in the program session; the session that deferred the key is still who asked (EXEC-FIELD-3).
-        let _asker = (requester.session.is_none() && asked.is_some()).then(|| kernel.enter_asker(asked.clone()));
+        // A completion stepping in the program session for a viewer's ask reads that viewer as who asked (EXEC-FIELD-3).
+        let _asker = requester.asker.is_some().then(|| kernel.enter_asker(requester.asker.clone()));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
         let delivered = kernel.dispatch_route(site, key, event, payload, failed, &answer);
@@ -1042,6 +1061,80 @@ mod tests {
         let (event, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
         assert_eq!((event.as_str(), client.as_deref()), ("DONE", Some("tab-1")));
         assert_eq!(ran_as, Some(viewer("ada")), "the asking session's identity, not the program session's");
+    }
+
+    /// A sink whose completions report the event, the client they were delivered for and the session they ran in.
+    fn session_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<(String, Option<String>, Option<String>)>) {
+        use crate::config::KernelConfig;
+        use orbital_core_base::effect_types::RuntimeEnvironment;
+        let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(crate::entity_source::InMemoryEntityCache::new()), KernelConfig::default()));
+        let answer: Arc<CompletionAnswerer> = Arc::new(|_| IoAnswer::Service(Err("no host".to_string())));
+        let (told, ran) = std::sync::mpsc::channel();
+        let told = Mutex::new(told);
+        let seen = Arc::downgrade(&kernel);
+        let done: Arc<CompletionDone> = Arc::new(move |_, event, _, client_id, _| {
+            let session = seen.upgrade().and_then(|k| k.thread_session()).map(|s| s.to_string());
+            let _ = told.lock().send((event.to_string(), client_id.map(str::to_string), session));
+        });
+        (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, ran)
+    }
+
+    fn substrate_ask(key: String, trait_name: &str) -> IoRequest {
+        let mut at = site(Some("DONE"), None);
+        at.trait_name = trait_name.to_string();
+        IoRequest::Substrate { op: "program/dispatch".to_string(), args: Vec::new(), key: Some(key), site: Some(at) }
+    }
+
+    fn settle_on_a_thread(sink: &Arc<KernelCompletionSink>, key: String, trait_name: &str) {
+        let sink = sink.clone();
+        let mut at = site(Some("DONE"), None);
+        at.trait_name = trait_name.to_string();
+        std::thread::spawn(move || sink.settle(&at, &key, Ok(Value::object(ValueMap::default())))).join().expect("settled");
+    }
+
+    // EXEC-DIST-9 (owner ruling 2026-11-13, G-CROSS-607): an ask completes in the session of the step that made it, and its
+    // result is still delivered for the client whose dispatch it was part of.
+    #[test]
+    fn a_keyed_ask_a_program_session_step_made_inside_a_clients_dispatch_completes_in_the_program_session() {
+        let (sink, kernel, ran) = session_sink();
+        let key = crate::resumable::host_call_key(None, "Http", "", "send-1");
+        {
+            let _session = kernel.enter_session("tab-1");
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&deferred, &substrate_ask(key.clone(), "Http")), IoAnswer::ServiceDeferred));
+        }
+        settle_on_a_thread(&sink, key, "Http");
+        let (event, client, session) = ran.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!(event, "DONE");
+        assert_eq!(session, None, "the step that asked ran in the program session");
+        assert_eq!(client.as_deref(), Some("tab-1"), "the result is still delivered for the client");
+    }
+
+    #[test]
+    fn control_a_keyed_ask_a_clients_own_step_made_completes_in_that_clients_session() {
+        let (sink, kernel, ran) = session_sink();
+        let key = crate::resumable::host_call_key(Some("tab-1"), "Panel", "", "load-1");
+        {
+            let _session = kernel.enter_session("tab-1");
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&deferred, &substrate_ask(key.clone(), "Panel")), IoAnswer::ServiceDeferred));
+        }
+        settle_on_a_thread(&sink, key, "Panel");
+        let (_, client, session) = ran.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!((client.as_deref(), session.as_deref()), (Some("tab-1"), Some("tab-1")));
+    }
+
+    #[test]
+    fn edge_a_key_the_kernel_did_not_scope_keeps_the_dispatchs_session() {
+        let (sink, kernel, ran) = session_sink();
+        {
+            let _session = kernel.enter_session("tab-1");
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&deferred, &substrate_ask("host-made".to_string(), "Panel")), IoAnswer::ServiceDeferred));
+        }
+        settle_on_a_thread(&sink, "host-made".to_string(), "Panel");
+        let (_, _, session) = ran.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!(session.as_deref(), Some("tab-1"));
     }
 
     #[test]

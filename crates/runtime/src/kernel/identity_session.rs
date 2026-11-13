@@ -73,7 +73,7 @@ impl RuntimeKernel {
         if self.effect_executor.environment().is_client() {
             return None;
         }
-        let binding = self.sessions.identities.read().get(&*self.user_key()).cloned();
+        let binding = self.sessions.identities.read().get(&*self.identity_key()).cloned();
         match binding {
             None | Some(IdentityBinding::Anonymous) => Some(FrameIdentity::default()),
             Some(IdentityBinding::Subject { user: Some(user), .. }) => Some(FrameIdentity { user: Some(user) }),
@@ -210,12 +210,19 @@ impl RuntimeKernel {
         let Effect::Custom { args, .. } = &resolved else {
             return;
         };
+        let named = if name == SIGN_IN { args.get(1) } else { args.first() };
+        let target = match named {
+            Some(Value::String(session)) => session.to_string(),
+            Some(_) => String::new(),
+            None => self.identity_key().to_string(),
+        };
         let outcome = if name == SIGN_IN { self.sign_in(args) } else { self.sign_out(args) };
         let routes = emit.clone().unwrap_or_default();
         let (result, completion) = match outcome {
             Err(Refusal::Suspended) => return,
-            Ok(subject) => {
-                let payload = object_of([("subject", Value::string(subject))]);
+            Ok((subject, session)) => {
+                let session = if &*session == PROGRAM_SESSION { String::new() } else { session.to_string() };
+                let payload = object_of([("subject", Value::string(subject)), ("session", Value::string(session))]);
                 let completion = routes
                     .success
                     .clone()
@@ -224,7 +231,7 @@ impl RuntimeKernel {
             }
             Err(Refusal::Failed { kind, error }) => {
                 tracing::error!(site = %self.effect_site(), effect = %name, kind, error = %error, "kernel: identity effect refused");
-                let payload = object_of([("error", Value::string(error.as_str())), ("kind", Value::string(kind))]);
+                let payload = object_of([("error", Value::string(error.as_str())), ("kind", Value::string(kind)), ("session", Value::string(target))]);
                 let completion = routes
                     .failure
                     .clone()
@@ -237,8 +244,27 @@ impl RuntimeKernel {
 
     /// The running step's identity change: it takes hold when the step commits ([`Self::commit_identity`]), so a step
     /// that suspends and replays starts from the identity it started from.
-    fn stage_identity(&self, binding: IdentityBinding) {
-        *self.step.identity_change.write() = Some((self.user_key().to_string(), binding));
+    fn stage_identity(&self, session: Arc<str>, binding: IdentityBinding) {
+        *self.step.identity_change.write() = Some((session.to_string(), binding));
+    }
+
+    /// The session a sign-in or sign-out binds: the one it names, which only a step running in the program session may
+    /// name (no client or scratch session entered), else the session the step runs in (EXEC-IDENTITY-3).
+    fn bound_session(&self, named: Option<&Value>) -> Result<Arc<str>, Refusal> {
+        let Some(named) = named else {
+            return Ok(self.identity_key());
+        };
+        let session = match named {
+            Value::String(session) if !session.is_empty() => Arc::<str>::from(session.as_str()),
+            _ => return Err(refused("invalid", "the session an identity effect names is a non-empty string")),
+        };
+        if self.thread_session().is_some() {
+            return Err(refused("not-program-session", "only a program-session step names the session it signs in or out"));
+        }
+        if self.session_ended(&session) {
+            return Err(refused("session-ended", format!("session {session} has ended")));
+        }
+        Ok(session)
     }
 
     /// End the step: its identity change takes hold when `committed`, and is dropped otherwise.
@@ -249,9 +275,10 @@ impl RuntimeKernel {
         }
     }
 
-    fn sign_in(&self, args: &[Value]) -> Result<String, Refusal> {
-        let verified = match args {
-            [value] if value.is_sealed_as(VERIFIED) => value,
+    fn sign_in(&self, args: &[Value]) -> Result<(String, Arc<str>), Refusal> {
+        let (verified, named) = match args {
+            [value] if value.is_sealed_as(VERIFIED) => (value, None),
+            [value, session] if value.is_sealed_as(VERIFIED) => (value, Some(session)),
             _ => {
                 return Err(refused(
                     "unsealed",
@@ -259,6 +286,7 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let session = self.bound_session(named)?;
         let subject = match verified.get("subject") {
             Some(Value::String(subject)) if !subject.is_empty() => subject.to_string(),
             _ => return Err(refused("unsealed", "the Verified names no subject")),
@@ -282,17 +310,22 @@ impl RuntimeKernel {
                 Err(error) => return Err(refused("store", error)),
             }
         };
-        self.stage_identity(IdentityBinding::Subject { subject: Arc::from(subject.as_str()), user });
-        Ok(subject)
+        self.stage_identity(Arc::clone(&session), IdentityBinding::Subject { subject: Arc::from(subject.as_str()), user });
+        Ok((subject, session))
     }
 
-    fn sign_out(&self, args: &[Value]) -> Result<String, Refusal> {
-        if !args.is_empty() {
-            return Err(refused("invalid", "identity/sign-out takes no argument"));
-        }
-        let previous = self.session_identity();
-        self.stage_identity(IdentityBinding::Anonymous);
-        Ok(previous.map_or_else(|| orbital_core_base::viewer::ANONYMOUS.to_string(), |subject| subject.to_string()))
+    fn sign_out(&self, args: &[Value]) -> Result<(String, Arc<str>), Refusal> {
+        let session = match args {
+            [] => self.bound_session(None)?,
+            [session] => self.bound_session(Some(session))?,
+            _ => return Err(refused("invalid", "identity/sign-out takes at most the session it signs out")),
+        };
+        let previous = match self.sessions.identities.read().get(&*session) {
+            Some(IdentityBinding::Subject { subject, .. }) => Some(Arc::clone(subject)),
+            _ => None,
+        };
+        self.stage_identity(Arc::clone(&session), IdentityBinding::Anonymous);
+        Ok((previous.map_or_else(|| orbital_core_base::viewer::ANONYMOUS.to_string(), |subject| subject.to_string()), session))
     }
 
     /// The row of a `[runtime]` identity: its declared defaults, `id` the subject, and each declared field a verified

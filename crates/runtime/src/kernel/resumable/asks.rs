@@ -283,6 +283,18 @@ pub fn program_call_key(host_key: &str) -> &str {
     rest
 }
 
+/// The session of the step that made a [`host_call_key`] ask: `Some(None)` for the program session, `Some(Some(session))`
+/// for a client session, `None` for a key the kernel did not scope (one a host made itself).
+pub fn call_key_session(host_key: &str) -> Option<Option<&str>> {
+    let (len, tail) = host_key.split_once(':')?;
+    let len = len.parse::<usize>().ok()?;
+    let session = tail.get(..len)?;
+    if program_call_key(host_key) == host_key {
+        return None;
+    }
+    Some((!session.is_empty()).then_some(session))
+}
+
 /// The event and payload `outcome` fires on `site`'s routes.
 pub fn substrate_completion_event(site: &CallSite, key: &str, outcome: Result<Value, Value>) -> Option<(String, Value)> {
     let (event, payload) = match outcome {

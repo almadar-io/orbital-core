@@ -47,6 +47,12 @@ fn walk(value: &mut Value, namespace: &str, path: &str, issues: &mut Vec<Message
     }
 }
 
+/// Whether `text` is a key the lowering qualified (`<behavior>:<key>`): every literal a program writes in a
+/// `MessageKey` slot is one by the time it is validated, so an unqualified one came from a plain string.
+pub fn is_qualified_key(text: &str) -> bool {
+    text.split_once(NAMESPACE_SEPARATOR).is_some_and(|(ns, key)| !ns.is_empty() && !key.is_empty())
+}
+
 /// Qualifies one `MessageKey` written where it is declared or passed. A string literal is qualified; a `@` binding
 /// reads a key already qualified where it was written, and any other expression is typed by the checker, so both pass
 /// through.
@@ -203,6 +209,14 @@ mod tests {
         let mut v = json!(["i18n/t"]);
         assert!(qualify_message_keys(&mut v, "home").is_empty());
         assert_eq!(v, json!(["i18n/t"]));
+    }
+
+    #[test]
+    fn a_qualified_key_has_a_namespace_and_a_key() {
+        assert!(is_qualified_key("panel:begin"));
+        for text in ["begin", ":begin", "panel:", ""] {
+            assert!(!is_qualified_key(text), "{text:?}");
+        }
     }
 
     #[test]

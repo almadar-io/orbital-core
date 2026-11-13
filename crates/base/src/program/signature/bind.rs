@@ -595,8 +595,8 @@ pub(super) fn bind_unknown(
     }
 }
 
-/// A nominal std type a strict call checks (`bytes`, the vector, cell and geometry structs), a catalog key (a string
-/// literal or a value typed `MessageKey`) and a sealed type, which only a value of the same sealed type fits
+/// A nominal std type a strict call checks (`bytes`, the vector, cell and geometry structs), a catalog key (a literal
+/// the lowering qualified, or a value typed `MessageKey`) and a sealed type, which only a value of the same sealed type fits
 /// (EXEC-IDENTITY-3); any other name is open.
 pub(super) fn bind_nominal(
     name: &str,
@@ -607,7 +607,8 @@ pub(super) fn bind_nominal(
 ) -> Result<(), Mismatch> {
     if name == "messagekey" {
         let typed = matches!(known, Known::Type(ty) if fits(ty, &OirType::MessageKey, b, Mode::Proof));
-        return if actual.text.is_some() || typed { Ok(()) } else { Err(type_mismatch(formal, actual)) };
+        let qualified = actual.text.as_deref().is_some_and(crate::messages::is_qualified_key);
+        return if qualified || typed { Ok(()) } else { Err(type_mismatch(formal, actual)) };
     }
     let sealed = crate::sealed::is_sealed_type(name);
     if !sealed && !matches!(name, "bytes" | "vector" | "cell" | "rect" | "circle" | "point" | "segment") {

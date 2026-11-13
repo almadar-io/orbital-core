@@ -162,6 +162,19 @@ impl LiveBroadcastItem {
             .collect()
     }
 
+    /// [`Self::program_wide`] for a deferred completion: no browser runs the program-wide trait and no request answer
+    /// carries its emits, so the client that asked receives each one too (EXEC-DIST-9). With no asking client each goes
+    /// to every connection once.
+    pub fn program_wide_completion(emitted: Vec<EmittedEvent>, client_id: Option<&str>) -> Vec<Self> {
+        let peers = Self::program_wide(emitted, client_id);
+        let Some(client_id) = client_id else { return peers };
+        let origin: Vec<Self> = peers
+            .iter()
+            .map(|item| Self { target: LiveTarget::Origin, origin_client_id: Some(client_id.to_string()), ..item.clone() })
+            .collect();
+        peers.into_iter().chain(origin).collect()
+    }
+
     /// The `persist` effect's success emits of `response`: each goes to every connection but the request's own.
     pub fn persisted(response: &EventResponse, client_id: Option<&str>) -> Vec<Self> {
         response
@@ -250,6 +263,33 @@ mod tests {
             target,
             dispatch: None,
         }
+    }
+
+    fn emitted(event: &str) -> EmittedEvent {
+        EmittedEvent { event: event.to_string(), payload: None, source: Some(BusEventSource::from_trait("Lister")) }
+    }
+
+    // EXEC-DIST-9: a completion routed to a program-wide trait runs in the program session, and the client that asked
+    // still receives its result: no browser runs that trait, so its emits reach the asker as well as the peers.
+    #[test]
+    fn a_program_wide_emit_made_in_a_completion_reaches_the_client_that_asked_and_its_peers() {
+        let items = LiveBroadcastItem::program_wide_completion(vec![emitted("ANSWERED")], Some("a"));
+        assert!(items.iter().any(|i| i.event == "ANSWERED" && i.delivered_to(Some("a"), |_| true)), "the asker hears the answer");
+        assert!(items.iter().any(|i| i.event == "ANSWERED" && i.delivered_to(Some("b"), |_| true)), "a peer hears it too");
+        assert_eq!(items.iter().filter(|i| i.delivered_to(Some("a"), |_| true)).count(), 1, "the asker hears it once");
+    }
+
+    #[test]
+    fn control_a_program_wide_emit_made_in_a_request_reaches_only_the_peers() {
+        let items = LiveBroadcastItem::program_wide(vec![emitted("ANSWERED")], Some("a"));
+        assert!(!items.iter().any(|i| i.delivered_to(Some("a"), |_| true)), "the request's own answer carries it");
+        assert!(items.iter().any(|i| i.delivered_to(Some("b"), |_| true)));
+    }
+
+    #[test]
+    fn edge_a_program_wide_completion_no_client_asked_for_reaches_every_connection_once() {
+        let items = LiveBroadcastItem::program_wide_completion(vec![emitted("TICKED")], None);
+        assert_eq!(items.iter().filter(|i| i.delivered_to(Some("a"), |_| true)).count(), 1);
     }
 
     #[test]

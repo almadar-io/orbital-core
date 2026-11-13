@@ -201,8 +201,12 @@ pub const ACCESS_CHECK_SHAPE: &[ShapeField] = &[field("allowed", "boolean")];
 /// A credential store failure: the host's message.
 pub const CREDENTIAL_ADMIN_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string")];
 
-/// What `identity/sign-in` and `identity/sign-out` emit on success: the subject now bound (or signed out).
-pub const IDENTITY_SHAPE: &[ShapeField] = &[field("subject", "string")];
+/// What `identity/sign-in` and `identity/sign-out` emit on success: the subject now bound (or signed out) and the session
+/// it was for ("" for the program session).
+pub const IDENTITY_SHAPE: &[ShapeField] = &[field("subject", "string"), field("session", "string")];
+
+/// What `identity/sign-in` and `identity/sign-out` emit on failure: the message, its kind and the session it was for.
+pub const IDENTITY_FAILURE_SHAPE: &[ShapeField] = &[field("error", "string"), field("kind", "string"), field("session", "string")];
 
 /// What `theme/set` and `theme/clear` emit on success: the theme key now in effect for the session.
 pub const THEME_SHAPE: &[ShapeField] = &[field("theme", "string")];
@@ -400,9 +404,8 @@ pub fn failure_payload(operator: &str, variant: CallVariant, keyed: bool) -> Pro
         "random-bytes" | "credential-status" | "credential-forget" | "access-check" | "browser/page-facts" => {
             ProducedPayload::Shape(HOST_FAILURE_SHAPE)
         }
-        "credential-connect" | "identity/sign-in" | "identity/sign-out" | "theme/set" | "theme/clear" => {
-            ProducedPayload::Shape(OS_FAILURE_SHAPE)
-        }
+        "identity/sign-in" | "identity/sign-out" => ProducedPayload::Shape(IDENTITY_FAILURE_SHAPE),
+        "credential-connect" | "theme/set" | "theme/clear" => ProducedPayload::Shape(OS_FAILURE_SHAPE),
         "credential-list" | "credential-set" | "credential-remove" | "credential-test" | "credential-mode"
         | "credential-rotate" => ProducedPayload::Shape(CREDENTIAL_ADMIN_FAILURE_SHAPE),
         "persist" => match variant {
@@ -569,7 +572,8 @@ mod tests {
     fn identity_effects_emit_the_subject_and_fail_with_a_kind() {
         for op in ["identity/sign-in", "identity/sign-out"] {
             assert_eq!(success_payload(op, CallVariant::Plain), ProducedPayload::Shape(IDENTITY_SHAPE), "{op}");
-            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(OS_FAILURE_SHAPE), "{op}");
+            assert_eq!(failure_payload(op, CallVariant::Plain, false), ProducedPayload::Shape(IDENTITY_FAILURE_SHAPE), "{op}");
+            assert!(IDENTITY_SHAPE.iter().chain(IDENTITY_FAILURE_SHAPE.iter()).filter(|f| f.name == "session").count() == 2, "{op}: both outcomes name the session");
         }
         assert_eq!(success_payload("identity/other", CallVariant::Plain), ProducedPayload::Opaque, "control: another name is not an identity effect");
     }
