@@ -79,6 +79,25 @@ impl RuntimeKernel {
         self.run_straight_through(run)
     }
 
+    /// A dispatch the program answers for and no viewer asked: an inbound hook's delivery. Its steps are program-session
+    /// steps (EXEC-FIELD-3): they read the anonymous viewer, read rows unscoped and may make `server` writes.
+    pub(crate) fn dispatch_program(&self, trait_name: &str, event_name: &str, payload: Value) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let _lane = self.lane.enter(None)?;
+        self.require_payload([(trait_name, event_name)], &payload)?;
+        let mut run = self.run_of_dispatch(trait_name, None, event_name, payload, None, None);
+        run.program = true;
+        self.run_straight_through(run)
+    }
+
+    /// [`Self::dispatch_program`] as a resumable dispatch.
+    pub(crate) fn start_dispatch_program(&self, trait_name: &str, event_name: &str, payload: Value) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter(None)?;
+        self.require_payload([(trait_name, event_name)], &payload)?;
+        let mut run = self.run_of_dispatch(trait_name, None, event_name, payload, None, None);
+        run.program = true;
+        self.drive_entry(lane, Self::continuation_of(run))
+    }
+
     /// The traits of `candidates` whose held state has an arm for `event`, in the order given: who a
     /// request that names no trait is delivered to. JS twin: `evaluateOrbitalEvent`'s discovery
     /// (`canHandleEvent`).

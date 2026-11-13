@@ -707,7 +707,7 @@ impl ProgramStepScope {
         Self(PROGRAM_STEP.with(|scope| scope.replace(true)))
     }
 
-    pub(super) fn active() -> bool {
+    pub(crate) fn active() -> bool {
         PROGRAM_STEP.with(std::cell::Cell::get)
     }
 }

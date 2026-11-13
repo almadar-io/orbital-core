@@ -252,11 +252,11 @@ impl EntitySourceHandler {
         nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<FetchPage, String> {
-        let policy = self
-            .entity_policies
-            .read()
-            .get(entity_type)
-            .and_then(|p| p.read.clone());
+        let policy = if crate::effects::executor::ProgramStepScope::active() {
+            None
+        } else {
+            self.entity_policies.read().get(entity_type).and_then(|p| p.read.clone())
+        };
         let mut tier = "interpreted";
         let mut compiled: Option<FetchPage> = None;
         // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`.
@@ -478,11 +478,11 @@ impl FetchHandler for EntitySourceHandler {
         nearest: Option<&RowNearest>,
         ctx: &BindingContext,
     ) -> Result<RowSetRef, String> {
-        let policy = self
-            .entity_policies
-            .read()
-            .get(entity_type)
-            .and_then(|p| p.read.clone());
+        let policy = if crate::effects::executor::ProgramStepScope::active() {
+            None
+        } else {
+            self.entity_policies.read().get(entity_type).and_then(|p| p.read.clone())
+        };
         let required_fields = self.required_fields_of(entity_type);
         let required = |field: &str| field == "id" || required_fields.contains(field);
         let query = Self::compile_fetch(

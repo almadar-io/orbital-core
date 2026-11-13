@@ -129,6 +129,7 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> Result<OirType, Shap
         FieldType::File => OirType::File,
         FieldType::Bytes => OirType::Bytes,
         FieldType::CallKey => OirType::CallKey,
+        FieldType::MessageKey => OirType::MessageKey,
         FieldType::Array => {
             let items = field.items.as_deref().ok_or_else(|| ShapeError::at(ShapeGap::ArrayWithoutItems))?;
             OirType::array(field_shape(items).map_err(|e| e.within("[]"))?)
@@ -259,6 +260,7 @@ pub fn payload_type_shape(field_type: &str) -> Result<OirType, ShapeError> {
         "file" => return Ok(OirType::File),
         "bytes" => return Ok(OirType::Bytes),
         "CallKey" => return Ok(OirType::CallKey),
+        "MessageKey" => return Ok(OirType::MessageKey),
         sealed if crate::sealed::is_sealed_type(sealed) => return Ok(crate::sealed::sealed_type_ref(sealed)),
         // In a payload position a relation travels as the related row's id and an enum as its literal value.
         "relation" | "enum" => return Ok(OirType::String),

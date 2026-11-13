@@ -172,7 +172,7 @@ pub fn is_json_family(t: &OirType) -> bool {
 pub fn is_string_kind(t: &OirType) -> bool {
     matches!(
         t,
-        OirType::String | OirType::Enum { .. } | OirType::Trait | OirType::CallKey
+        OirType::String | OirType::Enum { .. } | OirType::Trait | OirType::CallKey | OirType::MessageKey
     )
 }
 

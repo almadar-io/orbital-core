@@ -1068,6 +1068,70 @@ mod derived_fields {
         assert!(made.is_executed() && made.code.is_none(), "{made:?}");
     }
 
+    fn held_person_a(persistence: &InMemoryPersistence) {
+        persistence.create("Person", &v(json!({ "id": "a", "name": "old", "note": "x" }))).unwrap();
+    }
+
+    #[test]
+    fn a_batch_upsert_creates_an_absent_row_and_replaces_a_held_row_whole() {
+        let (executor, persistence) = executor(vec![], None, &[]);
+        held_person_a(&persistence);
+        let batch = Effect::PersistBatch {
+            ops: v(json!([["upsert", "Person", { "id": "a", "name": "new" }], ["upsert", "Person", { "id": "b", "name": "fresh" }]])),
+            emit: None,
+        };
+        let result = executor.execute(&batch, &BindingContext::new());
+        assert!(result.is_executed(), "{result:?}");
+        let summary = serde_json::to_value(result.return_value.clone().unwrap()).unwrap();
+        assert_eq!((summary["completedCount"].clone(), summary["totalCount"].clone()), (json!(2.0), json!(2.0)));
+        let a = stored(&persistence, "a");
+        assert_eq!(a["name"], json!("new"));
+        assert!(a.get("note").is_none(), "the replace is whole: {a}");
+        assert_eq!(stored(&persistence, "b")["name"], json!("fresh"));
+    }
+
+    #[test]
+    fn a_failure_after_batch_upserts_restores_the_replaced_row_and_removes_the_created_one() {
+        let (executor, persistence) = executor(vec![], None, &[]);
+        held_person_a(&persistence);
+        let batch = Effect::PersistBatch {
+            ops: v(json!([
+                ["upsert", "Person", { "id": "a", "name": "new" }],
+                ["upsert", "Person", { "id": "b", "name": "fresh" }],
+                ["update", "Person", "missing", { "name": "z" }]
+            ])),
+            emit: None,
+        };
+        let result = executor.execute(&batch, &BindingContext::new());
+        assert!(result.is_failed(), "{result:?}");
+        let a = stored(&persistence, "a");
+        assert_eq!((a["name"].clone(), a["note"].clone()), (json!("old"), json!("x")));
+        assert!(persistence.find("Person", "b").unwrap().is_none(), "the created row is removed");
+    }
+
+    #[test]
+    fn a_batch_upsert_without_an_id_fails_as_the_single_upsert_does() {
+        let (executor, persistence) = executor(vec![], None, &[]);
+        let ctx = BindingContext::new();
+        let batch = Effect::PersistBatch { ops: v(json!([["upsert", "Person", { "name": "no id" }]])), emit: None };
+        let batched = executor.execute(&batch, &ctx);
+        let single = executor.execute(&persist(PersistOperation::Upsert, "Person", None, json!({ "name": "no id" })), &ctx);
+        assert!(batched.is_failed() && single.is_failed(), "{batched:?} {single:?}");
+        let single_message = single.error.clone().unwrap();
+        let batched_message = batched.error.clone().unwrap();
+        assert!(batched_message.contains(&single_message), "batch: {batched_message}; single: {single_message}");
+        assert!(persistence.list("Person").unwrap().is_empty());
+    }
+
+    #[test]
+    fn control_an_unknown_batch_action_is_still_refused() {
+        let (executor, _) = executor(vec![], None, &[]);
+        let batch = Effect::PersistBatch { ops: v(json!([["rekey", "Person", "a"]])), emit: None };
+        let result = executor.execute(&batch, &BindingContext::new());
+        assert!(result.is_failed(), "{result:?}");
+        assert!(result.error.clone().unwrap().contains("Unknown batch operation action: rekey"), "{result:?}");
+    }
+
     /// A store that runs conditional batches: the pushed path, where every op is prepared before any lands.
     pub(super) struct Pushing(pub(super) Arc<InMemoryPersistence>);
 

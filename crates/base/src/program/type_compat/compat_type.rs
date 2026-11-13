@@ -144,6 +144,7 @@ pub fn parse_compat_type(s: &str) -> CompatType {
         "image" => CompatType::Ty(OirType::Image),
         "bytes" => CompatType::Ty(OirType::Bytes),
         "callkey" | "CallKey" => CompatType::Ty(OirType::CallKey),
+        "messagekey" | "MessageKey" => CompatType::Ty(OirType::MessageKey),
         "trait" => CompatType::Ty(OirType::Trait),
         "orbital" => CompatType::Ty(OirType::Orbital),
         "behavior" => CompatType::Ty(OirType::Behavior),

@@ -729,27 +729,8 @@ impl EmbeddedServer {
             .enter_locale(request.locale.as_deref())
             .map_err(|e| e.to_string())?;
         let payload = request.payload.clone().unwrap_or(Value::Null);
-        let carried_id = request.target_trait.as_ref().and_then(|target| {
-            request
-                .entity_by_trait
-                .as_ref()?
-                .get(target)?
-                .get_path("id")?
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        });
-        let entity_id = request.entity_id.clone().or(carried_id);
+        let entity_id = self.kernel.seed_carried_request(&request);
         let entity_id = entity_id.as_deref();
-        let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
-        let carries_state = request.traits.is_some() || request.entity_by_trait.is_some();
-        if carries_state && !mounting {
-            self.kernel.seed_leg(
-                request.traits.as_deref().unwrap_or_default(),
-                request.entity_by_trait.as_ref(),
-                entity_id,
-            );
-        }
         if let Some(run) = request.run_tick.as_ref() {
             return self.start_tick(run, entity_id, &request.event, session);
         }

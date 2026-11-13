@@ -314,7 +314,7 @@ impl EffectExecutor {
             let action = tuple.first().and_then(Value::as_str).unwrap_or("");
             let entity = tuple.get(1).and_then(Value::as_str).unwrap_or("");
             let arity = match action {
-                "create" | "delete" => 3,
+                "create" | "delete" | "upsert" => 3,
                 "update" => 4,
                 _ => {
                     return EffectResult::failed(
@@ -332,6 +332,7 @@ impl EffectExecutor {
             let (operation, row_id, data): (PersistOperation, Option<String>, Value) = match action
             {
                 "create" => (PersistOperation::Create, None, tuple[2].clone()),
+                "upsert" => (PersistOperation::Upsert, None, tuple[2].clone()),
                 "update" => (
                     PersistOperation::Update,
                     tuple[2].as_str().map(str::to_string),
@@ -361,7 +362,9 @@ impl EffectExecutor {
             guard: None,
         };
         let batch_failure = |k: usize, b: &BatchOp, detail: &str, code: Option<ServerEffectCode>| {
-            error!(entity_type = %b.entity, operation = %b.action, index = k, error = %detail, "Persist batch refused");
+            if !persistence.suspended() {
+                error!(entity_type = %b.entity, operation = %b.action, index = k, error = %detail, "Persist batch refused");
+            }
             let failed = EffectResult::failed(
                 effect.clone(),
                 &format!(
@@ -445,6 +448,8 @@ impl EffectExecutor {
                 (PersistOperation::Update | PersistOperation::Delete, Some(id)) => {
                     persistence.find(&b.entity, id).ok().flatten()
                 }
+                (PersistOperation::Upsert, _) => Self::row_id_of(&b.data)
+                    .and_then(|id| persistence.find(&b.entity, id).ok().flatten()),
                 _ => None,
             };
             let result = self.persist_resolved(
@@ -483,6 +488,25 @@ impl EffectExecutor {
                                     )
                                     .map(|_| ())
                             }
+                            (PersistOperation::Upsert, Some(row), _) => {
+                                let mut restore = row.as_object().cloned().unwrap_or_default();
+                                if let Some(data) = op.data.as_object() {
+                                    for key in data.keys() {
+                                        restore.entry(key.clone()).or_insert(Value::Null);
+                                    }
+                                }
+                                persistence
+                                    .update(
+                                        &op.entity,
+                                        Self::row_id_of(&op.data).unwrap_or(""),
+                                        &Value::object(restore),
+                                    )
+                                    .map(|_| ())
+                            }
+                            (PersistOperation::Upsert, None, _) => match Self::row_id_of(&op.data) {
+                                Some(id) => persistence.delete(&op.entity, id),
+                                None => Ok(()),
+                            },
                             (PersistOperation::Delete, Some(row), _) => {
                                 persistence.create(&op.entity, row).map(|_| ())
                             }

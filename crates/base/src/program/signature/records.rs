@@ -51,6 +51,7 @@ pub(super) fn concrete(name: &str) -> Option<OirType> {
         "instant" => OirType::Instant,
         "bytes" => OirType::Bytes,
         "callkey" => OirType::CallKey,
+        "messagekey" => OirType::MessageKey,
         "sexpr" => OirType::SExpr,
         "trait" => OirType::Trait,
         "orbital" => OirType::Orbital,

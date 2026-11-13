@@ -254,6 +254,7 @@
     "event": "event",
     "EventAddress": "EventAddress",
     "CallKey": "CallKey",
+    "MessageKey": "MessageKey",
     "slot": "slot",
     "pattern": "pattern",
     "Map": "Map",

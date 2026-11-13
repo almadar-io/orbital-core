@@ -73,7 +73,7 @@ impl RuntimeKernel {
         if self.effect_executor.environment().is_client() {
             return None;
         }
-        let binding = self.sessions.identities.read().get(&*self.identity_key()).cloned();
+        let binding = self.sessions.identities.read().get(&*self.user_key()).cloned();
         match binding {
             None | Some(IdentityBinding::Anonymous) => Some(FrameIdentity::default()),
             Some(IdentityBinding::Subject { user: Some(user), .. }) => Some(FrameIdentity { user: Some(user) }),
@@ -118,10 +118,16 @@ impl RuntimeKernel {
         })
     }
 
+    /// The session whose identity `@user` reads: who asked for the program-session step this thread runs, else the thread's own session.
+    fn user_key(&self) -> Arc<str> {
+        self.sessions.asker_by_thread.read().get(&orbital_core_base::sync::current_thread()).cloned().unwrap_or_else(|| self.identity_key())
+    }
+
     /// The `@user` of the session this thread dispatches in (EXEC-IDENTITY-1): its bound `[identity]` row (read like any
     /// row, so a store read may suspend the run), else the anonymous viewer.
     pub(super) fn session_user(&self) -> Result<Value, Fault> {
-        if self.sessions.seam_threads.read().contains(&orbital_core_base::sync::current_thread()) {
+        let asked = self.sessions.asker_by_thread.read().contains_key(&orbital_core_base::sync::current_thread());
+        if !asked && self.sessions.seam_threads.read().contains(&orbital_core_base::sync::current_thread()) {
             return Ok(self.sessions.anonymous.clone());
         }
         let binding = {
@@ -129,7 +135,7 @@ impl RuntimeKernel {
             if bound.is_empty() {
                 return Ok(self.sessions.anonymous.clone());
             }
-            bound.get(&*self.identity_key()).cloned()
+            bound.get(&*self.user_key()).cloned()
         };
         match binding {
             None | Some(IdentityBinding::Anonymous) => Ok(self.sessions.anonymous.clone()),
@@ -145,7 +151,7 @@ impl RuntimeKernel {
                 let row = found.map_err(KernelError::Internal)?;
                 let user = subject_user(&subject, row.as_deref());
                 if row.is_some() {
-                    let key = self.identity_key();
+                    let key = self.user_key();
                     if let Some(IdentityBinding::Subject { subject: held, user: slot }) = self.sessions.identities.write().get_mut(&*key) {
                         if *held == subject && slot.is_none() {
                             *slot = Some(user.clone());
@@ -232,7 +238,7 @@ impl RuntimeKernel {
     /// The running step's identity change: it takes hold when the step commits ([`Self::commit_identity`]), so a step
     /// that suspends and replays starts from the identity it started from.
     fn stage_identity(&self, binding: IdentityBinding) {
-        *self.step.identity_change.write() = Some((self.identity_key().to_string(), binding));
+        *self.step.identity_change.write() = Some((self.user_key().to_string(), binding));
     }
 
     /// End the step: its identity change takes hold when `committed`, and is dropped otherwise.

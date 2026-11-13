@@ -43,6 +43,8 @@ pub enum OirType {
     /// the explicit cast (`Coercion::Explicit`). Distinct from the semantic string
     /// domains, whose `String` source is refined implicitly.
     CallKey,
+    /// A message-catalog key: a string at rest; only a literal knob value makes one, never a conversion.
+    MessageKey,
     /// The name of a field of the record `record`, a string at run time; `value` is the type that field must have,
     /// when declared. Read through `object/get` of a record that is an `R`, it types the read.
     #[serde(rename_all = "camelCase")]

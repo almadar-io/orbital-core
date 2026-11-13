@@ -137,10 +137,13 @@ impl FetchHandler for InMemoryPersistence {
                     .unwrap_or_default(),
             }
         };
-        let policy = self
-            .entity_policies
-            .as_ref()
-            .and_then(|table| table.read().get(entity_type).and_then(|p| p.read.clone()));
+        let policy = if super::ProgramStepScope::active() {
+            None
+        } else {
+            self.entity_policies
+                .as_ref()
+                .and_then(|table| table.read().get(entity_type).and_then(|p| p.read.clone()))
+        };
         let total = scope_fetched_rows(
             &mut entities,
             policy.as_ref(),

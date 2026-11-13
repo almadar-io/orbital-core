@@ -39,7 +39,7 @@ pub fn json_type(declared: &str) -> Option<&'static str> {
     match declared {
         "string" | "date" | "timestamp" | "datetime" | "email" | "url" | "phone" | "uuid"
         | "instant" | "image" | "bytes" | "callkey" | "enum" | "trait" | "slot" | "pattern" | "secret"
-        | "event" | "EventAddress" | "CallKey" | "field" => Some("string"),
+        | "event" | "EventAddress" | "CallKey" | "MessageKey" | "messagekey" | "field" => Some("string"),
         "number" => Some("number"),
         "boolean" => Some("boolean"),
         "array" => Some("array"),

@@ -29,8 +29,10 @@ impl RuntimeKernel {
         let _dispatch = c.run.span.clone().entered();
         loop {
             // A store ask the program seed made is answered in the program session too (EXEC-DIST-9).
-            let _program = (c.run.program || c.run.seed.as_ref().is_some_and(|seed| seed.program))
-                .then(|| self.enter_program_session());
+            let seed_program = c.run.seed.as_ref().is_some_and(|seed| seed.program);
+            let asker = if seed_program { self.seed_asker() } else { None };
+            let _program = (c.run.program || seed_program).then(|| self.enter_program_session());
+            let _asker = (c.run.program || seed_program).then(|| self.enter_asker(asker));
             let _seam = c.run.program.then(|| self.enter_store_seam());
             let _program_step = (c.run.program || c.run.seed.as_ref().is_some_and(|seed| seed.program))
                 .then(crate::effects::executor::ProgramStepScope::enter);

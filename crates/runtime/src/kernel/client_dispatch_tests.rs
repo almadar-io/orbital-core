@@ -2144,3 +2144,198 @@ fn a_viewer_session_cannot_create_a_server_created_row_but_the_program_session_s
     kernel.dispatch("Viewer", None, "ASK", Value::Null).unwrap();
     assert!(cache.find("Invite", "i-program").unwrap().is_some(), "the program-session step created it");
 }
+
+/// `Viewer` (a server-run route trait) hands `MADE`'s payload to `Claimer` (mounted only on `boot`), which creates the
+/// `Invite` it names. `MADE` is meant to arrive only as the success route of `Viewer`'s own persist.
+fn handover_schema() -> OrbitalSchema {
+    let invite = || serde_json::json!({ "name": "Invite", "persistence": "persistent", "collection": "invites",
+        "access_waivers": { "create_server": "created after the server checks the asker" },
+        "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": invite(),
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "Invite",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "MADE", "effects": [["emit", "CLAIM", { "teamId": "@payload.id" }]] }] },
+                "emits": [{ "event": "CLAIM", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Jobs",
+            "entity": invite(),
+            "traits": [{
+                "name": "Claimer", "linkedEntity": "Invite",
+                "listens": [{ "event": "CLAIM", "triggers": "CLAIMED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "CLAIMED", "effects": [["persist", "create", "Invite", { "id": "@payload.teamId", "name": "x" }]] }] }
+            }],
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+// An event is not a trust boundary: a session's client may send any event of a session-run trait with any payload, so a
+// program-session step is trusted for who runs it and must check what it is handed itself (EXEC-FIELD-2).
+#[test]
+fn a_route_event_a_session_sends_itself_reaches_the_program_session_step_with_its_payload() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(handover_schema()).unwrap();
+    let _session = kernel.enter_session("s1");
+    let forged: Value = serde_json::from_value(serde_json::json!({ "id": "forged" })).unwrap();
+    let outcomes = kernel.dispatch("Viewer", None, "MADE", forged).unwrap();
+    assert!(cache.find("Invite", "forged").unwrap().is_some(), "the program-session step ran on the payload the session sent: {outcomes:?}");
+}
+
+#[test]
+fn control_a_session_dispatching_a_boot_only_trait_itself_is_not_a_program_session_step() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(handover_schema()).unwrap();
+    let _session = kernel.enter_session("s1");
+    let direct: Value = serde_json::from_value(serde_json::json!({ "teamId": "direct" })).unwrap();
+    let outcomes = kernel.dispatch("Claimer", None, "CLAIMED", direct).unwrap();
+    assert!(cache.find("Invite", "direct").unwrap().is_none(), "a session's own dispatch of the boot trait created a server-created row: {outcomes:?}");
+}
+
+/// `Viewer` (server-run) hands `MADE`'s team id to `Claimer` (boot only), whose step fetches the `Team` and creates an
+/// `Invite` only when the team's owner is the `@user` the step reads. `LOOK` fetches a team as the viewer.
+fn checking_schema() -> OrbitalSchema {
+    let invite = || serde_json::json!({ "name": "Invite", "persistence": "persistent", "collection": "invites",
+        "access_waivers": { "create_server": "created after the server checks the asker" },
+        "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Team", "persistence": "persistent", "collection": "teams",
+                "read_policy": ["=", "@entity.ownerId", "@user.id"],
+                "fields": [{ "name": "id", "type": "string" }, { "name": "ownerId", "type": "string" }] },
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "Team",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "MADE", "effects": [["emit", "CLAIM", { "teamId": "@payload.id" }]] },
+                    { "from": "idle", "to": "idle", "event": "LOOK", "effects": [["fetch", "Team", { "id": "@payload.id", "emit": { "success": "SEEN", "failure": "UNSEEN" } }]] }] },
+                "emits": [{ "event": "CLAIM", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Jobs",
+            "entity": invite(),
+            "traits": [{
+                "name": "Claimer", "linkedEntity": "Invite",
+                "listens": [{ "event": "CLAIM", "triggers": "CLAIMED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "CLAIMED", "effects": [["fetch", "Team", { "id": "@payload.teamId", "emit": { "success": "TEAM_READ", "failure": "TEAM_UNREAD" } }]] },
+                    { "from": "idle", "to": "idle", "event": "TEAM_READ",
+                      "guard": ["=", ["object/get", "@payload.data", "ownerId"], "@user.id"],
+                      "effects": [["persist", "create", "Invite", {
+                          "id": ["str/concat", "m-", ["object/get", "@payload.data", "id"], "-", "@user.id"], "name": "x" }]] }] }
+            }],
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn checking_kernel() -> (Arc<InMemoryEntityCache>, RuntimeKernel) {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(checking_schema()).unwrap();
+    for (id, owner) in [("t-own", "u1"), ("t-other", "u2")] {
+        cache.write("Team", id, &serde_json::from_value(serde_json::json!({ "id": id, "ownerId": owner })).unwrap()).unwrap();
+    }
+    (cache, kernel)
+}
+
+fn signed_in_member() -> Value {
+    serde_json::from_value(serde_json::json!({ "id": "u1", "role": "member" })).unwrap()
+}
+
+fn payload_id(id: &str) -> Value {
+    serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+}
+
+// EXEC-FIELD-2: the program-session step a viewer asked for reads that viewer as `@user`, and its fetch is not narrowed by `@read`.
+#[test]
+fn a_program_session_step_reads_its_asker_as_user_and_rows_the_asker_cannot_read() {
+    let (cache, kernel) = checking_kernel();
+    let _session = kernel.enter_session("s1");
+    kernel.bind_test_identity(signed_in_member());
+    let looked = kernel.dispatch("Viewer", None, "LOOK", payload_id("t-other")).unwrap();
+    let seen = looked.iter().flat_map(|(_, r)| r.effect_results.iter()).any(|er| {
+        matches!(&er.effect, orbital_core_base::effect_types::Effect::Emit { event, .. } if event == "SEEN")
+    });
+    assert!(!seen, "the viewer cannot read another owner's team: {looked:?}");
+    kernel.dispatch("Viewer", None, "MADE", payload_id("t-own")).unwrap();
+    assert!(cache.find("Invite", "m-t-own-u1").unwrap().is_some(), "the checking step read the asker as @user");
+}
+
+#[test]
+fn a_hand_over_naming_a_row_the_asker_does_not_own_is_refused_by_the_checking_step() {
+    let (cache, kernel) = checking_kernel();
+    let _session = kernel.enter_session("s1");
+    kernel.bind_test_identity(signed_in_member());
+    kernel.dispatch("Viewer", None, "MADE", payload_id("t-other")).unwrap();
+    assert!(cache.find("Invite", "m-t-other-u1").unwrap().is_none());
+    assert!(cache.find("Invite", "m-t-other-anonymous").unwrap().is_none());
+}
+
+#[test]
+fn control_a_dispatch_with_no_session_reads_the_anonymous_viewer_and_stays_scoped() {
+    let (cache, kernel) = checking_kernel();
+    kernel.dispatch("Viewer", None, "MADE", payload_id("t-own")).unwrap();
+    assert!(cache.find("Invite", "m-t-own-u1").unwrap().is_none());
+    assert!(cache.find("Invite", "m-t-own-anonymous").unwrap().is_none());
+}
+
+/// `checking_schema` where `Claimer` answers with `CLAIM_DONE` and `Viewer` hears it as `DONE`, creating a `Team` named for
+/// the `@user` its step read.
+fn answering_schema() -> OrbitalSchema {
+    let mut program = serde_json::to_value(checking_schema()).unwrap();
+    let viewer = &mut program["orbitals"][0]["traits"][0];
+    viewer["listens"] = serde_json::json!([{ "event": "CLAIM_DONE", "triggers": "DONE", "source": { "kind": "orbital", "orbital": "Jobs", "trait": "Claimer" } }]);
+    viewer["stateMachine"]["transitions"].as_array_mut().unwrap().push(serde_json::json!({ "from": "idle", "to": "idle", "event": "DONE",
+        "effects": [["persist", "create", "Team", { "id": ["str/concat", "heard-", "@user.id"], "ownerId": "@user.id" }]] }));
+    let claimer = &mut program["orbitals"][1]["traits"][0];
+    claimer["emits"] = serde_json::json!([{ "event": "CLAIM_DONE", "scope": "external" }]);
+    claimer["stateMachine"]["transitions"][1]["effects"].as_array_mut().unwrap().push(serde_json::json!(["emit", "CLAIM_DONE", { "teamId": ["object/get", "@payload.data", "id"] }]));
+    serde_json::from_value(program).unwrap()
+}
+
+// The answer a program-session step emits is heard inside that step's own run: the listener steps there, with the asker as
+// `@user`, so the asking client learns the outcome from the run's emitted events.
+#[test]
+fn a_program_session_steps_answer_is_heard_in_its_own_run_with_the_asker_as_user() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(answering_schema()).unwrap();
+    cache.write("Team", "t-own", &serde_json::from_value(serde_json::json!({ "id": "t-own", "ownerId": "u1" })).unwrap()).unwrap();
+    let _session = kernel.enter_session("s1");
+    kernel.bind_test_identity(signed_in_member());
+    let outcomes = kernel.dispatch("Viewer", None, "MADE", payload_id("t-own")).unwrap();
+    let ran: Vec<&str> = outcomes.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(ran, ["Viewer", "Claimer", "Claimer", "Viewer"], "{outcomes:?}");
+    assert!(cache.find("Team", "heard-u1").unwrap().is_some(), "the listener read the asker as @user");
+    assert!(cache.find("Team", "heard-anonymous").unwrap().is_none());
+}
+
+// The same checking step on a host that answers row asks itself (the served path): every step of the program seed, the
+// ones after a suspended read included, is a program-session step that reads its asker.
+#[test]
+fn a_program_session_step_keeps_its_asker_and_its_standing_across_a_host_answered_read() {
+    use crate::resumable::{drive_blocking, BlockingHost};
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(checking_schema()).unwrap();
+    let host_rows = InMemoryEntityCache::new();
+    host_rows.write("Team", "t-own", &serde_json::from_value(serde_json::json!({ "id": "t-own", "ownerId": "u1" })).unwrap()).unwrap();
+    let _session = kernel.enter_session("s1");
+    kernel.bind_test_identity(signed_in_member());
+    let progress = kernel.start_dispatch("Viewer", None, "MADE", payload_id("t-own"), None, None).unwrap();
+    let outcomes = drive_blocking(&kernel, progress, &|request| BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)).unwrap();
+    assert!(host_rows.find("Invite", "m-t-own-u1").unwrap().is_some(), "{outcomes:?}");
+}

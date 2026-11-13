@@ -775,6 +775,12 @@ fn play_step(
     if !step["viewer"].is_null() {
         return Err(format!("step {i}: `viewer` is retired; a step names `identity`, the session's bound identity"));
     }
+    let session = match &step["session"] {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(session) if !session.is_empty() => Some(kernel.enter_session(session)),
+        _ => return Err(format!("step {i}: `session` must be the non-empty id of the viewer session the step runs in")),
+    };
+    let in_session = session.is_some();
     let identity = match &step["identity"] {
         serde_json::Value::Null => None,
         user @ serde_json::Value::Object(_) => Some(to_value(user)?),
@@ -894,6 +900,8 @@ fn play_step(
         .iter()
         .filter(|(_, r)| r.executed)
         .map(|(t, _)| {
+            // A program-wide trait's frame is the program session's, whichever session the step ran in.
+            let _program = (in_session && kernel.program_wide(t)).then(|| kernel.enter_program_session());
             let row = kernel.snapshot_trait(t, None).entity;
             (
                 t.to_string(),
@@ -1101,6 +1109,48 @@ mod tests {
     const BOUNDED_CHAIN: &str = r#"{"name":"ChainApp","typeContractVersion":1,"orbitals":[{"name":"Main","entity":{"name":"Item","persistence":"runtime","fields":[{"name":"id","type":"string"}]},"pages":[],"traits":[{"name":"Fanner","linkedEntity":"Item","listens":[{"event":"STEP_NEXT","triggers":"STEP","source":{"kind":"trait","trait":"Fanner"}}],"stateMachine":{"states":[{"name":"searching","isInitial":true}],"transitions":[
         {"from":"searching","to":"searching","event":"STEP","guard":[">","@payload.remaining",0],"effects":[["emit","STEP_NEXT",{"remaining":["-","@payload.remaining",1]}]]}
     ]}}]}]}"#;
+
+    const SERVED: &str = r#"{"name":"App","typeContractVersion":1,"orbitals":[
+        {"name":"Ui","entity":{"name":"Invite","persistence":"persistent","collection":"invites","access_waivers":{"create_server":"created after the server checks it"},"fields":[{"name":"id","type":"string"},{"name":"name","type":"string"}]},
+         "traits":[{"name":"Viewer","linkedEntity":"Invite","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[{"from":"idle","to":"idle","event":"ASK","effects":[["emit","CLAIM",{}]]}]},"emits":[{"event":"CLAIM","scope":"external"}]}],
+         "pages":[{"name":"Home","path":"/","traits":[{"ref":"Viewer"}]}]},
+        {"name":"Jobs","entity":{"name":"Invite","persistence":"persistent","collection":"invites","access_waivers":{"create_server":"created after the server checks it"},"fields":[{"name":"id","type":"string"},{"name":"name","type":"string"}]},
+         "traits":[{"name":"Claimer","linkedEntity":"Invite","listens":[{"event":"CLAIM","triggers":"CLAIMED","source":{"kind":"orbital","orbital":"Ui","trait":"Viewer"}}],
+           "stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[{"from":"idle","to":"idle","event":"CLAIMED","effects":[["persist","create","Invite",{"id":["str/concat","by-","@user.id"],"name":"x"}]]}]}}],
+         "pages":[{"name":"Bg","path":"","protocol":"boot","traits":[{"ref":"Claimer"}]}]}]}"#;
+
+    fn claimer_persist(report: &serde_json::Value) -> serde_json::Value {
+        let outcomes = report["steps"][0]["outcomes"].as_array().cloned().unwrap_or_default();
+        let claimer = outcomes.iter().find(|o| o["trait"] == "Claimer").cloned().unwrap_or(serde_json::Value::Null);
+        claimer["effects"][0].clone()
+    }
+
+    #[test]
+    fn a_step_naming_a_session_runs_as_a_served_request_and_its_boot_delivery_is_a_program_session_step() {
+        let report = play_refusable(SERVED, serde_json::json!([
+            { "trait": "Viewer", "event": "ASK", "session": "s1", "identity": { "id": "u1", "role": "member" } }
+        ]))
+        .unwrap();
+        let persist = claimer_persist(&report);
+        assert_eq!(persist["status"], "executed", "{report}");
+    }
+
+    #[test]
+    fn control_a_step_naming_no_session_runs_its_boot_delivery_inline_as_before() {
+        let report = play_refusable(SERVED, serde_json::json!([
+            { "trait": "Viewer", "event": "ASK", "identity": { "id": "u1", "role": "member" } }
+        ]))
+        .unwrap();
+        let persist = claimer_persist(&report);
+        assert_eq!(persist["status"], "failed", "{report}");
+        assert!(persist.to_string().contains("created only by a program-session step"), "{persist}");
+    }
+
+    #[test]
+    fn a_session_that_is_not_a_non_empty_string_refuses_the_step() {
+        let refusal = play_refusable(SERVED, serde_json::json!([{ "trait": "Viewer", "event": "ASK", "session": "" }])).unwrap_err();
+        assert!(refusal.error.contains("`session` must be"), "{}", refusal.error);
+    }
 
     #[test]
     fn a_step_cut_at_the_cap_refuses_the_replay() {

@@ -97,6 +97,7 @@ fn type_tag(ty: &OirType) -> String {
         OirType::Image => "image".to_string(),
         OirType::Bytes => "bytes".to_string(),
         OirType::CallKey => "callkey".to_string(),
+        OirType::MessageKey => "messagekey".to_string(),
         OirType::FieldRef { .. } => "fieldref".to_string(),
         OirType::Money => "money".to_string(),
         OirType::File => "file".to_string(),
@@ -201,6 +202,7 @@ fn render_at<'t, R: TargetLiteralRenderer>(
         | (OirType::Image, OirValue::String(s))
         | (OirType::Bytes, OirValue::String(s))
         | (OirType::CallKey, OirValue::String(s))
+        | (OirType::MessageKey, OirValue::String(s))
         | (OirType::FieldRef { .. }, OirValue::String(s))
         | (OirType::File, OirValue::String(s)) => Ok(Some(r.string(s))),
 

@@ -110,6 +110,7 @@ impl PrettyPrinter {
             OirType::Image => "Image".to_string(),
             OirType::Bytes => "Bytes".to_string(),
             OirType::CallKey => "CallKey".to_string(),
+            OirType::MessageKey => "MessageKey".to_string(),
             OirType::FieldRef { record, value: Some(value) } => {
                 format!("Field<{}, {}>", self.format_type(record), self.format_type(value))
             }

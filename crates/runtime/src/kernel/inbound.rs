@@ -53,14 +53,7 @@ impl RuntimeKernel {
         raw_body: &str,
         credential: Option<&str>,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
-        self.start_dispatch(
-            &route.trait_name,
-            None,
-            &route.event,
-            inbound_payload(route, headers, raw_body, credential),
-            None,
-            None,
-        )
+        self.start_dispatch_program(&route.trait_name, &route.event, inbound_payload(route, headers, raw_body, credential))
     }
 
     /// [`Self::start_inbound`] run straight through, for a blocking host: the delivery's whole answer.
@@ -80,7 +73,7 @@ impl RuntimeKernel {
             Err(failed) => return failed,
         };
         let payload = inbound_payload(&route, headers, raw_body, credential.as_deref());
-        match self.dispatch(&route.trait_name, None, &route.event, payload) {
+        match self.dispatch_program(&route.trait_name, &route.event, payload) {
             Ok(outcomes) => Self::inbound_answer(&route, &outcomes),
             Err(error) => dispatch_failed(&error.to_string()),
         }
@@ -287,6 +280,59 @@ mod tests {
         .unwrap();
         kernel.register_schema(schema).unwrap();
         kernel
+    }
+
+    fn ledger_kernel() -> (Arc<InMemoryEntityCache>, RuntimeKernel) {
+        let cache = Arc::new(InMemoryEntityCache::new());
+        let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+        let schema: OrbitalSchema = serde_json::from_value(json!({
+            "name": "LedgerApp", "inbound": ["billing"], "typeContractVersion": 1, "orbitals": [{
+                "name": "Bills",
+                "entity": { "name": "Plan", "persistence": "persistent", "collection": "plans",
+                    "access_waivers": { "create_server": "written from the billing provider's hook" },
+                    "fields": [{ "name": "id", "type": "string" }, { "name": "tier", "type": "string" }] },
+                "traits": [{
+                    "name": "Hook", "linkedEntity": "Plan",
+                    "emits": [{ "event": "HOOK_ANSWERED" }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "events": [{ "key": "CALLED", "inbound": { "name": "billing", "answers": "HOOK_ANSWERED" } }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "CALLED", "effects": [
+                            ["persist", "create", "Plan", { "id": "p1", "tier": "solo" }],
+                            ["emit", "HOOK_ANSWERED", { "status": 200, "body": "{}" }]] }]
+                    }
+                }]
+            }]
+        }))
+        .unwrap();
+        kernel.register_schema(schema).unwrap();
+        (cache, kernel)
+    }
+
+    struct NoSecrets;
+
+    impl crate::secret_source::SecretSource for NoSecrets {
+        fn secret(&self, _: &str) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+    }
+
+    // EXEC-FIELD-3: an inbound hook's delivery is a program-session step.
+    #[test]
+    fn an_inbound_hooks_delivery_may_create_a_server_created_row() {
+        let (cache, kernel) = ledger_kernel();
+        let answer = kernel.deliver_inbound("billing", [], "{}", &NoSecrets);
+        assert_eq!(answer.status, 200, "{answer:?}");
+        assert!(cache.find("Plan", "p1").unwrap().is_some());
+    }
+
+    #[test]
+    fn control_a_sessions_dispatch_of_the_hooks_event_cannot() {
+        let (cache, kernel) = ledger_kernel();
+        let _session = kernel.enter_session("s1");
+        let payload: Value = serde_json::from_value(json!({ "headers": {}, "rawBody": "{}" })).unwrap();
+        let _ = kernel.dispatch("Hook", None, "CALLED", payload);
+        assert!(cache.find("Plan", "p1").unwrap().is_none());
     }
 
     struct Vault(Option<&'static str>);

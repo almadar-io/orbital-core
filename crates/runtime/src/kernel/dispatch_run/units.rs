@@ -61,7 +61,9 @@ impl RuntimeKernel {
         self.hold_origin(origin);
         let _deliver = in_flight.span.clone().entered();
         let viewerless_tick = in_flight.tick.is_some() && self.thread_session().is_none();
+        let asker = if in_flight.program { self.seed_asker() } else { None };
         let _program = (in_flight.program || *program).then(|| self.enter_program_session());
+        let _asker = (in_flight.program || *program || viewerless_tick).then(|| self.enter_asker(asker));
         let _seam = (*program || viewerless_tick).then(|| self.enter_store_seam());
         let _program_step = (in_flight.program || *program || viewerless_tick).then(crate::effects::executor::ProgramStepScope::enter);
         let stepped = self.step_seed(in_flight, outcomes);

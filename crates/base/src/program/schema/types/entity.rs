@@ -674,6 +674,10 @@ pub enum FieldType {
     /// the keyed call a `cancel-call` aborts.
     #[serde(rename = "CallKey")]
     CallKey,
+    /// A message-catalog key: a string at rest, nominal in the type relation. Only a literal knob value (qualified
+    /// with its behavior at lowering and checked against the catalog) makes one; no string converts to it.
+    #[serde(rename = "MessageKey")]
+    MessageKey,
     /// A fixed-length tuple (`.lolo` `[T1, T2, …]`). Its slots ride `properties`, keyed
     /// by slot index (`"0"`, `"1"`, …).
     Tuple,
@@ -754,6 +758,7 @@ impl FieldType {
             "file" => FieldType::File,
             "bytes" => FieldType::Bytes,
             "CallKey" => FieldType::CallKey,
+            "MessageKey" => FieldType::MessageKey,
             // Semantic string domains, now first-class field types rather than
             // subtypes that erased to `string`. Closes the "no format validation yet"
             // half of Gap G-LOLO-TYPENAME-SILENT-FALLBACK: the declared domain
@@ -818,6 +823,7 @@ pub const FIELD_TYPE_NAMES: &[&str] = &[
     "file",
     "bytes",
     "CallKey",
+    "MessageKey",
     "array",
     "object",
     "enum",

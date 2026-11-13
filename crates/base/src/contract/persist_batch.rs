@@ -1,8 +1,8 @@
 //! `persist batch`: one effect that writes many rows.
 //!
 //! IR: `["persist", "batch", <ops>, { "emit": … }?]`. `<ops>` evaluates to an
-//! array whose elements are `["create", E, data]`, `["update", E, id, data]` or
-//! `["delete", E, id]`. This module is the one place that reads the STATIC shape
+//! array whose elements are `["create", E, data]`, `["update", E, id, data]`,
+//! `["delete", E, id]` or `["upsert", E, data]`. This module is the one place that reads the STATIC shape
 //! of that argument: which op tuples are written out literally, and so which
 //! entities the batch is known to touch. Placement, validation and codegen all
 //! ask here.
@@ -12,14 +12,14 @@ use std::prelude::v1::*;
 use crate::runs_on::Residence;
 use crate::schema::sexpr::SExpression;
 
-/// The three op actions a batch element may carry.
-pub const BATCH_ACTIONS: [&str; 3] = ["create", "update", "delete"];
+/// The four op actions a batch element may carry.
+pub const BATCH_ACTIONS: [&str; 4] = ["create", "update", "delete", "upsert"];
 
 /// Element count (head included) an op tuple of `action` must have, or `None`
 /// for an unknown action.
 pub fn batch_op_arity(action: &str) -> Option<usize> {
     match action {
-        "create" | "delete" => Some(3),
+        "create" | "delete" | "upsert" => Some(3),
         "update" => Some(4),
         _ => None,
     }
@@ -208,7 +208,7 @@ pub fn batch_writes(ops: &SExpression) -> Vec<BatchWrite<'_>> {
             let action = t.first()?.as_str()?;
             let entity = op_entity(t)?;
             let data = match action {
-                "create" => t.get(2),
+                "create" | "upsert" => t.get(2),
                 "update" => t.get(3),
                 _ => None,
             };
@@ -415,6 +415,20 @@ mod tests {
         assert_eq!(batch_op_arity("create"), Some(3));
         assert_eq!(batch_op_arity("update"), Some(4));
         assert_eq!(batch_op_arity("delete"), Some(3));
-        assert_eq!(batch_op_arity("upsert"), None);
+        assert_eq!(batch_op_arity("upsert"), Some(3));
+        assert_eq!(batch_op_arity("rekey"), None);
+    }
+
+    #[test]
+    fn an_upsert_tuple_is_an_op_and_carries_its_row() {
+        let tuple = sx(json!(["upsert", "Row", {"id": "a", "s": 1}]));
+        assert!(is_op_tuple(&tuple));
+        let list = sx(json!([["upsert", "Row", {"id": "a", "s": 1}]]));
+        let writes = batch_writes(&list);
+        assert_eq!(writes.len(), 1);
+        assert_eq!((writes[0].action, writes[0].entity), ("upsert", "Row"));
+        assert_eq!(writes[0].data, Some(&sx(json!({"id": "a", "s": 1}))));
+        assert!(batch_written_entities(&list).unwrap().contains("Row"));
+        assert!(!is_op_tuple(&sx(json!(["rekey", "Row", "a"]))));
     }
 }

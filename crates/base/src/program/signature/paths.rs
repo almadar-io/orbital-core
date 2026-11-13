@@ -122,6 +122,7 @@ pub(super) fn walk_path_in(ty: &OirType, path: &str, maps_may_miss: bool, resolv
             | OirType::Uuid
             | OirType::Bytes
             | OirType::CallKey
+            | OirType::MessageKey
             | OirType::Enum { .. }
             | OirType::FieldRef { .. }
             | OirType::Array { .. } => return Path::Impossible,

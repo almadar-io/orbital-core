@@ -419,6 +419,8 @@ impl Relation<'_> {
                 _ if is_string_kind(src) => Some(Coercion::Explicit),
                 _ => None,
             },
+            // A message key is made only by a literal knob value; nothing converts to one.
+            OirType::MessageKey => None,
             // Field names meet strings and each other before this match; nothing else is a field name.
             OirType::FieldRef { .. } => None,
             // The object family (Struct/Union/Map/File/TypeRef) and the json family

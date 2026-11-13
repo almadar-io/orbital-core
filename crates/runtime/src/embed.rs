@@ -101,8 +101,9 @@ fn batch_steps(outcomes: &[(String, ProcessEventResult)]) -> Vec<BatchStep> {
 
 /// Whether `leg`, owed by the dispatch of `seed` that ran `steps`, is a hop to another trait that a step delivered
 /// through a browser-run trait ([`EmbeddedKernel::mount_hops`]).
-fn is_unreachable_hop(seed: &str, steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>) -> bool {
-    let Some(target) = leg.target_trait.as_deref().filter(|t| *t != seed) else { return false };
+fn is_unreachable_hop(seed: (&str, &str), steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>) -> bool {
+    // A leg to the seed trait for its own event is its replay; one for an event delivered to it (a held ask) is not.
+    let Some(target) = leg.target_trait.as_deref().filter(|t| (*t, leg.event.as_str()) != seed) else { return false };
     steps
         .iter()
         .rposition(|s| s.trait_name == target && s.emitter.as_deref() == leg.source_trait.as_deref())
@@ -555,7 +556,7 @@ impl EmbeddedKernel {
         let mut hops = Vec::new();
         for wire in wires {
             for routed in &wire.server_legs {
-                if is_unreachable_hop(&wire.seed.trait_name, &wire.steps, &routed.leg, &browser_run, &seeds) {
+                if is_unreachable_hop((&wire.seed.trait_name, &wire.seed.event), &wire.steps, &routed.leg, &browser_run, &seeds) {
                     hops.push(routed);
                 }
             }
@@ -570,7 +571,7 @@ impl EmbeddedKernel {
         let seeds: HashSet<(&str, &str)> = seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())).collect();
         let steps = batch_steps(&dispatch.outcomes);
         (0..dispatch.server_legs.len())
-            .filter(|i| is_unreachable_hop(&dispatch.seed.0, &steps, &dispatch.server_legs[*i], &browser_run, &seeds))
+            .filter(|i| is_unreachable_hop((&dispatch.seed.0, &dispatch.seed.1), &steps, &dispatch.server_legs[*i], &browser_run, &seeds))
             .collect()
     }
 

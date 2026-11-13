@@ -192,6 +192,17 @@ impl RuntimeKernel {
         })
     }
 
+    /// Whether this executed step of `trait_name` emitted an event only the host can deliver ([`Self::heard_off_client`]):
+    /// its own server work, told apart from another step of the same trait.
+    pub(super) fn step_emits_off_client(&self, trait_name: &str, result: &ProcessEventResult) -> bool {
+        result.executed && {
+            let source = self.emit_source_on(trait_name, &result.entity_id);
+            result.effect_results.iter().any(|er| {
+                matches!(&er.effect, Effect::Emit { event, .. } if self.heard_off_client(event, &source))
+            })
+        }
+    }
+
     /// Whether `trait_name` has an arm for `event` from `state`.
     pub(super) fn trait_handles(&self, trait_name: &str, state: &str, event: &str) -> bool {
         self.registry.trait_definitions

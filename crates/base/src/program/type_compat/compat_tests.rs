@@ -428,6 +428,22 @@ fn call_key_is_nominal_a_bare_string_never_assigns_but_a_call_key_widens() {
 }
 
 #[test]
+fn message_key_is_nominal_with_no_cast_and_widens_to_a_string() {
+    use super::{assignable, castable, sub};
+    assert_eq!(sub(&String, &MessageKey), None, "only a literal key or a MessageKey value is one");
+    assert_eq!(sub(&MessageKey, &String), Some(C::Identity));
+    assert_eq!(sub(&MessageKey, &MessageKey), Some(C::Identity));
+    assert!(!assignable(&String, &MessageKey));
+    assert!(assignable(&MessageKey, &String));
+    assert!(!oir_type_satisfies(&String, &MessageKey));
+    assert!(oir_type_satisfies(&MessageKey, &String));
+    assert!(!set_value_type_compatible("MessageKey", "string"));
+    assert!(set_value_type_compatible("string", "MessageKey"));
+    assert!(!castable(&String, &MessageKey), "no cast makes a key from text");
+    assert!(!castable(&CallKey, &MessageKey), "control: one key is not the other");
+}
+
+#[test]
 fn an_optional_or_listed_call_key_slot_still_needs_the_cast() {
     use super::assignable;
     use crate::ir::types::OirType as T;

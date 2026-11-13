@@ -690,9 +690,12 @@ impl KernelCompletionSink {
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
         let (requester, _ticket) = self.requester_of(key);
+        let asked = requester.session.clone();
         let requester = program_wide_requester(&kernel, site, requester);
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
+        // A program-wide trait steps in the program session; the session that deferred the key is still who asked (EXEC-FIELD-3).
+        let _asker = (requester.session.is_none() && asked.is_some()).then(|| kernel.enter_asker(asked.clone()));
         let scope = self.scope(requester.clone());
         let answer = |request: &IoRequest| scope.answer(&*self.answer, request);
         let delivered = kernel.dispatch_route(site, key, event, payload, failed, &answer);
@@ -1004,6 +1007,41 @@ mod tests {
         complete_on_a_thread(&sink, "k1", "AGAIN").join().expect("k1 again");
         let (_, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
         assert_eq!((client, ran_as), (None, Some(anonymous())), "control: a finite key's requester is used once");
+    }
+
+    fn boot_only_program() -> orbital_core_base::schema::types::OrbitalSchema {
+        serde_json::from_value(serde_json::json!({
+            "name": "App", "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Jobs",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Bg", "linkedEntity": "Job",
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                        { "from": "idle", "to": "idle", "event": "DONE", "effects": [] }] } }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Bg" }] }]
+            }]
+        }))
+        .expect("a program")
+    }
+
+    // EXEC-FIELD-3: a completion routed to a program-wide trait steps in the program session, asked by the session that deferred it.
+    #[test]
+    fn a_completion_routed_to_a_program_wide_trait_reads_the_session_that_asked_as_user() {
+        let (sink, kernel, asked) = requester_sink();
+        kernel.register_schema(boot_only_program()).expect("registered");
+        {
+            let _session = kernel.enter_session("tab-1");
+            kernel.bind_test_identity(viewer("ada"));
+            let scope = sink.begin_dispatch_for(Some("tab-1"));
+            assert!(matches!(scope.answer(&deferred, &defers("k1")), IoAnswer::ServiceDeferred));
+        }
+        let mut at = site(Some("DONE"), None);
+        at.trait_name = "Bg".to_string();
+        let completing = sink.clone();
+        std::thread::spawn(move || completing.complete(&at, "k1", Ok(exited(0.0)))).join().expect("k1");
+        let (event, client, ran_as) = asked.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!((event.as_str(), client.as_deref()), ("DONE", Some("tab-1")));
+        assert_eq!(ran_as, Some(viewer("ada")), "the asking session's identity, not the program session's");
     }
 
     #[test]

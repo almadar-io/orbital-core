@@ -277,7 +277,7 @@ impl RuntimeKernel {
                             .iter()
                             .filter(|(t, r)| {
                                 delegating_traits.contains(t)
-                                    && !client_only(t)
+                                    && (!client_only(t) || self.step_emits_off_client(t, r))
                                     && r.entry
                                         .as_ref()
                                         .filter(|_| r.executed)
@@ -327,7 +327,7 @@ impl RuntimeKernel {
                         }
                         // A client-only step is posted only for its own server work (an emit only a server-only
                         // orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
-                        let own_server_work = !emitter_covered && delegating_traits.contains(t.as_str());
+                        let own_server_work = !emitter_covered && self.step_emits_off_client(t, r);
                         if emitter.is_none() || (client_only(t) && !own_server_work) || !reaches_server(i) {
                             continue;
                         }
@@ -437,6 +437,10 @@ impl RuntimeKernel {
                     .iter()
                     .any(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
         };
+        // A step's own emit that only the host hears is server work too (EXEC-DIST-2), like a delegated effect.
+        let owes_host = |trait_name: &str, result: &ProcessEventResult| {
+            delegates(result) || self.step_emits_off_client(trait_name, result)
+        };
         let ran_client_side: HashSet<&str> = outcomes
             .iter()
             .filter(|(_, result)| result.executed && !delegates(result))
@@ -497,11 +501,11 @@ impl RuntimeKernel {
                 covered.insert(trait_name.as_str());
                 false
             } else if emitter == Some(trait_name.as_str()) {
-                !delegated.is_empty()
+                owes_host(trait_name, result)
             } else if emitter.is_some_and(|e| ran_client_side.contains(e)) {
-                !delegated.is_empty()
+                owes_host(trait_name, result)
                     || (!client_only(trait_name)
-                        && chain_needs_server(&chain, i, |j| delegates(steps[j].1)))
+                        && chain_needs_server(&chain, i, |j| owes_host(steps[j].0, steps[j].1)))
             } else {
                 false
             };
@@ -884,6 +888,42 @@ impl RuntimeKernel {
                 .collect(),
             restored_rows,
         }
+    }
+
+    /// The seeding every server-role host runs before a request that is no mount (EXEC-DIST-11), in one place: the
+    /// entity id the request names, else the id of the row it carries for its target trait, with the carried states and
+    /// rows seeded under it ([`Self::seed_leg`]). Answers that entity id.
+    pub fn seed_carried_request(&self, request: &EventRequest) -> Option<String> {
+        let carried_id = request.target_trait.as_ref().and_then(|target| {
+            request
+                .entity_by_trait
+                .as_ref()?
+                .get(target)?
+                .get_path("id")?
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        });
+        let entity_id = request.entity_id.clone().or(carried_id);
+        let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
+        if (request.traits.is_some() || request.entity_by_trait.is_some()) && !mounting {
+            let carried = request.traits.as_deref().unwrap_or_default();
+            // A leg carries one entry per step a trait took; its target replays from the entry of the replayed event.
+            let replayed = request.target_trait.as_deref().and_then(|target| {
+                carried.iter().find(|c| c.r#trait == target && c.event.as_deref() == Some(request.event.as_str()))
+            });
+            let traits: Vec<TraitFrom> = match replayed {
+                Some(entry) => carried
+                    .iter()
+                    .filter(|c| c.r#trait != entry.r#trait)
+                    .cloned()
+                    .chain(core::iter::once(entry.clone()))
+                    .collect(),
+                None => carried.to_vec(),
+            };
+            self.seed_leg(&traits, request.entity_by_trait.as_ref(), entity_id.as_deref());
+        }
+        entity_id
     }
 
     /// Seed a delegated server leg with the client's circuit state: each carried trait is held at its

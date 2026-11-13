@@ -541,3 +541,59 @@ fn control_a_program_session_event_reads_the_signed_in_identity() {
     held.run("LOOK", json!({}));
     assert_eq!(held.gate()["who"], json!("user-1"));
 }
+
+// EXEC-FIELD-3: a sign-in a program-wide trait makes while it serves a viewer's delivery signs that viewer's session in.
+fn boot_signer_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Seen", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "who", "type": "string" }] },
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "Seen",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "SIGN", { "token": "@payload.token" }]] },
+                    { "from": "idle", "to": "idle", "event": "WHO", "effects": [["set", "@entity.who", "@user.id"]] }] },
+                "emits": [{ "event": "SIGN", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Auth",
+            "entity": { "name": "Person", "identity": true, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Signer", "linkedEntity": "Person",
+                "listens": [{ "event": "SIGN", "triggers": "SIGN_ASKED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "SIGN_ASKED", "effects": [
+                        ["let", [["v", ["jws/verify", "@payload.token", [], { "issuer": "firebase-auth-emulator@example.com", "audience": "test", "allowUnsigned": true }]]],
+                            ["identity/sign-in", "@v"]]] }] }
+            }],
+            "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Signer" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn who(kernel: &orbital_core_runtime::kernel::RuntimeKernel, session: Option<&str>) -> serde_json::Value {
+    let _session = session.map(|s| kernel.enter_session(s));
+    kernel.dispatch("Viewer", None, "WHO", Value::Null).unwrap();
+    serde_json::to_value(&kernel.snapshot_trait("Viewer", None).entity).unwrap()["who"].clone()
+}
+
+#[test]
+fn exec_field_3_a_sign_in_made_by_a_program_wide_trait_for_a_viewers_delivery_binds_that_viewers_session() {
+    let kernel = orbital_core_runtime::kernel::RuntimeKernel::new(
+        orbital_core_base::effect_types::RuntimeEnvironment::Server,
+        std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new()),
+        Default::default(),
+    );
+    kernel.register_schema(boot_signer_schema()).unwrap();
+    {
+        let _session = kernel.enter_session("tab-1");
+        let payload: Value = serde_json::from_value(json!({ "token": crate::support::identity::token("ada", json!({})) })).unwrap();
+        kernel.dispatch("Viewer", None, "ASK", payload).unwrap();
+    }
+    assert_eq!(who(&kernel, Some("tab-1")), json!("ada"), "the viewer who asked is signed in");
+    assert_eq!(who(&kernel, Some("tab-2")), json!("anonymous"), "control: another session is not");
+    assert_eq!(who(&kernel, None), json!("anonymous"), "control: the program session is not");
+}

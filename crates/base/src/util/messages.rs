@@ -15,8 +15,6 @@ pub const NAMESPACE_SEPARATOR: char = ':';
 /// Why a key could not be qualified.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageKeyIssue {
-    /// The key is not a string literal, so it cannot be checked against a catalog.
-    Dynamic { path: String },
     /// The key is empty or already carries the reserved `:` separator.
     Invalid { path: String, key: String },
 }
@@ -32,16 +30,8 @@ fn walk(value: &mut Value, namespace: &str, path: &str, issues: &mut Vec<Message
     match value {
         Value::Array(items) => {
             if matches!(items.first(), Some(Value::String(op)) if op == TRANSLATE_OP) {
-                let key_path = format!("{path}[1]");
-                match items.get_mut(1) {
-                    Some(Value::String(key)) if !key.is_empty() && !key.contains(NAMESPACE_SEPARATOR) => {
-                        *key = format!("{namespace}{NAMESPACE_SEPARATOR}{key}");
-                    }
-                    Some(Value::String(key)) => issues.push(MessageKeyIssue::Invalid {
-                        path: key_path,
-                        key: key.clone(),
-                    }),
-                    _ => issues.push(MessageKeyIssue::Dynamic { path: key_path }),
+                if let Some(key @ Value::String(_)) = items.get_mut(1) {
+                    issues.extend(qualify_message_key_value(key, namespace, &format!("{path}[1]")));
                 }
             }
             for (i, item) in items.iter_mut().enumerate() {
@@ -55,6 +45,120 @@ fn walk(value: &mut Value, namespace: &str, path: &str, issues: &mut Vec<Message
         }
         _ => {}
     }
+}
+
+/// Qualifies one `MessageKey` written where it is declared or passed. A string literal is qualified; a `@` binding
+/// reads a key already qualified where it was written, and any other expression is typed by the checker, so both pass
+/// through.
+pub fn qualify_message_key_value(value: &mut Value, namespace: &str, path: &str) -> Vec<MessageKeyIssue> {
+    match value {
+        Value::String(key) if key.starts_with('@') => Vec::new(),
+        Value::String(key) if !key.is_empty() && !key.contains(NAMESPACE_SEPARATOR) => {
+            *key = format!("{namespace}{NAMESPACE_SEPARATOR}{key}");
+            Vec::new()
+        }
+        Value::String(key) => vec![MessageKeyIssue::Invalid { path: path.to_string(), key: key.clone() }],
+        _ => Vec::new(),
+    }
+}
+
+/// Qualifies a `[MessageKey]` list literal item by item.
+pub fn qualify_message_key_list(value: &mut Value, namespace: &str, path: &str) -> Vec<MessageKeyIssue> {
+    match value {
+        Value::Array(items) => items
+            .iter_mut()
+            .enumerate()
+            .flat_map(|(i, item)| qualify_message_key_value(item, namespace, &format!("{path}[{i}]")))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a config knob's declared type holds catalog keys: one (`MessageKey`) or a list (`[MessageKey]`).
+fn message_key_knob(field_type: &str) -> Option<bool> {
+    match field_type {
+        "MessageKey" => Some(false),
+        "[MessageKey]" => Some(true),
+        _ => None,
+    }
+}
+
+fn each_trait_config_mut(
+    schema: &mut crate::schema::OrbitalSchema,
+    mut visit: impl FnMut(String, &mut crate::schema::ConfigField),
+) {
+    use crate::schema::TraitReference;
+    for orbital in &mut schema.orbitals {
+        for (index, trait_ref) in orbital.traits.iter_mut().enumerate() {
+            let (name, config) = match trait_ref {
+                TraitReference::Inline(def) => {
+                    if !def.config.iter().flatten().any(|(_, f)| message_key_knob(&f.field_type).is_some()) {
+                        continue;
+                    }
+                    let def = std::sync::Arc::make_mut(def);
+                    (def.name.clone(), def.config.as_mut())
+                }
+                TraitReference::Reference { name, reference, config, .. } => (
+                    name.clone().or_else(|| reference.clone()).unwrap_or_else(|| index.to_string()),
+                    config.as_mut(),
+                ),
+            };
+            for (knob, field) in config.into_iter().flatten() {
+                visit(format!("{}.{name}.config.{knob}", orbital.name), field);
+            }
+        }
+    }
+}
+
+/// Qualifies the literal values of every config knob typed `MessageKey` or `[MessageKey]` (a trait's own declaration
+/// or a call-site wiring the lowering typed from the atom) with `namespace`, as `i18n/t` literals are.
+pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, namespace: &str) -> Vec<MessageKeyIssue> {
+    let mut issues = Vec::new();
+    each_trait_config_mut(schema, |path, field| {
+        let (Some(list), Some(default)) = (message_key_knob(&field.field_type), field.default.as_mut()) else {
+            return;
+        };
+        let Ok(mut value) = serde_json::to_value(&*default) else { return };
+        let found = if list {
+            qualify_message_key_list(&mut value, namespace, &path)
+        } else {
+            qualify_message_key_value(&mut value, namespace, &path)
+        };
+        if let Ok(qualified) = serde_json::from_value(value) {
+            *default = qualified;
+        }
+        issues.extend(found);
+    });
+    issues
+}
+
+/// The literal keys every `MessageKey` / `[MessageKey]` config knob holds: catalog keys the program uses through a
+/// knob rather than an `i18n/t` literal.
+pub fn config_message_keys(schema: &crate::schema::OrbitalSchema) -> Vec<String> {
+    use crate::schema::TraitReference;
+    let fields = schema.orbitals.iter().flat_map(|o| &o.traits).flat_map(|t| match t {
+        TraitReference::Inline(def) => def.config.iter().flatten(),
+        TraitReference::Reference { config, .. } => config.iter().flatten(),
+    });
+    let mut keys = Vec::new();
+    for (_, field) in fields {
+        let Some(default) = field.default.as_ref().filter(|_| message_key_knob(&field.field_type).is_some()) else {
+            continue;
+        };
+        let Ok(value) = serde_json::to_value(default) else { continue };
+        let literals: Vec<&Value> = match &value {
+            Value::Array(items) => items.iter().collect(),
+            one => vec![one],
+        };
+        keys.extend(
+            literals
+                .into_iter()
+                .filter_map(Value::as_str)
+                .filter(|k| !k.starts_with('@'))
+                .map(str::to_string),
+        );
+    }
+    keys
 }
 
 #[cfg(test)]
@@ -87,18 +191,49 @@ mod tests {
     }
 
     #[test]
-    fn a_computed_key_is_reported_as_dynamic() {
-        let mut v = json!({ "content": ["i18n/t", ["str/concat", "post.", "@entity.slug"]] });
-        assert_eq!(
-            qualify_message_keys(&mut v, "home"),
-            vec![MessageKeyIssue::Dynamic { path: ".content[1]".into() }]
-        );
+    fn a_binding_or_computed_key_is_left_for_the_type_checker() {
+        let mut v = json!({ "a": ["i18n/t", "@config.label"], "b": ["i18n/t", "@n.textKey"], "c": ["i18n/t", ["str/concat", "post.", "@entity.slug"]] });
+        let before = v.clone();
+        assert!(qualify_message_keys(&mut v, "home").is_empty());
+        assert_eq!(v, before);
     }
 
     #[test]
-    fn edge_a_missing_key_is_reported_as_dynamic() {
+    fn edge_a_missing_key_is_left_for_the_arity_check() {
         let mut v = json!(["i18n/t"]);
-        assert_eq!(qualify_message_keys(&mut v, "home"), vec![MessageKeyIssue::Dynamic { path: "[1]".into() }]);
+        assert!(qualify_message_keys(&mut v, "home").is_empty());
+        assert_eq!(v, json!(["i18n/t"]));
+    }
+
+    #[test]
+    fn a_message_key_value_qualifies_literals_and_list_items() {
+        let mut one = json!("begin");
+        assert!(qualify_message_key_value(&mut one, "panel", "label").is_empty());
+        assert_eq!(one, json!("panel:begin"));
+        let mut many = json!(["spring", "summer"]);
+        assert!(qualify_message_key_list(&mut many, "panel", "seasons").is_empty());
+        assert_eq!(many, json!(["panel:spring", "panel:summer"]));
+    }
+
+    #[test]
+    fn control_a_message_key_binding_or_expression_value_is_untouched() {
+        for v in [json!("@config.label"), json!(["str/concat", "a", "b"]), json!(null)] {
+            let mut got = v.clone();
+            assert!(qualify_message_key_value(&mut got, "panel", "label").is_empty());
+            assert_eq!(got, v);
+        }
+    }
+
+    #[test]
+    fn edge_an_empty_or_qualified_message_key_value_is_invalid() {
+        let mut v = json!(["", "x:y"]);
+        assert_eq!(
+            qualify_message_key_list(&mut v, "panel", "labels"),
+            vec![
+                MessageKeyIssue::Invalid { path: "labels[0]".into(), key: "".into() },
+                MessageKeyIssue::Invalid { path: "labels[1]".into(), key: "x:y".into() },
+            ]
+        );
     }
 
     #[test]
@@ -225,6 +360,7 @@ fn placeholders(message: &str) -> Vec<String> {
 /// locale's catalog file, or `None` when the file is absent.
 pub fn check_catalogs(
     program: &Value,
+    knob_keys: &[String],
     namespace: &str,
     locales: Option<&[String]>,
     catalogs: &std::collections::BTreeMap<String, Option<Value>>,
@@ -234,6 +370,12 @@ pub fn check_catalogs(
     let mut calls = Vec::new();
     let prefix = format!("{namespace}{NAMESPACE_SEPARATOR}");
     collect_calls(program, &prefix, &mut calls, &mut issues);
+    calls.extend(
+        knob_keys
+            .iter()
+            .filter_map(|k| k.strip_prefix(&prefix))
+            .map(|key| Call { key: key.to_string(), params: None }),
+    );
 
     let declared: Vec<String> = locales.map(|l| l.to_vec()).unwrap_or_default();
     if !declared.iter().any(|l| l == "en") {
@@ -346,21 +488,21 @@ mod catalog_tests {
 
     #[test]
     fn control_complete_catalogs_pass_and_other_namespaces_are_ignored() {
-        assert!(check_catalogs(&program(), "home", Some(&locales()), &complete()).is_empty());
+        assert!(check_catalogs(&program(), &[], "home", Some(&locales()), &complete()).is_empty());
     }
 
     #[test]
     fn a_key_missing_from_en_is_reported() {
         let mut c = complete();
         c.insert("en".into(), Some(json!({ "posts.count": "{{n}} posts" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_MISSING"]);
+        assert_eq!(codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_MISSING"]);
     }
 
     #[test]
     fn a_key_missing_from_another_declared_locale_is_untranslated() {
         let mut c = complete();
         c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNTRANSLATED"]);
+        assert_eq!(codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNTRANSLATED"]);
     }
 
     #[test]
@@ -368,7 +510,7 @@ mod catalog_tests {
         let mut c = complete();
         c.insert("ar".into(), None);
         assert_eq!(
-            codes(&check_catalogs(&program(), "home", Some(&locales()), &c)),
+            codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c)),
             vec!["ORB_I18N_KEY_UNTRANSLATED", "ORB_I18N_KEY_UNTRANSLATED"]
         );
     }
@@ -377,7 +519,7 @@ mod catalog_tests {
     fn placeholders_must_match_the_params_in_every_locale() {
         let mut c = complete();
         c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا", "posts.count": "{{count}} مقالات" })));
-        let issues = check_catalogs(&program(), "home", Some(&locales()), &c);
+        let issues = check_catalogs(&program(), &[], "home", Some(&locales()), &c);
         assert_eq!(codes(&issues), vec!["ORB_I18N_PARAM_MISMATCH"]);
     }
 
@@ -385,26 +527,26 @@ mod catalog_tests {
     fn edge_params_that_are_not_an_object_literal_are_rejected() {
         let p = json!(["i18n/t", "home:posts.count", "@config.counts"]);
         let c = catalogs(json!({ "posts.count": "{{n}}" }), json!({ "posts.count": "{{n}}" }));
-        assert_eq!(codes(&check_catalogs(&p, "home", Some(&locales()), &c)), vec!["ORB_I18N_PARAM_MISMATCH"]);
+        assert_eq!(codes(&check_catalogs(&p, &[], "home", Some(&locales()), &c)), vec!["ORB_I18N_PARAM_MISMATCH"]);
     }
 
     #[test]
     fn an_unused_catalog_key_is_reported() {
         let mut c = complete();
         c.insert("en".into(), Some(json!({ "hero.title": "Hello", "posts.count": "{{n}} posts", "stale": "x" })));
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNUSED"]);
+        assert_eq!(codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c)), vec!["ORB_I18N_KEY_UNUSED"]);
     }
 
     #[test]
     fn using_i18n_without_locales_is_rejected_and_control_without_calls_is_fine() {
-        assert_eq!(codes(&check_catalogs(&program(), "home", None, &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
-        assert!(check_catalogs(&json!(["do"]), "home", None, &BTreeMap::new()).is_empty());
+        assert_eq!(codes(&check_catalogs(&program(), &[], "home", None, &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
+        assert!(check_catalogs(&json!(["do"]), &[], "home", None, &BTreeMap::new()).is_empty());
     }
 
     #[test]
     fn edge_locales_without_en_are_rejected() {
         let only_ar = vec!["ar".to_string()];
-        assert_eq!(codes(&check_catalogs(&program(), "home", Some(&only_ar), &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
+        assert_eq!(codes(&check_catalogs(&program(), &[], "home", Some(&only_ar), &BTreeMap::new())), vec!["ORB_I18N_NO_LOCALES"]);
     }
 
     #[test]
@@ -412,8 +554,79 @@ mod catalog_tests {
         let mut c = complete();
         c.insert("ar".into(), Some(json!({ "hero.title": { "nested": "x" }, "posts.count": "{{n}}" })));
         c.insert("sl".into(), Some(json!({})));
-        let found = codes(&check_catalogs(&program(), "home", Some(&locales()), &c));
+        let found = codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c));
         assert!(found.iter().filter(|c| **c == "ORB_I18N_CATALOG_INVALID").count() == 2, "{found:?}");
+    }
+
+    #[test]
+    fn a_knob_key_is_used_and_checked_like_a_literal() {
+        let knobs = vec!["home:begin".to_string(), "atom:ignored".to_string()];
+        let mut c = complete();
+        c.insert("en".into(), Some(json!({ "hero.title": "Hello", "posts.count": "{{n}} posts", "begin": "Begin" })));
+        c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا", "posts.count": "{{n}} مقالات", "begin": "ابدأ" })));
+        assert!(check_catalogs(&program(), &knobs, "home", Some(&locales()), &c).is_empty());
+        assert_eq!(
+            codes(&check_catalogs(&program(), &[], "home", Some(&locales()), &c)),
+            vec!["ORB_I18N_KEY_UNUSED", "ORB_I18N_KEY_UNUSED"],
+            "control: without the knob the key is unused"
+        );
+    }
+
+    #[test]
+    fn edge_a_knob_key_missing_from_en_is_reported() {
+        let knobs = vec!["home:begin".to_string()];
+        assert_eq!(
+            codes(&check_catalogs(&program(), &knobs, "home", Some(&locales()), &complete())),
+            vec!["ORB_I18N_KEY_MISSING", "ORB_I18N_KEY_UNTRANSLATED"]
+        );
+    }
+
+    fn knob_schema() -> crate::schema::OrbitalSchema {
+        serde_json::from_value(json!({
+            "name": "panel",
+            "orbitals": [{
+                "name": "Panel",
+                "entity": { "name": "PanelView", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [
+                    { "name": "Own", "linkedEntity": "PanelView", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [], "transitions": [] },
+                      "config": {
+                        "label": { "type": "MessageKey", "default": "title" },
+                        "seasons": { "type": "[MessageKey]", "default": ["spring", "summer"], "items": { "type": "MessageKey" } },
+                        "plain": { "type": "string", "default": "not a key" }
+                      } },
+                    { "ref": "Button.traits.RasmPressable", "name": "Begin", "config": {
+                        "label": { "type": "MessageKey", "default": "begin" },
+                        "bound": { "type": "MessageKey", "default": "@config.label" },
+                        "id": { "type": "unknown", "default": "begin" }
+                    } }
+                ]
+            }]
+        }))
+        .expect("schema")
+    }
+
+    #[test]
+    fn config_knobs_typed_message_key_are_qualified_and_collected() {
+        let mut schema = knob_schema();
+        assert!(qualify_config_message_keys(&mut schema, "panel").is_empty());
+        let mut keys = config_message_keys(&schema);
+        keys.sort();
+        assert_eq!(keys, vec!["panel:begin", "panel:spring", "panel:summer", "panel:title"]);
+        let json = serde_json::to_string(&schema).unwrap();
+        assert!(json.contains(r#""default":"not a key""#), "control: a string knob is untouched: {json}");
+        assert!(json.contains(r#""default":"@config.label""#), "control: a binding is untouched: {json}");
+        assert!(json.contains(r#""id":{"type":"unknown","default":"begin"}"#), "control: an untyped wiring is untouched: {json}");
+    }
+
+    #[test]
+    fn edge_a_qualified_knob_value_is_invalid() {
+        let mut schema = knob_schema();
+        let json = serde_json::to_string(&schema).unwrap().replace(r#""default":"title""#, r#""default":"x:title""#);
+        schema = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            qualify_config_message_keys(&mut schema, "panel"),
+            vec![MessageKeyIssue::Invalid { path: "Panel.Own.config.label".into(), key: "x:title".into() }]
+        );
     }
 }
 

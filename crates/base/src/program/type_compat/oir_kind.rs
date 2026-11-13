@@ -53,6 +53,7 @@ pub fn oir_type_kind(t: &crate::ir::types::OirType) -> String {
         OirType::Image => "image".to_string(),
         OirType::Bytes => "bytes".to_string(),
         OirType::CallKey => "callkey".to_string(),
+        OirType::MessageKey => "messagekey".to_string(),
         // A field name is a string at run time.
         OirType::FieldRef { .. } => "string".to_string(),
         // Money is numeric at rest; File is the canonical struct value.

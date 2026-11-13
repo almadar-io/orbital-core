@@ -42,6 +42,7 @@ impl TypePredicate {
             | T::Enum { .. }
             | T::Trait
             | T::CallKey
+            | T::MessageKey
             | T::Email
             | T::Url
             | T::Phone

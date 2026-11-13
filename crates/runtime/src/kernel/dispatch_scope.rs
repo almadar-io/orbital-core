@@ -80,6 +80,22 @@ impl Drop for SessionGuard {
     }
 }
 
+pub struct AskerGuard {
+    pub(super) slot: Arc<RwLock<HashMap<orbital_core_base::sync::ThreadKey, Arc<str>>>>,
+    pub(super) thread: orbital_core_base::sync::ThreadKey,
+    pub(super) outer: Option<Arc<str>>,
+}
+
+impl Drop for AskerGuard {
+    fn drop(&mut self) {
+        let mut slot = self.slot.write();
+        match self.outer.take() {
+            Some(outer) => slot.insert(self.thread, outer),
+            None => slot.remove(&self.thread),
+        };
+    }
+}
+
 pub(super) fn drop_session_instances(
     frames: &RwLock<HashMap<(String, String), SharedEntity>>,
     carried: &RwLock<HashMap<(String, String), String>>,
