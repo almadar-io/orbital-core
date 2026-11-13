@@ -6,13 +6,14 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
+use crate::effects::response::{EventRequest, EventResponse};
 #[cfg(feature = "client-http")]
-use crate::effects::response::{EventRequest, EventResponse, TraitFrom};
+use crate::effects::response::TraitFrom;
 #[cfg(feature = "client-http")]
 use orbital_core_base::value::Value;
 use thiserror::Error;
 #[cfg(feature = "client-http")]
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 /// Errors that can occur during server communication
 #[derive(Debug, Error)]
@@ -50,6 +51,129 @@ fn build_event_request(event: &str, entity_id: Option<&str>, trait_name: Option<
     }
 }
 
+/// A dispatch the host ran on its own, as a `{ type: dispatch }` `/api/events` frame carries it: the client folds its
+/// response and never runs it again (the web twin: `EventTransport.subscribeHostDispatches`).
+#[derive(Debug, Clone)]
+pub struct PushedDispatch {
+    pub orbital_name: String,
+    pub request: EventRequest,
+    pub response: EventResponse,
+}
+
+#[cfg(feature = "client-http")]
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum FeedFrame {
+    #[serde(rename_all = "camelCase")]
+    Dispatch { orbital_name: String, request: EventRequest, response: EventResponse },
+    #[serde(other)]
+    Other,
+}
+
+/// A numbered frame's id, `<server boot>-<n>` (the web's `FrameNumber`): a reopened stream resumes after the last one
+/// applied, and a replay of one already applied is dropped.
+#[cfg(feature = "client-http")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrameNumber {
+    boot: String,
+    n: u64,
+}
+
+#[cfg(feature = "client-http")]
+fn parse_frame_number(id: &str) -> Option<FrameNumber> {
+    let dash = id.rfind('-').filter(|dash| *dash > 0)?;
+    Some(FrameNumber { boot: id[..dash].to_string(), n: id[dash + 1..].parse().ok()? })
+}
+
+/// The delay before a dropped stream is opened again.
+#[cfg(feature = "client-http")]
+const FEED_REOPEN: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// One client's `/api/events` stream, read on its own thread: the host-run dispatches addressed to this client id
+/// wait here until the window drains them. Dropping the feed ends the thread at its next frame or reopen.
+#[cfg(feature = "client-http")]
+pub struct LiveFeed {
+    frames: std::sync::mpsc::Receiver<PushedDispatch>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[cfg(feature = "client-http")]
+impl LiveFeed {
+    /// The dispatches that arrived since the last call, in arrival order.
+    pub fn drain(&self) -> Vec<PushedDispatch> {
+        self.frames.try_iter().collect()
+    }
+}
+
+/// A client's live stream as a window drains it, whatever transport carries it.
+pub trait HostFeed: Send {
+    fn drain(&self) -> Vec<PushedDispatch>;
+}
+
+#[cfg(feature = "client-http")]
+impl HostFeed for LiveFeed {
+    fn drain(&self) -> Vec<PushedDispatch> {
+        LiveFeed::drain(self)
+    }
+}
+
+#[cfg(feature = "client-http")]
+impl Drop for LiveFeed {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Read SSE `data:` events from `stream` and hand each dispatch frame to `deliver`; other frames (`bus`) are not
+/// dispatches and are skipped. A numbered frame (`id:`) of the boot `seen` holds that is not past it is a replay and is
+/// dropped; `seen` moves to the last numbered frame read. Returns when the stream ends or `deliver` refuses.
+#[cfg(feature = "client-http")]
+fn read_frames(
+    stream: impl std::io::BufRead,
+    seen: &mut Option<FrameNumber>,
+    mut deliver: impl FnMut(PushedDispatch) -> bool,
+) {
+    let mut data = String::new();
+    let mut id: Option<FrameNumber> = None;
+    for line in stream.lines() {
+        let Ok(line) = line else { return };
+        if let Some(raw) = line.strip_prefix("id:") {
+            id = parse_frame_number(raw.strip_prefix(' ').unwrap_or(raw));
+            continue;
+        }
+        if let Some(chunk) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(chunk.strip_prefix(' ').unwrap_or(chunk));
+            continue;
+        }
+        if !line.is_empty() {
+            continue;
+        }
+        let text = std::mem::take(&mut data);
+        let number = id.take();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(number) = number {
+            if seen.as_ref().is_some_and(|last| last.boot == number.boot && number.n <= last.n) {
+                continue;
+            }
+            *seen = Some(number);
+        }
+        match serde_json::from_str::<FeedFrame>(&text) {
+            Ok(FeedFrame::Dispatch { orbital_name, request, response }) => {
+                if !deliver(PushedDispatch { orbital_name, request, response }) {
+                    return;
+                }
+            }
+            Ok(FeedFrame::Other) => {}
+            Err(e) => warn!(error = %e, "live feed: a frame was not understood"),
+        }
+    }
+}
+
 /// Synchronous HTTP client wrapper for non-async contexts
 ///
 /// Use this in synchronous contexts like egui update functions
@@ -73,6 +197,26 @@ impl SyncServerBridge {
     /// Get the server base URL
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Open `client_id`'s live stream (`POST /api/events/ticket`, then `GET /api/events`, the web transport's own
+    /// handshake): the host-run dispatches addressed to that client id arrive on the returned feed, and a stream that
+    /// drops is opened again.
+    pub fn open_feed(&self, client_id: &str) -> LiveFeed {
+        let (tx, frames) = std::sync::mpsc::channel();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (base, client_id, halted) = (self.base_url.clone(), client_id.to_string(), stop.clone());
+        std::thread::spawn(move || {
+            let mut seen = None;
+            while !halted.load(std::sync::atomic::Ordering::SeqCst) {
+                match stream_once(&base, &client_id, &mut seen, &halted, &tx) {
+                    Ok(()) => {}
+                    Err(e) => warn!(error = %e, "live feed: the stream could not be opened"),
+                }
+                std::thread::sleep(FEED_REOPEN);
+            }
+        });
+        LiveFeed { frames, stop }
     }
 
     /// Check server health
@@ -202,6 +346,38 @@ impl SyncServerBridge {
     }
 }
 
+/// One connection of a client's stream: mint a ticket, open the stream with it, deliver its dispatch frames until it ends.
+#[cfg(feature = "client-http")]
+fn stream_once(
+    base: &str,
+    client_id: &str,
+    seen: &mut Option<FrameNumber>,
+    halted: &std::sync::atomic::AtomicBool,
+    tx: &std::sync::mpsc::Sender<PushedDispatch>,
+) -> Result<(), BridgeError> {
+    #[derive(serde::Deserialize)]
+    struct Ticket {
+        ticket: String,
+    }
+    let minted: Ticket = ureq::post(&format!("{base}/api/events/ticket"))
+        .query("clientId", client_id)
+        .call()
+        .map_err(|e| BridgeError::Network(e.to_string()))?
+        .into_json()
+        .map_err(|e| BridgeError::Parse(e.to_string()))?;
+    let mut request = ureq::get(&format!("{base}/api/events"))
+        .query("clientId", client_id)
+        .query("ticket", &minted.ticket);
+    if let Some(last) = seen.as_ref() {
+        request = request.query("since", &format!("{}-{}", last.boot, last.n));
+    }
+    let stream = request.call().map_err(|e| BridgeError::Network(e.to_string()))?;
+    read_frames(std::io::BufReader::new(stream.into_reader()), seen, |frame| {
+        tx.send(frame).is_ok() && !halted.load(std::sync::atomic::Ordering::SeqCst)
+    });
+    Ok(())
+}
+
 /// Builder for configuring a server bridge with runtime
 #[derive(Debug, Default)]
 pub struct ServerBridgeBuilder {
@@ -244,5 +420,89 @@ mod tests {
     #[test]
     fn control_the_builder_without_a_url_is_refused() {
         assert!(matches!(ServerBridgeBuilder::new().build_sync(), Err(BridgeError::InvalidRequest(_))));
+    }
+
+    #[cfg(feature = "client-http")]
+    mod feed {
+        use super::*;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        const DISPATCH: &str = r#"{"type":"dispatch","orbitalName":"Files","request":{"event":"OF_ROOT","targetTrait":"Reader","entityId":"singleton"},"response":{"success":true,"transitioned":true},"timestamp":1}"#;
+
+        /// A host that serves the stream only to `owner`: the ticket route mints for any client id, and the stream
+        /// carries one `bus` frame and one `dispatch` frame when the query names `owner`, and nothing otherwise.
+        fn host(owner: &'static str) -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for connection in listener.incoming() {
+                    let Ok(mut connection) = connection else { return };
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(connection.try_clone().unwrap());
+                        let mut request = String::new();
+                        reader.read_line(&mut request).unwrap();
+                        loop {
+                            let mut line = String::new();
+                            reader.read_line(&mut line).unwrap();
+                            if line == "\r\n" || line.is_empty() {
+                                break;
+                            }
+                        }
+                        let body = if request.starts_with("POST /api/events/ticket") {
+                            r#"{"ticket":"t1"}"#.to_string()
+                        } else if request.contains(&format!("clientId={owner}")) && request.contains("ticket=t1") {
+                            format!("data: {{\"type\":\"bus\",\"event\":\"X\"}}\n\ndata: {DISPATCH}\n\n")
+                        } else {
+                            String::new()
+                        };
+                        let kind = if request.starts_with("POST") { "application/json" } else { "text/event-stream" };
+                        let _ = write!(connection, "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    });
+                }
+            });
+            url
+        }
+
+        fn wait_for(feed: &LiveFeed, at_least: usize) -> Vec<PushedDispatch> {
+            let mut got = Vec::new();
+            for _ in 0..50 {
+                got.extend(feed.drain());
+                if got.len() >= at_least {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            got
+        }
+
+        #[test]
+        fn a_dispatch_frame_pushed_to_this_client_reaches_its_feed() {
+            let bridge = SyncServerBridge::new(host("tab-1"));
+            let feed = bridge.open_feed("tab-1");
+            let got = wait_for(&feed, 1);
+            assert_eq!(got.len(), 1, "the bus frame is skipped and the dispatch frame arrives once");
+            assert_eq!(got[0].orbital_name, "Files");
+            assert_eq!(got[0].request.event, "OF_ROOT");
+            assert_eq!(got[0].request.target_trait.as_deref(), Some("Reader"));
+            assert!(got[0].response.success);
+        }
+
+        #[test]
+        fn control_a_frame_for_another_client_id_never_reaches_the_feed() {
+            let bridge = SyncServerBridge::new(host("tab-1"));
+            let feed = bridge.open_feed("tab-2");
+            assert!(wait_for(&feed, 1).is_empty());
+        }
+
+        #[test]
+        fn control_a_frame_that_is_not_a_dispatch_is_skipped() {
+            let mut seen = Vec::new();
+            read_frames(std::io::Cursor::new("data: {\"type\":\"bus\",\"event\":\"X\"}\n\n"), &mut None, |frame| {
+                seen.push(frame);
+                true
+            });
+            assert!(seen.is_empty());
+        }
     }
 }

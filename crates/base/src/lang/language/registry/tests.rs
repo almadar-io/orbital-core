@@ -208,6 +208,24 @@ fn patterns_parse_and_lookup() {
 }
 
 #[test]
+fn patterns_are_parsed_once_and_shared() {
+    assert!(std::ptr::eq(patterns(), patterns()));
+    let button = get_pattern("button").unwrap();
+    assert!(std::ptr::eq(button, &patterns()["button"]));
+    assert!(std::ptr::eq(get_pattern("button").unwrap(), button));
+    let table = get_pattern("table-view").unwrap();
+    assert!(!std::ptr::eq(button, table));
+}
+
+#[test]
+fn every_registry_pattern_survives_the_typed_parse() {
+    let raw: serde_json::Value = serde_json::from_str(patterns_json()).unwrap();
+    let raw = raw["patterns"].as_object().unwrap();
+    assert_eq!(patterns().len(), raw.len());
+    assert!(raw.keys().all(|name| patterns().contains_key(name)));
+}
+
+#[test]
 fn program_host_effects_are_the_installed_tables_host_program_operators() {
     let from_table: std::collections::BTreeSet<&str> = operators()
         .iter()

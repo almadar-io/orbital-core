@@ -167,12 +167,14 @@ impl RuntimeKernel {
         let mut server_legs = if mixed {
             Vec::new()
         } else if self.effect_executor.environment().is_client() && !drained.is_empty() {
-            if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) {
+            let only_emits = drained.iter().all(|e| matches!(e, Effect::Emit { .. }));
+            if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) && !only_emits {
                 // A `local` trait's OWN effects should be client-only by construction;
                 // a server-only effect the seed itself delegated is a validator bug
                 // (§7 declares `local` legal only where nothing needs the server), not
                 // something to silently ship as a leg. Report and drop. Data in the
-                // browser store is the exception: the host runs that leg against the store.
+                // browser store is the exception: the host runs that leg against the store, and so is an emit only an
+                // orbital the client program leaves out hears (EXEC-DIST-10).
                 tracing::error!(
                     trait_name = %trait_name, event = %event, drained = drained.len(),
                     "HybridClientOnly trait delegated server-only effects — dropping the server leg",

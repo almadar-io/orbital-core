@@ -303,6 +303,54 @@ fn the_page_marked_initial_opens_not_the_first() {
     assert_eq!(core.current_page.as_deref(), Some("DetailPage"));
 }
 
+#[test]
+fn navigating_sets_the_viewer_locale_from_the_route() {
+    let mut schema = two_page_schema();
+    schema.locales = Some(vec!["en".into(), "ar".into()]);
+    schema.orbitals[0].pages.as_mut().unwrap().push(
+        serde_json::from_value(serde_json::json!(
+            { "name": "ArPage", "path": "/ar/notes", "traits": [{ "ref": "ListTrait" }] }
+        ))
+        .unwrap(),
+    );
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    assert_eq!(core.locale().as_deref(), Some("en"), "control: before any route, the first declared");
+    core.navigate_to("/ar/notes", None);
+    assert_eq!(core.locale().as_deref(), Some("ar"));
+    core.navigate_to("/notes/42", None);
+    assert_eq!(core.locale().as_deref(), Some("en"), "a path naming no locale takes the first declared, as the web does");
+}
+
+#[test]
+fn a_client_started_on_a_locale_path_paints_that_locale() {
+    let mut schema = two_page_schema();
+    schema.locales = Some(vec!["en".into(), "ar".into()]);
+    schema.orbitals[0].pages.as_mut().unwrap().push(
+        serde_json::from_value(serde_json::json!(
+            { "name": "ArPage", "path": "/ar/notes", "isInitial": true, "traits": [{ "ref": "ListTrait" }] }
+        ))
+        .unwrap(),
+    );
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let core = ClientCore::with_client_kernel(schema.clone(), kernel);
+    assert_eq!(core.page_mount_route().as_deref(), Some("/ar/notes"));
+    assert_eq!(core.locale().as_deref(), Some("ar"));
+
+    let control_schema = {
+        let mut s = schema;
+        s.orbitals[0].pages.as_mut().unwrap().iter_mut().for_each(|p| {
+            if let orbital_core_base::schema::types::PageRef::Inline(def) = p {
+                def.is_initial = None;
+            }
+        });
+        s
+    };
+    let kernel = Arc::new(ClientKernel::new(control_schema.clone(), None).unwrap());
+    let control = ClientCore::with_client_kernel(control_schema, kernel);
+    assert_eq!(control.locale().as_deref(), Some("en"), "control: a start path naming no locale takes the first declared");
+}
+
 /// R5: a path no page matches enters the page declared `[notFound]` (the unknown path keeps the page only
 /// when the app declares none, which `main_shows_the_current_pages_writers_and_navigate_switches_page` pins).
 #[test]
@@ -1173,4 +1221,91 @@ fn a_boot_page_is_never_a_navigation_target() {
         Some(true),
         "control: a path no route declares is still refused"
     );
+}
+
+#[cfg(feature = "client-http")]
+mod host_feed {
+    use super::*;
+    use crate::client::http::SyncServerBridge;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    const KEYED_COMPLETION: &str = r#"{"type":"dispatch","orbitalName":"Main","request":{"event":"SHOW","targetTrait":"RenderTrait","entityId":"singleton"},"response":{"success":true,"transitioned":true,"states":{"RenderTrait":"shown"},"clientEffectsByTrait":[{"traitName":"RenderTrait","effect":["render-ui","main",{"type":"page-header","title":"from the host"}]}]},"timestamp":1}"#;
+    const BUS: &str = r#"{"type":"bus","event":"SHOW"}"#;
+    const FAILED: &str = r#"{"type":"dispatch","orbitalName":"Main","request":{"event":"SHOW","targetTrait":"RenderTrait"},"response":{"success":false,"error":"refused","states":{"RenderTrait":"shown"}},"timestamp":2}"#;
+
+    fn host(frame: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for connection in listener.incoming() {
+                let Ok(mut connection) = connection else { return };
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(connection.try_clone().unwrap());
+                    let mut request = String::new();
+                    reader.read_line(&mut request).unwrap();
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).unwrap();
+                        if line == "\r\n" || line.is_empty() {
+                            break;
+                        }
+                    }
+                    let (kind, body) = if request.starts_with("POST /api/events/ticket") {
+                        ("application/json", r#"{"ticket":"t1"}"#.to_string())
+                    } else if request.starts_with("GET /api/events") {
+                        ("text/event-stream", format!("id: boot-1\ndata: {frame}\n\n"))
+                    } else {
+                        ("application/json", String::new())
+                    };
+                    let _ = write!(connection, "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                });
+            }
+        });
+        url
+    }
+
+    fn window(frame: &'static str) -> ClientCore {
+        let schema = render_ui_schema();
+        let bridge: Arc<dyn crate::client::bridge::ServerBridge> = Arc::new(SyncServerBridge::new(host(frame)));
+        let kernel = Arc::new(ClientKernel::new(schema.clone(), Some(bridge)).unwrap());
+        assert!(kernel.open_feed());
+        ClientCore::with_client_kernel(schema, kernel)
+    }
+
+    fn heard(core: &mut ClientCore) -> bool {
+        for _ in 0..50 {
+            if core.drain_host_feed() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
+
+    #[test]
+    fn a_keyed_completion_pushed_to_the_window_folds_into_its_state_and_paint() {
+        let mut core = window(KEYED_COMPLETION);
+        assert_ne!(core.current_state, "shown");
+        assert!(heard(&mut core), "the dispatch frame reached the window");
+        assert_eq!(core.current_state, "shown");
+        let title = core.ui_slots.get("main").and_then(|slot| slot.first()).and_then(|content| content.props.as_object()?.get("title").cloned());
+        assert_eq!(title, Some(Value::string("from the host")));
+    }
+
+    #[test]
+    fn control_a_bus_frame_changes_nothing() {
+        let mut core = window(BUS);
+        assert!(!heard(&mut core));
+        assert_ne!(core.current_state, "shown");
+        assert!(core.ui_slots.get("main").is_none());
+    }
+
+    #[test]
+    fn control_a_failed_host_dispatch_applies_nothing() {
+        let mut core = window(FAILED);
+        assert!(heard(&mut core));
+        assert_ne!(core.current_state, "shown");
+        assert!(core.status_message.is_none());
+    }
 }

@@ -432,6 +432,7 @@
     "motion": "motion",
     "mounts": "mounts",
     "name": "name",
+    "nearest": "nearest",
     "nestedForwardedFrom": "nestedForwardedFrom",
     "net": "net",
     "omit": "omit",

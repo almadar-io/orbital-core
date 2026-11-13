@@ -157,6 +157,7 @@ pub struct ClientKernel {
     server_hosted: std::collections::HashSet<String>,
     begin_order: Mutex<()>,
     flights: Arc<FlightOrder>,
+    feed: Mutex<Option<Box<dyn crate::client::http::HostFeed>>>,
 }
 
 /// A dispatch whose local cascade ran ([`ClientKernel::begin`]) and whose server legs, if any,
@@ -280,6 +281,7 @@ impl ClientKernel {
             server_hosted,
             begin_order: Mutex::new(()),
             flights: Arc::new(FlightOrder::default()),
+            feed: Mutex::new(None),
         })
     }
 
@@ -318,6 +320,72 @@ impl ClientKernel {
         self.embedded.kernel().set_theme_mode(mode);
     }
 
+
+    /// Open this client's live stream on the bridge, under the client id its legs are posted with. `false` when there is no
+    /// bridge or the bridge has no stream.
+    pub fn open_feed(&self) -> bool {
+        let Some(feed) = self.bridge.as_ref().and_then(|bridge| bridge.open_feed(self.embedded.client_id())) else {
+            return false;
+        };
+        *self.feed.lock() = Some(feed);
+        true
+    }
+
+    /// The dispatches the host ran on its own since the last call, in arrival order (empty when no stream is open).
+    pub fn drain_feed(&self) -> Vec<crate::client::http::PushedDispatch> {
+        self.feed.lock().as_ref().map(|feed| feed.drain()).unwrap_or_default()
+    }
+
+    /// Show a dispatch the host ran on its own (the web's `foldHostDispatch`): nothing runs and nothing is posted for it, so
+    /// its effects happen once, on the host. A failed one applies nothing. One the program here does not run (no trait it
+    /// names is declared here) still hands its emits to the listeners that are, as the host's answer. The answer goes
+    /// through the one server-response fold, and the legs that fold owes the host are posted, so the returned response
+    /// carries the host's paints and emits beside the fold's own.
+    pub fn fold_host_dispatch(
+        &self,
+        pushed: &crate::client::http::PushedDispatch,
+    ) -> Result<EventResponse, BridgeError> {
+        let response = &pushed.response;
+        if !response.success {
+            return Ok(EventResponse { client_effects_by_trait: Some(Vec::new()), ..response.clone() });
+        }
+        let in_view = pushed.request.target_trait.as_deref().is_some_and(|t| self.declares_trait(t))
+            || response.states.keys().any(|t| self.declares_trait(t))
+            || response
+                .client_effects_by_trait
+                .iter()
+                .flatten()
+                .any(|e| self.declares_trait(&e.trait_name));
+        let answer = if in_view {
+            response.clone()
+        } else {
+            EventResponse { success: true, emitted_events: response.emitted_events.clone(), ..Default::default() }
+        };
+        let Some(bridge) = &self.bridge else {
+            return Err(BridgeError::InvalidRequest("a host dispatch needs the bridge it came through".into()));
+        };
+        let none = std::collections::HashSet::new();
+        let base = EventResponse { success: true, ..Default::default() };
+        let mut settled = self.fold_answer(bridge.as_ref(), &answer, &none, base)?;
+        settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
+        for trait_name in answer.states.keys().filter(|t| self.declares_trait(t)) {
+            let held = self.embedded.kernel().snapshot_trait(trait_name, None);
+            if !held.state.is_empty() {
+                settled.states.insert(trait_name.clone(), held.state);
+            }
+        }
+        Ok(settled)
+    }
+
+    /// The page's locale `i18n/t` paints in when a dispatch names none (see `RuntimeKernel::set_viewer_locale`).
+    pub fn set_viewer_locale(&self, locale: Option<String>) -> Result<(), crate::kernel::KernelError> {
+        self.embedded.kernel().set_viewer_locale(locale)
+    }
+
+    /// The locale the kernel resolves `@locale` to now (`RuntimeKernel::effective_locale`).
+    pub fn effective_locale(&self) -> Option<String> {
+        self.embedded.kernel().effective_locale()
+    }
 
     pub fn resolved_theme(&self) -> orbital_core_base::theme::ResolvedTheme {
         self.embedded.kernel().resolved_theme()

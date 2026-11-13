@@ -39,6 +39,11 @@ pub trait TargetLiteralRenderer {
     fn union_arm(&self, _arm: &str, inner: Self::Out) -> Self::Out {
         inner
     }
+    /// [`Self::union_arm`] for a union reached through the alias `owner` (its target identifier): a target that names an arm
+    /// after its union spells it under the alias the union is declared as, not under the field that holds it.
+    fn union_arm_in(&self, _owner: Option<&str>, arm: &str, inner: Self::Out) -> Self::Out {
+        self.union_arm(arm, inner)
+    }
 }
 
 /// A declared default's `OirValue` doesn't fit the field's `OirType` — e.g. a
@@ -127,9 +132,54 @@ pub fn render_default<R: TargetLiteralRenderer>(
     ty: &OirType,
     enum_name: Option<&str>,
 ) -> Result<Option<R::Out>, LiteralMismatch> {
+    render_default_in(r, value, ty, enum_name, &NamedTypes::new())
+}
+
+/// The module's alias table ([`crate::ir::OirModule::named_types`]): what a `TypeRef` resolves through.
+pub type NamedTypes = std::collections::BTreeMap<String, OirType>;
+
+/// [`render_default`] with the module's alias table: a `TypeRef { name }` renders `value` against the alias's declared body, so a
+/// union, enum or struct alias renders exactly as the same shape written inline. A name the table does not hold, or an alias
+/// that reaches itself without consuming any of the value, is the mismatch.
+pub fn render_default_in<R: TargetLiteralRenderer>(
+    r: &R,
+    value: &OirValue,
+    ty: &OirType,
+    enum_name: Option<&str>,
+    named: &NamedTypes,
+) -> Result<Option<R::Out>, LiteralMismatch> {
+    render_at(r, value, ty, enum_name, named, None, &mut Vec::new())
+}
+
+fn render_at<'t, R: TargetLiteralRenderer>(
+    r: &R,
+    value: &OirValue,
+    ty: &'t OirType,
+    enum_name: Option<&str>,
+    named: &'t NamedTypes,
+    owner: Option<&str>,
+    chain: &mut Vec<&'t str>,
+) -> Result<Option<R::Out>, LiteralMismatch> {
     match (ty, value) {
+        (OirType::TypeRef { name }, v) if !matches!(v, OirValue::Null) => {
+            let mismatch = || LiteralMismatch { expected: type_tag(ty), found: value_kind(value) };
+            let body = named.get(name).ok_or_else(mismatch)?;
+            if chain.contains(&name.as_str()) {
+                return Err(mismatch());
+            }
+            let ident = crate::type_compat::type_identifier(name);
+            let enum_name = match body {
+                OirType::Enum { name: literal } if crate::type_compat::literal_union_members(literal).is_some() => Some(ident.as_str()),
+                _ => enum_name,
+            };
+            chain.push(name);
+            let out = render_at(r, v, body, enum_name, named, Some(&ident), chain);
+            chain.pop();
+            out
+        }
+
         (OirType::Optional { .. }, OirValue::Null) => Ok(Some(r.null())),
-        (OirType::Optional { inner }, v) => render_default(r, v, inner, enum_name),
+        (OirType::Optional { inner }, v) => render_at(r, v, inner, enum_name, named, owner, chain),
 
         (OirType::Enum { name }, OirValue::String(s)) => {
             Ok(Some(r.enum_member(enum_name.unwrap_or(name), s)))
@@ -171,7 +221,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         (OirType::Array { inner }, OirValue::Array(items)) => {
             let mut rendered = Vec::with_capacity(items.len());
             for item in items {
-                match render_default(r, item, inner, None)? {
+                match render_at(r, item, inner, None, named, None, &mut Vec::new())? {
                     Some(out) => rendered.push(out),
                     None => continue, // a null element renders as no literal; skip it
                 }
@@ -186,7 +236,7 @@ pub fn render_default<R: TargetLiteralRenderer>(
         (OirType::Map { value: entry, .. }, OirValue::Object(fields)) => {
             let mut entries = Vec::with_capacity(fields.len());
             for (key, item) in fields {
-                if let Some(out) = render_default(r, item, entry, None)? {
+                if let Some(out) = render_at(r, item, entry, None, named, None, &mut Vec::new())? {
                     entries.push((key.clone(), out));
                 }
             }
@@ -207,9 +257,9 @@ pub fn render_default<R: TargetLiteralRenderer>(
         // A union default renders at the first arm, in declaration order, whose type the value fits.
         (OirType::Union { variants }, v) => match variants
             .iter()
-            .find_map(|arm| render_default(r, v, &arm.field_type, None).ok().map(|out| (arm, out)))
+            .find_map(|arm| render_at(r, v, &arm.field_type, None, named, None, chain).ok().map(|out| (arm, out)))
         {
-            Some((arm, Some(out))) => Ok(Some(r.union_arm(&arm.name, out))),
+            Some((arm, Some(out))) => Ok(Some(r.union_arm_in(owner, &arm.name, out))),
             Some((_, None)) => Ok(None),
             None => Err(LiteralMismatch { expected: type_tag(ty), found: value_kind(value) }),
         },
@@ -621,5 +671,139 @@ mod tests {
             .expect_err("Number value against Enum type");
         assert_eq!(enum_vs_number.expected, "enum(Status)");
         assert_eq!(enum_vs_number.found, "number");
+    }
+
+    fn alias(name: &str) -> OirType {
+        OirType::TypeRef { name: name.to_string() }
+    }
+
+    #[test]
+    fn a_typeref_default_renders_against_the_alias_body() {
+        let mut named = NamedTypes::new();
+        named.insert("Host".to_string(), host_union());
+        let host = OirValue::String("api.example.test".to_string());
+        assert_eq!(
+            render_default_in(&TaggedRenderer, &host, &alias("Host"), None, &named),
+            Ok(Some("string(\"api.example.test\")".to_string())),
+            "a union alias renders under the arm the value fits"
+        );
+        named.insert("Mode".to_string(), OirType::enum_type("Mode"));
+        assert_eq!(
+            render_default_in(&r(), &OirValue::String("on".to_string()), &alias("Mode"), None, &named),
+            Ok(Some("Mode.on".to_string())),
+            "an enum alias renders its member"
+        );
+        named.insert("Item".to_string(), OirType::Struct { fields: vec![OirField::new("id", OirType::String)].into(), additional: None });
+        assert_eq!(
+            render_default_in(&ObjectRenderer, &OirValue::Object(Default::default()), &alias("Item"), None, &named),
+            Ok(Some("{}".to_string())),
+            "a struct alias renders the object"
+        );
+        assert_eq!(
+            render_default_in(&r(), &OirValue::Null, &alias("Host"), None, &named),
+            Ok(None),
+            "control: null still has no default"
+        );
+        named.insert("Outer".to_string(), alias("Host"));
+        assert_eq!(
+            render_default_in(&TaggedRenderer, &host, &alias("Outer"), None, &named),
+            Ok(Some("string(\"api.example.test\")".to_string())),
+            "an alias of an alias resolves through both"
+        );
+    }
+
+    #[test]
+    fn a_typeref_default_that_does_not_fit_is_still_a_mismatch() {
+        let mut named = NamedTypes::new();
+        named.insert("Host".to_string(), host_union());
+        let err = render_default_in(&TaggedRenderer, &OirValue::Number(1.0), &alias("Host"), None, &named).expect_err("a number fits no arm");
+        assert_eq!(err, LiteralMismatch { expected: "union".to_string(), found: "number" });
+        let unknown = render_default_in(&r(), &OirValue::String("x".to_string()), &alias("Missing"), None, &named).expect_err("an alias the table lacks");
+        assert_eq!(unknown, LiteralMismatch { expected: "typeref(Missing)".to_string(), found: "string" });
+        assert_eq!(
+            render_default(&r(), &OirValue::String("x".to_string()), &alias("Host"), None),
+            Err(LiteralMismatch { expected: "typeref(Host)".to_string(), found: "string" }),
+            "control: without the table a typeref stays unresolved"
+        );
+    }
+
+    #[test]
+    fn a_self_referential_alias_returns_the_mismatch_without_looping() {
+        let mut named = NamedTypes::new();
+        named.insert("Loop".to_string(), alias("Loop"));
+        named.insert(
+            "Tree".to_string(),
+            OirType::Union { variants: vec![OirField::new("node", OirType::array(alias("Tree"))), OirField::new("self", alias("Tree"))].into() },
+        );
+        let text = OirValue::String("x".to_string());
+        assert_eq!(
+            render_default_in(&r(), &text, &alias("Loop"), None, &named),
+            Err(LiteralMismatch { expected: "typeref(Loop)".to_string(), found: "string" })
+        );
+        assert!(render_default_in(&r(), &text, &alias("Tree"), None, &named).is_err());
+        assert_eq!(
+            render_default_in(&r(), &OirValue::Array(vec![OirValue::Array(vec![])]), &alias("Tree"), None, &named),
+            Ok(Some("[[]]".to_string())),
+            "control: a recursive alias still renders a value that nests finitely"
+        );
+    }
+
+    struct OwnedRenderer;
+
+    impl TargetLiteralRenderer for OwnedRenderer {
+        type Out = String;
+        fn null(&self) -> String {
+            "null".to_string()
+        }
+        fn bool(&self, b: bool) -> String {
+            b.to_string()
+        }
+        fn integer(&self, i: i64) -> String {
+            i.to_string()
+        }
+        fn number(&self, n: f64) -> String {
+            n.to_string()
+        }
+        fn string(&self, s: &str) -> String {
+            format!("\"{s}\"")
+        }
+        fn enum_member(&self, enum_name: &str, member: &str) -> String {
+            format!("{enum_name}.{member}")
+        }
+        fn array(&self, items: Vec<String>) -> String {
+            format!("[{}]", items.join(","))
+        }
+        fn union_arm_in(&self, owner: Option<&str>, arm: &str, inner: String) -> String {
+            format!("{}::{arm}({inner})", owner.unwrap_or("Field"))
+        }
+    }
+
+    #[test]
+    fn an_alias_names_its_union_and_its_literal_enum_by_its_own_identifier() {
+        let mut named = NamedTypes::new();
+        named.insert("api-host".to_string(), host_union());
+        let literal = crate::type_compat::literal_union_text(&["on".to_string(), "off".to_string()]).unwrap();
+        named.insert("Switch".to_string(), OirType::Enum { name: literal });
+        named.insert("Declared".to_string(), OirType::enum_type("Mode"));
+        let host = OirValue::String("api.example.test".to_string());
+        let ident = crate::type_compat::type_identifier("api-host");
+        assert_eq!(
+            render_default_in(&OwnedRenderer, &host, &alias("api-host"), None, &named),
+            Ok(Some(format!("{ident}::string(\"api.example.test\")")))
+        );
+        assert_eq!(
+            render_default_in(&OwnedRenderer, &host, &host_union(), None, &named),
+            Ok(Some("Field::string(\"api.example.test\")".to_string())),
+            "control: an inline union keeps the holder's name"
+        );
+        assert_eq!(
+            render_default_in(&r(), &OirValue::String("on".to_string()), &alias("Switch"), None, &named),
+            Ok(Some("Switch.on".to_string()))
+        );
+        assert_eq!(
+            render_default_in(&r(), &OirValue::String("on".to_string()), &alias("Declared"), None, &named),
+            Ok(Some("Mode.on".to_string())),
+            "control: a declared enum name is kept"
+        );
     }
 }

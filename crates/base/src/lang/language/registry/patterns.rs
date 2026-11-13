@@ -125,8 +125,6 @@ pub struct EmbeddedPatternProp {
     pub enum_values: Option<Vec<String>>,
     #[serde(default)]
     pub required: RequiredFlag,
-    #[serde(default)]
-    pub description: Option<String>,
     /// Optional marker for SCALAR props whose value is a field name on the
     /// linked entity. Currently the only recognised value is `"field-ref"`.
     /// See `docs/Almadar_Agent_Behaviors_Plan.md` Phase 3.2/3.3.
@@ -212,10 +210,8 @@ pub struct EmbeddedPattern {
     pub pattern_type: String,
     #[serde(default)]
     pub category: String,
-    #[serde(default)]
-    pub description: Option<String>,
     #[serde(rename = "propsSchema", default)]
-    pub props_schema: HashMap<String, EmbeddedPatternProp>,
+    pub props_schema: indexmap::IndexMap<String, EmbeddedPatternProp>,
     #[serde(rename = "entityAware", default)]
     pub entity_aware: bool,
     /// `form` for a pattern that collects field values and submits them (`form`, `form-section`).
@@ -225,23 +221,33 @@ pub struct EmbeddedPattern {
 
 pub static PATTERNS: OnceLock<HashMap<String, EmbeddedPattern>> = OnceLock::new();
 
-/// All patterns keyed by pattern type (e.g. `"table-view"`, `"button"`).
+/// One registry entry that is kept only when it parses as an [`EmbeddedPattern`]; the entry's raw value
+/// lives just for its own parse, so the whole registry is never held as a JSON tree.
+struct PatternEntry(Option<EmbeddedPattern>);
+
+impl<'de> Deserialize<'de> for PatternEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(PatternEntry(serde_json::from_value::<EmbeddedPattern>(value).ok()))
+    }
+}
+
+#[derive(Deserialize)]
+struct PatternsFile {
+    patterns: HashMap<String, PatternEntry>,
+}
+
+/// All patterns keyed by pattern type (e.g. `"table-view"`, `"button"`). Parsed once per process; every
+/// caller shares this one map.
 pub fn patterns() -> &'static HashMap<String, EmbeddedPattern> {
     PATTERNS.get_or_init(|| {
         // patterns-registry.json shape: { version, exportedAt, patterns: { name: PatternEntry } }
-        let parsed: serde_json::Value = serde_json::from_str(patterns_json())
-            .expect("installed patterns-registry.json is corrupt — reinstall @almadar/core");
-        let patterns_obj = parsed
-            .get("patterns")
-            .and_then(|v| v.as_object())
-            .expect("patterns-registry.json missing 'patterns' object at root");
-        let mut map = HashMap::new();
-        for (name, value) in patterns_obj {
-            if let Ok(p) = serde_json::from_value::<EmbeddedPattern>(value.clone()) {
-                map.insert(name.clone(), p);
-            }
-        }
-        map
+        let file: PatternsFile = serde_json::from_str(patterns_json())
+            .expect("installed patterns-registry.json is corrupt or has no 'patterns' object — reinstall @almadar/core");
+        file.patterns
+            .into_iter()
+            .filter_map(|(name, entry)| entry.0.map(|p| (name, p)))
+            .collect()
     })
 }
 

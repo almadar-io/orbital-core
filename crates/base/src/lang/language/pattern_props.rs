@@ -12,7 +12,7 @@ use std::prelude::v1::*;
 use crate::sync::LazyLock;
 use std::collections::{HashMap, HashSet};
 
-use serde_json::{Map, Value};
+use super::registry::{patterns, EmbeddedPattern};
 
 /// Item-action props the validator always accepts; each pattern's declared
 /// `itemActions` item properties are added to these.
@@ -28,42 +28,20 @@ const BASE_ITEM_ACTION_PROPS: [&str; 9] = [
     "navigatesTo",
 ];
 
-static REGISTRY: LazyLock<Value> = LazyLock::new(|| {
-    let data = crate::language_data::language_data_after_preflight();
-    serde_json::from_str(&data.patterns).unwrap_or_else(|e| {
-        panic!(
-            "ORB_LANGUAGE_DATA_INVALID: {}: patterns registry is not valid JSON: {e}",
-            data.root_text()
-        )
-    })
-});
+fn patterns_map() -> &'static HashMap<String, EmbeddedPattern> {
+    patterns()
+}
 
-fn patterns_map() -> &'static Map<String, Value> {
-    match REGISTRY.get("patterns").and_then(Value::as_object) {
-        Some(map) => map,
-        None => panic!("ORB_LANGUAGE_DATA_INVALID: patterns registry has no `patterns` object"),
+fn category_of(def: &'static EmbeddedPattern) -> &'static str {
+    if def.category.is_empty() {
+        "component"
+    } else {
+        def.category.as_str()
     }
-}
-
-fn props_schema(def: &'static Value) -> Option<&'static Map<String, Value>> {
-    def.get("propsSchema").and_then(Value::as_object)
-}
-
-fn str_list(value: Option<&'static Value>) -> Vec<&'static str> {
-    value
-        .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default()
 }
 
 fn leak(list: Vec<&'static str>) -> &'static [&'static str] {
     Box::leak(list.into_boxed_slice())
-}
-
-fn category_of(def: &'static Value) -> &'static str {
-    def.get("category")
-        .and_then(Value::as_str)
-        .unwrap_or("component")
 }
 
 /// All valid pattern types
@@ -87,11 +65,11 @@ pub static PATTERN_TO_CATEGORY: LazyLock<HashMap<&'static str, &'static str>> =
 pub static VALID_ITEM_ACTION_PROPS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let mut out: HashSet<&'static str> = BASE_ITEM_ACTION_PROPS.into_iter().collect();
     for def in patterns_map().values() {
-        let declared = props_schema(def)
-            .and_then(|schema| schema.get("itemActions"))
-            .and_then(|prop| prop.get("items"))
-            .and_then(|items| items.get("properties"))
-            .and_then(Value::as_object);
+        let declared = def
+            .props_schema
+            .get("itemActions")
+            .and_then(|prop| prop.items.as_ref())
+            .and_then(|items| items.properties.as_ref());
         if let Some(properties) = declared {
             out.extend(properties.keys().map(String::as_str));
         }
@@ -105,9 +83,10 @@ pub static PATTERN_REQUIRED_PROPS: LazyLock<HashMap<&'static str, Vec<&'static s
         patterns_map()
             .iter()
             .filter_map(|(name, def)| {
-                let required: Vec<&'static str> = props_schema(def)?
+                let required: Vec<&'static str> = def
+                    .props_schema
                     .iter()
-                    .filter(|(_, prop)| prop.get("required").and_then(Value::as_bool) == Some(true))
+                    .filter(|(_, prop)| prop.required.required_on_parent())
                     .map(|(prop, _)| prop.as_str())
                     .collect();
                 (!required.is_empty()).then_some((name.as_str(), required))
@@ -121,9 +100,12 @@ pub static PATTERN_PROPS_SCHEMA: LazyLock<HashMap<&'static str, HashSet<&'static
         patterns_map()
             .iter()
             .filter_map(|(name, def)| {
-                let schema = props_schema(def)?;
-                (!schema.is_empty())
-                    .then(|| (name.as_str(), schema.keys().map(String::as_str).collect()))
+                (!def.props_schema.is_empty()).then(|| {
+                    (
+                        name.as_str(),
+                        def.props_schema.keys().map(String::as_str).collect(),
+                    )
+                })
             })
             .collect()
     });
@@ -136,11 +118,14 @@ pub static PATTERN_PROP_TYPES: LazyLock<
     patterns_map()
         .iter()
         .filter_map(|(name, def)| {
-            let props: HashMap<&'static str, &'static [&'static str]> = props_schema(def)?
+            let props: HashMap<&'static str, &'static [&'static str]> = def
+                .props_schema
                 .iter()
                 .filter_map(|(prop, prop_def)| {
-                    let concrete: Vec<&'static str> = str_list(prop_def.get("types"))
-                        .into_iter()
+                    let concrete: Vec<&'static str> = prop_def
+                        .types
+                        .iter()
+                        .map(String::as_str)
                         .filter(|t| *t != "unknown")
                         .collect();
                     (!concrete.is_empty()).then(|| (prop.as_str(), leak(concrete)))
@@ -161,10 +146,16 @@ pub static PATTERN_PROP_ENUM_VALUES: LazyLock<
     patterns_map()
         .iter()
         .filter_map(|(name, def)| {
-            let props: HashMap<&'static str, &'static [&'static str]> = props_schema(def)?
+            let props: HashMap<&'static str, &'static [&'static str]> = def
+                .props_schema
                 .iter()
                 .filter_map(|(prop, prop_def)| {
-                    let values = str_list(prop_def.get("enumValues"));
+                    let values: Vec<&'static str> = prop_def
+                        .enum_values
+                        .iter()
+                        .flatten()
+                        .map(String::as_str)
+                        .collect();
                     (!values.is_empty()).then(|| (prop.as_str(), leak(values)))
                 })
                 .collect();
@@ -182,9 +173,10 @@ pub static PATTERN_EVENT_PROPS: LazyLock<HashMap<&'static str, HashSet<&'static 
         patterns_map()
             .iter()
             .filter_map(|(name, def)| {
-                let props: HashSet<&'static str> = props_schema(def)?
+                let props: HashSet<&'static str> = def
+                    .props_schema
                     .iter()
-                    .filter(|(_, prop)| prop.get("kind").and_then(Value::as_str) == Some("event"))
+                    .filter(|(_, prop)| prop.kind.as_deref() == Some("event"))
                     .map(|(prop, _)| prop.as_str())
                     .collect();
                 (!props.is_empty()).then_some((name.as_str(), props))
@@ -208,15 +200,13 @@ pub static PATTERN_EVENT_NAME_PROPS: LazyLock<
     patterns_map()
         .iter()
         .filter_map(|(name, def)| {
-            let props: HashMap<&'static str, (&'static str, &'static str)> = props_schema(def)?
+            let props: HashMap<&'static str, (&'static str, &'static str)> = def
+                .props_schema
                 .iter()
                 .filter_map(|(prop, prop_def)| {
-                    let kind = prop_def.get("kind").and_then(Value::as_str)?;
+                    let kind = prop_def.kind.as_deref()?;
                     let kind = KINDS.iter().copied().find(|k| *k == kind)?;
-                    let field = prop_def
-                        .get("eventField")
-                        .and_then(Value::as_str)
-                        .unwrap_or("event");
+                    let field = prop_def.event_field.as_deref().unwrap_or("event");
                     Some((prop.as_str(), (kind, field)))
                 })
                 .collect();
@@ -234,14 +224,12 @@ pub static PATTERN_EVENT_LIST_PROPS: LazyLock<
     patterns_map()
         .iter()
         .filter_map(|(name, def)| {
-            let props: HashMap<&'static str, &'static str> = props_schema(def)?
+            let props: HashMap<&'static str, &'static str> = def
+                .props_schema
                 .iter()
-                .filter(|(_, prop)| prop.get("kind").and_then(Value::as_str) == Some("event-list"))
+                .filter(|(_, prop)| prop.kind.as_deref() == Some("event-list"))
                 .map(|(prop, prop_def)| {
-                    let field = prop_def
-                        .get("eventField")
-                        .and_then(Value::as_str)
-                        .unwrap_or("event");
+                    let field = prop_def.event_field.as_deref().unwrap_or("event");
                     (prop.as_str(), field)
                 })
                 .collect();
@@ -304,10 +292,9 @@ pub fn get_prop_property_types(
     prop_name: &str,
     property: &str,
 ) -> Option<Vec<&'static str>> {
-    let def = patterns_map().get(pattern_type)?;
-    let prop = props_schema(def)?.get(prop_name)?;
-    let types = prop.get("properties")?.get(property)?.get("types")?;
-    Some(str_list(Some(types)))
+    let prop = patterns_map().get(pattern_type)?.props_schema.get(prop_name)?;
+    let nested = prop.properties.as_ref()?.get(property)?;
+    Some(nested.types.iter().map(String::as_str).collect())
 }
 
 /// Get the allowed string-literal enum values for a prop on a pattern.

@@ -69,6 +69,12 @@ pub trait ServerBridge: Send + Sync {
         ))
     }
 
+    /// `client_id`'s live stream of the dispatches the host runs on its own (an `os/*` completion, a process stream, an
+    /// `http` call a client action started). A bridge with no such stream has none.
+    fn open_feed(&self, _client_id: &str) -> Option<Box<dyn crate::client::http::HostFeed>> {
+        None
+    }
+
     /// Run one scheduled tick of `trait_name` (effects + guard) against the in-memory
     /// entity and return the resulting client effects, so a game's per-frame/interval
     /// `set` effects advance the entity locally. Only the in-process [`KernelBridge`]
@@ -113,6 +119,10 @@ impl ServerBridge for crate::client::http::SyncServerBridge {
 
     fn resolve_rows(&self, reference: &RowSetRef) -> Result<RowPage, BridgeError> {
         crate::client::http::SyncServerBridge::resolve_rows(self, reference)
+    }
+
+    fn open_feed(&self, client_id: &str) -> Option<Box<dyn crate::client::http::HostFeed>> {
+        Some(Box::new(crate::client::http::SyncServerBridge::open_feed(self, client_id)))
     }
 }
 

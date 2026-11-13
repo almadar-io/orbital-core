@@ -758,3 +758,59 @@ fn control_g_orbital_shell_typescript_107_a_signed_in_viewer_mounts_the_authenti
     assert_eq!(c.page.as_deref(), Some("Account"));
     assert_eq!(names(c.mounts), ["Mine"]);
 }
+
+fn client_trait_asking_a_boot_orbital(effect: serde_json::Value) -> RuntimeKernel {
+    let collector = Arc::new(crate::server_leg::ServerLegCollector::new());
+    let config = KernelConfig {
+        environment: RuntimeEnvironment::Client,
+        delegate: Some(collector as Arc<dyn crate::effects::executor::EffectDelegate>),
+        ..KernelConfig::default()
+    };
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1,
+        "_metadata": { "serverListens": [{ "orbital": "Files", "listen": {
+            "event": "ASK", "triggers": "ASK", "source": { "kind": "orbital", "orbital": "Main", "trait": "Win" }
+        } }] },
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Win",
+                "linkedEntity": "Note",
+                "dispatch": "client",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [effect] }]
+                },
+                "emits": [{ "event": "ASK" }, { "event": "NOTE" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Win" }] }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Client,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        config,
+    );
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+// G-CROSS-517 (EXEC-DIST-10): a `[client]` trait's emit that only a boot orbital the client program leaves out hears is posted as a leg.
+#[test]
+fn g_cross_517_a_client_traits_init_emit_heard_only_by_a_boot_orbital_leaves_as_a_leg() {
+    let kernel = client_trait_asking_a_boot_orbital(serde_json::json!(["emit", "ASK", {}]));
+    let dispatch = kernel.dispatch_with_server_leg("Main", "Win", None, "INIT", Value::Null, Some("tab")).unwrap();
+    assert_eq!(dispatch.server_legs.len(), 1, "the INIT that emits ASK replays on the host");
+    assert_eq!(dispatch.server_legs[0].event, "INIT");
+    assert_eq!(dispatch.server_legs[0].target_trait.as_deref(), Some("Win"));
+}
+
+#[test]
+fn control_g_cross_517_a_client_traits_init_emit_nobody_off_the_client_hears_posts_nothing() {
+    let kernel = client_trait_asking_a_boot_orbital(serde_json::json!(["emit", "NOTE", {}]));
+    let dispatch = kernel.dispatch_with_server_leg("Main", "Win", None, "INIT", Value::Null, Some("tab")).unwrap();
+    assert!(dispatch.server_legs.is_empty());
+}

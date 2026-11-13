@@ -262,6 +262,9 @@ impl ClientCore {
         let mut core = Self::new(schema, None);
         core.awaiting_motion = client_kernel.awaiting_motion();
         core.client_kernel = Some(client_kernel);
+        if let Some(route) = core.page_mount_route() {
+            core.set_route_locale(&route);
+        }
         core
     }
 
@@ -767,6 +770,21 @@ impl ClientCore {
         }
     }
 
+    /// Fold every dispatch the host ran on its own since the last call (`ClientKernel::fold_host_dispatch`) and paint each
+    /// answer, in arrival order; `true` when any arrived, so the host repaints.
+    pub fn drain_host_feed(&mut self) -> bool {
+        let Some(kernel) = self.client_kernel.clone() else { return false };
+        let pushed = kernel.drain_feed();
+        for dispatch in pushed.iter().filter(|dispatch| dispatch.response.success) {
+            let target = dispatch.request.target_trait.clone();
+            match kernel.fold_host_dispatch(dispatch) {
+                Ok(response) => self.process_response(&dispatch.request.event, target, response),
+                Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+            }
+        }
+        !pushed.is_empty()
+    }
+
     /// Drive and display `trait_name` (its orbital and page), clearing what was shown.
     pub fn set_active_trait(&mut self, trait_name: &str) {
         if let Some(idx) = self.orbital_index_of_trait(trait_name) {
@@ -865,7 +883,26 @@ impl ClientCore {
             page: self.current_page.clone(),
             params: std::mem::take(&mut self.route_params),
         });
+        self.set_route_locale(path);
         self.enter_page(idx, Some(page), route);
+    }
+
+    /// The viewer's locale follows the route, as the web's `LocaleRoot` does: the declared locale the path names, else
+    /// the first declared; a program that declares none keeps the kernel's default.
+    fn set_route_locale(&self, path: &str) {
+        let (Some(kernel), Some(locales)) = (&self.client_kernel, self.schema.locales.as_ref()) else {
+            return;
+        };
+        if let Some(locale) = orbital_core_base::messages::locale_of_path(locales, path) {
+            if let Err(error) = kernel.set_viewer_locale(Some(locale.to_string())) {
+                tracing::warn!(target: "almadar::client", path = %path, "route locale refused: {error}");
+            }
+        }
+    }
+
+    /// The locale this client paints in (the kernel's effective one); `None` for a program that declares no locales.
+    pub fn locale(&self) -> Option<String> {
+        self.client_kernel.as_ref().and_then(|kernel| kernel.effective_locale())
     }
 
     /// The page declared `[notFound]` (the resolver guarantees at most one), searched orbital by orbital.

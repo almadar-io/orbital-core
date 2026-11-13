@@ -234,12 +234,22 @@ fn ensure_services_hostable<B: Backend>(oir: &OirModule, backend: &B, options: &
 /// the shell's `generated_dir` — the ONE resolution rule the write loop and
 /// the stale-prune pass both use, so a manifest entry always resolves to the
 /// exact file it named.
-fn resolve_manifest_path(output_dir: &Path, generated_dir: &Path, logical_path: &str) -> std::path::PathBuf {
+pub(crate) fn resolve_manifest_path(output_dir: &Path, generated_dir: &Path, logical_path: &str) -> std::path::PathBuf {
     if WORKSPACE_RELATIVE_PREFIXES.iter().any(|prefix| logical_path.starts_with(prefix)) {
         output_dir.join(logical_path)
     } else {
         generated_dir.join(logical_path)
     }
+}
+
+/// Where `logical_path` lands, relative to the output root: the writer's own resolution with the output root empty, `.` components dropped.
+pub(crate) fn physical_relative_path(generated_dir: &str, logical_path: &str) -> String {
+    resolve_manifest_path(Path::new(""), Path::new(generated_dir), logical_path)
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect::<std::path::PathBuf>()
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// The previous compile's manifest, if `output_dir` has one and it parses —
@@ -357,6 +367,36 @@ mod tests {
         let out = root.path().join("fresh");
         write_project(&OirModule::new("App", "1.0.0"), &out, &shell("gen"), &OneFile, &WriteOptions::default()).unwrap();
         assert_eq!(std::fs::read_to_string(out.join("gen/src/app.txt")).unwrap(), "hi");
+    }
+
+    fn assert_reported_paths_exist(generated_dir: &'static str) {
+        let root = tempfile::TempDir::new().unwrap();
+        let out = root.path().join("fresh");
+        let generated = write_project(&OirModule::new("App", "1.0.0"), &out, &shell(generated_dir), &OneFile, &WriteOptions::default()).unwrap();
+        let reported = crate::shell_protocol::written_files(&generated, generated_dir);
+        assert_eq!(reported.len(), 1);
+        for path in reported {
+            assert!(out.join(&path).is_file(), "reported {path} does not exist under the output root");
+        }
+    }
+
+    #[test]
+    fn every_reported_path_exists_for_a_root_generated_dir() {
+        assert_reported_paths_exist(".");
+    }
+
+    #[test]
+    fn every_reported_path_exists_for_a_nested_generated_dir() {
+        assert_reported_paths_exist("gen");
+    }
+
+    #[test]
+    fn control_the_logical_manifest_stays_logical_for_a_nested_generated_dir() {
+        let root = tempfile::TempDir::new().unwrap();
+        let out = root.path().join("fresh");
+        write_project(&OirModule::new("App", "1.0.0"), &out, &shell("gen"), &OneFile, &WriteOptions::default()).unwrap();
+        let manifest = read_orb_manifest(&out).unwrap();
+        assert_eq!(manifest.into_iter().collect::<Vec<_>>(), vec!["src/app.txt".to_string()]);
     }
 
     fn site() -> tempfile::TempDir {

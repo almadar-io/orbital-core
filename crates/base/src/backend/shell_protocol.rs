@@ -185,9 +185,13 @@ pub fn description(
     }
 }
 
-/// The written files' manifest paths, for a [`GenerateResponse`].
-pub fn written_files(output: &crate::generate::GeneratedOutput) -> Vec<String> {
-    output.files.iter().map(|f| f.path.clone()).collect()
+/// The written files' paths relative to the output root (resolved as the writer resolves them), for a [`GenerateResponse`].
+pub fn written_files(output: &crate::generate::GeneratedOutput, generated_dir: &str) -> Vec<String> {
+    output
+        .files
+        .iter()
+        .map(|f| crate::project::physical_relative_path(generated_dir, &f.path))
+        .collect()
 }
 
 /// What `generate` prints: the response, or why it failed.

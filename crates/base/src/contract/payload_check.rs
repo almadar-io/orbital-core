@@ -108,13 +108,21 @@ fn field_json_schema(field: &PayloadField) -> Value {
             Value::Array(values.iter().cloned().map(Value::String).collect()),
         );
     }
-    if !is_array {
-        return shape;
+    let mut out = if is_array {
+        let mut array = Map::new();
+        array.insert("type".into(), Value::String("array".into()));
+        array.insert("items".into(), shape);
+        array
+    } else {
+        match shape {
+            Value::Object(map) => map,
+            other => return other,
+        }
+    };
+    if let Some(description) = &field.description {
+        out.insert("description".into(), Value::String(description.clone()));
     }
-    let mut array = Map::new();
-    array.insert("type".into(), Value::String("array".into()));
-    array.insert("items".into(), shape);
-    Value::Object(array)
+    Value::Object(out)
 }
 
 /// How a value misses its declared payload.
@@ -589,6 +597,24 @@ mod tests {
             payload_json_schema(&[]),
             json!({ "type": "object", "properties": {} })
         );
+    }
+
+    #[test]
+    fn the_json_schema_carries_a_field_description_and_leaves_it_out_when_none() {
+        let schema = payload_json_schema(&fields(json!([
+            { "name": "name", "type": "string", "required": true, "description": "The record's display name" },
+            { "name": "tags", "type": "[string]", "description": "Labels to attach" },
+            { "name": "purpose", "type": "string" }
+        ])));
+        assert_eq!(
+            schema["properties"]["name"],
+            json!({ "type": "string", "description": "The record's display name" })
+        );
+        assert_eq!(
+            schema["properties"]["tags"],
+            json!({ "type": "array", "items": { "type": "string" }, "description": "Labels to attach" })
+        );
+        assert_eq!(schema["properties"]["purpose"], json!({ "type": "string" }));
     }
 
     #[test]
