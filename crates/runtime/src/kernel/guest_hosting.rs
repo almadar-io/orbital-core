@@ -49,6 +49,9 @@ pub trait GuestHost: Send + Sync {
         event: &str,
         payload: Value,
     ) -> Result<DispatchOutcomes, String>;
+    /// A split guest's server leg: `payload` with the request `options` a viewer kernel posts, answered as this host
+    /// answers a served program's events request (the `EventResponse` wire for `wire: true`).
+    fn request(&self, payload: &Value, options: &orbital_core_base::value::ValueMap) -> Result<Value, crate::effects::executor::SubstrateFailure>;
     /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
     /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
     fn tick_pass(&self) -> Result<DispatchOutcomes, String>;

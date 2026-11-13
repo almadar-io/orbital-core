@@ -536,6 +536,7 @@ impl IoPort {
         event: String,
         payload: Value,
         grants: OsGrants,
+        leg: Option<Value>,
         call: Vec<Value>,
     ) -> Result<Option<Value>, SubstrateFailure> {
         let (key, site) = match self.substrate_site() {
@@ -543,7 +544,7 @@ impl IoPort {
             _ => (None, None),
         };
         let keyed = key.is_some();
-        match self.ask(|| IoRequest::Guest { guest, kernel, targets, event, payload, grants, key, site }) {
+        match self.ask(|| IoRequest::Guest { guest, kernel, targets, event, payload, grants, leg, key, site }) {
             Asked::Answer(IoAnswer::ServiceDeferred) if keyed => {
                 *self.verdict.lock() = Some(CallVerdict::Deferred);
                 *self.deferred_call.lock() = Some(DeferredCall { operator: "program/dispatch".to_string(), args: call });

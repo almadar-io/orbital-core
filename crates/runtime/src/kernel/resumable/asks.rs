@@ -100,7 +100,8 @@ pub enum IoRequest {
     /// A `program/dispatch` into the guest session `guest` that the host runs (EXEC-CONC-7): `event` with `payload` (a copy)
     /// to each of `targets` in the session `kernel`, its asks answered by a host holding only `grants`. Keyed, the host runs
     /// it on a thread of its own and answers [`IoAnswer::ServiceDeferred`], the outcome arriving as the call site's keyed
-    /// completion event (EXEC-CONC-3); unkeyed, it answers the outcome in place.
+    /// completion event (EXEC-CONC-3); unkeyed, it answers the outcome in place. With `leg`, the request options of a
+    /// split guest's viewer kernel, the guest's host answers `payload` as a served events request instead (EXEC-CONC-7).
     Guest {
         guest: String,
         kernel: GuestKernel,
@@ -108,6 +109,7 @@ pub enum IoRequest {
         event: String,
         payload: Value,
         grants: OsGrants,
+        leg: Option<Value>,
         key: Option<String>,
         site: Option<CallSite>,
     },

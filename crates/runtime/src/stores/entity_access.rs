@@ -16,7 +16,7 @@ use std::prelude::v1::*;
 use orbital_core_base::effect_types::PersistOperation;
 use orbital_core_eval::evaluator::context::BindingContext;
 use orbital_core_eval::evaluator::Evaluator;
-use orbital_core_base::schema::types::EntityDefinition;
+use orbital_core_base::schema::types::{EntityDefinition, FieldUpdate};
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::shared_entity::SharedEntity;
@@ -183,6 +183,9 @@ pub struct EntityAccessPolicies {
     /// This entity's `@derived` fields as (name, expression), in declaration order: the kernel computes each on
     /// every write, from the row being written, before the policies and required-column checks.
     pub derived_fields: Vec<(String, SExpression)>,
+    /// This entity's fields that carry their own `@update` (a predicate, or `server`), in declaration order: the
+    /// entity's own declaration, never inherited from a sibling on the same collection.
+    pub field_updates: Vec<(String, FieldUpdate)>,
 }
 
 impl EntityAccessPolicies {
@@ -409,6 +412,90 @@ pub fn check_mutation_access(
             )))
         }
     }
+}
+
+/// The entity's fields that carry their own `@update`, as (name, rule), in declaration order.
+pub fn field_update_rules(entity: &EntityDefinition) -> Vec<(String, FieldUpdate)> {
+    entity
+        .fields
+        .iter()
+        .filter_map(|f| Some((f.name.clone()?, f.update.clone()?)))
+        .collect()
+}
+
+/// The `@update` rules of one entity that a write of `patch` over `existing` is bound by, and the fields it changes.
+/// A field whose value the write leaves as it is is not changed: a patch naming a field with its current value
+/// (a missing current value reads null) does not ask its rule.
+pub fn changed_fields(existing: &Value, patch: &Value) -> Vec<String> {
+    let Some(patch) = patch.as_object() else {
+        return Vec::new();
+    };
+    let current = existing.as_object();
+    patch
+        .iter()
+        .filter(|(name, value)| {
+            let before = current.and_then(|row| row.get(*name)).unwrap_or(&Value::Null);
+            before != *value
+        })
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+/// Whether the write changes at least one field and every changed field is a `server` field.
+pub fn changes_only_server_fields(changed: &[String], rules: &[(String, FieldUpdate)]) -> bool {
+    !changed.is_empty()
+        && changed.iter().all(|name| {
+            rules
+                .iter()
+                .any(|(field, rule)| field == name && matches!(rule, FieldUpdate::Server(_)))
+        })
+}
+
+/// Check the fields a write changes against their own `@update`. `existing` is the row before the write
+/// (`@entity`), `changed` the names [`changed_fields`] found. A `server` field is refused unless `program_step` (the
+/// write runs in a program-session step); a predicate field is refused when it does not hold. Fail-closed like the
+/// entity directive.
+pub fn check_field_updates(
+    existing: &Value,
+    changed: &[String],
+    rules: &[(String, FieldUpdate)],
+    program_step: bool,
+    ctx: &BindingContext,
+    entity_type: &str,
+) -> Result<(), AccessDenied> {
+    for (field, rule) in rules {
+        if !changed.contains(field) {
+            continue;
+        }
+        match rule {
+            FieldUpdate::Server(reason) => {
+                if !program_step {
+                    return Err(AccessDenied(format!(
+                        "@Update denied: `{entity_type}.{field}` is written only by a program-session step ({reason})"
+                    )));
+                }
+            }
+            FieldUpdate::Policy(predicate) => {
+                let mut row_ctx = ctx.clone();
+                row_ctx.set_entity(existing.clone());
+                match Evaluator::new().evaluate(predicate, &row_ctx).and_then(|v| Ok(v.boolean()?)) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Err(AccessDenied(format!(
+                            "@Update denied: the declared `@update` of `{entity_type}.{field}` rejected this write"
+                        )))
+                    }
+                    Err(err) => {
+                        tracing::warn!(entity_type, field = %field, error = %err, "field update predicate failed to evaluate; write denied");
+                        return Err(AccessDenied(format!(
+                            "@Update denied: the declared `@update` of `{entity_type}.{field}` could not be evaluated ({err})"
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The entity's `@derived` fields as (name, expression), in declaration order.

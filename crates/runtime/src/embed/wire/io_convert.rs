@@ -158,13 +158,14 @@ impl From<IoRequestWire> for IoRequest {
                 key,
                 site: CallSite::from(site),
             },
-            IoRequestWire::Guest { guest, targets, event, payload, grants, key, site } => Self::Guest {
+            IoRequestWire::Guest { guest, targets, event, payload, grants, leg, key, site } => Self::Guest {
                 guest,
                 kernel: Default::default(),
                 targets,
                 event,
                 payload,
                 grants,
+                leg,
                 key,
                 site: site.map(CallSite::from),
             },
@@ -307,12 +308,13 @@ impl From<&IoRequest> for IoRequestWire {
                 key: key.clone(),
                 site: CallSiteWire::from(site),
             },
-            IoRequest::Guest { guest, targets, event, payload, grants, key, site, .. } => Self::Guest {
+            IoRequest::Guest { guest, targets, event, payload, grants, leg, key, site, .. } => Self::Guest {
                 guest: guest.clone(),
                 targets: targets.clone(),
                 event: event.clone(),
                 payload: payload.clone(),
                 grants: grants.clone(),
+                leg: leg.clone(),
                 key: key.clone(),
                 site: site.as_ref().map(CallSiteWire::from),
             },

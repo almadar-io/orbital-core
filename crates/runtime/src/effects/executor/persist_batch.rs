@@ -43,12 +43,10 @@ impl EffectExecutor {
                 let Some(row_id) = Self::row_id_of(&data).map(str::to_string) else {
                     return PersistPrep::Legacy;
                 };
-                if operation == PersistOperation::Upsert
-                    && self
-                        .persist_scope(entity_type, PersistOperation::Update)
-                        .policy
-                        .is_some()
-                {
+                if operation == PersistOperation::Upsert && {
+                    let update = self.persist_scope(entity_type, PersistOperation::Update);
+                    update.policy.is_some() || !update.field_updates.is_empty()
+                } {
                     return PersistPrep::Legacy;
                 }
                 let mut refused_code = None;
@@ -84,6 +82,9 @@ impl EffectExecutor {
                     Ok(row_id) => row_id,
                     Err(e) => return refuse(effect, e, Some(ServerEffectCode::NoRowKey)),
                 };
+                if operation == PersistOperation::Update && Self::names_ruled_field(&scope, &data) {
+                    return PersistPrep::Legacy;
+                }
                 let Ok(guard) =
                     Self::write_guard(scope.policy.as_ref(), ctx, &scope.declared_required)
                 else {

@@ -1412,3 +1412,19 @@ fn the_host_sign_in_route_ignores_a_trailing_slash_and_nothing_else() {
         assert!(!is_host_sign_in_route(path), "{path}");
     }
 }
+
+#[test]
+fn a_field_update_annotation_round_trips_and_skips_when_absent() {
+    use serde_json::json;
+    let policy = json!({ "name": "note", "type": "string", "update": { "policy": ["=", "@user.role", "admin"] } });
+    let f: super::FieldDefinition = serde_json::from_value(policy.clone()).unwrap();
+    assert!(matches!(f.update, Some(super::FieldUpdate::Policy(_))));
+    assert_eq!(serde_json::to_value(&f).unwrap()["update"], policy["update"]);
+    let server = json!({ "name": "teamId", "type": "string", "update": { "server": "set by the membership flow" } });
+    let f: super::FieldDefinition = serde_json::from_value(server.clone()).unwrap();
+    assert!(matches!(&f.update, Some(super::FieldUpdate::Server(reason)) if reason == "set by the membership flow"));
+    assert_eq!(serde_json::to_value(&f).unwrap()["update"], server["update"]);
+    let plain: super::FieldDefinition = serde_json::from_value(json!({ "name": "email", "type": "string" })).unwrap();
+    assert!(plain.update.is_none());
+    assert!(serde_json::to_value(&plain).unwrap().get("update").is_none(), "control: absent stays absent");
+}

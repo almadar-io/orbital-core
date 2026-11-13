@@ -59,16 +59,16 @@ impl SecretSource for NoSecrets {
 /// One guest session dispatch on this host (EXEC-CONC-7): `event` with `payload` to each of `targets` in the session's
 /// kernel, its asks answered by a host over the session's own rows holding exactly `grants`, no credentials and no
 /// substrate host, or by the guest's own host when it is hosted. A wire-detached session (no live kernel) is refused.
-fn run_guest(kernel: &GuestKernel, targets: &[String], event: &str, payload: &Value, grants: &OsGrants) -> Result<Value, SubstrateFailure> {
+fn run_guest(kernel: &GuestKernel, targets: &[String], event: &str, payload: &Value, grants: &OsGrants, leg: Option<&Value>) -> Result<Value, SubstrateFailure> {
     let Some(session) = kernel.0.as_ref() else {
         return Err(guest_failure(OsErrorKind::Unsupported, "program/dispatch: the guest session is not live on this host"));
     };
     let ran = match &session.source {
         Some(source) => {
             let host = NativeHost::new(source.clone(), Arc::new(NoSecrets), grants.clone(), Arc::new(OsHandles::default()), Arc::new(|_: Option<&CallSite>, _: Value| {}));
-            crate::kernel::run_guest_session(session, targets, event, payload, &|request: &IoRequest| host.answer(request))
+            crate::kernel::run_guest_session(session, targets, event, payload, leg, &|request: &IoRequest| host.answer(request))
         }
-        None => crate::kernel::run_guest_session(session, targets, event, payload, &|_: &IoRequest| {
+        None => crate::kernel::run_guest_session(session, targets, event, payload, leg, &|_: &IoRequest| {
             IoAnswer::Service(Err("a hosted guest's asks are answered by its own host".to_string()))
         }),
     };
@@ -162,16 +162,16 @@ impl NativeHost {
     /// settles through the sink; without a sink there is nothing to answer later, and the blocking answer refuses it.
     /// Unkeyed, it runs here and answers in place.
     fn answer_guest(&self, request: &IoRequest) -> Option<IoAnswer> {
-        let IoRequest::Guest { kernel, targets, event, payload, grants, key, site, .. } = request else {
+        let IoRequest::Guest { kernel, targets, event, payload, grants, leg, key, site, .. } = request else {
             return None;
         };
         let (Some(key), Some(site)) = (key, site) else {
-            return Some(IoAnswer::Substrate(run_guest(kernel, targets, event, payload, grants)));
+            return Some(IoAnswer::Substrate(run_guest(kernel, targets, event, payload, grants, leg.as_ref())));
         };
         self.handles.completions.sink()?;
-        let (kernel, targets, event, payload, grants) = (kernel.clone(), targets.clone(), event.clone(), payload.clone(), grants.clone());
+        let (kernel, targets, event, payload, grants, leg) = (kernel.clone(), targets.clone(), event.clone(), payload.clone(), grants.clone(), leg.clone());
         Some(crate::os_host::completion::Completions::defer_guest(&self.handles.completions, key, site, move || {
-            run_guest(&kernel, &targets, &event, &payload, &grants)
+            run_guest(&kernel, &targets, &event, &payload, &grants, leg.as_ref())
         }))
     }
 
@@ -423,6 +423,7 @@ pub(crate) mod tests {
             event: "GO".to_string(),
             payload: object(&[("n", Value::Int(1))]),
             grants: Default::default(),
+            leg: None,
             key: key.map(str::to_string),
             site,
         }

@@ -63,6 +63,7 @@ impl RuntimeKernel {
         let viewerless_tick = in_flight.tick.is_some() && self.thread_session().is_none();
         let _program = (in_flight.program || *program).then(|| self.enter_program_session());
         let _seam = (*program || viewerless_tick).then(|| self.enter_store_seam());
+        let _program_step = (in_flight.program || *program || viewerless_tick).then(crate::effects::executor::ProgramStepScope::enter);
         let stepped = self.step_seed(in_flight, outcomes);
         program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
         self.settle_identity(stepped.is_ok());

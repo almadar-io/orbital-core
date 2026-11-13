@@ -13,7 +13,7 @@ use orbital_core_eval::evaluator::Evaluator;
 use orbital_core_base::value::Value;
 use orbital_core_base::events::types::Event;
 use orbital_core_base::events::bus::SharedEventBus;
-use crate::entity_access::{apply_derived, check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
+use crate::entity_access::{apply_derived, changed_fields, changes_only_server_fields, check_field_updates, check_mutation_access, missing_required_fields, scope_fetched_rows, EntityAccessTable};
 use crate::row_query::{compare_rows, compile_predicate, default_row_order, lower_object_filter, PredicateRole, RowWriteBatch, RowWriteFailureMode, RowWriteOp, RowWriteOutcome};
 use orbital_core_base::row_set::{nearest_rows, RowDirection, RowNearest, RowOrder, RowPredicate, RowSetRef, RowTotalMode};
 use orbital_core_base::schema::sexpr::SExpression;
@@ -371,7 +371,7 @@ mod persist_types;
 use in_memory::*;
 use persist_types::*;
 pub use in_memory::InMemoryPersistence;
-pub(crate) use persist::SeedWriteScope;
+pub(crate) use persist::{ProgramStepScope, SeedWriteScope};
 pub(crate) use persist_types::page_ordered_rows;
 
 #[cfg(test)]

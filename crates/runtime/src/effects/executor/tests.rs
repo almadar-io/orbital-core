@@ -1069,7 +1069,7 @@ mod derived_fields {
     }
 
     /// A store that runs conditional batches: the pushed path, where every op is prepared before any lands.
-    struct Pushing(Arc<InMemoryPersistence>);
+    pub(super) struct Pushing(pub(super) Arc<InMemoryPersistence>);
 
     impl PersistenceHandler for Pushing {
         fn create(&self, entity_type: &str, data: &Value) -> Result<Value, String> {
@@ -1748,5 +1748,182 @@ mod fetch_option_evaluation {
     fn unresolved_id_binding_still_fails_loudly() {
         let r = run(json!({ "id": "@payload.nope" }), json!({}), json!({}));
         assert!(!r.is_executed());
+    }
+}
+
+mod field_updates {
+    use super::*;
+    use crate::entity_access::EntityAccessPolicies;
+    use orbital_core_base::schema::types::FieldUpdate;
+    use serde_json::json;
+
+    fn v(j: serde_json::Value) -> Value {
+        serde_json::from_value(j).unwrap()
+    }
+
+    fn s(j: serde_json::Value) -> SExpression {
+        serde_json::from_value(j).unwrap()
+    }
+
+    fn own_row() -> Value {
+        v(json!(["=", "@entity.id", "@user.id"]))
+    }
+
+    fn executor(with_rules: bool) -> (EffectExecutor, Arc<InMemoryPersistence>) {
+        let store = Arc::new(InMemoryPersistence::new());
+        store.create("Member", &v(json!({ "id": "u1", "name": "Ada", "teamId": "", "note": "n" }))).unwrap();
+        let mut table = EntityAccessTable::new();
+        table.insert(
+            "Member".to_string(),
+            EntityAccessPolicies {
+                update: Some(own_row()),
+                field_updates: if with_rules {
+                    vec![
+                        ("teamId".to_string(), FieldUpdate::Server("set by the membership flow".to_string())),
+                        ("note".to_string(), FieldUpdate::Policy(s(json!(["=", "@user.role", "admin"])))),
+                    ]
+                } else {
+                    Vec::new()
+                },
+                ..Default::default()
+            },
+        );
+        (EffectExecutor::server().with_persistence(store.clone()).with_entity_policies(Arc::new(RwLock::new(table))), store)
+    }
+
+    fn viewer(id: &str, role: &str) -> BindingContext {
+        orbital_core_eval::evaluator::context::BindingContextBuilder::new().user(v(json!({ "id": id, "role": role }))).build()
+    }
+
+    fn update(patch: serde_json::Value) -> Effect {
+        Effect::Persist {
+            operation: PersistOperation::Update,
+            entity_type: "Member".to_string(),
+            data: v(patch),
+            id: Some("u1".to_string()),
+            emit: None,
+            guard: None,
+        }
+    }
+
+    fn row(store: &InMemoryPersistence) -> serde_json::Value {
+        serde_json::to_value(store.read("Member", "u1").unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_viewer_changing_a_server_field_of_their_own_row_is_denied_and_the_row_survives() {
+        let (executor, store) = executor(true);
+        let result = executor.execute(&update(json!({ "id": "u1", "teamId": "t9" })), &viewer("u1", "member"));
+        assert!(result.is_failed(), "{result:?}");
+        assert_eq!(result.code, Some(ServerEffectCode::Denied));
+        assert!(result.error.clone().unwrap().contains("Member.teamId"), "{result:?}");
+        assert_eq!(row(&store)["teamId"], json!(""));
+    }
+
+    #[test]
+    fn control_a_write_that_leaves_the_server_field_as_it_is_passes() {
+        let (executor, store) = executor(true);
+        let same = executor.execute(&update(json!({ "id": "u1", "teamId": "", "name": "Ada L" })), &viewer("u1", "member"));
+        assert!(same.is_executed(), "{same:?}");
+        let other = executor.execute(&update(json!({ "id": "u1", "name": "Ada Lovelace" })), &viewer("u1", "member"));
+        assert!(other.is_executed(), "{other:?}");
+        assert_eq!(row(&store)["name"], json!("Ada Lovelace"));
+    }
+
+    #[test]
+    fn a_field_predicate_refuses_a_change_it_rejects_and_admits_one_it_holds_for() {
+        let (executor, store) = executor(true);
+        let member = executor.execute(&update(json!({ "id": "u1", "note": "x" })), &viewer("u1", "member"));
+        assert!(member.is_failed() && member.code == Some(ServerEffectCode::Denied), "{member:?}");
+        assert_eq!(row(&store)["note"], json!("n"));
+        let unchanged = executor.execute(&update(json!({ "id": "u1", "note": "n" })), &viewer("u1", "member"));
+        assert!(unchanged.is_executed(), "control: an unchanged field is not asked: {unchanged:?}");
+        let mut admin = viewer("u1", "admin");
+        admin.set_user(v(json!({ "id": "u1", "role": "admin" })));
+        let admitted = executor.execute(&update(json!({ "id": "u1", "note": "x" })), &admin);
+        assert!(admitted.is_executed(), "{admitted:?}");
+    }
+
+    #[test]
+    fn a_program_step_writes_a_server_field_without_the_entity_update_and_a_mixed_write_still_meets_it() {
+        let (executor, store) = executor(true);
+        let _step = crate::effects::executor::ProgramStepScope::enter();
+        let anonymous = BindingContext::new();
+        let server_only = executor.execute(&update(json!({ "id": "u1", "teamId": "t9" })), &anonymous);
+        assert!(server_only.is_executed(), "{server_only:?}");
+        assert_eq!(row(&store)["teamId"], json!("t9"));
+        let mixed = executor.execute(&update(json!({ "id": "u1", "teamId": "t10", "name": "Mallory" })), &anonymous);
+        assert!(mixed.is_failed() && mixed.code == Some(ServerEffectCode::Denied), "the entity @update still governs a non-server field: {mixed:?}");
+        assert_eq!(row(&store)["teamId"], json!("t9"));
+    }
+
+    #[test]
+    fn control_a_viewer_session_after_a_program_step_is_denied_again_and_an_entity_without_rules_is_unchanged() {
+        let (executor, _store) = executor(true);
+        {
+            let _step = crate::effects::executor::ProgramStepScope::enter();
+        }
+        let after = executor.execute(&update(json!({ "id": "u1", "teamId": "t9" })), &viewer("u1", "member"));
+        assert!(after.is_failed(), "{after:?}");
+        let (plain, store) = executor_without();
+        let own = plain.execute(&update(json!({ "id": "u1", "teamId": "t9" })), &viewer("u1", "member"));
+        assert!(own.is_executed(), "{own:?}");
+        assert_eq!(row(&store)["teamId"], json!("t9"));
+        let other = plain.execute(&update(json!({ "id": "u1", "teamId": "t8" })), &viewer("u2", "member"));
+        assert!(other.is_failed(), "control: the entity @update still refuses a stranger: {other:?}");
+    }
+
+    fn executor_without() -> (EffectExecutor, Arc<InMemoryPersistence>) {
+        executor(false)
+    }
+
+    #[test]
+    fn an_upsert_and_a_batch_op_that_change_a_server_field_are_denied() {
+        let (executor, store) = executor(true);
+        let upsert = Effect::Persist {
+            operation: PersistOperation::Upsert,
+            entity_type: "Member".to_string(),
+            data: v(json!({ "id": "u1", "name": "Ada", "teamId": "t9", "note": "n" })),
+            id: None,
+            emit: None,
+            guard: None,
+        };
+        let refused = executor.execute(&upsert, &viewer("u1", "member"));
+        assert!(refused.is_failed() && refused.code == Some(ServerEffectCode::Denied), "{refused:?}");
+        let batch = Effect::PersistBatch { ops: v(json!([["update", "Member", "u1", { "teamId": "t9" }]])), emit: None };
+        let denied = executor.execute(&batch, &viewer("u1", "member"));
+        assert!(denied.is_failed(), "{denied:?}");
+        assert_eq!(row(&store)["teamId"], json!(""));
+        let same = Effect::Persist {
+            operation: PersistOperation::Upsert,
+            entity_type: "Member".to_string(),
+            data: v(json!({ "id": "u1", "name": "Ada", "teamId": "", "note": "n" })),
+            id: None,
+            emit: None,
+            guard: None,
+        };
+        assert!(executor.execute(&same, &viewer("u1", "member")).is_executed(), "control: an upsert that keeps every ruled field passes");
+    }
+
+    #[test]
+    fn a_pushed_batch_reads_the_row_first_when_an_op_names_a_ruled_field() {
+        let (_, store) = executor(true);
+        let mut table = EntityAccessTable::new();
+        table.insert(
+            "Member".to_string(),
+            EntityAccessPolicies {
+                field_updates: vec![("teamId".to_string(), FieldUpdate::Server("set by the membership flow".to_string()))],
+                ..Default::default()
+            },
+        );
+        let pushed = EffectExecutor::server()
+            .with_persistence(Arc::new(super::derived_fields::Pushing(store.clone())))
+            .with_entity_policies(Arc::new(RwLock::new(table)));
+        let batch = Effect::PersistBatch { ops: v(json!([["update", "Member", "u1", { "teamId": "t9" }]])), emit: None };
+        let denied = pushed.execute(&batch, &viewer("u1", "member"));
+        assert!(denied.is_failed(), "{denied:?}");
+        assert_eq!(row(&store)["teamId"], json!(""));
+        let other = Effect::PersistBatch { ops: v(json!([["update", "Member", "u1", { "name": "Ada L" }]])), emit: None };
+        assert!(pushed.execute(&other, &viewer("u1", "member")).is_executed(), "control: a batch op that names no ruled field is pushed as before");
     }
 }

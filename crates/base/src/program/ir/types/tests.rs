@@ -384,6 +384,7 @@ fn bare_field(field_type: FieldType) -> FieldDefinition {
         projected_from: None,
         record: None,
         derived: None,
+        update: None,
     }
 }
 

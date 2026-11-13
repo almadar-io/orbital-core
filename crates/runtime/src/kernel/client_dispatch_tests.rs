@@ -2039,3 +2039,57 @@ fn control_an_unfired_step_on_a_client_the_host_never_painted_shows_the_entering
     let outcomes = kernel.dispatch("Shelf", None, "OPEN", Value::Null).unwrap();
     assert_eq!(repainted_main(&outcomes), [serde_json::json!({ "type": "typography", "content": "loading" })]);
 }
+
+/// `Viewer` (a `[client]` route trait) writes `Member` itself on `TRY`, and on `ASK` emits `CLAIM`, which `Claimer` (mounted
+/// only on `boot`, so the program session steps it) turns into the same write.
+fn server_field_schema() -> OrbitalSchema {
+    let write = |event: &str, team: &str| serde_json::json!({ "from": "idle", "to": "idle", "event": event, "effects": [["persist", "update", "Member", { "id": "u1", "teamId": team }]] });
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Member", "persistence": "persistent", "collection": "members",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" },
+                           { "name": "teamId", "type": "string", "update": { "server": "set by the membership flow" } }] },
+            "traits": [{
+                "name": "Viewer", "linkedEntity": "Member", "dispatch": "client",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    write("TRY", "t-viewer"),
+                    { "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "CLAIM", {}]] }] },
+                "emits": [{ "event": "CLAIM", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Viewer" }] }]
+        }, {
+            "name": "Jobs",
+            "entity": { "name": "Member", "persistence": "persistent", "collection": "members",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" },
+                           { "name": "teamId", "type": "string", "update": { "server": "set by the membership flow" } }] },
+            "traits": [{
+                "name": "Claimer", "linkedEntity": "Member",
+                "listens": [{ "event": "CLAIM", "triggers": "CLAIMED", "source": { "kind": "orbital", "orbital": "Ui", "trait": "Viewer" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [write("CLAIMED", "t-program")] }
+            }],
+            "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn member_team(cache: &InMemoryEntityCache) -> Value {
+    cache.read("Member", "u1").unwrap().get_path("teamId").cloned().unwrap_or(Value::Null)
+}
+
+// EXEC-FIELD-1: a `server` field changes only in a program-session step.
+#[test]
+fn a_viewer_session_cannot_write_a_server_field_but_the_program_session_step_it_asked_for_can() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_field_schema()).unwrap();
+    cache.write("Member", "u1", &serde_json::from_value(serde_json::json!({ "id": "u1", "name": "Ada", "teamId": "" })).unwrap()).unwrap();
+    let _session = kernel.enter_session("s1");
+    let tried = kernel.dispatch("Viewer", None, "TRY", Value::Null).unwrap();
+    assert!(tried.iter().all(|(_, r)| r.effect_results.iter().all(|e| !e.is_executed())), "{tried:?}");
+    assert_eq!(member_team(&cache), Value::string(""), "the viewer's own write of a server field is refused");
+    kernel.dispatch("Viewer", None, "ASK", Value::Null).unwrap();
+    assert_eq!(member_team(&cache), Value::string("t-program"), "the program-session step wrote it");
+}

@@ -115,6 +115,8 @@ pub enum IoRequestWire {
         payload: Value,
         grants: orbital_core_base::os_grants::OsGrants,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        leg: Option<Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         key: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         site: Option<CallSiteWire>,

@@ -5,7 +5,7 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use crate::entity_access::{apply_read_access, check_mutation_access};
+use crate::entity_access::{apply_read_access, changed_fields, check_field_updates, check_mutation_access};
 use crate::kernel::envelope::mapped_listen_payload;
 use orbital_core_base::effect_types::PersistOperation;
 use orbital_core_base::schema::sexpr::{SExpression, SObject};
@@ -391,6 +391,37 @@ pub fn check_mutation_json(
             allowed: false,
             message: Some(denied.into_message()),
         },
+    };
+    to_json(&verdict)
+}
+
+/// One field's `@update` rule on the wire: the field and its `FieldUpdate` (`{ "policy": expr }` or `{ "server": reason }`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FieldUpdateRuleWire {
+    pub field: String,
+    pub update: orbital_core_base::schema::types::FieldUpdate,
+}
+
+/// Whether `patch` over the row as it stands may change the fields it changes under their own `@update`: a
+/// `MutationVerdictWire`. `program_step` is whether the write is a program-session step's. A host asks this beside
+/// [`check_mutation_json`] on every update of an entity that declares a field rule.
+pub fn check_field_updates_json(
+    bindings_json: &str,
+    row_json: &str,
+    patch_json: &str,
+    rules_json: &str,
+    program_step: bool,
+    entity_type: &str,
+) -> Result<String, String> {
+    let ctx = context_of(bindings_json)?;
+    let row: Value = parse(row_json, "row")?;
+    let patch: Value = parse(patch_json, "patch")?;
+    let rules: Vec<FieldUpdateRuleWire> = parse(rules_json, "rules")?;
+    let rules: Vec<_> = rules.into_iter().map(|r| (r.field, r.update)).collect();
+    let changed = changed_fields(&row, &patch);
+    let verdict = match check_field_updates(&row, &changed, &rules, program_step, &ctx, entity_type) {
+        Ok(()) => MutationVerdictWire { allowed: true, message: None },
+        Err(denied) => MutationVerdictWire { allowed: false, message: Some(denied.into_message()) },
     };
     to_json(&verdict)
 }
@@ -899,5 +930,28 @@ mod resolve_values_tests {
         let out = resolve(json!({ "entity": {} }), json!([["i18n/t"], "ok"]));
         assert_eq!(out[0]["kind"], json!("error"));
         assert_eq!(out[1], json!({ "kind": "value", "value": "ok" }));
+    }
+}
+
+#[cfg(test)]
+mod field_update_wire_tests {
+    use super::check_field_updates_json;
+    use serde_json::{json, Value as Json};
+
+    fn verdict(patch: Json, program_step: bool) -> Json {
+        let rules = json!([{ "field": "teamId", "update": { "server": "set by the membership flow" } }]);
+        serde_json::from_str(
+            &check_field_updates_json(&json!({ "user": { "id": "u1" } }).to_string(), &json!({ "id": "u1", "teamId": "" }).to_string(), &patch.to_string(), &rules.to_string(), program_step, "Member").unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_changed_server_field_is_refused_off_the_program_session_and_admitted_in_it() {
+        let refused = verdict(json!({ "teamId": "t9" }), false);
+        assert_eq!(refused["allowed"], json!(false));
+        assert!(refused["message"].as_str().unwrap().contains("Member.teamId"));
+        assert_eq!(verdict(json!({ "teamId": "t9" }), true)["allowed"], json!(true));
+        assert_eq!(verdict(json!({ "teamId": "", "name": "A" }), false)["allowed"], json!(true), "control: an unchanged server field is not asked");
     }
 }

@@ -118,6 +118,7 @@ impl EffectExecutor {
             declared_required: policies.required_fields.clone(),
             intrinsic: policies.intrinsic_fields.clone(),
             derived: policies.derived_fields.clone(),
+            field_updates: policies.field_updates.clone(),
         }
     }
 
@@ -228,6 +229,35 @@ impl EffectExecutor {
             entity_type,
         )
         .map_err(|denied| Self::refused(denied, code))
+    }
+
+    /// Whether `patch` names a field that carries its own `@update`: such a write reads the row first, so the
+    /// fields it changes are known, and is never pushed to the store as a guarded write.
+    pub(super) fn names_ruled_field(scope: &PersistScope, patch: &Value) -> bool {
+        patch
+            .as_object()
+            .is_some_and(|fields| scope.field_updates.iter().any(|(name, _)| fields.contains_key(name.as_str())))
+    }
+
+    /// The checks of a persist update on the row as it stands: the entity's `@update` (not asked of a program-session
+    /// step that changes only `server` fields), then the `@update` of each field the write changes.
+    pub(super) fn check_update(
+        existing: &Value,
+        patch: &Value,
+        scope: &PersistScope,
+        ctx: &BindingContext,
+        entity_type: &str,
+        code: &mut Option<ServerEffectCode>,
+    ) -> Result<(), String> {
+        let program_step = ProgramStepScope::active();
+        let changed = changed_fields(existing, patch);
+        let server_only = program_step && changes_only_server_fields(&changed, &scope.field_updates);
+        if scope.policy.is_some() && !server_only {
+            check_mutation_access(PersistOperation::Update, existing, scope.policy.as_ref(), ctx, entity_type)
+                .map_err(|denied| Self::refused(denied, code))?;
+        }
+        check_field_updates(existing, &changed, &scope.field_updates, program_step, ctx, entity_type)
+            .map_err(|denied| Self::refused(denied, code))
     }
 
     /// An access policy refused a mutation: the failure is coded `denied` from the typed refusal.
@@ -428,23 +458,18 @@ impl EffectExecutor {
             *code = Some(ServerEffectCode::NoRowKey);
             return Err(format!("persist upsert {entity_type}: the row names no id"));
         };
-        let update_policy = self
-            .persist_scope(entity_type, PersistOperation::Update)
-            .policy;
-        let existing = if update_policy.is_some() {
+        let scope = self.persist_scope(entity_type, PersistOperation::Update);
+        let existing = if scope.policy.is_some() || !scope.field_updates.is_empty() {
             persistence.find(entity_type, id)?
         } else {
             None
         };
         if let Some(existing) = &existing {
-            check_mutation_access(
-                PersistOperation::Update,
-                existing,
-                update_policy.as_ref(),
-                ctx,
-                entity_type,
-            )
-            .map_err(|denied| Self::refused(denied, code))?;
+            let mut replacement = data.as_object().cloned().unwrap_or_default();
+            for (name, _) in &scope.field_updates {
+                replacement.entry(name.clone().into()).or_insert(Value::Null);
+            }
+            Self::check_update(existing, &Value::object(replacement), &scope, ctx, entity_type, code)?;
         }
         let op = RowWriteOp::Upsert {
             entity_type: entity_type.to_string(),
@@ -546,18 +571,22 @@ impl EffectExecutor {
                         code = Some(ServerEffectCode::NoRowKey);
                         Err(e)
                     }
-                    Ok(entity_id) => match self.pushed_write(
-                        persistence.as_ref(),
-                        operation,
-                        entity_type,
-                        &entity_id,
-                        resolved_data,
-                        policy,
-                        &scope.declared_required,
-                        row_where.as_ref(),
-                        ctx,
-                        &mut code,
-                    ) {
+                    Ok(entity_id) => match if Self::names_ruled_field(&scope, resolved_data) {
+                        None
+                    } else {
+                        self.pushed_write(
+                            persistence.as_ref(),
+                            operation,
+                            entity_type,
+                            &entity_id,
+                            resolved_data,
+                            policy,
+                            &scope.declared_required,
+                            row_where.as_ref(),
+                            ctx,
+                            &mut code,
+                        )
+                    } {
                         Some(pushed) => pushed,
                         None => Self::existing_row(
                             persistence.as_ref(),
@@ -567,16 +596,7 @@ impl EffectExecutor {
                         )
                         .and_then(|existing| Self::where_holds(row_where.as_ref(), existing, entity_type, &entity_id, &mut code))
                         .and_then(|existing| {
-                            if policy.is_some() {
-                                check_mutation_access(
-                                    operation,
-                                    &existing,
-                                    policy,
-                                    ctx,
-                                    entity_type,
-                                )
-                                .map_err(|denied| Self::refused(denied, &mut code))?;
-                            }
+                            Self::check_update(&existing, resolved_data, &scope, ctx, entity_type, &mut code)?;
                             persistence.update(entity_type, &entity_id, resolved_data)
                         }),
                     },
@@ -664,6 +684,31 @@ impl SeedWriteScope {
 
     pub(super) fn active() -> bool {
         SEED_WRITE.with(std::cell::Cell::get)
+    }
+}
+
+thread_local! {
+    static PROGRAM_STEP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A step the program session runs, on no viewer's behalf (EXEC-IDENTITY-1, EXEC-FIELD-1): while it is entered on
+/// this thread a persist update may change a `server` field, and an update that changes only `server` fields is
+/// not tested against the entity's `@update`. Nested scopes restore the outer one.
+pub struct ProgramStepScope(bool);
+
+impl ProgramStepScope {
+    pub fn enter() -> Self {
+        Self(PROGRAM_STEP.with(|scope| scope.replace(true)))
+    }
+
+    pub(super) fn active() -> bool {
+        PROGRAM_STEP.with(std::cell::Cell::get)
+    }
+}
+
+impl Drop for ProgramStepScope {
+    fn drop(&mut self) {
+        PROGRAM_STEP.with(|scope| scope.set(self.0));
     }
 }
 

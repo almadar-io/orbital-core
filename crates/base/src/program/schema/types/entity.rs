@@ -271,6 +271,17 @@ pub enum Persistence {
     Runtime,
 }
 
+/// A field's own write rule (`@update` on the field).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum FieldUpdate {
+    /// `@update <expr>`: a predicate over the row before the write (`@entity`) and the viewer (`@user`); a write that
+    /// changes the field is refused when it does not hold.
+    Policy(SExpression),
+    /// `@update server "<reason>"`: no viewer may change the field; only a program-session step may (EXEC-FIELD-1).
+    Server(String),
+}
+
 /// Field definition within an entity
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -345,6 +356,11 @@ pub struct FieldDefinition {
     /// `@entity` bound to the row; the store keeps the value like any field. Never written by `set` or `persist`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derived: Option<SExpression>,
+
+    /// `@update <expr>` / `@update server "<reason>"` on the field: who may change this field's value on an
+    /// existing row, over and above the entity's own `@update`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<FieldUpdate>,
 
     /// Human/semantic description — authored in `.lolo` as a trailing
     /// `@description "..."` annotation. Authoring/build-time metadata that flows

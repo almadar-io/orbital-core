@@ -54,6 +54,8 @@ pub struct GuestSession {
     pub(crate) grants: Option<OsGrants>,
     /// The session that opened the guest; the guest ends with it (EXEC-CONC-7).
     pub(crate) opener_session: Option<String>,
+    /// The opener's viewer runs the guest's `[client]` traits and mounts its pages; the guest answers its server legs.
+    pub(crate) split: bool,
     arenas: Vec<(i64, Value)>,
     route: Arc<RwLock<GuestRoute>>,
 }
@@ -107,8 +109,12 @@ pub(crate) fn run_session(
     targets: &[String],
     event: &str,
     payload: &Value,
+    leg: Option<&Value>,
     answer: &(dyn Fn(&crate::resumable::IoRequest) -> crate::resumable::IoAnswer + Sync),
 ) -> Result<Value, String> {
+    if let Some(leg) = leg {
+        return serve_leg(session, payload, leg).map_err(|failure| failure.error);
+    }
     let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
     for trait_name in targets {
         if let Some(host) = &session.host {
@@ -175,6 +181,21 @@ fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value, op: &str) -> Result<(), 
         guest.rows.note_write(entity);
     }
     Ok(())
+}
+
+/// A split guest's server leg, answered by its host as a served events request (EXEC-CONC-7). Only a split guest takes
+/// one: its viewer's kernel runs its `[client]` traits, so the host answers it as a served program's server.
+fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Value, AgentPortFailure> {
+    let (Some(host), true) = (&session.host, session.split) else {
+        return Err(guest_refusal(
+            orbital_core_base::os::OsErrorKind::Invalid,
+            "program/dispatch: a wire leg goes only to a guest opened with `split: true`",
+        ));
+    };
+    let Value::Object(options) = leg else {
+        return Err(failure("program/dispatch: a wire leg's options are a record"));
+    };
+    host.request(payload, options).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors })
 }
 
 fn json_value(json: serde_json::Value) -> Value {
@@ -481,6 +502,16 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let split = match options.as_ref().and_then(|o| o.get("split")) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(split)) => *split,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `split` is true or false",
+                ))
+            }
+        };
         let seed_writer = match options.as_ref().and_then(|o| o.get("seed")) {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if !name.as_str().is_empty() => Some(name.to_string()),
@@ -627,6 +658,12 @@ impl RuntimeKernel {
             }
         }
         let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
+        if split && host.is_none() {
+            return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Unsupported,
+                "program/open: a split guest needs a host that offers guest hosting; this one runs guests in its own kernel",
+            ));
+        }
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         if granted.is_some() || host.is_some() {
@@ -662,7 +699,12 @@ impl RuntimeKernel {
                 (Arc::new(guest), Some(source))
             }
         };
-        guest.set_runs_client_traits(true);
+        guest.set_runs_client_traits(!split);
+        let client = split.then(|| {
+            json_value(orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
+                &serde_json::to_value(&schema).unwrap_or(serde_json::Value::Null),
+            )))
+        });
         if carries_lazy {
             guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));
         }
@@ -704,13 +746,17 @@ impl RuntimeKernel {
             access,
         } = routed_mounts(&guest, route.as_deref(), "program/open")?;
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
-        for seed in routed {
-            if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
-                seeds.push(seed);
+        if !split {
+            for seed in routed {
+                if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
+                    seeds.push(seed);
+                }
             }
         }
         let outcomes = mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?;
-        view_page(&guest, &page, &embedded);
+        if !split {
+            view_page(&guest, &page, &embedded);
+        }
         let orbitals = painter_orbitals(&guest, &outcomes);
         let handle = format!(
             "guest-{}",
@@ -723,6 +769,7 @@ impl RuntimeKernel {
             host,
             grants: granted,
             opener_session: self.thread_session().map(|session| session.to_string()),
+            split,
             arenas,
             route: Arc::new(RwLock::new(GuestRoute {
                 embedded: embedded.clone(),
@@ -731,7 +778,7 @@ impl RuntimeKernel {
         };
         self.guests.write().insert(handle.clone(), session);
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
-        Ok(guest_answer(
+        let mut answer = guest_answer(
             &orbitals,
             Some(&handle),
             Some((&page, resolved.as_deref())),
@@ -741,7 +788,11 @@ impl RuntimeKernel {
             "INIT",
             Some(&access),
             &[],
-        ))
+        );
+        if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
+            fields.insert("client".into(), client);
+        }
+        Ok(answer)
     }
 
     /// `program/navigate { guest, route, rows?, remount? }`: load the lazy page `route` names, seed its `rows`, mount the
@@ -922,7 +973,15 @@ impl RuntimeKernel {
         };
         let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
         let payload = self.copy_into(&session, &given)?;
-        self.run_in_guest(&session, handle, targets, event, payload, args)
+        let leg = match args.get(2) {
+            Some(Value::Object(options)) if options.get("wire") == Some(&Value::Bool(true)) => {
+                let mut leg = options.clone();
+                leg.shift_remove("guest");
+                Some(Value::object(leg))
+            }
+            _ => None,
+        };
+        self.run_in_guest(&session, handle, targets, event, payload, leg, args)
     }
 
     /// `program/dispatch { ask, answer | refuse } { guest }`: return a host's answer to a client ask the guest made, as a
@@ -953,7 +1012,7 @@ impl RuntimeKernel {
         };
         let target = ask.completion.map(|c| c.trait_name).unwrap_or_default();
         let payload = self.copy_into(session, &payload)?;
-        self.run_in_guest(session, handle, vec![target], &event, payload, args)
+        self.run_in_guest(session, handle, vec![target], &event, payload, None, args)
     }
 
     /// Dispatch `event` to `targets` in the guest as its client would, on the lane the call's key decides.
@@ -964,6 +1023,7 @@ impl RuntimeKernel {
         targets: Vec<String>,
         event: &str,
         payload: Value,
+        leg: Option<Value>,
         args: &[Value],
     ) -> Result<Value, AgentPortFailure> {
         let guest = &session.kernel;
@@ -987,6 +1047,7 @@ impl RuntimeKernel {
                     event.to_string(),
                     payload,
                     grants,
+                    leg,
                     args.to_vec(),
                 )
                 .map(|answer| answer.unwrap_or(Value::Null))
@@ -994,6 +1055,9 @@ impl RuntimeKernel {
                     error: refused.message,
                     errors: refused.errors,
                 });
+        }
+        if let Some(leg) = &leg {
+            return serve_leg(session, &payload, leg);
         }
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         for trait_name in &targets {
@@ -1238,6 +1302,7 @@ impl GuestSession {
             host: None,
             grants,
             opener_session: None,
+            split: false,
             arenas: Vec::new(),
             route: Arc::default(),
         }

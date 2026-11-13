@@ -306,6 +306,7 @@ impl RuntimeKernel {
                                     .collect(),
                                 intrinsic_fields: crate::entity_access::intrinsic_field_names(def),
                                 derived_fields: crate::entity_access::derived_field_exprs(def),
+                                field_updates: crate::entity_access::field_update_rules(def),
                             },
                         );
                     }
