@@ -1111,3 +1111,64 @@ fn an_unkeyed_substrate_read_completes_while_a_keyed_dependencies_read_is_in_fli
     assert_eq!(reading.completions.recv_timeout(wait).expect("the keyed read settles"), "DEPS_DONE");
     assert_eq!(tally_of(&reading, "Constellation")["deps"], "behavior/dependencies");
 }
+
+// A keyed `call-service` the host answers with an error at once takes its failure route in the same dispatch.
+#[test]
+fn a_keyed_call_the_host_refuses_at_once_takes_its_failure_route() {
+    use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "calls", "typeContractVersion": 1, "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "string" }] },
+            "traits": [{ "name": "Panel", "linkedEntity": "Run",
+                "stateMachine": { "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }], "transitions": [
+                    { "from": "loading", "to": "loading", "event": "GO", "effects": [["call-service", "registry", "handles", {}, { "key": "k1", "emit": { "success": "LOADED", "failure": "FAILED" } }]] },
+                    { "from": "loading", "to": "ready", "event": "LOADED", "effects": [["set", "@entity.seen", "loaded"]] },
+                    { "from": "loading", "to": "ready", "event": "FAILED", "effects": [["set", "@entity.seen", "failed"]] }] } }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig {
+        service_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>),
+        ..Default::default()
+    };
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+    kernel.register_schema(schema).unwrap();
+    let progress = kernel.start_dispatch("Panel", None, "GO", Value::Null, None, None).unwrap();
+    drive_blocking(&kernel, progress, &|request| match request {
+        IoRequest::CallService { .. } => IoAnswer::Service(Err("Integration not configured: registry.handles".to_string())),
+        other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+    })
+    .unwrap();
+    assert_eq!(kernel.snapshot_trait("Panel", None).state, "ready");
+}
+
+// The same on a kernel built with no service answerer (the served host's): the call still fails on its route.
+#[test]
+fn a_keyed_call_on_a_kernel_with_no_service_answerer_takes_its_failure_route() {
+    use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
+    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        "name": "calls", "typeContractVersion": 1, "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "string" }] },
+            "traits": [{ "name": "Panel", "linkedEntity": "Run",
+                "stateMachine": { "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }], "transitions": [
+                    { "from": "loading", "to": "loading", "event": "GO", "effects": [["call-service", "registry", "handles", {}, { "key": "k1", "emit": { "success": "LOADED", "failure": "FAILED" } }]] },
+                    { "from": "loading", "to": "ready", "event": "LOADED", "effects": [["set", "@entity.seen", "loaded"]] },
+                    { "from": "loading", "to": "ready", "event": "FAILED", "effects": [["set", "@entity.seen", "failed"]] }] } }]
+        }]
+    }))
+    .unwrap();
+    let config = orbital_core_runtime::config::KernelConfig::default();
+    let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
+    kernel.register_schema(schema).unwrap();
+    let progress = kernel.start_dispatch("Panel", None, "GO", Value::Null, None, None).unwrap();
+    drive_blocking(&kernel, progress, &|request| match request {
+        IoRequest::CallService { .. } => IoAnswer::Service(Err("Integration not configured: registry.handles".to_string())),
+        other => BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+    })
+    .unwrap();
+    assert_eq!(kernel.snapshot_trait("Panel", None).state, "ready");
+}

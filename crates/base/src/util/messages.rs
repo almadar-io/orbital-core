@@ -68,24 +68,64 @@ pub fn qualify_message_key_value(value: &mut Value, namespace: &str, path: &str)
     }
 }
 
-/// Qualifies a `[MessageKey]` list literal item by item.
-pub fn qualify_message_key_list(value: &mut Value, namespace: &str, path: &str) -> Vec<MessageKeyIssue> {
-    match value {
-        Value::Array(items) => items
-            .iter_mut()
-            .enumerate()
-            .flat_map(|(i, item)| qualify_message_key_value(item, namespace, &format!("{path}[{i}]")))
-            .collect(),
-        _ => Vec::new(),
+/// One step into a knob's value: every item of a list, or one member of a record.
+#[derive(Debug, Clone, PartialEq)]
+pub enum KeyStep {
+    Item,
+    Field(String),
+}
+
+/// The positions in a knob's value that hold a catalog key, read off its declared shape: the value itself
+/// (`MessageKey`), each item (`[MessageKey]`), or a `MessageKey` member of a record, at any depth of lists and records.
+pub fn message_key_paths(field: &crate::schema::ConfigField) -> Vec<Vec<KeyStep>> {
+    match field.field_type.as_str() {
+        "MessageKey" => vec![Vec::new()],
+        "[MessageKey]" => vec![vec![KeyStep::Item]],
+        _ => carried_key_paths(field.items.as_deref(), field.properties.as_ref()),
     }
 }
 
-/// Whether a config knob's declared type holds catalog keys: one (`MessageKey`) or a list (`[MessageKey]`).
-fn message_key_knob(field_type: &str) -> Option<bool> {
-    match field_type {
-        "MessageKey" => Some(false),
-        "[MessageKey]" => Some(true),
-        _ => None,
+fn carried_key_paths(
+    items: Option<&crate::schema::FieldDefinition>,
+    properties: Option<&crate::collections::IndexMap<String, crate::schema::FieldDefinition>>,
+) -> Vec<Vec<KeyStep>> {
+    let mut paths = Vec::new();
+    if let Some(item) = items {
+        paths.extend(definition_key_paths(item).into_iter().map(|rest| prepend(KeyStep::Item, rest)));
+    }
+    for (name, member) in properties.into_iter().flatten() {
+        paths.extend(definition_key_paths(member).into_iter().map(|rest| prepend(KeyStep::Field(name.clone()), rest)));
+    }
+    paths
+}
+
+fn definition_key_paths(def: &crate::schema::FieldDefinition) -> Vec<Vec<KeyStep>> {
+    if matches!(def.field_type, crate::schema::FieldType::MessageKey) {
+        return vec![Vec::new()];
+    }
+    carried_key_paths(def.items.as_deref(), def.properties.as_ref())
+}
+
+fn prepend(step: KeyStep, mut rest: Vec<KeyStep>) -> Vec<KeyStep> {
+    rest.insert(0, step);
+    rest
+}
+
+fn at_path<'v>(value: &'v mut Value, path: &[KeyStep], at: String, out: &mut Vec<(String, &'v mut Value)>) {
+    match path.split_first() {
+        None => out.push((at, value)),
+        Some((KeyStep::Item, rest)) => {
+            if let Value::Array(items) = value {
+                for (i, item) in items.iter_mut().enumerate() {
+                    at_path(item, rest, format!("{at}[{i}]"), out);
+                }
+            }
+        }
+        Some((KeyStep::Field(name), rest)) => {
+            if let Some(member) = value.as_object_mut().and_then(|m| m.get_mut(name)) {
+                at_path(member, rest, format!("{at}.{name}"), out);
+            }
+        }
     }
 }
 
@@ -98,7 +138,7 @@ fn each_trait_config_mut(
         for (index, trait_ref) in orbital.traits.iter_mut().enumerate() {
             let (name, config) = match trait_ref {
                 TraitReference::Inline(def) => {
-                    if !def.config.iter().flatten().any(|(_, f)| message_key_knob(&f.field_type).is_some()) {
+                    if !def.config.iter().flatten().any(|(_, f)| !message_key_paths(f).is_empty()) {
                         continue;
                     }
                     let def = std::sync::Arc::make_mut(def);
@@ -121,19 +161,21 @@ fn each_trait_config_mut(
 pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, namespace: &str) -> Vec<MessageKeyIssue> {
     let mut issues = Vec::new();
     each_trait_config_mut(schema, |path, field| {
-        let (Some(list), Some(default)) = (message_key_knob(&field.field_type), field.default.as_mut()) else {
+        let paths = message_key_paths(field);
+        let Some(default) = field.default.as_mut().filter(|_| !paths.is_empty()) else {
             return;
         };
         let Ok(mut value) = serde_json::to_value(&*default) else { return };
-        let found = if list {
-            qualify_message_key_list(&mut value, namespace, &path)
-        } else {
-            qualify_message_key_value(&mut value, namespace, &path)
-        };
+        for key_path in &paths {
+            let mut slots = Vec::new();
+            at_path(&mut value, key_path, path.clone(), &mut slots);
+            for (at, slot) in slots {
+                issues.extend(qualify_message_key_value(slot, namespace, &at));
+            }
+        }
         if let Ok(qualified) = serde_json::from_value(value) {
             *default = qualified;
         }
-        issues.extend(found);
     });
     issues
 }
@@ -148,21 +190,16 @@ pub fn config_message_keys(schema: &crate::schema::OrbitalSchema) -> Vec<String>
     });
     let mut keys = Vec::new();
     for (_, field) in fields {
-        let Some(default) = field.default.as_ref().filter(|_| message_key_knob(&field.field_type).is_some()) else {
+        let paths = message_key_paths(field);
+        let Some(default) = field.default.as_ref().filter(|_| !paths.is_empty()) else {
             continue;
         };
-        let Ok(value) = serde_json::to_value(default) else { continue };
-        let literals: Vec<&Value> = match &value {
-            Value::Array(items) => items.iter().collect(),
-            one => vec![one],
-        };
-        keys.extend(
-            literals
-                .into_iter()
-                .filter_map(Value::as_str)
-                .filter(|k| !k.starts_with('@'))
-                .map(str::to_string),
-        );
+        let Ok(mut value) = serde_json::to_value(default) else { continue };
+        for key_path in &paths {
+            let mut slots = Vec::new();
+            at_path(&mut value, key_path, String::new(), &mut slots);
+            keys.extend(slots.into_iter().filter_map(|(_, v)| v.as_str()).filter(|k| !k.starts_with('@')).map(str::to_string));
+        }
     }
     keys
 }
@@ -220,13 +257,11 @@ mod tests {
     }
 
     #[test]
-    fn a_message_key_value_qualifies_literals_and_list_items() {
+    fn a_message_key_value_qualifies_a_literal() {
         let mut one = json!("begin");
         assert!(qualify_message_key_value(&mut one, "panel", "label").is_empty());
         assert_eq!(one, json!("panel:begin"));
-        let mut many = json!(["spring", "summer"]);
-        assert!(qualify_message_key_list(&mut many, "panel", "seasons").is_empty());
-        assert_eq!(many, json!(["panel:spring", "panel:summer"]));
+
     }
 
     #[test]
@@ -240,13 +275,14 @@ mod tests {
 
     #[test]
     fn edge_an_empty_or_qualified_message_key_value_is_invalid() {
-        let mut v = json!(["", "x:y"]);
+        let (mut empty, mut qualified) = (json!(""), json!("x:y"));
         assert_eq!(
-            qualify_message_key_list(&mut v, "panel", "labels"),
-            vec![
-                MessageKeyIssue::Invalid { path: "labels[0]".into(), key: "".into() },
-                MessageKeyIssue::Invalid { path: "labels[1]".into(), key: "x:y".into() },
-            ]
+            qualify_message_key_value(&mut empty, "panel", "labels[0]"),
+            vec![MessageKeyIssue::Invalid { path: "labels[0]".into(), key: "".into() }]
+        );
+        assert_eq!(
+            qualify_message_key_value(&mut qualified, "panel", "labels[1]"),
+            vec![MessageKeyIssue::Invalid { path: "labels[1]".into(), key: "x:y".into() }]
         );
     }
 
@@ -606,7 +642,11 @@ mod catalog_tests {
                       "config": {
                         "label": { "type": "MessageKey", "default": "title" },
                         "seasons": { "type": "[MessageKey]", "default": ["spring", "summer"], "items": { "type": "MessageKey" } },
-                        "plain": { "type": "string", "default": "not a key" }
+                        "plain": { "type": "string", "default": "not a key" },
+                        "options": { "type": "[RasmOption]", "default": [{ "value": "spring", "label": "season.spring" }, { "value": "@x", "label": "@config.other" }],
+                          "items": { "type": "object", "properties": {
+                            "value": { "name": "value", "type": "string" },
+                            "label": { "name": "label", "type": "MessageKey" } } } }
                       } },
                     { "ref": "Button.traits.RasmPressable", "name": "Begin", "config": {
                         "label": { "type": "MessageKey", "default": "begin" },
@@ -623,10 +663,12 @@ mod catalog_tests {
     fn config_knobs_typed_message_key_are_qualified_and_collected() {
         let mut schema = knob_schema();
         assert!(qualify_config_message_keys(&mut schema, "panel").is_empty());
+        let json = serde_json::to_string(&schema).unwrap();
         let mut keys = config_message_keys(&schema);
         keys.sort();
-        assert_eq!(keys, vec!["panel:begin", "panel:spring", "panel:summer", "panel:title"]);
-        let json = serde_json::to_string(&schema).unwrap();
+        assert_eq!(keys, vec!["panel:begin", "panel:season.spring", "panel:spring", "panel:summer", "panel:title"]);
+        assert!(json.contains(r#""value":"spring","label":"panel:season.spring""#), "a key inside a record of a list: {json}");
+        assert!(json.contains(r#""value":"@x","label":"@config.other""#), "control: a record's string member and a binding are untouched: {json}");
         assert!(json.contains(r#""default":"not a key""#), "control: a string knob is untouched: {json}");
         assert!(json.contains(r#""default":"@config.label""#), "control: a binding is untouched: {json}");
         assert!(json.contains(r#""id":{"type":"unknown","default":"begin"}"#), "control: an untyped wiring is untouched: {json}");

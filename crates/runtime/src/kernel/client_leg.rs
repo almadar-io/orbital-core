@@ -982,13 +982,27 @@ impl RuntimeKernel {
                 Some(id) => self.carried_rows.write().insert(slot, id),
                 None => self.carried_rows.write().remove(&slot),
             };
+            let held = self.browser_held(trait_name, row);
             self.write_trait_frame(
                 trait_name,
                 &entity_type,
                 eid,
-                &SharedEntity::from_value_ref(row),
+                &SharedEntity::from_value_ref(held.as_ref().unwrap_or(row)),
             );
         }
+    }
+
+    /// A stateful host's browser holds only the fields it reads of a frame (EXEC-DIST-8), so of a carried row only those
+    /// fold; the fields the host holds alone stay as the session left them. `None` folds the whole row (a stateless host,
+    /// whose browser carries all of the state, or a trait the table does not narrow).
+    fn browser_held(&self, trait_name: &str, row: &Value) -> Option<Value> {
+        if !self.stateful.load(std::sync::atomic::Ordering::SeqCst) {
+            return None;
+        }
+        let table = self.browser_reads();
+        let read = table.get(trait_name)?;
+        let fields = row.as_object()?;
+        Some(Value::Object(fields.iter().filter(|(field, _)| read.keeps(field.as_str())).map(|(field, value)| (field.clone(), value.clone())).collect()))
     }
 
     /// Get the current state for an entity.

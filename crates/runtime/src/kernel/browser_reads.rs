@@ -17,7 +17,7 @@ pub enum BrowserFields {
 }
 
 impl BrowserFields {
-    fn keeps(&self, field: &str) -> bool {
+    pub(super) fn keeps(&self, field: &str) -> bool {
         match self {
             Self::All => true,
             Self::Named(names) => field == "id" || names.contains(field),
@@ -86,7 +86,11 @@ impl Part {
                     }
                 }
                 let skip = match (head, items.get(1)) {
-                    (Some("set"), Some(SExpression::String(target))) if target.starts_with("@entity") => 2,
+                    (Some("set"), Some(SExpression::String(target))) if target.starts_with("@entity") => {
+                        // The browser holds what a step it runs writes, so a carried row keeps that field (seed_leg).
+                        self.read_text(target);
+                        2
+                    }
                     (Some("emit"), Some(SExpression::String(event))) if !event.starts_with('@') => {
                         self.emits.push(event.to_string());
                         2

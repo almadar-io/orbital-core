@@ -323,7 +323,8 @@ impl EffectExecutor {
                 Err(e) => EffectResult::failed(effect, &e),
             }
         } else {
-            EffectResult::noop(effect, "no service handler configured")
+            // Nobody answers the call: a failure, so the caller's failure route runs instead of waiting forever.
+            EffectResult::failed(effect, "no service handler configured")
         }
     }
 

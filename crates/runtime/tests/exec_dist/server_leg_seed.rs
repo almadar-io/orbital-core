@@ -27,6 +27,7 @@ fn schema() -> OrbitalSchema {
                   "stateMachine": {
                       "states": [{ "name": "ready", "isInitial": true }],
                       "transitions": [
+                          { "from": "ready", "to": "ready", "event": "INIT", "guard": ["!=", "@entity.content", "never"] },
                           { "from": "ready", "to": "ready", "event": "SEND", "guard": ["validate/required", "@entity.content"],
                             "effects": [["emit", "SAVE", { "content": "@entity.content" }]] }
                       ]
@@ -594,4 +595,89 @@ fn a_stateless_request_reads_back_the_frame_its_client_carries_not_another_viewe
     drive_rows(&template.fork_session().unwrap(), "TopicOrbital", topic_request("SET_TOPIC", Some("cli"), None));
     let fresh = template.fork_session().unwrap();
     assert_eq!(seen_after(&fresh, topic_request("READ_BACK", None, Some("app"))), json!("app"));
+}
+
+// EXEC-DIST-8: a session's browser holds only the fields it reads, so a stateful host's delegated leg folds only those
+// from the carried row; the fields the host holds alone stay as the session left them.
+fn browser_held_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Held",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                { "name": "id", "type": "string" },
+                { "name": "shown", "type": "string", "default": "" },
+                { "name": "kept", "type": "string", "default": "" },
+                { "name": "draft", "type": "string", "default": "" }
+            ] },
+            "traits": [{ "name": "Keeper", "linkedEntity": "Note",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "guard": ["!=", "@entity.shown", "never"],
+                          "effects": [["render-ui", "main", { "type": "button", "label": "Type", "action": "TYPED" }]] },
+                        { "from": "idle", "to": "idle", "event": "TYPED", "effects": [["set", "@entity.draft", "@payload.text"]] },
+                        { "from": "idle", "to": "idle", "event": "FILL",
+                          "effects": [["set", "@entity.kept", "server-only"], ["set", "@entity.shown", "s1"]] },
+                        { "from": "idle", "to": "idle", "event": "SHOW",
+                          "effects": [["emit", "SHOWN", { "kept": "@entity.kept", "shown": "@entity.shown", "draft": "@entity.draft" }]] }
+                    ]
+                } }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn held_drive(server: &EmbeddedServer, request: EventRequest) -> EventResponse {
+    match server.start("Held", request).unwrap() {
+        ServerProgress::Done(response) => response,
+        other => panic!("the fixture asks nothing: {:?}", matches!(other, ServerProgress::Await { .. })),
+    }
+}
+
+fn shown_after_a_leg(server: &EmbeddedServer, carried_row: Json) -> Json {
+    let fill = EventRequest { event: "FILL".to_string(), client_id: Some("tab-1".to_string()), ..Default::default() };
+    assert!(held_drive(server, fill).success);
+    let show = EventRequest {
+        event: "SHOW".to_string(),
+        client_id: Some("tab-1".to_string()),
+        target_trait: Some("Keeper".to_string()),
+        traits: Some(vec![carried("Keeper", "idle")]),
+        entity_by_trait: Some(ValueMap::from([("Keeper".into(), row(carried_row))])),
+        ..Default::default()
+    };
+    let response = held_drive(server, show);
+    let shown = response.emitted_events.iter().find(|e| e.event == "SHOWN").expect("SHOWN is emitted");
+    serde_json::to_value(shown.payload.clone().expect("a payload")).unwrap()
+}
+
+#[test]
+fn a_stateful_leg_keeps_the_fields_the_browser_never_held() {
+    let server = EmbeddedServer::new(browser_held_schema()).unwrap();
+    server.set_stateful(true);
+    let shown = shown_after_a_leg(&server, json!({ "shown": "s1", "kept": "" }));
+    assert_eq!(shown["kept"], "server-only", "the browser's default for a field it was never sent does not reset the host's");
+}
+
+#[test]
+fn control_a_stateful_leg_still_folds_a_field_the_browser_reads() {
+    let server = EmbeddedServer::new(browser_held_schema()).unwrap();
+    server.set_stateful(true);
+    let shown = shown_after_a_leg(&server, json!({ "shown": "s2", "kept": "" }));
+    assert_eq!(shown["shown"], "s2", "the browser's copy of a field it reads is the leg's");
+}
+
+#[test]
+fn control_a_stateless_leg_takes_the_whole_carried_row() {
+    let server = EmbeddedServer::new(browser_held_schema()).unwrap();
+    let shown = shown_after_a_leg(&server, json!({ "shown": "s1", "kept": "from-browser" }));
+    assert_eq!(shown["kept"], "from-browser", "a stateless host's browser carries all of the state");
+}
+
+#[test]
+fn a_stateful_leg_folds_a_field_a_browser_run_step_wrote() {
+    let server = EmbeddedServer::new(browser_held_schema()).unwrap();
+    server.set_stateful(true);
+    let shown = shown_after_a_leg(&server, json!({ "shown": "s1", "kept": "", "draft": "typed" }));
+    assert_eq!(shown["draft"], "typed", "a field the browser wrote is the browser's, so the leg takes it");
 }
