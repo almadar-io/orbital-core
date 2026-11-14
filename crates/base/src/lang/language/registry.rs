@@ -258,6 +258,18 @@ pub struct EmbeddedOperatorParam {
     pub ty: OperatorTypeRef,
 }
 
+/// An operator's drawing metadata (std `visual`): its glyph as one SVG path in a unit box (-1..1, y down).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct EmbeddedOperatorVisual {
+    #[serde(default)]
+    pub glyph: Option<String>,
+}
+
+/// The glyph `name` is drawn with, from the installed std operator table; `None` when it declares none.
+pub fn operator_glyph(name: &str) -> Option<&'static str> {
+    operators().get(name)?.visual.as_ref()?.glyph.as_deref()
+}
+
 /// Metadata for a single operator parsed from `operators.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddedOperator {
@@ -279,6 +291,9 @@ pub struct EmbeddedOperator {
     /// fixed-return operators.
     #[serde(rename = "returnSemantics", default)]
     pub return_semantics: Option<String>,
+    /// How the operator is drawn: its glyph, when it has one (std `visual.glyph`).
+    #[serde(default)]
+    pub visual: Option<EmbeddedOperatorVisual>,
     /// Schema v2 effect metadata. Absent on operators that predate the v2
     /// uplift. The V2 validator consults `effect.produces` at effect call
     /// sites to check `emit: { success: "X" }` compatibility.
