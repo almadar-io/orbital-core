@@ -49,6 +49,11 @@ impl<T> Shared<T> {
         Arc::as_ptr(&this.0)
     }
 
+    /// Whether another handle shares this allocation.
+    pub fn is_shared(this: &Self) -> bool {
+        Arc::strong_count(&this.0) > 1
+    }
+
     /// A handle to the allocation that does not keep it alive.
     pub fn downgrade(this: &Self) -> std::sync::Weak<T> {
         Arc::downgrade(&this.0)

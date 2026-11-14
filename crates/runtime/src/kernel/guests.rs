@@ -705,10 +705,18 @@ impl RuntimeKernel {
             }
         };
         guest.set_runs_client_traits(!split);
+        let client_of = |program: &OrbitalSchema| {
+            orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
+                &serde_json::to_value(program).unwrap_or(serde_json::Value::Null),
+            ))
+        };
         let client = split.then(|| {
-            json_value(orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
-                &serde_json::to_value(&schema).unwrap_or(serde_json::Value::Null),
-            )))
+            let mut client = client_of(&schema);
+            if let (true, Some(fields)) = (carries_lazy, client.as_object_mut()) {
+                let lazy = lazy_programs.iter().map(|(file, child)| (file.clone(), client_of(child))).collect();
+                fields.insert("lazyPrograms".into(), serde_json::Value::Object(lazy));
+            }
+            json_value(client)
         });
         if carries_lazy {
             guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));

@@ -11,8 +11,10 @@ use super::*;
 use orbital_core_base::ir::types::{DeclaredShape, OirType};
 use orbital_core_base::type_compat::{parse_compat_type, CompatType};
 
-fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
-    serde_json::from_str(text)
+/// Text is parsed as deep as the kernel reads any JSON ([`orbital_core_base::json_value::MAX_JSON_DEPTH`]), so a reply
+/// that nests deeper than serde's default 128 levels (a Chrome heap profile's call tree) still parses.
+fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, orbital_core_base::json_value::DeepJsonError> {
+    orbital_core_base::json_value::from_deep_json(text.as_bytes())
 }
 
 fn json_to_value(json: serde_json::Value) -> Value {
@@ -482,3 +484,30 @@ impl Operator for JsonStringifyOp {
 
 #[allow(unused_imports)]
 pub(crate) use orbital_core_base::json_value::value_to_json;
+
+#[cfg(test)]
+mod deep_parse_tests {
+    use super::*;
+    use crate::evaluator::context::BindingContext;
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    fn parse(text: &str, shape: &str) -> Value {
+        JsonParseOp.evaluate(&[SExpression::string(text.to_string()), SExpression::string(shape.to_string())], &BindingContext::new()).unwrap()
+    }
+
+    #[test]
+    fn json_parse_reads_text_nested_deeper_than_serdes_default_limit() {
+        let deep = nested(261);
+        assert!(!parse(&deep, "SExpr").is_null(), "a 261-deep reply parses");
+        assert!(!parse(&nested(100), "SExpr").is_null(), "control: a shallow one still parses");
+    }
+
+    #[test]
+    fn json_parse_refuses_text_past_the_kernels_depth_bound_as_null() {
+        let too_deep = nested(orbital_core_base::json_value::MAX_JSON_DEPTH + 1);
+        assert!(parse(&too_deep, "SExpr").is_null());
+    }
+}
