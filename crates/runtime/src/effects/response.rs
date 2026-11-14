@@ -222,6 +222,10 @@ pub struct EventRequest {
     /// with the shared `payload` (`bus.ts` `OrbitalEventRequest.mount`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount: Option<Vec<MountSeed>>,
+    /// The traits an `$UNMOUNT` releases for its client, every trait of this orbital a page left, in one request
+    /// (EXEC-TICK-6). The only place an `$UNMOUNT` names its traits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unmount: Option<Vec<String>>,
     /// The route a `mount` batch opens: the kernel delivers `$MOUNT { page, route, traits, entities, ancestors, label?, crumb? }` to the traits that
     /// listen for it before the batch's seeds run (EXEC-SEED-7). Absent: a mount that opens no route delivers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -244,8 +248,8 @@ pub struct EventRequest {
 }
 
 /// The option keys of a `program/dispatch` event request that become request fields as they are named.
-const DISPATCH_REQUEST_KEYS: [&str; 12] =
-    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "route", "crumb", "entityByTrait", "framesSince"];
+const DISPATCH_REQUEST_KEYS: [&str; 13] =
+    ["event", "entityId", "targetTrait", "clientId", "locale", "delivery", "dispatchLog", "mount", "unmount", "route", "crumb", "entityByTrait", "framesSince"];
 
 /// An empty text, record or list in an event request is absent, as the HTTP routes read it.
 fn dispatch_option_present(value: &serde_json::Value) -> bool {

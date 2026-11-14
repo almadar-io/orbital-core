@@ -76,6 +76,23 @@ impl RuntimeKernel {
             .unmount(client, orbital, traits.into_iter().map(Into::into));
     }
 
+    /// `$UNMOUNT` (EXEC-TICK-6): releases, for its client, the traits the request names in `unmount`, and dispatches
+    /// nothing; one naming none is refused by name. `None` for any other request. Every server-role host answers an
+    /// `$UNMOUNT` here, before it admits the request.
+    pub fn release_request(&self, orbital: &str, request: &crate::effects::response::EventRequest) -> Option<crate::effects::response::EventResponse> {
+        use crate::effects::response::EventResponse;
+        if request.event != orbital_core_base::bus_event::UNMOUNT_EVENT {
+            return None;
+        }
+        let Some(traits) = request.unmount.clone() else {
+            return Some(EventResponse::error("an `$UNMOUNT` names the traits it releases in `unmount`"));
+        };
+        if let Some(client) = request.client_id.as_deref() {
+            self.unmount_client(client, orbital, traits);
+        }
+        Some(EventResponse::success(""))
+    }
+
     /// `client` is gone: everything it had mounted is released.
     pub fn release_client(&self, client: &str) {
         self.mount_ledger.write().release(client);

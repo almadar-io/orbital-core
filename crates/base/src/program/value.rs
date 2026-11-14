@@ -357,8 +357,14 @@ impl Serialize for Value {
             Value::Int(i) => serializer.serialize_i64(*i),
             Value::Bytes(b) => serializer.serialize_str(&crate::codec::base64_encode(b)),
             Value::String(s) => serializer.serialize_str(s),
-            Value::Array(arr) => arr.serialize(serializer),
-            Value::Object(obj) => obj.serialize(serializer),
+            Value::Array(arr) => match crate::held_values::write(self, serializer) {
+                crate::held_values::Held::Done(out) => out,
+                crate::held_values::Held::Inline(serializer) => arr.serialize(serializer),
+            },
+            Value::Object(obj) => match crate::held_values::write(self, serializer) {
+                crate::held_values::Held::Done(out) => out,
+                crate::held_values::Held::Inline(serializer) => obj.serialize(serializer),
+            },
             Value::Sealed(sealed) => sealed.fields.serialize(serializer),
             Value::Lambda(_) => {
                 // Serialize lambda as ["fn", params, body]

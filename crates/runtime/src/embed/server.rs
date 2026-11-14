@@ -610,9 +610,10 @@ impl EmbeddedServer {
         if let Some(refused) = self.kernel.refusal(&request) {
             return Ok(ServerProgress::Done(refused));
         }
-        if self.record_mount(orbital, &request) {
-            return Ok(ServerProgress::Done(EventResponse::success("")));
+        if let Some(released) = self.kernel.release_request(orbital, &request) {
+            return Ok(ServerProgress::Done(released));
         }
+        self.record_mount(orbital, &request);
         let admitted = self.admit(&request)?;
         let mut queued = self.queued.lock();
         if self.lane_held() || !queued.is_empty() {
@@ -625,23 +626,18 @@ impl EmbeddedServer {
     }
 
     /// The client's mount ledger follows its requests (EXEC-TICK-4): a mount batch or a lifecycle event mounts the traits
-    /// it names for the client, `$UNMOUNT` releases them. A request naming no client is no client's mount (the host's own
-    /// boot mount). Answers whether the request was an unmount, which dispatches nothing.
-    fn record_mount(&self, orbital: &str, request: &EventRequest) -> bool {
-        let unmount = request.event == orbital_core_base::bus_event::UNMOUNT_EVENT;
+    /// it names for the client. A request naming no client is no client's mount (the host's own boot mount).
+    fn record_mount(&self, orbital: &str, request: &EventRequest) {
         let Some(client) = request.client_id.as_deref() else {
-            return unmount;
+            return;
         };
         let traits: Vec<String> = match request.mount.as_ref() {
             Some(seeds) => seeds.iter().map(|seed| seed.r#trait.clone()).collect(),
             None => request.target_trait.iter().cloned().collect(),
         };
-        if unmount {
-            self.kernel.unmount_client(client, orbital, traits);
-        } else if request.mount.is_some() || LifecycleEvent::parse(&request.event).is_some() {
+        if request.mount.is_some() || LifecycleEvent::parse(&request.event).is_some() {
             self.kernel.mount_client(client, orbital, traits);
         }
-        unmount
     }
 
     /// Admit `request` into its session as it arrives (EXEC-DIST-9), so a request waiting for the lane holds it.

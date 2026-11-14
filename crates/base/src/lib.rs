@@ -54,8 +54,8 @@ pub mod effect_types;
 pub mod http_wire;
 #[path = "wire/js_readable.rs"]
 pub mod js_readable;
-#[path = "wire/held.rs"]
-pub mod held;
+#[path = "wire/held_values.rs"]
+pub mod held_values;
 #[path = "wire/row_set.rs"]
 pub mod row_set;
 #[path = "wire/tab.rs"]

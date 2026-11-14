@@ -151,10 +151,14 @@ fn mount_request(client: &str, trait_name: &str) -> EventRequest {
 }
 
 fn unmount_request(client: &str, trait_name: &str) -> EventRequest {
+    release_request(client, &[trait_name])
+}
+
+fn release_request(client: &str, traits: &[&str]) -> EventRequest {
     EventRequest {
         event: UNMOUNT_EVENT.to_string(),
         client_id: Some(client.to_string()),
-        target_trait: Some(trait_name.to_string()),
+        unmount: Some(traits.iter().map(|t| t.to_string()).collect()),
         ..Default::default()
     }
 }
@@ -193,6 +197,43 @@ fn a_mount_request_enters_the_ledger_and_an_unmount_request_leaves_it() {
     let left = start_done(&server, unmount_request("tab-1", "Scoped"));
     assert!(left.success && !left.transitioned);
     assert!(emitted(&drive(&server, tick("Scoped", None), &["a"])).is_empty());
+}
+
+// EXEC-TICK-6: a page's traits leave in one release per orbital.
+#[test]
+fn one_unmount_request_releases_every_trait_it_names() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    start_done(&server, mount_request("tab-1", "InRunning"));
+    let left = start_done(&server, release_request("tab-1", &["Scoped", "InRunning"]));
+    assert!(left.success && !left.transitioned);
+    assert!(!server.kernel().trait_mounted("Scoped"));
+    assert!(!server.kernel().trait_mounted("InRunning"));
+}
+
+#[test]
+fn control_an_unmount_request_releases_only_the_traits_it_names() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    start_done(&server, mount_request("tab-1", "InRunning"));
+    start_done(&server, release_request("tab-1", &["Scoped"]));
+    assert!(!server.kernel().trait_mounted("Scoped"));
+    assert!(server.kernel().trait_mounted("InRunning"));
+}
+
+#[test]
+fn an_unmount_request_that_names_its_trait_as_the_target_is_refused_and_releases_nothing() {
+    let server = EmbeddedServer::new(schema()).unwrap();
+    start_done(&server, mount_request("tab-1", "Scoped"));
+    let refused = start_done(&server, EventRequest {
+        event: UNMOUNT_EVENT.to_string(),
+        client_id: Some("tab-1".to_string()),
+        target_trait: Some("Scoped".to_string()),
+        ..Default::default()
+    });
+    assert!(!refused.success);
+    assert!(refused.error.as_deref().unwrap_or("").contains("`unmount`"), "{:?}", refused.error);
+    assert!(server.kernel().trait_mounted("Scoped"));
 }
 
 // EXEC-TICK-6: the kernel keeps who has mounted what; a tick fires while some client holds its trait.

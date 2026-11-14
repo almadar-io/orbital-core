@@ -86,7 +86,43 @@ fn seeded(entered: &orbital_core_runtime::embed::wire::Entered) -> Vec<&str> {
 }
 
 fn released(left: &[orbital_core_runtime::embed::wire::Left]) -> Vec<&str> {
-    left.iter().map(|l| l.trait_name.as_str()).collect()
+    left.iter().flat_map(|l| l.traits.iter().map(String::as_str)).collect()
+}
+
+fn two_orbitals() -> EmbeddedKernel {
+    let with = |name: &str| {
+        json!({
+            "name": name, "linkedEntity": "E", "dispatch": "client",
+            "stateMachine": { "states": [{ "name": "on", "isInitial": true }],
+                "transitions": [{ "from": "on", "to": "on", "event": "INIT", "effects": [] }] }
+        })
+    };
+    let entity = |name: &str| json!({ "name": name, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] });
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [
+            { "name": "Main", "entity": entity("E"), "traits": [with("A"), with("B")],
+              "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "A" }, { "ref": "B" }] }] },
+            { "name": "Side", "entity": entity("E"), "traits": [with("D")], "pages": [] }
+        ]
+    }))
+    .unwrap();
+    EmbeddedKernel::new(schema, "c").unwrap()
+}
+
+#[test]
+fn leaving_a_page_releases_each_orbitals_traits_in_one_leg() {
+    let k = two_orbitals();
+    k.enter(Some("/"), "page", vec!["A".into(), "B".into(), "D".into()]).unwrap();
+    let left = k.leave();
+    let legs: Vec<(&str, Vec<&str>)> = left.iter().map(|l| (l.orbital.as_str(), l.traits.iter().map(String::as_str).collect())).collect();
+    assert_eq!(legs, [("Main", vec!["A", "B"]), ("Side", vec!["D"])]);
+    for l in &left {
+        assert_eq!(l.leg.event, "$UNMOUNT");
+        assert_eq!(l.leg.unmount.as_ref(), Some(&l.traits));
+        assert_eq!(l.leg.target_trait, None);
+        assert_eq!(l.leg.client_id.as_deref(), Some("c"));
+    }
 }
 
 #[test]
@@ -115,7 +151,9 @@ fn entering_a_smaller_set_answers_the_unmount_legs_of_the_traits_that_left() {
     assert_eq!(released(&next.left), ["A"]);
     assert_eq!(next.left[0].orbital, "Main");
     assert_eq!(next.left[0].leg.event, "$UNMOUNT");
-    assert_eq!(next.left[0].leg.target_trait.as_deref(), Some("A"));
+    assert_eq!(next.left[0].leg.unmount.as_deref(), Some(&["A".to_string()][..]));
+    assert_eq!(next.left[0].leg.target_trait, None);
+    assert_eq!(next.left.len(), 1, "control: one trait leaving is one leg");
     assert_eq!(next.left[0].leg.client_id.as_deref(), Some("c"));
 }
 

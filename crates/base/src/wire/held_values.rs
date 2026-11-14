@@ -52,7 +52,12 @@ impl HeldValues {
     }
 
     fn sweep(&mut self) {
-        let dead: Vec<usize> = self.sent.iter().filter(|(_, (_, w))| !w.alive()).map(|(at, _)| *at).collect();
+        let dead: Vec<usize> = self
+            .sent
+            .iter()
+            .filter(|(_, (_, w))| !w.alive())
+            .map(|(at, _)| *at)
+            .collect();
         for at in dead {
             if let Some((id, _)) = self.sent.remove(&at) {
                 self.released.push(id);
@@ -75,7 +80,16 @@ impl Scope {
             .get(&at)
             .filter(|(_, w)| w.alive())
             .map(|(id, _)| *id)
-            .or_else(|| if self.writing { self.pending.iter().find(|(p, _, _)| *p == at).map(|(_, id, _)| *id) } else { None })
+            .or_else(|| {
+                if self.writing {
+                    self.pending
+                        .iter()
+                        .find(|(p, _, _)| *p == at)
+                        .map(|(_, id, _)| *id)
+                } else {
+                    None
+                }
+            })
     }
 }
 
@@ -85,18 +99,32 @@ crate::kernel_local! {
 
 /// `value` as JSON text a JavaScript host reads exactly, naming each held render value `held` records as handed
 /// over by reference. Nothing is recorded when the text cannot be written.
-pub fn to_js_readable_json_held<T: serde::Serialize + ?Sized>(value: &T, held: &mut HeldValues) -> Result<String, String> {
+pub fn to_js_readable_json_held<T: serde::Serialize + ?Sized>(
+    value: &T,
+    held: &mut HeldValues,
+) -> Result<String, String> {
     held.sweep();
     let next = held.next;
-    let open = Scope { held: core::mem::take(held), pending: Vec::new(), writing: false, render_depth: 0 };
+    let open = Scope {
+        held: core::mem::take(held),
+        pending: Vec::new(),
+        writing: false,
+        render_depth: 0,
+    };
     SCOPE.with(|s| *s.borrow_mut() = Some(open));
     let checked = crate::js_readable::js_readable(value).map_err(|e| e.to_string());
     let written = checked.and_then(|()| {
-        SCOPE.with(|s| if let Some(scope) = s.borrow_mut().as_mut() { scope.writing = true });
+        SCOPE.with(|s| {
+            if let Some(scope) = s.borrow_mut().as_mut() {
+                scope.writing = true
+            }
+        });
         serde_json::to_string(value).map_err(|e| format!("serialize: {e}"))
     });
     let scope = SCOPE.with(|s| s.borrow_mut().take());
-    let Some(mut scope) = scope else { return Err("held-value scope lost".to_string()) };
+    let Some(mut scope) = scope else {
+        return Err("held-value scope lost".to_string());
+    };
     match &written {
         Ok(_) => {
             for (at, id, weak) in scope.pending.drain(..) {
@@ -111,10 +139,19 @@ pub fn to_js_readable_json_held<T: serde::Serialize + ?Sized>(value: &T, held: &
 
 /// Runs `f` (a `render-ui` payload's serialization) with held values written by reference when a scope is open.
 pub(crate) fn in_render<R>(f: impl FnOnce() -> R) -> R {
-    let entered = SCOPE.with(|s| s.borrow_mut().as_mut().map(|scope| scope.render_depth += 1).is_some());
+    let entered = SCOPE.with(|s| {
+        s.borrow_mut()
+            .as_mut()
+            .map(|scope| scope.render_depth += 1)
+            .is_some()
+    });
     let out = f();
     if entered {
-        SCOPE.with(|s| if let Some(scope) = s.borrow_mut().as_mut() { scope.render_depth -= 1 });
+        SCOPE.with(|s| {
+            if let Some(scope) = s.borrow_mut().as_mut() {
+                scope.render_depth -= 1
+            }
+        });
     }
     out
 }
@@ -133,15 +170,17 @@ enum Decision {
 
 /// `value` written by reference when a scope is open, it sits in a `render-ui` payload and another holder shares it.
 pub(crate) fn write<S: Serializer>(value: &Value, serializer: S) -> Held<S> {
-    let (at, weak, shared) = match value {
-        Value::Array(a) => (Shared::as_ptr(a) as usize, HeldWeak::Array(Shared::downgrade(a)), Shared::is_shared(a)),
-        Value::Object(o) => (Shared::as_ptr(o) as usize, HeldWeak::Object(Shared::downgrade(o)), Shared::is_shared(o)),
+    let at = match value {
+        Value::Array(a) if Shared::is_shared(a) => Shared::as_ptr(a) as usize,
+        Value::Object(o) if Shared::is_shared(o) => Shared::as_ptr(o) as usize,
         _ => return Held::Inline(serializer),
     };
     let decision = SCOPE.with(|s| {
         let mut slot = s.borrow_mut();
-        let Some(scope) = slot.as_mut() else { return Decision::Inline };
-        if scope.render_depth == 0 || !shared {
+        let Some(scope) = slot.as_mut() else {
+            return Decision::Inline;
+        };
+        if scope.render_depth == 0 {
             return Decision::Inline;
         }
         match (scope.id_of(at), scope.writing) {
@@ -149,6 +188,11 @@ pub(crate) fn write<S: Serializer>(value: &Value, serializer: S) -> Held<S> {
             (Some(id), true) => Decision::Reference(id),
             (None, false) => Decision::Inline,
             (None, true) => {
+                let weak = match value {
+                    Value::Array(a) => HeldWeak::Array(Shared::downgrade(a)),
+                    Value::Object(o) => HeldWeak::Object(Shared::downgrade(o)),
+                    _ => return Decision::Inline,
+                };
                 let id = scope.held.next;
                 scope.held.next += 1;
                 scope.pending.push((at, id, weak));
@@ -187,18 +231,30 @@ mod tests {
     fn program() -> Value {
         let mut m = ValueMap::default();
         m.insert("name".into(), Value::String(Shared::new("crm".to_string())));
-        m.insert("traits".into(), Value::Array(Shared::new(vec![Value::Int(1), Value::Int(2)])));
+        m.insert(
+            "traits".into(),
+            Value::Array(Shared::new(vec![Value::Int(1), Value::Int(2)])),
+        );
         Value::Object(Shared::new(m))
     }
 
     fn render(program: Value) -> ClientEffect {
         let mut view = ValueMap::default();
-        view.insert("type".into(), Value::String(Shared::new("guest-view".to_string())));
+        view.insert(
+            "type".into(),
+            Value::String(Shared::new("guest-view".to_string())),
+        );
         view.insert("program".into(), program);
-        ClientEffect::RenderUi { slot: "main".to_string(), config: Some(Value::Object(Shared::new(view))) }
+        ClientEffect::RenderUi {
+            slot: "main".to_string(),
+            config: Some(Value::Object(Shared::new(view))),
+        }
     }
 
-    fn resolve(v: serde_json::Value, cache: &mut BTreeMap<u64, serde_json::Value>) -> serde_json::Value {
+    fn resolve(
+        v: serde_json::Value,
+        cache: &mut BTreeMap<u64, serde_json::Value>,
+    ) -> serde_json::Value {
         match v {
             serde_json::Value::Object(m) if m.contains_key(HELD_MARKER) => {
                 let id = m[HELD_MARKER].as_u64().expect("id");
@@ -208,11 +264,18 @@ mod tests {
                         cache.insert(id, full.clone());
                         full
                     }
-                    None => cache.get(&id).cloned().expect("held id the host was handed"),
+                    None => cache
+                        .get(&id)
+                        .cloned()
+                        .expect("held id the host was handed"),
                 }
             }
-            serde_json::Value::Object(m) => serde_json::Value::Object(m.into_iter().map(|(k, v)| (k, resolve(v, cache))).collect()),
-            serde_json::Value::Array(a) => serde_json::Value::Array(a.into_iter().map(|v| resolve(v, cache)).collect()),
+            serde_json::Value::Object(m) => serde_json::Value::Object(
+                m.into_iter().map(|(k, v)| (k, resolve(v, cache))).collect(),
+            ),
+            serde_json::Value::Array(a) => {
+                serde_json::Value::Array(a.into_iter().map(|v| resolve(v, cache)).collect())
+            }
             other => other,
         }
     }
@@ -226,9 +289,15 @@ mod tests {
         let row = program();
         let mut held = HeldValues::new();
         let first = to_js_readable_json_held(&render(row.clone()), &mut held).expect("first");
-        assert_eq!(text(&first)[2]["program"], json!({ "$held": 0, "value": { "name": "crm", "traits": [1, 2] } }));
+        assert_eq!(
+            text(&first)[2]["program"],
+            json!({ "$held": 0, "value": { "name": "crm", "traits": [1, 2] } })
+        );
         let second = to_js_readable_json_held(&render(row.clone()), &mut held).expect("second");
-        assert_eq!(text(&second), json!(["render-ui", "main", { "type": "guest-view", "program": { "$held": 0 } }]));
+        assert_eq!(
+            text(&second),
+            json!(["render-ui", "main", { "type": "guest-view", "program": { "$held": 0 } }])
+        );
         assert_eq!(held.held(), 1);
     }
 
@@ -239,7 +308,8 @@ mod tests {
         let mut cache = BTreeMap::new();
         for _ in 0..3 {
             let plain = text(&to_js_readable_json(&render(row.clone())).expect("plain"));
-            let by_ref = text(&to_js_readable_json_held(&render(row.clone()), &mut held).expect("held"));
+            let by_ref =
+                text(&to_js_readable_json_held(&render(row.clone()), &mut held).expect("held"));
             assert_eq!(resolve(by_ref, &mut cache), plain);
         }
     }
@@ -248,7 +318,10 @@ mod tests {
     fn a_value_nothing_else_holds_is_written_inline() {
         let mut held = HeldValues::new();
         let out = to_js_readable_json_held(&render(program()), &mut held).expect("inline");
-        assert_eq!(text(&out)[2]["program"], json!({ "name": "crm", "traits": [1, 2] }));
+        assert_eq!(
+            text(&out)[2]["program"],
+            json!({ "name": "crm", "traits": [1, 2] })
+        );
         assert_eq!(held.held(), 0);
     }
 
@@ -256,13 +329,20 @@ mod tests {
     fn the_plain_encoder_never_writes_a_reference() {
         let row = program();
         let out = to_js_readable_json(&render(row.clone())).expect("plain");
-        assert_eq!(text(&out)[2]["program"], json!({ "name": "crm", "traits": [1, 2] }));
+        assert_eq!(
+            text(&out)[2]["program"],
+            json!({ "name": "crm", "traits": [1, 2] })
+        );
     }
 
     #[test]
     fn a_shared_value_outside_a_render_is_written_inline() {
         let row = program();
-        let effect = ClientEffect::Navigate { path: "/x".to_string(), params: Some(row.clone()), options: None };
+        let effect = ClientEffect::Navigate {
+            path: "/x".to_string(),
+            params: Some(row.clone()),
+            options: None,
+        };
         let mut held = HeldValues::new();
         let out = to_js_readable_json_held(&effect, &mut held).expect("navigate");
         assert_eq!(text(&out)[2], json!({ "name": "crm", "traits": [1, 2] }));
@@ -273,7 +353,9 @@ mod tests {
     fn the_same_value_twice_in_one_answer_is_sent_once() {
         let row = program();
         let mut held = HeldValues::new();
-        let out = to_js_readable_json_held(&vec![render(row.clone()), render(row.clone())], &mut held).expect("two");
+        let out =
+            to_js_readable_json_held(&vec![render(row.clone()), render(row.clone())], &mut held)
+                .expect("two");
         let out = text(&out);
         assert_eq!(out[0][2]["program"]["$held"], json!(0));
         assert!(out[0][2]["program"].get("value").is_some());
@@ -298,11 +380,18 @@ mod tests {
     fn an_answer_that_cannot_be_written_records_nothing() {
         let row = program();
         let mut held = HeldValues::new();
-        let too_big = ClientEffect::Navigate { path: "/x".to_string(), params: Some(Value::Int(i64::MAX)), options: None };
+        let too_big = ClientEffect::Navigate {
+            path: "/x".to_string(),
+            params: Some(Value::Int(i64::MAX)),
+            options: None,
+        };
         let failing = (render(row.clone()), too_big);
         assert!(to_js_readable_json_held(&failing, &mut held).is_err());
         assert_eq!(held.held(), 0);
         let out = to_js_readable_json_held(&render(row.clone()), &mut held).expect("after failure");
-        assert_eq!(text(&out)[2]["program"], json!({ "$held": 0, "value": { "name": "crm", "traits": [1, 2] } }));
+        assert_eq!(
+            text(&out)[2]["program"],
+            json!({ "$held": 0, "value": { "name": "crm", "traits": [1, 2] } })
+        );
     }
 }

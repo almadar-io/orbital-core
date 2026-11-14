@@ -1303,10 +1303,7 @@ impl EmbeddedKernel {
         self.kernel.remount_traits(traits.clone());
         let mut entered = self.entered.lock();
         let gone = std::mem::take(&mut *entered);
-        gone.into_iter()
-            .filter(|(name, _)| !traits.contains(name))
-            .map(|(name, orbital)| self.unmount_leg(name, orbital))
-            .collect()
+        self.release_legs(gone.into_iter().filter(|(name, _)| !traits.contains(name)))
     }
 
     /// The page identified by `mount_key` now holds `traits`, opened at `route_path` (`None`: no route, nothing seeded).
@@ -1359,14 +1356,26 @@ impl EmbeddedKernel {
         self.unmount(all)
     }
 
-    fn unmount_leg(&self, trait_name: String, orbital: String) -> Left {
+    /// One leg per orbital, in the order its first trait left, releasing every `(trait, orbital)` of it.
+    fn release_legs(&self, left: impl IntoIterator<Item = (String, String)>) -> Vec<Left> {
+        let mut by_orbital: Vec<(String, Vec<String>)> = Vec::new();
+        for (name, orbital) in left {
+            match by_orbital.iter_mut().find(|(o, _)| *o == orbital) {
+                Some((_, names)) => names.push(name),
+                None => by_orbital.push((orbital, vec![name])),
+            }
+        }
+        by_orbital.into_iter().map(|(orbital, names)| self.unmount_leg(orbital, names)).collect()
+    }
+
+    fn unmount_leg(&self, orbital: String, traits: Vec<String>) -> Left {
         let leg = EventRequest {
             event: orbital_core_base::bus_event::UNMOUNT_EVENT.to_string(),
-            target_trait: Some(trait_name.clone()),
+            unmount: Some(traits.clone()),
             client_id: Some(self.client_id.clone()),
             ..Default::default()
         };
-        Left { trait_name, orbital, leg }
+        Left { orbital, traits, leg }
     }
 
     /// Add traits to the current mount without dropping those already mounted. The first mount a
@@ -1379,8 +1388,8 @@ impl EmbeddedKernel {
         self.kernel.mount_traits(traits);
     }
 
-    /// Traits leaving the mount: their ticks stop and nothing stays held for them. The answer is the leg that releases
-    /// each trait the page had entered on its host.
+    /// Traits leaving the mount: their ticks stop and nothing stays held for them. The answer is the legs that release
+    /// the traits the page had entered on their hosts.
     pub fn unmount(&self, traits: Vec<String>) -> Vec<Left> {
         if let Some(mounted) = self.mounted.lock().as_mut() {
             for t in &traits {
@@ -1392,7 +1401,7 @@ impl EmbeddedKernel {
             traits.iter().filter_map(|name| entered.remove_entry(name)).collect::<Vec<_>>()
         };
         self.kernel.unmount_traits(traits);
-        left.into_iter().map(|(name, orbital)| self.unmount_leg(name, orbital)).collect()
+        self.release_legs(left)
     }
 
     /// The host's report of whether `trait_name`'s rendered output is on screen (its `[visible]` ticks).

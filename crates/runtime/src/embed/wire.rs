@@ -138,14 +138,13 @@ pub struct MountFailure {
     pub message: String,
 }
 
-/// A trait the page entered that has left, and the leg that releases it on its host.
+/// The traits of one orbital the page entered that have left, and the one leg that releases them on its host.
 #[cfg_attr(test, derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Left {
-    #[serde(rename = "trait")]
-    pub trait_name: String,
     pub orbital: String,
+    pub traits: Vec<String>,
     pub leg: EventRequest,
 }
 
