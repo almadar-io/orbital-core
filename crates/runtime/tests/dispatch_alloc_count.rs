@@ -6,8 +6,8 @@
 mod support;
 
 use serde_json::json;
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use orbital_core_base::alloc_meter::{self, CountingAlloc};
+use std::alloc::System;
 use std::sync::Arc;
 use {
     orbital_core_base::effect_types::RuntimeEnvironment,
@@ -19,38 +19,10 @@ use {
     orbital_core_runtime::kernel::RuntimeKernel,
 };
 
-struct Counting;
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-static BYTES: AtomicUsize = AtomicUsize::new(0);
-static LIVE: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-static PEAK: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(layout.size(), Ordering::Relaxed);
-        let live = LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed) + layout.size() as isize;
-        PEAK.fetch_max(live, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        BYTES.fetch_add(new_size, Ordering::Relaxed);
-        let grow = new_size as isize - layout.size() as isize;
-        let live = LIVE.fetch_add(grow, Ordering::Relaxed) + grow;
-        PEAK.fetch_max(live, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
-    }
-}
-
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[global_allocator]
-static A: Counting = Counting;
+static A: CountingAlloc<System> = CountingAlloc::with_totals(System);
 
 fn schema() -> OrbitalSchema {
     let fields: Vec<_> = (0..14)
@@ -125,9 +97,9 @@ fn deep_copy(value: &Value) -> Value {
 }
 
 fn count<R>(f: impl FnOnce() -> R) -> (usize, R) {
-    let before = ALLOCS.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().allocs;
     let r = f();
-    (ALLOCS.load(Ordering::SeqCst) - before, r)
+    (alloc_meter::totals().allocs - before, r)
 }
 
 #[test]
@@ -417,9 +389,9 @@ fn retained_by_loop(blob: &str, steps: usize) -> isize {
     );
     k.register_schema(scanner_schema(blob)).unwrap();
     let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
-    let held = LIVE.load(Ordering::SeqCst) - before;
+    let held = alloc_meter::totals().live - before;
     let executed = out.iter().filter(|(_, r)| r.executed).count();
     assert_eq!(executed, steps);
     held
@@ -479,9 +451,9 @@ fn retained_by_counter(steps: usize) -> isize {
     );
     k.register_schema(counter_schema()).unwrap();
     let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     let out = k.dispatch("Counter", None, "TICK", payload).unwrap();
-    let held = LIVE.load(Ordering::SeqCst) - before;
+    let held = alloc_meter::totals().live - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
     held
 }
@@ -510,9 +482,9 @@ fn allocated_by_loop(blob: &str, steps: usize) -> usize {
     );
     k.register_schema(scanner_schema(blob)).unwrap();
     let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
-    let spent = BYTES.load(Ordering::SeqCst) - before;
+    let spent = alloc_meter::totals().bytes - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
     spent
 }
@@ -564,9 +536,9 @@ fn control_a_large_field_read_each_step_is_still_paid_for() {
     );
     k.register_schema(rewriter_schema(&"x".repeat(BLOB))).unwrap();
     let payload = serde_json::from_value::<Value>(json!({ "left": 10 })).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
-    let spent = BYTES.load(Ordering::SeqCst) - before;
+    let spent = alloc_meter::totals().bytes - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 10);
     assert!(spent > 10 * BLOB, "a field each step rewrites is built each step: {spent} bytes");
 }
@@ -621,9 +593,9 @@ fn retained_by_rewrites(blob: &str, steps: usize) -> isize {
     );
     k.register_schema(rewriter_schema(blob)).unwrap();
     let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
-    let held = LIVE.load(Ordering::SeqCst) - before;
+    let held = alloc_meter::totals().live - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), steps);
     held
 }
@@ -680,9 +652,9 @@ fn allocated_by_reads(big: &serde_json::Value, through_let: bool) -> usize {
         Default::default(),
     );
     k.register_schema(reader_schema(big, through_let)).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Read", None, "READ", Value::Null).unwrap();
-    let spent = BYTES.load(Ordering::SeqCst) - before;
+    let spent = alloc_meter::totals().bytes - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
     spent
 }
@@ -699,9 +671,9 @@ fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
     let large = map_of(1024, 64);
     let small = map_of(2, 4);
     let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let copy = deep_copy(&as_value);
-    let one_copy = BYTES.load(Ordering::SeqCst) - before;
+    let one_copy = alloc_meter::totals().bytes - before;
     drop(copy);
     for through_let in [false, true] {
         let extra = allocated_by_reads(&large, through_let).saturating_sub(allocated_by_reads(&small, through_let));
@@ -741,9 +713,9 @@ fn allocated_by_part_reads(list: &serde_json::Value, big: &serde_json::Value, re
         Default::default(),
     );
     k.register_schema(part_reader_schema(list, big, read.clone())).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Read", None, "READ", Value::Null).unwrap();
-    let spent = BYTES.load(Ordering::SeqCst) - before;
+    let spent = alloc_meter::totals().bytes - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1, "{read}");
     spent
 }
@@ -758,9 +730,9 @@ fn reading_part_of_a_bound_list_or_map_does_not_copy_it() {
     let (large_map, small_map) = (map_of(1024, 64), map_of(2, 4));
     let one_copy = |value: &serde_json::Value| {
         let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
-        let before = BYTES.load(Ordering::SeqCst);
+        let before = alloc_meter::totals().bytes;
         let copy = deep_copy(&as_value);
-        let spent = BYTES.load(Ordering::SeqCst) - before;
+        let spent = alloc_meter::totals().bytes - before;
         drop(copy);
         spent
     };
@@ -817,18 +789,18 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
             Default::default(),
         );
         k.register_schema(schema(big)).unwrap();
-        let before = BYTES.load(Ordering::SeqCst);
+        let before = alloc_meter::totals().bytes;
         let out = k.dispatch("Fold", None, "FOLD", Value::Null).unwrap();
-        let spent = BYTES.load(Ordering::SeqCst) - before;
+        let spent = alloc_meter::totals().bytes - before;
         assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
         spent
     };
     spent(&map_of(2, 4));
     let large = map_of(1024, 64);
     let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let copy = deep_copy(&as_value);
-    let one_copy = BYTES.load(Ordering::SeqCst) - before;
+    let one_copy = alloc_meter::totals().bytes - before;
     drop(copy);
     let extra = spent(&large).saturating_sub(spent(&map_of(2, 4)));
     println!("ALLOCATED_BY_50_STEP_REDUCE {extra} (one copy: {one_copy})");
@@ -865,9 +837,9 @@ fn allocated_by_map(list: &serde_json::Value, read: &serde_json::Value) -> usize
         Default::default(),
     );
     k.register_schema(mapper_schema(list, read.clone())).unwrap();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Map", None, "MAP", Value::Null).unwrap();
-    let spent = BYTES.load(Ordering::SeqCst) - before;
+    let spent = alloc_meter::totals().bytes - before;
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 1);
     spent
 }
@@ -881,9 +853,9 @@ fn a_callback_binds_each_element_once() {
     let list = |width: usize| serde_json::Value::Array((0..256).map(|i| json!(format!("{i}{}", "v".repeat(width)))).collect());
     let one_copy = |value: &serde_json::Value| {
         let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
-        let before = BYTES.load(Ordering::SeqCst);
+        let before = alloc_meter::totals().bytes;
         let copy = deep_copy(&as_value);
-        let spent = BYTES.load(Ordering::SeqCst) - before;
+        let spent = alloc_meter::totals().bytes - before;
         drop(copy);
         spent
     };
@@ -967,13 +939,13 @@ fn fanout_peak_ratio(listeners: usize) -> f64 {
     );
     k.register_schema(fanout_schema(listeners)).unwrap();
     let rows: Vec<serde_json::Value> = (0..2000).map(|i| json!({ "label": "x".repeat(64), "n": i })).collect();
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     let payload = serde_json::from_value::<Value>(json!({ "rows": rows })).unwrap();
-    let size = (LIVE.load(Ordering::SeqCst) - before) as f64;
-    let base = LIVE.load(Ordering::SeqCst);
-    PEAK.store(base, Ordering::SeqCst);
+    let size = (alloc_meter::totals().live - before) as f64;
+    let base = alloc_meter::totals().live;
+    alloc_meter::reset_peak(base);
     k.dispatch("Source", None, "GO", payload).unwrap();
-    (PEAK.load(Ordering::SeqCst) - base) as f64 / size
+    (alloc_meter::totals().peak - base) as f64 / size
 }
 
 /// A fan-out shares the emitted payload across its listeners: peak memory does not grow with the listener count.
@@ -1017,9 +989,9 @@ fn reduce_append_bytes(n: usize) -> usize {
     ))
     .unwrap();
     let ctx = BindingContextBuilder::new().build();
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let out = orbital_core_eval::evaluator::operators::eval_expr(&expr, &ctx).unwrap();
-    let bytes = BYTES.load(Ordering::SeqCst) - before;
+    let bytes = alloc_meter::totals().bytes - before;
     assert_eq!(out.as_array().map(|a| a.len()), Some(n));
     bytes
 }
@@ -1038,11 +1010,11 @@ fn retained_per_dispatch(k: &RuntimeKernel, trait_name: &str, event: &str, runs:
     for _ in 0..50 {
         dispatch();
     }
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     for _ in 0..runs {
         dispatch();
     }
-    (LIVE.load(Ordering::SeqCst) - before) as f64 / runs as f64
+    (alloc_meter::totals().live - before) as f64 / runs as f64
 }
 
 // 1885 -> 1468 retained per audited SAVE (row 1663 -> 1374 bytes): the store keeps one allocation per field name, not one per
@@ -1065,9 +1037,9 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
     let save = retained_per_dispatch(&k, "ContactForm", "SAVE", 500);
     let rows = cache.list("AuditEntry").unwrap();
     assert_eq!(rows.len() - rows_before, 550, "each SAVE persists one audit row");
-    let before = BYTES.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().bytes;
     let copy = deep_copy(&rows[rows.len() - 1]);
-    let row_bytes = (BYTES.load(Ordering::SeqCst) - before) as f64;
+    let row_bytes = (alloc_meter::totals().bytes - before) as f64;
     drop(copy);
     println!("RETAINED_PER_DISPATCH init={init:.0} save={save:.0} row={row_bytes:.0}");
     assert!(init < 64.0, "control: a dispatch that persists nothing retains {init:.0} bytes");
@@ -1114,11 +1086,11 @@ fn an_ended_session_retains_only_its_tombstone() {
     for i in 0..50 {
         cycle(i);
     }
-    let before = LIVE.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().live;
     for i in 50..550 {
         cycle(i);
     }
-    let per_session = (LIVE.load(Ordering::SeqCst) - before) / 500;
+    let per_session = (alloc_meter::totals().live - before) / 500;
     println!("RETAINED_PER_SESSION {per_session}");
     assert!(server.kernel().frame_sessions().is_empty(), "every ended session's frames were freed");
     assert!(per_session <= PINNED_RETAINED_PER_SESSION, "an ended session retains {per_session} bytes");

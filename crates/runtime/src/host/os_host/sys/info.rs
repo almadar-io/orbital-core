@@ -3,9 +3,7 @@
 use super::*;
 
 pub(super) fn clock_monotonic() -> Value {
-    static ORIGIN: OnceLock<Instant> = OnceLock::new();
-    let origin = *ORIGIN.get_or_init(Instant::now);
-    object([("nanos", num(origin.elapsed().as_nanos() as f64))])
+    object([("nanos", num(orbital_core_base::time_util::monotonic_ns() as f64))])
 }
 
 pub(super) fn uid() -> Result<Value, OsError> {

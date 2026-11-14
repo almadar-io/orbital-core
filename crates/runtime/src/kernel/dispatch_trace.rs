@@ -31,6 +31,9 @@ pub struct TraceTransition {
     #[cfg_attr(test, ts(optional))]
     pub collapsed: Option<Vec<TraceCollapsed>>,
     pub failure: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the dispatch: the trait and event it was for and its payload.
@@ -74,8 +77,26 @@ pub struct TraceEmit {
 pub struct TraceEffect {
     #[cfg_attr(test, ts(type = "JsonValue"))]
     pub effect: serde_json::Value,
+    /// The effect's operator (`set`, `persist`, `os/read-file`, …); empty for an effect with none.
+    #[serde(default)]
+    pub op: String,
     pub status: String,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
+}
+
+impl TraceTransition {
+    /// The transition as a stream that did not ask for cost sees it (EXEC-COST-1).
+    pub fn without_cost(&self) -> Self {
+        let mut plain = self.clone();
+        plain.cost = None;
+        for effect in &mut plain.effects {
+            effect.cost = None;
+        }
+        plain
+    }
 }
 
 pub fn transition_of(
@@ -118,8 +139,10 @@ pub fn transition_of(
             .iter()
             .map(|run| TraceEffect {
                 effect: serde_json::to_value(&run.effect).unwrap_or(serde_json::Value::Null),
+                op: run.effect.operator().unwrap_or_default().to_string(),
                 status: format!("{:?}", run.status),
                 error: run.error.clone(),
+                cost: run.cost,
             })
             .collect(),
         emits: result
@@ -147,6 +170,7 @@ pub fn transition_of(
                 .collect()
         }),
         failure: result.failure.clone(),
+        cost: result.cost,
     }
 }
 
@@ -171,6 +195,8 @@ pub struct DispatchTraceRecord {
 /// Runs before the dispatch lane releases; observers must not dispatch into the kernel.
 pub struct DispatchObserver {
     pub enabled: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Whether an enabled observer's subscribers asked for cost (EXEC-COST-1): the kernel then measures the dispatch.
+    pub cost: Box<dyn Fn() -> bool + Send + Sync>,
     pub completed: Box<dyn Fn(DispatchTraceRecord) + Send + Sync>,
 }
 
@@ -198,8 +224,15 @@ impl DispatchTraceRecord {
 #[derive(Default)]
 pub struct TraceFeed {
     on: core::sync::atomic::AtomicBool,
+    cost: core::sync::atomic::AtomicBool,
     seq: core::sync::atomic::AtomicU64,
-    items: orbital_core_base::sync::Mutex<Vec<serde_json::Value>>,
+    items: orbital_core_base::sync::Mutex<Vec<TraceItemViews>>,
+}
+
+/// One recorded dispatch as a stream without cost sees it, and, when it was measured, as a cost stream sees it.
+pub struct TraceItemViews {
+    pub plain: serde_json::Value,
+    pub costed: Option<serde_json::Value>,
 }
 
 impl TraceFeed {
@@ -207,8 +240,10 @@ impl TraceFeed {
     pub fn observer(self: &std::sync::Arc<Self>) -> DispatchObserver {
         let enabled = std::sync::Arc::clone(self);
         let completed = std::sync::Arc::clone(self);
+        let costed = std::sync::Arc::clone(self);
         DispatchObserver {
             enabled: Box::new(move || enabled.on.load(core::sync::atomic::Ordering::SeqCst)),
+            cost: Box::new(move || costed.cost.load(core::sync::atomic::Ordering::SeqCst)),
             completed: Box::new(move |record| completed.record(&record)),
         }
     }
@@ -221,26 +256,41 @@ impl TraceFeed {
         }
     }
 
-    /// The items recorded since the last take, in dispatch order.
+    /// Measure each recorded dispatch (EXEC-COST-1) while on.
+    pub fn set_cost(&self, cost: bool) {
+        self.cost.store(cost, core::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The items recorded since the last take, in dispatch order, as a stream without cost sees them.
     pub fn take(&self) -> Vec<serde_json::Value> {
+        self.take_views().into_iter().map(|views| views.plain).collect()
+    }
+
+    /// The items recorded since the last take, each in both views (EXEC-COST-1).
+    pub fn take_views(&self) -> Vec<TraceItemViews> {
         core::mem::take(&mut *self.items.lock())
     }
 
     fn record(&self, record: &DispatchTraceRecord) {
         let (seed, seed_entity_id, seed_traits) = record.seed_summary();
-        let item = serde_json::json!({
-            "type": "trace",
-            "dispatch": {
-                "seq": self.seq.fetch_add(1, core::sync::atomic::Ordering::SeqCst),
-                "dispatchId": record.dispatch_id,
-                "seed": seed,
-                "seedEntityId": seed_entity_id,
-                "seedTraits": seed_traits,
-                "outcomes": record.outcomes,
-                "error": record.error,
-            }
-        });
-        self.items.lock().push(item);
+        let seq = self.seq.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        let item = |outcomes: &[TraceTransition]| {
+            serde_json::json!({
+                "type": "trace",
+                "dispatch": {
+                    "seq": seq,
+                    "dispatchId": record.dispatch_id,
+                    "seed": seed,
+                    "seedEntityId": seed_entity_id,
+                    "seedTraits": seed_traits,
+                    "outcomes": outcomes,
+                    "error": record.error,
+                }
+            })
+        };
+        let plain: Vec<TraceTransition> = record.outcomes.iter().map(TraceTransition::without_cost).collect();
+        let costed = record.outcomes.iter().any(|o| o.cost.is_some()).then(|| item(&record.outcomes));
+        self.items.lock().push(TraceItemViews { plain: item(&plain), costed });
     }
 }
 

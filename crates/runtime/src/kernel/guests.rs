@@ -282,13 +282,17 @@ fn guest_answer(
     let moved: Vec<Value> = outcomes
         .iter()
         .map(|(trait_name, result)| {
-            record(vec![
+            let mut fields = vec![
                 ("trait", Value::string(trait_name.clone())),
                 ("event", result.event.clone().map(Value::string).unwrap_or(Value::Null)),
                 ("from", Value::string(result.previous_state.clone())),
                 ("to", Value::string(result.new_state.clone())),
                 ("fired", Value::Bool(result.executed)),
-            ])
+            ];
+            if let Some(cost) = result.cost {
+                fields.push(("cost", cost_record(&cost)));
+            }
+            record(fields)
         })
         .collect();
     let mut states = ValueMap::default();
@@ -696,6 +700,7 @@ impl RuntimeKernel {
                         ..KernelConfig::default()
                     },
                 );
+                guest.set_cost_meter(self.cost_meter());
                 (Arc::new(guest), Some(source))
             }
         };
@@ -1064,6 +1069,15 @@ impl RuntimeKernel {
         if let Some(leg) = &leg {
             return serve_leg(session, &payload, leg);
         }
+        let cost = match args.get(2) {
+            Some(Value::Object(options)) => match options.get("cost") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(cost)) => *cost,
+                Some(_) => return Err(failure("program/dispatch: options.cost must be a boolean")),
+            },
+            _ => false,
+        };
+        let _cost = cost.then(RuntimeKernel::cost_scope);
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         for trait_name in &targets {
             let ran = match &session.host {
@@ -1312,4 +1326,14 @@ impl GuestSession {
             route: Arc::default(),
         }
     }
+}
+
+/// A step's cost as a guest answer carries it (EXEC-COST-1).
+fn cost_record(cost: &orbital_core_base::cost::StepCost) -> Value {
+    let mut fields = ValueMap::default();
+    fields.insert("startNs".into(), Value::Number(cost.start_ns as f64));
+    fields.insert("ns".into(), Value::Number(cost.ns as f64));
+    fields.insert("allocs".into(), Value::Number(cost.allocs as f64));
+    fields.insert("allocBytes".into(), Value::Number(cost.alloc_bytes as f64));
+    Value::object(fields)
 }

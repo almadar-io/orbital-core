@@ -18,6 +18,9 @@ pub mod intern;
 pub mod value_serialize;
 #[path = "program/shared_entity.rs"]
 pub mod shared_entity;
+#[cfg(feature = "std")]
+#[path = "program/held.rs"]
+pub mod held;
 #[path = "program/json_value.rs"]
 pub mod json_value;
 #[path = "program/type_compat/mod.rs"]
@@ -145,6 +148,8 @@ pub mod gpu_wgsl;
 pub mod agent_ports;
 #[path = "host/drawable.rs"]
 pub mod drawable;
+#[path = "host/cost.rs"]
+pub mod cost;
 
 // backend — the shell/backend contract shells implement
 #[cfg(feature = "std")]
@@ -185,6 +190,9 @@ pub mod messages;
 pub mod str_utils;
 #[path = "util/time_util.rs"]
 pub mod time_util;
+#[cfg(feature = "std")]
+#[path = "util/alloc_meter.rs"]
+pub mod alloc_meter;
 #[path = "util/cron.rs"]
 pub mod cron;
 #[cfg(feature = "std")]

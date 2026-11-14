@@ -1435,3 +1435,81 @@ fn edge_an_app_with_no_sign_in_route_is_denied_with_none_named() {
     let after = shop_event(&kernel, "NAV", json!({ "route": "/other" }));
     assert_eq!(after["got"]["access"], json!({ "verdict": "denied", "returnTo": "/other" }), "{after}");
 }
+
+struct TickMeter(std::sync::atomic::AtomicU64);
+
+impl orbital_core_base::cost::CostMeter for TickMeter {
+    fn now_ns(&self) -> u64 {
+        self.0.fetch_add(10, std::sync::atomic::Ordering::SeqCst)
+    }
+    fn allocations(&self) -> (u64, u64) {
+        (0, 0)
+    }
+}
+
+fn costed_opener() -> RuntimeKernel {
+    let kernel = opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "ADD_COSTED", "effects": [
+            ["program/dispatch", "Diary.DiaryList.ADD", { "text": "hello" }, { "guest": "@entity.guest", "cost": true, "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "ADD_PLAIN", "effects": [
+            ["program/dispatch", "Diary.DiaryList.ADD", { "text": "hello" }, { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "ADD_BAD_COST", "effects": [
+            ["program/dispatch", "Diary.DiaryList.ADD", { "text": "hello" }, { "guest": "@entity.guest", "cost": "yes", "emit": emit() }]
+        ] }
+    ]));
+    kernel.set_cost_meter(Some(Arc::new(TickMeter(std::sync::atomic::AtomicU64::new(0)))));
+    run(&kernel, "GO");
+    kernel
+}
+
+#[test]
+fn a_guest_dispatch_that_asks_for_cost_answers_each_outcomes_cost() {
+    let kernel = costed_opener();
+    let after = run(&kernel, "ADD_COSTED");
+    let outcome = &after["got"]["outcomes"][0];
+    assert_eq!(outcome["trait"], "DiaryList", "{after}");
+    assert!(outcome["cost"]["ns"].as_f64().is_some_and(|ns| ns > 0.0), "{after}");
+}
+
+#[test]
+fn control_a_guest_dispatch_that_does_not_ask_for_cost_answers_none_and_a_non_boolean_cost_is_refused() {
+    let kernel = costed_opener();
+    let after = run(&kernel, "ADD_PLAIN");
+    assert!(after["got"]["outcomes"][0].get("cost").is_none(), "{after}");
+    let refused = run(&kernel, "ADD_BAD_COST");
+    assert!(
+        refused["refused"].to_string().contains("options.cost must be a boolean"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_guest_holds_bytes_while_open_and_its_opener_holds_none_of_them_once_it_closes() {
+    let (kernel, _, _) = opened();
+    let empty = kernel.held_bytes().guests;
+    run(&kernel, "ADD");
+    let with_note = kernel.held_bytes().guests;
+    assert!(with_note > empty, "a note the guest persisted is held: {empty} -> {with_note}");
+    run(&kernel, "CLOSE");
+    assert_eq!(kernel.held_bytes().guests, 0, "nothing of a closed guest is held");
+}
+
+#[test]
+fn the_stats_read_answers_the_bytes_each_table_holds() {
+    let kernel = opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "STATS", "effects": [
+            ["program/inputs", { "stats": true }, { "emit": emit() }]
+        ] }
+    ]));
+    run(&kernel, "GO");
+    let after = run(&kernel, "STATS");
+    let held = &after["got"]["stats"]["heldBytes"];
+    assert!(held["frames"].as_f64().is_some_and(|b| b > 0.0), "the opener's own frame is held: {after}");
+    for table in ["rows", "guests", "arenas"] {
+        assert!(held[table].as_f64().is_some(), "{table}: {after}");
+    }
+}

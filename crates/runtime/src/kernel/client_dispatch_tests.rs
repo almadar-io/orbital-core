@@ -651,7 +651,9 @@ fn i18n_schema(locales: bool) -> OrbitalSchema {
                             "title": ["i18n/t", "site:hero.title"],
                             "count": ["i18n/t", "site:posts.count", { "n": 3 }],
                             "className": ["if", ["==", ["i18n/t", "site:cta"], ""], "hidden", ""],
-                            "lang": "@locale"
+                            "lang": "@locale",
+                            "titleAr": ["i18n/t", "site:hero.title", { "locale": "ar" }],
+                            "dirAr": ["i18n/direction", { "locale": "ar" }]
                         }]]
                     }]
                 }
@@ -700,6 +702,16 @@ fn i18n_t_renders_the_dispatch_viewers_locale() {
     assert_eq!(field(&config, "count"), Value::string("3 منشورات"));
     assert_eq!(field(&config, "className"), Value::string(""));
     assert_eq!(field(&config, "lang"), Value::string("ar"));
+}
+
+#[test]
+fn i18n_t_with_a_locale_reads_that_catalog_under_another_viewer_locale() {
+    let kernel = server_kernel_with(i18n_schema(true));
+    let _locale = kernel.enter_locale(Some("en")).unwrap();
+    let config = rendered_config(&kernel);
+    assert_eq!(field(&config, "title"), Value::string("Hello"), "control: no locale reads the active catalog");
+    assert_eq!(field(&config, "titleAr"), Value::string("مرحبا"));
+    assert_eq!(field(&config, "dirAr"), Value::string("rtl"));
 }
 
 #[test]
@@ -917,6 +929,7 @@ fn apply_server_response_rolls_back_on_error() {
 #[test]
 fn already_delivered_from_includes_local_emits_and_seed() {
     let mut result = ProcessEventResult {
+        cost: None,
         event: None,
         executed: true,
         previous_state: "idle".to_string(),

@@ -6,21 +6,36 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
+/// The `i18n/t` and `i18n/direction` option naming the locale to read instead of the active one; never a placeholder.
+const LOCALE_OPTION: &str = "locale";
+
 pub struct I18nTOp;
 impl Operator for I18nTOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "i18n/t", >= 1);
         let key = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let Some(message) = ctx.message(&key) else {
+        let params = match args.get(1) {
+            Some(params) => Some(eval_expr(params, ctx)?),
+            None => None,
+        };
+        let map = match &params {
+            Some(params) => Some(params.as_object().ok_or_else(|| params.kind_error("object"))?),
+            None => None,
+        };
+        let locale = match map.and_then(|m| m.get(LOCALE_OPTION)) {
+            Some(locale) => Some(locale.text()?.to_string()),
+            None => None,
+        };
+        let message = match &locale {
+            Some(locale) => ctx.message_in(locale, &key),
+            None => ctx.message(&key),
+        };
+        let Some(message) = message else {
             return Ok(Value::Null);
         };
         let mut out = message.to_string();
-        if let Some(params) = args.get(1) {
-            let params = eval_expr(params, ctx)?;
-            let map = params
-                .as_object()
-                .ok_or_else(|| params.kind_error("object"))?;
-            for (name, value) in map {
+        for (name, value) in map.into_iter().flatten() {
+            if name != LOCALE_OPTION {
                 out = out.replace(&format!("{{{{{name}}}}}"), &value.to_string_value());
             }
         }
@@ -32,7 +47,20 @@ impl Operator for I18nTOp {
 pub struct I18nDirectionOp;
 impl Operator for I18nDirectionOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        require_arity!(args, "i18n/direction", == 0);
+        if args.len() > 1 {
+            return Err(OrbitalError::Eval(EvalError::ArityMismatch {
+                operator: "i18n/direction".to_string(),
+                expected: 1,
+                actual: args.len(),
+            }));
+        }
+        if let Some(options) = args.first() {
+            let options = eval_expr(options, ctx)?;
+            let map = options.as_object().ok_or_else(|| options.kind_error("object"))?;
+            if let Some(locale) = map.get(LOCALE_OPTION) {
+                return Ok(Value::string(orbital_core_base::messages::locale_direction(locale.text()?)));
+            }
+        }
         Ok(match ctx.locale.as_str() {
             Some(locale) => Value::string(orbital_core_base::messages::locale_direction(locale)),
             None => Value::Null,
@@ -63,6 +91,68 @@ mod tests {
 
     fn call(json: serde_json::Value) -> SExpression {
         serde_json::from_value(json).unwrap()
+    }
+
+    fn ctx_all(locale: &str, catalogs: &[(&str, &[(&str, &str)])]) -> crate::evaluator::context::BindingContext {
+        let all: HashMap<String, HashMap<String, String>> = catalogs
+            .iter()
+            .map(|(l, m)| (l.to_string(), m.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+            .collect();
+        let active = all.get(locale).cloned().unwrap_or_default();
+        BindingContextBuilder::new()
+            .locale(Value::string(locale))
+            .messages(active)
+            .catalogs(std::sync::Arc::new(all))
+            .build()
+    }
+
+    fn two() -> crate::evaluator::context::BindingContext {
+        ctx_all(
+            "en",
+            &[
+                ("en", &[("home:hi", "Hello"), ("home:n", "{{n}} posts")]),
+                ("ar", &[("home:hi", "مرحبا"), ("home:n", "{{n}} مقالات")]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_named_locale_reads_that_locales_catalog() {
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hi", { "locale": "ar" }])), &two()).unwrap();
+        assert_eq!(v, Value::string("مرحبا"));
+    }
+
+    #[test]
+    fn control_without_a_locale_the_active_catalog_answers() {
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hi"])), &two()).unwrap();
+        assert_eq!(v, Value::string("Hello"));
+    }
+
+    #[test]
+    fn the_locale_option_is_not_a_placeholder_and_params_still_fill() {
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:n", { "locale": "ar", "n": 3 }])), &two()).unwrap();
+        assert_eq!(v, Value::string("3 مقالات"));
+    }
+
+    #[test]
+    fn edge_a_locale_with_no_catalog_answers_null_not_a_fallback() {
+        let v = eval_expr(&call(serde_json::json!(["i18n/t", "home:hi", { "locale": "sl" }])), &two()).unwrap();
+        assert_eq!(v, Value::Null);
+    }
+
+    #[test]
+    fn edge_a_non_string_locale_is_a_type_mismatch() {
+        assert!(eval_expr(&call(serde_json::json!(["i18n/t", "home:hi", { "locale": 3 }])), &two()).is_err());
+    }
+
+    #[test]
+    fn the_direction_of_a_named_locale() {
+        let c = two();
+        let ar = eval_expr(&call(serde_json::json!(["i18n/direction", { "locale": "ar" }])), &c).unwrap();
+        assert_eq!(ar, Value::string("rtl"));
+        let active = eval_expr(&call(serde_json::json!(["i18n/direction"])), &c).unwrap();
+        assert_eq!(active, Value::string("ltr"), "control: no locale reads the active one");
+        assert!(eval_expr(&call(serde_json::json!(["i18n/direction", { "locale": 1 }])), &c).is_err());
     }
 
     #[test]

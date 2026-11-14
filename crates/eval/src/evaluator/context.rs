@@ -180,6 +180,8 @@ pub struct BindingContext {
     pub locale: Arc<Value>,
     /// The active locale's merged catalog (qualified key → message) for `i18n/t`.
     messages: Arc<HashMap<String, String>>,
+    /// Every declared locale's catalog, for `i18n/t` and `i18n/direction` given a `locale`.
+    catalogs: Arc<HashMap<String, HashMap<String, String>>>,
     /// `@event`: the delivery being processed (`delivery_record_value`, Runtime Spec Clause 5.5).
     pub event: Arc<Value>,
     /// `@prevEvents`: deliveries this trait already received this dispatch.
@@ -393,6 +395,11 @@ impl BindingContext {
         self.messages.get(key).map(String::as_str)
     }
 
+    /// A named locale's message for a qualified catalog key; `None` when that locale has no catalog or no such key.
+    pub fn message_in(&self, locale: &str, key: &str) -> Option<&str> {
+        self.catalogs.get(locale)?.get(key).map(String::as_str)
+    }
+
     pub fn now_millis(&self) -> f64 {
         self.now
             .unwrap_or_else(orbital_core_base::time_util::now_millis_f64)
@@ -547,6 +554,7 @@ impl BindingContext {
             now: self.now,
             locale: self.locale.clone(),
             messages: Arc::clone(&self.messages),
+            catalogs: Arc::clone(&self.catalogs),
             event: self.event.clone(),
             callsite_payload: self.callsite_payload.clone(),
             prev_events: self.prev_events.clone(),

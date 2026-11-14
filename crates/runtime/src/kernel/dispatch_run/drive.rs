@@ -5,6 +5,7 @@ use super::*;
 impl RuntimeKernel {
     /// Run every unit with the host's handlers answering at the I/O point: no suspension, no replay.
     pub(super) fn run_straight_through(&self, mut run: DispatchRun) -> Result<DispatchOutcomes, KernelError> {
+        let _cost = self.observed_cost_scope();
         loop {
             match self.unit(&mut run) {
                 Ok(Flow::More) => {}
@@ -27,6 +28,7 @@ impl RuntimeKernel {
         mut c: DispatchContinuation,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let _dispatch = c.run.span.clone().entered();
+        let _cost = self.observed_cost_scope();
         loop {
             // A store ask the program seed made is answered in the program session too (EXEC-DIST-9).
             let seed_program = c.run.seed.as_ref().is_some_and(|seed| seed.program);

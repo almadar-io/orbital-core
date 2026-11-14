@@ -116,6 +116,9 @@ pub struct ProcessEventResult {
     /// step that writes a large field keeps one copy of it. Null for a step that did not run or wrote nothing. A
     /// dispatch response row is these plus the `id` (EXEC-DIST-7).
     pub written: SharedEntity,
+
+    /// What the step cost, when it ran inside a cost scope with a meter (EXEC-COST-1).
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 impl ProcessEventResult {
@@ -164,6 +167,8 @@ pub struct EffectRun {
     pub routed: bool,
     /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order, each traced the same way; `None` for a leaf effect.
     pub nested: Option<Vec<EffectRun>>,
+    /// What the authored effect cost, when its step was measured (EXEC-COST-1).
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// The state a transition ran against: the trait's `@entity` frame before its effects, and the dispatch's `@event` / `@prevEvents` / `@prevStates` view.

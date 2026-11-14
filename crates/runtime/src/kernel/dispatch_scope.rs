@@ -11,7 +11,7 @@ pub(super) struct DispatchStamp {
 #[derive(Debug, Default, Clone)]
 pub(super) struct KernelI18n {
     pub(super) locales: Vec<String>,
-    pub(super) catalogs: HashMap<String, HashMap<String, String>>,
+    pub(super) catalogs: Arc<HashMap<String, HashMap<String, String>>>,
     pub(super) viewer: Option<String>,
 }
 

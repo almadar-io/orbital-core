@@ -63,6 +63,11 @@ impl BindingContextBuilder {
         self
     }
 
+    pub fn catalogs(mut self, catalogs: Arc<HashMap<String, HashMap<String, String>>>) -> Self {
+        self.context.catalogs = catalogs;
+        self
+    }
+
     pub fn local(mut self, name: &str, value: Value) -> Self {
         self.context.set_local(name, value);
         self

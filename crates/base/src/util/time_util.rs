@@ -19,6 +19,15 @@ static INSTALLED_CLOCK: std::sync::OnceLock<fn() -> i64> = std::sync::OnceLock::
 
 /// A clock that replaces the OS clock for the whole process, installed once before the kernel reads time: a harness that
 /// runs two kernels side by side gives both the same `@now`. Without one, the OS clock is read.
+/// Nanoseconds on the process's monotonic clock, from its first reading: `os/clock-monotonic` and the cost meter
+/// read the same clock.
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub fn monotonic_ns() -> u64 {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let origin = *ORIGIN.get_or_init(std::time::Instant::now);
+    u64::try_from(origin.elapsed().as_nanos()).expect("a process runs fewer than 584 years")
+}
+
 #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
 pub fn install_clock(clock: fn() -> i64) {
     assert!(INSTALLED_CLOCK.set(clock).is_ok(), "the clock is installed once");

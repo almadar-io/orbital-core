@@ -471,6 +471,8 @@ pub struct RuntimeKernel {
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
     record_entity_after: std::sync::atomic::AtomicBool,
+    /// The host's clock and allocation reading, used only inside a cost scope (EXEC-COST-1).
+    cost_meter: RwLock<Option<Arc<dyn orbital_core_base::cost::CostMeter>>>,
     /// Whether this host holds the circuit state itself ([`RuntimeKernel::set_stateful`]).
     stateful: std::sync::atomic::AtomicBool,
     /// No browser runs this kernel's `[client]` traits, so it runs them itself ([`RuntimeKernel::set_runs_client_traits`]).
@@ -835,6 +837,7 @@ impl RuntimeKernel {
             tls: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
+            cost_meter: RwLock::new(None),
             stateful: std::sync::atomic::AtomicBool::new(false),
             runs_client_traits: std::sync::atomic::AtomicBool::new(false),
             seed_writer: orbital_core_base::sync::Mutex::new(None),
@@ -925,6 +928,61 @@ impl RuntimeKernel {
     pub fn set_record_entity_after(&self, record: bool) {
         self.record_entity_after
             .store(record, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The host's cost meter (EXEC-COST-1); without one, a cost scope measures nothing.
+    pub fn set_cost_meter(&self, meter: Option<Arc<dyn orbital_core_base::cost::CostMeter>>) {
+        *self.cost_meter.write() = meter;
+    }
+
+    pub fn cost_meter(&self) -> Option<Arc<dyn orbital_core_base::cost::CostMeter>> {
+        self.cost_meter.read().clone()
+    }
+
+    /// Measure every step and authored effect this thread runs until the guard drops (EXEC-COST-1).
+    pub fn cost_scope() -> CostScope {
+        CostScope::enter()
+    }
+
+    /// Run `f` with every step and authored effect it runs on this thread measured (EXEC-COST-1).
+    pub fn with_cost<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _scope = CostScope::enter();
+        f()
+    }
+
+    /// A reading for a step or effect starting now, when a cost scope is open and the host gave a meter.
+    pub(crate) fn cost_begin(&self) -> Option<orbital_core_base::cost::CostStart> {
+        if COST_SCOPE.with(std::cell::Cell::get) == 0 {
+            return None;
+        }
+        self.cost_meter.read().clone().map(orbital_core_base::cost::CostStart::begin)
+    }
+
+    /// The bytes each of this kernel's tables holds (EXEC-COST-2).
+    pub fn held_bytes(&self) -> HeldTables {
+        self.held_into(&mut orbital_core_base::held::HeldBytes::default())
+    }
+
+    fn held_into(&self, held: &mut orbital_core_base::held::HeldBytes) -> HeldTables {
+        let start = held.bytes();
+        self.io.held(held);
+        let rows = held.since(start);
+        let start = held.bytes();
+        for ((trait_name, entity), frame) in self.frames.read().iter() {
+            held.raw((trait_name.capacity() + entity.capacity()) as u64);
+            held.entity(frame);
+        }
+        let frames = held.since(start);
+        let start = held.bytes();
+        for guest in self.guests.read().values() {
+            guest.kernel.held_into(held);
+            if let Some(source) = &guest.source {
+                source.held(held);
+            }
+        }
+        let guests = held.since(start);
+        let arenas = self.mem.read().held_bytes();
+        HeldTables { rows, frames, guests, arenas }
     }
 
     /// Get runtime statistics.
@@ -1278,6 +1336,39 @@ mod fetch_payload_tests;
 
 #[cfg(test)]
 mod set_eval_failure_tests;
+
+#[cfg(test)]
+mod cost_tests;
+
+orbital_core_base::kernel_local! {
+    static COST_SCOPE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// What [`RuntimeKernel::held_bytes`] answers: the bytes of each table, every shared allocation counted once across
+/// all of them (a guest's tables count toward `guests`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HeldTables {
+    pub rows: u64,
+    pub frames: u64,
+    pub guests: u64,
+    pub arenas: u64,
+}
+
+/// An open cost scope on this thread; scopes nest and the last one out closes it.
+pub struct CostScope;
+
+impl CostScope {
+    pub(crate) fn enter() -> Self {
+        COST_SCOPE.with(|depth| depth.set(depth.get() + 1));
+        Self
+    }
+}
+
+impl Drop for CostScope {
+    fn drop(&mut self) {
+        COST_SCOPE.with(|depth| depth.set(depth.get() - 1));
+    }
+}
 
 #[cfg(test)]
 mod suspend_log_tests;

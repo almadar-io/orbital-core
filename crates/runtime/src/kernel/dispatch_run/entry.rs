@@ -637,6 +637,12 @@ impl RuntimeKernel {
         }
     }
 
+    /// A cost scope for a dispatch an enabled observer wants measured (EXEC-COST-1, EXEC-DIST-14).
+    pub(super) fn observed_cost_scope(&self) -> Option<crate::kernel::CostScope> {
+        let observer = self.dispatch_observer.read().clone()?;
+        ((observer.enabled)() && (observer.cost)()).then(crate::kernel::CostScope::enter)
+    }
+
     pub(super) fn observe_dispatch(&self, run: &DispatchRun, error: Option<String>) {
         self.end_dispatch_mem(run.dispatch_id());
         let Some(observer) = self.dispatch_observer.read().clone() else {

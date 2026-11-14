@@ -45,6 +45,24 @@ impl RuntimeKernel {
         follow_on: bool,
         callsite: Option<&Value>,
     ) -> Result<ProcessEventResult, Fault> {
+        let started = self.cost_begin();
+        let mut result =
+            self.process_event_unmetered(trait_name, entity_id, event_name, payload, view, follow_on, callsite)?;
+        result.cost = started.map(orbital_core_base::cost::CostStart::finish);
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_event_unmetered(
+        &self,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event_name: &str,
+        payload: Arc<Value>,
+        view: Option<&DispatchView>,
+        follow_on: bool,
+        callsite: Option<&Value>,
+    ) -> Result<ProcessEventResult, Fault> {
         // An id-less event (`entity_id: None`) still needs somewhere to keep
         // `@entity` writes across transitions, so the kernel keys a per-trait
         // frame under the literal id "singleton" — one frame per (trait,
@@ -260,6 +278,7 @@ impl RuntimeKernel {
             self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
 
             Ok(ProcessEventResult {
+                cost: None,
                 executed: true,
                 previous_state: current_state.current_state.clone(),
                 new_state,
@@ -348,6 +367,7 @@ impl RuntimeKernel {
             }
 
             Ok(ProcessEventResult {
+                cost: None,
                 event: None,
                 executed: false,
                 previous_state: current_state.current_state.clone(),

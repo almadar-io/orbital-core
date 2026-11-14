@@ -35,6 +35,7 @@ impl RuntimeKernel {
             let _effect = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = ?effect_expr.operator()).entered();
             if failure.is_some() {
                 runs.push(EffectRun {
+                    cost: None,
                     effect: effect_expr.clone(),
                     status: EffectRunStatus::Skipped,
                     error: None,
@@ -44,6 +45,7 @@ impl RuntimeKernel {
                 });
                 continue;
             }
+            let started = self.cost_begin();
             let before = effect_results.len();
             let mut nested = Vec::new();
             if !run_results.contains_key(&index) {
@@ -101,7 +103,8 @@ impl RuntimeKernel {
                 }
             }
             let ran = &effect_results[before..];
-            let run = effect_run(effect_expr, ran, is_compound(effect_expr).then_some(nested));
+            let mut run = effect_run(effect_expr, ran, is_compound(effect_expr).then_some(nested));
+            run.cost = started.map(orbital_core_base::cost::CostStart::finish);
             runs.push(run);
             if failure.is_none() {
                 failure = ran
@@ -747,6 +750,7 @@ fn effect_run(effect: &SExpression, ran: &[EffectResult], nested: Option<Vec<Eff
         EffectRunStatus::Skipped
     };
     EffectRun {
+        cost: None,
         effect: effect.clone(),
         status,
         error: failed.and_then(|r| r.error.clone()),

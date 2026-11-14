@@ -269,6 +269,12 @@ pub(super) fn as_int64(value: u64) -> Result<i64, OsError> {
 }
 
 impl MemTable {
+    /// The bytes this kernel's own arenas have handed out (EXEC-COST-2); an arena adopted from another kernel is that
+    /// kernel's.
+    pub(super) fn held_bytes(&self) -> u64 {
+        self.arenas.values().filter(|a| !a.adopted).map(|a| a.used).sum()
+    }
+
     fn mint(&mut self) -> Result<i64, OsError> {
         let id = self.next_id.checked_add(1).ok_or_else(|| refuse(OsErrorKind::Invalid, "the handle ids are exhausted"))?;
         self.next_id = id;

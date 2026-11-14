@@ -203,6 +203,8 @@ pub use orbital_core_base::slots;
 pub use orbital_core_base::stamp;
 pub use orbital_core_base::str_utils;
 pub use orbital_core_base::time_util;
+pub use orbital_core_base::cost;
+pub use orbital_core_base::alloc_meter;
 pub use orbital_core_base::value_serialize;
 pub use orbital_core_eval::state_machine;
 pub mod type_compat {

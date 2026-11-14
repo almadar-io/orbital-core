@@ -318,6 +318,8 @@ pub enum CatalogIssue {
     ParamsNotLiteral { key: String },
     /// A catalog key no call uses.
     KeyUnused { key: String, locale: String },
+    /// An `i18n/t` call names a literal `locale` the app does not declare.
+    LocaleUndeclared { key: String, locale: String },
 }
 
 impl CatalogIssue {
@@ -331,6 +333,7 @@ impl CatalogIssue {
                 "ORB_I18N_PARAM_MISMATCH"
             }
             CatalogIssue::KeyUnused { .. } => "ORB_I18N_KEY_UNUSED",
+            CatalogIssue::LocaleUndeclared { .. } => "ORB_I18N_LOCALE_UNDECLARED",
         }
     }
 
@@ -351,6 +354,9 @@ impl CatalogIssue {
                 format!("the params of `{key}` must be an object literal so its placeholders can be checked")
             }
             CatalogIssue::KeyUnused { key, locale } => format!("catalog `{locale}` key `{key}` is used by no `i18n/t` call"),
+            CatalogIssue::LocaleUndeclared { key, locale } => {
+                format!("key `{key}` asks for locale `{locale}`, which the app does not declare in `locales`")
+            }
         }
     }
 }
@@ -358,7 +364,12 @@ impl CatalogIssue {
 struct Call {
     key: String,
     params: Option<Vec<String>>,
+    /// The catalog a literal `locale` option names; a computed one is not known before run time.
+    locale: Option<String>,
 }
+
+/// The `i18n/t` option naming the catalog to read instead of the active one; never a placeholder.
+const LOCALE_OPTION: &str = "locale";
 
 fn collect_calls(value: &Value, prefix: &str, out: &mut Vec<Call>, issues: &mut Vec<CatalogIssue>) {
     match value {
@@ -368,13 +379,22 @@ fn collect_calls(value: &Value, prefix: &str, out: &mut Vec<Call>, issues: &mut 
                     if let Some(key) = qualified.strip_prefix(prefix) {
                         let params = match items.get(2) {
                             None => Some(Vec::new()),
-                            Some(Value::Object(map)) => Some(map.keys().cloned().collect()),
+                            Some(Value::Object(map)) => {
+                                Some(map.keys().filter(|k| k.as_str() != LOCALE_OPTION).cloned().collect())
+                            }
                             Some(_) => {
                                 issues.push(CatalogIssue::ParamsNotLiteral { key: key.to_string() });
                                 None
                             }
                         };
-                        out.push(Call { key: key.to_string(), params });
+                        let locale = match items.get(2) {
+                            Some(Value::Object(map)) => match map.get(LOCALE_OPTION) {
+                                Some(Value::String(locale)) if !locale.starts_with('@') => Some(locale.clone()),
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        out.push(Call { key: key.to_string(), params, locale });
                     }
                 }
             }
@@ -426,7 +446,7 @@ pub fn check_catalogs(
         knob_keys
             .iter()
             .filter_map(|k| k.strip_prefix(&prefix))
-            .map(|key| Call { key: key.to_string(), params: None }),
+            .map(|key| Call { key: key.to_string(), params: None, locale: None }),
     );
 
     let declared: Vec<String> = locales.map(|l| l.to_vec()).unwrap_or_default();
@@ -469,6 +489,13 @@ pub fn check_catalogs(
         parsed.insert(locale.clone(), messages);
     }
 
+    for call in &calls {
+        if let Some(locale) = &call.locale {
+            if !declared.contains(locale) {
+                issues.push(CatalogIssue::LocaleUndeclared { key: call.key.clone(), locale: locale.clone() });
+            }
+        }
+    }
     let used: BTreeSet<&str> = calls.iter().map(|c| c.key.as_str()).collect();
     for locale in &declared {
         let messages = parsed.get(locale);
@@ -573,6 +600,26 @@ mod catalog_tests {
         c.insert("ar".into(), Some(json!({ "hero.title": "مرحبا", "posts.count": "{{count}} مقالات" })));
         let issues = check_catalogs(&program(), &[], "home", Some(&locales()), &c);
         assert_eq!(codes(&issues), vec!["ORB_I18N_PARAM_MISMATCH"]);
+    }
+
+    #[test]
+    fn a_locale_option_is_not_a_placeholder() {
+        let p = json!(["do", ["i18n/t", "home:hero.title", { "locale": "ar" }], ["i18n/t", "home:posts.count", { "n": 3, "locale": "ar" }]]);
+        assert!(check_catalogs(&p, &[], "home", Some(&locales()), &complete()).is_empty());
+    }
+
+    #[test]
+    fn a_literal_locale_the_app_does_not_declare_is_refused() {
+        let p = json!(["do", ["i18n/t", "home:hero.title", { "locale": "fr" }], ["i18n/t", "home:posts.count", { "n": 3 }]]);
+        let issues = check_catalogs(&p, &[], "home", Some(&locales()), &complete());
+        assert_eq!(codes(&issues), vec!["ORB_I18N_LOCALE_UNDECLARED"]);
+        assert!(issues[0].message().contains("`fr`"), "{}", issues[0].message());
+    }
+
+    #[test]
+    fn control_a_computed_locale_is_not_checked_statically() {
+        let p = json!(["do", ["i18n/t", "home:hero.title", { "locale": "@entity.lang" }], ["i18n/t", "home:posts.count", { "n": 3 }]]);
+        assert!(check_catalogs(&p, &[], "home", Some(&locales()), &complete()).is_empty());
     }
 
     #[test]

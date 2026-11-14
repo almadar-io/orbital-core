@@ -265,6 +265,12 @@ impl RuntimeKernel {
             ] {
                 counters.insert(name.to_string().into(), Value::Number(count as f64));
             }
+            let held = self.held_bytes();
+            let mut tables = ValueMap::default();
+            for (name, bytes) in [("rows", held.rows), ("frames", held.frames), ("guests", held.guests), ("arenas", held.arenas)] {
+                tables.insert(name.to_string().into(), Value::Number(bytes as f64));
+            }
+            counters.insert("heldBytes".to_string().into(), Value::object(tables));
             answer.insert("stats".into(), Value::object(counters));
         }
         if let Some(steps) = reads.trace {

@@ -106,6 +106,10 @@ pub trait EntitySource: Send + Sync {
     /// Count stored entities across all types.
     fn count(&self) -> usize;
 
+    /// Count the rows this store holds in this process into `held` (EXEC-COST-2); a store whose rows live
+    /// elsewhere holds none here.
+    fn held(&self, _held: &mut orbital_core_base::held::HeldBytes) {}
+
     /// List all entities of a given type (empty vec if none).
     fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String>;
 
@@ -628,6 +632,16 @@ impl EntitySource for InMemoryEntityCache {
             .values()
             .map(|type_cache| type_cache.len())
             .sum()
+    }
+
+    fn held(&self, held: &mut orbital_core_base::held::HeldBytes) {
+        for table in self.data.read().values() {
+            held.raw((table.capacity() * core::mem::size_of::<(String, Arc<Value>)>()) as u64);
+            for (id, row) in table {
+                held.raw(id.capacity() as u64);
+                held.shared_value(row);
+            }
+        }
     }
 
     fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String> {

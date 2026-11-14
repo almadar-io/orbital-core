@@ -5,12 +5,12 @@
 use orbital_core_runtime::embed::EmbeddedKernel;
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde_json::json;
+use orbital_core_base::alloc_meter::{self, CountingAlloc};
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-struct Counting;
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
+struct Sampled;
+static COUNTING: CountingAlloc<System> = CountingAlloc::with_totals(System);
 
 thread_local! {
     static SAMPLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -25,23 +25,22 @@ fn sample() {
     }
 }
 
-unsafe impl GlobalAlloc for Counting {
+// SAFETY: forwards every call to the counting allocator; sampling only records a backtrace on this thread.
+unsafe impl GlobalAlloc for Sampled {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
         sample();
-        System.alloc(layout)
+        unsafe { COUNTING.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
+        unsafe { COUNTING.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
+        unsafe { COUNTING.realloc(ptr, layout, new_size) }
     }
 }
 
 #[global_allocator]
-static A: Counting = Counting;
+static A: Sampled = Sampled;
 
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -98,9 +97,9 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
         assert_eq!(fired_count(&f), ticking);
         now += step;
     }
-    let before = ALLOCS.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().allocs;
     let f = k.frame(now as u64).unwrap().expect("frame fires");
-    let allocs = ALLOCS.load(Ordering::SeqCst) - before;
+    let allocs = alloc_meter::totals().allocs - before;
     assert_eq!(fired_count(&f), ticking);
     now += step;
     let t = Instant::now();
@@ -295,9 +294,9 @@ fn browse_wire_sizes() {
 }
 
 fn allocs_of<R>(f: impl FnOnce() -> R) -> (usize, R) {
-    let before = ALLOCS.load(Ordering::SeqCst);
+    let before = alloc_meter::totals().allocs;
     let out = f();
-    (ALLOCS.load(Ordering::SeqCst) - before, out)
+    (alloc_meter::totals().allocs - before, out)
 }
 
 /// Stage breakdown of one steady-state tick of 100 ticking traits:

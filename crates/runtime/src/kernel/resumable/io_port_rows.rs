@@ -114,6 +114,11 @@ impl EntitySource for IoPort {
         self.source.count() + self.memory.count()
     }
 
+    fn held(&self, held: &mut orbital_core_base::held::HeldBytes) {
+        self.source.held(held);
+        self.memory.held(held);
+    }
+
     fn list(&self, entity_type: &str) -> Result<Vec<Arc<Value>>, String> {
         match self.ask(|| IoRequest::ListRows {
             entity_type: entity_type.to_string(),

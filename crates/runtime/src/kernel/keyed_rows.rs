@@ -333,11 +333,21 @@ impl RuntimeKernel {
 
     /// The keyed asks the host deferred and no event has ended yet, in the order they were recorded.
     pub fn pending_asks(&self) -> Vec<PendingAsk> {
+        self.pending_asks_since(0)
+    }
+
+    /// The position the next deferred ask will take; asks recorded from here on are [`Self::pending_asks_since`] it.
+    pub fn deferred_asks_mark(&self) -> u64 {
+        self.deferred_seq.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The pending asks recorded at or after `mark`, in the order they were recorded.
+    pub fn pending_asks_since(&self, mark: u64) -> Vec<PendingAsk> {
         let asks = self.deferred_asks.read();
         let mut pending: Vec<(u64, PendingAsk)> = asks
             .iter()
             .flat_map(|((trait_name, _), list)| {
-                list.iter().map(move |ask| {
+                list.iter().filter(move |ask| ask.seq >= mark).map(move |ask| {
                     (
                         ask.seq,
                         PendingAsk {

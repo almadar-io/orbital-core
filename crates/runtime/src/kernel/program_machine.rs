@@ -91,6 +91,10 @@ pub struct PlayedEffect {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(type = "Array<PlayedEffect>", optional))]
     pub nested: Option<Vec<PlayedEffect>>,
+    /// The effect's cost when its step was measured (EXEC-COST-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// How a proposition fared on the run.
@@ -184,12 +188,17 @@ pub struct PlayedResult {
     /// The step's row after its effects.
     #[cfg_attr(test, ts(type = "EventPayload | null"))]
     pub entity_after: serde_json::Value,
+    /// The keyed asks this step recorded that are still open after it; an earlier step's open ask is that step's.
     pub pending_asks: Vec<PendingAsk>,
     /// Every trait the request's event moved, the requested one among them.
     pub outcomes: Vec<PlayedOutcome>,
     /// Deliveries the request's dispatch skipped as exact repeats (EXEC-QUEUE-4), from every trait its event moved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collapsed: Option<Vec<StepCollapsed>>,
+    /// Its cost when the ask named `cost: true` (EXEC-COST-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// One trait the played request's cascade moved.
@@ -206,6 +215,10 @@ pub struct PlayedOutcome {
     pub fired: bool,
     pub effects: Vec<PlayedEffect>,
     pub emitted: Vec<PlayedEmit>,
+    /// Its cost when the ask named `cost: true` (EXEC-COST-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// One non-`system` slot a played trait's `render-ui` filled, as the client circuit rendered it.
@@ -461,6 +474,7 @@ pub fn played_effect(run: &EffectRun) -> PlayedEffect {
         code: run.code,
         routed,
         nested: run.nested.as_ref().map(|runs| runs.iter().map(played_effect).collect()),
+        cost: run.cost,
     }
 }
 
@@ -604,6 +618,7 @@ mod tests {
                 .and_then(orbital_core_base::effect_types::Effect::emit_routes)
                 .is_some_and(|routes| routes.failure.is_some());
             played_effect(&EffectRun {
+                cost: None,
                 effect: effect.clone(),
                 status,
                 error: None,

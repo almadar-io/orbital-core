@@ -78,6 +78,19 @@ impl RuntimeKernel {
         state_entity: &str,
         tick_name: &str,
     ) -> Result<ProcessEventResult, Fault> {
+        let started = self.cost_begin();
+        let mut result = self.process_tick_unmetered(trait_name, entity_id, state_entity, tick_name)?;
+        result.cost = started.map(orbital_core_base::cost::CostStart::finish);
+        Ok(result)
+    }
+
+    fn process_tick_unmetered(
+        &self,
+        trait_name: &str,
+        entity_id: &str,
+        state_entity: &str,
+        tick_name: &str,
+    ) -> Result<ProcessEventResult, Fault> {
         let stamp = self.begin_dispatch();
 
         self.ensure_trait_loaded(trait_name)?;
@@ -117,6 +130,7 @@ impl RuntimeKernel {
                 .is_some_and(|states| !states.is_empty() && !states.contains(&current_state))
         {
             return Ok(ProcessEventResult {
+                cost: None,
                 event: None,
                 executed: false,
                 previous_state: current_state.clone(),
@@ -186,6 +200,7 @@ impl RuntimeKernel {
             let evaluator = Evaluator::new();
             if !matches!(evaluator.evaluate_guard(guard, &ctx), Ok(true)) {
                 return Ok(ProcessEventResult {
+                    cost: None,
                     event: None,
                     executed: false,
                     previous_state: current_state.clone(),
@@ -247,6 +262,7 @@ impl RuntimeKernel {
         self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
 
         Ok(ProcessEventResult {
+            cost: None,
             event: None,
             executed: true,
             previous_state: current_state.clone(),

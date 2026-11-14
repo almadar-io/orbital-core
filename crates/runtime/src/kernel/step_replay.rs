@@ -254,6 +254,10 @@ pub struct StepOutcome {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(test, ts(optional))]
     pub collapsed: Option<Vec<StepCollapsed>>,
+    /// The step's cost when the ask named `cost: true` (EXEC-COST-1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(test, ts(optional))]
+    pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the step's dispatch: the trait and event it was for and its payload.
@@ -293,6 +297,7 @@ pub struct StepResult {
     pub entities: serde_json::Map<String, serde_json::Value>,
     #[cfg_attr(test, ts(type = "EventPayload | null"))]
     pub entity_after: serde_json::Value,
+    /// The keyed asks this step recorded that are still open after it; an earlier step's open ask is that step's.
     pub pending_asks: Vec<PendingAsk>,
 }
 
@@ -385,6 +390,7 @@ pub fn outcome_report(
                 })
                 .collect()
         }),
+        cost: r.cost,
     }
 }
 
@@ -462,6 +468,7 @@ pub fn played_steps(
                         fired: o.executed,
                         effects: o.effects.clone(),
                         emitted: played_emits(o, timestamp)?,
+                        cost: o.cost,
                     })
                 })
                 .collect::<Result<Vec<_>, StepRefusal>>()?;
@@ -493,6 +500,7 @@ pub fn played_steps(
                     outcomes,
                     collapsed: Some(moved.iter().flat_map(|o| o.collapsed.iter().flatten().cloned()).collect::<Vec<_>>())
                         .filter(|c| !c.is_empty()),
+                    cost: outcome.cost,
                 },
             })
         })
@@ -753,6 +761,7 @@ fn play_step(
     i: usize,
     step: &serde_json::Value,
     live: bool,
+    keep_states: bool,
     dispatch: &mut dyn FnMut(&str, &str, Value, Option<f64>) -> Result<DispatchOutcomes, String>,
     partial: &mut Vec<StepOutcome>,
 ) -> Result<StepResult, String> {
@@ -849,6 +858,7 @@ fn play_step(
     credentials.hold(held);
     kernel.effect_executor().set_asks_viewer(!scripted.host.is_empty());
     answers.hold(scripted);
+    let asks_mark = kernel.deferred_asks_mark();
     let outcomes = dispatch(trait_name, event, payload, settle_ms);
     let unused = answers.unused();
     answers.hold(ScriptedAnswers::default());
@@ -877,17 +887,14 @@ fn play_step(
                 event: event.to_string(),
                 ensures: Vec::new(),
                 collapsed: None,
+                cost: None,
             });
             return Ok(StepResult {
                 outcomes: std::mem::take(partial),
-                states: kernel
-                    .trait_snapshot(None)
-                    .into_iter()
-                    .map(|(name, (state, _))| (name, state))
-                    .collect(),
+                states: if keep_states { every_state(kernel) } else { BTreeMap::new() },
                 entities: serde_json::Map::new(),
                 entity_after: serde_json::to_value(snapshot.entity).unwrap_or(serde_json::Value::Null),
-                pending_asks: kernel.pending_asks(),
+                pending_asks: kernel.pending_asks_since(asks_mark),
             });
         }
     };
@@ -898,7 +905,7 @@ fn play_step(
         .unwrap_or(serde_json::Value::Null);
     let entities: serde_json::Map<String, serde_json::Value> = outcomes
         .iter()
-        .filter(|(_, r)| r.executed)
+        .filter(|(_, r)| keep_states && r.executed)
         .map(|(t, _)| {
             // A program-wide trait's frame is the program session's, whichever session the step ran in.
             let _program = (in_session && kernel.program_wide(t)).then(|| kernel.enter_program_session());
@@ -924,12 +931,8 @@ fn play_step(
         return Err(format!("step {i}: {}", cut.message()));
     }
     let outcomes = std::mem::take(partial);
-    let states = kernel
-        .trait_snapshot(None)
-        .into_iter()
-        .map(|(name, (state, _))| (name, state))
-        .collect();
-    let pending_asks = kernel.pending_asks();
+    let states = if keep_states { every_state(kernel) } else { BTreeMap::new() };
+    let pending_asks = kernel.pending_asks_since(asks_mark);
     Ok(StepResult {
         outcomes,
         states,
@@ -939,7 +942,13 @@ fn play_step(
     })
 }
 
-/// Plays `steps` on `kernel`. A step's `credentials` are held in `credentials` and its `answers` in `answers` while it runs. `live` is true when `dispatch` runs them on a live host (only then does a step take
+/// The state of every trait, as a step's `states` reports it.
+fn every_state(kernel: &RuntimeKernel) -> BTreeMap<String, String> {
+    kernel.trait_snapshot(None).into_iter().map(|(name, (state, _))| (name, state)).collect()
+}
+
+/// Plays `steps` on `kernel`. With `keep_states` false a step's `states` and `entities` stay empty: a caller that reads
+/// only the outcomes, `entity_after` and `pending_asks` does not hold every trait's state for every step. A step's `credentials` are held in `credentials` and its `answers` in `answers` while it runs. `live` is true when `dispatch` runs them on a live host (only then does a step take
 /// `settleMs`, which `dispatch` receives); `dispatch` returns the outcomes of the cascade one event started.
 /// The report is a [`StepReport`].
 pub fn play_steps(
@@ -950,6 +959,7 @@ pub fn play_steps(
     trait_defs: &BTreeMap<String, Arc<TraitDefinition>>,
     steps: &[serde_json::Value],
     live: bool,
+    keep_states: bool,
     dispatch: &mut dyn FnMut(&str, &str, Value, Option<f64>) -> Result<DispatchOutcomes, String>,
 ) -> Result<StepReport, StepRefusal> {
     kernel.set_record_entity_after(true);
@@ -967,6 +977,7 @@ pub fn play_steps(
             i,
             step,
             live,
+            keep_states,
             dispatch,
             &mut partial,
         );
@@ -1052,6 +1063,7 @@ mod tests {
             &defs,
             &steps,
             false,
+            true,
             &mut |t, e, p, _| replay_dispatch(&kernel, &credentials, &answers, t, e, p),
         )
         .map(|report| serde_json::to_value(report).unwrap())
@@ -1506,6 +1518,45 @@ mod tests {
         assert!(outside.outcomes.is_empty());
     }
 
+    fn played(keep_states: bool, steps: &serde_json::Value) -> StepReport {
+        let schema: OrbitalSchema = serde_json::from_str(MODES).unwrap();
+        let clock = StepClock::new();
+        let kernel = RuntimeKernel::new(
+            RuntimeEnvironment::Server,
+            Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+            KernelConfig { clock: Some(clock.dispatch_clock()), ..Default::default() },
+        );
+        let defs = trait_definitions(&schema);
+        kernel.register_schema(schema).unwrap();
+        let (credentials, answers) = (StepCredentials::new(), StepAnswers::new());
+        play_steps(&kernel, &clock, &credentials, &answers, &defs, steps.as_array().unwrap(), false, keep_states,
+            &mut |t, e, p, _| replay_dispatch(&kernel, &credentials, &answers, t, e, p))
+        .expect("the steps play")
+    }
+
+    #[test]
+    fn a_play_that_keeps_no_states_answers_the_same_outcomes_without_every_traits_state() {
+        let steps = serde_json::json!([
+            { "trait": "Modes", "from": "NORMAL", "event": "KEY", "payload": { "key": "i" } },
+            { "trait": "Modes", "from": "NORMAL", "event": "KEY", "payload": { "key": "v" } },
+            { "trait": "Modes", "from": "NORMAL", "event": "KEY", "payload": { "key": "x" } }
+        ]);
+        let kept = played(true, &steps);
+        let lean = played(false, &steps);
+        assert_eq!(kept.steps.len(), 3);
+        assert_eq!(lean.steps.len(), 3);
+        for (k, l) in kept.steps.iter().zip(&lean.steps) {
+            assert_eq!(serde_json::to_value(&k.outcomes).unwrap(), serde_json::to_value(&l.outcomes).unwrap());
+            assert_eq!(k.entity_after, l.entity_after);
+            assert_eq!(serde_json::to_value(&k.pending_asks).unwrap(), serde_json::to_value(&l.pending_asks).unwrap());
+            assert!(l.states.is_empty(), "a lean play keeps no per-step map of every trait's state");
+            assert!(l.entities.is_empty(), "nor every executed trait's entity");
+        }
+        assert_eq!(kept.dispatch_modes, lean.dispatch_modes);
+        assert_eq!(kept.steps[0].states["Modes"], "INSERT", "control: a kept play still records every trait's state");
+        assert!(!kept.steps[0].entities.is_empty(), "control: and the executed traits' entities");
+    }
+
     #[test]
     fn a_refused_dispatch_is_that_steps_result_and_the_later_steps_still_run() {
         let schema: OrbitalSchema = serde_json::from_str(MODES).unwrap();
@@ -1533,6 +1584,7 @@ mod tests {
             &defs,
             steps.as_array().unwrap(),
             false,
+            true,
             &mut |t, e, p, _| {
                 if serde_json::to_value(&p).unwrap()["key"] == "i" {
                     Err("Payload validation failed for event 'KEY': key (wrong-type)".to_string())
@@ -1727,7 +1779,7 @@ mod tests {
     }
 
     #[test]
-    fn an_answered_ask_is_not_listed_and_the_one_still_waiting_is() {
+    fn an_answered_ask_is_not_listed_again_and_an_earlier_open_one_stays_with_its_step() {
         let report = play_on(
             ASKING,
             serde_json::json!([
@@ -1744,12 +1796,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(keys(0), ["a", "b"], "{report}");
-        assert_eq!(
-            keys(1),
-            ["b"],
-            "a: answered by its completion event: {report}"
-        );
-        assert!(keys(2).is_empty(), "b: answered too: {report}");
+        assert!(keys(1).is_empty(), "a step that only answers an earlier ask left none of its own open: {report}");
+        assert!(keys(2).is_empty(), "{report}");
+        let answered = play_on(ASKING, serde_json::json!([{ "trait": "Caller", "event": "GO_TWO" }, { "trait": "Caller", "event": "DONE", "payload": { "key": "a" } }, { "trait": "Caller", "event": "GO_TWO" }])).unwrap();
+        assert_eq!(pending_of(&answered, 2).into_iter().map(|p| p.3).collect::<Vec<_>>(), ["a"], "an answered ask asked again is open again, and b, still open, was the first step's: {answered}");
     }
 
     #[test]
@@ -1764,6 +1814,23 @@ mod tests {
             serde_json::json!([]),
             "{report}"
         );
+    }
+
+    #[test]
+    fn a_step_lists_only_the_asks_it_left_open_not_those_of_earlier_steps() {
+        let report = play_on(
+            ASKING,
+            serde_json::json!([
+                { "trait": "Caller", "event": "GO" },
+                { "trait": "Caller", "event": "PLAIN" },
+                { "trait": "Caller", "event": "GO_TWO" }
+            ]),
+        )
+        .unwrap();
+        let keys = |i: usize| pending_of(&report, i).into_iter().map(|p| p.3).collect::<Vec<_>>();
+        assert_eq!(keys(0), ["first"], "{report}");
+        assert!(keys(1).is_empty(), "an earlier step's open ask is not this step's: {report}");
+        assert_eq!(keys(2), ["a", "b"], "{report}");
     }
 
     #[test]

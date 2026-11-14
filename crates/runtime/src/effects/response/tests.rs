@@ -224,6 +224,7 @@ fn control_a_server_answer_with_no_outcomes_adds_none() {
 
 fn empty_result(new_state: &str, executed: bool) -> ProcessEventResult {
     ProcessEventResult {
+        cost: None,
         event: None,
         executed,
         previous_state: "idle".to_string(),

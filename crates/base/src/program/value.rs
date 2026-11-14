@@ -44,6 +44,11 @@ impl<T> Shared<T> {
         Arc::ptr_eq(&a.0, &b.0)
     }
 
+    /// The allocation's address: one shared allocation, however many handles reach it.
+    pub fn as_ptr(this: &Self) -> *const T {
+        Arc::as_ptr(&this.0)
+    }
+
     /// A handle to the allocation that does not keep it alive.
     pub fn downgrade(this: &Self) -> std::sync::Weak<T> {
         Arc::downgrade(&this.0)

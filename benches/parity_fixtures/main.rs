@@ -20,32 +20,13 @@ use r0_client_session::R0ClientDriver;
 use r0_session::R0Driver;
 use scenario_bench::*;
 use serde_json::json;
-use std::alloc::{GlobalAlloc, Layout, System};
+use orbital_core_base::alloc_meter::{self, CountingAlloc};
+use std::alloc::System;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-struct CountingAlloc;
-static LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
-
-unsafe impl GlobalAlloc for CountingAlloc {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE_BYTES.fetch_sub(layout.size() as u64, Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE_BYTES.fetch_add(new_size as u64, Ordering::Relaxed);
-        LIVE_BYTES.fetch_sub(layout.size() as u64, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
-    }
-}
-
 #[global_allocator]
-static ALLOC: CountingAlloc = CountingAlloc;
+static ALLOC: CountingAlloc<System> = CountingAlloc::with_totals(System);
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(
@@ -71,7 +52,7 @@ fn write_json(out: &str) {
         }
         .to_string()
     });
-    let sampler = || (LIVE_BYTES.load(Ordering::Relaxed), rss_bytes());
+    let sampler = || (u64::try_from(alloc_meter::totals().live).expect("live bytes are never below zero"), rss_bytes());
     let client = std::env::var("ALMADAR_BENCH_ROLE").is_ok_and(|role| role == "client");
     let (row, row_name) = if client {
         (
