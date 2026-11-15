@@ -15,13 +15,14 @@ pub use crate::payload_check::{find_input_by_address, PayloadIssue, PayloadIssue
 use crate::schema::types::{EntityRef, OrbitalSchema, PayloadField, Persistence};
 use crate::value::{Value, ValueMap};
 
-pub const AGENT_PORT_OPERATORS: [&str; 7] = [
+pub const AGENT_PORT_OPERATORS: [&str; 8] = [
     "program/inputs",
     "program/dispatch",
     "persist/read-named",
     "program/self",
     "program/open",
     "program/navigate",
+    "program/lazy",
     "program/close",
 ];
 

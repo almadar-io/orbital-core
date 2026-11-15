@@ -1064,6 +1064,7 @@
     "program/eval": "program/eval",
     "program/host-ask": "program/host-ask",
     "program/inputs": "program/inputs",
+    "program/lazy": "program/lazy",
     "program/live": "program/live",
     "program/navigate": "program/navigate",
     "program/open": "program/open",

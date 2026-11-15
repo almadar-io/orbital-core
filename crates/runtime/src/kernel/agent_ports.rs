@@ -127,6 +127,10 @@ impl RuntimeKernel {
                 Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                 Err(failure) => failure_result(effect, failure),
             },
+            "program/lazy" => match self.lazy_guest_page(&resolved) {
+                Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
+                Err(failure) => failure_result(effect, failure),
+            },
             "program/close" => match self.close_guest(&resolved) {
                 Ok(answer) => EffectResult::executed_with_value(effect.clone(), answer),
                 Err(failure) => failure_result(effect, failure),

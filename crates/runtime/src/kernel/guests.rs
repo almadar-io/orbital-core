@@ -56,6 +56,8 @@ pub struct GuestSession {
     pub(crate) opener_session: Option<String>,
     /// The opener's viewer runs the guest's `[client]` traits and mounts its pages; the guest answers its server legs.
     pub(crate) split: bool,
+    /// The guest's lazy programs: a split guest's viewer asks for one with `program/lazy`.
+    lazy: Arc<GuestLazy>,
     arenas: Vec<(i64, Value)>,
     route: Arc<RwLock<GuestRoute>>,
 }
@@ -67,20 +69,90 @@ struct GuestRoute {
     mounted: std::collections::HashSet<String>,
 }
 
-/// The lazy programs an opened program value carries (`lazyPrograms`), by the file the kernel asks for.
-struct CarriedLazy(std::collections::HashMap<String, OrbitalSchema>);
+/// How a guest's programs are made ready before it runs them: a mocked guest's stores unbound, and the grants it holds.
+#[derive(Clone)]
+struct GuestPrepare {
+    mock: bool,
+    apply_grants: bool,
+    keep_declared: bool,
+    live: bool,
+    opener_held: Option<OsGrants>,
+    granted: Option<OsGrants>,
+}
 
-impl LazySource for CarriedLazy {
-    fn read(&self, file: &str) -> Result<LazyProgram, String> {
-        self.0
-            .get(file)
-            .map(|schema| LazyProgram {
-                schema: schema.clone(),
-            })
-            .ok_or_else(|| {
-                format!("the opened program carries no lazy program `{file}` in `lazyPrograms`")
-            })
+impl GuestPrepare {
+    fn apply(&self, schema: &mut OrbitalSchema) {
+        if self.mock {
+            unbind_stores(schema);
+        }
+        if !self.apply_grants {
+            return;
+        }
+        // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
+        // opener's: none when neither was asked, even under a host.
+        match (self.keep_declared, &self.opener_held) {
+            (true, Some(held)) if self.live && held.kernel_allows(KernelKind::Declared, None) => {
+                let passed = self.granted.clone().unwrap_or_default();
+                schema.os_grants = Some(union(&passed, &schema.os_grants.clone().unwrap_or_default()));
+            }
+            (true, Some(held)) => narrow_program_grants(schema, held, self.granted.as_ref().unwrap_or(&OsGrants::default())),
+            _ => {
+                schema.os_grants = self.granted.clone();
+                schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+            }
+        }
     }
+}
+
+/// Where a guest reads its lazy programs: none, the programs its opened value carried (`lazyPrograms`), or the installed
+/// behavior its value names (`lazySource`), which the host resolves one file at a time.
+enum LazyFrom {
+    None,
+    Carried(std::collections::HashMap<String, OrbitalSchema>),
+    Behavior(Arc<dyn super::guest_hosting::GuestHosting>, String),
+}
+
+/// A guest's lazy programs: each read once, when the guest or its viewer first needs it, and prepared as its own program is.
+struct GuestLazy {
+    from: LazyFrom,
+    prepare: GuestPrepare,
+    read: orbital_core_base::sync::Mutex<std::collections::HashMap<String, OrbitalSchema>>,
+}
+
+impl GuestLazy {
+    fn program(&self, file: &str) -> Result<OrbitalSchema, crate::effects::executor::SubstrateFailure> {
+        if let Some(program) = self.read.lock().get(file) {
+            return Ok(program.clone());
+        }
+        let carried_none = || crate::agent_ports::guest_failure(
+            orbital_core_base::os::OsErrorKind::NotFound,
+            format!("the guest carries no lazy program `{file}`"),
+        );
+        let mut program = match &self.from {
+            LazyFrom::None => return Err(carried_none()),
+            LazyFrom::Carried(programs) => programs.get(file).cloned().ok_or_else(carried_none)?,
+            LazyFrom::Behavior(hosting, behavior) => hosting.lazy_program(behavior, file)?,
+        };
+        self.prepare.apply(&mut program);
+        self.read.lock().insert(file.to_string(), program.clone());
+        Ok(program)
+    }
+}
+
+/// The guest kernel's own lazy loads (EXEC-LOAD-2), read through its [`GuestLazy`].
+struct GuestLazySource(Arc<GuestLazy>);
+
+impl LazySource for GuestLazySource {
+    fn read(&self, file: &str) -> Result<LazyProgram, String> {
+        self.0.program(file).map(|schema| LazyProgram { schema }).map_err(|failure| failure.message)
+    }
+}
+
+/// The part of `program` a split guest's viewer runs: its `[client]` traits and pages.
+fn client_program_of(program: &OrbitalSchema) -> serde_json::Value {
+    orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
+        &serde_json::to_value(program).unwrap_or(serde_json::Value::Null),
+    ))
 }
 
 fn failure(message: impl Into<String>) -> AgentPortFailure {
@@ -642,6 +714,19 @@ impl RuntimeKernel {
                 })?,
             ),
         };
+        let lazy_behavior = match program_json.as_object_mut().and_then(|object| object.remove("lazySource")) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(source) => match source.get("behavior").and_then(serde_json::Value::as_str) {
+                Some(behavior) => Some(behavior.to_string()),
+                None => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
+            },
+        };
+        if carried.is_some() && lazy_behavior.is_some() {
+            return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
+            ));
+        }
         let mut schema: OrbitalSchema = serde_json::from_value(program_json).map_err(|e| {
             failure(format!(
                 "program/open: the program is not a resolved program: {e}"
@@ -650,44 +735,42 @@ impl RuntimeKernel {
         if schema.orbitals.is_empty() {
             return Err(failure("program/open: the program has no orbitals"));
         }
-        let carries_lazy = carried.is_some();
-        let mut lazy_programs = carried.unwrap_or_default();
-        if integrations == GuestIntegrations::Mock {
-            std::iter::once(&mut schema).chain(lazy_programs.values_mut()).for_each(unbind_stores);
-        }
         if !env.is_empty() {
             let held = opener_held.as_ref().ok_or_else(|| failure("program/open: `env` needs the guest grant `declared` or `grants`"))?;
             if let Some((name, _)) = env.iter().find(|(name, _)| !held.env_allows(name)) {
                 return Err(failure(format!("program/open: `env` names {name}, which the opener holds no grant for")));
             }
         }
-        let host = self.guest_hosting().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
+        let hosting = self.guest_hosting();
+        let host = hosting.as_ref().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
         if split && host.is_none() {
             return Err(guest_refusal(
                 orbital_core_base::os::OsErrorKind::Unsupported,
                 "program/open: a split guest needs a host that offers guest hosting; this one runs guests in its own kernel",
             ));
         }
-        // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
-        // opener's: none when neither was asked, even under a host.
-        if granted.is_some() || host.is_some() {
-            for carried_schema in std::iter::once(&mut schema).chain(lazy_programs.values_mut()) {
-                match (keep_declared, &opener_held) {
-                    (true, Some(held)) if integrations == GuestIntegrations::Live && held.kernel_allows(KernelKind::Declared, None) => {
-                        let passed = granted.clone().unwrap_or_default();
-                        carried_schema.os_grants = Some(union(&passed, &carried_schema.os_grants.clone().unwrap_or_default()));
-                    }
-                    (true, Some(held)) => narrow_program_grants(carried_schema, held, granted.as_ref().unwrap_or(&OsGrants::default())),
-                    _ => {
-                        carried_schema.os_grants = granted.clone();
-                        carried_schema
-                            .orbitals
-                            .iter_mut()
-                            .for_each(|orbital| orbital.os_grants = None);
-                    }
-                }
+        let prepare = GuestPrepare {
+            mock: integrations == GuestIntegrations::Mock,
+            apply_grants: granted.is_some() || host.is_some(),
+            keep_declared,
+            live: integrations == GuestIntegrations::Live,
+            opener_held: opener_held.clone(),
+            granted: granted.clone(),
+        };
+        prepare.apply(&mut schema);
+        let from = match (carried, lazy_behavior, &hosting) {
+            (Some(programs), _, _) => LazyFrom::Carried(programs),
+            (None, Some(behavior), Some(hosting)) => LazyFrom::Behavior(Arc::clone(hosting), behavior),
+            (None, Some(behavior), None) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Unsupported,
+                    format!("program/open: `lazySource` names `{behavior}`, but this host offers no guest hosting to read its lazy programs"),
+                ))
             }
-        }
+            (None, None, _) => LazyFrom::None,
+        };
+        let has_lazy = !matches!(from, LazyFrom::None);
+        let lazy = Arc::new(GuestLazy { from, prepare, read: orbital_core_base::sync::Mutex::new(Default::default()) });
         let (guest, source) = match &host {
             Some(host) => (host.kernel(), None),
             None => {
@@ -705,21 +788,9 @@ impl RuntimeKernel {
             }
         };
         guest.set_runs_client_traits(!split);
-        let client_of = |program: &OrbitalSchema| {
-            orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
-                &serde_json::to_value(program).unwrap_or(serde_json::Value::Null),
-            ))
-        };
-        let client = split.then(|| {
-            let mut client = client_of(&schema);
-            if let (true, Some(fields)) = (carries_lazy, client.as_object_mut()) {
-                let lazy = lazy_programs.iter().map(|(file, child)| (file.clone(), client_of(child))).collect();
-                fields.insert("lazyPrograms".into(), serde_json::Value::Object(lazy));
-            }
-            json_value(client)
-        });
-        if carries_lazy {
-            guest.set_lazy_source(Arc::new(CarriedLazy(lazy_programs)));
+        let client = split.then(|| json_value(client_program_of(&schema)));
+        if has_lazy {
+            guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
         }
         match &host {
             Some(host) => host.register(schema).map_err(|e| failure(format!("program/open: {e}")))?,
@@ -783,6 +854,7 @@ impl RuntimeKernel {
             grants: granted,
             opener_session: self.thread_session().map(|session| session.to_string()),
             split,
+            lazy,
             arenas,
             route: Arc::new(RwLock::new(GuestRoute {
                 embedded: embedded.clone(),
@@ -806,6 +878,32 @@ impl RuntimeKernel {
             fields.insert("client".into(), client);
         }
         Ok(answer)
+    }
+
+    /// `program/lazy { guest, file }`: the client program of the lazy program the split guest carries under `file`, for
+    /// its viewer's kernel to load when a route first needs it (EXEC-CONC-7, EXEC-LOAD-2).
+    pub(super) fn lazy_guest_page(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
+        let Some(Value::Object(options)) = args.first() else {
+            return Err(failure("program/lazy: name `{ guest, file }`"));
+        };
+        let handle = options
+            .get("guest")
+            .ok_or_else(|| failure("program/lazy: name the `guest` program/open answered"))?;
+        let Some(Value::String(file)) = options.get("file") else {
+            return Err(failure("program/lazy: `file` is the lazy page's file"));
+        };
+        let session = self.guest(handle, "program/lazy")?;
+        if !session.split {
+            return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                "program/lazy: the guest is not split, so its viewer loads no page",
+            ));
+        }
+        let child = session.lazy.program(file.as_str()).map_err(|refused| AgentPortFailure {
+            error: format!("program/lazy: {}", refused.message),
+            errors: refused.errors,
+        })?;
+        Ok(json_value(serde_json::json!({ "file": file.as_str(), "program": client_program_of(&child) })))
     }
 
     /// `program/navigate { guest, route, rows?, remount? }`: load the lazy page `route` names, seed its `rows`, mount the
