@@ -215,6 +215,83 @@ fn step_form_of_a_corpus() {
     }
 }
 
+#[test]
+#[ignore = "tool: ORB_LOWER_CORPUS=<orb lower output lines> times the evaluator against the step runner on every expression both run alike"]
+fn step_and_evaluator_time_of_a_corpus() {
+    use crate::step_runner::{evaluated, run, step_of};
+    use std::time::{Duration, Instant};
+    preflight().expect("the installed language data must load");
+    let path = std::env::var("ORB_LOWER_CORPUS").expect("ORB_LOWER_CORPUS");
+    let reps: u32 = std::env::var("ORB_TIME_REPS").ok().and_then(|n| n.parse().ok()).unwrap_or(20);
+    let file = std::io::BufReader::new(std::fs::File::open(path).expect("corpus file"));
+    let ctx = BindingContextBuilder::new().build();
+    let mut seen = BTreeSet::new();
+    let (mut timed, mut eval_total, mut step_total, mut lower_total) = (0usize, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let mut ratios = Vec::new();
+    let mut by_head: BTreeMap<String, (usize, Duration, Duration)> = BTreeMap::new();
+    for line in file.lines() {
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
+        let mut found = Vec::new();
+        expressions(&entry["orb"], false, &mut found);
+        for raw in found {
+            if !seen.insert(raw.to_string()) {
+                continue;
+            }
+            let expr: SExpression = from_json_value(&raw).expect("an expression");
+            let lower_start = Instant::now();
+            let Ok(module) = step_of(&expr) else { continue };
+            let lower_time = lower_start.elapsed();
+            match run(&module, &ctx) {
+                Ok(ran) if ran == evaluated(&expr, &ctx) => {}
+                _ => continue,
+            }
+            let (mut eval_time, mut step_time) = (Duration::ZERO, Duration::ZERO);
+            for rep in 0..reps {
+                let mut time_eval = || {
+                    let start = Instant::now();
+                    std::hint::black_box(eval_expr(std::hint::black_box(&expr), &ctx).is_ok());
+                    eval_time += start.elapsed();
+                };
+                let mut time_step = || {
+                    let start = Instant::now();
+                    std::hint::black_box(run(std::hint::black_box(&module), &ctx).is_ok());
+                    step_time += start.elapsed();
+                };
+                if rep % 2 == 0 {
+                    time_eval();
+                    time_step();
+                } else {
+                    time_step();
+                    time_eval();
+                }
+            }
+            timed += 1;
+            eval_total += eval_time;
+            step_total += step_time;
+            lower_total += lower_time;
+            ratios.push(eval_time.as_secs_f64() / step_time.as_secs_f64().max(1e-12));
+            let slot = by_head.entry(head(&expr)).or_default();
+            slot.0 += 1;
+            slot.1 += eval_time;
+            slot.2 += step_time;
+        }
+    }
+    ratios.sort_by(f64::total_cmp);
+    let pct = |p: usize| ratios.get(ratios.len().saturating_sub(1) * p / 100).copied().unwrap_or(0.0);
+    println!(
+        "TIME expressions={timed} reps={reps} eval={eval_total:?} step={step_total:?} total_speedup={:.2} median={:.2} p10={:.2} p90={:.2} lowering_once={lower_total:?}",
+        eval_total.as_secs_f64() / step_total.as_secs_f64().max(1e-12),
+        pct(50),
+        pct(10),
+        pct(90)
+    );
+    let mut rows: Vec<_> = by_head.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+    for (head, (count, eval, step)) in rows.into_iter().take(25) {
+        println!("HEAD {head}\tn={count}\teval={eval:?}\tstep={step:?}\tspeedup={:.2}", eval.as_secs_f64() / step.as_secs_f64().max(1e-12));
+    }
+}
+
 /// Every effect node in `expr`, outermost first.
 fn effects_in<'a>(expr: &'a orbital_core_base::ir::expr::OirExpr, out: &mut Vec<&'a orbital_core_base::ir::effects::OirEffect>) {
     if let orbital_core_base::ir::expr::OirExpr::Effect { effect } = expr {

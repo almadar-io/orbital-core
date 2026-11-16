@@ -109,6 +109,17 @@ pub struct EventDefinition {
     )]
     pub payload_entity: Option<String>,
 
+    /// `...T` in this payload (P-040): the fields of the struct or entity the type parameter `$T` is bound to come
+    /// first, flat, then `payload_schema`'s own fields. Set by `orbital-lolo` for a spread type parameter; the
+    /// inline phase (`resolve_type_param_sentinels`) fills it from the call-site argument or the parameter default
+    /// and clears it, so a validated program never carries one.
+    #[serde(
+        rename = "payloadSpread",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub payload_spread: Option<String>,
+
     /// A declared input (`listens { EVENT -> input { … } }`): a
     /// client outside the program (an API, an agent, an MCP client) may send
     /// this event to the trait. Absent = not an input.

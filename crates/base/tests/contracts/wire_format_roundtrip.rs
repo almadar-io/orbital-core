@@ -291,6 +291,7 @@ fn emit_payload_field_with_type_when_round_trips() {
 fn emit_definition_omits_optional_nulls() {
     let emit = EmitDefinition {
         payload_entity: None,
+        payload_spread: None,
         definer_knob: None,
         scope_overridden: None,
         event: "USER_SAVED".to_string(),

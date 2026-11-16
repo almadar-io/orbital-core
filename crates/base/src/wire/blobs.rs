@@ -60,17 +60,21 @@ impl Blobs {
 
 struct ReadScope {
     handed: BTreeMap<u64, Option<Arc<Blob>>>,
+    /// The blobs the kernel already holds: an answer that names one again (a host echoing state it was handed) reads it
+    /// as the same handle.
+    held: BTreeMap<u64, std::sync::Weak<Blob>>,
 }
 
 crate::kernel_local! {
     static SCOPE: RefCell<Option<ReadScope>> = const { RefCell::new(None) };
 }
 
-/// Run `read` (an answer's parse) with the ids in `handed` readable as blob handles; an id the answer never names is
-/// released at once.
+/// Run `read` (an answer's parse) with the ids in `handed`, and every blob this kernel still holds, readable as blob
+/// handles; a handed id the answer never names is released at once.
 pub fn read_with<R>(blobs: &mut Blobs, handed: &[u64], read: impl FnOnce() -> R) -> R {
     let scope = ReadScope {
         handed: handed.iter().map(|id| (*id, None)).collect(),
+        held: blobs.live.clone(),
     };
     let outer = SCOPE.with(|s| s.borrow_mut().replace(scope));
     let out = read();
@@ -91,15 +95,19 @@ pub(crate) fn reading() -> bool {
     SCOPE.with(|s| s.borrow().is_some())
 }
 
-/// The handle for `id`, one per id in an answer; an id the host never handed is refused.
+/// The handle for `id`: one per id handed with the answer, or the one the kernel already holds; any other id is refused.
 pub(crate) fn handle(id: u64) -> Result<Arc<Blob>, String> {
     SCOPE.with(|s| {
         let mut slot = s.borrow_mut();
-        let entry = slot
-            .as_mut()
-            .and_then(|scope| scope.handed.get_mut(&id))
-            .ok_or_else(|| format!("{BLOB_MARKER} {id} was never handed to this kernel"))?;
-        Ok(entry.get_or_insert_with(|| Arc::new(Blob { id })).clone())
+        let scope = slot.as_mut().ok_or_else(|| format!("{BLOB_MARKER} {id} was never handed to this kernel"))?;
+        if let Some(entry) = scope.handed.get_mut(&id) {
+            return Ok(entry.get_or_insert_with(|| Arc::new(Blob { id })).clone());
+        }
+        scope
+            .held
+            .get(&id)
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| format!("{BLOB_MARKER} {id} was never handed to this kernel, or it let go of it"))
     })
 }
 
