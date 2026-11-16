@@ -2,6 +2,7 @@
 //! with `program/host-ask`, the viewer's host answers it and writes its outcome as text, and
 //! `program/dispatch { ask, answer } { guest }` fires the ask's declared route inside the guest. `.lolo` only moves the
 //! two strings, so no value crosses the relay untyped.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -39,7 +40,7 @@ pub fn relayed(arg: Option<&Value>) -> Result<RelayedAsk, String> {
     let Some(text) = arg.and_then(Value::as_str) else {
         return Err("program/host-ask takes the ask text a guest answer carries".to_string());
     };
-    let ask: RelayedAsk = serde_json::from_str(text).map_err(|e| format!("program/host-ask: the ask is not one a guest wrote: {e}"))?;
+    let ask: RelayedAsk = from_json_str(text).map_err(|e| format!("program/host-ask: the ask is not one a guest wrote: {e}"))?;
     if ask.op == "program/host-ask" || crate::runs_on::is_identity_ask(&ask.op) {
         return Err(format!("program/host-ask: {} is not an ask a viewer answers for a guest", ask.op));
     }
@@ -51,7 +52,7 @@ pub fn relayed(arg: Option<&Value>) -> Result<RelayedAsk, String> {
 
 /// Read a host's answer text.
 pub fn answer(text: &str) -> Result<RelayedAnswer, String> {
-    serde_json::from_str(text).map_err(|e| format!("program/dispatch: the answer is not one a host wrote: {e}"))
+    from_json_str(text).map_err(|e| format!("program/dispatch: the answer is not one a host wrote: {e}"))
 }
 
 /// The route event and payload the asking trait receives, as a browser host returns a host ask (EXEC-DIST-13): the
@@ -134,7 +135,7 @@ mod tests {
     #[test]
     fn an_ask_round_trips_through_its_text() {
         let text = write("audio/play-sound", &[Value::string("step".to_string())], ask(Some("A"), None, None).completion.as_ref());
-        let back: RelayedAsk = serde_json::from_str(&text).unwrap();
+        let back: RelayedAsk = from_json_str(&text).unwrap();
         assert_eq!(back.op, "audio/play-sound");
         assert_eq!(back.args, vec![Value::string("step".to_string())]);
         assert!(answer("not an answer").is_err(), "edge: text no host wrote is refused");

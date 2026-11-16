@@ -91,9 +91,10 @@ pub fn parse_row_route(expr: &SExpression) -> Result<RowRoute, RowRouteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     fn parse(json: &str) -> SExpression {
-        serde_json::from_str(json).unwrap()
+        from_json_str(json).unwrap()
     }
 
     #[test]

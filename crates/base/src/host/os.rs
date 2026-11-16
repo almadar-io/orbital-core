@@ -551,10 +551,11 @@ pub fn resolve_credential_segments(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::{from_json_str, from_json_value};
     use serde_json::json;
 
     fn sx(v: serde_json::Value) -> Vec<SExpression> {
-        serde_json::from_value(v).expect("s-expression array")
+        from_json_value(&v).expect("s-expression array")
     }
 
     fn table_naming(names: impl Iterator<Item = &'static str>) -> crate::language_data::OperatorData {
@@ -858,10 +859,10 @@ mod tests {
             json!("os/tcp-connect")
         );
         assert_eq!(
-            serde_json::from_value::<OsOp>(json!("os/stdin-read")).expect("de"),
+            from_json_value::<OsOp>(&json!("os/stdin-read")).expect("de"),
             OsOp::StdinRead
         );
-        assert!(serde_json::from_value::<OsOp>(json!("os/path-join")).is_err());
+        assert!(from_json_value::<OsOp>(&json!("os/path-join")).is_err());
     }
 
     #[test]
@@ -952,7 +953,7 @@ mod tests {
 
     fn encode_vectors() -> Vec<EncodeVector> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/operators/credential-encode-vectors.json");
-        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("vectors")
+        from_json_str(&std::fs::read_to_string(path).expect("fixture")).expect("vectors")
     }
 
     fn held(name: &str, value: &str) -> impl Fn(&str, Option<&str>) -> Result<Option<String>, String> {
@@ -961,7 +962,7 @@ mod tests {
     }
 
     fn send_resolved(segment: serde_json::Value, value: &str) -> Result<Vec<u8>, OsError> {
-        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let args: Vec<crate::value::Value> = from_json_value(&json!([5, [segment]])).expect("value args");
         let source = held("CRED", value);
         let resolved = resolve_credential_segments(OsOp::Send, &args, None, Some(&source))?;
         let crate::value::Value::Bytes(data) = &resolved[1] else { panic!("bytes operand") };
@@ -983,13 +984,13 @@ mod tests {
     #[test]
     fn a_declared_bytes_answer_field_becomes_bytes_and_an_undeclared_one_is_left_alone() {
         use crate::value::Value;
-        let answer: Value = serde_json::from_value(json!({ "data": "aGk=", "eof": false })).expect("answer");
+        let answer: Value = from_json_value(&json!({ "data": "aGk=", "eof": false })).expect("answer");
         let read = answer_with_declared_bytes(OsOp::ReadFile, answer.clone()).expect("converted");
         assert_eq!(read.get("data"), Some(&Value::bytes(b"hi".to_vec())));
         assert_eq!(read.get("eof"), Some(&Value::Bool(false)));
-        let wrote: Value = serde_json::from_value(json!({ "bytes": "aGk=" })).expect("answer");
+        let wrote: Value = from_json_value(&json!({ "bytes": "aGk=" })).expect("answer");
         assert_eq!(answer_with_declared_bytes(OsOp::WriteFile, wrote.clone()).expect("untouched"), wrote);
-        let bad: Value = serde_json::from_value(json!({ "data": "not base64!" })).expect("answer");
+        let bad: Value = from_json_value(&json!({ "data": "not base64!" })).expect("answer");
         assert_eq!(answer_with_declared_bytes(OsOp::ReadFile, bad).expect_err("refused").kind, OsErrorKind::Io);
     }
 
@@ -1012,7 +1013,7 @@ mod tests {
     }
 
     fn send_as(segment: serde_json::Value, principal: Option<&str>) -> Result<Vec<u8>, OsError> {
-        let args: Vec<crate::value::Value> = serde_json::from_value(json!([5, [segment]])).expect("value args");
+        let args: Vec<crate::value::Value> = from_json_value(&json!([5, [segment]])).expect("value args");
         let source = |name: &str, owner: Option<&str>| Ok((name == "CRED").then(|| format!("value-of-{}", owner.unwrap_or("app"))));
         let resolved = resolve_credential_segments(OsOp::Send, &args, principal, Some(&source))?;
         let crate::value::Value::Bytes(data) = &resolved[1] else { panic!("bytes operand") };

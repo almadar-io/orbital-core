@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::value::Value;
 use orbital_core_runtime::embed::memory::MemoryStoreApi;
 use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
@@ -13,7 +14,7 @@ fn table(rows: Json) -> RowTable {
         .unwrap()
         .iter()
         .map(|row| {
-            let value: Value = serde_json::from_value(row.clone()).unwrap();
+            let value: Value = from_json_value(&row).unwrap();
             (row["id"].as_str().unwrap().to_string(), Arc::new(value))
         })
         .collect()
@@ -24,7 +25,7 @@ fn rows(table: &RowTable) -> Json {
 }
 
 fn op(value: Json) -> RowWriteOp {
-    serde_json::from_value(value).expect("canonical rekey wire")
+    from_json_value(&value).expect("canonical rekey wire")
 }
 fn rekey(id: &str, new_id: &str) -> RowWriteOp {
     op(json!({"kind":"rekey", "entityType":"Item", "id":id, "newId":new_id}))
@@ -112,7 +113,7 @@ fn rekey_guards_missing_empty_identity_and_invalid_wire_do_not_mutate() {
         json!({"kind":"rekey","entityType":"Item","id":"a"}),
         json!({"kind":"other","entityType":"Item"}),
     ] {
-        assert!(serde_json::from_value::<RowWriteOp>(malformed).is_err());
+        assert!(from_json_value::<RowWriteOp>(&malformed).is_err());
     }
     assert_eq!(rows(&data), initial);
 }
@@ -168,7 +169,7 @@ fn cache_rekey_aliases_share_table_and_atomic_rollback_crosses_tables() {
         .write(
             "Item",
             "a",
-            &serde_json::from_value(json!({"id":"a","manual":9.0})).unwrap(),
+            &from_json_value(&json!({"id":"a","manual":9.0})).unwrap(),
         )
         .unwrap();
     let moved = cache.write_where(&rekey("a", "b")).unwrap().unwrap();
@@ -213,7 +214,7 @@ fn failed_writes_do_not_create_an_observable_empty_table() {
     ] {
         let result = store.write_where(&operation.to_string()).unwrap();
         assert_eq!(
-            serde_json::from_str::<Json>(&result).unwrap()["kind"],
+            from_json_str::<Json>(&result).unwrap()["kind"],
             outcome
         );
         assert_eq!(store.snapshot().unwrap(), before);
@@ -224,9 +225,9 @@ fn failed_writes_do_not_create_an_observable_empty_table() {
 fn only_native_memory_advertises_rekey_capability() {
     let historical = serde_json::to_value(WriteCapabilities::full()).unwrap();
     assert!(historical.get("rekey").is_none());
-    let restored: WriteCapabilities = serde_json::from_value(historical).unwrap();
+    let restored: WriteCapabilities = from_json_value(&historical).unwrap();
     assert_eq!(restored.rekey, None);
     let native: Json =
-        serde_json::from_str(&MemoryStoreApi::new().write_capabilities().unwrap()).unwrap();
+        from_json_str(&MemoryStoreApi::new().write_capabilities().unwrap()).unwrap();
     assert_eq!(native["rekey"], true);
 }

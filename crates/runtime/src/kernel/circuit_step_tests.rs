@@ -1,6 +1,7 @@
 //! One dispatch reports the circuit it ran: which `from --event-->` arm fired, every
 //! guard tried, and one status per authored effect of the fired arm (what
 //! `orb execute --steps` and the cosmic zoom's Step read).
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
@@ -10,7 +11,7 @@ fn kernel() -> RuntimeKernel {
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
         KernelConfig::default(),
     );
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "EditorApp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Editor",
@@ -28,7 +29,7 @@ fn kernel() -> RuntimeKernel {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     kernel.register_schema(schema).unwrap();
     kernel
@@ -84,7 +85,7 @@ fn failing_os_kernel() -> RuntimeKernel {
         KernelConfig::default(),
     );
     let routes = serde_json::json!({ "emit": { "success": "OPENED", "failure": "OPEN_FAILED" } });
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "OsApp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Files",
@@ -105,7 +106,7 @@ fn failing_os_kernel() -> RuntimeKernel {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     kernel.register_schema(schema).unwrap();
     kernel
@@ -141,7 +142,7 @@ fn nested_kernel() -> RuntimeKernel {
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
         KernelConfig::default(),
     );
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "NestedApp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Nest",
@@ -161,7 +162,7 @@ fn nested_kernel() -> RuntimeKernel {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     kernel.register_schema(schema).unwrap();
     kernel

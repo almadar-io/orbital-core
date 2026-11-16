@@ -360,15 +360,15 @@ pub fn bake_list_shapes(schema: &mut OrbitalSchema) -> Result<(), serde_json::Er
 }
 
 pub struct XmlValidOp;
-impl Operator for XmlValidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for XmlValidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.len() != 1 {
             return Err(OrbitalError::Eval(EvalError::InvalidArgument(
                 "xml/valid: expected exactly one argument".into(),
             )));
         }
-        match eval_expr(&args[0], ctx)? {
-            Value::String(text) => Ok(Value::Bool(parse_tree(&text).is_ok())),
+        match args[0] {
+            Value::String(text) => Ok(Value::Bool(parse_tree(text).is_ok())),
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
                 actual: other.type_name().into(),

@@ -1,5 +1,6 @@
 //! EXEC-COST-1: a step's and each authored effect's cost is measured only inside a cost scope and only with a meter;
 //! everything else about the step is unchanged.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 use orbital_core_base::cost::{CostMeter, StepCost};
@@ -25,7 +26,7 @@ fn scripted() -> Arc<dyn CostMeter> {
 }
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Cost",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Page",
@@ -41,7 +42,7 @@ fn kernel() -> RuntimeKernel {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,

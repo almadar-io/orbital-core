@@ -1,5 +1,6 @@
 // An unset `@config` knob in a render prop is an absent prop, not `null` (twin of the JS evaluator; ui `Chat.realtime-chat` lost its Send button to `placeholder: null`).
 
+use orbital_core_base::json_value::from_json_value;
 use serde_json::{json, Value as Json};
 use std::sync::Arc;
 use {
@@ -14,7 +15,7 @@ use {
 };
 
 fn response(config: Json, slot: &str, props: Json) -> EventResponse {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "O",

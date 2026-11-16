@@ -1,5 +1,6 @@
 //! A schema registered straight into the kernel (no compiler resolve): the
 //! host orbital's entity never decides a trait's dispatch mode.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
@@ -14,7 +15,7 @@ fn kernel_with(entity_persistence: &str, linked: Option<&str>) -> RuntimeKernel 
     if let Some(e) = linked {
         t["linkedEntity"] = serde_json::json!(e);
     }
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Host",
         "typeContractVersion": 1, "orbitals": [
             { "name": "Frames",
@@ -25,7 +26,7 @@ fn kernel_with(entity_persistence: &str, linked: Option<&str>) -> RuntimeKernel 
               "entity": { "name": "Row", "fields": [{ "name": "id", "type": "string" }] },
               "traits": [] }
         ]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,

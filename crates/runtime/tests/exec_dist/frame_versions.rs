@@ -2,6 +2,7 @@
 // a dispatch wrote, a client applies a delta only at the version it starts from, a repeat is a no-op, a gap asks for a
 // snapshot, and an empty diff does not bump the version.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
 use crate::support::identity;
@@ -11,7 +12,7 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashSet};
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -33,7 +34,7 @@ fn request(event: &str, client: &str, field: &str, value: &str) -> EventRequest 
         event: event.to_string(),
         target_trait: Some("Writer".to_string()),
         client_id: Some(client.to_string()),
-        payload: Some(serde_json::from_value(json!({ field: value })).unwrap()),
+        payload: Some(from_json_value(&json!({ field: value })).unwrap()),
         ..Default::default()
     }
 }
@@ -204,7 +205,7 @@ fn versioned(from: u64, to: u64, ops: Vec<FrameOp>) -> FrameDelta {
 
 fn set(field: &str, value: &str) -> FrameOp {
     FrameOp::Set {
-        frames: vec![("Writer".into(), serde_json::from_value(json!({ field: value })).unwrap())],
+        frames: vec![("Writer".into(), from_json_value(&json!({ field: value })).unwrap())],
     }
 }
 
@@ -290,7 +291,7 @@ fn a_gap_applies_nothing_and_asks_for_the_snapshot_from_the_version_held() {
             FrameOp::Clear,
             FrameOp::Put {
                 frame: "Writer".into(),
-                fields: serde_json::from_value(json!({ "v": "four", "w": "x" })).unwrap(),
+                fields: from_json_value(&json!({ "v": "four", "w": "x" })).unwrap(),
             },
         ],
     );
@@ -360,7 +361,7 @@ fn one_set_op_carries_every_frame_and_field_a_dispatch_changed() {
     assert_eq!(delta(&first).ops.len(), 1, "{:?}", delta(&first).ops);
     let wire = serde_json::to_value(delta(&first)).unwrap();
     assert_eq!(wire["ops"], json!([["set", { "Writer": { "v": "two" } }]]));
-    let back: FrameDelta = serde_json::from_value(wire).unwrap();
+    let back: FrameDelta = from_json_value(&wire).unwrap();
     assert_eq!(&back, delta(&first));
 }
 
@@ -368,7 +369,7 @@ fn one_set_op_carries_every_frame_and_field_a_dispatch_changed() {
 /// (EXEC-DIST-9, `kernel/frames.rs` `frame_slot`/`session_eid`), so no client view can miss it as a frame delta.
 #[test]
 fn a_server_tick_writes_the_program_sessions_frame_and_no_clients_view() {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -463,7 +464,7 @@ fn another_sessions_identity_never_reaches_this_client() {
 // the client's program, so its traits' frames never enter a client session's record, never advance its version, and
 // never reach a snapshot the client folds (G-CROSS-396).
 fn hosted_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
             { "name": "Main",
@@ -488,7 +489,7 @@ fn hosted_send(server: &EmbeddedServer, orbital: &str, target: &str, event: &str
         event: event.to_string(),
         target_trait: Some(target.to_string()),
         client_id: Some("tab".to_string()),
-        payload: Some(serde_json::from_value(json!({ "v": value })).unwrap()),
+        payload: Some(from_json_value(&json!({ "v": value })).unwrap()),
         ..Default::default()
     };
     done(server.start(orbital, request).unwrap())

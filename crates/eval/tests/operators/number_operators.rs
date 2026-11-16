@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use serde_json::Value as Json;
@@ -23,7 +24,7 @@ struct Case {
 #[test]
 fn every_shared_number_vector_matches() {
     let cases: Vec<Case> =
-        serde_json::from_str(include_str!("../../../../tests/fixtures/operators/number-vectors.json")).unwrap();
+        from_json_str(include_str!("../../../../tests/fixtures/operators/number-vectors.json")).unwrap();
     assert!(cases.iter().any(|case| case.error));
     assert!(cases
         .iter()
@@ -36,7 +37,7 @@ fn every_shared_number_vector_matches() {
     }
     let ctx = BindingContextBuilder::new().build();
     for case in cases {
-        let expression = serde_json::from_value(case.expr).unwrap();
+        let expression = from_json_value(&case.expr).unwrap();
         let result = Evaluator::new().evaluate(&expression, &ctx);
         if case.error {
             assert!(result.is_err(), "{}: {result:?}", case.source);
@@ -82,7 +83,7 @@ const ECMA_NUMBER_TEXT: [(f64, &str); 14] = [
 
 fn eval_text(expr: Json) -> String {
     let ctx = BindingContextBuilder::new().build();
-    match Evaluator::new().evaluate(&serde_json::from_value(expr.clone()).unwrap(), &ctx) {
+    match Evaluator::new().evaluate(&from_json_value(&expr).unwrap(), &ctx) {
         Ok(Value::String(s)) => s.into_inner(),
         other => panic!("{expr}: {other:?}"),
     }
@@ -105,7 +106,7 @@ fn a_number_becomes_text_as_ecmascript_number_to_string() {
 fn control_str_concat_refuses_an_object_rather_than_stringifying_it() {
     let ctx = BindingContextBuilder::new().build();
     let expr = serde_json::json!(["str/concat", "", {"n": 1e19}]);
-    let result = Evaluator::new().evaluate(&serde_json::from_value(expr).unwrap(), &ctx);
+    let result = Evaluator::new().evaluate(&from_json_value(&expr).unwrap(), &ctx);
     assert!(
         matches!(result, Err(orbital_core_base::error::OrbitalError::Eval(orbital_core_base::error::EvalError::TypeMismatch { .. }))),
         "{result:?}"
@@ -130,14 +131,14 @@ fn control_a_non_finite_number_stringifies_as_json_null() {
     let inf = serde_json::json!(["str/to-number", "Infinity"]);
     for expr in [inf.clone(), serde_json::json!(["-", inf, inf])] {
         let stringified = serde_json::json!(["json/stringify", {"n": expr}]);
-        let result = Evaluator::new().evaluate(&serde_json::from_value(stringified).unwrap(), &ctx);
+        let result = Evaluator::new().evaluate(&from_json_value(&stringified).unwrap(), &ctx);
         assert_eq!(result.unwrap(), Value::string("{\"n\":null}"));
     }
 }
 
 fn eval_bool(expr: Json) -> bool {
     let ctx = BindingContextBuilder::new().build();
-    match Evaluator::new().evaluate(&serde_json::from_value(expr.clone()).unwrap(), &ctx) {
+    match Evaluator::new().evaluate(&from_json_value(&expr).unwrap(), &ctx) {
         Ok(Value::Bool(b)) => b,
         other => panic!("{expr}: {other:?}"),
     }
@@ -177,7 +178,7 @@ fn control_equal_numbers_stay_equal_and_ordering_is_unchanged() {
 
 fn eval_any(expr: Json) -> Value {
     let ctx = BindingContextBuilder::new().build();
-    Evaluator::new().evaluate(&serde_json::from_value(expr).unwrap(), &ctx).unwrap()
+    Evaluator::new().evaluate(&from_json_value(&expr).unwrap(), &ctx).unwrap()
 }
 
 #[test]

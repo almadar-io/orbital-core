@@ -59,7 +59,7 @@ impl OirEmitConfig {
 
 /// Effect definitions
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "kebab-case")]
+#[serde(remote = "Self", tag = "kind", rename_all = "kebab-case")]
 pub enum OirEffect {
     /// Set a value
     Set {
@@ -416,6 +416,18 @@ pub enum OirEffect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emit: Option<OirEmitConfig>,
     },
+}
+
+impl serde::Serialize for OirEffect {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        OirEffect::serialize(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for OirEffect {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::json_value::deserialize_via_value(deserializer, |value| OirEffect::deserialize(value))
+    }
 }
 
 /// One page fact `browser/page-facts` can read. The closed set; list order is read order.

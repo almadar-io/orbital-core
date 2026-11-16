@@ -328,9 +328,10 @@ fn oir_of(value: &Value) -> Result<OirValue, FieldStampError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
 
     fn entity() -> EntityDefinition {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "Task",
             "fields": [
                 { "name": "title", "type": "string", "required": true, "description": "What to do" },
@@ -338,12 +339,12 @@ mod tests {
                 { "name": "note", "type": "string" },
                 { "name": "owner", "type": "relation", "relation": { "entity": "User", "cardinality": "many-to-one" } }
             ]
-        }))
+        })))
         .expect("entity parses")
     }
 
     fn tree(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).expect("tree parses")
+        from_json_value(&json).expect("tree parses")
     }
 
     fn stamped(json: serde_json::Value) -> serde_json::Value {

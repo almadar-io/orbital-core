@@ -1,5 +1,6 @@
 //! Trait definitions, trait references and config fields.
 
+use crate::json_value::from_json_value;
 use super::*;
 
 // =============================================================================
@@ -384,7 +385,7 @@ impl<'de> Deserialize<'de> for TraitReference {
         let is_reference = obj.contains_key("ref") || !obj.contains_key("stateMachine");
         if is_reference {
             let f: TraitReferenceFields =
-                serde_json::from_value(value).map_err(D::Error::custom)?;
+                from_json_value(&value).map_err(D::Error::custom)?;
             Ok(TraitReference::Reference {
                 reference: f.reference,
                 ref_id: f.ref_id,
@@ -402,7 +403,7 @@ impl<'de> Deserialize<'de> for TraitReference {
                 dispatch: f.dispatch,
             })
         } else {
-            let td: TraitDefinition = serde_json::from_value(value).map_err(D::Error::custom)?;
+            let td: TraitDefinition = from_json_value(&value).map_err(D::Error::custom)?;
             Ok(TraitReference::Inline(Arc::new(td)))
         }
     }

@@ -8,11 +8,11 @@ use super::*;
 
 /// validate/required - Check not null/empty
 pub struct ValidateRequiredOp;
-impl Operator for ValidateRequiredOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateRequiredOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/required", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let is_valid = match &val {
+        let val = args[0];
+        let is_valid = match val {
             Value::Null => false,
             Value::String(s) => !s.is_empty(),
             Value::Bytes(b) => !b.is_empty(),
@@ -25,51 +25,51 @@ impl Operator for ValidateRequiredOp {
 
 /// validate/string - Type check
 pub struct ValidateStringOp;
-impl Operator for ValidateStringOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateStringOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/string", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(TypePredicate::String.matches_value(&val)))
+        let val = args[0];
+        Ok(Value::Bool(TypePredicate::String.matches_value(val)))
     }
 }
 
 /// validate/number - Type check
 pub struct ValidateNumberOp;
-impl Operator for ValidateNumberOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateNumberOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/number", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(TypePredicate::Number.matches_value(&val)))
+        let val = args[0];
+        Ok(Value::Bool(TypePredicate::Number.matches_value(val)))
     }
 }
 
 /// validate/boolean - Type check
 pub struct ValidateBooleanOp;
-impl Operator for ValidateBooleanOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateBooleanOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/boolean", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(TypePredicate::Boolean.matches_value(&val)))
+        let val = args[0];
+        Ok(Value::Bool(TypePredicate::Boolean.matches_value(val)))
     }
 }
 
 /// validate/array - Type check
 pub struct ValidateArrayOp;
-impl Operator for ValidateArrayOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateArrayOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/array", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(TypePredicate::Array.matches_value(&val)))
+        let val = args[0];
+        Ok(Value::Bool(TypePredicate::Array.matches_value(val)))
     }
 }
 
 /// validate/object - Type check
 pub struct ValidateObjectOp;
-impl Operator for ValidateObjectOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateObjectOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/object", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        Ok(Value::Bool(TypePredicate::Object.matches_value(&val)))
+        let val = args[0];
+        Ok(Value::Bool(TypePredicate::Object.matches_value(val)))
     }
 }
 
@@ -115,10 +115,10 @@ pub fn semantic_string_value_valid(kind: &str, value: &str) -> Result<bool, Orbi
 
 /// validate/email - the `pattern` the operator table declares for it
 pub struct ValidateEmailOp;
-impl Operator for ValidateEmailOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateEmailOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/email", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern(
             "validate/email",
@@ -129,10 +129,10 @@ impl Operator for ValidateEmailOp {
 
 /// validate/url - the `pattern` the operator table declares for it
 pub struct ValidateUrlOp;
-impl Operator for ValidateUrlOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateUrlOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/url", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern("validate/url", val)?))
     }
@@ -149,11 +149,11 @@ fn length_of(val: &Value) -> Result<usize, OrbitalError> {
 
 /// validate/minLength - Minimum string length
 pub struct ValidateMinLengthOp;
-impl Operator for ValidateMinLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateMinLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/minLength", >= 2);
-        let len = length_of(&eval_expr(&args[0], ctx)?)?;
-        let min = require_number!(eval_expr(&args[1], ctx)?);
+        let len = length_of(args[0])?;
+        let min = require_number!(args[1]);
 
         Ok(Value::Bool(len as f64 >= min))
     }
@@ -161,11 +161,11 @@ impl Operator for ValidateMinLengthOp {
 
 /// validate/maxLength - Maximum string length
 pub struct ValidateMaxLengthOp;
-impl Operator for ValidateMaxLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateMaxLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/maxLength", >= 2);
-        let len = length_of(&eval_expr(&args[0], ctx)?)?;
-        let max = require_number!(eval_expr(&args[1], ctx)?);
+        let len = length_of(args[0])?;
+        let max = require_number!(args[1]);
 
         Ok(Value::Bool(len as f64 <= max))
     }
@@ -174,11 +174,11 @@ impl Operator for ValidateMaxLengthOp {
 /// validate/pattern - Match a regex pattern of the shared dialect (see `translate_shared_regex`).
 /// An invalid or unsupported pattern is false; a non-string value or pattern is a type mismatch.
 pub struct ValidatePatternOp;
-impl Operator for ValidatePatternOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidatePatternOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/pattern", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let pattern = eval_expr(&args[1], ctx)?;
+        let val = args[0];
+        let pattern = args[1];
         let (val, pattern) = (val.text()?, pattern.text()?);
         Ok(Value::Bool(
             super::string::compile_shared_regex(pattern).is_some_and(|re| re.is_match(val)),
@@ -192,10 +192,10 @@ impl Operator for ValidatePatternOp {
 
 /// validate/uuid - the `pattern` the operator table declares for it
 pub struct ValidateUuidOp;
-impl Operator for ValidateUuidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateUuidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/uuid", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern("validate/uuid", val)?))
     }
@@ -203,10 +203,10 @@ impl Operator for ValidateUuidOp {
 
 /// validate/date - Valid date string
 pub struct ValidateDateOp;
-impl Operator for ValidateDateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateDateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/date", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let Value::String(val) = val else {
             return Ok(Value::Bool(false));
         };
@@ -238,11 +238,11 @@ impl Operator for ValidateDateOp {
 
 /// validate/length - Exact length (works with strings and arrays)
 pub struct ValidateLengthOp;
-impl Operator for ValidateLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/length", >= 2);
-        let actual_len = length_of(&eval_expr(&args[0], ctx)?)?;
-        let expected_len = require_number!(eval_expr(&args[1], ctx)?);
+        let actual_len = length_of(args[0])?;
+        let expected_len = require_number!(args[1]);
 
         Ok(Value::Bool(actual_len as f64 == expected_len))
     }
@@ -250,12 +250,12 @@ impl Operator for ValidateLengthOp {
 
 /// validate/range - Value in numeric range
 pub struct ValidateRangeOp;
-impl Operator for ValidateRangeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateRangeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/range", >= 3);
-        let val = require_number!(eval_expr(&args[0], ctx)?);
-        let min = require_number!(eval_expr(&args[1], ctx)?);
-        let max = require_number!(eval_expr(&args[2], ctx)?);
+        let val = require_number!(args[0]);
+        let min = require_number!(args[1]);
+        let max = require_number!(args[2]);
 
         Ok(Value::Bool(val >= min && val <= max))
     }
@@ -263,11 +263,11 @@ impl Operator for ValidateRangeOp {
 
 /// validate/oneOf - Value in set
 pub struct ValidateOneOfOp;
-impl Operator for ValidateOneOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateOneOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/oneOf", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let options = eval_expr(&args[1], ctx)?;
+        let val = args[0];
+        let options = args[1];
 
         let array = match options {
             Value::Array(a) => a,
@@ -280,7 +280,7 @@ impl Operator for ValidateOneOfOp {
         };
 
         for opt in array.iter() {
-            if *opt == val {
+            if *opt == *val {
                 return Ok(Value::Bool(true));
             }
         }
@@ -290,13 +290,13 @@ impl Operator for ValidateOneOfOp {
 
 /// validate/equals - Deep equality check
 pub struct ValidateEqualsOp;
-impl Operator for ValidateEqualsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateEqualsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/equals", >= 2);
-        let val1 = eval_expr(&args[0], ctx)?;
-        let val2 = eval_expr(&args[1], ctx)?;
+        let val1 = args[0];
+        let val2 = args[1];
 
-        Ok(Value::Bool(deep_equals(&val1, &val2)))
+        Ok(Value::Bool(deep_equals(val1, val2)))
     }
 }
 
@@ -306,10 +306,10 @@ impl Operator for ValidateEqualsOp {
 
 /// validate/phone - the `pattern` the operator table declares for it
 pub struct ValidatePhoneOp;
-impl Operator for ValidatePhoneOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidatePhoneOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/phone", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let val = val.text()?;
         Ok(Value::Bool(matches_semantic_pattern(
             "validate/phone",
@@ -320,10 +320,10 @@ impl Operator for ValidatePhoneOp {
 
 /// validate/creditCard - Luhn algorithm check
 pub struct ValidateCreditCardOp;
-impl Operator for ValidateCreditCardOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateCreditCardOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/creditCard", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let val = val.text()?;
 
         // Extract only digits
@@ -360,11 +360,11 @@ impl Operator for ValidateCreditCardOp {
 
 /// validate/noneOf - Value not in set
 pub struct ValidateNoneOfOp;
-impl Operator for ValidateNoneOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateNoneOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/noneOf", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let excluded = eval_expr(&args[1], ctx)?;
+        let val = args[0];
+        let excluded = args[1];
 
         let array = match excluded {
             Value::Array(a) => a,
@@ -377,7 +377,7 @@ impl Operator for ValidateNoneOfOp {
         };
 
         for opt in array.iter() {
-            if *opt == val {
+            if *opt == *val {
                 return Ok(Value::Bool(false));
             }
         }
@@ -556,22 +556,22 @@ impl Operator for ValidateCheckOp {
 
 /// validate/max - Maximum value constraint
 pub struct ValidateMaxOp;
-impl Operator for ValidateMaxOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateMaxOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/max", >= 2);
-        let num = eval_expr(&args[0], ctx)?.number()?;
-        let max = require_number!(eval_expr(&args[1], ctx)?);
+        let num = args[0].number()?;
+        let max = require_number!(args[1]);
         Ok(Value::Bool(num <= max))
     }
 }
 
 /// validate/min - Minimum value constraint
 pub struct ValidateMinOp;
-impl Operator for ValidateMinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateMinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/min", >= 2);
-        let num = eval_expr(&args[0], ctx)?.number()?;
-        let min = require_number!(eval_expr(&args[1], ctx)?);
+        let num = args[0].number()?;
+        let min = require_number!(args[1]);
         Ok(Value::Bool(num >= min))
     }
 }

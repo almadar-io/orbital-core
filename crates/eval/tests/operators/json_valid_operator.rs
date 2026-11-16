@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_base::schema::SExpression, orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use serde_json::json;
@@ -13,7 +14,7 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    serde_json::from_str(include_str!("../../../../tests/fixtures/operators/json-valid-vectors.json")).unwrap()
+    from_json_str(include_str!("../../../../tests/fixtures/operators/json-valid-vectors.json")).unwrap()
 }
 
 #[test]
@@ -54,12 +55,12 @@ fn validity_distinguishes_null_without_changing_legacy_parse() {
     let ctx = BindingContextBuilder::new().build();
     for (input, valid) in [("null", true), ("{not json", false)] {
         let parse: SExpression =
-            serde_json::from_value(json!(["json/parse", input, "Row"])).unwrap();
+            from_json_value(&json!(["json/parse", input, "Row"])).unwrap();
         assert_eq!(
             Evaluator::new().evaluate(&parse, &ctx).unwrap(),
             Value::Null
         );
-        let check: SExpression = serde_json::from_value(json!(["json/valid", input])).unwrap();
+        let check: SExpression = from_json_value(&json!(["json/valid", input])).unwrap();
         assert_eq!(
             Evaluator::new().evaluate(&check, &ctx).unwrap(),
             Value::Bool(valid)
@@ -84,28 +85,28 @@ fn legacy_json_parse_controls_remain_unchanged() {
         (json!("undefined"), json!(null)),
     ] {
         let parse: SExpression =
-            serde_json::from_value(json!(["json/parse", input, "Row"])).unwrap();
+            from_json_value(&json!(["json/parse", input, "Row"])).unwrap();
         let actual = Evaluator::new().evaluate(&parse, &ctx).unwrap();
-        let expected: Value = serde_json::from_value(expected).unwrap();
+        let expected: Value = from_json_value(&expected).unwrap();
         assert_eq!(actual, expected, "input: {input}");
     }
     let null_input: SExpression =
-        serde_json::from_value(json!(["json/parse", null, "Row"])).unwrap();
+        from_json_value(&json!(["json/parse", null, "Row"])).unwrap();
     assert!(Evaluator::new().evaluate(&null_input, &ctx).is_err());
 }
 
 fn nodes_of(value: serde_json::Value) -> Result<Value, String> {
     let ctx = BindingContextBuilder::new()
-        .payload(serde_json::from_value(json!({ "v": value })).unwrap())
+        .payload(from_json_value(&json!({ "v": value })).unwrap())
         .build();
-    let expr: SExpression = serde_json::from_value(json!(["json/nodes", "@payload.v"])).unwrap();
+    let expr: SExpression = from_json_value(&json!(["json/nodes", "@payload.v"])).unwrap();
     Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
 }
 
 #[test]
 fn json_nodes_lists_every_nested_value_in_pre_order() {
     let tree = json!({ "a": [1, { "b": "x" }], "c": null });
-    let expected: Value = serde_json::from_value(json!([
+    let expected: Value = from_json_value(&json!([
         { "a": [1, { "b": "x" }], "c": null },
         [1, { "b": "x" }],
         1,
@@ -139,6 +140,6 @@ fn json_nodes_of_a_scalar_is_that_scalar_alone() {
 #[test]
 fn json_nodes_takes_exactly_one_argument() {
     let ctx = BindingContextBuilder::new().build();
-    let expr: SExpression = serde_json::from_value(json!(["json/nodes", 1, 2])).unwrap();
+    let expr: SExpression = from_json_value(&json!(["json/nodes", 1, 2])).unwrap();
     assert!(Evaluator::new().evaluate(&expr, &ctx).is_err());
 }

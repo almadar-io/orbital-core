@@ -1,5 +1,6 @@
 // A client-only trait whose data effects all live in the browser store still owes the host its leg: the host runs it against the store (twin of `seedBrowserLeg`, `almadar-runtime/src/evaluation/client-role.ts`; ui `OrbPreview.browser-stored-entity`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::dispatch_mode::DispatchMode;
 use orbital_core_runtime::effects::response::LegResidence;
 use orbital_core_runtime::ServerLegCollector;
@@ -17,7 +18,7 @@ use {
 };
 
 fn kernel(effects: serde_json::Value, local: bool) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "books",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
@@ -77,7 +78,7 @@ fn control_a_server_entity_fetch_still_posts_its_leg() {
 // The host ran the browser leg's cascade on a client-only trait (`LOADED` after `INIT`): its reported state continues from
 // the state the leg carried, so the client adopts it. A host that reports a client-only trait it never ran keeps no say.
 fn cascade_kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "books",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
@@ -118,7 +119,7 @@ fn cascade_kernel() -> RuntimeKernel {
 fn host_answer(
     transitions: serde_json::Value,
 ) -> orbital_core_runtime::effects::response::EventResponse {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "success": true, "transitioned": true,
         "states": { "InvoiceList": "browsing" },
         "emittedEvents": [{ "event": "LOADED", "payload": { "data": [] },
@@ -175,7 +176,7 @@ fn control_a_persist_batch_on_a_server_entity_posts_a_server_leg() {
 }
 
 fn two_entity_kernel(effects: serde_json::Value) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "books",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Books",

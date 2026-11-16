@@ -458,10 +458,11 @@ fn glob_matches(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn value(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).expect("value")
+        from_json_value(&json).expect("value")
     }
 
     fn input(orbital: &str, trait_name: &str, event: &str) -> ExternalInput {

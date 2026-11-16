@@ -1,5 +1,6 @@
 //! Registering a program: schema, traits, listeners, stores, credentials, mounts, and the per-request fork.
 
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 impl RuntimeKernel {
@@ -489,7 +490,7 @@ impl RuntimeKernel {
         };
         if let Some(value) = declared("queryCapabilities") {
             match value.and_then(|v| {
-                serde_json::from_value::<QueryCapabilities>(v).map_err(|e| e.to_string())
+                from_json_value::<QueryCapabilities>(&v).map_err(|e| e.to_string())
             }) {
                 Ok(capabilities) => self.io.set_query_capabilities(entity_type, capabilities),
                 Err(e) => {
@@ -499,7 +500,7 @@ impl RuntimeKernel {
         }
         if let Some(value) = declared("writeCapabilities") {
             match value.and_then(|v| {
-                serde_json::from_value::<WriteCapabilities>(v).map_err(|e| e.to_string())
+                from_json_value::<WriteCapabilities>(&v).map_err(|e| e.to_string())
             }) {
                 Ok(capabilities) => self.io.set_write_capabilities(entity_type, capabilities),
                 Err(e) => {

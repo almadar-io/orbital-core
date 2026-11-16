@@ -1081,7 +1081,7 @@ mod tests {
     use super::{Shared, Value, ValueMap};
 
     fn parsed(text: &str) -> Value {
-        serde_json::from_str(text).unwrap()
+        from_json_str(text).unwrap()
     }
 
     fn items(value: &Value) -> &[Value] {
@@ -1146,7 +1146,7 @@ mod tests {
     #[test]
     fn g_cross_076_a_path_reads_through_a_quote_value_only_when_asked() {
         use crate::schema::quote::quote_expr;
-        let body: SExpression = serde_json::from_str(r#"{"transitions":[1,2],"name":"m"}"#).unwrap();
+        let body: SExpression = from_json_str(r#"{"transitions":[1,2],"name":"m"}"#).unwrap();
         let quoted = Value::from(quote_expr(&body));
         let holder = Value::object(ValueMap::from_iter([("machine".to_string().into(), quoted)]));
         assert_eq!(
@@ -1223,12 +1223,13 @@ mod tests {
         assert_eq!(v.get_path("a.b.c"), None, "control: a plain path is not the literal key");
     }
     use super::*;
+    use crate::json_value::{from_json_str, from_json_value};
 
     #[test]
     fn a_value_reads_from_json_as_the_expression_tree_converted() {
         let json = r#"{"a":[null,true,3,-2,1.5,"@x",{"z":[],"b":{}}],"k":"v"}"#;
-        let direct: Value = serde_json::from_str(json).unwrap();
-        let via_tree = Value::from(serde_json::from_str::<SExpression>(json).unwrap());
+        let direct: Value = from_json_str(json).unwrap();
+        let via_tree = Value::from(from_json_str::<SExpression>(json).unwrap());
         assert_eq!(direct, via_tree);
         let Value::Object(map) = &direct else {
             panic!("an object");
@@ -1238,7 +1239,7 @@ mod tests {
 
     #[test]
     fn control_a_value_from_malformed_json_is_an_error() {
-        assert!(serde_json::from_str::<Value>("{\"a\": ").is_err());
+        assert!(from_json_str::<Value>("{\"a\": ").is_err());
     }
 
     #[test]
@@ -1408,7 +1409,7 @@ mod tests {
         }
         let mut tree = serde_json::to_value(&sample).unwrap();
         sorted(&mut tree);
-        let via_json: Value = serde_json::from_value(tree).unwrap();
+        let via_json: Value = from_json_value(&tree).unwrap();
         let direct = crate::value_serialize::to_canonical_value(&sample).unwrap();
         assert_eq!(direct, via_json);
         let keys: Vec<String> = match &direct {
@@ -1468,7 +1469,7 @@ mod tests {
         assert_eq!(sealed.type_name(), "Verified");
         let wire = serde_json::to_value(&sealed).unwrap();
         assert_eq!(wire, serde_json::json!({"subject": "u1", "n": 2.0}));
-        let back: Value = serde_json::from_value(wire).unwrap();
+        let back: Value = from_json_value(&wire).unwrap();
         assert!(!back.is_sealed_as("Verified"));
         assert_ne!(back, sealed, "control: the plain object with the same fields is a different value");
         let mut copy = sealed.clone();
@@ -1532,7 +1533,7 @@ mod tests {
 
     #[test]
     fn json_integers_read_as_ints_and_fractions_as_numbers() {
-        let v: Value = serde_json::from_str(r#"{"i": 5, "f": 5.5, "w": 5.0, "big": 1152921504606846976}"#).unwrap();
+        let v: Value = from_json_str(r#"{"i": 5, "f": 5.5, "w": 5.0, "big": 1152921504606846976}"#).unwrap();
         assert!(matches!(v["i"], Value::Int(5)));
         assert!(matches!(v["f"], Value::Number(n) if n == 5.5));
         assert!(matches!(v["w"], Value::Number(n) if n == 5.0), "a written fraction stays a number");

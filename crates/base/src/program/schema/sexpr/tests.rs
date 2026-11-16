@@ -1,7 +1,8 @@
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 
 fn rewrite_input(json: serde_json::Value) -> SExpression {
-    serde_json::from_value(json).unwrap()
+    from_json_value(&json).unwrap()
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn any_string_reads_every_string_leaf_and_nothing_else() {
 
 #[test]
 fn every_variant_reads_from_json_and_integers_are_numbers() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"[null, true, 3, -2, 1.5, 18446744073709551615, "@a.b", [], {"z": 1, "a": [2]}]"#,
     )
     .unwrap();
@@ -146,21 +147,21 @@ fn every_variant_reads_from_json_and_integers_are_numbers() {
 #[test]
 fn a_serialized_expression_reads_back_equal() {
     let json = r#"["and",["=","@x",1],{"k":[true,null,"s"]}]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
-    let again: SExpression = serde_json::from_str(&serde_json::to_string(&expr).unwrap()).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
+    let again: SExpression = from_json_str(&serde_json::to_string(&expr).unwrap()).unwrap();
     assert_eq!(expr, again);
 }
 
 #[test]
 fn control_malformed_json_is_an_error_not_a_null() {
-    assert!(serde_json::from_str::<SExpression>("[1, ").is_err());
-    assert!(serde_json::from_str::<SExpression>("{1: 2}").is_err());
+    assert!(from_json_str::<SExpression>("[1, ").is_err());
+    assert!(from_json_str::<SExpression>("{1: 2}").is_err());
 }
 
 #[test]
 fn test_parse_guard() {
     let json = r#"["and", ["!=", "@payload.data.email", ""], [">=", "@payload.data.connectionSlots", 1]]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
 
     assert!(expr.is_call());
     assert_eq!(expr.operator(), Some("and"));
@@ -182,7 +183,7 @@ fn test_parse_guard() {
 fn test_parse_effect() {
     let json =
         r#"["render-ui", "main", { "type": "page-header", "title": "Community Members" }]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
 
     assert!(expr.is_call());
     assert_eq!(expr.operator(), Some("render-ui"));
@@ -200,7 +201,7 @@ fn test_parse_effect() {
 #[test]
 fn test_parse_persist_effect() {
     let json = r#"["persist", "create", "User", "@payload.data"]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
 
     assert_eq!(expr.operator(), Some("persist"));
     let args = expr.arguments().unwrap();
@@ -213,7 +214,7 @@ fn test_parse_persist_effect() {
 fn mapped_children_recognizes_single_param_tuple() {
     // ["array/map", "@entity.items", ["fn", "item", { type: badge, ... }]]
     let json = r#"["array/map", "@entity.items", ["fn", "item", { "type": "badge", "label": "@item.name" }]]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     let mc = expr
         .as_mapped_children()
         .expect("must recognize array/map tuple");
@@ -233,7 +234,7 @@ fn mapped_children_recognizes_single_param_tuple() {
 fn mapped_children_recognizes_grouped_param_form() {
     // Normalized grouped lambda: ["fn", ["q", "i"], node]
     let json = r#"["array/map", "@config.questions", ["fn", ["q", "i"], { "type": "card" }]]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     let mc = expr.as_mapped_children().expect("grouped param form");
     assert_eq!(mc.params, vec!["q", "i"]);
 }
@@ -248,7 +249,7 @@ fn mapped_children_rejects_non_map_arrays() {
         r#"["array/map", "@entity.items"]"#,
         r#"["array/map", "@entity.items", { "type": "badge" }]"#,
     ] {
-        let expr: SExpression = serde_json::from_str(json).unwrap();
+        let expr: SExpression = from_json_str(json).unwrap();
         assert!(
             expr.as_mapped_children().is_none(),
             "must not recognize: {json}"
@@ -260,7 +261,7 @@ fn mapped_children_rejects_non_map_arrays() {
 fn test_complex_guard_from_orbital_pattern() {
     // From Orbital_Pattern.orb - Dunbar's number guard
     let json = r#"["<", ["count", "Connection", ["and", ["=", "@Connection.requesterId", "@user.id"], ["=", "@Connection.status", "accepted"]]], 150]"#;
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
 
     assert_eq!(expr.operator(), Some("<"));
     let args = expr.arguments().unwrap();
@@ -341,7 +342,7 @@ const WALK: ValueWalk<'static> = ValueWalk {
 };
 
 fn sx(json: &str) -> SExpression {
-    serde_json::from_str(json).unwrap()
+    from_json_str(json).unwrap()
 }
 
 fn leaf_strings(expr: &SExpression) -> Vec<String> {
@@ -683,7 +684,7 @@ fn is_statically_false_false_for_binding_string() {
 }
 
 fn reads(node: serde_json::Value) -> Vec<String> {
-    let expr: SExpression = serde_json::from_value(node).expect("s-expression");
+    let expr: SExpression = from_json_value(&node).expect("s-expression");
     let mut out = std::collections::HashSet::new();
     expr.collect_entity_reads(&mut out);
     let mut v: Vec<String> = out.into_iter().collect();
@@ -736,7 +737,7 @@ fn an_ir_node_is_16_bytes_because_lists_and_objects_are_shared_handles() {
 #[test]
 fn a_boxed_object_keeps_the_plain_json_wire_form() {
     let json = serde_json::json!({"type": "page", "items": [1.5, {"k": null}]});
-    let expr: SExpression = serde_json::from_value(json.clone()).unwrap();
+    let expr: SExpression = from_json_value(&json).unwrap();
     assert!(matches!(expr, SExpression::Object(_)));
     assert_eq!(serde_json::to_value(&expr).unwrap(), json);
 }
@@ -750,7 +751,7 @@ fn string_of(expr: &SExpression) -> &crate::value::Shared<String> {
 
 #[test]
 fn reading_a_tree_shares_equal_string_values_and_keys_in_one_allocation() {
-    let expr: SExpression = serde_json::from_str(r#"["go", {"go": "go", "other": ["go", "x"]}, "x"]"#).unwrap();
+    let expr: SExpression = from_json_str(r#"["go", {"go": "go", "other": ["go", "x"]}, "x"]"#).unwrap();
     let SExpression::Array(items) = &expr else { panic!("array") };
     let SExpression::Object(map) = &items[1] else { panic!("object") };
     let (key, value) = map.get_index(0).unwrap();
@@ -765,11 +766,11 @@ fn reading_a_tree_shares_equal_string_values_and_keys_in_one_allocation() {
 
 #[test]
 fn the_interning_table_does_not_outlive_the_read() {
-    let _: SExpression = serde_json::from_str(r#"["a", "a"]"#).unwrap();
+    let _: SExpression = from_json_str(r#"["a", "a"]"#).unwrap();
     assert_eq!(crate::intern::held(), 0);
     let held = crate::intern::scope(|| {
-        let _: SExpression = serde_json::from_str(r#"["a", "b", "a"]"#).unwrap();
-        let _: SExpression = serde_json::from_str(r#"["b", "c"]"#).unwrap();
+        let _: SExpression = from_json_str(r#"["a", "b", "a"]"#).unwrap();
+        let _: SExpression = from_json_str(r#"["b", "c"]"#).unwrap();
         crate::intern::held()
     });
     assert_eq!(held, 3, "a nested read joins the outer table");
@@ -778,15 +779,15 @@ fn the_interning_table_does_not_outlive_the_read() {
 
 #[test]
 fn separate_reads_do_not_share_allocations() {
-    let a: SExpression = serde_json::from_str(r#""same""#).unwrap();
-    let b: SExpression = serde_json::from_str(r#""same""#).unwrap();
+    let a: SExpression = from_json_str(r#""same""#).unwrap();
+    let b: SExpression = from_json_str(r#""same""#).unwrap();
     assert_eq!(a, b);
     assert!(!crate::value::Shared::ptr_eq(string_of(&a), string_of(&b)));
 }
 
 #[test]
 fn interned_object_keys_answer_str_lookups_and_compare_by_text() {
-    let expr: SExpression = serde_json::from_str(r#"{"alpha": 1, "beta": 2}"#).unwrap();
+    let expr: SExpression = from_json_str(r#"{"alpha": 1, "beta": 2}"#).unwrap();
     let SExpression::Object(map) = &expr else { panic!("object") };
     assert_eq!(map.get("beta"), Some(&SExpression::Number(2.0)));
     assert!(map.contains_key("alpha"));
@@ -806,13 +807,13 @@ fn a_resolved_program_round_trips_to_the_same_bytes_and_shares_its_strings() {
         include_str!("../../../../../../tests/fixtures/embed/resolved/two-orbital-chore.json"),
         include_str!("../../../../../../tests/fixtures/embed/resolved/tick-counter.json"),
     ] {
-        let schema: OrbitalSchema = serde_json::from_str(text).unwrap();
+        let schema: OrbitalSchema = from_json_str(text).unwrap();
         let first = serde_json::to_string_pretty(&schema).unwrap();
-        let again: OrbitalSchema = serde_json::from_str(&first).unwrap();
+        let again: OrbitalSchema = from_json_str(&first).unwrap();
         assert_eq!(serde_json::to_string_pretty(&again).unwrap(), first, "serialize(parse(x)) is a fixed point");
-        let tree: SExpression = serde_json::from_str(text).unwrap();
+        let tree: SExpression = from_json_str(text).unwrap();
         let bytes = serde_json::to_string(&tree).unwrap();
-        let mut plain: serde_json::Value = serde_json::from_str(text).unwrap();
+        let mut plain: serde_json::Value = from_json_str(text).unwrap();
         fn as_floats(value: &mut serde_json::Value) {
             match value {
                 serde_json::Value::Number(n) => *value = serde_json::json!(n.as_f64().unwrap()),
@@ -858,7 +859,7 @@ fn a_program_read_keeps_one_allocation_per_distinct_string() {
             _ => {}
         }
     }
-    let whole: SExpression = serde_json::from_str(text).unwrap();
+    let whole: SExpression = from_json_str(text).unwrap();
     visit(&whole, &mut total, &mut distinct, &mut by_text);
     assert!(total > distinct.len(), "the fixture repeats strings");
     assert!(by_text.values().all(|ptrs| ptrs.len() == 1), "equal text is held once");
@@ -871,11 +872,11 @@ fn interning_hit_rate_on_a_resolved_program() {
     let path = std::env::var("ORB_MEASURE_PROGRAM").expect("ORB_MEASURE_PROGRAM names a resolved program");
     let text = std::fs::read_to_string(&path).unwrap();
     let stats = crate::intern::scope(|| {
-        let _program: OrbitalSchema = serde_json::from_str(&text).unwrap();
+        let _program: OrbitalSchema = from_json_str(&text).unwrap();
         crate::intern::stats().unwrap()
     });
     println!("interned: {stats:?}");
-    let tree: SExpression = crate::intern::scope(|| serde_json::from_str(&text).unwrap());
+    let tree: SExpression = crate::intern::scope(|| from_json_str(&text).unwrap());
     let (mut expanded, mut held) = ((0usize, 0usize), (0usize, 0usize));
     let mut seen = std::collections::HashSet::new();
     let mut stack = vec![(&tree, true)];
@@ -925,7 +926,7 @@ fn record_of(expr: &SExpression) -> &crate::value::Shared<SObject> {
 
 #[test]
 fn identical_subtrees_in_one_read_share_one_node() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"["if", ["=", "@a", 1], ["+", ["*", 2, 3], {"k": ["*", 2, 3]}], ["+", ["*", 2, 3], {"k": ["*", 2, 3]}]]"#,
     )
     .unwrap();
@@ -938,7 +939,7 @@ fn identical_subtrees_in_one_read_share_one_node() {
 
 #[test]
 fn control_nodes_that_differ_in_any_child_order_or_bit_stay_apart() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"[["a", 1], ["a", 2], ["a", 1.5], ["b", 1], [1, "a"], {"x": 1, "y": 2}, {"y": 2, "x": 1}, {"x": 1}, [0.0], [-0.0], [], {}]"#,
     )
     .unwrap();
@@ -957,18 +958,18 @@ fn control_nodes_that_differ_in_any_child_order_or_bit_stay_apart() {
 
 #[test]
 fn separate_reads_and_empty_nodes_follow_the_scope() {
-    let a: SExpression = serde_json::from_str("[1, 2]").unwrap();
-    let b: SExpression = serde_json::from_str("[1, 2]").unwrap();
+    let a: SExpression = from_json_str("[1, 2]").unwrap();
+    let b: SExpression = from_json_str("[1, 2]").unwrap();
     assert!(!crate::value::Shared::ptr_eq(list_of(&a), list_of(&b)), "no table outside a scope");
     let (c, d) = crate::intern::scope(|| {
-        (serde_json::from_str::<SExpression>("[1, 2]").unwrap(), serde_json::from_str::<SExpression>("[1, 2]").unwrap())
+        (from_json_str::<SExpression>("[1, 2]").unwrap(), from_json_str::<SExpression>("[1, 2]").unwrap())
     });
     assert!(crate::value::Shared::ptr_eq(list_of(&c), list_of(&d)), "a nested read joins the outer table");
 }
 
 #[test]
 fn writing_through_one_holder_of_a_shared_node_leaves_the_other_untouched() {
-    let mut expr: SExpression = serde_json::from_str(r#"[["a", 1], ["a", 1]]"#).unwrap();
+    let mut expr: SExpression = from_json_str(r#"[["a", 1], ["a", 1]]"#).unwrap();
     let SExpression::Array(items) = &mut expr else { panic!("array") };
     assert!(crate::value::Shared::ptr_eq(list_of(&items[0]), list_of(&items[1])));
     let SExpression::Array(first) = &mut items[0] else { panic!("array") };

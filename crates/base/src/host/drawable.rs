@@ -7,6 +7,7 @@
 //! render-ui validator (accept `children` on a draw-host; gate each child's
 //! drawable-ness) and the orbital-client render_probe (exempt a draw-host's painted
 //! children from renderer-coverage). Their only shared upstream is this crate.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -15,7 +16,7 @@ use crate::sync::LazyLock;
 
 fn flagged(flag: &str) -> HashSet<String> {
     let registry: serde_json::Value =
-        serde_json::from_str(&crate::language_data::language_data_after_preflight().patterns)
+        from_json_str(&crate::language_data::language_data_after_preflight().patterns)
             .unwrap_or_else(|e| panic!("installed patterns registry is not JSON: {e}"));
     registry["patterns"]
         .as_object()

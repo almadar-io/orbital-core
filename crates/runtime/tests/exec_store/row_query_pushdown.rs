@@ -2,6 +2,7 @@
 //! (`tests/baked/pushdown/*.json`, mirrored from `tests/baked/pushdown`), the sexpr
 //! compiler against the interpreter, and the kernel's tiers (pushed / compiled / interpreted) and writes.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_eval::evaluator::BindingContext;
 use orbital_core_runtime::entity_access::apply_read_access;
 use orbital_core_runtime::resumable::{BlockingHost, DispatchOutcomes, HostAnswered, IoAnswer, IoReply, IoRequest, Progress};
@@ -15,11 +16,11 @@ fn fixture(name: &str) -> Json {
     let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
         .join("tests/baked/pushdown")
         .join(name);
-    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+    from_json_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
 }
 
 fn v(j: &Json) -> Value {
-    serde_json::from_value(j.clone()).expect("a value")
+    from_json_value(&j).expect("a value")
 }
 
 fn arcs(rows: &Json) -> Vec<Arc<Value>> {
@@ -94,7 +95,7 @@ fn every_query_case_runs_to_its_recorded_page_and_round_trips_its_json() {
     assert!(!cases.is_empty());
     for case in cases {
         let name = case["name"].as_str().unwrap();
-        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let query: RowQuery = from_json_value(&case["query"]).expect(name);
         assert_eq!(
             norm(&serde_json::to_value(&query).unwrap()),
             norm(&case["query"]),
@@ -132,7 +133,7 @@ fn every_sexpr_compiles_to_its_recorded_query() {
     for case in f["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
         let ctx = ctx_of(&case["bindings"]);
-        let want: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
+        let want: RowQuery = from_json_value(&case["query"]).unwrap();
         let sexpr = &case["sexpr"];
         let policy = sexpr.get("readPolicy").map(|p| {
             compile_predicate(&v(p), &ctx, PredicateRole::Policy, &all_required).expect(name)
@@ -336,7 +337,7 @@ fn capabilities_decide_the_pushdown_and_name_the_reason() {
     let full = QueryCapabilities::full();
     let f = fixture("query-cases.json");
     for case in f["cases"].as_array().unwrap() {
-        let q: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
+        let q: RowQuery = from_json_value(&case["query"]).unwrap();
         assert_eq!(
             query_unsupported_reason(&full, &q),
             None,
@@ -395,9 +396,9 @@ fn every_write_case_matches_the_reference_semantics() {
         let name = case["name"].as_str().unwrap();
         let mut t = table(&f["rows"]);
         let batch: RowWriteBatch = match case.get("batch") {
-            Some(b) => serde_json::from_value(b.clone()).expect(name),
+            Some(b) => from_json_value(&b).expect(name),
             None => RowWriteBatch {
-                ops: vec![serde_json::from_value(case["op"].clone()).expect(name)],
+                ops: vec![from_json_value(&case["op"]).expect(name)],
                 on_failure: RowWriteFailureMode::Stop,
             },
         };
@@ -432,9 +433,9 @@ fn the_cache_runs_every_write_case_the_same_way() {
                 .unwrap();
         }
         let batch: RowWriteBatch = match case.get("batch") {
-            Some(b) => serde_json::from_value(b.clone()).unwrap(),
+            Some(b) => from_json_value(&b).unwrap(),
             None => RowWriteBatch {
-                ops: vec![serde_json::from_value(case["op"].clone()).unwrap()],
+                ops: vec![from_json_value(&case["op"]).unwrap()],
                 on_failure: RowWriteFailureMode::Stop,
             },
         };
@@ -551,7 +552,7 @@ fn every_id_and_resolve_case_matches() {
     let rows = arcs(&f["rows"]);
     for case in f["idCases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let q: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
+        let q: RowQuery = from_json_value(&case["query"]).unwrap();
         let got = run_ids(&rows, &q).unwrap();
         assert_eq!(got.ids, expected_ids(&case["expect"]), "{name}");
         assert_eq!(
@@ -588,10 +589,10 @@ fn every_id_and_resolve_case_matches() {
             }
             t.insert(id.to_string(), Arc::new(row));
         }
-        let reference: RowSetRef = serde_json::from_value(case["ref"].clone()).expect(name);
+        let reference: RowSetRef = from_json_value(&case["ref"]).expect(name);
         let policy: Option<RowPredicate> = case
             .get("policy")
-            .map(|p| serde_json::from_value(p.clone()).unwrap());
+            .map(|p| from_json_value(&p).unwrap());
         let got: RowPage = resolve_row_set(t.values(), &reference, policy.as_ref());
         assert_eq!(ids_of(&got.rows), expected_ids(&case["expect"]), "{name}");
         assert_eq!(
@@ -605,7 +606,7 @@ fn every_id_and_resolve_case_matches() {
 // ----- the kernel's tiers and writes ----------------------------------------------------------
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "tiers",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1372,7 +1373,7 @@ fn the_wire_form_of_the_new_requests_and_answers_round_trips() {
         "{text}"
     );
     assert_eq!(
-        IoRequest::from(serde_json::from_str::<IoRequestWire>(&text).unwrap()),
+        IoRequest::from(from_json_str::<IoRequestWire>(&text).unwrap()),
         request
     );
     let answer = IoAnswer::Wrote(Ok(vec![
@@ -1381,7 +1382,7 @@ fn the_wire_form_of_the_new_requests_and_answers_round_trips() {
     ]));
     let text = serde_json::to_string(&IoAnswerWire::from(&answer)).unwrap();
     assert_eq!(
-        IoAnswer::from(serde_json::from_str::<IoAnswerWire>(&text).unwrap()),
+        IoAnswer::from(from_json_str::<IoAnswerWire>(&text).unwrap()),
         answer
     );
 }
@@ -1415,7 +1416,7 @@ impl EntitySource for Plain {
 
 #[test]
 fn a_batch_on_a_store_without_atomic_writes_restores_what_it_applied() {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "comp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1477,7 +1478,7 @@ fn a_batch_on_a_store_without_atomic_writes_restores_what_it_applied() {
 
 fn run_ids_of(rows: Json, query: Json) -> Vec<String> {
     let rows = arcs(&rows);
-    let query: RowQuery = serde_json::from_value(query).unwrap();
+    let query: RowQuery = from_json_value(&query).unwrap();
     run_ids(rows.iter(), &query).unwrap().ids
 }
 
@@ -1538,7 +1539,7 @@ fn nearest_case_reasons(caps: &QueryCapabilities) -> Vec<(String, Option<String>
         .unwrap()
         .iter()
         .map(|case| {
-            let q: RowQuery = serde_json::from_value(case["query"].clone()).unwrap();
+            let q: RowQuery = from_json_value(&case["query"]).unwrap();
             (
                 case["name"].as_str().unwrap().to_string(),
                 query_unsupported_reason(caps, &q).map(|r| r.as_str().to_string()),
@@ -1555,7 +1556,7 @@ fn nearest_error_cases_fail_with_their_reason_and_the_paired_valid_cases_do_not(
     assert!(!errors.is_empty());
     for case in errors {
         let name = case["name"].as_str().unwrap();
-        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let query: RowQuery = from_json_value(&case["query"]).expect(name);
         let want = case["expect"]["error"].as_str().unwrap();
         let got = run_query(&rows, &query).unwrap_err();
         assert!(got.contains(want), "{name}: {got}");
@@ -1684,7 +1685,7 @@ fn resolving_a_nearest_reference_totals_the_rows_still_resolving_and_a_plain_one
         { "id": "c", "status": "open", "embedding": [1, 1] }
     ]));
     let reference = |nearest: Json| -> RowSetRef {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "entityType": "T", "ids": ["a", "c"], "total": 2,
             "query": { "filter": { "kind": "compare", "field": "status", "op": "==", "value": "open" }, "nearest": nearest }
         }))
@@ -1795,7 +1796,7 @@ fn every_case_agrees(plain: &InMemoryEntityCache, indexed: &InMemoryEntityCache,
     let f = fixture("query-cases.json");
     for case in f["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let query: RowQuery = from_json_value(&case["query"]).expect(name);
         assert_eq!(
             indexed.query_page("Ticket", &query).unwrap_rows(),
             plain.query_page("Ticket", &query).unwrap_rows(),
@@ -1815,7 +1816,7 @@ fn control_an_undeclared_cache_answers_every_query_case_as_the_recorded_page() {
     let cache = ticket_cache(false);
     for case in f["cases"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let query: RowQuery = serde_json::from_value(case["query"].clone()).expect(name);
+        let query: RowQuery = from_json_value(&case["query"]).expect(name);
         let page = cache.query_page("Ticket", &query).unwrap_rows();
         assert_eq!(ids_of(&page.rows), expected_ids(&case["expect"]), "{name}");
     }
@@ -1852,7 +1853,7 @@ fn mutate_again(cache: &InMemoryEntityCache) {
 }
 
 fn status_is(value: &str) -> RowQuery {
-    serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "status", "op": "==", "value": value } })).unwrap()
+    from_json_value(&json!({ "filter": { "kind": "compare", "field": "status", "op": "==", "value": value } })).unwrap()
 }
 
 #[test]
@@ -1884,7 +1885,7 @@ fn a_covered_query_still_visits_only_candidates_after_a_write_moves_a_row_betwee
 #[test]
 fn control_a_query_on_an_unindexed_field_scans_every_row() {
     let indexed = ticket_cache(true);
-    let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "title", "op": "==", "value": "Alpha" } })).unwrap();
+    let query: RowQuery = from_json_value(&json!({ "filter": { "kind": "compare", "field": "title", "op": "==", "value": "Alpha" } })).unwrap();
     let page = indexed.query_page("Ticket", &query).unwrap_rows();
     assert_eq!(ids_of(&page.rows), ["t01"]);
     assert_eq!(indexed.rows_visited(), 12);
@@ -1893,7 +1894,7 @@ fn control_a_query_on_an_unindexed_field_scans_every_row() {
 #[test]
 fn an_equality_on_an_indexed_field_still_applies_the_rest_of_the_filter_and_the_policy() {
     let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
-    let query: RowQuery = serde_json::from_value(json!({
+    let query: RowQuery = from_json_value(&json!({
         "policy": { "kind": "compare", "field": "owner", "op": "==", "value": "u1" },
         "filter": { "kind": "all", "of": [
             { "kind": "compare", "field": "status", "op": "==", "value": "open" },
@@ -1910,7 +1911,7 @@ fn an_equality_on_an_indexed_field_still_applies_the_rest_of_the_filter_and_the_
 fn an_equality_on_null_or_a_missing_field_is_answered_as_the_scan_answers_it() {
     let (plain, indexed) = (ticket_cache(false), ticket_cache(true));
     for value in [json!(null), json!("nope")] {
-        let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "owner", "op": "==", "value": value } })).unwrap();
+        let query: RowQuery = from_json_value(&json!({ "filter": { "kind": "compare", "field": "owner", "op": "==", "value": value } })).unwrap();
         assert_eq!(indexed.query_page("Ticket", &query).unwrap_rows(), plain.query_page("Ticket", &query).unwrap_rows());
     }
 }
@@ -1919,35 +1920,35 @@ fn an_equality_on_null_or_a_missing_field_is_answered_as_the_scan_answers_it() {
 fn a_drivers_declared_index_realization_parses_and_an_absent_one_is_none() {
     use orbital_core_runtime::row_query::IndexRealization;
     let full = serde_json::to_value(QueryCapabilities::full()).unwrap();
-    assert_eq!(serde_json::from_value::<QueryCapabilities>(full.clone()).unwrap().indexes, None);
+    assert_eq!(from_json_value::<QueryCapabilities>(&full).unwrap().indexes, None);
     for (word, want) in [("runtime", IndexRealization::Runtime), ("deploy", IndexRealization::Deploy), ("none", IndexRealization::None)] {
         let mut declared = full.clone();
         declared["indexes"] = json!(word);
-        let parsed: QueryCapabilities = serde_json::from_value(declared.clone()).unwrap();
+        let parsed: QueryCapabilities = from_json_value(&declared).unwrap();
         assert_eq!(parsed.indexes, Some(want), "{word}");
         assert_eq!(serde_json::to_value(&parsed).unwrap()["indexes"], json!(word));
     }
     let mut unknown = full;
     unknown["indexes"] = json!("sometimes");
-    assert!(serde_json::from_value::<QueryCapabilities>(unknown).is_err());
+    assert!(from_json_value::<QueryCapabilities>(&unknown).is_err());
 }
 
 /// A `.lolo` config number reaches the kernel as a float: `memberLimit: 30` is `30.0` on the wire.
 #[test]
 fn a_drivers_member_limit_parses_from_a_whole_float_and_refuses_a_fraction() {
     let full = serde_json::to_value(QueryCapabilities::full()).unwrap();
-    assert_eq!(serde_json::from_value::<QueryCapabilities>(full.clone()).unwrap().member_limit, None);
+    assert_eq!(from_json_value::<QueryCapabilities>(&full).unwrap().member_limit, None);
     for given in [json!(30), json!(30.0)] {
         let mut declared = full.clone();
         declared["memberLimit"] = given.clone();
-        let parsed: QueryCapabilities = serde_json::from_value(declared).unwrap();
+        let parsed: QueryCapabilities = from_json_value(&declared).unwrap();
         assert_eq!(parsed.member_limit, Some(30), "{given}");
         assert_eq!(serde_json::to_value(&parsed).unwrap()["memberLimit"], json!(30));
     }
     for refused in [json!(2.5), json!(-1), json!(0), json!("30")] {
         let mut declared = full.clone();
         declared["memberLimit"] = refused.clone();
-        assert!(serde_json::from_value::<QueryCapabilities>(declared).is_err(), "{refused}");
+        assert!(from_json_value::<QueryCapabilities>(&declared).is_err(), "{refused}");
     }
 }
 

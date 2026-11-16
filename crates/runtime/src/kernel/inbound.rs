@@ -235,6 +235,7 @@ impl RuntimeKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use crate::entity_source::InMemoryEntityCache;
     use crate::CascadeCut;
     use serde_json::json;
@@ -245,7 +246,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "CalendarApp",
             "inbound": inbound,
             "typeContractVersion": 1, "orbitals": [{
@@ -285,7 +286,7 @@ mod tests {
     fn ledger_kernel() -> (Arc<InMemoryEntityCache>, RuntimeKernel) {
         let cache = Arc::new(InMemoryEntityCache::new());
         let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "LedgerApp", "inbound": ["billing"], "typeContractVersion": 1, "orbitals": [{
                 "name": "Bills",
                 "entity": { "name": "Plan", "persistence": "persistent", "collection": "plans",
@@ -330,7 +331,7 @@ mod tests {
     fn control_a_sessions_dispatch_of_the_hooks_event_cannot() {
         let (cache, kernel) = ledger_kernel();
         let _session = kernel.enter_session("s1");
-        let payload: Value = serde_json::from_value(json!({ "headers": {}, "rawBody": "{}" })).unwrap();
+        let payload: Value = from_json_value(&json!({ "headers": {}, "rawBody": "{}" })).unwrap();
         let _ = kernel.dispatch("Hook", None, "CALLED", payload);
         assert!(cache.find("Plan", "p1").unwrap().is_none());
     }
@@ -478,9 +479,7 @@ mod tests {
                 &route.trait_name,
                 None,
                 "PUSH",
-                serde_json::from_value(
-                    json!({ "headers": { "x-goog-resource-state": "sync" }, "verified": true }),
-                )
+                from_json_value(&json!({ "headers": { "x-goog-resource-state": "sync" }, "verified": true }))
                 .unwrap(),
             )
             .unwrap();
@@ -493,9 +492,7 @@ mod tests {
                 &route.trait_name,
                 None,
                 "PUSH",
-                serde_json::from_value(
-                    json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }),
-                )
+                from_json_value(&json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }))
                 .unwrap(),
             )
             .unwrap();
@@ -517,9 +514,7 @@ mod tests {
     fn unanswered_delivery() -> (InboundRoute, DispatchOutcomes) {
         let kernel = kernel(json!(["google-calendar"]));
         let route = kernel.inbound_route("google-calendar").unwrap();
-        let payload = serde_json::from_value(
-            json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }),
-        )
+        let payload = from_json_value(&json!({ "headers": { "x-goog-resource-state": "gone" }, "verified": true }))
         .unwrap();
         let outcomes = kernel
             .dispatch(&route.trait_name, None, "PUSH", payload)
@@ -545,7 +540,7 @@ mod tests {
         let (_sender, late) = std::sync::mpsc::channel();
         let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &Vec::new, None);
         assert_eq!(answer.status, 500, "{}", answer.body);
-        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        let body: serde_json::Value = from_json_str(&answer.body).unwrap();
         assert_eq!(
             (
                 body["code"].as_str(),
@@ -562,7 +557,7 @@ mod tests {
         let (_sender, late) = std::sync::mpsc::channel();
         let failed = || vec!["Input LINT_FILE: Payload validation failed for event 'LINT_INPUT': program (wrong-type)".to_string()];
         let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &failed, None);
-        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        let body: serde_json::Value = from_json_str(&answer.body).unwrap();
         assert_eq!(body["code"].as_str(), Some("inbound-unanswered"));
         assert!(body["error"].as_str().is_some_and(|e| e.contains("LINT_INPUT")), "{body}");
         assert_eq!(body["failures"].as_array().map(Vec::len), Some(1));
@@ -580,7 +575,7 @@ mod tests {
         sibling.failure = Some("set @entity.found: strict or over objects".to_string());
         outcomes.push(("LintRuleX".to_string(), sibling));
         let answer = RuntimeKernel::await_inbound_answer(&route, &outcomes, &late, || false, &|| vec!["Deferred LATER: refused".to_string()], None);
-        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        let body: serde_json::Value = from_json_str(&answer.body).unwrap();
         assert_eq!(body["code"].as_str(), Some("inbound-unanswered"));
         assert_eq!(
             body["failures"],
@@ -667,7 +662,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "LoopApp",
             "inbound": ["cli-loop"],
             "typeContractVersion": 1, "orbitals": [{
@@ -709,13 +704,13 @@ mod tests {
         let answer =
             k.deliver_inbound("cli-loop", [], &format!(r#"{{"n":{steps}}}"#), &Vault(None));
         assert_eq!(answer.status, 500, "{}", answer.body);
-        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        let body: serde_json::Value = from_json_str(&answer.body).unwrap();
         assert_eq!(body["code"], "cascade-cap");
         assert_eq!(body["cap"], CROSS_TRAIT_CASCADE_CAP);
         assert_eq!(body["trait"], "Loop");
         assert_eq!(body["event"], "STEP");
         let route = k.inbound_route("cli-loop").unwrap();
-        let payload = serde_json::from_value(json!({ "body": { "n": steps } })).unwrap();
+        let payload = from_json_value(&json!({ "body": { "n": steps } })).unwrap();
         let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
         assert!(
             RuntimeKernel::inbound_answered(&route, &outcomes),
@@ -736,7 +731,7 @@ mod tests {
             (200, r#"{"ok":true}"#)
         );
         let route = k.inbound_route("cli-loop").unwrap();
-        let payload = serde_json::from_value(json!({ "body": { "n": 10 } })).unwrap();
+        let payload = from_json_value(&json!({ "body": { "n": 10 } })).unwrap();
         let outcomes = k.dispatch("Loop", None, "LOOP", payload).unwrap();
         assert!(outcomes.iter().all(|(_, r)| r.cascade_cut.is_none()));
         assert_eq!(

@@ -39,14 +39,14 @@ impl Driver for FloorDriver {
     type Open = FloorSession;
 
     fn open(&self, fixture: &Fixture, scenario: &Scenario) -> Result<FloorSession, String> {
-        let schema: OrbitalSchema = serde_json::from_value(fixture.schema.clone())
+        let schema: OrbitalSchema = orbital_core::json_value::from_json_value(&fixture.schema)
             .map_err(|e| format!("{}: schema: {e}", fixture.name))?;
         let steps = scenario
             .steps
             .iter()
             .map(|step| {
                 let payload = match &step.payload {
-                    Some(p) => serde_json::from_value(p.clone()).map_err(|e| format!("payload: {e}"))?,
+                    Some(p) => orbital_core::json_value::from_json_value(&p).map_err(|e| format!("payload: {e}"))?,
                     None => Value::Object(Default::default()),
                 };
                 Ok(DecodedStep {

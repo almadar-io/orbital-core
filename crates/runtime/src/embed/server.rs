@@ -1337,6 +1337,7 @@ pub fn tab_url_matches(pattern: &str, url: &str) -> bool {
 #[cfg(test)]
 mod program_context_tests {
     use super::*;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use serde_json::{json, Value as Json};
 
     fn program(
@@ -1346,7 +1347,7 @@ mod program_context_tests {
         trait_name: &str,
         effect: Json,
     ) -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name":name, "typeContractVersion": 1, "orbitals":[{"name":orbital,"entity":{"name":entity,"persistence":"runtime","fields":[{"name":"id","type":"string"}]},
             "traits":[{"name":trait_name,"linkedEntity":entity,"stateMachine":{"states":[{"name":"idle","isInitial":true},{"name":"done"}],"transitions":[{"from":"idle","to":"done","event":"GO","effects":[effect]}]}}]}]
         })).unwrap()
@@ -1366,7 +1367,7 @@ mod program_context_tests {
             panic!("inline entity")
         };
         entity.collection = Some("notes".to_string());
-        let policy = serde_json::from_value(json!([
+        let policy = from_json_value(&json!([
             "=",
             ["object/get", "@entity", "ownerId"],
             "@user.id"
@@ -1374,7 +1375,7 @@ mod program_context_tests {
         .unwrap();
         entity.read_policy = Some(policy);
         entity.create_policy = entity.read_policy.clone();
-        schema.os_grants = Some(serde_json::from_value(json!({"exec":["parent-only"]})).unwrap());
+        schema.os_grants = Some(from_json_value(&json!({"exec":["parent-only"]})).unwrap());
         schema.egress = Some(vec!["https://parent.example".to_string()]);
         EmbeddedServer::new(schema).unwrap()
     }
@@ -1425,7 +1426,7 @@ mod program_context_tests {
                     effect,
                 );
                 control.os_grants =
-                    Some(serde_json::from_value(json!({"exec":["child-only"]})).unwrap());
+                    Some(from_json_value(&json!({"exec":["child-only"]})).unwrap());
                 let child = parent.fork_program(control).unwrap();
                 let ServerProgress::Done(response) = child
                     .start("ControlOrbital", request("ControlTrait"))
@@ -1538,20 +1539,20 @@ mod os_anchor_tests {
 
     #[test]
     fn the_stream_ops_are_the_kernel_s_streams_and_no_single_answer_op() {
-        let streams: Vec<String> = serde_json::from_str(&os_stream_ops_json().unwrap()).unwrap();
+        let streams: Vec<String> = orbital_core_base::json_value::from_json_str(&os_stream_ops_json().unwrap()).unwrap();
         assert!(streams.contains(&"os/tcp-listen".to_string()), "{streams:?}");
         assert!(!streams.contains(&"os/read-file".to_string()), "control: a single answer is no stream");
         assert!(streams.iter().all(|name| OsOp::from_name(name).is_some_and(OsOp::is_stream)));
     }
 
     fn listener() -> EmbeddedServer {
-        let mut schema: OrbitalSchema = serde_json::from_value(json!({
+        let mut schema: OrbitalSchema = orbital_core_base::json_value::from_json_value(&json!({
             "name":"L", "typeContractVersion": 1, "orbitals":[{"name":"L","entity":{"name":"S","persistence":"runtime","fields":[{"name":"id","type":"string"}]},
             "traits":[{"name":"T","linkedEntity":"S","stateMachine":{"states":[{"name":"idle","isInitial":true}],"transitions":[]}}]}]
         }))
         .unwrap();
         schema.os_grants = Some(
-            serde_json::from_value(json!({
+            orbital_core_base::json_value::from_json_value(&json!({
                 "net": [{ "target": "127.0.0.1:3000", "kinds": ["listen"] }],
                 "anchored": {
                     "net": [{ "host": { "literal": "127.0.0.1" }, "port": { "anchor": { "env": "PORT" } }, "kinds": ["listen"] }],
@@ -1585,7 +1586,7 @@ mod os_anchor_tests {
         let args = server
             .os_resolve_args_json("os/tcp-listen", &json!(["127.0.0.1", { "anchor": { "env": "PORT" } }]).to_string())
             .unwrap();
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&args).unwrap(), json!({ "ok": ["127.0.0.1", 8080.0] }));
+        assert_eq!(orbital_core_base::json_value::from_json_str::<serde_json::Value>(&args).unwrap(), json!({ "ok": ["127.0.0.1", 8080.0] }));
     }
 
     #[test]
@@ -1603,7 +1604,7 @@ mod os_anchor_tests {
         let args = server
             .os_resolve_args_json("os/tcp-listen", &json!(["127.0.0.1", { "anchor": { "env": "PORT" } }]).to_string())
             .unwrap();
-        let answer: serde_json::Value = serde_json::from_str(&args).unwrap();
+        let answer: serde_json::Value = orbital_core_base::json_value::from_json_str(&args).unwrap();
         assert_eq!(answer["error"]["kind"], "not-found", "{answer}");
         assert!(server.os_resolve_args_json("os/nope", "[]").is_err(), "an unknown op is refused");
     }

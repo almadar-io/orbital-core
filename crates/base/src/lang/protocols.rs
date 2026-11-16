@@ -5,6 +5,7 @@
 //! `@almadar/core`'s `orbLanguage.protocols`; a compiled client program carries
 //! it in `_metadata.protocols` for a kernel with no installed core.
 
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -54,7 +55,7 @@ pub const ROUTE: &str = "route";
 /// The rows of `text` (`orbLanguage.protocols`): a non-empty array of unique names that includes the route row.
 pub fn parse(text: &str) -> Result<Vec<ProtocolSpec>, String> {
     let rows: Vec<ProtocolSpec> =
-        serde_json::from_str(text).map_err(|e| format!("invalid protocols: {e}"))?;
+        from_json_str(text).map_err(|e| format!("invalid protocols: {e}"))?;
     if rows.is_empty() {
         return Err("the protocol table has no rows".to_string());
     }

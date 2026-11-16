@@ -135,54 +135,54 @@ fn dot3(a: &Vector, b: &Vector) -> f64 {
 }
 
 pub struct VecAddOp;
-impl Operator for VecAddOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecAddOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/add", >= 2);
-        let a = eval_vector("vec/add", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/add", "b", &args[1], ctx)?;
+        let a = read_vector("vec/add", "a", args[0])?;
+        let b = read_vector("vec/add", "b", args[1])?;
         let with_z = a.has_z;
         Ok(make_vec(a.x + b.x, a.y + b.y, a.z + b.z, with_z))
     }
 }
 
 pub struct VecSubOp;
-impl Operator for VecSubOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecSubOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/sub", >= 2);
-        let a = eval_vector("vec/sub", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/sub", "b", &args[1], ctx)?;
+        let a = read_vector("vec/sub", "a", args[0])?;
+        let b = read_vector("vec/sub", "b", args[1])?;
         let with_z = a.has_z;
         Ok(make_vec(a.x - b.x, a.y - b.y, a.z - b.z, with_z))
     }
 }
 
 pub struct VecScaleOp;
-impl Operator for VecScaleOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecScaleOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/scale", >= 2);
-        let a = eval_vector("vec/scale", "a", &args[0], ctx)?;
-        let k = require_number!(eval_expr(&args[1], ctx)?);
+        let a = read_vector("vec/scale", "a", args[0])?;
+        let k = require_number!(args[1]);
         let with_z = a.has_z;
         Ok(make_vec(a.x * k, a.y * k, a.z * k, with_z))
     }
 }
 
 pub struct VecDotOp;
-impl Operator for VecDotOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecDotOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/dot", >= 2);
-        let a = eval_vector("vec/dot", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/dot", "b", &args[1], ctx)?;
+        let a = read_vector("vec/dot", "a", args[0])?;
+        let b = read_vector("vec/dot", "b", args[1])?;
         Ok(Value::Number(dot3(&a, &b)))
     }
 }
 
 pub struct VecCrossOp;
-impl Operator for VecCrossOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecCrossOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/cross", >= 2);
-        let a = eval_vector("vec/cross", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/cross", "b", &args[1], ctx)?;
+        let a = read_vector("vec/cross", "a", args[0])?;
+        let b = read_vector("vec/cross", "b", args[1])?;
         if a.has_z || b.has_z {
             let ax = a.x;
             let ay = a.y;
@@ -203,28 +203,28 @@ impl Operator for VecCrossOp {
 }
 
 pub struct VecLengthOp;
-impl Operator for VecLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/length", 1);
-        let a = eval_vector("vec/length", "a", &args[0], ctx)?;
+        let a = read_vector("vec/length", "a", args[0])?;
         Ok(Value::Number(dot3(&a, &a).sqrt()))
     }
 }
 
 pub struct VecLengthSqOp;
-impl Operator for VecLengthSqOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecLengthSqOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/length-sq", 1);
-        let a = eval_vector("vec/length-sq", "a", &args[0], ctx)?;
+        let a = read_vector("vec/length-sq", "a", args[0])?;
         Ok(Value::Number(dot3(&a, &a)))
     }
 }
 
 pub struct VecNormalizeOp;
-impl Operator for VecNormalizeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecNormalizeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/normalize", 1);
-        let a = eval_vector("vec/normalize", "a", &args[0], ctx)?;
+        let a = read_vector("vec/normalize", "a", args[0])?;
         let with_z = a.has_z;
         let len = dot3(&a, &a).sqrt();
         if len == 0.0 {
@@ -235,11 +235,11 @@ impl Operator for VecNormalizeOp {
 }
 
 pub struct VecDistanceOp;
-impl Operator for VecDistanceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecDistanceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/distance", >= 2);
-        let a = eval_vector("vec/distance", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/distance", "b", &args[1], ctx)?;
+        let a = read_vector("vec/distance", "a", args[0])?;
+        let b = read_vector("vec/distance", "b", args[1])?;
         let dx = a.x - b.x;
         let dy = a.y - b.y;
         let dz = a.z - b.z;
@@ -248,11 +248,11 @@ impl Operator for VecDistanceOp {
 }
 
 pub struct VecDistanceSqOp;
-impl Operator for VecDistanceSqOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecDistanceSqOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/distance-sq", >= 2);
-        let a = eval_vector("vec/distance-sq", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/distance-sq", "b", &args[1], ctx)?;
+        let a = read_vector("vec/distance-sq", "a", args[0])?;
+        let b = read_vector("vec/distance-sq", "b", args[1])?;
         let dx = a.x - b.x;
         let dy = a.y - b.y;
         let dz = a.z - b.z;
@@ -261,12 +261,12 @@ impl Operator for VecDistanceSqOp {
 }
 
 pub struct VecLerpOp;
-impl Operator for VecLerpOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecLerpOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/lerp", >= 3);
-        let a = eval_vector("vec/lerp", "a", &args[0], ctx)?;
-        let b = eval_vector("vec/lerp", "b", &args[1], ctx)?;
-        let t = require_number!(eval_expr(&args[2], ctx)?);
+        let a = read_vector("vec/lerp", "a", args[0])?;
+        let b = read_vector("vec/lerp", "b", args[1])?;
+        let t = require_number!(args[2]);
         let with_z = a.has_z;
         let lerp = |x: f64, y: f64| x + (y - x) * t;
         Ok(make_vec(
@@ -279,14 +279,14 @@ impl Operator for VecLerpOp {
 }
 
 pub struct VecAngleOp;
-impl Operator for VecAngleOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecAngleOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/angle", 1);
-        let a = eval_vector("vec/angle", "a", &args[0], ctx)?;
+        let a = read_vector("vec/angle", "a", args[0])?;
         if args.len() == 1 {
             return Ok(Value::Number(libm::atan2(a.y, a.x)));
         }
-        let b = eval_vector("vec/angle", "b", &args[1], ctx)?;
+        let b = read_vector("vec/angle", "b", args[1])?;
         let la = dot3(&a, &a).sqrt();
         let lb = dot3(&b, &b).sqrt();
         if la == 0.0 || lb == 0.0 {
@@ -298,11 +298,11 @@ impl Operator for VecAngleOp {
 }
 
 pub struct VecRotateOp;
-impl Operator for VecRotateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecRotateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/rotate", >= 2);
-        let a = eval_vector("vec/rotate", "a", &args[0], ctx)?;
-        let rad = require_number!(eval_expr(&args[1], ctx)?);
+        let a = read_vector("vec/rotate", "a", args[0])?;
+        let rad = require_number!(args[1]);
         let with_z = a.has_z;
         let x = a.x;
         let y = a.y;
@@ -312,11 +312,11 @@ impl Operator for VecRotateOp {
 }
 
 pub struct VecClampLengthOp;
-impl Operator for VecClampLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for VecClampLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "vec/clamp-length", >= 2);
-        let a = eval_vector("vec/clamp-length", "a", &args[0], ctx)?;
-        let max = require_number!(eval_expr(&args[1], ctx)?);
+        let a = read_vector("vec/clamp-length", "a", args[0])?;
+        let max = require_number!(args[1]);
         let with_z = a.has_z;
         let len = dot3(&a, &a).sqrt();
         if len > max && len != 0.0 {

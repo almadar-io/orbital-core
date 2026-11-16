@@ -3,6 +3,7 @@
 //! must be a key of `en.orb`. Uses `syn` (dev-only) to parse the schema
 //! source directly rather than duplicating field lists by hand — the schema
 //! stays the single owner of the `.orb` shape.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -201,7 +202,7 @@ fn notation_keys() -> &'static std::collections::BTreeSet<String> {
             keys: Vec<String>,
         }
         let raw = include_str!("orb-notation.json");
-        let parsed: Notation = serde_json::from_str(raw).expect("baked orb-notation.json");
+        let parsed: Notation = from_json_str(raw).expect("baked orb-notation.json");
         parsed.keys.into_iter().collect()
     })
 }
@@ -291,7 +292,7 @@ fn en_operators_equal_the_canonical_table() {
         .find(|p| p.exists())
         .expect("packages/almadar-std/canonical-operators.json above the crate");
     let canonical: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&table).unwrap()).unwrap();
+        from_json_str(&std::fs::read_to_string(&table).unwrap()).unwrap();
     let canonical: BTreeSet<String> = canonical["operators"]
         .as_object()
         .expect("canonical-operators.json has an operators object")

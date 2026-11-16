@@ -1,5 +1,6 @@
 //! A store-bound fetch or persist whose step suspends on host I/O logs a suspend at debug, never an ERROR;
 //! a real store failure still logs ERROR.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::resumable::{Exchange, IoAnswer, IoRequest};
 use crate::row_query::{RowWriteBatch, RowWriteFailureMode, RowWriteOp};
@@ -180,7 +181,7 @@ fn batch_of(ids: &[&str]) -> Effect {
         .map(|id| serde_json::json!(["create", "Note", { "id": id }]))
         .collect();
     Effect::PersistBatch {
-        ops: serde_json::from_value(serde_json::Value::Array(ops)).unwrap(),
+        ops: from_json_value(&serde_json::Value::Array(ops)).unwrap(),
         emit: None,
     }
 }
@@ -243,7 +244,7 @@ fn bound_batch_of(ids: &[&str]) -> Effect {
         .map(|id| serde_json::json!(["create", "Ticket", { "id": id }]))
         .collect();
     Effect::PersistBatch {
-        ops: serde_json::from_value(serde_json::Value::Array(ops)).unwrap(),
+        ops: from_json_value(&serde_json::Value::Array(ops)).unwrap(),
         emit: None,
     }
 }
@@ -333,7 +334,7 @@ fn control_a_batch_op_the_host_really_refuses_is_compensated_and_answers_its_fai
     let effect = batch_of(&["a", "b"]);
     let read = |id: &str| Exchange::new(IoRequest::ReadRow { entity_type: "Note".into(), id: id.into() }, IoAnswer::Row(Ok(Value::Null)));
     let create = |id: &str, answer: Result<Value, String>| {
-        let data: Value = serde_json::from_value(serde_json::json!({ "id": id })).unwrap();
+        let data: Value = from_json_value(&(serde_json::json!({ "id": id }))).unwrap();
         Exchange::new(IoRequest::CreateRow { entity_type: "Note".into(), data: data.clone() }, IoAnswer::Row(answer.map(|_| data)))
     };
     let journal = vec![read("a"), create("a", Ok(Value::Null)), read("b"), create("b", Err("disk full".into()))];

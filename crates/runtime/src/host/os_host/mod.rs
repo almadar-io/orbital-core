@@ -268,6 +268,7 @@ pub fn answer_os(host: Option<&OsHost<'_>>, request: &IoRequest) -> IoAnswer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     fn ask(op: OsOp) -> IoRequest {
         IoRequest::Os {
@@ -291,7 +292,7 @@ mod tests {
     }
 
     fn anchored_value(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).expect("value")
+        from_json_value(&json).expect("value")
     }
 
     fn os_answer(op: OsOp, args: Vec<Value>, grants: &OsGrants, handles: &OsHandles) -> Result<Value, OsError> {
@@ -443,7 +444,7 @@ mod tests {
         let text = |p: &std::path::Path| Value::string(p.to_string_lossy().into_owned());
         let s = |t: &str| Value::string(t.to_string());
         let n = |v: f64| Value::Number(v);
-        let object = |json: serde_json::Value| -> Value { serde_json::from_value(json).expect("value") };
+        let object = |json: serde_json::Value| -> Value { from_json_value(&json).expect("value") };
         let list = |items: Vec<Value>| Value::Array(items.into_iter().collect());
         let tcp = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let tcp_port = tcp.local_addr().unwrap().port();
@@ -753,7 +754,7 @@ mod tests {
     }
 
     fn spawn_args(command: Value) -> Vec<Value> {
-        vec![command, Value::array(Vec::new()), serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null" })).unwrap()]
+        vec![command, Value::array(Vec::new()), from_json_value(&(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null" }))).unwrap()]
     }
 
     #[cfg(unix)]
@@ -821,7 +822,7 @@ mod tests {
         let resolved = resolve_anchored_args(OsOp::Spawn, &spawn_args(command.clone()), &handles.anchors).unwrap();
         assert_eq!(resolved[0], Value::string(exe.to_str().unwrap()));
         let mut args = spawn_args(command.clone());
-        args[1] = serde_json::from_value(serde_json::json!(["--list"])).unwrap();
+        args[1] = from_json_value(&(serde_json::json!(["--list"]))).unwrap();
         assert!(os_answer(OsOp::Spawn, args, &grants, &handles).is_ok());
         let ungranted = os_answer(OsOp::Spawn, spawn_args(command), &OsGrants::default(), &handles).expect_err("no exec grant");
         assert_eq!(ungranted.kind, OsErrorKind::Denied, "control: the anchor alone grants nothing");
@@ -835,7 +836,7 @@ mod tests {
         let handles = OsHandles::default();
         let with_env = |value: &str| {
             let mut args = spawn_args(Value::string("/bin/sh"));
-            args[2] = serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "PATH": value } })).unwrap();
+            args[2] = from_json_value(&(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "PATH": value } }))).unwrap();
             args
         };
         let bare = OsGrants { exec: vec!["/bin/sh".to_string()], ..OsGrants::default() };
@@ -845,7 +846,7 @@ mod tests {
         let granted = OsGrants { env: vec!["PATH".to_string()], ..bare.clone() };
         assert!(os_answer(OsOp::Spawn, with_env("/usr/bin"), &granted, &handles).is_ok());
         let mut other = with_env("x");
-        other[2] = serde_json::from_value(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "L113_PLAIN": "x" } })).unwrap();
+        other[2] = from_json_value(&(serde_json::json!({ "stdin": "null", "stdout": "null", "stderr": "null", "env": { "L113_PLAIN": "x" } }))).unwrap();
         assert!(os_answer(OsOp::Spawn, other, &bare, &handles).is_ok(), "control: another literal variable needs no grant");
     }
 

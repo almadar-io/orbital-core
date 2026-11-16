@@ -4,6 +4,7 @@
 //! lowered onto its `stateMachine.events[]` entry as `inbound`). The host only carries bytes:
 //! it hands the kernel `{name, headers, rawBody}` and writes back the answer the kernel returns.
 //! Mirrors `@almadar/core` `src/access/inbound.ts` (EXEC-INBOUND-1).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -234,7 +235,7 @@ pub fn inbound_payload<'a>(
         let seen = lowered.get(&v.header).and_then(Value::as_str).unwrap_or("");
         sender_verified(route, seen, credential)
     });
-    let body = serde_json::from_str::<Value>(raw_body).unwrap_or(Value::Null);
+    let body = from_json_str::<Value>(raw_body).unwrap_or(Value::Null);
     let mut payload = ValueMap::default();
     payload.insert("headers".into(), Value::object(lowered));
     payload.insert("body".into(), body);
@@ -337,6 +338,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn schema(inbound: serde_json::Value, second_handler: bool) -> OrbitalSchema {
@@ -349,7 +351,7 @@ mod tests {
                 json!({ "key": "PUSH_AGAIN", "inbound": { "name": "google-calendar", "answers": "PUSH_ANSWERED" } }),
             );
         }
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "inbound": inbound,
             "orbitals": [{
@@ -392,7 +394,7 @@ mod tests {
         let refused = find_inbound(&schema(json!([]), false), "google-calendar").unwrap_err();
         assert_eq!(refused.status, 404);
         assert_eq!(refused.body, r#"{"error":"Unknown hook provider: google-calendar"}"#);
-        let absent: OrbitalSchema = serde_json::from_value(json!({ "name": "App", "orbitals": [] })).unwrap();
+        let absent: OrbitalSchema = from_json_value(&json!({ "name": "App", "orbitals": [] })).unwrap();
         assert_eq!(find_inbound(&absent, "google-calendar").unwrap_err().status, 404);
     }
 
@@ -524,7 +526,7 @@ mod tests {
     }
 
     fn emit(status: serde_json::Value, body: serde_json::Value) -> Value {
-        serde_json::from_value(json!({ "status": status, "body": body })).unwrap()
+        from_json_value(&json!({ "status": status, "body": body })).unwrap()
     }
 
     #[test]
@@ -552,7 +554,7 @@ mod tests {
     fn a_stalled_delivery_answers_naming_the_handler() {
         let answer = inbound_unanswered("VerifyWalkCli", "VERIFY_WALK_CALLED");
         assert_eq!(answer.status, 500);
-        let body: serde_json::Value = serde_json::from_str(&answer.body).unwrap();
+        let body: serde_json::Value = from_json_str(&answer.body).unwrap();
         assert_eq!(body["code"], "inbound-unanswered");
         assert_eq!(body["trait"], "VerifyWalkCli");
         assert_eq!(body["event"], "VERIFY_WALK_CALLED");
@@ -561,7 +563,7 @@ mod tests {
 
     #[test]
     fn an_answer_carries_its_stderr_and_one_without_or_with_null_stderr_has_none() {
-        let with: Value = serde_json::from_value(json!({ "status": 500, "body": "", "stderr": "orb x: failed" })).unwrap();
+        let with: Value = from_json_value(&json!({ "status": 500, "body": "", "stderr": "orb x: failed" })).unwrap();
         let answer = answer_of(&route(), [("PUSH_ANSWERED", &with)]);
         assert_eq!(
             answer,
@@ -573,7 +575,7 @@ mod tests {
                 exit: None,
             }
         );
-        let null: Value = serde_json::from_value(json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
+        let null: Value = from_json_value(&json!({ "status": 200, "body": "ok", "stderr": null })).unwrap();
         assert_eq!(answer_of(&route(), [("PUSH_ANSWERED", &null)]).stderr, None);
         let without = emit(json!(200), json!("ok"));
         assert_eq!(
@@ -601,7 +603,7 @@ mod tests {
             emit(json!(99), json!("{}")),
             emit(json!(600), json!("{}")),
             emit(json!(200), json!(1)),
-            serde_json::from_value(json!({ "status": 200, "body": "", "stderr": 1 })).unwrap(),
+            from_json_value(&json!({ "status": 200, "body": "", "stderr": 1 })).unwrap(),
         ] {
             let answer = answer_of(&route(), [("PUSH_ANSWERED", &bad)]);
             assert_eq!(
@@ -620,8 +622,8 @@ mod tests {
     fn a_response_that_emitted_the_answer_event_answers_with_its_status_and_body() {
         let answer = json!({ "status": 202, "body": "ok" });
         let other = json!({});
-        let answer: Value = serde_json::from_value(answer).unwrap();
-        let other: Value = serde_json::from_value(other).unwrap();
+        let answer: Value = from_json_value(&answer).unwrap();
+        let other: Value = from_json_value(&other).unwrap();
         let emitted = [("NOISE", &other), ("PUSH_ANSWERED", &answer)];
         assert_eq!(answer_of_response(&calendar_route(), emitted, Some("ignored")), InboundAnswer { status: 202, body: "ok".into(), stderr: None, headers: None, exit: None });
     }
@@ -635,7 +637,7 @@ mod tests {
 
     #[test]
     fn g_orb_448_an_answer_payload_can_carry_the_process_exit_code() {
-        let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "census: 3 unscanned", "exit": 3 })).unwrap();
+        let payload: Value = from_json_value(&json!({ "status": 200, "body": "census: 3 unscanned", "exit": 3 })).unwrap();
         let emitted = [("PUSH_ANSWERED", &payload)];
         let answer = answer_of_response(&calendar_route(), emitted, None);
         let wire = serde_json::to_value(&answer).unwrap();
@@ -645,7 +647,7 @@ mod tests {
     #[test]
     fn g_orb_448_an_exit_outside_0_to_255_is_an_invalid_answer() {
         for bad in [json!(256), json!(-1), json!(1.5), json!("3")] {
-            let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "x", "exit": bad })).unwrap();
+            let payload: Value = from_json_value(&json!({ "status": 200, "body": "x", "exit": bad })).unwrap();
             let emitted = [("PUSH_ANSWERED", &payload)];
             assert_eq!(answer_of_response(&calendar_route(), emitted, None), dispatch_failed("inbound-answer-exit-invalid"));
         }
@@ -653,7 +655,7 @@ mod tests {
 
     #[test]
     fn control_the_answer_payload_without_exit_round_trips_status_and_body() {
-        let payload: Value = serde_json::from_value(json!({ "status": 200, "body": "ok" })).unwrap();
+        let payload: Value = from_json_value(&json!({ "status": 200, "body": "ok" })).unwrap();
         let emitted = [("PUSH_ANSWERED", &payload)];
         let wire = serde_json::to_value(answer_of_response(&calendar_route(), emitted, None)).unwrap();
         assert_eq!(wire, json!({ "status": 200, "body": "ok" }));

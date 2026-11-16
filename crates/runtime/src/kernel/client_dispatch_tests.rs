@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 use crate::server_leg::ServerLegCollector;
@@ -10,7 +11,7 @@ use {
 /// transitions `idle -[CREATE]-> created` via a real `persist` effect —
 /// the server-only effect that must reach the `ServerLegCollector`.
 fn persisted_awaited_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -36,7 +37,7 @@ fn persisted_awaited_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -46,7 +47,7 @@ fn persisted_awaited_schema() -> OrbitalSchema {
 /// reproduced here deliberately to prove the kernel's
 /// defensive drop holds even when the collector has something to drain.
 fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -70,7 +71,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -78,7 +79,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
 /// server-only effect, so it never produces a leg either (nothing to
 /// delegate) but DOES snapshot for optimistic rollback.
 fn runtime_optimistic_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -105,7 +106,7 @@ fn runtime_optimistic_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -113,7 +114,7 @@ fn runtime_optimistic_schema() -> OrbitalSchema {
 /// `@payload.title` into `main` — proves render-ui resolves live in a
 /// Client-env kernel (native shells depend on this).
 fn render_ui_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -135,14 +136,14 @@ fn render_ui_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
 /// A listener trait, used by the `apply_server_response` tests: fires
 /// `LISTENED` when a server-emitted `PING` (source `Emitter`) is folded.
 fn server_response_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -175,7 +176,7 @@ fn server_response_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -240,7 +241,7 @@ fn client_env_delegates_persist_and_collects_server_leg() {
 
 #[test]
 fn a_cascade_leg_names_the_event_each_trait_fired_on() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -256,7 +257,7 @@ fn a_cascade_leg_names_the_event_each_trait_fired_on() {
                     "transitions": [{ "from": "idle", "to": "idle", "event": "DO_CREATE", "effects": [["persist", "create", "Note", {}]] }] } }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let (kernel, _collector) = client_kernel_with(schema);
     let dispatch = kernel
@@ -281,7 +282,7 @@ fn a_cascade_leg_names_the_event_each_trait_fired_on() {
 
 #[test]
 fn a_posted_dispatch_marks_each_non_local_trait_it_fired_as_awaiting() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -297,7 +298,7 @@ fn a_posted_dispatch_marks_each_non_local_trait_it_fired_as_awaiting() {
                     "transitions": [{ "from": "idle", "to": "saved", "event": "DO_CREATE", "effects": [["persist", "create", "Note", {}]] }] } }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let (kernel, _collector) = client_kernel_with(schema);
     let dispatch = kernel
@@ -326,7 +327,7 @@ fn control_a_local_dispatch_with_no_leg_awaits_nothing() {
 #[test]
 fn control_a_trait_entry_without_event_still_deserializes() {
     let entry: TraitFrom =
-        serde_json::from_value(serde_json::json!({ "trait": "A", "from": "idle" })).unwrap();
+        from_json_value(&(serde_json::json!({ "trait": "A", "from": "idle" }))).unwrap();
     assert_eq!(entry.event, None);
     assert_eq!(
         serde_json::to_value(&entry).unwrap(),
@@ -429,7 +430,7 @@ fn render_ui_runs_locally_in_client_env() {
 /// transition renders the bare sigil directly, same as an atom's
 /// `data-theme: @currentTheme` binding (`std-app-layout.lolo`).
 fn render_ui_theme_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "theme": "clay-light",
         "typeContractVersion": 1, "orbitals": [{
@@ -452,7 +453,7 @@ fn render_ui_theme_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -491,7 +492,7 @@ fn pages_schema(extra_shell_pages: serde_json::Value) -> OrbitalSchema {
         serde_json::json!({ "name": "DetailPage", "path": "/items/:id", "label": "Detail", "traits": [] }),
     ];
     shell_pages.extend(extra_shell_pages.as_array().cloned().unwrap_or_default());
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "SigilApp",
         "typeContractVersion": 1, "orbitals": [
             {
@@ -517,7 +518,7 @@ fn pages_schema(extra_shell_pages: serde_json::Value) -> OrbitalSchema {
                 ]
             }
         ]
-    }))
+    })))
     .unwrap()
 }
 
@@ -540,9 +541,9 @@ fn rendered_items(schema: OrbitalSchema) -> Option<Value> {
 #[test]
 fn pages_binding_resolves_to_the_app_wide_root_nav_entries() {
     let items = rendered_items(pages_schema(serde_json::json!([])));
-    let expected: Value = serde_json::from_value(serde_json::json!([
+    let expected: Value = from_json_value(&(serde_json::json!([
         { "href": "/items", "label": "Items", "icon": "list", "roles": ["admin", "staff"] }
-    ]))
+    ])))
     .unwrap();
     assert_eq!(items, Some(expected));
 }
@@ -571,7 +572,7 @@ fn pages_binding_lists_entries_in_orbital_order_without_duplicates_params_or_unl
 #[test]
 fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_listed_path() {
     let kernel = server_kernel_with(pages_schema(serde_json::json!([])));
-    let second: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let second: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Second",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ExtraOrbital",
@@ -582,7 +583,7 @@ fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_list
                 { "name": "Zeta", "path": "/zeta", "label": "Zeta", "traits": [] }
             ]
         }]
-    }))
+    })))
     .unwrap();
     kernel.register_schema(second).unwrap();
     let outcomes = kernel
@@ -615,7 +616,7 @@ fn a_second_registered_program_adds_its_entries_after_the_first_and_skips_a_list
 
 #[test]
 fn control_a_program_with_no_labeled_root_page_has_no_entries() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "NoNav",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ShellOrbital",
@@ -630,7 +631,7 @@ fn control_a_program_with_no_labeled_root_page_has_no_entries() {
             }],
             "pages": [{ "name": "HomePage", "path": "/", "traits": [] }]
         }]
-    }))
+    })))
     .unwrap();
     assert_eq!(rendered_items(schema), Some(Value::array(Vec::new())));
 }
@@ -667,7 +668,7 @@ fn i18n_schema(locales: bool) -> OrbitalSchema {
             "ar": { "site:hero.title": "مرحبا", "site:posts.count": "{{n}} منشورات", "site:cta": "ابدأ" }
         });
     }
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 fn field(config: &Value, key: &str) -> Value {
@@ -777,7 +778,7 @@ fn store_bound_response_schema() -> OrbitalSchema {
         "traits": [{ "name": "RowsDriver", "linkedEntity": "RowsRun",
             "stateMachine": { "states": [{ "name": "ready", "isInitial": true }], "transitions": [] } }]
     }));
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 fn note_response() -> EventResponse {
@@ -1025,7 +1026,7 @@ fn kernel_concurrent_dispatch_and_apply_no_deadlock() {
 /// std-realtime-chat's shape: a `local` composer emits SAVE; a persistor
 /// listening to it runs the server-bound `persist create`.
 fn local_seed_downstream_persist_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1062,7 +1063,7 @@ fn local_seed_downstream_persist_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1101,7 +1102,7 @@ fn tick_emit_schema(own_arm: bool) -> OrbitalSchema {
         ticker_transitions.push(serde_json::json!(
             { "from": "running", "to": "running", "event": "BEAT", "effects": [] }));
     }
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1147,7 +1148,7 @@ fn tick_emit_schema(own_arm: bool) -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1344,7 +1345,7 @@ fn dispatching_an_unknown_tick_or_trait_is_an_error() {
 
 /// std-realtime-chat's composer: SEND persists the draft, then clears it.
 fn clearing_composer_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1372,7 +1373,7 @@ fn clearing_composer_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1408,7 +1409,7 @@ fn client_env_leg_carries_the_row_the_event_was_dispatched_against() {
 }
 
 fn counted_note_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1419,12 +1420,12 @@ fn counted_note_schema() -> OrbitalSchema {
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
 fn rows_response(rows: serde_json::Value) -> EventResponse {
-    let rows: Vec<Value> = serde_json::from_value(rows).unwrap();
+    let rows: Vec<Value> = from_json_value(&rows).unwrap();
     EventResponse { success: true, data: Some(HashMap::from([("Note".to_string(), rows)])), ..Default::default() }
 }
 
@@ -1444,7 +1445,7 @@ fn a_server_row_that_contradicts_its_entity_refuses_the_whole_fold() {
 #[test]
 fn a_mistyped_trait_frame_refuses_the_fold() {
     let (kernel, _) = client_kernel_with(counted_note_schema());
-    let frames = crate::effects::FrameDelta::absolute([("Notes".to_string(), serde_json::from_value(serde_json::json!({ "count": [] })).unwrap())]);
+    let frames = crate::effects::FrameDelta::absolute([("Notes".to_string(), from_json_value(&(serde_json::json!({ "count": [] }))).unwrap())]);
     let response = EventResponse { success: true, frames: Some(frames), ..Default::default() };
     assert!(kernel.apply_server_response(&response, &HashSet::new()).is_err());
 }
@@ -1464,7 +1465,7 @@ fn control_fitting_server_rows_fold_and_an_idless_row_is_the_runtime_singleton()
 }
 
 fn declared_count_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1479,7 +1480,7 @@ fn declared_count_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1487,9 +1488,9 @@ fn declared_count_schema() -> OrbitalSchema {
 #[test]
 fn a_client_ui_event_whose_payload_contradicts_its_declaration_is_refused() {
     let (kernel, _) = client_kernel_with(declared_count_schema());
-    let payload: Value = serde_json::from_value(serde_json::json!({ "n": "one" })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "n": "one" }))).unwrap();
     assert!(kernel.dispatch("Counter", None, "SET", payload).is_err());
-    let payload: Value = serde_json::from_value(serde_json::json!({ "n": 1 })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "n": 1 }))).unwrap();
     let outcomes = kernel.dispatch("Counter", None, "SET", payload).unwrap();
     assert!(outcomes.iter().any(|(_, r)| r.new_state == "set"), "control: a fitting payload runs");
 }
@@ -1498,7 +1499,7 @@ fn a_client_ui_event_whose_payload_contradicts_its_declaration_is_refused() {
 #[test]
 fn an_in_process_seed_whose_row_contradicts_its_entity_is_refused() {
     let bridge = crate::client::bridge::KernelBridge::new(counted_note_schema()).unwrap();
-    let rows = |v: serde_json::Value| -> Vec<Value> { serde_json::from_value(v).unwrap() };
+    let rows = |v: serde_json::Value| -> Vec<Value> { from_json_value(&v).unwrap() };
     let refused = bridge.seed("Note", rows(serde_json::json!([{ "id": "n-1", "count": 1 }, { "id": "n-2", "count": "2" }])));
     assert!(refused.is_err_and(|e| e.contains("Note.count")));
     bridge.seed("Note", rows(serde_json::json!([{ "id": "n-1", "count": 1 }]))).unwrap();
@@ -1512,7 +1513,7 @@ fn held_client_ask_schema(asker_init_persists: bool) -> OrbitalSchema {
     } else {
         serde_json::json!({ "from": "idle", "to": "idle", "event": "INIT" })
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1540,7 +1541,7 @@ fn held_client_ask_schema(asker_init_persists: bool) -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1622,7 +1623,7 @@ fn client_chain_schema(mid_persists: bool, deep_persists: bool) -> OrbitalSchema
     } else {
         serde_json::json!([])
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1665,7 +1666,7 @@ fn client_chain_schema(mid_persists: bool, deep_persists: bool) -> OrbitalSchema
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1738,7 +1739,7 @@ fn client_server_client_server_schema(retry_back: bool, github_persists: bool) -
     } else {
         serde_json::json!([])
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1783,7 +1784,7 @@ fn client_server_client_server_schema(retry_back: bool, github_persists: bool) -
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1812,7 +1813,7 @@ fn control_a_single_server_hop_posts_exactly_one_leg() {
 }
 
 fn loading_board_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1841,7 +1842,7 @@ fn loading_board_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1866,7 +1867,7 @@ fn a_server_answer_listing_a_client_trait_idle_leaves_it_loading() {
 /// A route trait that emits `SUBMIT` (heard only by `Jobs`, an orbital the client program leaves out and lists in
 /// `_metadata.serverListens`) and `NOTE` (heard by nobody).
 fn server_listen_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1,
         "_metadata": { "serverListens": [{ "orbital": "Jobs", "listen": {
@@ -1889,7 +1890,7 @@ fn server_listen_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Page" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1912,7 +1913,7 @@ fn control_client_env_an_emit_nobody_off_the_client_hears_posts_nothing() {
 
 /// `Worker` and `Relay` are mounted only on `boot` (program-wide, `Relay` hears NOISE); `Viewer` is a `[client]` route trait listening to its `PING`.
 fn program_wide_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -1937,7 +1938,7 @@ fn program_wide_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }, { "ref": "Relay" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1983,7 +1984,7 @@ fn control_a_route_trait_s_emits_are_not_program_wide() {
 }
 
 fn host_painted_shelf_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -2002,7 +2003,7 @@ fn host_painted_shelf_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -2012,7 +2013,7 @@ fn host_paint(content: serde_json::Value) -> EventResponse {
         states: HashMap::from([("Shelf".to_string(), "browsing".to_string())]),
         client_effects_by_trait: Some(vec![crate::effects::response::ClientEffectByTrait {
             trait_name: "Shelf".to_string(),
-            effect: orbital_core_base::client_effect::ClientEffect::RenderUi { slot: "main".to_string(), config: serde_json::from_value(content).unwrap() },
+            effect: orbital_core_base::client_effect::ClientEffect::RenderUi { slot: "main".to_string(), config: from_json_value(&content).unwrap() },
             event: None,
             from_state: None,
             callsite_payload: None,
@@ -2040,7 +2041,7 @@ fn an_unfired_step_on_a_client_repaints_what_the_host_painted() {
     let (kernel, _) = client_kernel_with(host_painted_shelf_schema());
     let rows = serde_json::json!({ "type": "data-list", "entity": [{ "id": "a" }, { "id": "b" }] });
     kernel.apply_server_response(&host_paint(rows.clone()), &HashSet::new()).unwrap();
-    let click: Value = serde_json::from_value(serde_json::json!({ "id": "a" })).unwrap();
+    let click: Value = from_json_value(&(serde_json::json!({ "id": "a" }))).unwrap();
     let outcomes = kernel.dispatch("Shelf", None, "OPEN", click).unwrap();
     assert!(outcomes.iter().all(|(_, result)| !result.executed), "control: the guard refuses, so the step does not fire");
     assert_eq!(repainted_main(&outcomes), [rows], "the list keeps its rows");
@@ -2057,7 +2058,7 @@ fn control_an_unfired_step_on_a_client_the_host_never_painted_shows_the_entering
 /// only on `boot`, so the program session steps it) turns into the same write.
 fn server_field_schema() -> OrbitalSchema {
     let write = |event: &str, team: &str| serde_json::json!({ "from": "idle", "to": "idle", "event": event, "effects": [["persist", "update", "Member", { "id": "u1", "teamId": team }]] });
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -2084,7 +2085,7 @@ fn server_field_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -2098,7 +2099,7 @@ fn a_viewer_session_cannot_write_a_server_field_but_the_program_session_step_it_
     let cache = Arc::new(InMemoryEntityCache::new());
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(server_field_schema()).unwrap();
-    cache.write("Member", "u1", &serde_json::from_value(serde_json::json!({ "id": "u1", "name": "Ada", "teamId": "" })).unwrap()).unwrap();
+    cache.write("Member", "u1", &from_json_value(&(serde_json::json!({ "id": "u1", "name": "Ada", "teamId": "" }))).unwrap()).unwrap();
     let _session = kernel.enter_session("s1");
     let tried = kernel.dispatch("Viewer", None, "TRY", Value::Null).unwrap();
     assert!(tried.iter().all(|(_, r)| r.effect_results.iter().all(|e| !e.is_executed())), "{tried:?}");
@@ -2114,7 +2115,7 @@ fn server_create_schema() -> OrbitalSchema {
         "access_waivers": { "create_server": "created when an invite is accepted, after the server checks it" },
         "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
     let create = |event: &str, id: &str| serde_json::json!({ "from": "idle", "to": "idle", "event": event, "effects": [["persist", "create", "Invite", { "id": id, "name": "Ada" }]] });
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -2137,7 +2138,7 @@ fn server_create_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -2164,7 +2165,7 @@ fn handover_schema() -> OrbitalSchema {
     let invite = || serde_json::json!({ "name": "Invite", "persistence": "persistent", "collection": "invites",
         "access_waivers": { "create_server": "created after the server checks the asker" },
         "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -2187,7 +2188,7 @@ fn handover_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -2199,7 +2200,7 @@ fn a_route_event_a_session_sends_itself_reaches_the_program_session_step_with_it
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(handover_schema()).unwrap();
     let _session = kernel.enter_session("s1");
-    let forged: Value = serde_json::from_value(serde_json::json!({ "id": "forged" })).unwrap();
+    let forged: Value = from_json_value(&(serde_json::json!({ "id": "forged" }))).unwrap();
     let outcomes = kernel.dispatch("Viewer", None, "MADE", forged).unwrap();
     assert!(cache.find("Invite", "forged").unwrap().is_some(), "the program-session step ran on the payload the session sent: {outcomes:?}");
 }
@@ -2210,7 +2211,7 @@ fn control_a_session_dispatching_a_boot_only_trait_itself_is_not_a_program_sessi
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(handover_schema()).unwrap();
     let _session = kernel.enter_session("s1");
-    let direct: Value = serde_json::from_value(serde_json::json!({ "teamId": "direct" })).unwrap();
+    let direct: Value = from_json_value(&(serde_json::json!({ "teamId": "direct" }))).unwrap();
     let outcomes = kernel.dispatch("Claimer", None, "CLAIMED", direct).unwrap();
     assert!(cache.find("Invite", "direct").unwrap().is_none(), "a session's own dispatch of the boot trait created a server-created row: {outcomes:?}");
 }
@@ -2221,7 +2222,7 @@ fn checking_schema() -> OrbitalSchema {
     let invite = || serde_json::json!({ "name": "Invite", "persistence": "persistent", "collection": "invites",
         "access_waivers": { "create_server": "created after the server checks the asker" },
         "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] });
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -2251,7 +2252,7 @@ fn checking_schema() -> OrbitalSchema {
             }],
             "pages": [{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "Claimer" }] }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -2260,17 +2261,17 @@ fn checking_kernel() -> (Arc<InMemoryEntityCache>, RuntimeKernel) {
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(checking_schema()).unwrap();
     for (id, owner) in [("t-own", "u1"), ("t-other", "u2")] {
-        cache.write("Team", id, &serde_json::from_value(serde_json::json!({ "id": id, "ownerId": owner })).unwrap()).unwrap();
+        cache.write("Team", id, &from_json_value(&(serde_json::json!({ "id": id, "ownerId": owner }))).unwrap()).unwrap();
     }
     (cache, kernel)
 }
 
 fn signed_in_member() -> Value {
-    serde_json::from_value(serde_json::json!({ "id": "u1", "role": "member" })).unwrap()
+    from_json_value(&(serde_json::json!({ "id": "u1", "role": "member" }))).unwrap()
 }
 
 fn payload_id(id: &str) -> Value {
-    serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+    from_json_value(&(serde_json::json!({ "id": id }))).unwrap()
 }
 
 // EXEC-FIELD-2: the program-session step a viewer asked for reads that viewer as `@user`, and its fetch is not narrowed by `@read`.
@@ -2317,7 +2318,7 @@ fn answering_schema() -> OrbitalSchema {
     let claimer = &mut program["orbitals"][1]["traits"][0];
     claimer["emits"] = serde_json::json!([{ "event": "CLAIM_DONE", "scope": "external" }]);
     claimer["stateMachine"]["transitions"][1]["effects"].as_array_mut().unwrap().push(serde_json::json!(["emit", "CLAIM_DONE", { "teamId": ["object/get", "@payload.data", "id"] }]));
-    serde_json::from_value(program).unwrap()
+    from_json_value(&program).unwrap()
 }
 
 // The answer a program-session step emits is heard inside that step's own run: the listener steps there, with the asker as
@@ -2327,7 +2328,7 @@ fn a_program_session_steps_answer_is_heard_in_its_own_run_with_the_asker_as_user
     let cache = Arc::new(InMemoryEntityCache::new());
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(answering_schema()).unwrap();
-    cache.write("Team", "t-own", &serde_json::from_value(serde_json::json!({ "id": "t-own", "ownerId": "u1" })).unwrap()).unwrap();
+    cache.write("Team", "t-own", &from_json_value(&(serde_json::json!({ "id": "t-own", "ownerId": "u1" }))).unwrap()).unwrap();
     let _session = kernel.enter_session("s1");
     kernel.bind_test_identity(signed_in_member());
     let outcomes = kernel.dispatch("Viewer", None, "MADE", payload_id("t-own")).unwrap();
@@ -2345,7 +2346,7 @@ fn a_program_session_step_keeps_its_asker_and_its_standing_across_a_host_answere
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>, KernelConfig::default());
     kernel.register_schema(checking_schema()).unwrap();
     let host_rows = InMemoryEntityCache::new();
-    host_rows.write("Team", "t-own", &serde_json::from_value(serde_json::json!({ "id": "t-own", "ownerId": "u1" })).unwrap()).unwrap();
+    host_rows.write("Team", "t-own", &from_json_value(&(serde_json::json!({ "id": "t-own", "ownerId": "u1" }))).unwrap()).unwrap();
     let _session = kernel.enter_session("s1");
     kernel.bind_test_identity(signed_in_member());
     let progress = kernel.start_dispatch("Viewer", None, "MADE", payload_id("t-own"), None, None).unwrap();
@@ -2356,7 +2357,7 @@ fn a_program_session_step_keeps_its_asker_and_its_standing_across_a_host_answere
 // EXEC-IDENTITY-4: a client kernel renders before the server's first identity frame; when the mirrored identity
 // changes, the renders that read `@user` repaint (owner ruling 2026-11-16, G-CROSS-639).
 fn viewer_header_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -2383,12 +2384,12 @@ fn viewer_header_schema() -> OrbitalSchema {
                 "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
             "traits": []
         }]
-    }))
+    })))
     .unwrap()
 }
 
 fn mirrored(user: serde_json::Value) -> crate::effects::frame_delta::FrameIdentity {
-    crate::effects::frame_delta::FrameIdentity { user: Some(serde_json::from_value(user).unwrap()) }
+    crate::effects::frame_delta::FrameIdentity { user: Some(from_json_value(&user).unwrap()) }
 }
 
 #[test]

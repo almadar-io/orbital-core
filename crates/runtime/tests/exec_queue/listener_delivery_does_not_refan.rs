@@ -3,6 +3,7 @@
 //! A listener whose `triggers` is the very event it listens to used to re-deliver to itself until
 //! the 2000-step cap (JS twin: `almadar-runtime/test/stateful-create-keeps-state-address.test.ts`).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment};
 use serde_json::json;
@@ -14,7 +15,7 @@ fn schema(trigger_is_listened_name: bool) -> OrbitalSchema {
     } else {
         "GOT"
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "refan",
         "typeContractVersion": 1, "orbitals": [
             {

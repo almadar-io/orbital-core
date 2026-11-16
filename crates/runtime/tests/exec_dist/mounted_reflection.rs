@@ -1,5 +1,6 @@
 //! EXEC-DIST-15: `program/self { mounted: true }` answers the session's mounted orbital as a tree.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::effects::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::kernel::RuntimeKernel;
@@ -226,7 +227,7 @@ fn a_client_kernel_answers_from_its_own_session_page_and_asks_no_server() {
 #[test]
 fn a_browser_embed_route_mount_records_its_page_for_the_mounted_tree() {
     let schema: orbital_core_base::schema::types::OrbitalSchema =
-        serde_json::from_value(program()).unwrap();
+        from_json_value(&program()).unwrap();
     let embedded = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
     embedded
         .dispatch_route_mount(Some("/"), &[seed("Frame")], None, Value::Null)
@@ -338,7 +339,7 @@ fn control_a_page_that_talks_to_no_other_orbital_lists_no_linked_trait() {
 #[test]
 fn control_a_browser_embed_mount_with_no_route_records_no_page() {
     let schema: orbital_core_base::schema::types::OrbitalSchema =
-        serde_json::from_value(program()).unwrap();
+        from_json_value(&program()).unwrap();
     let embedded = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
     embedded
         .dispatch_route_mount(None, &[seed("Frame")], None, Value::Null)

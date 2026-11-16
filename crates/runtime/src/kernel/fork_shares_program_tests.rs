@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 fn kernel_with_program() -> RuntimeKernel {
@@ -6,7 +7,7 @@ fn kernel_with_program() -> RuntimeKernel {
         Arc::new(crate::entity_source::InMemoryEntityCache::new()),
         KernelConfig::default(),
     );
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Notes",
         "typeContractVersion": 1, "orbitals": [{
             "name": "NotesOrbital",
@@ -21,7 +22,7 @@ fn kernel_with_program() -> RuntimeKernel {
             }],
             "pages": []
         }]
-    }))
+    })))
     .expect("schema");
     kernel.register_schema(schema).expect("registers");
     kernel

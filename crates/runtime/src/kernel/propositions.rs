@@ -125,6 +125,7 @@ pub fn judge_propositions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     fn prop_obs(
         executed: bool,
@@ -133,19 +134,19 @@ mod tests {
         after: f64,
         amount: f64,
     ) -> PropositionObservation {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "executed": executed, "failed": failed,
             "entityBefore": { "balance": before }, "entityAfter": { "balance": after }, "payload": { "amount": amount }
-        }))
+        })))
         .unwrap()
     }
 
     fn spend() -> Vec<orbital_core_base::schema::SExpression> {
-        serde_json::from_value(serde_json::json!([[
+        from_json_value(&(serde_json::json!([[
             "=",
             "@entity.balance",
             ["-", "@fromEntity.balance", "@payload.amount"]
-        ]]))
+        ]])))
         .unwrap()
     }
 
@@ -188,7 +189,7 @@ mod tests {
     #[test]
     fn a_proposition_the_evaluator_cannot_run_is_inconclusive() {
         let broken: Vec<orbital_core_base::schema::SExpression> =
-            serde_json::from_value(serde_json::json!([["no/such-op", "@entity.balance"]])).unwrap();
+            from_json_value(&(serde_json::json!([["no/such-op", "@entity.balance"]]))).unwrap();
         assert!(matches!(
             judge_propositions(&broken, &prop_obs(true, false, 1.0, 1.0, 0.0)),
             PropositionVerdict::Inconclusive { .. }

@@ -1,5 +1,6 @@
 // A client kernel addresses each server leg to the trait whose own delivery needs the server (G-ORB-158), and exposes every executed delivery (G-ORB-169).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::kernel::{already_delivered_from, RuntimeKernel}, orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig};
 use orbital_core_runtime::ServerLegCollector;
 use {orbital_core_runtime::ClientDispatch, orbital_core_runtime::effects::executor::EffectDelegate, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -36,7 +37,7 @@ fn listener(name: &str, heard: &str, trigger: &str, effects: Json) -> Json {
 }
 
 fn schema(traits: Vec<Json>) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -66,7 +67,7 @@ fn client(schema: OrbitalSchema) -> RuntimeKernel {
 }
 
 fn payload(id: &str) -> Value {
-    serde_json::from_value(json!({ "id": id })).unwrap()
+    from_json_value(&json!({ "id": id })).unwrap()
 }
 
 fn dispatch(schema: OrbitalSchema, trait_name: &str, event: &str) -> ClientDispatch {

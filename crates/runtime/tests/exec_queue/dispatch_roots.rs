@@ -1,5 +1,6 @@
 // Runtime Spec Clauses 3.3 + 5.5 on the Rust kernel. Twin of `almadar-runtime/test/dispatch-roots.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
@@ -41,7 +42,7 @@ fn kernel() -> RuntimeKernel {
         "srcTrait": "@event.source.trait", "srcEvent": "@event.event", "srcN": "@event.payload.n",
         "from": "@fromState", "to": "@toState", "state": "@state", "seen": ["array/len", "@prevEvents"]
     }]]);
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "dispatch-roots-app",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -153,15 +154,15 @@ fn the_memory_dies_with_the_dispatch() {
 
 fn prov_acks(delivery: Option<Json>, log: Option<Json>) -> Vec<Json> {
     let delivery: Option<orbital_core_runtime::effects::DeliveryRecord> =
-        delivery.map(|d| serde_json::from_value(d).unwrap());
+        delivery.map(|d| from_json_value(&d).unwrap());
     let log: Option<orbital_core_runtime::effects::DispatchLog> =
-        log.map(|l| serde_json::from_value(l).unwrap());
+        log.map(|l| from_json_value(&l).unwrap());
     kernel()
         .dispatch_continuing(
             "Prov",
             None,
             "GOT",
-            serde_json::from_value(json!({ "n": 5 })).unwrap(),
+            from_json_value(&json!({ "n": 5 })).unwrap(),
             delivery.as_ref(),
             log.as_ref(),
         )

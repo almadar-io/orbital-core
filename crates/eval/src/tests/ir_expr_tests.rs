@@ -1,4 +1,5 @@
 #[cfg(not(feature = "std"))]
+use orbital_core_base::json_value::from_json_value;
 use std::prelude::v1::*;
 #[allow(unused_imports)]
 use orbital_core_base::ir::expr::*;
@@ -36,7 +37,7 @@ fn to_sexpression_guard_roundtrips_through_evaluator() {
         ].into())
     );
     // And the one evaluator agrees: 90/100 = 0.9 ≥ 0.85.
-    let v = |j: serde_json::Value| serde_json::from_value::<Value>(j).unwrap();
+    let v = |j: serde_json::Value| orbital_core_base::json_value::from_json_value::<Value>(&j).unwrap();
     let mut ctx = BindingContext::new();
     ctx.set_payload(v(serde_json::json!({ "current": 90 })));
     ctx.set_entity(v(serde_json::json!({ "max": 100 })));

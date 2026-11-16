@@ -44,10 +44,11 @@ pub fn capture_trait_source_declaration(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn definition() -> TraitDefinition {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name":"Flow", "id":"decl-1", "linkedEntity":"Row",
             "config":{"text":{"type":"string","default":"hello"}},
             "stateMachine":{
@@ -72,7 +73,7 @@ mod tests {
             trait_execution_fingerprint(&reordered).unwrap()
         );
         let mut edited = definition();
-        edited.state_machine.transitions[0].effects = Some(vec![serde_json::from_value(json!([
+        edited.state_machine.transitions[0].effects = Some(vec![from_json_value(&json!([
             "set",
             "@entity.value",
             2
@@ -109,8 +110,8 @@ mod tests {
         first["config"]["extra"] = json!({"type":"object","default":{"a":1,"b":2}});
         second["config"]["extra"] = json!({"default":{"b":2,"a":1},"type":"object"});
         assert_eq!(
-            trait_execution_fingerprint(&serde_json::from_value(first).unwrap()).unwrap(),
-            trait_execution_fingerprint(&serde_json::from_value(second).unwrap()).unwrap()
+            trait_execution_fingerprint(&from_json_value(&first).unwrap()).unwrap(),
+            trait_execution_fingerprint(&from_json_value(&second).unwrap()).unwrap()
         );
     }
 }

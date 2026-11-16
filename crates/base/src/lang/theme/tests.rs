@@ -1,8 +1,9 @@
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 use std::sync::Arc;
 
 fn preset(json: &str) -> ThemeDefinition {
-    serde_json::from_str(json).unwrap()
+    from_json_str(json).unwrap()
 }
 
 #[test]
@@ -74,13 +75,13 @@ fn minimal_trait_def(name: &str) -> TraitDefinition {
     // build through `serde_json` instead of hand-listing every field —
     // only `name` + `stateMachine` (states + transitions, both required)
     // are non-`Option`.
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": name,
         "stateMachine": {
             "states": [{ "name": "idle" }],
             "transitions": [],
         },
-    }))
+    })))
     .expect("minimal trait definition parses")
 }
 
@@ -346,7 +347,7 @@ fn resolved_theme_serde_round_trip() {
     );
     let resolved = resolve_theme(&schema, Some("A"), &presets, None);
     let json = serde_json::to_value(&resolved).expect("serializes");
-    let back: ResolvedTheme = serde_json::from_value(json.clone()).expect("deserializes");
+    let back: ResolvedTheme = from_json_value(&json).expect("deserializes");
     assert_eq!(serde_json::to_value(&back).unwrap(), json);
 }
 
@@ -375,7 +376,7 @@ fn own_theme(name: &str, dark: bool) -> ThemeDefinition {
     if dark {
         theme["variants"] = serde_json::json!({ "dark": { "colors": { "primary": "#eeeeee" } } });
     }
-    serde_json::from_value(theme).expect("an inline theme parses")
+    from_json_value(&theme).expect("an inline theme parses")
 }
 
 fn own_themes_schema() -> OrbitalSchema {
@@ -389,10 +390,10 @@ fn own_themes_schema() -> OrbitalSchema {
 
 #[test]
 fn a_themes_list_reads_a_theme_the_program_defines_beside_a_registry_key() {
-    let themes: Vec<ThemeRef> = serde_json::from_value(serde_json::json!([
+    let themes: Vec<ThemeRef> = from_json_value(&(serde_json::json!([
         "aqua-dark",
         { "name": "brand-serif", "tokens": { "colors": { "primary": "#111111" } } }
-    ]))
+    ])))
     .expect("a mixed themes list parses");
     assert_eq!(themes[0].as_reference(), Some("aqua-dark"));
     assert_eq!(themes[1].as_inline().map(|d| d.name.as_str()), Some("brand-serif"));

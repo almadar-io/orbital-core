@@ -349,7 +349,7 @@ pub struct PageFactsWire {
 /// A host's answer to one request; `kind` must be the one the request calls for.
 #[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(remote = "Self", tag = "kind", rename_all = "camelCase")]
 pub enum IoAnswerWire {
     Row {
         #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<EntityRow | null, string>"))]
@@ -474,6 +474,18 @@ pub enum IoAnswerWire {
     Deliver {
         result: Settled<Accepted, DeliverRefusal>,
     },
+}
+
+impl serde::Serialize for IoAnswerWire {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        IoAnswerWire::serialize(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for IoAnswerWire {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        orbital_core_base::json_value::deserialize_via_value(deserializer, |value| IoAnswerWire::deserialize(value))
+    }
 }
 
 /// A request a dispatch is waiting on, named by `id`.

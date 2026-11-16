@@ -1,6 +1,7 @@
 //! EXEC-RENDER conformance: how a `render-ui` effect resolves where it paints.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::{Effect, EffectOutcome};
 use orbital_core_base::value::Value;
 use orbital_core_runtime::config::KernelConfig;
@@ -46,7 +47,7 @@ use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::EventResponse;
 
 fn nav_schema(pages: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "NavApp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ShellOrbital",
@@ -101,7 +102,7 @@ fn exec_render_2_control_with_no_labeled_page_pages_is_an_empty_list() {
 fn render_effect_wire(extra: Json) -> Vec<Json> {
     let mut effects = vec![json!(["render-ui", "main", { "type": "typography", "content": "x" }])];
     effects.extend(extra.as_array().cloned().unwrap_or_default());
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Wire",
         "typeContractVersion": 1, "orbitals": [{
             "name": "O",

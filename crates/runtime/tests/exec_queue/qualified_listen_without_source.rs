@@ -1,12 +1,13 @@
 // A `listens` event written `Trait.EVENT` (or `Orbital.Trait.EVENT`) with no `source` is that source's event (twin of `parseListenSource`, `almadar-runtime/src/events/identity/routing.ts`; ui `game-keyboard-routing`).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::json;
 use std::sync::Arc;
 
 fn steered(heard: &str) -> bool {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Snake",
         "typeContractVersion": 1, "orbitals": [{
             "name": "SnakeOrbital",
@@ -60,7 +61,7 @@ fn control_a_bare_listen_still_hears_any_source() {
 }
 
 fn guarded(sent_key: &str, guard: serde_json::Value) -> bool {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Keyed",
         "typeContractVersion": 1, "orbitals": [{
             "name": "KeyedOrbital",

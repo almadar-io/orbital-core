@@ -1167,10 +1167,11 @@ pub fn icon_name_to_glyph(name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
 
     /// Helper to create Value from JSON literal
     fn json_value(s: &str) -> Value {
-        let json: serde_json::Value = serde_json::from_str(s).unwrap();
+        let json: serde_json::Value = from_json_str(s).unwrap();
         from_json(json)
     }
 

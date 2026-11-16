@@ -1,6 +1,7 @@
 //! Builders shared by the runtime integration tests: one way to parse a test schema and one way to stand up a kernel over it.
 #![allow(dead_code)]
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::config::KernelConfig;
@@ -12,7 +13,7 @@ use serde_json::{json, Value as Json};
 use std::sync::Arc;
 
 pub fn schema(value: Json) -> OrbitalSchema {
-    serde_json::from_value(value).expect("test schema parses")
+    from_json_value(&value).expect("test schema parses")
 }
 
 pub struct TestKernel {
@@ -129,7 +130,7 @@ pub mod identity {
     /// Sign the session this thread is in as `subject`, its claims carrying the identity row's fields.
     pub fn sign_in(kernel: &RuntimeKernel, subject: &str, claims: Json) {
         let payload: Value =
-            serde_json::from_value(json!({ "token": token(subject, claims) })).expect("payload");
+            from_json_value(&json!({ "token": token(subject, claims) })).expect("payload");
         kernel
             .dispatch(SIGNER, None, "SIGN_IN", payload)
             .expect("the sign-in dispatches");
@@ -176,7 +177,7 @@ pub mod identity {
             event: event.to_string(),
             target_trait: Some(SIGNER.to_string()),
             client_id: Some(client.to_string()),
-            payload: payload.map(|payload| serde_json::from_value(payload).expect("payload")),
+            payload: payload.map(|payload| from_json_value(&payload).expect("payload")),
             ..Default::default()
         };
         match server

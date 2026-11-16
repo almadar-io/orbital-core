@@ -2,6 +2,7 @@
 // transition with the typed mismatch (an `effect-failed` rejection), as the JS executor throws. It used to
 // keep the unevaluated expression as the prop. JS twin: `OrbPreview.mount-error.test.tsx` (kernel mode).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::effects::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -22,7 +23,7 @@ fn schema(broken: Vec<Json>) -> OrbitalSchema {
             }
         })
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",

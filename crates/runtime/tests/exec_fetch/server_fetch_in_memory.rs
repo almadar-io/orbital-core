@@ -1,6 +1,7 @@
 //! A Server-env kernel over a seeded `InMemoryEntityCache`: a `fetch` returns the seeded rows,
 //! ordered and unordered.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::json;
@@ -12,7 +13,7 @@ fn run_rows(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> Ve
     for (k, v) in entity_extra.as_object().unwrap() {
         entity[k] = v.clone();
     }
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main", "entity": entity,
             "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
                 "states": [{ "name": "idle", "isInitial": true }],
@@ -32,7 +33,7 @@ fn run_rows(entity_extra: serde_json::Value, fetch_cfg: serde_json::Value) -> Ve
     // no longer reads.
     for i in 0..3 {
         let row: Value =
-            serde_json::from_value(json!({ "id": format!("t{i}"), "score": i })).unwrap();
+            from_json_value(&json!({ "id": format!("t{i}"), "score": i })).unwrap();
         cache.write("Ticket", &format!("t{i}"), &row).unwrap();
     }
     let out = k.dispatch("T", None, "LIST", Value::Null).unwrap();
@@ -86,7 +87,7 @@ fn collection_declared_entity_reads_the_entity_name_key() {
 
 /// The fetch's own result for a by-id miss: what the verifier's judge reads as handled or not (G-ORBITAL-CORE-035).
 fn missed_fetch(fetch_cfg: serde_json::Value) -> orbital_core_base::effect_types::EffectResult {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
@@ -123,7 +124,7 @@ fn control_a_missed_fetch_with_no_failure_route_reports_none() {
 
 /// The ids a `fetch` with `filter` returns over `rows`, in the fetch's order, for a LIST dispatched with `payload`.
 fn fetched_ids(rows: serde_json::Value, filter: serde_json::Value, payload: serde_json::Value) -> Vec<String> {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "fields": [
                 { "name": "id", "type": "string" }, { "name": "projectId", "type": "string" },
@@ -143,10 +144,10 @@ fn fetched_ids(rows: serde_json::Value, filter: serde_json::Value, payload: serd
     k.register_schema(schema).unwrap();
     for row in rows.as_array().unwrap() {
         let id = row["id"].as_str().unwrap().to_string();
-        let row: Value = serde_json::from_value(row.clone()).unwrap();
+        let row: Value = from_json_value(&row).unwrap();
         cache.write("Ticket", &id, &row).unwrap();
     }
-    let payload: Value = serde_json::from_value(payload).unwrap();
+    let payload: Value = from_json_value(&payload).unwrap();
     let out = k.dispatch("T", None, "LIST", payload).unwrap();
     out.iter()
         .flat_map(|(_, r)| r.effect_results.iter())
@@ -214,7 +215,7 @@ fn an_object_filter_with_no_keys_is_the_empty_conjunction_and_admits_every_row()
 
 /// The ids a `fetch` lists after a `persist create` of `row`, on a Server kernel that keeps `[runtime]` rows in the kernel.
 fn persisted_then_fetched(persistence: &str, row: serde_json::Value) -> Vec<String> {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "rt", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Card", "persistence": persistence, "fields": [
                 { "name": "id", "type": "string" }, { "name": "label", "type": "string" }] },
@@ -259,7 +260,7 @@ fn control_a_runtime_row_persisted_without_an_id_is_fetched() {
 /// The completion events a fetch dispatch fired, as `(event, payload)`, with the fetch declared by `fetch_cfg`
 /// and OPEN dispatched with `payload` over one seeded row `t0`.
 fn fetch_completions(fetch_cfg: serde_json::Value, payload: serde_json::Value) -> Vec<(String, serde_json::Value)> {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "sf", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Ticket", "persistence": "persistent", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "T", "linkedEntity": "Ticket", "stateMachine": {
@@ -270,8 +271,8 @@ fn fetch_completions(fetch_cfg: serde_json::Value, payload: serde_json::Value) -
     let cache = Arc::new(InMemoryEntityCache::new());
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, Default::default());
     k.register_schema(schema).unwrap();
-    cache.write("Ticket", "t0", &serde_json::from_value(json!({ "id": "t0" })).unwrap()).unwrap();
-    let out = k.dispatch("T", None, "OPEN", serde_json::from_value(payload).unwrap()).unwrap();
+    cache.write("Ticket", "t0", &from_json_value(&json!({ "id": "t0" })).unwrap()).unwrap();
+    let out = k.dispatch("T", None, "OPEN", from_json_value(&payload).unwrap()).unwrap();
     out.iter()
         .flat_map(|(_, r)| r.effect_results.iter())
         .filter_map(|er| match &er.effect {
@@ -346,7 +347,7 @@ fn edge_a_key_that_is_not_a_non_empty_string_fails_the_fetch_with_no_completion_
 fn an_unsigned_session_fetches_and_resolves_as_the_anonymous_viewer() {
     let f = |name: &str| json!(["object/get", "@entity", name]);
     let policy = json!(["or", ["!=", f("kind"), "memory"], ["=", f("ownerId"), "@user.id"]]);
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "g365", "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Chunk", "persistence": "persistent", "read_policy": policy,
                 "fields": [{ "name": "id", "type": "string" }, { "name": "kind", "type": "string" }, { "name": "ownerId", "type": "string" }] },
@@ -366,7 +367,7 @@ fn an_unsigned_session_fetches_and_resolves_as_the_anonymous_viewer() {
         json!({ "id": "orphan", "kind": "memory" }),
     ] {
         let id = row["id"].as_str().unwrap().to_string();
-        cache.write("Chunk", &id, &serde_json::from_value::<Value>(row).unwrap()).unwrap();
+        cache.write("Chunk", &id, &from_json_value::<Value>(&row).unwrap()).unwrap();
     }
     let out = k.dispatch("T", None, "LIST", Value::Null).unwrap();
     let ids = |out: &[(String, orbital_core_runtime::process_result::ProcessEventResult)]| {
@@ -381,9 +382,7 @@ fn an_unsigned_session_fetches_and_resolves_as_the_anonymous_viewer() {
         ids
     };
     assert_eq!(ids(&out), vec!["anon", "lesson"], "dispatch fetch");
-    let reference: orbital_core_base::row_set::RowSetRef = serde_json::from_value(
-        json!({ "entityType": "Chunk", "ids": ["lesson", "anon", "theirs", "orphan"], "total": 4, "query": {} }),
-    )
+    let reference: orbital_core_base::row_set::RowSetRef = from_json_value(&json!({ "entityType": "Chunk", "ids": ["lesson", "anon", "theirs", "orphan"], "total": 4, "query": {} }))
     .unwrap();
     let page = k.resolve_rows(&reference).unwrap();
     let mut resolved: Vec<String> = page.rows.iter().map(orbital_core_runtime::row_query::row_id).collect();

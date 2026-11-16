@@ -1,6 +1,7 @@
 //! EXEC-TICK conformance: where a tick's emits go.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use serde_json::json;
 use crate::support::TestKernel;
@@ -89,7 +90,7 @@ fn visible_kernel() -> EmbeddedKernel {
             "ticks": [{ "name": "beat", "interval": 0, "whileVisible": visible, "effects": [["set", "@entity.n", 1]] }]
         })
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

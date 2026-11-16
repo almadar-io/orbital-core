@@ -1,7 +1,5 @@
 //! EXEC-RENDER family: what a step paints and when it repaints.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod callsite_capture;

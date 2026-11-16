@@ -11,15 +11,18 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
-fn number(expr: &SExpression, ctx: &BindingContext) -> Result<f64, OrbitalError> {
-    Ok(require_number!(eval_expr(expr, ctx)?))
+fn number(value: &Value, _ctx: &BindingContext) -> Result<f64, OrbitalError> {
+    Ok(require_number!(value))
 }
 
-fn numbers(value: Value) -> Result<Vec<f64>, OrbitalError> {
-    require_array!(value)
-        .into_iter()
-        .map(|item| Ok(require_number!(item)))
-        .collect()
+fn numbers(value: &Value) -> Result<Vec<f64>, OrbitalError> {
+    let Value::Array(items) = value else {
+        return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: "array".to_string(),
+            actual: value.type_name().to_string(),
+        }));
+    };
+    items.iter().map(|item| Ok(require_number!(item))).collect()
 }
 
 fn standard_normal(ctx: &BindingContext) -> Result<f64, OrbitalError> {
@@ -70,40 +73,52 @@ macro_rules! prob_op {
     };
 }
 
-prob_op!(ProbSeedOp, "prob/seed", 1, |args, ctx| {
-    let n = number(&args[0], ctx)?;
+macro_rules! prob_strict_op {
+    ($name:ident, $op:literal, $arity:expr, |$args:ident, $ctx:ident| $body:block) => {
+        pub struct $name;
+        impl StrictOperator for $name {
+            fn apply(&self, $args: &[&Value], $ctx: &BindingContext) -> EvalResult {
+                require_arity!($args, $op, == $arity);
+                $body
+            }
+        }
+    };
+}
+
+prob_strict_op!(ProbSeedOp, "prob/seed", 1, |args, ctx| {
+    let n = number(args[0], ctx)?;
     ctx.prob_seed(n);
     Ok(Value::Null)
 });
 
-prob_op!(ProbFlipOp, "prob/flip", 1, |args, ctx| {
-    let p = number(&args[0], ctx)?;
+prob_strict_op!(ProbFlipOp, "prob/flip", 1, |args, ctx| {
+    let p = number(args[0], ctx)?;
     Ok(Value::Bool(ctx.prob_next()? < p))
 });
 
-prob_op!(ProbGaussianOp, "prob/gaussian", 2, |args, ctx| {
-    let mu = number(&args[0], ctx)?;
-    let sigma = number(&args[1], ctx)?;
+prob_strict_op!(ProbGaussianOp, "prob/gaussian", 2, |args, ctx| {
+    let mu = number(args[0], ctx)?;
+    let sigma = number(args[1], ctx)?;
     Ok(Value::Number(mu + sigma * standard_normal(ctx)?))
 });
 
-prob_op!(ProbUniformOp, "prob/uniform", 2, |args, ctx| {
-    let lo = number(&args[0], ctx)?;
-    let hi = number(&args[1], ctx)?;
+prob_strict_op!(ProbUniformOp, "prob/uniform", 2, |args, ctx| {
+    let lo = number(args[0], ctx)?;
+    let hi = number(args[1], ctx)?;
     Ok(Value::Number(lo + ctx.prob_next()? * (hi - lo)))
 });
 
-prob_op!(ProbBetaOp, "prob/beta", 2, |args, ctx| {
-    let alpha = number(&args[0], ctx)?;
-    let beta = number(&args[1], ctx)?;
+prob_strict_op!(ProbBetaOp, "prob/beta", 2, |args, ctx| {
+    let alpha = number(args[0], ctx)?;
+    let beta = number(args[1], ctx)?;
     let x = gamma_variate(alpha, ctx)?;
     let y = gamma_variate(beta, ctx)?;
     Ok(Value::Number(x / (x + y)))
 });
 
-prob_op!(ProbCategoricalOp, "prob/categorical", 2, |args, ctx| {
-    let items = require_array!(eval_expr(&args[0], ctx)?);
-    let weights = numbers(eval_expr(&args[1], ctx)?)?;
+prob_strict_op!(ProbCategoricalOp, "prob/categorical", 2, |args, ctx| {
+    let items = require_array!(args[0].clone());
+    let weights = numbers(args[1])?;
     if items.len() != weights.len() {
         return Err(EvalError::InvalidArgument(format!(
             "prob/categorical: {} items but {} weights",
@@ -130,8 +145,8 @@ prob_op!(ProbCategoricalOp, "prob/categorical", 2, |args, ctx| {
     Ok(items[items.len() - 1].clone())
 });
 
-prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
-    let limit = libm::exp(-number(&args[0], ctx)?);
+prob_strict_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
+    let limit = libm::exp(-number(args[0], ctx)?);
     let mut k = 0.0;
     let mut p = 1.0;
     loop {
@@ -144,8 +159,8 @@ prob_op!(ProbPoissonOp, "prob/poisson", 1, |args, ctx| {
     Ok(Value::Int((k - 1.0) as i64))
 });
 
-prob_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
-    if !eval_expr(&args[0], ctx)?.boolean()? {
+prob_strict_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
+    if !args[0].boolean()? {
         ctx.prob().reject();
     }
     Ok(Value::Null)
@@ -251,7 +266,7 @@ prob_op!(ProbPosteriorOp, "prob/posterior", 4, |args, ctx| {
 
 prob_op!(ProbInferOp, "prob/infer", 4, |args, ctx| {
     let (accepted, n) = rejection_samples(args, ctx)?;
-    let samples = numbers(Value::array(accepted))?;
+    let samples = numbers(&Value::array(accepted))?;
     let count = samples.len() as f64;
     if samples.is_empty() {
         return Err(EvalError::InvalidArgument(
@@ -282,27 +297,27 @@ fn mean_of(operator: &str, samples: &[f64]) -> Result<f64, OrbitalError> {
     Ok(samples.iter().sum::<f64>() / samples.len() as f64)
 }
 
-prob_op!(
+prob_strict_op!(
     ProbExpectedValueOp,
     "prob/expected-value",
     1,
-    |args, ctx| {
-        let samples = numbers(eval_expr(&args[0], ctx)?)?;
+    |args, _ctx| {
+        let samples = numbers(args[0])?;
         Ok(Value::Number(mean_of("prob/expected-value", &samples)?))
     }
 );
 
-prob_op!(ProbVarianceOp, "prob/variance", 1, |args, ctx| {
-    let samples = numbers(eval_expr(&args[0], ctx)?)?;
+prob_strict_op!(ProbVarianceOp, "prob/variance", 1, |args, _ctx| {
+    let samples = numbers(args[0])?;
     let mean = mean_of("prob/variance", &samples)?;
     Ok(Value::Number(
         samples.iter().map(|v| libm::pow(v - mean, 2.0)).sum::<f64>() / samples.len() as f64,
     ))
 });
 
-prob_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
-    let samples = numbers(eval_expr(&args[0], ctx)?)?;
-    let bins = number(&args[1], ctx)?;
+prob_strict_op!(ProbHistogramOp, "prob/histogram", 2, |args, ctx| {
+    let samples = numbers(args[0])?;
+    let bins = number(args[1], ctx)?;
     if bins < 1.0 || bins.fract() != 0.0 {
         return Ok(Value::Null);
     }
@@ -344,9 +359,9 @@ fn sorted(mut samples: Vec<f64>) -> Vec<f64> {
     samples
 }
 
-prob_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
-    let samples = numbers(eval_expr(&args[0], ctx)?)?;
-    let p = number(&args[1], ctx)?;
+prob_strict_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
+    let samples = numbers(args[0])?;
+    let p = number(args[1], ctx)?;
     if !(0.0..=100.0).contains(&p) {
         return Ok(Value::Null);
     }
@@ -365,13 +380,13 @@ prob_op!(ProbPercentileOp, "prob/percentile", 2, |args, ctx| {
     ))
 });
 
-prob_op!(
+prob_strict_op!(
     ProbCredibleIntervalOp,
     "prob/credible-interval",
     2,
     |args, ctx| {
-        let samples = numbers(eval_expr(&args[0], ctx)?)?;
-        let alpha = number(&args[1], ctx)?;
+        let samples = numbers(args[0])?;
+        let alpha = number(args[1], ctx)?;
         if !(0.0..=1.0).contains(&alpha) {
             return Ok(Value::Null);
         }

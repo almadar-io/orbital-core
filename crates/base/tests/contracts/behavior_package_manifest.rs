@@ -1,5 +1,6 @@
 //! A behavior package's `orb` block: what it must and may declare.
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_base::behavior_packages::discover;
 use std::fs;
 use std::path::Path;
@@ -55,7 +56,7 @@ fn a_package_ships_what_its_files_allowlist_covers_of_the_registry() {
     fs::create_dir_all(pkg_dir.join("behaviors/registry/shipped")).unwrap();
     fs::create_dir_all(pkg_dir.join("behaviors/registry/internal")).unwrap();
     let manifest: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(pkg_dir.join("package.json")).unwrap()).unwrap();
+        from_json_str(&fs::read_to_string(pkg_dir.join("package.json")).unwrap()).unwrap();
     let mut manifest = manifest;
     manifest["files"] = serde_json::json!(["dist", "behaviors/registry/shipped/"]);
     fs::write(pkg_dir.join("package.json"), manifest.to_string()).unwrap();
@@ -73,7 +74,7 @@ fn a_package_whose_files_say_nothing_of_the_registry_ships_all_of_it() {
     package(tmp.path(), None);
     let pkg_dir = tmp.path().join("node_modules/pkg-a");
     let mut manifest: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(pkg_dir.join("package.json")).unwrap()).unwrap();
+        from_json_str(&fs::read_to_string(pkg_dir.join("package.json")).unwrap()).unwrap();
     manifest["files"] = serde_json::json!(["dist"]);
     fs::write(pkg_dir.join("package.json"), manifest.to_string()).unwrap();
     let found = discover(tmp.path(), &tmp.path().join("store")).unwrap();
@@ -168,7 +169,7 @@ fn duplicate_live_behavior_names_are_refused() {
     let pkg = tmp.path().join("node_modules/pkg-a");
     let path = pkg.join("package.json");
     let mut manifest: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        from_json_str(&fs::read_to_string(&path).unwrap()).unwrap();
     manifest["orb"].as_object_mut().unwrap().remove("registry");
     manifest["orb"]["source"] = serde_json::json!("behaviors/lolo");
     fs::write(path, manifest.to_string()).unwrap();

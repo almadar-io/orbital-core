@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::eval_expr, orbital_core_base::value::Value};
 use orbital_core_base::fixtures::binding_path_cases;
 use orbital_core_base::schema::SExpression;
@@ -119,12 +120,12 @@ struct PathFixture {
 }
 
 fn path_fixture() -> PathFixture {
-    serde_json::from_str(binding_path_cases()).expect("binding-path fixture parses")
+    from_json_str(binding_path_cases()).expect("binding-path fixture parses")
 }
 
 fn path_ctx(f: &PathFixture) -> BindingContext {
     let mut c = BindingContext::new();
-    let payload: Value = serde_json::from_value(f.payload.clone()).expect("payload value");
+    let payload: Value = from_json_value(&f.payload).expect("payload value");
     c.set_payload(payload);
     c
 }
@@ -136,7 +137,7 @@ fn binding_path_every_case_resolves_as_the_fixture_says() {
     for case in &f.cases {
         let got = c.resolve_binding(&case.binding);
         if case.found {
-            let want: Value = serde_json::from_value(case.value.clone().expect("found has a value")).unwrap();
+            let want: Value = from_json_value(&case.value.clone().expect("found has a value")).unwrap();
             assert_eq!(got, Some(want), "resolve `{}`", case.name);
         } else {
             assert_eq!(got, None, "resolve `{}`", case.name);
@@ -152,7 +153,7 @@ fn binding_path_every_case_evaluates_as_the_fixture_says() {
         let expr = SExpression::string(case.binding.clone());
         let got = eval_expr(&expr, &c).unwrap();
         let want = if case.found {
-            serde_json::from_value(case.value.clone().unwrap()).unwrap()
+            from_json_value(&case.value.clone().unwrap()).unwrap()
         } else {
             Value::Null
         };

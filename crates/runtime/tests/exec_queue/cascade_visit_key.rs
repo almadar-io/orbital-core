@@ -1,5 +1,6 @@
 // EXEC-QUEUE-4: a cascade delivery is `(trait, event, from, payload, frame)`; only an exact repeat is a cycle.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::{RuntimeKernel, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP}};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -7,7 +8,7 @@ use std::sync::Arc;
 
 /// `Fanner` re-triggers its own `STEP` from every `STEP_NEXT` it emits.
 fn fanner(transitions: Json, states: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -28,7 +29,7 @@ fn one_state() -> Json {
 }
 
 fn executed_steps(kernel: &RuntimeKernel, payload: Json) -> usize {
-    let payload: Value = serde_json::from_value(payload).unwrap();
+    let payload: Value = from_json_value(&payload).unwrap();
     kernel
         .dispatch("Fanner", None, "STEP", payload)
         .unwrap()
@@ -85,7 +86,7 @@ fn a_chain_that_never_repeats_stops_at_the_cap() {
 }
 
 fn fanner_response(kernel: &RuntimeKernel, payload: Json) -> EventResponse {
-    let payload: Value = serde_json::from_value(payload).unwrap();
+    let payload: Value = from_json_value(&payload).unwrap();
     let outcomes = kernel.dispatch("Fanner", None, "STEP", payload).unwrap();
     EventResponse::from_process_results(&outcomes, "Fanner", "STEP")
 }
@@ -151,7 +152,7 @@ fn control_an_exact_repeat_cycle_is_not_truncation() {
 
 /// `Fanner` with an entity counter `n` the guard bounds; `set` is the effect that moves the frame.
 fn counting_fanner(set_value: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -188,7 +189,7 @@ fn an_identical_payload_with_an_unchanged_frame_is_still_a_cycle() {
 
 /// Progress lives in the trait's persisted row (a `persist update`), never in a `set` frame.
 fn persisting_fanner(n_value: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -222,7 +223,7 @@ fn persisting_fanner(n_value: Json) -> RuntimeKernel {
         .write(
             "Item",
             "singleton",
-            &serde_json::from_value::<Value>(json!({ "id": "singleton", "n": 0 })).unwrap(),
+            &from_json_value::<Value>(&json!({ "id": "singleton", "n": 0 })).unwrap(),
         )
         .unwrap();
     kernel
@@ -243,7 +244,7 @@ fn an_identical_payload_with_an_unchanged_row_is_still_a_cycle() {
 /// Server reports `X` from `Source`; the client fans it through `Relay` to `Chime` (EXEC-DIST-10).
 fn relay_chain() -> RuntimeKernel {
     let idle = json!([{ "name": "idle", "isInitial": true }]);
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -267,7 +268,7 @@ fn relay_chain() -> RuntimeKernel {
 }
 
 fn x_from_source() -> orbital_core_runtime::effects::response::EventResponse {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "success": true, "transitioned": true, "states": {},
         "emittedEvents": [{ "event": "X", "source": { "orbital": "Main", "trait": "Source" } }]
     }))
@@ -328,7 +329,7 @@ fn self_looper(guarded: bool) -> RuntimeKernel {
     if guarded {
         arm["guard"] = json!(["<", "@entity.n", 30]);
     }
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -352,7 +353,7 @@ fn looper_steps(kernel: &RuntimeKernel) -> usize {
             "Looper",
             None,
             "TICK",
-            serde_json::from_value(json!({})).unwrap(),
+            from_json_value(&json!({})).unwrap(),
         )
         .unwrap()
         .iter()
@@ -379,13 +380,13 @@ fn a_traits_own_endless_loop_stops_at_the_dispatch_budget() {
 fn a_traits_own_endless_loop_names_itself_as_truncated() {
     let kernel = self_looper(false);
     let outcomes = kernel
-        .dispatch("Looper", None, "TICK", serde_json::from_value(json!({})).unwrap())
+        .dispatch("Looper", None, "TICK", from_json_value(&json!({})).unwrap())
         .unwrap();
     let response = EventResponse::from_process_results(&outcomes, "Looper", "TICK");
     assert_eq!(response.cascade_truncated, Some(vec!["Looper".to_string()]));
     let bounded = self_looper(true);
     let outcomes = bounded
-        .dispatch("Looper", None, "TICK", serde_json::from_value(json!({})).unwrap())
+        .dispatch("Looper", None, "TICK", from_json_value(&json!({})).unwrap())
         .unwrap();
     assert_eq!(EventResponse::from_process_results(&outcomes, "Looper", "TICK").cascade_truncated, None);
 }
@@ -394,7 +395,7 @@ fn a_traits_own_endless_loop_names_itself_as_truncated() {
 /// The row is only the fields the dispatch wrote (EXEC-DIST-7), in first-write order; the unwritten `title` default is not echoed.
 #[test]
 fn a_two_hop_cascade_response_serializes_byte_identically() {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -428,7 +429,7 @@ fn a_two_hop_cascade_response_serializes_byte_identically() {
         Default::default(),
     );
     kernel.register_schema(schema).unwrap();
-    let payload: Value = serde_json::from_value(json!({ "left": 2 })).unwrap();
+    let payload: Value = from_json_value(&json!({ "left": 2 })).unwrap();
     let outcomes = kernel.dispatch("Hop", None, "HOP", payload).unwrap();
     let mut response = EventResponse::from_process_results(&outcomes, "Hop", "HOP");
     kernel.seal_outcomes(&mut response, &outcomes, None, false);
@@ -458,7 +459,7 @@ fn passer(bounded: bool) -> RuntimeKernel {
     transitions.extend(ends("B").as_array().unwrap().clone());
     transitions.push(json!({ "from": "run", "to": "run", "event": "B", "guard": [">=", "@payload.i", 400],
         "effects": [["emit", "ROUND_NEXT", { "pass": ["-", "@payload.pass", 1] }]] }));
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -479,7 +480,7 @@ fn passer(bounded: bool) -> RuntimeKernel {
 }
 
 fn passer_run(kernel: &RuntimeKernel, passes: u64) -> (usize, bool) {
-    let payload: Value = serde_json::from_value(json!({ "pass": passes })).unwrap();
+    let payload: Value = from_json_value(&json!({ "pass": passes })).unwrap();
     let outcomes = kernel.dispatch("Passer", None, "ROUND", payload).unwrap();
     let steps = outcomes.iter().filter(|(t, r)| t == "Passer" && r.executed).count();
     (steps, outcomes.iter().any(|(_, r)| r.cascade_cut.is_some()))
@@ -507,7 +508,7 @@ fn control_one_pass_under_the_cap_is_not_cut() {
 #[test]
 fn a_fan_out_runaway_that_drains_every_pass_is_cut_at_the_dispatch_total() {
     let kernel = passer(true);
-    let payload: Value = serde_json::from_value(json!({ "pass": 100_000 })).unwrap();
+    let payload: Value = from_json_value(&json!({ "pass": 100_000 })).unwrap();
     let outcomes = kernel.dispatch("Passer", None, "ROUND", payload).unwrap();
     let steps = outcomes.iter().filter(|(t, r)| t == "Passer" && r.executed).count();
     let cut = outcomes.iter().find_map(|(_, r)| r.cascade_cut.as_ref()).expect("the dispatch is cut");
@@ -523,7 +524,7 @@ fn control_a_dispatch_of_many_passes_under_the_total_is_not_cut() {
 
 /// G-CROSS-569: `Caller` asks `Store`, `Store` answers, and `Caller`'s continuation asks `Store` again in the same dispatch.
 fn ask_twice(second_doc: &str) -> usize {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -562,7 +563,7 @@ fn control_a_second_ask_with_another_payload_is_delivered() {
 }
 
 fn collapsed_visits(kernel: &RuntimeKernel, payload: Json) -> Vec<(String, String, Json)> {
-    let payload: Value = serde_json::from_value(payload).unwrap();
+    let payload: Value = from_json_value(&payload).unwrap();
     kernel
         .dispatch("Fanner", None, "STEP", payload)
         .unwrap()

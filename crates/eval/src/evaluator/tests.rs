@@ -1,8 +1,9 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 use orbital_core_base::value::ValueMap;
 
 fn eval(json: &str) -> Value {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     let evaluator = Evaluator::new();
     let ctx = BindingContext::new();
     evaluator.evaluate(&expr, &ctx).unwrap()
@@ -33,7 +34,7 @@ fn eval_sealed(json: &str) -> Value {
 }
 
 fn eval_err(json: &str) -> String {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap_err()
@@ -45,7 +46,7 @@ fn eval_err(json: &str) -> String {
 #[test]
 fn a_hyphenated_payload_key_is_addressable_by_a_binding() {
     let payload: Value =
-        serde_json::from_str(r#"{ "headers": { "x-goog-resource-state": "sync" } }"#).unwrap();
+        from_json_str(r#"{ "headers": { "x-goog-resource-state": "sync" } }"#).unwrap();
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
         .payload(payload)
         .build();
@@ -73,7 +74,7 @@ fn a_hyphenated_payload_key_is_addressable_by_a_binding() {
 }
 
 fn eval_with_ctx(json: &str, ctx: &BindingContext) -> Value {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     let evaluator = Evaluator::new();
     evaluator.evaluate(&expr, ctx).unwrap()
 }
@@ -398,7 +399,7 @@ fn concat_conformance_bare_concat_errors() {
     // Bare "concat" was removed as an alias — ambiguous between
     // str/concat and array/concat — it must error, not silently succeed.
     let result = eval_expr(
-        &serde_json::from_str(r#"["concat", "a", "b"]"#).unwrap(),
+        &from_json_str(r#"["concat", "a", "b"]"#).unwrap(),
         &BindingContext::default(),
     );
     assert!(result.is_err(), "bare concat must not evaluate");
@@ -699,7 +700,7 @@ fn control_json_parse_shape_without_a_run_time_declaration_is_unchanged() {
 
 // G-ORB-420: a shape naming the program's own alias checks against the declared type.
 fn parse_in_program(text: &str, shape: &str) -> Value {
-    let aliases = serde_json::from_value(serde_json::json!({
+    let aliases = from_json_value(&serde_json::json!({
         "RowFile": [
             { "name": "rows", "type": "[Row]", "required": true },
             { "name": "changes", "type": "[object]", "required": true, "properties": [
@@ -732,7 +733,7 @@ fn parse_as_resolved(
         None => shape.to_string(),
     };
     let expr: SExpression =
-        serde_json::from_value(serde_json::json!(["json/parse", text, recorded])).unwrap();
+        from_json_value(&serde_json::json!(["json/parse", text, recorded])).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap()
@@ -793,7 +794,7 @@ fn json_parse_program_alias_matching_value_passes() {
 }
 
 fn parse_manifest(text: &str) -> Value {
-    let aliases = serde_json::from_value(serde_json::json!({
+    let aliases = from_json_value(&serde_json::json!({
         "Manifest": [
             { "name": "pack", "type": "string", "required": true },
             { "name": "assets", "type": "[object]", "properties": [
@@ -838,7 +839,7 @@ fn control_json_parse_undeclared_alias_name_stays_unchecked() {
 // A `let` binding's declared shape is static (G-CROSS-335): the kernel binds the value and checks nothing against the
 // declared `[OrbValue]`, so the validator is the only place a misfit is found.
 fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
-    let aliases = serde_json::from_value(serde_json::json!({
+    let aliases = from_json_value(&serde_json::json!({
         "OrbValue": [{ "name": "", "type": "union", "properties": [
             { "name": "string", "type": "string" },
             { "name": "number", "type": "number" },
@@ -849,7 +850,7 @@ fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
     }))
     .unwrap();
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
-        .payload(serde_json::from_value(serde_json::json!({ "items": items })).unwrap())
+        .payload(from_json_value(&serde_json::json!({ "items": items })).unwrap())
         .build();
     let list = orbital_core_base::ir::types::OirType::array(
         orbital_core_base::ir::types::OirType::TypeRef {
@@ -860,7 +861,7 @@ fn map_len_of_ascribed_list(items: serde_json::Value) -> Result<Value, String> {
         None, list, &aliases,
     ).unwrap())
     .unwrap();
-    let expr: SExpression = serde_json::from_value(serde_json::json!([
+    let expr: SExpression = from_json_value(&serde_json::json!([
         "let",
         [["xs", "@payload.items", declared]],
         ["array/len", ["array/map", "@xs", ["fn", "i", 1]]]
@@ -1201,10 +1202,10 @@ fn test_evaluate_guard() {
     let evaluator = Evaluator::new();
     let ctx = BindingContext::new();
 
-    let guard: SExpression = serde_json::from_str(r#"["and", true, true]"#).unwrap();
+    let guard: SExpression = from_json_str(r#"["and", true, true]"#).unwrap();
     assert!(evaluator.evaluate_guard(&guard, &ctx).unwrap());
 
-    let guard2: SExpression = serde_json::from_str(r#"["and", true, false]"#).unwrap();
+    let guard2: SExpression = from_json_str(r#"["and", true, false]"#).unwrap();
     assert!(!evaluator.evaluate_guard(&guard2, &ctx).unwrap());
 }
 
@@ -1214,15 +1215,15 @@ fn test_evaluate_guards() {
     let ctx = BindingContext::new();
 
     let guards: Vec<SExpression> = vec![
-        serde_json::from_str(r#"["=", 1, 1]"#).unwrap(),
-        serde_json::from_str(r#"[">", 5, 3]"#).unwrap(),
+        from_json_str(r#"["=", 1, 1]"#).unwrap(),
+        from_json_str(r#"[">", 5, 3]"#).unwrap(),
     ];
 
     assert!(evaluator.evaluate_guards(&guards, &ctx).unwrap());
 
     let guards_fail: Vec<SExpression> = vec![
-        serde_json::from_str(r#"["=", 1, 1]"#).unwrap(),
-        serde_json::from_str(r#"["<", 5, 3]"#).unwrap(), // This fails
+        from_json_str(r#"["=", 1, 1]"#).unwrap(),
+        from_json_str(r#"["<", 5, 3]"#).unwrap(), // This fails
     ];
 
     assert!(!evaluator.evaluate_guards(&guards_fail, &ctx).unwrap());
@@ -1540,7 +1541,7 @@ fn test_array_cosine() {
     ] {
         assert_eq!(eval(bad), Value::Null, "must answer null: {bad}");
     }
-    let expr: SExpression = serde_json::from_str(r#"["array/cosine", [1, "a"], [1, 0]]"#).unwrap();
+    let expr: SExpression = from_json_str(r#"["array/cosine", [1, "a"], [1, 0]]"#).unwrap();
     assert!(eval_expr(&expr, &BindingContext::new()).is_err());
 }
 
@@ -3087,7 +3088,7 @@ fn operators_without_a_raw_body_form_have_no_raw_callback_params() {
         assert_eq!(raw_callback_params(op), None, "{op}");
     }
     let expr: SExpression =
-        serde_json::from_str(r#"["array/findIndex", [1, 2], [">", "@item", 1]]"#).unwrap();
+        from_json_str(r#"["array/findIndex", [1, 2], [">", "@item", 1]]"#).unwrap();
     assert!(
         Evaluator::new()
             .evaluate(&expr, &BindingContext::new())
@@ -3238,9 +3239,9 @@ fn fold_with(
     definition: &str,
 ) -> Result<Value, String> {
     let ctx = crate::evaluator::context::BindingContextBuilder::new()
-        .payload(serde_json::from_value(serde_json::json!({ "v": value })).unwrap())
+        .payload(from_json_value(&serde_json::json!({ "v": value })).unwrap())
         .build();
-    let expr: SExpression = serde_json::from_value(serde_json::json!([
+    let expr: SExpression = from_json_value(&serde_json::json!([
         "tree/fold",
         "@payload.v",
         step,
@@ -3254,7 +3255,7 @@ fn fold_with(
 }
 
 fn json_value(json: serde_json::Value) -> Value {
-    serde_json::from_value(json).unwrap()
+    from_json_value(&json).unwrap()
 }
 
 #[test]
@@ -3416,7 +3417,7 @@ fn tree_fold_reads_positions_from_the_selected_variant_never_the_value_shape() {
         "an absent value folds to null"
     );
     let unbaked: SExpression =
-        serde_json::from_value(serde_json::json!(["tree/fold", null, step, "RowPredicate"]))
+        from_json_value(&serde_json::json!(["tree/fold", null, step, "RowPredicate"]))
             .unwrap();
     let err = Evaluator::new()
         .evaluate(&unbaked, &BindingContext::new())
@@ -3657,7 +3658,7 @@ fn row_matches_decides_a_typed_predicate() {
         ))
         .build();
     let expr: SExpression =
-        serde_json::from_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
+        from_json_str(r#"["row/matches", "@payload.pred", "@payload.row"]"#).unwrap();
     assert!(
         Evaluator::new()
             .evaluate(&expr, &ctx)
@@ -3702,7 +3703,7 @@ fn tree_index_groups_every_listed_call_by_head_with_its_path() {
     let got = eval(
         r#"["tree/index", ["quote", "[[\"emit\",\"A\"],[\"if\",true,[\"emit\",\"B\",[\"persist\",\"create\",\"T\",{}]]],{\"k\":[\"emit\",\"C\"]}]"], ["list", "emit", "persist", "fetch"]]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "emit": [
             { "path": "[0]", "node": ["emit", "A"], "at": 1 },
             { "path": "[1][2]", "node": ["emit", "B", ["persist", "create", "T", {}]], "at": 7 },
@@ -3720,7 +3721,7 @@ fn tree_index_spells_a_root_key_without_a_leading_dot() {
     let got = eval(
         r#"["tree/index", ["quote", "{\"orbitals\":[{\"effects\":[[\"emit\",\"A\"]]}]}"], ["list", "emit"]]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "emit": [{ "path": "orbitals[0].effects[0]", "node": ["emit", "A"], "at": 4 }]
     }))
     .unwrap();
@@ -3732,12 +3733,12 @@ fn tree_index_control_an_unlisted_head_and_no_heads_find_nothing() {
     let got = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list", "persist"]]"#);
     assert_eq!(
         got,
-        serde_json::from_value::<Value>(serde_json::json!({ "persist": [] })).unwrap()
+        from_json_value::<Value>(&serde_json::json!({ "persist": [] })).unwrap()
     );
     let none = eval(r#"["tree/index", ["quote", "[[\"emit\",\"A\"]]"], ["list"]]"#);
     assert_eq!(
         none,
-        serde_json::from_value::<Value>(serde_json::json!({})).unwrap()
+        from_json_value::<Value>(&serde_json::json!({})).unwrap()
     );
 }
 
@@ -3755,7 +3756,7 @@ fn tree_index_refuses_heads_that_are_not_a_list_of_strings() {
     }
     assert_eq!(
         eval(r#"["tree/index", ["list"], ["list", "emit"]]"#),
-        serde_json::from_value::<Value>(serde_json::json!({ "emit": [] })).unwrap(),
+        from_json_value::<Value>(&serde_json::json!({ "emit": [] })).unwrap(),
         "control: a list of strings"
     );
 }
@@ -3765,7 +3766,7 @@ fn tree_index_prefixes_collect_string_leaves_grouped_in_prefix_order() {
     let got = eval(
         r#"["tree/index", ["quote", "{\"a\":\"@entity.x\",\"b\":[\"plain\",\"@config.y\",\"@entity.z\"]}"], ["list"], {"prefixes": ["quote", "[\"@entity.\",\"@config.\",\"@none.\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "@entity.": [
             { "path": "a", "node": "@entity.x", "at": 1 },
             { "path": "b[2]", "node": "@entity.z", "at": 5 }
@@ -3782,7 +3783,7 @@ fn tree_index_prefixes_count_a_list_head_string_with_its_path() {
     let got = eval(
         r#"["tree/index", ["quote", "[[\"@fn.go\",\"@fn.arg\"],[\"plain\",\"@fn.b\"],\"@fn.alone\"]"], ["list"], {"prefixes": ["quote", "[\"@fn.\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "@fn.": [
             { "path": "[0][0]", "node": "@fn.go", "at": 2 },
             { "path": "[0][1]", "node": "@fn.arg", "at": 3 },
@@ -3799,7 +3800,7 @@ fn tree_index_prefixes_first_listed_prefix_wins_when_two_overlap() {
     let got = eval(
         r#"["tree/index", ["quote", "[\"x\",\"@entity.row\"]"], ["list"], {"prefixes": ["quote", "[\"@entity.\",\"@e\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "@entity.": [{ "path": "[1]", "node": "@entity.row", "at": 2 }],
         "@e": []
     }))
@@ -3808,7 +3809,7 @@ fn tree_index_prefixes_first_listed_prefix_wins_when_two_overlap() {
     let swapped = eval(
         r#"["tree/index", ["quote", "[\"x\",\"@entity.row\"]"], ["list"], {"prefixes": ["quote", "[\"@e\",\"@entity.\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "@e": [{ "path": "[1]", "node": "@entity.row", "at": 2 }],
         "@entity.": []
     }))
@@ -3821,7 +3822,7 @@ fn tree_index_at_merges_hits_of_two_heads_back_into_walk_order() {
     let got = eval(
         r#"["tree/index", ["quote", "[[\"b\",1],[\"a\",[\"b\"]],[\"a\"]]"], ["list", "a", "b"]]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "a": [
             { "path": "[1]", "node": ["a", ["b"]], "at": 4 },
             { "path": "[2]", "node": ["a"], "at": 8 }
@@ -3842,7 +3843,7 @@ fn tree_index_control_empty_options_equal_no_options() {
     let with =
         eval(r#"["tree/index", ["quote", "[[\"emit\",\"@entity.x\"]]"], ["list", "emit"], {}]"#);
     assert_eq!(plain, with);
-    assert_eq!(plain, serde_json::from_value::<Value>(serde_json::json!({ "emit": [{ "path": "[0]", "node": ["emit", "@entity.x"], "at": 1 }] })).unwrap());
+    assert_eq!(plain, from_json_value::<Value>(&serde_json::json!({ "emit": [{ "path": "[0]", "node": ["emit", "@entity.x"], "at": 1 }] })).unwrap());
 }
 
 #[test]
@@ -3869,7 +3870,7 @@ fn tree_index_objects_group_carriers_by_key_with_path_and_at() {
     let got = eval(
         r#"["tree/index", ["quote", "{\"a\":{\"name\":1,\"x\":{\"name\":2}},\"b\":[{\"id\":3,\"name\":4}]}"], ["list"], {"objects": ["quote", "[\"name\",\"id\",\"none\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "name": [
             { "path": "a", "node": { "name": 1, "x": { "name": 2 } }, "at": 1 },
             { "path": "a.x", "node": { "name": 2 }, "at": 3 },
@@ -3887,7 +3888,7 @@ fn tree_index_objects_share_one_walk_with_heads_and_prefixes() {
     let got = eval(
         r#"["tree/index", ["quote", "[[\"emit\",{\"k\":\"@entity.x\"}]]"], ["list", "emit"], {"objects": ["quote", "[\"k\"]"], "prefixes": ["quote", "[\"@entity.\"]"]}]"#,
     );
-    let want: Value = serde_json::from_value(serde_json::json!({
+    let want: Value = from_json_value(&serde_json::json!({
         "emit": [{ "path": "[0]", "node": ["emit", { "k": "@entity.x" }], "at": 1 }],
         "@entity.": [{ "path": "[0][1].k", "node": "@entity.x", "at": 4 }],
         "k": [{ "path": "[0][1]", "node": { "k": "@entity.x" }, "at": 3 }]
@@ -4211,7 +4212,7 @@ fn time_iso_duration_stays_a_number_of_ms() {
 }
 
 fn traced_paths(json: &str) -> (Vec<(String, Value)>, Vec<NodePathOwned>) {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = from_json_str(json).unwrap();
     let (result, steps) = crate::evaluator::trace::evaluate_traced(&expr, &BindingContext::new());
     result.unwrap();
     let mut exits = Vec::new();
@@ -4288,7 +4289,7 @@ fn int_arithmetic_stays_int_and_an_overflow_is_an_error_never_a_wrap() {
     assert!(matches!(eval_with_ctx(r#"["-", "@b"]"#, &ctx), Value::Int(-2)));
     assert!(matches!(eval_with_ctx(r#"["math/abs", ["-", "@b"]]"#, &ctx), Value::Int(2)));
     for overflow in [r#"["+", "@max", "@b"]"#, r#"["*", "@max", "@b"]"#] {
-        let expr: SExpression = serde_json::from_str(overflow).unwrap();
+        let expr: SExpression = from_json_str(overflow).unwrap();
         let outcome = Evaluator::new().evaluate(&expr, &ctx);
         assert!(outcome.unwrap_err().to_string().contains("int overflow"), "{overflow}");
     }

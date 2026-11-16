@@ -126,9 +126,10 @@ pub fn nav_entries<'a>(pages: impl IntoIterator<Item = &'a PageRef>) -> Vec<NavE
 #[cfg(test)]
 mod nav_entry_tests {
     use super::*;
+    use crate::json_value::from_json_value;
 
     fn pages(json: serde_json::Value) -> Vec<PageRef> {
-        serde_json::from_value(json).unwrap()
+        from_json_value(&json).unwrap()
     }
 
     #[test]

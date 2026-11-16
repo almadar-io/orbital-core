@@ -2,6 +2,7 @@
 //! `fixtures/operators/time-vectors.json`, mirrored under `tests/fixtures/operators/`;
 //! the TS twin in `@almadar/evaluator` reads the same file).
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde_json::Value as Json;
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ fn crate_path(rel: &str) -> PathBuf {
 }
 
 fn eval(expr: &Json) -> Result<Json, String> {
-    let sexpr = serde_json::from_value(expr.clone()).map_err(|e| e.to_string())?;
+    let sexpr = from_json_value(&expr).map_err(|e| e.to_string())?;
     let ctx = BindingContextBuilder::new().build();
     match Evaluator::new().evaluate(&sexpr, &ctx).map_err(|e| e.to_string())? {
         Value::Number(n) => Ok(Json::from(n as i64)),
@@ -36,7 +37,7 @@ fn eval(expr: &Json) -> Result<Json, String> {
 #[test]
 fn every_shared_vector_matches() {
     let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/time-vectors.json")).unwrap();
-    let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
+    let cases: Vec<Case> = from_json_str(&raw).unwrap();
     assert!(cases.iter().any(|c| c.null) && cases.iter().any(|c| !c.null && !c.error));
     for case in &cases {
         let got = eval(&case.expr);

@@ -5,6 +5,7 @@
 // matches, the owned return of the uninstalled input, the wire bytes, and the measured layout, so
 // growth fails a test instead of passing silently under an expectation.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::wire::{PendingRequestWire, ServerProgressWire};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress, ServerResolve};
 use orbital_core_base::language_data::{install_language_data, language_data, load_language_data, LanguageData};
@@ -48,12 +49,12 @@ impl Drop for Tmp {
 }
 
 fn v(j: &Json) -> Value {
-    serde_json::from_value(j.clone()).expect("a value")
+    from_json_value(&j).expect("a value")
 }
 
 fn notes_schema() -> OrbitalSchema {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -75,7 +76,7 @@ fn notes_schema() -> OrbitalSchema {
 }
 
 fn tickets_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rsr",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -354,7 +355,7 @@ fn tickets_store() -> InMemoryEntityCache {
 }
 
 fn tickets_ref() -> RowSetRef {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "entityType": "Ticket", "ids": ["t1", "t2"], "total": 2,
         "query": { "filter": { "kind": "compare", "field": "status", "op": "==", "value": "open" } }
     }))
@@ -498,12 +499,10 @@ fn server_resolve_stays_a_two_variant_match() {
 
 #[test]
 fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
-    let reference: EntityRef = serde_json::from_value(json!("Alias.thing")).unwrap();
+    let reference: EntityRef = from_json_value(&json!("Alias.thing")).unwrap();
     let extends: EntityRef =
-        serde_json::from_value(json!({ "extends": "Alias.thing", "name": "Mine" })).unwrap();
-    let inline: EntityRef = serde_json::from_value(
-        json!({ "name": "Note", "fields": [{ "name": "id", "type": "string" }] }),
-    )
+        from_json_value(&json!({ "extends": "Alias.thing", "name": "Mine" })).unwrap();
+    let inline: EntityRef = from_json_value(&json!({ "name": "Note", "fields": [{ "name": "id", "type": "string" }] }))
     .unwrap();
     for (entity, expected) in [(&reference, "ref"), (&extends, "extends"), (&inline, "inline")] {
         let seen = match entity {
@@ -531,7 +530,7 @@ fn entity_ref_variants_are_unboxed_and_keep_their_untagged_wire_bytes() {
     let written = serde_json::to_value(&inline).unwrap();
     assert_eq!(written["name"], "Note");
     assert_eq!(written["fields"][0]["name"], "id");
-    let again: EntityRef = serde_json::from_value(written).unwrap();
+    let again: EntityRef = from_json_value(&written).unwrap();
     assert!(matches!(again, EntityRef::Inline(_)));
 }
 

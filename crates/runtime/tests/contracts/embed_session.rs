@@ -2,6 +2,7 @@
 //! must produce the same wire JSON (`tests/fixtures/embed/golden`, recorded from the C ABI). A host
 //! failure is `{"error": msg}` and the last one is what `lastError` reads, as the C ABI reports it.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::embed::{parse_theme_mode, EmbeddedKernel};
 use orbital_core_runtime::kernel::TraitSnapshot;
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value as CoreValue};
@@ -14,7 +15,7 @@ fn embed_dir() -> PathBuf {
 }
 
 fn read_json(path: &Path) -> Value {
-    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    from_json_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
 struct Session {
@@ -50,7 +51,7 @@ impl Session {
             "dispatch" => {
                 let payload: CoreValue = step
                     .get("payload")
-                    .map(|p| serde_json::from_value(p.clone()).unwrap())
+                    .map(|p| from_json_value(&p).unwrap())
                     .unwrap_or(CoreValue::Null);
                 let result = self
                     .kernel
@@ -63,18 +64,18 @@ impl Session {
                 self.report(result)
             }
             "apply" => {
-                let response: EventResponse = serde_json::from_value(step["response"].clone())
+                let response: EventResponse = from_json_value(&step["response"])
                     .map_err(|e| format!("parse response_json: {e}"))
                     .unwrap();
                 let already: Vec<(String, String)> =
-                    serde_json::from_value(step["alreadyDelivered"].clone()).unwrap();
+                    from_json_value(&step["alreadyDelivered"]).unwrap();
                 let already: HashSet<(String, String)> = already.into_iter().collect();
                 let result = self.kernel.apply_server_response(&response, &already);
                 self.report(result)
             }
             "restore" => {
                 let snapshot: Result<TraitSnapshot, String> =
-                    serde_json::from_value(step["snapshot"].clone())
+                    from_json_value(&step["snapshot"])
                         .map_err(|e| format!("parse snapshot_json: {e}"));
                 let result =
                     snapshot.map(|snap| self.kernel.restore(&s("trait"), entity.as_deref(), snap));
@@ -110,13 +111,13 @@ impl Session {
                 self.note(result)
             }
             "seed" => {
-                let result = serde_json::from_value::<Vec<CoreValue>>(step["rows"].clone())
+                let result = from_json_value::<Vec<CoreValue>>(&step["rows"])
                     .map_err(|e| format!("parse rows_json: {e}"))
                     .and_then(|rows| self.kernel.seed(&s("entityType"), rows));
                 self.note(result)
             }
             "remount" | "mount" => {
-                let traits: Vec<String> = serde_json::from_value(step["traits"].clone()).unwrap();
+                let traits: Vec<String> = from_json_value(&step["traits"]).unwrap();
                 if step["op"] == "mount" {
                     self.kernel.mount(traits);
                 } else {
@@ -131,11 +132,11 @@ impl Session {
 }
 
 fn run_script(script: &Value) -> Vec<Value> {
-    let schema: OrbitalSchema = serde_json::from_value(read_json(
+    let schema: OrbitalSchema = from_json_value(&(read_json(
         &embed_dir()
             .join("resolved")
             .join(format!("{}.json", script["schema"].as_str().unwrap())),
-    ))
+    )))
     .unwrap();
     let kernel = EmbeddedKernel::new(schema, script["clientId"].as_str().unwrap()).unwrap();
     let mut session = Session {
@@ -193,7 +194,7 @@ fn control_a_changed_step_breaks_the_golden() {
 #[test]
 fn an_empty_schema_is_refused() {
     let schema: OrbitalSchema =
-        serde_json::from_value(json!({ "name": "Empty", "typeContractVersion": 1, "orbitals": [] })).unwrap();
+        from_json_value(&json!({ "name": "Empty", "typeContractVersion": 1, "orbitals": [] })).unwrap();
     assert!(matches!(
         EmbeddedKernel::new(schema, "c").err(),
         Some(orbital_core_runtime::kernel::EntryError::NoOrbitals)

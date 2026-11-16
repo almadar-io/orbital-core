@@ -339,6 +339,7 @@ impl RuntimeKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use crate::entity_source::InMemoryEntityCache;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -383,9 +384,9 @@ mod tests {
     }
 
     fn program(orbitals: Vec<serde_json::Value>, lazy_pages: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "App", "typeContractVersion": 1, "orbitals": orbitals, "lazyPages": lazy_pages
-        }))
+        })))
         .unwrap()
     }
 
@@ -398,10 +399,10 @@ mod tests {
     }
 
     fn late_program(ticks: bool) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "Late", "typeContractVersion": 1,
             "orbitals": [orbital("Late", "Memo", hear(ticks), serde_json::json!([{ "name": "LatePage", "path": "/late", "traits": [{ "ref": "Hear" }] }]))]
-        }))
+        })))
         .unwrap()
     }
 

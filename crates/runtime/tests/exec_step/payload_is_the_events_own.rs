@@ -2,12 +2,13 @@
 // drift D-2): nothing a trait received earlier carries over, an empty payload reads `{}`, and a
 // tick has no payload. Twin of `@almadar/runtime` `test/payload-is-the-events-own.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -33,7 +34,7 @@ fn kernel() -> RuntimeKernel {
 }
 
 fn payload(value: serde_json::Value) -> Value {
-    serde_json::from_value(value).unwrap()
+    from_json_value(&value).unwrap()
 }
 
 fn entity_after(kernel: &RuntimeKernel, event: &str, body: serde_json::Value) -> serde_json::Value {

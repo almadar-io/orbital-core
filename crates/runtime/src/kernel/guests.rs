@@ -6,6 +6,7 @@
 //! its asks are answered by a host holding only those grants. The key decides the lane (EXEC-CONC-0a): an unkeyed dispatch
 //! runs in the asking dispatch and answers in place (in the kernel for a guest without grants, through the opener's host
 //! for one with them); a keyed dispatch runs on the guest's own lane, a host thread, and answers as a completion event.
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -269,7 +270,7 @@ fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Val
 }
 
 fn json_value(json: serde_json::Value) -> Value {
-    serde_json::from_value(json).unwrap_or(Value::Null)
+    from_json_value(&json).unwrap_or(Value::Null)
 }
 
 /// The orbital declaring each trait that painted in `outcomes`: a paint names its orbital, so a host scopes the paint's
@@ -647,11 +648,11 @@ impl RuntimeKernel {
                     "program/open: `program` needs the grant kernel: { \"guest\": [spawn, program] }",
                 ));
             }
-            let guest: OsGrants = serde_json::from_value(value_to_json(
+            let guest: OsGrants = from_json_value(&(value_to_json(
                 asked_grants
                     .as_ref()
                     .unwrap_or(&Value::object(ValueMap::default())),
-            ))
+            )))
             .map_err(|e| {
                 guest_refusal(
                     orbital_core_base::os::OsErrorKind::Invalid,
@@ -665,9 +666,9 @@ impl RuntimeKernel {
                 )
             })?;
             if let Some(dir) = &cwd {
-                let asked: OsGrants = serde_json::from_value(serde_json::json!({
+                let asked: OsGrants = from_json_value(&(serde_json::json!({
                     "fs": [{ "glob": format!("{dir}/**"), "modes": ["read", "write", "create", "remove"] }]
-                }))
+                })))
                 .map_err(|e| failure(format!("program/open: `cwd` is not a grantable path: {e}")))?;
                 covers(&held, &asked).map_err(|missing| {
                     guest_refusal(
@@ -707,7 +708,7 @@ impl RuntimeKernel {
         let carried = match program_json.as_object_mut().and_then(|object| object.remove("lazyPrograms")) {
             None | Some(serde_json::Value::Null) => None,
             Some(carried) => Some(
-                serde_json::from_value::<std::collections::HashMap<String, OrbitalSchema>>(carried).map_err(|e| {
+                from_json_value::<std::collections::HashMap<String, OrbitalSchema>>(&carried).map_err(|e| {
                     failure(format!("program/open: `lazyPrograms` is a map of file to resolved program: {e}"))
                 })?,
             ),
@@ -725,7 +726,7 @@ impl RuntimeKernel {
                 "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
             ));
         }
-        let mut schema: OrbitalSchema = serde_json::from_value(program_json).map_err(|e| {
+        let mut schema: OrbitalSchema = from_json_value(&program_json).map_err(|e| {
             failure(format!(
                 "program/open: the program is not a resolved program: {e}"
             ))
@@ -1115,7 +1116,7 @@ impl RuntimeKernel {
         let text = |name: &str| form.get(name).and_then(Value::as_str);
         let ask: RelayedAsk = text("ask")
             .ok_or_else(|| failure("program/dispatch: ask is the text a guest answer carried"))
-            .and_then(|t| serde_json::from_str(t).map_err(|e| failure(format!("program/dispatch: the ask is not one a guest wrote: {e}"))))?;
+            .and_then(|t| from_json_str(t).map_err(|e| failure(format!("program/dispatch: the ask is not one a guest wrote: {e}"))))?;
         let outcome = match (text("answer"), text("refuse")) {
             (Some(given), None) => answer(given).map_err(failure)?,
             (None, Some(reason)) => RelayedAnswer::Refused { error: reason.to_string(), kind: "unavailable".to_string() },
@@ -1381,7 +1382,7 @@ impl RuntimeKernel {
         };
         let grants: Value = serde_json::to_value(&declared)
             .ok()
-            .and_then(|json| serde_json::from_value(json).ok())
+            .and_then(|json| from_json_value(&json).ok())
             .unwrap_or(Value::Null);
         let mut fields = fields_of(answer);
         fields.insert("environment".into(), environment);

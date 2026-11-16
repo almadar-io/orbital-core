@@ -275,6 +275,7 @@ pub fn resolve_motion(tokens: &ThemeTokens) -> ResolvedMotion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use serde_json::Value;
 
     fn base_css() -> serde_json::Map<String, Value> {
@@ -282,7 +283,7 @@ mod tests {
             concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
             "/tests/fixtures/motion/base-css.json"
         );
-        let fixture: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let fixture: Value = from_json_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         fixture["vars"].as_object().unwrap().clone()
     }
 
@@ -377,12 +378,12 @@ mod tests {
 
     #[test]
     fn a_theme_overrides_shapes_and_entry_and_a_bad_token_keeps_the_base() {
-        let tokens: ThemeTokens = serde_json::from_value(serde_json::json!({
+        let tokens: ThemeTokens = from_json_value(&(serde_json::json!({
             "motion": {
                 "shapes": { "modalEnter": "none", "toastEnter": "rotate(3deg)", "enterSlide": "translateX(calc(32px * var(--motion-enter-slide-sign)))" },
                 "entry": { "default": "rise", "stagger": "0.06s" }
             }
-        }))
+        })))
         .unwrap();
         let resolved = resolve_motion(&tokens);
         assert!(close(resolved.shapes.modal_enter, MotionShape::IDENTITY));
@@ -401,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_theme_with_no_motion_resolves_to_the_base() {
-        let tokens: ThemeTokens = serde_json::from_value(serde_json::json!({})).unwrap();
+        let tokens: ThemeTokens = from_json_value(&(serde_json::json!({}))).unwrap();
         let resolved = resolve_motion(&tokens);
         assert_eq!(resolved.entry_default, base::ENTRY_DEFAULT);
         assert_eq!(resolved.stagger_ms, base::STAGGER_MS);

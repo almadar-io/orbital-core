@@ -1,5 +1,6 @@
 // Every time operator reads the context's `now` stamp, never the wall clock; twin of almadar-evaluator `now-stamp.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 
 const STAMP: f64 = 1_592_222_400_000.0; // 2020-06-15T12:00:00Z
@@ -16,7 +17,7 @@ fn text(ms: f64) -> Value {
 
 fn eval_at(now: f64, expr: serde_json::Value) -> Value {
     let ctx = BindingContextBuilder::new().now(now).build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     Evaluator::new().evaluate(&sexpr, &ctx).unwrap()
 }
 
@@ -110,7 +111,7 @@ fn relative_formatting_measures_from_the_stamp() {
 #[test]
 fn an_unstamped_context_reads_the_wall_clock() {
     let ctx = BindingContextBuilder::new().build();
-    let sexpr = serde_json::from_value(serde_json::json!(["time/now"])).unwrap();
+    let sexpr = from_json_value(&serde_json::json!(["time/now"])).unwrap();
     let Value::String(at) = Evaluator::new().evaluate(&sexpr, &ctx).unwrap() else {
         panic!("an ISO-8601 instant")
     };

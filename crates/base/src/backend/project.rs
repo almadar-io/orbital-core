@@ -1,4 +1,5 @@
 //! Writing a generated project from a resolved program (the shell side of a compile).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -258,7 +259,7 @@ pub(crate) fn physical_relative_path(generated_dir: &str, logical_path: &str) ->
 /// rather than guessing at a malformed list).
 fn read_orb_manifest(output_dir: &Path) -> Option<std::collections::BTreeSet<String>> {
     let content = std::fs::read_to_string(output_dir.join(ORB_MANIFEST_FILE)).ok()?;
-    serde_json::from_str(&content).ok()
+    from_json_str(&content).ok()
 }
 
 /// Persist this compile's manifest for the NEXT compile's prune pass.

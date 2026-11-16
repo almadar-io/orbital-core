@@ -14,9 +14,9 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
-fn path_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<String, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::String(s) => Ok(s.into_inner()),
+fn path_arg(arg: &Value, op: &str) -> Result<String, OrbitalError> {
+    match arg {
+        Value::String(s) => Ok(s.clone().into_inner()),
         other => Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
             "{op}: expected a string path, got {}",
             other.type_name()
@@ -153,12 +153,12 @@ fn invalid(op: &str, message: String) -> OrbitalError {
 
 /// os/path-join - join the parts with `/`, then normalize; empty parts are skipped
 pub struct OsPathJoinOp;
-impl Operator for OsPathJoinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathJoinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-join", >= 1);
         let parts = args
             .iter()
-            .map(|a| path_arg(a, ctx, "os/path-join"))
+            .map(|a| path_arg(a, "os/path-join"))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Value::string(join(&parts)))
     }
@@ -166,55 +166,47 @@ impl Operator for OsPathJoinOp {
 
 /// os/path-normalize
 pub struct OsPathNormalizeOp;
-impl Operator for OsPathNormalizeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathNormalizeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-normalize", == 1);
-        Ok(Value::string(normalize(&path_arg(
-            &args[0],
-            ctx,
-            "os/path-normalize",
-        )?)))
+        Ok(Value::string(normalize(&path_arg(args[0], "os/path-normalize")?)))
     }
 }
 
 /// os/path-base - the last component
 pub struct OsPathBaseOp;
-impl Operator for OsPathBaseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathBaseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-base", == 1);
-        Ok(Value::string(base(&path_arg(
-            &args[0],
-            ctx,
-            "os/path-base",
-        )?)))
+        Ok(Value::string(base(&path_arg(args[0], "os/path-base")?)))
     }
 }
 
 /// os/path-dir - everything before the last component
 pub struct OsPathDirOp;
-impl Operator for OsPathDirOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathDirOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-dir", == 1);
-        Ok(Value::string(dir(&path_arg(&args[0], ctx, "os/path-dir")?)))
+        Ok(Value::string(dir(&path_arg(args[0], "os/path-dir")?)))
     }
 }
 
 /// os/path-ext - the last component's extension, with its dot
 pub struct OsPathExtOp;
-impl Operator for OsPathExtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathExtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-ext", == 1);
-        Ok(Value::string(ext(&path_arg(&args[0], ctx, "os/path-ext")?)))
+        Ok(Value::string(ext(&path_arg(args[0], "os/path-ext")?)))
     }
 }
 
 /// os/path-relative - the route from the first path to the second
 pub struct OsPathRelativeOp;
-impl Operator for OsPathRelativeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathRelativeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-relative", == 2);
-        let from = path_arg(&args[0], ctx, "os/path-relative")?;
-        let to = path_arg(&args[1], ctx, "os/path-relative")?;
+        let from = path_arg(args[0], "os/path-relative")?;
+        let to = path_arg(args[1], "os/path-relative")?;
         relative(&from, &to)
             .map(Value::string)
             .map_err(|message| invalid("os/path-relative", message))
@@ -223,14 +215,10 @@ impl Operator for OsPathRelativeOp {
 
 /// os/path-is-absolute
 pub struct OsPathIsAbsoluteOp;
-impl Operator for OsPathIsAbsoluteOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for OsPathIsAbsoluteOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "os/path-is-absolute", == 1);
-        Ok(Value::Bool(is_absolute(&path_arg(
-            &args[0],
-            ctx,
-            "os/path-is-absolute",
-        )?)))
+        Ok(Value::Bool(is_absolute(&path_arg(args[0], "os/path-is-absolute")?)))
     }
 }
 

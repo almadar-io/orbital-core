@@ -16,6 +16,7 @@
 //! and asserts the identical expectations, so a change to one path that is not
 //! mirrored in the other fails a test rather than shipping.
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_eval::evaluator::{BindingContext, Evaluator};
 use orbital_core_base::schema::SExpression;
 use orbital_core_base::value::Value;
@@ -55,14 +56,14 @@ fn lift(json: &str) -> String {
 }
 
 fn eval(json: &str) -> Value {
-    let expr: SExpression = serde_json::from_str(&lift(json)).unwrap();
+    let expr: SExpression = from_json_str(&lift(json)).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap()
 }
 
 fn eval_err(json: &str) -> String {
-    let expr: SExpression = serde_json::from_str(&lift(json)).unwrap();
+    let expr: SExpression = from_json_str(&lift(json)).unwrap();
     Evaluator::new()
         .evaluate(&expr, &BindingContext::new())
         .unwrap_err()

@@ -1,5 +1,6 @@
 // An emit the host already ran (`source.dispatched`) reached its listeners on the host; the fold runs it only on the client-only ones, whose host run is dropped (twin of `applyOrbitalEventResponse`'s `hostRan`, `almadar-runtime/src/evaluation/client-role.ts`; ui `Chat.realtime-chat`, `GlobalSearch.project-friday`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::EmbeddedKernel;
 use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::json;
@@ -13,7 +14,7 @@ fn kernel() -> EmbeddedKernel {
                 "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }],
                 "transitions": [{ "from": "idle", "to": "shown", "event": "SHOW", "effects": [] }] } })
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "chat",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Chat",
@@ -140,7 +141,7 @@ fn a_delivered_emit_queues_behind_an_older_open_flight_and_folds_in_order() {
 }
 
 fn self_handling_kernel() -> EmbeddedKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "app", "typeContractVersion": 1, "orbitals": [{
             "name": "O",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -185,7 +186,7 @@ fn control_the_fold_of_the_same_emit_runs_the_emitters_own_arm() {
 }
 
 fn self_listening_kernel() -> EmbeddedKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "app", "typeContractVersion": 1, "orbitals": [{
             "name": "O",
             "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },

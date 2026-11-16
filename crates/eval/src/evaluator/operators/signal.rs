@@ -284,19 +284,19 @@ impl Operator for SignalEnvelopeOp {
 
 /// signal/autocorrelate (xs, minLag, maxLag) - the mean lagged product of a list of numbers, one value per lag
 pub struct SignalAutocorrelateOp;
-impl Operator for SignalAutocorrelateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for SignalAutocorrelateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "signal/autocorrelate";
         require_arity!(args, OP, == 3);
-        let list = eval_expr(&args[0], ctx)?;
+        let list = args[0];
         let xs = list
             .as_array()
             .ok_or_else(|| OrbitalError::from(list.kind_error("array")))?
             .iter()
             .map(|x| x.number().map_err(OrbitalError::Eval))
             .collect::<Result<Vec<f64>, OrbitalError>>()?;
-        let min_lag = eval_expr(&args[1], ctx)?.int()?;
-        let max_lag = eval_expr(&args[2], ctx)?.int()?;
+        let min_lag = args[1].int()?;
+        let max_lag = args[2].int()?;
         if min_lag < 0 || max_lag < min_lag {
             return Err(invalid(OP, "needs 0 <= minLag <= maxLag"));
         }

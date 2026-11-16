@@ -1,5 +1,6 @@
 //! Orbitals, their use/expect declarations and inline-or-reference entities, pages and orbitals.
 
+use crate::json_value::from_json_value;
 use super::*;
 
 // =============================================================================
@@ -326,10 +327,10 @@ impl<'de> Deserialize<'de> for EntityRef {
         match &value {
             serde_json::Value::String(reference) => Ok(Self::Reference(reference.clone())),
             serde_json::Value::Object(object) if object.contains_key("extends") => {
-                serde_json::from_value(value).map(Self::Extends).map_err(D::Error::custom)
+                from_json_value(&value).map(Self::Extends).map_err(D::Error::custom)
             }
             serde_json::Value::Object(_) => {
-                serde_json::from_value(value).map(Self::Inline).map_err(D::Error::custom)
+                from_json_value(&value).map(Self::Inline).map_err(D::Error::custom)
             }
             _ => Err(D::Error::custom("entity must be an inline object, an extends object, or a string reference")),
         }

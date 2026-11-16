@@ -1,6 +1,7 @@
 //! EXEC-DIST conformance: where the kernel says a leg runs.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::effects::response::LegResidence;
 use orbital_core_runtime::kernel::ClientDispatch;
@@ -99,7 +100,7 @@ impl orbital_core_runtime::client::bridge::ServerBridge for Answer {
 fn optimistic_state_after(reply: orbital_core_runtime::effects::response::EventResponse) -> (bool, String) {
     use orbital_core_base::schema::types::OrbitalSchema;
     use orbital_core_runtime::client::ClientKernel;
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Cursor", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "x", "type": "number" }] },

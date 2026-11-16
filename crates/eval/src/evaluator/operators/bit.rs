@@ -5,8 +5,8 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::*;
 
-fn bounded(arg: &SExpression, ctx: &BindingContext, max: i64) -> Result<Option<u32>, OrbitalError> {
-    match eval_expr(arg, ctx)? {
+fn bounded(arg: &Value, _ctx: &BindingContext, max: i64) -> Result<Option<u32>, OrbitalError> {
+    match arg {
         value @ (Value::Number(_) | Value::Int(_)) => {
             Ok(value.as_int().filter(|n| (0..=max).contains(n)).map(|n| n as u32))
         }
@@ -14,16 +14,16 @@ fn bounded(arg: &SExpression, ctx: &BindingContext, max: i64) -> Result<Option<u
     }
 }
 
-fn word(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
+fn word(arg: &Value, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
     bounded(arg, ctx, i64::from(u32::MAX))
 }
 
-fn count(arg: &SExpression, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
+fn count(arg: &Value, ctx: &BindingContext) -> Result<Option<u32>, OrbitalError> {
     bounded(arg, ctx, 31)
 }
 
 fn fold(
-    args: &[SExpression],
+    args: &[&Value],
     ctx: &BindingContext,
     op: &str,
     f: fn(u32, u32) -> u32,
@@ -46,13 +46,13 @@ fn fold(
 }
 
 fn shift(
-    args: &[SExpression],
+    args: &[&Value],
     ctx: &BindingContext,
     op: &str,
     f: fn(u32, u32) -> u32,
 ) -> EvalResult {
     require_arity!(args, op, == 2);
-    let (Some(a), Some(n)) = (word(&args[0], ctx)?, count(&args[1], ctx)?) else {
+    let (Some(a), Some(n)) = (word(args[0], ctx)?, count(args[1], ctx)?) else {
         return Ok(Value::Null);
     };
     Ok(Value::Int(i64::from(f(a, n))))
@@ -60,34 +60,34 @@ fn shift(
 
 /// bit/xor (...words) - XOR folded left
 pub struct BitXorOp;
-impl Operator for BitXorOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitXorOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         fold(args, ctx, "bit/xor", |a, b| a ^ b)
     }
 }
 
 /// bit/and (...words) - AND folded left
 pub struct BitAndOp;
-impl Operator for BitAndOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitAndOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         fold(args, ctx, "bit/and", |a, b| a & b)
     }
 }
 
 /// bit/or (...words) - OR folded left
 pub struct BitOrOp;
-impl Operator for BitOrOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitOrOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         fold(args, ctx, "bit/or", |a, b| a | b)
     }
 }
 
 /// bit/not (a) - NOT over 32 bits
 pub struct BitNotOp;
-impl Operator for BitNotOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitNotOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bit/not", == 1);
-        Ok(match word(&args[0], ctx)? {
+        Ok(match word(args[0], ctx)? {
             Some(a) => Value::Int(i64::from(!a)),
             None => Value::Null,
         })
@@ -96,32 +96,32 @@ impl Operator for BitNotOp {
 
 /// bit/shl (a, n) - left shift; bits past bit 31 are discarded
 pub struct BitShlOp;
-impl Operator for BitShlOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitShlOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         shift(args, ctx, "bit/shl", |a, n| a << n)
     }
 }
 
 /// bit/shr (a, n) - logical right shift
 pub struct BitShrOp;
-impl Operator for BitShrOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitShrOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         shift(args, ctx, "bit/shr", |a, n| a >> n)
     }
 }
 
 /// bit/rotl (a, n) - rotate left within 32 bits
 pub struct BitRotlOp;
-impl Operator for BitRotlOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitRotlOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         shift(args, ctx, "bit/rotl", u32::rotate_left)
     }
 }
 
 /// bit/rotr (a, n) - rotate right within 32 bits
 pub struct BitRotrOp;
-impl Operator for BitRotrOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BitRotrOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         shift(args, ctx, "bit/rotr", u32::rotate_right)
     }
 }

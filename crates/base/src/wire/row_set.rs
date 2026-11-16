@@ -1,3 +1,4 @@
+use crate::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 use crate::value::Value;
@@ -166,7 +167,7 @@ pub fn row_set_marker(reference: &RowSetRef) -> Value {
         "ref".into(),
         serde_json::to_value(reference)
             .ok()
-            .and_then(|json| serde_json::from_value(json).ok())
+            .and_then(|json| from_json_value(&json).ok())
             .unwrap_or(Value::Null),
     );
     Value::object(leaf)
@@ -435,8 +436,8 @@ mod nearest_tests {
     #[test]
     fn a_zero_k_is_refused_at_the_wire_and_a_positive_one_is_read() {
         let wire = |k: u64| serde_json::json!({ "field": "embedding", "vector": [1.0], "k": k });
-        assert!(serde_json::from_value::<RowNearest>(wire(0)).is_err());
-        assert_eq!(serde_json::from_value::<RowNearest>(wire(1)).unwrap().k.get(), 1);
-        assert!(serde_json::from_value::<RowNearest>(serde_json::json!({ "field": "e", "vector": [1.0], "k": -1 })).is_err());
+        assert!(from_json_value::<RowNearest>(&wire(0)).is_err());
+        assert_eq!(from_json_value::<RowNearest>(&wire(1)).unwrap().k.get(), 1);
+        assert!(from_json_value::<RowNearest>(&(serde_json::json!({ "field": "e", "vector": [1.0], "k": -1 }))).is_err());
     }
 }

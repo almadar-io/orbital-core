@@ -147,6 +147,7 @@ impl ReadSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::{from_json_str, from_json_value};
 
     #[test]
     fn a_read_is_current_until_the_file_changes_or_a_missing_one_appears() {
@@ -236,7 +237,7 @@ mod tests {
         read_to_string(&file).unwrap();
         let written = serde_json::to_string(&end()).unwrap();
         assert!(written.starts_with('{') && written.contains("a.txt"), "the stored form is the path map alone: {written}");
-        let read_back: ReadSet = serde_json::from_str(&written).unwrap();
+        let read_back: ReadSet = from_json_str(&written).unwrap();
         assert!(read_back.is_current());
         begin();
         read_back.replay();
@@ -281,7 +282,7 @@ mod tests {
         let reads = end();
         let written = serde_json::to_value(&reads).unwrap();
         assert_eq!(written.as_object().unwrap().len(), 2, "{written}");
-        let back: ReadSet = serde_json::from_value(written.clone()).unwrap();
+        let back: ReadSet = from_json_value(&written).unwrap();
         assert_eq!(serde_json::to_value(&back).unwrap(), written);
         assert!(back.is_current());
     }

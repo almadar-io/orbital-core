@@ -1,11 +1,12 @@
 //! A fetch's `emit.success` payload is the TS wire's (`EffectExecutor.ts`):
 //! `{ data, totalCount }`, `totalCount` counted after `@read` + `filter:` and
 //! before offset/limit; a by-id hit's `data` is the row itself.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
 fn loaded(fetch: serde_json::Value) -> Option<Value> {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Fetches",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Items",
@@ -27,7 +28,7 @@ fn loaded(fetch: serde_json::Value) -> Option<Value> {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,

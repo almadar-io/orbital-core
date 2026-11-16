@@ -159,10 +159,11 @@ pub fn calendar_click_payload(date: &str, time: Option<&str>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
     use crate::client::helpers::from_json;
 
     fn props(s: &str) -> Value {
-        from_json(serde_json::from_str(s).unwrap())
+        from_json(from_json_str(s).unwrap())
     }
 
     #[test]

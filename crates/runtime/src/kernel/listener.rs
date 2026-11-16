@@ -275,6 +275,7 @@ impl ListenerManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
     use {orbital_core_base::schema::types::ListenDefinition, orbital_core_base::schema::sexpr::SExpression};
     use {orbital_core_base::events::bus::shared_bus, orbital_core_base::events::types::Event, orbital_core_base::value::Value};
 
@@ -414,7 +415,7 @@ mod tests {
             synonyms: None,
             tier: None,
             payload_mapping: None,
-            guard: Some(serde_json::from_str(r#"["=", "@payload.status", "active"]"#).unwrap()),
+            guard: Some(from_json_str(r#"["=", "@payload.status", "active"]"#).unwrap()),
             key: None,
             event_id: None,
             triggers_id: None,
@@ -452,7 +453,7 @@ mod tests {
         let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
         mapping.insert(
             "userId".into(),
-            serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap(),
+            from_json_str::<SExpression>(r#""@payload.id""#).unwrap(),
         );
 
         let listen = ListenDefinition {
@@ -489,7 +490,7 @@ mod tests {
     fn a_listens_guard_and_mapping_are_one_copy_shared_by_the_bus_handler_and_every_listener_info() {
         let manager = ListenerManager::new(shared_bus());
         let mut mapping = orbital_core_base::schema::sexpr::SObject::default();
-        mapping.insert("userId".into(), serde_json::from_str::<SExpression>(r#""@payload.id""#).unwrap());
+        mapping.insert("userId".into(), from_json_str::<SExpression>(r#""@payload.id""#).unwrap());
         let listen = ListenDefinition {
             event: "USER_CREATED".to_string(),
             triggers: Some("INIT_PROFILE".to_string()),
@@ -499,7 +500,7 @@ mod tests {
             tier: None,
             payload_mapping: Some(mapping),
             source: None,
-            guard: Some(serde_json::from_str::<SExpression>(r#"["=", "@payload.kind", "new"]"#).unwrap()),
+            guard: Some(from_json_str::<SExpression>(r#"["=", "@payload.kind", "new"]"#).unwrap()),
             key: None,
             event_id: None,
             triggers_id: None,

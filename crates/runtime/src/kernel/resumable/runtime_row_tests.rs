@@ -1,8 +1,9 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
 fn row(id: &str) -> Value {
-    serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+    from_json_value(&(serde_json::json!({ "id": id }))).unwrap()
 }
 
 fn create(entity: &str, id: &str) -> RowWriteOp {

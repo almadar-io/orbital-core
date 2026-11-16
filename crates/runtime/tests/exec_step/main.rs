@@ -1,7 +1,5 @@
 //! EXEC-STEP family: what one step does to its trait.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod effect_failure_contained;

@@ -1,5 +1,6 @@
 // The tick clock runs the ticks of the MOUNTED traits only (twin of `useClientTicks` over the page's `traitBindings`); a kernel with no mount declared covers the whole schema.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::EmbeddedKernel;
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde_json::json;
@@ -12,7 +13,7 @@ fn kernel() -> EmbeddedKernel {
             "ticks": [{ "name": "beat", "interval": 0, "effects": [["set", "@entity.n", 1]] }]
         })
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -68,7 +69,7 @@ fn paged() -> EmbeddedKernel {
                 "transitions": [{ "from": "on", "to": "on", "event": event, "effects": [] }] }
         })
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -98,7 +99,7 @@ fn two_orbitals() -> EmbeddedKernel {
         })
     };
     let entity = |name: &str| json!({ "name": name, "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] });
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
             { "name": "Main", "entity": entity("E"), "traits": [with("A"), with("B")],

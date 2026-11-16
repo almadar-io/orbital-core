@@ -1,6 +1,7 @@
 // EXEC-TICK-6 with EXEC-ENDPOINT-3: a trait on a protocol endpoint (`boot`, `http`, `stdio`) is mounted by the kernel for
 // the program's life, so its mount-scoped tick fires with no client; a route trait's waits for a client (G-CROSS-538).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::bus_event::tick_event_key;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
@@ -22,7 +23,7 @@ fn ticker(name: &str) -> serde_json::Value {
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Main",

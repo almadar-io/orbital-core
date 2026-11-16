@@ -315,10 +315,11 @@ impl Serialize for SharedEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn val(j: serde_json::Value) -> Value {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     #[test]

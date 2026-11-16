@@ -2,12 +2,13 @@
 //! effect and stops its transition: no later effect runs, and the step reports
 //! none of its client effects or emits. Writes made before the failure stand.
 //! JS twin: `effect-failure-contained.test.ts`.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
 fn kernel() -> RuntimeKernel {
     let broken = serde_json::json!(["set", "@entity.app", ["behavior/ref", "Indigo Pioneer"]]);
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "SetFailure",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Page",
@@ -40,7 +41,7 @@ fn kernel() -> RuntimeKernel {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,

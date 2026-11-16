@@ -1,10 +1,11 @@
 // `math/log10` and `math/ln` at 1, 0 and below 0; twin of almadar-evaluator `StdLibraryEvaluator.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 
 fn eval_value(expr: serde_json::Value) -> Value {
     let ctx = BindingContextBuilder::new().build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     Evaluator::new().evaluate(&sexpr, &ctx).unwrap()
 }
 

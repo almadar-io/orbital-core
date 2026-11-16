@@ -2,6 +2,7 @@
 // then the program's `[identity]` row of its subject, `identity/sign-out` returns the session to the anonymous viewer, and
 // a session that never signed in is the anonymous viewer (no host or request supplies a viewer).
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
@@ -12,7 +13,7 @@ use serde_json::json;
 const FIXTURE: &str = include_str!("../../../../tests/fixtures/security/jws-verify.json");
 
 fn fixture() -> serde_json::Value {
-    serde_json::from_str(FIXTURE).unwrap()
+    from_json_str(FIXTURE).unwrap()
 }
 
 fn schema(persistence: &str) -> OrbitalSchema {
@@ -26,7 +27,7 @@ fn schema(persistence: &str) -> OrbitalSchema {
         }
         effects
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -80,7 +81,7 @@ fn request(event: &str, client: &str, payload: serde_json::Value) -> EventReques
         event: event.to_string(),
         target_trait: Some("Gate".to_string()),
         client_id: Some(client.to_string()),
-        payload: Some(serde_json::from_value(payload).unwrap()),
+        payload: Some(from_json_value(&payload).unwrap()),
         ..Default::default()
     }
 }
@@ -97,7 +98,7 @@ fn answer(pending: Vec<PendingRequest>, store: &[serde_json::Value]) -> Vec<IoRe
                 IoRequest::ReadRow { id, .. } => IoAnswer::Row(Ok(store
                     .iter()
                     .find(|row| row["id"] == json!(id))
-                    .map(|row| serde_json::from_value(row.clone()).unwrap())
+                    .map(|row| from_json_value(&row).unwrap())
                     .unwrap_or(Value::Null))),
                 IoRequest::CallService { .. } => IoAnswer::Service(Ok(Value::Null)),
                 other => panic!("an unexpected ask: {other:?}"),
@@ -265,7 +266,7 @@ fn exec_identity_3_a_replayed_step_binds_the_same_identity_as_a_straight_one() {
 #[test]
 fn exec_identity_4_a_client_kernel_never_binds_an_identity_it_hands_the_sign_in_to_the_server() {
     let client = crate::support::TestKernel::client().register(schema("persistent"));
-    let payload: Value = serde_json::from_value(credential("rs256_valid")).unwrap();
+    let payload: Value = from_json_value(&credential("rs256_valid")).unwrap();
     let dispatch = client
         .dispatch_with_server_leg("Main", "Gate", None, "SIGN_IN", payload, Some("c1"))
         .unwrap();
@@ -323,7 +324,7 @@ fn exec_identity_2_a_verified_payload_field_reaches_a_host_as_a_sealed_stub_and_
 }
 
 fn self_cascade_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -400,7 +401,7 @@ fn store_bound_identity_schema(driver_page: Option<&str>) -> OrbitalSchema {
         rows["pages"] = json!([{ "name": "Bg", "path": "", "protocol": protocol, "traits": [{ "ref": "RowsDriver" }] }]);
     }
     schema["orbitals"].as_array_mut().unwrap().push(rows);
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 fn signed_in_read(driver_page: Option<&str>) -> serde_json::Value {
@@ -449,7 +450,7 @@ fn held_identity_schema() -> OrbitalSchema {
             "ticks": [{ "name": "beat", "interval": 1000, "effects": [["set", "@entity.who", "@user.id"]] }],
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                 "transitions": [{ "from": "idle", "to": "idle", "event": "LOOK", "effects": [["set", "@entity.who", "@user.id"], ["set", "@entity.role", "@user.role"]] }] } }] }));
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 struct Counted {
@@ -468,13 +469,13 @@ impl Counted {
         );
         kernel.register_schema(held_identity_schema()).unwrap();
         let rows = orbital_core_runtime::entity_source::InMemoryEntityCache::new();
-        rows.create("Person", &serde_json::from_value(person("user-1", "admin")).unwrap()).unwrap();
+        rows.create("Person", &from_json_value(&person("user-1", "admin")).unwrap()).unwrap();
         Counted { kernel, rows, reads: Default::default() }
     }
 
     fn run(&self, event: &str, payload: serde_json::Value) {
         let target = if event == "LOOK" { "Probe" } else { "Gate" };
-        let progress = self.kernel.start_dispatch(target, None, event, serde_json::from_value(payload).unwrap(), None, None).unwrap();
+        let progress = self.kernel.start_dispatch(target, None, event, from_json_value(&payload).unwrap(), None, None).unwrap();
         orbital_core_runtime::resumable::drive_blocking(&self.kernel, progress, &|request| {
             if matches!(request, IoRequest::ReadRow { entity_type, .. } if entity_type == "Person") {
                 self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -547,7 +548,7 @@ fn control_a_program_session_event_reads_the_signed_in_identity() {
 fn boot_signer_schema() -> OrbitalSchema {
     let routes = || json!({ "emit": { "success": "IN_OK", "failure": "IN_FAIL" } });
     let verify = json!(["jws/verify", "@payload.token", [], { "issuer": "firebase-auth-emulator@example.com", "audience": "test", "allowUnsigned": true }]);
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -597,7 +598,7 @@ fn boot_signer() -> orbital_core_runtime::kernel::RuntimeKernel {
 
 fn ask_in(kernel: &orbital_core_runtime::kernel::RuntimeKernel, from: &str, event: &str, session: &str) {
     let _session = kernel.enter_session(from);
-    let payload: Value = serde_json::from_value(json!({ "token": crate::support::identity::token("ada", json!({})), "session": session })).unwrap();
+    let payload: Value = from_json_value(&json!({ "token": crate::support::identity::token("ada", json!({})), "session": session })).unwrap();
     kernel.dispatch("Viewer", None, event, payload).unwrap();
 }
 
@@ -670,7 +671,7 @@ fn exec_identity_3_a_sign_out_naming_a_session_signs_that_session_out() {
 // EXEC-IDENTITY-4 on the wasm path: an embedded client paints before the server's first identity frame; folding the
 // response that carries it repaints the renders that read `@user` (owner ruling 2026-11-16, G-CROSS-639).
 fn header_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{
             "name": "Ui",
@@ -696,7 +697,7 @@ fn exec_identity_4_folding_the_first_identity_frame_repaints_what_read_the_anony
     let client = orbital_core_runtime::embed::EmbeddedKernel::new(header_schema(), "tab").unwrap();
     client.dispatch("Header", None, "INIT", Value::Null).unwrap();
     let identity: orbital_core_runtime::effects::frame_delta::FrameIdentity =
-        serde_json::from_value(json!({ "user": { "id": "u1", "name": "Ada" } })).unwrap();
+        from_json_value(&json!({ "user": { "id": "u1", "name": "Ada" } })).unwrap();
     let reply = EventResponse {
         success: true,
         frames: Some(orbital_core_runtime::effects::frame_delta::FrameDelta {

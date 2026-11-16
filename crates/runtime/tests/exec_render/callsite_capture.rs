@@ -5,6 +5,7 @@
 // repaint never moves a child. JS twins: `callsite-payload-embedded-child.test.ts`,
 // `callsite-capture-composed-by-event.test.ts`.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::embed::{EmbeddedKernel, EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
@@ -22,8 +23,8 @@ fn idle() -> Json {
 }
 
 fn schema_of(traits: Vec<Json>) -> OrbitalSchema {
-    let entity: Json = serde_json::from_str(ENTITY).unwrap();
-    serde_json::from_value(json!({
+    let entity: Json = from_json_str(ENTITY).unwrap();
+    from_json_value(&json!({
         "name": "App", "typeContractVersion": 1, "orbitals": [{ "name": "Main", "entity": entity, "traits": traits }]
     }))
     .unwrap()
@@ -36,7 +37,7 @@ fn app(traits: Vec<Json>) -> EmbeddedServer {
 /// The client role: the same program in a browser's kernel, dispatched locally.
 fn client_send(client: &EmbeddedKernel, target: &str, event: &str, payload: Json) -> EventResponse {
     client
-        .dispatch(target, None, event, serde_json::from_value(payload).unwrap())
+        .dispatch(target, None, event, from_json_value(&payload).unwrap())
         .unwrap()
         .response
 }
@@ -45,7 +46,7 @@ fn send(server: &EmbeddedServer, target: &str, event: &str, payload: Json) -> Ev
     let request = EventRequest {
         event: event.to_string(),
         target_trait: Some(target.to_string()),
-        payload: Some(serde_json::from_value(payload).unwrap()),
+        payload: Some(from_json_value(&payload).unwrap()),
         ..Default::default()
     };
     let mut progress = server.start("Main", request).unwrap();

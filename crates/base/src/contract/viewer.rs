@@ -1,6 +1,7 @@
 //! The viewer: who `@user` is, as one typed record. `@almadar/core`'s `Viewer` is generated from this type, and a
 //! provider's claims are a typed list rather than open keys. The `@user` binding holds the same viewer flat (claims as
 //! keys); [`Viewer::from_user`] and [`Viewer::to_user`] convert between the two.
+use crate::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -176,7 +177,7 @@ impl Viewer {
             if map.contains_key(&claim.name) {
                 return Err(format!("viewer claim {}: appears twice", claim.name));
             }
-            let value: Value = serde_json::from_value(claim.value.clone())
+            let value: Value = from_json_value(&claim.value)
                 .map_err(|e| format!("viewer claim {}: {e}", claim.name))?;
             map.insert(claim.name.clone().into(), value);
         }
@@ -190,7 +191,7 @@ mod tests {
     use serde_json::json;
 
     fn user(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).unwrap()
+        from_json_value(&json).unwrap()
     }
 
     fn firebase_user() -> Value {
@@ -221,7 +222,7 @@ mod tests {
         assert_eq!(viewer.to_user().unwrap(), source);
         let wire = serde_json::to_value(&viewer).unwrap();
         assert!(wire["claims"].as_array().unwrap().contains(&json!({ "name": "scores", "value": [1, 2] })));
-        let back: Viewer = serde_json::from_value(wire).unwrap();
+        let back: Viewer = from_json_value(&wire).unwrap();
         assert_eq!(back.to_user().unwrap(), source);
     }
 
@@ -246,13 +247,13 @@ mod tests {
             claim("firebase"),
             json!({ "sign_in_provider": "password", "identities": { "email": ["a@b.co"] } })
         );
-        let back: Viewer = serde_json::from_value(wire).unwrap();
+        let back: Viewer = from_json_value(&wire).unwrap();
         assert_eq!(back, viewer);
     }
 
     #[test]
     fn viewer_wire_omits_absent_fields_and_defaults_claims() {
-        let viewer: Viewer = serde_json::from_value(json!({ "id": "anonymous" })).unwrap();
+        let viewer: Viewer = from_json_value(&json!({ "id": "anonymous" })).unwrap();
         assert_eq!(viewer.claims, Vec::new());
         assert_eq!(viewer.role, None);
         assert_eq!(

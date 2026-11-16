@@ -6,6 +6,7 @@
 //! JSON escaping the only escaping. Every write serializes the whole store to `<store>.json.tmp-<random>`, fsyncs it
 //! and renames it over `<store>.json`, so `kv/batch` is one atomic commit. Without a state directory the store is a
 //! memory map.
+use orbital_core_base::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -197,7 +198,7 @@ fn load_file(op: OsOp, file: &Path) -> Result<KvTable, OsError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(KvTable::new()),
         Err(e) => return Err(fail(op, OsErrorKind::Io, format!("kv read failed: {e}"))),
     };
-    let parsed: Value = serde_json::from_str(&text).map_err(|e| {
+    let parsed: Value = from_json_str(&text).map_err(|e| {
         fail(
             op,
             OsErrorKind::Io,

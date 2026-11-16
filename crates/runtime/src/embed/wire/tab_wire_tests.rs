@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use orbital_core_base::tab::{TabAsk, TabCommand, TabFailure, TabFailureKind};
 
@@ -24,7 +25,7 @@ fn a_tab_ask_and_its_answer_cross_the_wire_in_the_shape_a_browser_host_reads() {
             "key": "job"
         })
     );
-    let back: IoRequestWire = serde_json::from_value(json).expect("parses");
+    let back: IoRequestWire = from_json_value(&json).expect("parses");
     assert_eq!(IoRequest::from(back), request);
 }
 
@@ -35,7 +36,7 @@ fn a_tab_answer_round_trips_whether_it_settles_or_fails() {
         IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::NotReady, "Tab 3 has no page script"))),
     ] {
         let json = serde_json::to_value(IoAnswerWire::from(&answer)).expect("serializes");
-        let back: IoAnswerWire = serde_json::from_value(json).expect("parses");
+        let back: IoAnswerWire = from_json_value(&json).expect("parses");
         assert_eq!(IoAnswer::from(back), answer);
     }
     let failed = serde_json::to_value(IoAnswerWire::from(&IoAnswer::Tab(Err(TabFailure::new(TabFailureKind::NotFound, "gone"))))).unwrap();

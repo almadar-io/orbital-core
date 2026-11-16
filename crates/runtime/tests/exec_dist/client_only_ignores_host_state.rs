@@ -1,5 +1,6 @@
 // A host's state and row for a client-only trait never overwrite the client's (twin of `withoutClientOnlyRuns`, `almadar-runtime/src/evaluation/client-role.ts`; ui `BrowserPlayground.cross-orbital-answer`).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::kernel::{already_delivered_from, RuntimeKernel}, orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig};
 use orbital_core_runtime::ServerLegCollector;
 use {orbital_core_runtime::effects::executor::EffectDelegate, orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -8,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "split",
         "typeContractVersion": 1, "orbitals": [
             { "name": "SearchOrbital",
@@ -58,7 +59,7 @@ fn host_row() -> EventResponse {
         success: true,
         frames: Some(orbital_core_runtime::effects::FrameDelta::absolute([(
             "Searcher".to_string(),
-            serde_json::from_value(json!({ "id": "q1", "text": "from the host" })).unwrap(),
+            from_json_value(&json!({ "id": "q1", "text": "from the host" })).unwrap(),
         )])),
         ..EventResponse::default()
     }
@@ -100,7 +101,7 @@ fn a_host_row_for_a_client_only_trait_is_ignored() {
 fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
     let k = kernel();
     let row =
-        serde_json::from_value::<Value>(json!({ "id": "t1", "text": "from the host" })).unwrap();
+        from_json_value::<Value>(&json!({ "id": "t1", "text": "from the host" })).unwrap();
     let response = EventResponse {
         success: true,
         frames: Some(orbital_core_runtime::effects::FrameDelta::absolute([("Responder".to_string(), row.as_object().unwrap().clone())])),
@@ -114,7 +115,7 @@ fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
 // std-confirmation-shaped: Delete runs CONFIRM in the browser, a listener persists through the host. The leg carries
 // Delete at its pre-dispatch `from`, and the host echoes that held state back without running Delete.
 fn confirm_kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "crm",
         "typeContractVersion": 1, "orbitals": [
             { "name": "ContactOrbital",
@@ -178,7 +179,7 @@ fn echoed_answer(hops: Vec<orbital_core_runtime::effects::response::TransitionHo
 }
 
 fn confirmed(k: &RuntimeKernel) -> orbital_core_runtime::kernel::ClientDispatch {
-    let payload: Value = serde_json::from_value(json!({ "id": "c1" })).unwrap();
+    let payload: Value = from_json_value(&json!({ "id": "c1" })).unwrap();
     k.dispatch_with_server_leg("crm", "Delete", None, "REQUEST", payload.clone(), None).unwrap();
     let d = k.dispatch_with_server_leg("crm", "Delete", None, "CONFIRM", payload, None).unwrap();
     assert!(!d.server_legs.is_empty(), "the listener's persist must leave as a server leg");
@@ -247,7 +248,7 @@ fn control_a_host_state_outside_the_clients_own_dispatch_is_folded() {
 }
 
 fn server_kernel(view_dispatch: &str, view_page: serde_json::Value) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "loader",
         "typeContractVersion": 1, "orbitals": [{ "name": "Play",
             "entity": { "name": "Load", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -300,7 +301,7 @@ fn control_a_host_runs_a_client_only_listener_no_route_places_as_a_cli_host_runs
 /// `View` (`[client]`) hears `Loader.LOADED`; it is on no page itself, but `Frame` embeds it with `@trait.View`, and
 /// `frame_page` places `Frame`.
 fn embedded_view_kernel(frame_page: serde_json::Value) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "loader",
         "typeContractVersion": 1, "orbitals": [{ "name": "Play",
             "entity": { "name": "Load", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -348,7 +349,7 @@ fn control_a_host_runs_a_client_only_listener_only_a_boot_trait_embeds() {
 /// One program on both sides: `Session` (server) emits `PAINTED`; `Frame` (`[client]`, on the route page) embeds
 /// `@trait.Stage`; `Stage` (`[client]`, on no page) hears `Session.PAINTED`.
 fn embedded_stage_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "stage",
         "typeContractVersion": 1, "orbitals": [{ "name": "Play",
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -415,7 +416,7 @@ fn twin_a_server_legs_emit_reaches_the_browsers_embedded_client_listener_when_th
     );
     browser.register_schema(embedded_stage_schema()).unwrap();
     browser.set_host_fans_out(true);
-    let guest: Value = serde_json::from_value(json!({ "program": {
+    let guest: Value = from_json_value(&json!({ "program": {
         "name": "Tiny", "typeContractVersion": 1,
         "orbitals": [{ "name": "Tiny", "entity": { "name": "T", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "TinyView", "linkedEntity": "T", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
@@ -448,7 +449,7 @@ fn stage_with_init_schema() -> OrbitalSchema {
         .as_array_mut()
         .unwrap()
         .push(json!({ "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.guest", ""]] }));
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 fn entered_browser(schema: OrbitalSchema) -> (orbital_core_runtime::embed::EmbeddedKernel, Vec<String>) {
@@ -493,7 +494,7 @@ fn control_an_embedded_trait_with_no_lifecycle_event_is_not_seeded_and_still_hea
 fn edge_a_trait_both_listed_and_embedded_is_seeded_once() {
     let mut schema = serde_json::to_value(stage_with_init_schema()).unwrap();
     schema["orbitals"][0]["pages"][0]["traits"].as_array_mut().unwrap().push(json!({ "ref": "Stage" }));
-    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(serde_json::from_value(schema).unwrap(), "c1").unwrap();
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(from_json_value(&schema).unwrap(), "c1").unwrap();
     let seeds = browser.route_mounts("/");
     assert_eq!(seeds.iter().filter(|s| s.r#trait == "Stage").count(), 1, "{seeds:?}");
 }
@@ -508,7 +509,7 @@ fn the_browser_view_carries_no_render_of_a_client_only_trait_and_keeps_the_other
     );
     server.register_schema(embedded_stage_schema()).unwrap();
     let mut outcomes = server.dispatch("Frame", None, "INIT", Value::Null).unwrap();
-    outcomes.extend(server.dispatch("Stage", None, "PAINTED", serde_json::from_value(json!({ "guest": "g" })).unwrap()).unwrap());
+    outcomes.extend(server.dispatch("Stage", None, "PAINTED", from_json_value(&json!({ "guest": "g" })).unwrap()).unwrap());
     let full = EventResponse::from_process_results(&outcomes, "Frame", "INIT");
     let painted = |r: &EventResponse| r.client_effects_by_trait.iter().flatten().map(|e| e.trait_name.clone()).collect::<Vec<_>>();
     assert!(painted(&full).iter().any(|t| t == "Frame"), "control: the host painted the client trait in process: {:?}", painted(&full));
@@ -519,7 +520,7 @@ fn the_browser_view_carries_no_render_of_a_client_only_trait_and_keeps_the_other
 // EXEC-DIST-8: the rows a server-run trait fetched are the host's; the browser view carries them only when a browser-run
 // trait fetched them or is bound to their entity (G-CROSS-565).
 fn fetched_rows_schema(reader_dispatch: &str, view_entity: &str) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rows",
         "typeContractVersion": 1, "orbitals": [
             { "name": "Events",
@@ -579,7 +580,7 @@ fn control_rows_of_an_entity_a_browser_run_trait_is_bound_to_reach_the_browser()
 // carries, the browser's. KFlow /home → path detail → /home: the paths front came back `busy` with no request in flight
 // and its asks waited forever (2026-11-16).
 fn front_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "fronted", "typeContractVersion": 1,
         "orbitals": [{ "name": "Main",
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -606,7 +607,7 @@ fn front_server() -> orbital_core_runtime::embed::EmbeddedServer {
 }
 
 fn front_send(server: &orbital_core_runtime::embed::EmbeddedServer, request: serde_json::Value) -> EventResponse {
-    let request: orbital_core_runtime::effects::response::EventRequest = serde_json::from_value(request).unwrap();
+    let request: orbital_core_runtime::effects::response::EventRequest = from_json_value(&request).unwrap();
     match server.start("Main", request).unwrap() {
         orbital_core_runtime::embed::ServerProgress::Done(response) => response,
         _ => panic!("the request ran to its end"),

@@ -9,6 +9,7 @@
 //! Two-valued null logic: a missing or null field satisfies only `!=` against a non-null value and
 //! `isNull: true`. Strings compare by code point (UTF-8 byte order). A comparison relates only two
 //! values of one kind. An array or object is never equal to anything.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -60,7 +61,7 @@ pub fn as_row_set_marker(value: &Value) -> Option<RowSetRef> {
     if leaf.get(ROW_SET_MARKER) != Some(&Value::Bool(true)) {
         return None;
     }
-    serde_json::from_value(orbital_core_base::json_value::value_to_json(leaf.get("ref")?)).ok()
+    from_json_value(&(orbital_core_base::json_value::value_to_json(leaf.get("ref")?))).ok()
 }
 
 /// Every reference a resolved value carries, in document order.

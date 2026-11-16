@@ -2,6 +2,7 @@
 // whose id the expression names. The row is created from defaults on first use with INIT once, a key that is not a
 // non-empty string is refused as DELIVERY_REJECTED, and a row that is quiet is dropped.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
@@ -88,7 +89,7 @@ fn per_payload_key() -> Option<Json> {
 }
 
 fn val(j: Json) -> Value {
-    serde_json::from_value(j).unwrap()
+    from_json_value(&j).unwrap()
 }
 
 fn whole(v: Json) -> Json {
@@ -424,9 +425,7 @@ mod keyed_completion {
                             answer: match pending.request {
                                 IoRequest::CallService { site, .. } => {
                                     sites.push(site.unwrap().entity_id);
-                                    IoAnswer::Service(Ok(serde_json::from_value(
-                                        json!({ "ok": true }),
-                                    )
+                                    IoAnswer::Service(Ok(from_json_value(&json!({ "ok": true }))
                                     .unwrap()))
                                 }
                                 other => panic!("unexpected ask {other:?}"),
@@ -441,7 +440,7 @@ mod keyed_completion {
     }
 
     fn support_schema(program: Json) -> orbital_core_base::schema::types::OrbitalSchema {
-        serde_json::from_value(program).unwrap()
+        from_json_value(&program).unwrap()
     }
 
     #[test]

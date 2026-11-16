@@ -1,5 +1,6 @@
 // A client kernel whose seed delegated a `fetch` to the server must leave `loading` once the server's response (carrying the fetch's success emit) is applied.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, orbital_core_runtime::effects::{EffectDelegate, EventResponse}};
 use {orbital_core_runtime::kernel::{already_delivered_from, RuntimeKernel}, orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig};
 use orbital_core_runtime::ServerLegCollector;
@@ -14,7 +15,7 @@ fn schema(fetching: bool) -> OrbitalSchema {
     } else {
         json!([])
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -58,7 +59,7 @@ fn schema(fetching: bool) -> OrbitalSchema {
 }
 
 fn row(id: &str) -> Value {
-    serde_json::from_value(json!({ "id": id })).unwrap()
+    from_json_value(&json!({ "id": id })).unwrap()
 }
 
 fn server(schema: OrbitalSchema) -> RuntimeKernel {
@@ -114,7 +115,7 @@ fn generated_server_answer(dispatched: bool) -> EventResponse {
         emitted_events: vec![EmittedEvent {
             event: "Loaded".to_string(),
             payload: Some(
-                serde_json::from_value(json!({ "data": [{ "id": "i-1" }], "totalCount": 1 }))
+                from_json_value(&json!({ "data": [{ "id": "i-1" }], "totalCount": 1 }))
                     .unwrap(),
             ),
             source: Some(source),
@@ -224,7 +225,7 @@ fn a_relayed_outcome_carries_the_mapped_payload() {
         .find(|(t, o)| t == "Relay" && o.executed)
         .map(|(_, o)| o)
         .expect("Relay ran");
-    let expected: Value = serde_json::from_value(json!({ "rows": [{ "id": "i-1" }] })).unwrap();
+    let expected: Value = from_json_value(&json!({ "rows": [{ "id": "i-1" }] })).unwrap();
     assert_eq!(*relay.payload, expected);
 }
 
@@ -266,7 +267,7 @@ fn guarded_seed_schema(with_listener: bool) -> OrbitalSchema {
         }
     })];
     traits.extend(listener.as_array().unwrap().iter().cloned());
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -279,7 +280,7 @@ fn guarded_seed_schema(with_listener: bool) -> OrbitalSchema {
 
 fn view_leg(with_listener: bool) -> Option<orbital_core_runtime::effects::response::EventRequest> {
     let c = client(guarded_seed_schema(with_listener));
-    let payload: Value = serde_json::from_value(json!({ "mode": "table" })).unwrap();
+    let payload: Value = from_json_value(&json!({ "mode": "table" })).unwrap();
     c.dispatch_with_server_leg("App", "Browse", None, "VIEW", payload, None)
         .unwrap()
         .server_legs

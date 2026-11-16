@@ -1,3 +1,4 @@
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 
 #[test]
@@ -91,7 +92,7 @@ fn emit_config_roundtrip_success_failure() {
     // camelCase + skips None fields
     assert_eq!(json, r#"{"success":"LOADED","failure":"LOAD_FAILED"}"#);
 
-    let round: OirEmitConfig = serde_json::from_str(&json).unwrap();
+    let round: OirEmitConfig = from_json_str(&json).unwrap();
     assert_eq!(round, cfg);
 }
 
@@ -106,7 +107,7 @@ fn emit_config_roundtrip_watch_shape() {
     let json = serde_json::to_string(&cfg).unwrap();
     assert!(json.contains(r#""failure":"SUBSCRIBE_FAILED""#));
     assert!(json.contains(r#""onMessage":"PUSH_RECEIVED""#));
-    let round: OirEmitConfig = serde_json::from_str(&json).unwrap();
+    let round: OirEmitConfig = from_json_str(&json).unwrap();
     assert_eq!(round, cfg);
 }
 
@@ -157,7 +158,7 @@ fn fetch_with_emit_serializes_field() {
     );
 
     // Round-trip
-    let round: OirEffect = serde_json::from_value(json).unwrap();
+    let round: OirEffect = from_json_value(&json).unwrap();
     if let OirEffect::Fetch { emit, .. } = round {
         assert_eq!(emit, Some(cfg));
     } else {
@@ -175,7 +176,7 @@ fn fetch_nearest_serializes_only_when_set() {
     }
     let json = serde_json::to_value(&eff).unwrap();
     assert!(json.get("nearest").is_some());
-    let round: OirEffect = serde_json::from_value(json).unwrap();
+    let round: OirEffect = from_json_value(&json).unwrap();
     assert_eq!(round, eff);
 }
 
@@ -197,7 +198,7 @@ fn legacy_fetch_json_without_emit_deserializes() {
         "kind": "fetch",
         "entity_type": "Patient",
     });
-    let eff: OirEffect = serde_json::from_value(json).unwrap();
+    let eff: OirEffect = from_json_value(&json).unwrap();
     if let OirEffect::Fetch { emit, .. } = eff {
         assert!(emit.is_none());
     } else {
@@ -214,7 +215,7 @@ fn emit_config_cancelled_roundtrips_and_counts_as_set() {
     assert!(!cfg.is_empty());
     let json = serde_json::to_string(&cfg).unwrap();
     assert_eq!(json, r#"{"cancelled":"CLASSIFY_CANCELLED"}"#);
-    let round: OirEmitConfig = serde_json::from_str(&json).unwrap();
+    let round: OirEmitConfig = from_json_str(&json).unwrap();
     assert_eq!(round, cfg);
 }
 
@@ -233,7 +234,7 @@ fn keyed_call_service_roundtrips_and_exposes_key_binding() {
     let json = serde_json::to_value(&eff).unwrap();
     assert!(json.get("key").is_some());
     assert_eq!(json["emit"]["cancelled"], "CANCELLED");
-    let round: OirEffect = serde_json::from_value(json).unwrap();
+    let round: OirEffect = from_json_value(&json).unwrap();
     assert_eq!(round, eff);
     assert_eq!(eff.child_exprs().len(), 2);
 }
@@ -257,6 +258,6 @@ fn cancel_call_is_a_server_effect_with_a_key_child() {
     assert!(eff.is_server_effect());
     assert!(!eff.is_client_effect());
     assert_eq!(eff.child_exprs().len(), 1);
-    let round: OirEffect = serde_json::from_value(serde_json::to_value(&eff).unwrap()).unwrap();
+    let round: OirEffect = from_json_value(&serde_json::to_value(&eff).unwrap()).unwrap();
     assert_eq!(round, eff);
 }

@@ -2,6 +2,7 @@
 //! dispatches the declared input the kernel asked for, as the dispatch's viewer, through its ordinary input
 //! channel, turns that response into the answer with [`dispatch_outcome`]. Twin of `dispatchOutcomeOf`
 //! (`@almadar/core`); the shared corpus pins both.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -95,7 +96,7 @@ pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, 
     if raw {
         return Ok(answer);
     }
-    let response: EventResponse = serde_json::from_value(orbital_core_base::json_value::value_to_json(&answer)).map_err(|e| {
+    let response: EventResponse = from_json_value(&orbital_core_base::json_value::value_to_json(&answer)).map_err(|e| {
         crate::effects::executor::SubstrateFailure { message: format!("program/dispatch: the host answered no event response: {e}"), errors: Vec::new() }
     })?;
     Ok(dispatch_outcome(&response))
@@ -157,6 +158,7 @@ pub fn guest_failure_payload(failure: &crate::effects::executor::SubstrateFailur
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
     use serde_json::Value as Json;
 
     const VECTORS: &str = include_str!("../../tests/fixtures/agent-ports/vectors.json");
@@ -175,7 +177,7 @@ mod tests {
 
     #[test]
     fn a_response_answers_the_model_the_same_way_for_every_shared_vector() {
-        let fixture: Json = serde_json::from_str(VECTORS).expect("the shared vectors parse");
+        let fixture: Json = from_json_str(VECTORS).expect("the shared vectors parse");
         let vectors = fixture["dispatchOutcomes"]
             .as_array()
             .expect("dispatchOutcomes");
@@ -186,7 +188,7 @@ mod tests {
         for vector in vectors {
             let name = vector["name"].as_str().unwrap_or_default();
             let response: EventResponse =
-                serde_json::from_value(vector["response"].clone()).expect("a response");
+                from_json_value(&vector["response"]).expect("a response");
             let outcome =
                 norm(serde_json::to_value(dispatch_outcome(&response)).expect("serializes"));
             assert_eq!(outcome, norm(vector["outcome"].clone()), "{name}");
@@ -195,9 +197,9 @@ mod tests {
 
     #[test]
     fn a_dispatch_answer_is_shaped_by_its_ask_whether_answered_in_place_or_deferred() {
-        let response = || serde_json::from_value::<Value>(serde_json::to_value(EventResponse { success: true, transitioned: true, ..EventResponse::default() }).unwrap()).unwrap();
+        let response = || from_json_value::<Value>(&(serde_json::to_value(EventResponse { success: true, transitioned: true, ..EventResponse::default() }).unwrap())).unwrap();
         let text = |s: &str| Value::string(s.to_string());
-        let object = |json: Json| serde_json::from_value::<Value>(json).unwrap();
+        let object = |json: Json| from_json_value::<Value>(&json).unwrap();
         let shaped = |args: Vec<Value>| program_answer("program/dispatch", &args, response()).map(|v| norm(serde_json::to_value(&v).unwrap()));
         let shaped_from = |answer: Result<Value, crate::effects::executor::SubstrateFailure>| norm(serde_json::to_value(answer.expect("shaped")).unwrap());
         let outcome = serde_json::json!({ "ok": true, "emitted": [] });

@@ -3,6 +3,7 @@
 //! package wins per name; the user store (`~/.orb/node_modules`) is always
 //! consulted as the lowest-precedence final rung, so a project's own copy of a
 //! package always shadows the user-store install of the same name.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -150,7 +151,7 @@ fn read_sidecar_lock(
         source: e,
     })?;
     let lock: SidecarLockFile =
-        serde_json::from_str(&raw).map_err(|e| invalid(format!("malformed: {e}")))?;
+        from_json_str(&raw).map_err(|e| invalid(format!("malformed: {e}")))?;
     if lock.version != 1 {
         return Err(invalid(format!("unsupported version {}", lock.version)));
     }
@@ -571,7 +572,7 @@ fn normalize_bin_path(root: &Path, rel: &str) -> PathBuf {
 
 fn build_npm_package(pkg_dir: &Path, package_json_path: &Path) -> Option<NpmPackage> {
     let raw = fs::read_to_string(package_json_path).ok()?;
-    let value: Value = serde_json::from_str(&raw).ok()?;
+    let value: Value = from_json_str(&raw).ok()?;
     let obj = value.as_object()?;
     let name = obj.get("name")?.as_str()?.to_string();
     let version = obj.get("version")?.as_str()?.to_string();
@@ -708,7 +709,7 @@ fn read_package_dir(
         path: package_json_path.clone(),
         source: e,
     })?;
-    let value: Value = match serde_json::from_str(&raw) {
+    let value: Value = match from_json_str(&raw) {
         Ok(v) => v,
         Err(e) => {
             return Err(DiscoverError::InvalidPackageJson {

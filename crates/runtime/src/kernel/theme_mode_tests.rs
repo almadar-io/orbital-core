@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
@@ -12,7 +13,7 @@ fn kernel_with(schema: OrbitalSchema) -> RuntimeKernel {
 }
 
 fn schema_with_theme(theme_key: &str) -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "theme": theme_key,
         "typeContractVersion": 1, "orbitals": [{
@@ -27,7 +28,7 @@ fn schema_with_theme(theme_key: &str) -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 

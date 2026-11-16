@@ -1,5 +1,6 @@
 //! Pins `derive_id` byte-for-byte against `tests/fixtures/derive_id.json`; the fixture is the contract.
 
+use orbital_core_base::json_value::from_json_str;
 use std::fs;
 use std::path::PathBuf;
 
@@ -20,7 +21,7 @@ fn fixture_path() -> PathBuf {
 #[test]
 fn derive_id_matches_the_fixture() {
     let raw = fs::read_to_string(fixture_path()).expect("read derive_id.json fixture");
-    let cases: Vec<FixtureCase> = serde_json::from_str(&raw).expect("parse derive_id.json fixture");
+    let cases: Vec<FixtureCase> = from_json_str(&raw).expect("parse derive_id.json fixture");
     assert!(!cases.is_empty(), "fixture must not be empty");
     for case in &cases {
         let actual = derive_id(&case.parent, &case.discriminator);

@@ -1,17 +1,18 @@
 //! `(behavior/apply value overrides)` on the evaluator — twin of the
 //! `@almadar/evaluator` operator.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::{eval_expr, BindingContext}, orbital_core_base::value::Value};
 use orbital_core_base::fixtures::behavior_apply_cases;
 use orbital_core_base::schema::behavior_value::apply_behavior_overrides;
 use orbital_core_base::schema::SExpression;
 
 fn sx(json: &str) -> SExpression {
-    serde_json::from_str(json).expect("sexpr json")
+    from_json_str(json).expect("sexpr json")
 }
 
 fn val(json: &str) -> Value {
-    serde_json::from_str(json).expect("value json")
+    from_json_str(json).expect("value json")
 }
 
 fn ctx() -> BindingContext {
@@ -55,17 +56,17 @@ fn unquote_outside_a_quasiquote_is_an_evaluation_error() {
 #[test]
 fn twin_cases_match_the_core_merge_table() {
     let cases: Vec<serde_json::Value> =
-        serde_json::from_str(behavior_apply_cases()).expect("behavior-apply fixture parses");
+        from_json_str(behavior_apply_cases()).expect("behavior-apply fixture parses");
     assert!(!cases.is_empty());
     for case in cases {
         let name = case["name"].as_str().unwrap_or("?").to_string();
-        let value: Value = serde_json::from_value(case["value"].clone()).expect("value");
-        let overrides: Value = serde_json::from_value(case["overrides"].clone()).expect("overrides");
+        let value: Value = from_json_value(&case["value"]).expect("value");
+        let overrides: Value = from_json_value(&case["overrides"]).expect("overrides");
         let out = apply_behavior_overrides(&value, &overrides);
         if case["error"] == serde_json::Value::Bool(true) {
             assert!(out.is_none(), "{name}: expected a refusal, got {out:?}");
         } else {
-            let expected: Value = serde_json::from_value(case["expected"].clone()).expect("expected");
+            let expected: Value = from_json_value(&case["expected"]).expect("expected");
             assert_eq!(out, Some(expected), "{name}");
         }
     }

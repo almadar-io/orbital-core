@@ -2,6 +2,7 @@
 //! entity source, `os/` under the program's declared grants, credentials, random and clock from the secret source and
 //! the operating system. Each piece is the existing answerer (`BlockingHost`, `PortHost`,
 //! `answer_os`); this owns them so a host can share one answerer across threads and rebuild it when a program registers.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -400,7 +401,7 @@ pub(crate) mod tests {
     }
 
     fn guest_session(program: serde_json::Value) -> GuestKernel {
-        let schema: OrbitalSchema = serde_json::from_value(program).unwrap();
+        let schema: OrbitalSchema = from_json_value(&program).unwrap();
         let source = Arc::new(InMemoryEntityCache::new());
         let kernel = RuntimeKernel::new(
             RuntimeEnvironment::Server,

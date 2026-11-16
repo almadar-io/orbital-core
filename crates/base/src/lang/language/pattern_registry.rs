@@ -10,6 +10,7 @@
 //! component names from the installed mapping). `registry.json` is the same data
 //! as the patterns registry — reused, not re-read. All of it comes from the
 //! installed `@almadar/core` (`crate::language_data`), not the binary.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -221,7 +222,7 @@ fn component_mappings() -> &'static HashMap<String, ComponentMapping> {
     static PARSED: OnceLock<HashMap<String, ComponentMapping>> = OnceLock::new();
     PARSED.get_or_init(|| {
         let file: ComponentMappingFile =
-            serde_json::from_str(&language().component_mapping)
+            from_json_str(&language().component_mapping)
                 .expect("installed component-mapping.json is corrupt — reinstall @almadar/core");
         file.mappings
     })
@@ -231,7 +232,7 @@ fn event_contracts() -> &'static HashMap<String, EventContract> {
     static PARSED: OnceLock<HashMap<String, EventContract>> = OnceLock::new();
     PARSED.get_or_init(|| {
         let file: EventContractsFile =
-            serde_json::from_str(&language().event_contracts)
+            from_json_str(&language().event_contracts)
                 .expect("installed event-contracts.json is corrupt — reinstall @almadar/core");
         file.contracts
     })
@@ -241,7 +242,7 @@ fn pattern_definitions() -> &'static HashMap<String, RegistryPattern> {
     static PARSED: OnceLock<HashMap<String, RegistryPattern>> = OnceLock::new();
     PARSED.get_or_init(|| {
         let file: PatternRegistryFile =
-            serde_json::from_str(&language().patterns)
+            from_json_str(&language().patterns)
                 .expect("installed patterns-registry.json is corrupt — reinstall @almadar/core");
         file.patterns
     })

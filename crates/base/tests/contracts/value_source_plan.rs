@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_base::schema::{OperatorReturn, SExpression, ValueSlot, ValueWalk};
 
 fn lookup(name: &str) -> Option<OperatorReturn> {
@@ -26,7 +27,7 @@ const WALK: ValueWalk<'static> = ValueWalk {
 };
 
 fn sx(input: &str) -> SExpression {
-    serde_json::from_str(input).expect("expression fixture")
+    from_json_str(input).expect("expression fixture")
 }
 
 fn leaf_strings<'a>(expr: &'a SExpression, walk: &ValueWalk<'_>) -> Vec<&'a str> {

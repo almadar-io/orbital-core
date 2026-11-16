@@ -1,5 +1,6 @@
 // A config value that is a `@user.*` binding reads the session's identity one hop, a missing field becoming '' (twin of `buildConfigBinding`, `almadar-runtime/src/traits/config-defaults.ts`; ui `BrowserPlayground.api-gateway`). EXEC-IDENTITY-1: `@user` is the session's bound identity, the anonymous viewer when none is.
 
+use orbital_core_base::json_value::from_json_value;
 use crate::support::identity;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::EventRequest;
@@ -7,7 +8,7 @@ use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use serde_json::json;
 
 fn server() -> EmbeddedServer {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "gw",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Gw",

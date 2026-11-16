@@ -1,6 +1,7 @@
 // A `ClientCore` with no client-role kernel resolves a row-set reference through its server bridge: the server holds
 // the rows and applies the entity's `@read`. Controls: a core with no store errs; a bridge with no route refuses.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::client::bridge::{KernelBridge, ServerBridge};
 use orbital_core_runtime::client::client_core::ClientCore;
 use orbital_core_runtime::client::http::BridgeError;
@@ -10,7 +11,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rows", "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": {
@@ -28,7 +29,7 @@ fn schema() -> OrbitalSchema {
 }
 
 fn row(id: &str, owner: &str) -> Value {
-    serde_json::from_value(json!({ "id": id, "owner": owner })).unwrap()
+    from_json_value(&json!({ "id": id, "owner": owner })).unwrap()
 }
 
 fn reference(ids: &[&str]) -> RowSetRef {

@@ -3,13 +3,14 @@
 // has since moved on would otherwise take the event again. JS twin: `runTraitCascade` + the worklist in
 // `evaluateOrbitalEvent`, `task-comments-scoped-and-nested.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::json;
 use std::sync::Arc;
 
 fn deliveries(listener_arm_from: &str) -> usize {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -57,7 +58,7 @@ fn a_listener_takes_a_handled_emit_once() {
 
 #[test]
 fn control_a_listener_of_an_unhandled_emit_also_takes_it_once() {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

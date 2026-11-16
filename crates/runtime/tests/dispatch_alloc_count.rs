@@ -5,6 +5,7 @@
 #[path = "support/mod.rs"]
 mod support;
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use serde_json::json;
 use orbital_core_base::alloc_meter::{self, CountingAlloc};
 use std::alloc::System;
@@ -63,7 +64,7 @@ fn schema() -> OrbitalSchema {
         ["set", "@entity.f6", "x"]
     ]));
     effects.push(json!(["render-ui", "main", { "type": "typography", "content": "@entity.f3" }]));
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -114,7 +115,7 @@ fn search_dispatch_allocation_count_is_pinned() {
     k.register_schema(schema()).unwrap();
     k.dispatch_with_server_leg("Main", "Finder", None, "INIT", Value::Null, None)
         .unwrap();
-    let payload = || serde_json::from_value::<Value>(json!({ "q": "kernel" })).unwrap();
+    let payload = || from_json_value::<Value>(&json!({ "q": "kernel" })).unwrap();
     for _ in 0..3 {
         k.dispatch_with_server_leg("Main", "Finder", None, "SEARCH", payload(), None)
             .unwrap();
@@ -140,7 +141,7 @@ fn search_dispatch_allocation_count_is_pinned() {
 const PINNED_SEARCH: usize = 701;
 
 fn fetch_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-fetch",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -174,7 +175,7 @@ fn fetch_dispatch_allocation_count_is_pinned() {
     k.register_schema(fetch_schema()).unwrap();
     // Seed after registering: the cache keys its store by the bound collection.
     for i in 0..50 {
-        let row = serde_json::from_value::<Value>(json!({
+        let row = from_json_value::<Value>(&json!({
             "id": format!("t{i}"), "title": format!("T{i}"),
             "status": if i % 2 == 0 { "open" } else { "closed" }, "owner": "u1"
         }))
@@ -204,14 +205,14 @@ const PINNED_FETCH: usize = 185;
 fn read_access_allocation_count_is_pinned() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let policy =
-        serde_json::from_value::<Value>(json!(["=", ["object/get", "@entity", "owner"], "u1"]))
+        from_json_value::<Value>(&json!(["=", ["object/get", "@entity", "owner"], "u1"]))
             .unwrap();
     let filter =
-        serde_json::from_value::<Value>(json!(["=", ["object/get", "@entity", "status"], "open"]))
+        from_json_value::<Value>(&json!(["=", ["object/get", "@entity", "status"], "open"]))
             .unwrap();
     let mut rows: Vec<Value> = (0..50)
         .map(|i| {
-            serde_json::from_value::<Value>(json!({
+            from_json_value::<Value>(&json!({
                 "id": format!("t{i}"), "title": format!("T{i}"),
                 "status": if i % 2 == 0 { "open" } else { "closed" }, "owner": "u1"
             }))
@@ -259,7 +260,7 @@ fn replay_schema() -> OrbitalSchema {
             json!(["persist", "create", "Note", { "id": format!("n{i}"), "title": "t" }, emit]),
         );
     }
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-replay",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -344,7 +345,7 @@ fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
         .map(|i| {
             Arc::new(
-                serde_json::from_value(json!({ "id": format!("i{i}"), "title": format!("T{i}") }))
+                from_json_value(&json!({ "id": format!("i{i}"), "title": format!("T{i}") }))
                     .unwrap(),
             )
         })
@@ -353,7 +354,7 @@ fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
 }
 
 fn scanner_schema(blob: &str) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-loop",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -388,7 +389,7 @@ fn retained_by_loop(blob: &str, steps: usize) -> isize {
         Default::default(),
     );
     k.register_schema(scanner_schema(blob)).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": steps })).unwrap();
     let before = alloc_meter::totals().live;
     let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
     let held = alloc_meter::totals().live - before;
@@ -416,7 +417,7 @@ fn an_unchanged_large_field_is_shared_across_the_recorded_steps() {
 }
 
 fn counter_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-counter",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -450,7 +451,7 @@ fn retained_by_counter(steps: usize) -> isize {
         Default::default(),
     );
     k.register_schema(counter_schema()).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": steps })).unwrap();
     let before = alloc_meter::totals().live;
     let out = k.dispatch("Counter", None, "TICK", payload).unwrap();
     let held = alloc_meter::totals().live - before;
@@ -481,7 +482,7 @@ fn allocated_by_loop(blob: &str, steps: usize) -> usize {
         Default::default(),
     );
     k.register_schema(scanner_schema(blob)).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": steps })).unwrap();
     let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
     let spent = alloc_meter::totals().bytes - before;
@@ -535,7 +536,7 @@ fn control_a_large_field_read_each_step_is_still_paid_for() {
         Default::default(),
     );
     k.register_schema(rewriter_schema(&"x".repeat(BLOB))).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": 10 })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": 10 })).unwrap();
     let before = alloc_meter::totals().bytes;
     let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
     let spent = alloc_meter::totals().bytes - before;
@@ -552,13 +553,13 @@ fn control_a_large_field_rewritten_each_step_is_still_a_new_frame() {
         Default::default(),
     );
     k.register_schema(scanner_schema(&"x".repeat(1024))).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": 5 })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": 5 })).unwrap();
     let out = k.dispatch("Scanner", None, "SCAN", payload).unwrap();
     assert_eq!(out.iter().filter(|(_, r)| r.executed).count(), 5, "each step's frame differs, so none is a repeat");
 }
 
 fn rewriter_schema(blob: &str) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-rewrite",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -592,7 +593,7 @@ fn retained_by_rewrites(blob: &str, steps: usize) -> isize {
         Default::default(),
     );
     k.register_schema(rewriter_schema(blob)).unwrap();
-    let payload = serde_json::from_value::<Value>(json!({ "left": steps })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "left": steps })).unwrap();
     let before = alloc_meter::totals().live;
     let out = k.dispatch("Rewriter", None, "REWRITE", payload).unwrap();
     let held = alloc_meter::totals().live - before;
@@ -623,7 +624,7 @@ fn reader_schema(big: &serde_json::Value, through_let: bool) -> OrbitalSchema {
     } else {
         json!(["array/map", ["array/range", 50], ["fn", "i", ["object/get", "@entity.big", "k1"]]])
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-read",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -670,7 +671,7 @@ fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
     allocated_by_reads(&map_of(2, 4), false);
     let large = map_of(1024, 64);
     let small = map_of(2, 4);
-    let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
+    let as_value = from_json_value::<Value>(&large).unwrap();
     let before = alloc_meter::totals().bytes;
     let copy = deep_copy(&as_value);
     let one_copy = alloc_meter::totals().bytes - before;
@@ -683,7 +684,7 @@ fn reading_one_key_of_a_bound_map_does_not_copy_the_map() {
 }
 
 fn part_reader_schema(list: &serde_json::Value, big: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-part-read",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -729,7 +730,7 @@ fn reading_part_of_a_bound_list_or_map_does_not_copy_it() {
     let (large_list, small_list) = (list(1024), list(2));
     let (large_map, small_map) = (map_of(1024, 64), map_of(2, 4));
     let one_copy = |value: &serde_json::Value| {
-        let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
+        let as_value = from_json_value::<Value>(&value).unwrap();
         let before = alloc_meter::totals().bytes;
         let copy = deep_copy(&as_value);
         let spent = alloc_meter::totals().bytes - before;
@@ -762,7 +763,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let read = |_: ()| json!(["array/reduce", ["array/range", 50], "@entity.big", ["fn", ["acc", "i"], "@acc"]]);
     let schema = |big: &serde_json::Value| -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "alloc-reduce",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -797,7 +798,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
     };
     spent(&map_of(2, 4));
     let large = map_of(1024, 64);
-    let as_value = serde_json::from_value::<Value>(large.clone()).unwrap();
+    let as_value = from_json_value::<Value>(&large).unwrap();
     let before = alloc_meter::totals().bytes;
     let copy = deep_copy(&as_value);
     let one_copy = alloc_meter::totals().bytes - before;
@@ -808,7 +809,7 @@ fn a_reduce_binds_its_accumulator_without_copying_it() {
 }
 
 fn mapper_schema(list: &serde_json::Value, read: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "alloc-map",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -852,7 +853,7 @@ fn a_callback_binds_each_element_once() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let list = |width: usize| serde_json::Value::Array((0..256).map(|i| json!(format!("{i}{}", "v".repeat(width)))).collect());
     let one_copy = |value: &serde_json::Value| {
-        let as_value = serde_json::from_value::<Value>(value.clone()).unwrap();
+        let as_value = from_json_value::<Value>(&value).unwrap();
         let before = alloc_meter::totals().bytes;
         let copy = deep_copy(&as_value);
         let spent = alloc_meter::totals().bytes - before;
@@ -917,7 +918,7 @@ fn fanout_schema(listeners: usize) -> OrbitalSchema {
             }
         }));
     }
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "fanout",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -940,7 +941,7 @@ fn fanout_peak_ratio(listeners: usize) -> f64 {
     k.register_schema(fanout_schema(listeners)).unwrap();
     let rows: Vec<serde_json::Value> = (0..2000).map(|i| json!({ "label": "x".repeat(64), "n": i })).collect();
     let before = alloc_meter::totals().live;
-    let payload = serde_json::from_value::<Value>(json!({ "rows": rows })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "rows": rows })).unwrap();
     let size = (alloc_meter::totals().live - before) as f64;
     let base = alloc_meter::totals().live;
     alloc_meter::reset_peak(base);
@@ -965,7 +966,7 @@ fn fanout_allocs(listeners: usize, rows: usize) -> usize {
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache as Arc<dyn EntitySource>, Default::default());
     k.register_schema(fanout_schema(listeners)).unwrap();
     let rows: Vec<serde_json::Value> = (0..rows).map(|i| json!({ "label": "x", "n": i })).collect();
-    let payload = serde_json::from_value::<Value>(json!({ "rows": rows })).unwrap();
+    let payload = from_json_value::<Value>(&json!({ "rows": rows })).unwrap();
     count(|| k.dispatch("Source", None, "GO", payload).unwrap()).0
 }
 
@@ -984,7 +985,7 @@ fn a_fan_out_listener_does_not_redigest_the_payload() {
 fn reduce_append_bytes(n: usize) -> usize {
     use orbital_core_base::schema::sexpr::SExpression;
     use orbital_core_eval::evaluator::context::BindingContextBuilder;
-    let expr: SExpression = serde_json::from_value(json!(
+    let expr: SExpression = from_json_value(&json!(
         ["array/reduce", ["array/range", 0, n], [], ["fn", ["acc", "item"], ["array/append", "@acc", "@item"]]]
     ))
     .unwrap();
@@ -1006,7 +1007,7 @@ fn a_reduce_that_appends_to_its_accumulator_allocates_linearly() {
 
 /// Live bytes one dispatch of `trait.event` leaves behind, averaged over `runs` after a warm-up.
 fn retained_per_dispatch(k: &RuntimeKernel, trait_name: &str, event: &str, runs: usize) -> f64 {
-    let dispatch = || k.dispatch(trait_name, None, event, serde_json::from_value(json!({ "id": "c-1" })).unwrap()).unwrap();
+    let dispatch = || k.dispatch(trait_name, None, event, from_json_value(&json!({ "id": "c-1" })).unwrap()).unwrap();
     for _ in 0..50 {
         dispatch();
     }
@@ -1026,10 +1027,10 @@ const PINNED_RETAINED_PER_SAVE: f64 = 1500.0;
 #[test]
 fn a_dispatch_retains_only_the_rows_it_persists() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-    let fixture: serde_json::Value = serde_json::from_str(include_str!("fixtures/parity/audit-provenance.json")).unwrap();
+    let fixture: serde_json::Value = from_json_str(include_str!("fixtures/parity/audit-provenance.json")).unwrap();
     let cache = Arc::new(InMemoryEntityCache::new());
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::clone(&cache) as Arc<dyn EntitySource>, Default::default());
-    k.register_schema(serde_json::from_value(fixture["schema"].clone()).unwrap()).unwrap();
+    k.register_schema(from_json_value(&fixture["schema"]).unwrap()).unwrap();
     support::identity::enable(&k, &[]);
     support::identity::sign_in(&k, "u-1", json!({}));
     let init = retained_per_dispatch(&k, "ContactForm", "INIT", 500);
@@ -1048,7 +1049,7 @@ fn a_dispatch_retains_only_the_rows_it_persists() {
 }
 
 fn session_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1077,7 +1078,7 @@ fn an_ended_session_retains_only_its_tombstone() {
             event: "SET".to_string(),
             target_trait: Some("Editor".to_string()),
             client_id: Some(client),
-            payload: Some(serde_json::from_value(json!({ "body": body })).unwrap()),
+            payload: Some(from_json_value(&json!({ "body": body })).unwrap()),
             ..Default::default()
         };
         assert!(matches!(server.start("Main", request).unwrap(), ServerProgress::Done(_)));
@@ -1106,7 +1107,7 @@ fn big_program(orbitals: usize) -> serde_json::Value {
 }
 
 fn guest_stage() -> orbital_core_runtime::embed::EmbeddedKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "viewer", "typeContractVersion": 1, "orbitals": [{
             "name": "Sessions",
             "entity": { "name": "Session", "persistence": "persistent", "collection": "sessions", "fields": [{ "name": "id", "type": "string" }] },
@@ -1138,7 +1139,7 @@ fn fold_peak(program: serde_json::Value) -> (usize, isize, isize, usize) {
         transitioned: true,
         emitted_events: vec![EmittedEvent {
             event: "GUEST_CLIENT".to_string(),
-            payload: Some(serde_json::from_value(json!({ "guest": "g", "program": program })).unwrap()),
+            payload: Some(from_json_value(&json!({ "guest": "g", "program": program })).unwrap()),
             source: Some(BusEventSource { orbital: Some("Sessions".to_string()), r#trait: Some("GuestSession".to_string()), ..Default::default() }),
         }],
         ..Default::default()
@@ -1154,7 +1155,7 @@ fn fold_peak(program: serde_json::Value) -> (usize, isize, isize, usize) {
         println!("FOLD_STAGE {stage}: peak {:.1} MB live {:.1} MB", (t.peak - base) as f64 / 1048576.0, (t.live - base) as f64 / 1048576.0);
     };
     let out = {
-        let response: EventResponse = serde_json::from_str(&text).unwrap();
+        let response: EventResponse = from_json_str(&text).unwrap();
         mark("parsed");
         let progress = kernel.fold_in_order(flight, response, Default::default(), None).unwrap();
         mark("folded");
@@ -1191,7 +1192,7 @@ fn a_folded_program_is_held_in_less_memory_than_its_text() {
 fn fold_peak_of_a_captured_program() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let path = std::env::var("ORB_MEASURE_ANSWER").expect("ORB_MEASURE_ANSWER names a captured answer");
-    let answer: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let answer: serde_json::Value = from_json_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let program = answer["emittedEvents"].as_array().unwrap().iter().find_map(|e| e["payload"].get("program")).unwrap().clone();
     drop(answer);
     let (bytes, peak, held, out) = fold_peak(program);

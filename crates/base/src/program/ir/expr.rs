@@ -177,6 +177,7 @@ impl OirExpr {
                     OirBinaryOp::Concat => "str/concat",
                     OirBinaryOp::And => "and",
                     OirBinaryOp::Or => "or",
+                    OirBinaryOp::Eq => "=",
                     other => other.symbol(),
                 };
                 arr(head, vec![left.to_sexpression()?, right.to_sexpression()?])

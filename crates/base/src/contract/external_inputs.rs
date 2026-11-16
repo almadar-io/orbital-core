@@ -96,10 +96,11 @@ pub fn readable_entities_of(schema: &OrbitalSchema) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn schema() -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "orbitals": [{
                 "name": "TaskOrbital",
@@ -166,7 +167,7 @@ mod tests {
     fn readable_entities_are_the_persisted_ones_once_in_schema_order() {
         let mut s = schema();
         assert_eq!(readable_entities_of(&s), vec!["Task".to_string()]);
-        let runtime: OrbitalSchema = serde_json::from_value(json!({
+        let runtime: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "orbitals": [{
                 "name": "A",
@@ -180,7 +181,7 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(readable_entities_of(&runtime), vec!["Note".to_string()]);
-        let two: OrbitalSchema = serde_json::from_value(json!({
+        let two: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "orbitals": [
                 { "name": "TaskOrbital",
@@ -205,7 +206,7 @@ mod tests {
             def.as_object_mut().unwrap().extend(extra.as_object().cloned().unwrap());
             def
         };
-        let s: OrbitalSchema = serde_json::from_value(json!({
+        let s: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "orbitals": [{
                 "name": "A",

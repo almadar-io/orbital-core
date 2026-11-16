@@ -1,7 +1,5 @@
 //! EXEC-TICK family: ticks, their states and their legs.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod frame_browser_leg;

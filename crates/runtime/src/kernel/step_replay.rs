@@ -3,6 +3,7 @@
 //! read this report; the host that owns the program text, its resolution and any live substrate supplies only the
 //! dispatch.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use std::prelude::v1::*;
 
 use crate::config::DispatchClock;
@@ -207,7 +208,7 @@ pub fn trait_definitions(resolved: &OrbitalSchema) -> BTreeMap<String, Arc<Trait
 }
 
 fn to_value(json: &serde_json::Value) -> Result<Value, String> {
-    serde_json::from_value(json.clone())
+    from_json_value(&json)
         .map_err(|e| format!("Failed to convert JSON to evaluator value: {e}"))
 }
 
@@ -402,7 +403,7 @@ fn played_emits(outcome: &StepOutcome, timestamp: u64) -> Result<Vec<PlayedEmit>
             let payload =
                 match &e.payload {
                     serde_json::Value::Null => None,
-                    p => Some(serde_json::from_value::<Value>(p.clone()).map_err(|err| {
+                    p => Some(from_json_value::<Value>(&p).map_err(|err| {
                         StepRefusal::new(format!("emit {} payload: {err}", e.event))
                     })?),
                 };
@@ -418,7 +419,7 @@ fn played_emits(outcome: &StepOutcome, timestamp: u64) -> Result<Vec<PlayedEmit>
 fn played_guard(g: &StepGuard) -> Result<PlayedGuard, StepRefusal> {
     Ok(PlayedGuard {
         arm: g.arm as u32,
-        guard: serde_json::from_value(g.guard.clone())
+        guard: from_json_value(&g.guard)
             .map_err(|e| StepRefusal::new(format!("guard of arm {}: {e}", g.arm)))?,
         passed: g.passed,
         trace: Vec::new(),
@@ -542,7 +543,7 @@ pub fn with_step_config(
     if knobs.is_empty() {
         return Ok(None);
     }
-    let mut program: serde_json::Value = serde_json::from_str(program_json)
+    let mut program: serde_json::Value = from_json_str(program_json)
         .map_err(|e| format!("step config: the program is not .orb JSON: {e}"))?;
     for ((trait_name, knob), value) in knobs {
         let declared = program["orbitals"]
@@ -1040,7 +1041,7 @@ mod tests {
         program: &str,
         steps: serde_json::Value,
     ) -> Result<serde_json::Value, StepRefusal> {
-        let schema: OrbitalSchema = serde_json::from_str(program).unwrap();
+        let schema: OrbitalSchema = from_json_str(program).unwrap();
         let clock = StepClock::new();
         let kernel = RuntimeKernel::new(
             RuntimeEnvironment::Server,
@@ -1519,7 +1520,7 @@ mod tests {
     }
 
     fn played(keep_states: bool, steps: &serde_json::Value) -> StepReport {
-        let schema: OrbitalSchema = serde_json::from_str(MODES).unwrap();
+        let schema: OrbitalSchema = from_json_str(MODES).unwrap();
         let clock = StepClock::new();
         let kernel = RuntimeKernel::new(
             RuntimeEnvironment::Server,
@@ -1559,7 +1560,7 @@ mod tests {
 
     #[test]
     fn a_refused_dispatch_is_that_steps_result_and_the_later_steps_still_run() {
-        let schema: OrbitalSchema = serde_json::from_str(MODES).unwrap();
+        let schema: OrbitalSchema = from_json_str(MODES).unwrap();
         let clock = StepClock::new();
         let kernel = RuntimeKernel::new(
             RuntimeEnvironment::Server,
@@ -1641,7 +1642,7 @@ mod tests {
         };
         let folded = with_step_config(program, &steps(5, 5)).unwrap().unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&folded).unwrap()["orbitals"][0]["traits"][0]
+            from_json_str::<serde_json::Value>(&folded).unwrap()["orbitals"][0]["traits"][0]
                 ["config"]["limit"]["default"],
             5
         );
@@ -1668,12 +1669,12 @@ mod tests {
             { "trait": "Modes", "event": "KEY", "from": "NORMAL", "payload": { "key": "z" } }
         ]))
         .unwrap();
-        let report: StepReport = serde_json::from_value(report).unwrap();
+        let report: StepReport = from_json_value(&report).unwrap();
         let asked = |trait_name: &str, key: &str| serde_json::json!({ "orbital": "Editor", "trait": trait_name, "from": "NORMAL", "event": "KEY", "payload": { "key": key }, "now": 5 });
-        let requests: Vec<PlayRequest> = serde_json::from_value(serde_json::json!([
+        let requests: Vec<PlayRequest> = from_json_value(&(serde_json::json!([
             asked("Modes", "i"),
             asked("Modes", "z")
-        ]))
+        ])))
         .unwrap();
         let played = played_steps(&requests, &report).unwrap();
         assert_eq!(played.len(), 2);
@@ -1698,7 +1699,7 @@ mod tests {
         assert_eq!(refused.guards.len(), 2);
 
         let missing: Vec<PlayRequest> =
-            serde_json::from_value(serde_json::json!([asked("Nope", "i")])).unwrap();
+            from_json_value(&(serde_json::json!([asked("Nope", "i")]))).unwrap();
         let refusal = played_steps(&missing, &report).unwrap_err();
         assert_eq!(refusal.error, "trait \"Nope\" did not run");
     }
@@ -1710,7 +1711,7 @@ mod tests {
         ]))
         .unwrap();
         let typed: StepReport =
-            serde_json::from_value(report.clone()).expect("the report is a StepReport");
+            from_json_value(&report).expect("the report is a StepReport");
         assert!(typed.success);
         let outcome = &typed.steps[0].outcomes[0];
         assert_eq!(
@@ -1732,10 +1733,10 @@ mod tests {
             "the typed report prints what the replay printed"
         );
         let refusal = serde_json::json!({ "success": false, "error": "no", "trait": "Modes", "outcomes": [] });
-        let parsed: StepRefusal = serde_json::from_value(refusal.clone()).unwrap();
+        let parsed: StepRefusal = from_json_value(&refusal).unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), refusal);
         assert!(
-            serde_json::from_value::<StepReport>(refusal).is_err(),
+            from_json_value::<StepReport>(&refusal).is_err(),
             "control: a refusal carries no steps, so it is not a report"
         );
     }
@@ -1853,7 +1854,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["/a", "/b"]
         );
-        let typed: StepReport = serde_json::from_value(report.clone()).unwrap();
+        let typed: StepReport = from_json_value(&report).unwrap();
         assert_eq!(serde_json::to_value(&typed).unwrap(), report);
     }
 

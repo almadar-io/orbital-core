@@ -7,14 +7,14 @@ use super::*;
 use orbital_core_base::value::ValueMap;
 
 pub struct AnimFrameAtOp;
-impl Operator for AnimFrameAtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AnimFrameAtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "anim/frame-at", >= 3);
-        let elapsed = require_number!(eval_expr(&args[0], ctx)?);
-        let frame_dur = require_number!(eval_expr(&args[1], ctx)?);
-        let frame_count = require_number!(eval_expr(&args[2], ctx)?);
-        let looped = match args.get(3) {
-            Some(a) => eval_expr(a, ctx)?.boolean()?,
+        let elapsed = require_number!(args[0]);
+        let frame_dur = require_number!(args[1]);
+        let frame_count = require_number!(args[2]);
+        let looped = match args.get(3).copied() {
+            Some(a) => a.boolean()?,
             None => true,
         };
         if frame_dur == 0.0 {
@@ -45,13 +45,13 @@ impl Operator for AnimFrameAtOp {
 }
 
 pub struct AnimSheetRectOp;
-impl Operator for AnimSheetRectOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AnimSheetRectOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "anim/sheet-rect", >= 4);
-        let frame_index = require_number!(eval_expr(&args[0], ctx)?);
-        let cols = require_number!(eval_expr(&args[1], ctx)?);
-        let frame_w = require_number!(eval_expr(&args[2], ctx)?);
-        let frame_h = require_number!(eval_expr(&args[3], ctx)?);
+        let frame_index = require_number!(args[0]);
+        let cols = require_number!(args[1]);
+        let frame_w = require_number!(args[2]);
+        let frame_h = require_number!(args[3]);
         if cols <= 0.0 {
             return Err(EvalError::InvalidArgument(format!(
                 "anim/sheet-rect: cols {cols} must be positive"
@@ -72,13 +72,13 @@ impl Operator for AnimSheetRectOp {
 }
 
 pub struct AnimDirectionFromDeltaOp;
-impl Operator for AnimDirectionFromDeltaOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AnimDirectionFromDeltaOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "anim/direction-from-delta", >= 2);
-        let dx = require_number!(eval_expr(&args[0], ctx)?);
-        let dy = require_number!(eval_expr(&args[1], ctx)?);
-        let ways = match args.get(2) {
-            Some(a) => eval_expr(a, ctx)?.number()?,
+        let dx = require_number!(args[0]);
+        let dy = require_number!(args[1]);
+        let ways = match args.get(2).copied() {
+            Some(a) => a.number()?,
             None => 4.0,
         };
         if ways != 4.0 && ways != 8.0 {

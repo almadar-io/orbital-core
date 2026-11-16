@@ -3,6 +3,7 @@
 // `targetTrait` runs every declared trait. JS twins: `client-kernel-seeded-leg-fold`,
 // `client-role-leg-carries-pre-dispatch-row`, `client-role-local-seed-downstream-leg`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::ValueMap;
 use orbital_core_runtime::effects::TraitFrom;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
@@ -17,7 +18,7 @@ use {
 };
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
@@ -56,7 +57,7 @@ fn schema() -> OrbitalSchema {
 }
 
 fn row(json: Json) -> Value {
-    serde_json::from_value(json).unwrap()
+    from_json_value(&json).unwrap()
 }
 
 /// Run `request`; the persistence host records every create it is asked for.
@@ -263,7 +264,7 @@ fn control_a_stateless_host_takes_the_clients_copy_on_any_request() {
 // address). A `[runtime]` row carried with an id is that row, never the singleton's seeded row; an id-carrying row of a
 // `[shared]` entity stays out of the one shared frame.
 fn carried_rows_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "CardOrbital",
@@ -489,7 +490,7 @@ fn a_fork_answers_exactly_as_a_freshly_registered_server() {
 
 fn holder_schema() -> OrbitalSchema {
     let items: Vec<Json> = (0..20).map(|i| json!({ "k": format!("item-{i}") })).collect();
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "HolderOrbital",
@@ -537,7 +538,7 @@ fn control_a_dispatch_after_the_mount_returns_only_what_it_wrote() {
 }
 
 fn topic_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "TopicOrbital",
@@ -600,7 +601,7 @@ fn a_stateless_request_reads_back_the_frame_its_client_carries_not_another_viewe
 // EXEC-DIST-8: a session's browser holds only the fields it reads, so a stateful host's delegated leg folds only those
 // from the carried row; the fields the host holds alone stay as the session left them.
 fn browser_held_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Held",

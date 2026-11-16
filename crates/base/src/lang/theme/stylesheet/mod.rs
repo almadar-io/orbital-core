@@ -27,6 +27,7 @@ pub use css::{generate_theme_css, program_themes, program_themes_css, theme_font
 mod tests {
     use super::tokens::emit_skin_axes;
     use super::*;
+    use crate::json_value::from_json_value;
     use crate::schema::{
         DensityTokens, ElevationTokens, GeometryTokens, IconFamily, IconographyTokens,
         MotionDurationKey, MotionDurationPalette, MotionEasingKey, MotionIntent, MotionIntentMap,
@@ -325,7 +326,7 @@ mod tests {
                 "pageImageSize": "8px 8px"
             }
         });
-        serde_json::from_value(json).expect("range fixture deserializes")
+        from_json_value(&json).expect("range fixture deserializes")
     }
 
     /// Twin of `packages/almadar-ui/test/themeTokens.range-axes.test.ts`.
@@ -394,14 +395,14 @@ mod tests {
             .remove("dark")
             .unwrap();
         dark.surface =
-            serde_json::from_value(serde_json::json!({ "backdrop": "blur(4px)" })).unwrap();
+            from_json_value(&(serde_json::json!({ "backdrop": "blur(4px)" }))).unwrap();
         let css = tokens::emit_skin_axes_dark(&base, Some(&dark), "");
         assert!(css.contains("--surface-backdrop: blur(4px);"));
         assert!(!css.contains("--surface-page-image"));
     }
 
     fn diagram_fixture() -> ThemeTokens {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "diagram": {
                 "strokeThin": "1px", "strokeNormal": "2px", "strokeBold": "4px",
                 "lineCap": "square", "lineJoin": "miter", "dash": "8 4", "dot": "1 4",
@@ -415,7 +416,7 @@ mod tests {
                 "lightKeyColor": "#fff4e0", "fog": "0.2"
             },
             "surface": { "diagram": "var(--color-card)" }
-        }))
+        })))
         .unwrap()
     }
 
@@ -466,7 +467,7 @@ mod tests {
     #[test]
     fn diagram_axes_partial_axis_emits_only_its_keys() {
         let tokens: ThemeTokens =
-            serde_json::from_value(serde_json::json!({ "diagram": { "glow": "8" } })).unwrap();
+            from_json_value(&(serde_json::json!({ "diagram": { "glow": "8" } }))).unwrap();
         let css = emit_skin_axes(&tokens, "");
         assert!(css.contains("--diagram-glow: 8;"));
         assert!(!css.contains("--diagram-stroke"));
@@ -476,8 +477,8 @@ mod tests {
     fn diagram_axes_dark_variant_replaces_the_whole_axis() {
         let base = diagram_fixture();
         let mut dark = create_test_theme().variants.unwrap().remove("dark").unwrap();
-        dark.diagram = serde_json::from_value(serde_json::json!({ "glow": "10" })).unwrap();
-        dark.scene = serde_json::from_value(serde_json::json!({ "lightAmbient": "0.3" })).unwrap();
+        dark.diagram = from_json_value(&(serde_json::json!({ "glow": "10" }))).unwrap();
+        dark.scene = from_json_value(&(serde_json::json!({ "lightAmbient": "0.3" }))).unwrap();
         let css = tokens::emit_skin_axes_dark(&base, Some(&dark), "");
         assert!(css.contains("--diagram-glow: 10;"));
         assert!(!css.contains("--diagram-stroke-normal"));
@@ -489,7 +490,7 @@ mod tests {
     #[test]
     fn diagram_axes_reject_an_unknown_line_cap() {
         let bad: Result<ThemeTokens, _> =
-            serde_json::from_value(serde_json::json!({ "diagram": { "lineCap": "wavy" } }));
+            from_json_value(&(serde_json::json!({ "diagram": { "lineCap": "wavy" } })));
         assert!(bad.is_err());
     }
 
@@ -513,7 +514,7 @@ mod tests {
     #[test]
     fn a_dark_only_preset_reports_no_light_mode_and_no_themes_mean_no_default() {
         let mut theme = create_test_theme();
-        theme.tokens = serde_json::from_value(serde_json::json!({})).unwrap();
+        theme.tokens = from_json_value(&(serde_json::json!({}))).unwrap();
         let (themes, _, _) = client_themes(&[theme], Some("ocean-dark"));
         assert!(!themes[0].has_light_mode && themes[0].has_dark_mode);
         assert_eq!(client_themes(&[], None).1, None);
@@ -522,9 +523,9 @@ mod tests {
     /// Twin of the `motion shapes` case in `themeTokens.range-axes.test.ts`.
     #[test]
     fn motion_shapes_emit_the_surface_transform_endpoints() {
-        let tokens: ThemeTokens = serde_json::from_value(serde_json::json!({
+        let tokens: ThemeTokens = from_json_value(&(serde_json::json!({
             "motion": { "shapes": { "modalEnter": "scale(0.9)", "pageEnter": "none", "toastEnter": "translateX(24px)" } }
-        }))
+        })))
         .unwrap();
         let css = emit_skin_axes(&tokens, "");
         assert!(css.contains("--motion-modal-enter-from-transform: scale(0.9);"));

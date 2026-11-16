@@ -81,10 +81,10 @@ pub fn parse_csv(text: &str) -> Vec<Value> {
 }
 
 pub struct CsvParseOp;
-impl Operator for CsvParseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for CsvParseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "csv/parse", 1);
-        let input = eval_expr(&args[0], ctx)?;
+        let input = args[0];
         Ok(Value::array(parse_csv(input.text()?)))
     }
 }

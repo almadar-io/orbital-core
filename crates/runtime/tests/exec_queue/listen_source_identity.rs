@@ -4,12 +4,13 @@
 // `buildSourceMatcher` (`almadar-runtime/src/events/identity/routing.ts`) and
 // `identity-rename-routing.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
 fn kernel(schema: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+    let schema: OrbitalSchema = from_json_value(&schema).unwrap();
     crate::support::TestKernel::server().register(schema)
 }
 

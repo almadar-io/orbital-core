@@ -1,6 +1,7 @@
 //! G-CROSS-041: the `(quote x)` body codec, against the fixture `@almadar/core`
 //! owns (`fixtures/quote/cases.json`) — byte parity with the TS twin.
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_base::fixtures::quote_cases;
 use orbital_core_base::schema::quote::{decode_quote_body, encode_quote_body, quote_body_of, quote_expr, QUOTE_HEAD};
 use orbital_core_base::schema::SExpression;
@@ -13,7 +14,7 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    serde_json::from_str(quote_cases()).expect("quote fixture parses")
+    from_json_str(quote_cases()).expect("quote fixture parses")
 }
 
 #[test]

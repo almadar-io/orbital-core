@@ -2,6 +2,7 @@
 //! (`fixtures/quasiquote/cases.json`) and evaluation on the kernel path; twin
 //! of `@almadar/core` `__tests__/quasiquote-codec.test.ts`.
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_base::value::ValueMap;
 use {orbital_core_eval::evaluator::{eval_expr, BindingContext}, orbital_core_base::value::Value};
 use orbital_core_base::fixtures::quasiquote_cases;
@@ -20,11 +21,11 @@ struct Case {
 }
 
 fn cases() -> Vec<Case> {
-    serde_json::from_str(quasiquote_cases()).expect("quasiquote fixture parses")
+    from_json_str(quasiquote_cases()).expect("quasiquote fixture parses")
 }
 
 fn sx(json: &str) -> SExpression {
-    serde_json::from_str(json).expect("sexpr json")
+    from_json_str(json).expect("sexpr json")
 }
 
 /// A context whose bindings hold each case's hole values, so evaluating the IR

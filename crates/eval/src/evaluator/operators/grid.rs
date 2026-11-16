@@ -6,7 +6,7 @@
 use std::prelude::v1::*;
 
 use super::macros::*;
-use super::vector::{eval_fields, make_vec, whole, POINT};
+use super::vector::{make_vec, read_fields, whole, POINT};
 use super::*;
 
 fn cell(x: f64, y: f64) -> Value {
@@ -14,23 +14,23 @@ fn cell(x: f64, y: f64) -> Value {
 }
 
 pub struct GridToWorldOp;
-impl Operator for GridToWorldOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridToWorldOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/to-world";
         require_arity!(args, OP, >= 2);
-        let [c_x, c_y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
-        let size = require_number!(eval_expr(&args[1], ctx)?);
+        let [c_x, c_y] = read_fields(OP, "cell", args[0], POINT)?;
+        let size = require_number!(args[1]);
         Ok(make_vec((c_x + 0.5) * size, (c_y + 0.5) * size, 0.0, false))
     }
 }
 
 pub struct GridFromWorldOp;
-impl Operator for GridFromWorldOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridFromWorldOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/from-world";
         require_arity!(args, OP, >= 2);
-        let [p_x, p_y] = eval_fields(OP, "point", &args[0], ctx, POINT)?;
-        let size = require_number!(eval_expr(&args[1], ctx)?);
+        let [p_x, p_y] = read_fields(OP, "point", args[0], POINT)?;
+        let size = require_number!(args[1]);
         if size == 0.0 {
             return Err(EvalError::InvalidArgument(format!("{OP}: cellSize must not be 0")).into());
         }
@@ -39,13 +39,13 @@ impl Operator for GridFromWorldOp {
 }
 
 pub struct GridIsoToScreenOp;
-impl Operator for GridIsoToScreenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridIsoToScreenOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/iso-to-screen";
         require_arity!(args, OP, >= 3);
-        let [c_x, c_y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
-        let tile_w = require_number!(eval_expr(&args[1], ctx)?);
-        let tile_h = require_number!(eval_expr(&args[2], ctx)?);
+        let [c_x, c_y] = read_fields(OP, "cell", args[0], POINT)?;
+        let tile_w = require_number!(args[1]);
+        let tile_h = require_number!(args[2]);
         Ok(make_vec(
             (c_x - c_y) * tile_w / 2.0,
             (c_x + c_y) * tile_h / 2.0,
@@ -56,13 +56,13 @@ impl Operator for GridIsoToScreenOp {
 }
 
 pub struct GridScreenToIsoOp;
-impl Operator for GridScreenToIsoOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridScreenToIsoOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/screen-to-iso";
         require_arity!(args, OP, >= 3);
-        let [px, py] = eval_fields(OP, "point", &args[0], ctx, POINT)?;
-        let tile_w = require_number!(eval_expr(&args[1], ctx)?);
-        let tile_h = require_number!(eval_expr(&args[2], ctx)?);
+        let [px, py] = read_fields(OP, "point", args[0], POINT)?;
+        let tile_w = require_number!(args[1]);
+        let tile_h = require_number!(args[2]);
         let hw = tile_w / 2.0;
         let hh = tile_h / 2.0;
         if hw == 0.0 || hh == 0.0 {
@@ -80,12 +80,12 @@ impl Operator for GridScreenToIsoOp {
 }
 
 pub struct GridDistanceOp;
-impl Operator for GridDistanceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridDistanceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/distance";
         require_arity!(args, OP, >= 2);
-        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
-        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let [a_x, a_y] = read_fields(OP, "a", args[0], POINT)?;
+        let [b_x, b_y] = read_fields(OP, "b", args[1], POINT)?;
         let dx = (a_x - b_x).abs();
         let dy = (a_y - b_y).abs();
         Ok(Value::Number(dx.max(dy)))
@@ -93,12 +93,12 @@ impl Operator for GridDistanceOp {
 }
 
 pub struct GridManhattanDistanceOp;
-impl Operator for GridManhattanDistanceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridManhattanDistanceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/manhattan-distance";
         require_arity!(args, OP, >= 2);
-        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
-        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let [a_x, a_y] = read_fields(OP, "a", args[0], POINT)?;
+        let [b_x, b_y] = read_fields(OP, "b", args[1], POINT)?;
         let dx = (a_x - b_x).abs();
         let dy = (a_y - b_y).abs();
         Ok(Value::Number(dx + dy))
@@ -106,13 +106,13 @@ impl Operator for GridManhattanDistanceOp {
 }
 
 pub struct GridNeighborsOp;
-impl Operator for GridNeighborsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridNeighborsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/neighbors";
         require_arity!(args, OP, 1);
-        let [cx, cy] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
-        let diagonal = match args.get(1) {
-            Some(a) => eval_expr(a, ctx)?.boolean()?,
+        let [cx, cy] = read_fields(OP, "cell", args[0], POINT)?;
+        let diagonal = match args.get(1).copied() {
+            Some(a) => a.boolean()?,
             None => false,
         };
         // N, E, S, W
@@ -134,12 +134,12 @@ impl Operator for GridNeighborsOp {
 }
 
 pub struct GridCellsInRadiusOp;
-impl Operator for GridCellsInRadiusOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridCellsInRadiusOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/cells-in-radius";
         require_arity!(args, OP, >= 2);
-        let [cx, cy] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
-        let r = require_number!(eval_expr(&args[1], ctx)?);
+        let [cx, cy] = read_fields(OP, "cell", args[0], POINT)?;
+        let r = require_number!(args[1]);
         let rf = r.floor();
         let ri = rf as i64;
         let r2 = r * r;
@@ -162,12 +162,12 @@ impl Operator for GridCellsInRadiusOp {
 }
 
 pub struct GridLineOp;
-impl Operator for GridLineOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridLineOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/line";
         require_arity!(args, OP, >= 2);
-        let [a_x, a_y] = eval_fields(OP, "a", &args[0], ctx, POINT)?;
-        let [b_x, b_y] = eval_fields(OP, "b", &args[1], ctx, POINT)?;
+        let [a_x, a_y] = read_fields(OP, "a", args[0], POINT)?;
+        let [b_x, b_y] = read_fields(OP, "b", args[1], POINT)?;
         let mut x0 = whole(OP, "cell a.x", a_x)?;
         let mut y0 = whole(OP, "cell a.y", a_y)?;
         let x1 = whole(OP, "cell b.x", b_x)?;
@@ -198,13 +198,13 @@ impl Operator for GridLineOp {
 }
 
 pub struct GridInBoundsOp;
-impl Operator for GridInBoundsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GridInBoundsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "grid/in-bounds";
         require_arity!(args, OP, >= 3);
-        let [x, y] = eval_fields(OP, "cell", &args[0], ctx, POINT)?;
-        let w = require_number!(eval_expr(&args[1], ctx)?);
-        let h = require_number!(eval_expr(&args[2], ctx)?);
+        let [x, y] = read_fields(OP, "cell", args[0], POINT)?;
+        let w = require_number!(args[1]);
+        let h = require_number!(args[2]);
         Ok(Value::Bool(x >= 0.0 && x < w && y >= 0.0 && y < h))
     }
 }

@@ -1,5 +1,6 @@
 //! The kind-string vocabulary parsed into `CompatType` and checked against the relation.
 
+use crate::json_value::from_json_str;
 use super::*;
 
 /// The legacy kind-string vocabulary, parsed into the relation's input space.
@@ -96,7 +97,7 @@ pub(super) fn quoted_literal_union_members(text: &str) -> Option<Vec<String>> {
                 _ => token.push(ch),
             }
         }
-        members.push(serde_json::from_str::<String>(&token).ok()?);
+        members.push(from_json_str::<String>(&token).ok()?);
         remaining = remaining.get(end?..)?.trim_start();
         if remaining.is_empty() {
             return Some(members);

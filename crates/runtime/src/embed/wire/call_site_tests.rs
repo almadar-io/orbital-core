@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_str;
 use super::*;
 
 fn site(entity_id: &str) -> CallSite {
@@ -18,6 +19,6 @@ fn a_call_site_keeps_its_frame_across_the_wire_and_the_singleton_stays_off_it() 
     let single = CallSiteWire::from(&site(crate::process_result::RUNTIME_SINGLETON));
     assert_eq!(single.entity_id, None, "the singleton is the absence of a frame on the wire");
     assert_eq!(CallSite::from(single).entity_id, crate::process_result::RUNTIME_SINGLETON);
-    let old: CallSiteWire = serde_json::from_str(r#"{"trait":"Sup","followOn":false,"emit":{}}"#).expect("an older site parses");
+    let old: CallSiteWire = from_json_str(r#"{"trait":"Sup","followOn":false,"emit":{}}"#).expect("an older site parses");
     assert_eq!(CallSite::from(old).entity_id, crate::process_result::RUNTIME_SINGLETON, "control: a site with no frame addresses the singleton");
 }

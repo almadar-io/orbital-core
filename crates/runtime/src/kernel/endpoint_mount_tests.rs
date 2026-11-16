@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 use orbital_core_base::protocols::ProtocolSide;
@@ -13,7 +14,7 @@ fn trait_json(name: &str) -> serde_json::Value {
 }
 
 fn kernel(pages: serde_json::Value, traits: &[&str]) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -21,7 +22,7 @@ fn kernel(pages: serde_json::Value, traits: &[&str]) -> RuntimeKernel {
             "traits": traits.iter().map(|t| trait_json(t)).collect::<Vec<_>>(),
             "pages": pages
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -58,7 +59,7 @@ fn lifecycle_kernel() -> RuntimeKernel {
             "transitions": [{ "from": "idle", "to": "idle", "event": event, "effects": [] }]
         }
     });
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -66,7 +67,7 @@ fn lifecycle_kernel() -> RuntimeKernel {
             "traits": [with("Inits", "INIT"), with("Loads", "LOAD"), with("Mounts", "$MOUNT"), with("Deaf", "GO")],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Inits" }, { "ref": "Loads" }, { "ref": "Mounts" }, { "ref": "Deaf" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -148,7 +149,7 @@ fn composer_kernel(child_reads_payload: bool) -> RuntimeKernel {
     } else {
         serde_json::json!(["render-ui", "main", { "type": "text", "content": "plain" }])
     };
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -164,7 +165,7 @@ fn composer_kernel(child_reads_payload: bool) -> RuntimeKernel {
             ],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Host" }, { "ref": "Child" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -291,7 +292,7 @@ fn embed_kernel(host_embeds: bool) -> RuntimeKernel {
             "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", "@trait.Leaf"]] }]
         }
     });
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -299,7 +300,7 @@ fn embed_kernel(host_embeds: bool) -> RuntimeKernel {
             "traits": [host, mid, trait_json("Leaf")],
             "pages": [{ "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "Host" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -377,7 +378,7 @@ fn page_circuit_embedded_by_names_a_page_listed_trait_a_sibling_references() {
                 "effects": [["render-ui", "main", "@trait.Child"]] }]
         }
     });
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -385,7 +386,7 @@ fn page_circuit_embedded_by_names_a_page_listed_trait_a_sibling_references() {
             "traits": [host, trait_json("Child")],
             "pages": [{ "name": "Home", "path": "/", "isInitial": true, "traits": [{ "ref": "Host" }, { "ref": "Child" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let k = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -421,7 +422,7 @@ fn linked_trait(name: &str, entity: &str, effects: serde_json::Value) -> serde_j
 /// One orbital per entity; the pages bind traits by name.
 fn entity_kernel(orbitals: serde_json::Value) -> RuntimeKernel {
     let schema: OrbitalSchema =
-        serde_json::from_value(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap();
+        from_json_value(&(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals }))).unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
@@ -703,7 +704,7 @@ fn g_orbital_shell_typescript_106_page_circuit_names_the_declared_ancestor_pages
 }
 
 fn gated() -> RuntimeKernel {
-    let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: orbital_core_base::schema::types::OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1,
         "site": { "signIn": "/login" },
@@ -717,7 +718,7 @@ fn gated() -> RuntimeKernel {
                 { "name": "Login", "path": "/login", "access": "public", "traits": [{ "ref": "Login" }] }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -742,7 +743,7 @@ fn g_orbital_shell_typescript_107_an_anonymous_session_is_denied_an_authenticate
 #[test]
 fn g_orbital_shell_typescript_107_the_circuit_says_admitted_for_a_signed_in_viewer_and_a_public_page() {
     let k = gated();
-    k.bind_test_identity(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap());
+    k.bind_test_identity(from_json_value(&(serde_json::json!({ "id": "u1" }))).unwrap());
     let c = circuit_json(&k.page_circuit(None, Some("/account/42")).unwrap());
     assert_eq!(c["access"], serde_json::json!({ "verdict": "admitted", "viewer": "u1" }));
     let anonymous = gated();
@@ -753,7 +754,7 @@ fn g_orbital_shell_typescript_107_the_circuit_says_admitted_for_a_signed_in_view
 #[test]
 fn control_g_orbital_shell_typescript_107_a_signed_in_viewer_mounts_the_authenticated_page_today() {
     let k = gated();
-    k.bind_test_identity(serde_json::from_value(serde_json::json!({ "id": "u1" })).unwrap());
+    k.bind_test_identity(from_json_value(&(serde_json::json!({ "id": "u1" }))).unwrap());
     let c = k.page_circuit(None, Some("/account/42")).unwrap();
     assert_eq!(c.page.as_deref(), Some("Account"));
     assert_eq!(names(c.mounts), ["Mine"]);
@@ -766,7 +767,7 @@ fn client_trait_asking_a_boot_orbital(effect: serde_json::Value) -> RuntimeKerne
         delegate: Some(collector as Arc<dyn crate::effects::executor::EffectDelegate>),
         ..KernelConfig::default()
     };
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1,
         "_metadata": { "serverListens": [{ "orbital": "Files", "listen": {
@@ -787,7 +788,7 @@ fn client_trait_asking_a_boot_orbital(effect: serde_json::Value) -> RuntimeKerne
             }],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Win" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Client,

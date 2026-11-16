@@ -2,6 +2,7 @@
 // tick fires — its trait's mount scope, `appliesTo`, the rows it runs over. JS twins:
 // `almadar-runtime/test/{tick-mount-scope,tick-applies-to-states,pause-ticks}.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use serde_json::{json, Value as Json};
@@ -35,7 +36,7 @@ fn trait_with_tick(name: &str, emit: &str, background: bool, applies_to: Option<
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
@@ -86,7 +87,7 @@ fn drive(server: &EmbeddedServer, request: EventRequest, rows: &[&str]) -> Event
 }
 
 fn row(id: &str) -> Value {
-    serde_json::from_value(json!({ "id": id })).unwrap()
+    from_json_value(&json!({ "id": id })).unwrap()
 }
 
 fn tick(trait_name: &str, entity_id: Option<&str>) -> EventRequest {
@@ -347,7 +348,7 @@ fn an_entity_id_runs_the_tick_for_that_row_alone() {
 
 #[test]
 fn edge_a_tick_over_a_persistent_entity_with_no_rows_fires_nothing() {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
@@ -404,7 +405,7 @@ mod unfired_step_render {
     fn painter() -> OrbitalSchema {
         let say =
             |text: &str| json!(["render-ui", "main", { "type": "typography", "content": text }]);
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Board",

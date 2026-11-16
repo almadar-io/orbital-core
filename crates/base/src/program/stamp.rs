@@ -807,6 +807,7 @@ fn resolve_listen_source(source: &mut ListenSource, ids: &OrbitalIds) {
 
 #[cfg(test)]
 mod tests {
+    use crate::json_value::from_json_value;
     use super::stamp_schema_identity;
     use crate::schema::types::{OrbitalSchema, TraitReference};
     use std::collections::HashSet;
@@ -825,7 +826,7 @@ mod tests {
     }
 
     fn program(orbitals: Vec<serde_json::Value>) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({ "name": "P", "orbitals": orbitals }))
+        from_json_value(&(serde_json::json!({ "name": "P", "orbitals": orbitals })))
             .expect("schema")
     }
 

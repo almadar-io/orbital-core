@@ -21,8 +21,8 @@ fn readable<'a>(ctx: &'a BindingContext, op: &str) -> Result<&'a dyn crate::eval
 
 /// kernel/worklist () - the pending worklist at step start: `[{ event, trait, orbital }]`
 pub struct KernelWorklistOp;
-impl Operator for KernelWorklistOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for KernelWorklistOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "kernel/worklist";
         require_arity!(args, OP, == 0);
         Ok(readable(ctx, OP)?.worklist())
@@ -31,8 +31,8 @@ impl Operator for KernelWorklistOp {
 
 /// kernel/frame () - the step's own position: `{ trait, state, event, entityId }`
 pub struct KernelFrameOp;
-impl Operator for KernelFrameOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for KernelFrameOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "kernel/frame";
         require_arity!(args, OP, == 0);
         Ok(readable(ctx, OP)?.frame())
@@ -41,8 +41,8 @@ impl Operator for KernelFrameOp {
 
 /// kernel/stamp () - `{ now, dispatch, step, journal }`
 pub struct KernelStampOp;
-impl Operator for KernelStampOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for KernelStampOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "kernel/stamp";
         require_arity!(args, OP, == 0);
         Ok(readable(ctx, OP)?.stamp())
@@ -57,14 +57,14 @@ fn refuse(message: String) -> OrbitalError {
 /// grant does not cover, an unknown operator, an operator with side effects or a host. Arity and kind errors are the
 /// operator's own, raised by the same call path any written call takes.
 pub struct KernelApplyOp;
-impl Operator for KernelApplyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for KernelApplyOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "kernel/apply";
         require_arity!(args, OP, == 2);
         let introspect = ctx.kernel_introspect(OP)?;
-        let name_value = eval_expr(&args[0], ctx)?;
+        let name_value = args[0];
         let name = name_value.text()?;
-        let operands = require_array!(eval_expr(&args[1], ctx)?);
+        let operands = require_array!(args[1]);
 
         if name.starts_with("kernel/") {
             return Err(refuse(format!("{OP}: {name} is a kernel operator and cannot be applied")));

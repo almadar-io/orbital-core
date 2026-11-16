@@ -1,10 +1,11 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 use crate::client::client_kernel::ClientKernel;
 
 /// Same shape as `orbital-core`'s own `render_ui_schema` kernel-level fixture —
 /// a bare `SHOW` transition that renders `@payload.title` into `main`.
 fn render_ui_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -26,7 +27,7 @@ fn render_ui_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -93,7 +94,7 @@ fn peer_main_schema() -> OrbitalSchema {
             { "from": "shown", "to": "idle", "event": hide, "effects": [["render-ui", "main", null]] }
         ])
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -107,7 +108,7 @@ fn peer_main_schema() -> OrbitalSchema {
                   "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }], "transitions": shows("child") } }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -173,9 +174,9 @@ fn await_row(
     trait_name: &str,
     slot: &str,
 ) -> orbital_core_base::ir::types::AwaitRenderRow {
-    serde_json::from_value::<orbital_core_base::ir::types::AwaitRender>(serde_json::json!({
+    from_json_value::<orbital_core_base::ir::types::AwaitRender>(&(serde_json::json!({
         "trait": trait_name, "slot": slot, "skeleton": { "shape": { "variant": "list", "rows": 3 } }
-    }))
+    })))
     .map(|r| orbital_core_base::ir::types::AwaitRenderRow {
         request_trait: request.into(),
         event: event.into(),
@@ -273,7 +274,7 @@ fn two_page_schema() -> OrbitalSchema {
             { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": title }]] }
         ])
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -287,7 +288,7 @@ fn two_page_schema() -> OrbitalSchema {
                 { "name": "DetailPage", "path": "/notes/:id", "traits": [{ "ref": "DetailTrait" }] }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -308,9 +309,9 @@ fn navigating_sets_the_viewer_locale_from_the_route() {
     let mut schema = two_page_schema();
     schema.locales = Some(vec!["en".into(), "ar".into()]);
     schema.orbitals[0].pages.as_mut().unwrap().push(
-        serde_json::from_value(serde_json::json!(
+        from_json_value(&(serde_json::json!(
             { "name": "ArPage", "path": "/ar/notes", "traits": [{ "ref": "ListTrait" }] }
-        ))
+        )))
         .unwrap(),
     );
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
@@ -327,9 +328,9 @@ fn a_client_started_on_a_locale_path_paints_that_locale() {
     let mut schema = two_page_schema();
     schema.locales = Some(vec!["en".into(), "ar".into()]);
     schema.orbitals[0].pages.as_mut().unwrap().push(
-        serde_json::from_value(serde_json::json!(
+        from_json_value(&(serde_json::json!(
             { "name": "ArPage", "path": "/ar/notes", "isInitial": true, "traits": [{ "ref": "ListTrait" }] }
-        ))
+        )))
         .unwrap(),
     );
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
@@ -358,9 +359,9 @@ fn an_unmatched_path_enters_the_page_declared_not_found() {
     let mut schema = two_page_schema();
     let pages = schema.orbitals[0].pages.as_mut().unwrap();
     pages.push(
-        serde_json::from_value(serde_json::json!(
+        from_json_value(&(serde_json::json!(
             { "name": "MissingPage", "path": "/missing", "isNotFound": true, "traits": [{ "ref": "ListTrait" }] }
-        ))
+        )))
         .unwrap(),
     );
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
@@ -430,7 +431,7 @@ fn main_shows_the_current_pages_writers_and_navigate_switches_page() {
 /// event whose transition emits X reaches X's listener exactly once, and the response
 /// must not queue X again for `ClientCore` to replay to the emitter.
 fn emit_listener_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -463,7 +464,7 @@ fn emit_listener_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -523,7 +524,7 @@ fn an_emitter_handling_its_own_emit_runs_it_once() {
             serde_json::json!({ "from": "idle", "to": "idle", "event": "X",
             "effects": [["set", "@entity.count", ["+", ["default", "@entity.count", 0], 100]]] }),
         );
-    let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+    let schema: OrbitalSchema = from_json_value(&schema).unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel.clone());
     core.drive_blocking("INIT", Some("Emitter"), Value::Null);
@@ -547,14 +548,14 @@ fn peer_buttons_schema() -> OrbitalSchema {
                 { "from": "idle", "to": "clicked", "event": "CLICK" }
             ] } })
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [peer("First"), peer("Second")]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -600,13 +601,13 @@ fn two_orbital_schema() -> OrbitalSchema {
             "pages": [{ "name": page, "path": path, "traits": [{ "ref": trait_name }] }]
         })
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
             orbital("Home", "HomePage", "/home", "HomeTrait", serde_json::json!([["navigate", "/settings"]])),
             orbital("Settings", "SettingsPage", "/settings", "SettingsTrait", serde_json::json!([]))
         ]
-    }))
+    })))
     .unwrap()
 }
 
@@ -643,7 +644,7 @@ fn a_refused_dispatch_is_reported() {
 }
 
 fn routed_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -661,7 +662,7 @@ fn routed_schema() -> OrbitalSchema {
                 { "name": "DetailPage", "path": "/notes/:id", "traits": [{ "ref": "DetailTrait" }] }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -744,7 +745,7 @@ fn a_navigate_effect_mounts_the_page_it_lands_on() {
         .push(serde_json::json!(
             { "from": "idle", "to": "idle", "event": "OPEN", "effects": [["navigate", "/notes/9"]] }
         ));
-    schema.orbitals[0].traits[0] = serde_json::from_value(list.clone()).unwrap();
+    schema.orbitals[0].traits[0] = from_json_value(&list).unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
     core.mount_page_blocking();
@@ -755,7 +756,7 @@ fn a_navigate_effect_mounts_the_page_it_lands_on() {
 }
 
 fn ticking_schema(ticks: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "t",
         "typeContractVersion": 1, "orbitals": [{
             "name": "O",
@@ -772,7 +773,7 @@ fn ticking_schema(ticks: serde_json::Value) -> OrbitalSchema {
             }],
             "pages": []
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -972,7 +973,7 @@ fn a_page_mount_also_inits_the_traits_its_traits_embed() {
             "effects": [["render-ui", "main", { "type": "stack", "children": extra, "title": title }]] }])
     };
     let machine = |transitions: serde_json::Value| serde_json::json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions });
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -984,7 +985,7 @@ fn a_page_mount_also_inits_the_traits_its_traits_embed() {
             ],
             "pages": [{ "name": "HostPage", "path": "/host", "traits": [{ "ref": "Host" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
@@ -1008,7 +1009,7 @@ fn a_bare_trait_embed_render_is_a_main_entry_that_names_the_embedded_trait() {
         serde_json::json!({ "states": [{ "name": "idle", "isInitial": true }],
         "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [effect] }] })
     };
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1019,7 +1020,7 @@ fn a_bare_trait_embed_render_is_a_main_entry_that_names_the_embedded_trait() {
             ],
             "pages": [{ "name": "HostPage", "path": "/host", "traits": [{ "ref": "Host" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
@@ -1038,7 +1039,7 @@ fn a_bare_trait_embed_render_is_a_main_entry_that_names_the_embedded_trait() {
     );
     // control: an object pattern still parses by its type, and a non-reference string is no pattern.
     assert!(core
-        .parse_pattern(&serde_json::from_str("{\"type\":\"page-header\"}").unwrap())
+        .parse_pattern(&from_json_str("{\"type\":\"page-header\"}").unwrap())
         .is_some());
     assert!(core.parse_pattern(&Value::string("plain text")).is_none());
 }
@@ -1047,7 +1048,7 @@ fn a_bare_trait_embed_render_is_a_main_entry_that_names_the_embedded_trait() {
 /// the same page paints no message (the control).
 #[test]
 fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Site",
         "typeContractVersion": 1,
         "locales": ["en"],
@@ -1061,7 +1062,7 @@ fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
             } }],
             "pages": [{ "name": "HomePage", "path": "/", "traits": [{ "ref": "HomePage" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let title_with = |messages: bool| {
         let mut schema = schema.clone();
@@ -1081,7 +1082,7 @@ fn a_client_core_paints_i18n_from_the_catalogs_installed_in_its_kernel() {
 }
 
 fn init_response(rejections: serde_json::Value) -> EventResponse {
-    serde_json::from_value(serde_json::json!({ "success": true, "rejections": rejections }))
+    from_json_value(&(serde_json::json!({ "success": true, "rejections": rejections })))
         .unwrap()
 }
 
@@ -1149,10 +1150,10 @@ fn a_server_only_emitters_continuation_is_not_requeued_for_the_client() {
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
     let answer = |emitter: &str| -> EventResponse {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "success": true,
             "emittedEvents": [{ "event": "DONE", "source": { "trait": emitter } }]
-        }))
+        })))
         .unwrap()
     };
     core.process_response("INIT", None, answer("MockDataMockSeed"));
@@ -1184,7 +1185,7 @@ fn a_refused_mount_names_the_entering_traits() {
 fn route_precedence_navigate_opens_a_literal_page_declared_after_its_param_sibling() {
     let mut schema = two_page_schema();
     schema.orbitals[0].pages.as_mut().unwrap().push(
-        serde_json::from_value(serde_json::json!({ "name": "TreePage", "path": "/notes/tree", "traits": [{ "ref": "ListTrait" }] })).unwrap(),
+        from_json_value(&(serde_json::json!({ "name": "TreePage", "path": "/notes/tree", "traits": [{ "ref": "ListTrait" }] }))).unwrap(),
     );
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
@@ -1202,7 +1203,7 @@ fn a_boot_page_is_never_a_navigation_target() {
         "name": "HomeBoot", "path": "", "protocol": "boot", "traits": [{ "ref": "HomeTrait" }]
     }]);
     value["orbitals"][1]["pages"][0]["path"] = serde_json::json!("/");
-    let schema: OrbitalSchema = serde_json::from_value(value).unwrap();
+    let schema: OrbitalSchema = from_json_value(&value).unwrap();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
     assert_eq!(

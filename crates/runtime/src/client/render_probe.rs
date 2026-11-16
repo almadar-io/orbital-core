@@ -822,6 +822,7 @@ fn judge_nodes(nodes: &[RenderedNode], unreal: &mut Vec<String>, found: &mut Fin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     struct Target {
         supported: &'static [&'static str],
@@ -838,7 +839,7 @@ mod tests {
     }
 
     fn program(main: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "t",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Notes",
@@ -853,7 +854,7 @@ mod tests {
                 }],
                 "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
             }]
-        }))
+        })))
         .unwrap()
     }
 
@@ -922,11 +923,11 @@ mod tests {
         entities: &[(&str, usize)],
         gated: &[&str],
     ) -> Vec<RenderedNode> {
-        let content: Value = serde_json::from_value(content).unwrap();
+        let content: Value = from_json_value(&content).unwrap();
         let mut trait_content = ValueMap::default();
         trait_content.insert(
             "Shown".into(),
-            serde_json::from_value(serde_json::json!({ "type": "typography" })).unwrap(),
+            from_json_value(&(serde_json::json!({ "type": "typography" }))).unwrap(),
         );
         let overlay_only: HashSet<String> = ["Drawer".to_string()].into_iter().collect();
         let trait_empty: HashSet<String> = ["Gated".to_string()].into_iter().collect();
@@ -1119,7 +1120,7 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .insert(0, serde_json::json!(["fetch", "Note"]));
-        let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+        let schema: OrbitalSchema = from_json_value(&schema).unwrap();
         let target = Target {
             supported: &["stack", "data-list"],
             stubs: &[],
@@ -1135,7 +1136,7 @@ mod tests {
             false,
             |s, _| {
                 let bridge = KernelBridge::new(s.clone()).map_err(|e| format!("kernel bridge: {e}"))?;
-                let note: Value = serde_json::from_value(serde_json::json!({ "id": "n1", "title": "Note 1" }))
+                let note: Value = from_json_value(&(serde_json::json!({ "id": "n1", "title": "Note 1" })))
                     .map_err(|e| e.to_string())?;
                 bridge.seed("Note", vec![note])?;
                 Ok(Arc::new(bridge) as Arc<dyn ServerBridge>)
@@ -1183,7 +1184,7 @@ mod tests {
     }
 
     fn show_program() -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "t",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Notes",
@@ -1205,7 +1206,7 @@ mod tests {
                 }],
                 "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
             }]
-        }))
+        })))
         .unwrap()
     }
 
@@ -1236,7 +1237,7 @@ mod tests {
     }
 
     fn effects_program(effects: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "t",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Notes",
@@ -1253,7 +1254,7 @@ mod tests {
                 }],
                 "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
             }]
-        }))
+        })))
         .unwrap()
     }
 
@@ -1314,17 +1315,17 @@ mod tests {
             ["render-ui", "main", { "type": "stack" }]
         ]));
         let mut app = ClientCore::new(schema, None);
-        let response: crate::effects::response::EventResponse = serde_json::from_value(serde_json::json!({
+        let response: crate::effects::response::EventResponse = from_json_value(&(serde_json::json!({
             "success": true,
             "rejections": [{ "code": "repaint-failed", "trait": "NotesView", "slot": "main", "error": "boom" }]
-        }))
+        })))
         .unwrap();
         app.process_response("TICK", Some("NotesView".into()), response);
         assert_eq!(app.slot_faults.get("main").map(String::as_str), Some("boom"));
-        let painted: crate::effects::response::EventResponse = serde_json::from_value(serde_json::json!({
+        let painted: crate::effects::response::EventResponse = from_json_value(&(serde_json::json!({
             "success": true,
             "clientEffectsByTrait": [{ "traitName": "NotesView", "effect": ["render-ui", "main", { "type": "stack" }] }]
-        }))
+        })))
         .unwrap();
         app.process_response("TICK", Some("NotesView".into()), painted);
         assert!(app.slot_faults.is_empty(), "control: a later paint of the slot clears its fault");

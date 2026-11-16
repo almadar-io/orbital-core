@@ -253,6 +253,7 @@ impl LiveBroadcastItem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
 
     fn item(target: LiveTarget, origin: Option<&str>) -> LiveBroadcastItem {
         LiveBroadcastItem {
@@ -376,7 +377,7 @@ mod tests {
             dispatch: None,
         };
         let json = serde_json::to_string(&item).unwrap();
-        let back: LiveBroadcastItem = serde_json::from_str(&json).unwrap();
+        let back: LiveBroadcastItem = from_json_str(&json).unwrap();
         assert_eq!(back, item);
     }
 }

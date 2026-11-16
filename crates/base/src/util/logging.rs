@@ -843,6 +843,7 @@ impl std::fmt::Display for TimingTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
     use crate::logging::{record_outcome, OUTCOME};
 
     #[test]
@@ -1044,7 +1045,7 @@ mod tests {
         });
         let text = String::from_utf8(buffer.0.lock().clone()).expect("utf8");
         let lines: Vec<serde_json::Value> =
-            text.lines().map(|l| serde_json::from_str(l).expect("json line")).collect();
+            text.lines().map(|l| from_json_str(l).expect("json line")).collect();
         assert_eq!(lines.len(), 2, "{text}");
         assert_eq!(lines[0]["severity"], "WARNING");
         assert_eq!(lines[0]["namespace"], "almadar:cli");

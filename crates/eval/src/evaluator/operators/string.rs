@@ -10,12 +10,12 @@ use super::*;
 // ============================================================================
 
 pub struct ConcatOp;
-impl Operator for ConcatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ConcatOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         let mut result = String::new();
         for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            result.push_str(&joinable_text(&val)?);
+            let val: &Value = arg;
+            result.push_str(&joinable_text(val)?);
         }
         Ok(Value::string(result))
     }
@@ -81,16 +81,16 @@ fn pad_char_arg(value: &Value) -> Result<char, EvalError> {
 
 pub struct UpperOp;
 pub struct StrToNumberOp;
-impl Operator for StrToNumberOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrToNumberOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.len() != 1 {
             return Err(OrbitalError::Eval(EvalError::InvalidArgument(
                 "str/to-number: expected exactly one argument".into(),
             )));
         }
-        match eval_expr(&args[0], ctx)? {
+        match args[0] {
             Value::String(text) => {
-                let n = orbital_core_base::str_utils::js_number_from_text(&text);
+                let n = orbital_core_base::str_utils::js_number_from_text(text);
                 Ok(if n.is_nan() {
                     Value::Null
                 } else {
@@ -108,10 +108,10 @@ impl Operator for StrToNumberOp {
 /// str/to-int - Rust `i64::from_str`: an optional `+` or `-`, then one or more ASCII digits, nothing else; an exact
 /// int, null for any other text and for a value beyond the 64-bit range.
 pub struct StrToIntOp;
-impl Operator for StrToIntOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrToIntOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/to-int", == 1);
-        match eval_expr(&args[0], ctx)? {
+        match args[0] {
             Value::String(text) => Ok(text.parse::<i64>().map_or(Value::Null, Value::Int)),
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "string".into(),
@@ -121,38 +121,38 @@ impl Operator for StrToIntOp {
     }
 }
 
-impl Operator for UpperOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for UpperOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "upper", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         Ok(Value::string(val.text()?.to_uppercase()))
     }
 }
 
 pub struct LowerOp;
-impl Operator for LowerOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for LowerOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "lower", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         Ok(Value::string(val.text()?.to_lowercase()))
     }
 }
 
 pub struct TrimOp;
-impl Operator for TrimOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TrimOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trim", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         Ok(Value::string(val.text()?.trim().to_string()))
     }
 }
 
 pub struct SplitOp;
-impl Operator for SplitOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for SplitOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "split", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let delimiter = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
+        let delimiter = args[1].text()?.to_string();
 
         let parts: Vec<Value> = if delimiter.is_empty() {
             s.chars().map(|c| Value::string(c.to_string())).collect()
@@ -166,11 +166,11 @@ impl Operator for SplitOp {
 }
 
 pub struct JoinOp;
-impl Operator for JoinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for JoinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "join", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let delimiter = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let arr = args[0];
+        let delimiter = args[1].text()?.to_string();
 
         let array = require_array!(arr);
 
@@ -188,10 +188,10 @@ impl Operator for JoinOp {
 
 /// str/len - String length (characters, not bytes)
 pub struct StrLenOp;
-impl Operator for StrLenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrLenOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/len", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let s = val.text()?;
         Ok(super::util::int_of(s.chars().count()))
     }
@@ -199,45 +199,45 @@ impl Operator for StrLenOp {
 
 /// str/includes - Check if substring exists
 pub struct StrIncludesOp;
-impl Operator for StrIncludesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrIncludesOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/includes", >= 2);
-        let haystack = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let needle = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let haystack = args[0].text()?.to_string();
+        let needle = args[1].text()?.to_string();
         Ok(Value::Bool(haystack.contains(&needle)))
     }
 }
 
 /// str/startsWith - Check prefix
 pub struct StrStartsWithOp;
-impl Operator for StrStartsWithOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrStartsWithOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/startsWith", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let prefix = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
+        let prefix = args[1].text()?.to_string();
         Ok(Value::Bool(s.starts_with(&prefix)))
     }
 }
 
 /// str/endsWith - Check suffix
 pub struct StrEndsWithOp;
-impl Operator for StrEndsWithOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrEndsWithOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/endsWith", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let suffix = eval_expr(&args[1], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
+        let suffix = args[1].text()?.to_string();
         Ok(Value::Bool(s.ends_with(&suffix)))
     }
 }
 
 /// str/replace - Replace first occurrence
 pub struct StrReplaceOp;
-impl Operator for StrReplaceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrReplaceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/replace", >= 3);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let old = eval_expr(&args[1], ctx)?.text()?.to_string();
-        let new = eval_expr(&args[2], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
+        let old = args[1].text()?.to_string();
+        let new = args[2].text()?.to_string();
         Ok(Value::string(s.replacen(&old, &new, 1)))
     }
 }
@@ -245,12 +245,12 @@ impl Operator for StrReplaceOp {
 /// str/replace-pattern - Replace every match of a shared-dialect regex (see `translate_shared_regex`).
 /// The replacement is literal (`$` has no meaning); an invalid or unsupported pattern answers null.
 pub struct StrReplacePatternOp;
-impl Operator for StrReplacePatternOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrReplacePatternOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/replace-pattern", >= 3);
         let mut texts = Vec::with_capacity(3);
         for arg in &args[..3] {
-            match eval_expr(arg, ctx)? {
+            match *arg {
                 Value::String(text) => texts.push(text),
                 other => {
                     return Err(OrbitalError::Eval(EvalError::TypeMismatch {
@@ -260,11 +260,11 @@ impl Operator for StrReplacePatternOp {
                 }
             }
         }
-        let Some(regex) = compile_shared_regex(&texts[1]) else {
+        let Some(regex) = compile_shared_regex(texts[1]) else {
             return Ok(Value::Null);
         };
         Ok(Value::string(replace_each_match(
-            &regex, &texts[0], &texts[2],
+            &regex, texts[0], texts[2],
         )))
     }
 }
@@ -273,14 +273,14 @@ impl Operator for StrReplacePatternOp {
 /// `{ start, end, text }` in characters (the units of `str/len` and `str/slice`); an empty list when
 /// nothing matches, null for a pattern outside the dialect.
 pub struct StrFindPatternOp;
-impl Operator for StrFindPatternOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrFindPatternOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/find-pattern", >= 2);
-        let text = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let pattern = eval_expr(&args[1], ctx)?.text()?.to_string();
-        let from = match args.get(2) {
+        let text = args[0].text()?.to_string();
+        let pattern = args[1].text()?.to_string();
+        let from = match args.get(2).copied() {
             Some(arg) => {
-                let n = eval_expr(arg, ctx)?.number()?;
+                let n = arg.number()?;
                 if n.is_finite() && n > 0.0 {
                     n.floor() as usize
                 } else {
@@ -332,23 +332,23 @@ fn find_each_match(regex: &regex::Regex, text: &str, from_chars: usize) -> Vec<V
 
 /// str/replaceAll - Replace all occurrences
 pub struct StrReplaceAllOp;
-impl Operator for StrReplaceAllOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrReplaceAllOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/replaceAll", >= 3);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let old = eval_expr(&args[1], ctx)?.text()?.to_string();
-        let new = eval_expr(&args[2], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
+        let old = args[1].text()?.to_string();
+        let new = args[2].text()?.to_string();
         Ok(Value::string(s.replace(&old, &new)))
     }
 }
 
 /// str/template - Template interpolation with {{key}} syntax
 pub struct StrTemplateOp;
-impl Operator for StrTemplateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrTemplateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/template", >= 2);
-        let template = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let data = eval_expr(&args[1], ctx)?;
+        let template = args[0].text()?.to_string();
+        let data = args[1];
 
         let obj = match data {
             Value::Object(o) => o,
@@ -394,11 +394,11 @@ impl Operator for StrTemplateOp {
 
 /// str/slice - Extract by indices
 pub struct StrSliceOp;
-impl Operator for StrSliceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrSliceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/slice", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let start = index_arg(&eval_expr(&args[1], ctx)?)?;
+        let s = args[0].text()?.to_string();
+        let start = index_arg(args[1])?;
 
         let chars: Vec<char> = s.chars().collect();
         let len = chars.len() as i64;
@@ -410,7 +410,7 @@ impl Operator for StrSliceOp {
         };
 
         let end_idx = if args.len() > 2 {
-            let end = index_arg(&eval_expr(&args[2], ctx)?)?;
+            let end = index_arg(args[2])?;
             if end < 0 {
                 (len + end).max(0) as usize
             } else {
@@ -430,14 +430,14 @@ impl Operator for StrSliceOp {
 
 /// str/padStart - Pad start to length
 pub struct StrPadStartOp;
-impl Operator for StrPadStartOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrPadStartOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "padStart", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let target_len = count_arg(&eval_expr(&args[1], ctx)?)?;
+        let s = args[0].text()?.to_string();
+        let target_len = count_arg(args[1])?;
 
         let pad_char = if args.len() > 2 {
-            pad_char_arg(&eval_expr(&args[2], ctx)?)?
+            pad_char_arg(args[2])?
         } else {
             ' '
         };
@@ -454,14 +454,14 @@ impl Operator for StrPadStartOp {
 
 /// str/padEnd - Pad end to length
 pub struct StrPadEndOp;
-impl Operator for StrPadEndOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrPadEndOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "padEnd", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let target_len = count_arg(&eval_expr(&args[1], ctx)?)?;
+        let s = args[0].text()?.to_string();
+        let target_len = count_arg(args[1])?;
 
         let pad_char = if args.len() > 2 {
-            pad_char_arg(&eval_expr(&args[2], ctx)?)?
+            pad_char_arg(args[2])?
         } else {
             ' '
         };
@@ -478,10 +478,10 @@ impl Operator for StrPadEndOp {
 
 /// str/capitalize - Capitalize first letter
 pub struct StrCapitalizeOp;
-impl Operator for StrCapitalizeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrCapitalizeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "capitalize", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
 
         if s.is_empty() {
             return Ok(Value::string(s));
@@ -498,14 +498,14 @@ impl Operator for StrCapitalizeOp {
 /// str/truncate - Truncate with suffix
 /// Truncates to max_len characters and appends suffix (suffix is extra, not counted in max_len)
 pub struct StrTruncateOp;
-impl Operator for StrTruncateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrTruncateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "truncate", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let max_len = count_arg(&eval_expr(&args[1], ctx)?)?;
+        let s = args[0].text()?.to_string();
+        let max_len = count_arg(args[1])?;
 
         let suffix = if args.len() > 2 {
-            eval_expr(&args[2], ctx)?.text()?.to_string()
+            args[2].text()?.to_string()
         } else {
             "...".to_string()
         };
@@ -527,31 +527,31 @@ impl Operator for StrTruncateOp {
 
 /// str/trimStart - Trim leading whitespace
 pub struct StrTrimStartOp;
-impl Operator for StrTrimStartOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrTrimStartOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimStart", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
         Ok(Value::string(s.trim_start().to_string()))
     }
 }
 
 /// str/trimEnd - Trim trailing whitespace
 pub struct StrTrimEndOp;
-impl Operator for StrTrimEndOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrTrimEndOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "trimEnd", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
         Ok(Value::string(s.trim_end().to_string()))
     }
 }
 
 /// str/repeat - Repeat string n times
 pub struct StrRepeatOp;
-impl Operator for StrRepeatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrRepeatOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/repeat", >= 2);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let n = count_arg(&eval_expr(&args[1], ctx)?)?;
+        let s = args[0].text()?.to_string();
+        let n = count_arg(args[1])?;
 
         Ok(Value::string(s.repeat(n)))
     }
@@ -559,20 +559,20 @@ impl Operator for StrRepeatOp {
 
 /// str/reverse - Reverse string
 pub struct StrReverseOp;
-impl Operator for StrReverseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrReverseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/reverse", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
         Ok(Value::String(s.chars().rev().collect()))
     }
 }
 
 /// str/titleCase - Title Case Each Word
 pub struct StrTitleCaseOp;
-impl Operator for StrTitleCaseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrTitleCaseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "titleCase", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
 
         let result: String = s
             .split_whitespace()
@@ -594,10 +594,10 @@ impl Operator for StrTitleCaseOp {
 
 /// str/camelCase - Convert to camelCase
 pub struct StrCamelCaseOp;
-impl Operator for StrCamelCaseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrCamelCaseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "camelCase", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
 
         // Split on non-alphanumeric characters
         let words: Vec<&str> = s
@@ -662,10 +662,10 @@ fn case_words(s: &str) -> Vec<String> {
 
 /// str/kebabCase - Convert to kebab-case
 pub struct StrKebabCaseOp;
-impl Operator for StrKebabCaseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrKebabCaseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "kebabCase", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
 
         let words = case_words(&s);
 
@@ -675,10 +675,10 @@ impl Operator for StrKebabCaseOp {
 
 /// str/snakeCase - Convert to snake_case
 pub struct StrSnakeCaseOp;
-impl Operator for StrSnakeCaseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrSnakeCaseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "snakeCase", 1);
-        let s = eval_expr(&args[0], ctx)?.text()?.to_string();
+        let s = args[0].text()?.to_string();
 
         let words = case_words(&s);
 
@@ -694,17 +694,17 @@ fn root_collator() -> icu_collator::CollatorBorrowed<'static> {
     icu_collator::CollatorBorrowed::new_root(icu_collator::options::CollatorOptions::default())
 }
 
-fn collate_text(arg: &SExpression, ctx: &BindingContext) -> Result<String, OrbitalError> {
-    Ok(eval_expr(arg, ctx)?.text().map(str::to_string)?)
+fn collate_text(arg: &Value) -> Result<String, OrbitalError> {
+    Ok(arg.text().map(str::to_string)?)
 }
 
 /// str/collate - -1, 0 or 1 by the CLDR root collation (tertiary strength); null ; null on either side is a type mismatch
 pub struct StrCollateOp;
-impl Operator for StrCollateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrCollateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/collate", == 2);
-        let a = collate_text(&args[0], ctx)?;
-        let b = collate_text(&args[1], ctx)?;
+        let a = collate_text(args[0])?;
+        let b = collate_text(args[1])?;
         Ok(Value::Int(match root_collator().compare(&a, &b) {
             std::cmp::Ordering::Less => -1,
             std::cmp::Ordering::Equal => 0,
@@ -716,10 +716,10 @@ impl Operator for StrCollateOp {
 /// str/collate-key - a string whose code-point order is the root collation order of its argument (the collation
 /// sort key in lowercase hex), so `array/sort` by a field holding it sorts by collation; null is a type mismatch
 pub struct StrCollateKeyOp;
-impl Operator for StrCollateKeyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrCollateKeyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/collate-key", == 1);
-        let text = collate_text(&args[0], ctx)?;
+        let text = collate_text(args[0])?;
         let mut key: Vec<u8> = Vec::new();
         let Ok(()) = root_collator().write_sort_key_to(&text, &mut key);
         Ok(Value::string(orbital_core_base::codec::hex(&key)))

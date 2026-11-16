@@ -274,6 +274,7 @@ pub(super) fn persist_completion_emit(
 #[cfg(test)]
 mod absent_not_null_tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     fn assert_no_null(payload: &Value, what: &str) {
         match payload {
@@ -318,7 +319,7 @@ mod absent_not_null_tests {
     #[test]
     fn no_unkeyed_payload_with_an_absent_optional_leg_holds_null() {
         let fetch = orbital_core_base::effect_types::parse_effect(
-            &serde_json::from_value::<SExpression>(serde_json::json!(["fetch", "Task"])).unwrap(),
+            &from_json_value::<SExpression>(&(serde_json::json!(["fetch", "Task"]))).unwrap(),
         )
         .expect("table")
         .expect("a fetch effect");

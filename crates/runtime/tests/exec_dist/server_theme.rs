@@ -2,6 +2,7 @@
 // ahead of every declared theme, `theme/clear` returns the session to its declared theme, the server owns the binding and
 // the client mirrors it from the frame that carries it.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse, LifecycleEvent, MountSeed};
@@ -32,7 +33,7 @@ fn schema_with(theme: serde_json::Value, themes: serde_json::Value) -> OrbitalSc
         }
         effects
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "theme": theme,
         "themes": themes,
@@ -80,7 +81,7 @@ fn request(orbital_trait: &str, event: &str, client: &str, payload: serde_json::
         event: event.to_string(),
         target_trait: Some(orbital_trait.to_string()),
         client_id: Some(client.to_string()),
-        payload: Some(serde_json::from_value(payload).unwrap()),
+        payload: Some(from_json_value(&payload).unwrap()),
         ..Default::default()
     }
 }
@@ -250,12 +251,12 @@ fn a_client_reads_the_servers_bound_theme_from_the_frame_that_carries_it() {
 #[test]
 fn a_client_trait_binds_the_theme_on_its_own_kernel_with_no_server_leg() {
     let client = crate::support::TestKernel::client().register(schema());
-    let payload: Value = serde_json::from_value(json!({ "key": "ink-wash-dark" })).unwrap();
+    let payload: Value = from_json_value(&json!({ "key": "ink-wash-dark" })).unwrap();
     let dispatch = client.dispatch_with_server_leg("Main", "Picker", None, "SET", payload, Some("c1")).unwrap();
     assert!(dispatch.server_legs.is_empty(), "runsOn any: the client runs it: {:?}", dispatch.server_legs);
     assert_eq!(client.session_theme().as_deref(), Some("ink-wash-dark"));
     assert_eq!(client.resolved_theme().key, "ink-wash-dark");
-    let refused: Value = serde_json::from_value(json!({ "key": "neon-dark" })).unwrap();
+    let refused: Value = from_json_value(&json!({ "key": "neon-dark" })).unwrap();
     client.dispatch_with_server_leg("Main", "Picker", None, "SET", refused, Some("c1")).unwrap();
     assert_eq!(client.session_theme().as_deref(), Some("ink-wash-dark"), "an undeclared key is refused on the client too");
     client.dispatch_with_server_leg("Main", "Picker", None, "CLEAR", Value::Null, Some("c1")).unwrap();
@@ -266,7 +267,7 @@ fn a_client_trait_binds_the_theme_on_its_own_kernel_with_no_server_leg() {
 fn a_server_frame_replaces_a_theme_the_client_bound_itself() {
     let rig = Rig::new();
     let client = EmbeddedKernel::new(schema(), "tab-a").unwrap();
-    let payload: Value = serde_json::from_value(json!({ "key": "ink-wash-dark" })).unwrap();
+    let payload: Value = from_json_value(&json!({ "key": "ink-wash-dark" })).unwrap();
     client.kernel().dispatch_with_server_leg("Main", "Picker", None, "SET", payload, Some("tab-a")).unwrap();
     assert_eq!(client.kernel().session_theme().as_deref(), Some("ink-wash-dark"));
     let set = rig.respond("SET", "tab-a", json!({ "key": "scandi-light" }));

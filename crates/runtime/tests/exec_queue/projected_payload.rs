@@ -1,13 +1,14 @@
 //! `projected_payload`: a `T.f` payload field takes `f` of `T`'s first row; twin of
 //! `@almadar-io/verify` `payload-projection.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::projected_payload;
 use orbital_core_base::schema::PayloadField;
 use orbital_core_base::value::Value;
 use serde_json::json;
 
 fn fields() -> Vec<PayloadField> {
-    serde_json::from_value(json!([
+    from_json_value(&json!([
         { "name": "tagId", "type": "string", "required": true, "projectedFrom": { "type": "Tag", "field": "id" } },
         { "name": "tagName", "type": "string", "projectedFrom": { "type": "Tag", "field": "name" } },
         { "name": "tagIds", "type": "[string]", "projectedFrom": { "type": "Tag", "field": "id" } },
@@ -17,7 +18,7 @@ fn fields() -> Vec<PayloadField> {
 }
 
 fn tags() -> Vec<Value> {
-    serde_json::from_value(json!([{ "id": "Tag-1", "name": "urgent" }, { "id": "Tag-2", "name": "later" }])).expect("rows")
+    from_json_value(&json!([{ "id": "Tag-1", "name": "urgent" }, { "id": "Tag-2", "name": "later" }])).expect("rows")
 }
 
 #[test]
@@ -54,7 +55,7 @@ mod through_mapping {
     use orbital_core_base::schema::SExpression;
 
     fn target() -> Vec<PayloadField> {
-        serde_json::from_value(json!([
+        from_json_value(&json!([
             { "name": "tagId", "type": "string", "required": true, "projectedFrom": { "type": "Tag", "field": "id" } },
             { "name": "label", "type": "string" }
         ]))

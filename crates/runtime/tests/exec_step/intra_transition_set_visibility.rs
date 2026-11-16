@@ -11,6 +11,7 @@
 //! (`EffectExecutor.ts`); these are the missing Rust twin's regression tests
 //! (C-KERNEL-INTRA-TRANSITION-SET-INVISIBLE).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::effect_types::{Effect, EffectOutcome};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
@@ -28,7 +29,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
 /// One trait, one transition: stamp the payload's row id onto `@entity`, set a
 /// field, then persist the whole entity — the `Inline*Manage` shape verbatim.
 fn stamp_then_persist_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -58,13 +59,13 @@ fn stamp_then_persist_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
 /// A set whose VALUE reads a field set earlier in the same list.
 fn chained_set_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -94,7 +95,7 @@ fn chained_set_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -189,7 +190,7 @@ fn a_set_value_reads_a_field_set_earlier_in_the_same_transition() {
 /// later `do` step read the transition's earlier `set`s too (std-global-search's fan-out is
 /// gated on a field it just set). Twin: almadar-runtime `intra-transition-compound-sets.test.ts`.
 fn compound_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -209,7 +210,7 @@ fn compound_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 

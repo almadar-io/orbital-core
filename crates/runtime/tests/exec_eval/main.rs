@@ -1,7 +1,5 @@
 //! EXEC-EVAL family: evaluation inside effects.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod config_user_forward;
 mod conformance;

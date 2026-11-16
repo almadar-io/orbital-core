@@ -95,6 +95,7 @@ impl<'de> Deserialize<'de> for SecretText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     #[test]
     fn a_secret_prints_nowhere_and_exposes_only_on_request() {
@@ -116,7 +117,7 @@ mod tests {
         let wire = SecretText::new(Secret::new("s3cret".to_string()));
         assert_eq!(serde_json::to_string(&wire).unwrap(), "\"s3cret\"");
         assert_eq!(format!("{wire:?}"), "SecretText(<redacted>)");
-        let read: SecretText = serde_json::from_str("\"s3cret\"").unwrap();
+        let read: SecretText = from_json_str("\"s3cret\"").unwrap();
         assert_eq!(read.into_inner().expose(), "s3cret");
     }
 
@@ -127,7 +128,7 @@ mod tests {
             name: String,
             value: Secret<String>,
         }
-        let held: Holder = serde_json::from_str(r#"{"name":"n","value":"s3cret"}"#).unwrap();
+        let held: Holder = from_json_str(r#"{"name":"n","value":"s3cret"}"#).unwrap();
         assert_eq!(held.value.expose(), "s3cret");
         assert!(!format!("{held:?}").contains("s3cret"));
         assert!(!serde_json::to_string(&held).unwrap().contains("s3cret"));

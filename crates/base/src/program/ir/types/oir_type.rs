@@ -4,7 +4,7 @@ use super::*;
 
 /// Universal type system
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "lowercase")]
+#[serde(remote = "Self", tag = "kind", rename_all = "lowercase")]
 pub enum OirType {
     String,
     Number,
@@ -140,6 +140,18 @@ pub enum OirType {
     Var {
         name: Shared<String>,
     },
+}
+
+impl serde::Serialize for OirType {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        OirType::serialize(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for OirType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::json_value::deserialize_via_value(deserializer, |value| OirType::deserialize(value))
+    }
 }
 
 /// The empty field list every fieldless record and empty union shares: building one allocates nothing.

@@ -1,5 +1,6 @@
 // EXEC-TICK-2: a tick's emits enter the normal cascade, the emitter's own arm included (G-CROSS-539).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::bus_event::tick_event_key;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
@@ -8,7 +9,7 @@ use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use serde_json::{json, Value as Json};
 
 fn schema(guard: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Boot",

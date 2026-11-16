@@ -391,17 +391,18 @@ pub(crate) fn resolve_deferred(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use serde_json::json;
 
     fn ctx(entity: serde_json::Value, payload: serde_json::Value) -> BindingContext {
         let mut c = BindingContext::new();
-        c.set_entity(serde_json::from_value(entity).unwrap());
-        c.set_payload(serde_json::from_value(payload).unwrap());
+        c.set_entity(from_json_value(&entity).unwrap());
+        c.set_payload(from_json_value(&payload).unwrap());
         c
     }
 
     fn val(v: serde_json::Value) -> Value {
-        serde_json::from_value(v).unwrap()
+        from_json_value(&v).unwrap()
     }
 
     #[test]

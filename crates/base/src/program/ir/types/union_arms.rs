@@ -71,13 +71,14 @@ pub fn field_union_arm_collision(field: &FieldDefinition) -> Option<UnionArmColl
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
 
     fn payload(json: serde_json::Value) -> PayloadField {
-        serde_json::from_value(json).expect("payload field")
+        from_json_value(&json).expect("payload field")
     }
 
     fn field(json: serde_json::Value) -> FieldDefinition {
-        serde_json::from_value(json).expect("field definition")
+        from_json_value(&json).expect("field definition")
     }
 
     #[test]

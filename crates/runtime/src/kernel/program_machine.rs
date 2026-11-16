@@ -1,5 +1,6 @@
 //! A program's state machine as values (`MachineRow`, read by the `std-machine` atom) and the record `program/step`
 //! answers with (`PlayedStep`); `@almadar/core` names both as program types.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -455,7 +456,7 @@ pub fn played_effect(run: &EffectRun) -> PlayedEffect {
         Some([serde_json::Value::String(head), args @ ..]) => (
             head.clone(),
             args.iter()
-                .map(|a| serde_json::from_value(a.clone()).unwrap_or(Value::Null))
+                .map(|a| from_json_value(&a).unwrap_or(Value::Null))
                 .collect(),
         ),
         _ => (String::new(), Vec::new()),
@@ -508,7 +509,7 @@ mod tests {
                 "outcomes": [{ "orbital": "DoorOrbital", "trait": "Lock", "event": "UNLOCK", "from": "locked", "to": "open", "arm": 0, "fired": true, "effects": [], "emitted": [] }]
             }
         });
-        let played: PlayedStep = serde_json::from_value(wire.clone()).expect("a played step");
+        let played: PlayedStep = from_json_value(&wire).expect("a played step");
         assert_eq!(played.result.guard, GuardVerdict::Pass);
         assert_eq!(played.result.fired_arm, Some(0));
         assert_eq!(serde_json::to_value(&played).unwrap(), wire);
@@ -521,7 +522,7 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("firedArm");
-        let played: PlayedStep = serde_json::from_value(unfired.clone()).expect("an unfired step");
+        let played: PlayedStep = from_json_value(&unfired).expect("an unfired step");
         assert_eq!(played.result.guard, GuardVerdict::Unguarded);
         assert_eq!(played.result.fired_arm, None);
         assert_eq!(serde_json::to_value(&played).unwrap(), unfired);
@@ -529,17 +530,17 @@ mod tests {
         let mut bad = wire;
         bad["result"]["guard"] = json!("maybe");
         assert!(
-            serde_json::from_value::<PlayedStep>(bad).is_err(),
+            from_json_value::<PlayedStep>(&bad).is_err(),
             "a guard verdict outside pass|fail|none is refused"
         );
     }
 
     fn value(v: serde_json::Value) -> Value {
-        serde_json::from_value(v).expect("a value")
+        from_json_value(&v).expect("a value")
     }
 
     fn sexpr(v: serde_json::Value) -> SExpression {
-        serde_json::from_value(v).expect("an S-expression")
+        from_json_value(&v).expect("an S-expression")
     }
 
     #[test]

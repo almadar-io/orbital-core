@@ -38,27 +38,27 @@ fn arith(
 }
 
 pub struct AddOp;
-impl Operator for AddOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AddOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.is_empty() {
             return Ok(Value::Number(0.0));
         }
         let mut sum = Value::Int(0);
         for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            sum = arith("+", &sum, &val, i64::checked_add, |a, b| a + b)?;
+            let val: &Value = arg;
+            sum = arith("+", &sum, val, i64::checked_add, |a, b| a + b)?;
         }
         Ok(sum)
     }
 }
 
 pub struct SubOp;
-impl Operator for SubOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for SubOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.is_empty() {
             return Ok(Value::Number(0.0));
         }
-        let mut result = eval_expr(&args[0], ctx)?;
+        let mut result = args[0].clone();
         require_numeric(&result)?;
 
         if args.len() == 1 {
@@ -69,23 +69,23 @@ impl Operator for SubOp {
         }
 
         for arg in &args[1..] {
-            let val = eval_expr(arg, ctx)?;
-            result = arith("-", &result, &val, i64::checked_sub, |a, b| a - b)?;
+            let val: &Value = arg;
+            result = arith("-", &result, val, i64::checked_sub, |a, b| a - b)?;
         }
         Ok(result)
     }
 }
 
 pub struct MulOp;
-impl Operator for MulOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MulOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.is_empty() {
             return Ok(Value::Number(1.0));
         }
         let mut product = Value::Int(1);
         for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            product = arith("*", &product, &val, i64::checked_mul, |a, b| a * b)?;
+            let val: &Value = arg;
+            product = arith("*", &product, val, i64::checked_mul, |a, b| a * b)?;
         }
         Ok(product)
     }
@@ -100,12 +100,12 @@ fn nan_to_null(n: f64) -> Value {
 }
 
 pub struct DivOp;
-impl Operator for DivOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for DivOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "/", == 2);
-        let numerator = require_number!(eval_expr(&args[0], ctx)?);
+        let numerator = require_number!(args[0]);
 
-        let denominator = require_number!(eval_expr(&args[1], ctx)?);
+        let denominator = require_number!(args[1]);
 
         if denominator == 0.0 {
             return Ok(Value::Null);
@@ -116,11 +116,11 @@ impl Operator for DivOp {
 }
 
 pub struct ModOp;
-impl Operator for ModOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ModOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "%", == 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
+        let a = args[0].clone();
+        let b = args[1].clone();
         require_numeric(&a)?;
         require_numeric(&b)?;
 
@@ -143,22 +143,22 @@ impl Operator for ModOp {
 // Math Operators
 // ============================================================================
 
-fn extreme(args: &[SExpression], ctx: &BindingContext, keep: std::cmp::Ordering) -> EvalResult {
+fn extreme(args: &[&Value], keep: std::cmp::Ordering) -> EvalResult {
     if args.is_empty() {
         return Ok(Value::Null);
     }
     let mut best: Option<Value> = None;
     let mut all_int = true;
     for arg in args {
-        let val = eval_expr(arg, ctx)?;
-        require_numeric(&val)?;
+        let val: &Value = arg;
+        require_numeric(val)?;
         all_int &= matches!(val, Value::Int(_));
         if matches!(val, Value::Number(n) if n.is_nan()) {
             continue;
         }
         best = match best {
             Some(current) if val.compare(&current)? != keep => Some(current),
-            _ => Some(val),
+            _ => Some(val.clone()),
         };
     }
     match best {
@@ -176,26 +176,26 @@ fn extreme(args: &[SExpression], ctx: &BindingContext, keep: std::cmp::Ordering)
 }
 
 pub struct MinOp;
-impl Operator for MinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        extreme(args, ctx, std::cmp::Ordering::Less)
+impl StrictOperator for MinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
+        extreme(args, std::cmp::Ordering::Less)
     }
 }
 
 pub struct MaxOp;
-impl Operator for MaxOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        extreme(args, ctx, std::cmp::Ordering::Greater)
+impl StrictOperator for MaxOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
+        extreme(args, std::cmp::Ordering::Greater)
     }
 }
 
 pub struct ClampOp;
-impl Operator for ClampOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ClampOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "clamp", >= 3);
-        let value = eval_expr(&args[0], ctx)?;
-        let min = eval_expr(&args[1], ctx)?;
-        let max = eval_expr(&args[2], ctx)?;
+        let value = args[0].clone();
+        let min = args[1].clone();
+        let max = args[2].clone();
         if let (Value::Int(v), Value::Int(lo), Value::Int(hi)) = (&value, &min, &max) {
             return Ok(Value::Int((*v).max(*lo).min(*hi)));
         }
@@ -206,10 +206,10 @@ impl Operator for ClampOp {
 }
 
 pub struct AbsOp;
-impl Operator for AbsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AbsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "abs", 1);
-        match eval_expr(&args[0], ctx)? {
+        match args[0].clone() {
             Value::Int(i) => i.checked_abs().map(Value::Int).ok_or_else(|| int_overflow("abs")),
             other => Ok(Value::Number(require_number!(other).abs())),
         }
@@ -217,10 +217,10 @@ impl Operator for AbsOp {
 }
 
 pub struct FloorOp;
-impl Operator for FloorOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FloorOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "floor", 1);
-        match eval_expr(&args[0], ctx)? {
+        match args[0].clone() {
             Value::Int(i) => Ok(Value::Int(i)),
             other => Ok(int_or_number(require_number!(other).floor())),
         }
@@ -228,10 +228,10 @@ impl Operator for FloorOp {
 }
 
 pub struct CeilOp;
-impl Operator for CeilOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for CeilOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ceil", 1);
-        match eval_expr(&args[0], ctx)? {
+        match args[0].clone() {
             Value::Int(i) => Ok(Value::Int(i)),
             other => Ok(int_or_number(require_number!(other).ceil())),
         }
@@ -239,12 +239,12 @@ impl Operator for CeilOp {
 }
 
 pub struct RoundOp;
-impl Operator for RoundOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RoundOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "round", 1);
-        let value = eval_expr(&args[0], ctx)?;
+        let value = args[0].clone();
         let decimals = match args.get(1) {
-            Some(arg) => require_number!(eval_expr(arg, ctx)?),
+            Some(arg) => require_number!(arg),
             None => 0.0,
         };
         if let Value::Int(i) = value {
@@ -267,11 +267,11 @@ impl Operator for RoundOp {
 
 /// math/pow - Exponentiation
 pub struct MathPowOp;
-impl Operator for MathPowOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathPowOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "pow", >= 2);
-        let base = require_number!(eval_expr(&args[0], ctx)?);
-        let exp = require_number!(eval_expr(&args[1], ctx)?);
+        let base = require_number!(args[0]);
+        let exp = require_number!(args[1]);
 
         Ok(nan_to_null(libm::pow(base, exp)))
     }
@@ -279,10 +279,10 @@ impl Operator for MathPowOp {
 
 /// math/sqrt - Square root
 pub struct MathSqrtOp;
-impl Operator for MathSqrtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathSqrtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sqrt", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
 
         Ok(nan_to_null(n.sqrt()))
     }
@@ -290,10 +290,10 @@ impl Operator for MathSqrtOp {
 
 /// math/log10 - Base-10 logarithm
 pub struct MathLog10Op;
-impl Operator for MathLog10Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathLog10Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "log10", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
 
         Ok(nan_to_null(libm::log10(n)))
     }
@@ -301,10 +301,10 @@ impl Operator for MathLog10Op {
 
 /// math/ln - Natural logarithm (base e)
 pub struct MathLnOp;
-impl Operator for MathLnOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathLnOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ln", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
 
         Ok(nan_to_null(libm::log(n)))
     }
@@ -316,10 +316,10 @@ impl Operator for MathLnOp {
 
 /// math/sign - Returns -1, 0, or 1
 pub struct MathSignOp;
-impl Operator for MathSignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathSignOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sign", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
 
         let sign = if n > 0.0 {
             1.0
@@ -335,12 +335,12 @@ impl Operator for MathSignOp {
 
 /// math/lerp - Linear interpolation
 pub struct MathLerpOp;
-impl Operator for MathLerpOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathLerpOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "lerp", >= 3);
-        let a = require_number!(eval_expr(&args[0], ctx)?);
-        let b = require_number!(eval_expr(&args[1], ctx)?);
-        let t = require_number!(eval_expr(&args[2], ctx)?);
+        let a = require_number!(args[0]);
+        let b = require_number!(args[1]);
+        let t = require_number!(args[2]);
 
         Ok(Value::Number(a + (b - a) * t))
     }
@@ -348,14 +348,14 @@ impl Operator for MathLerpOp {
 
 /// math/map - Map value from one range to another
 pub struct MathMapOp;
-impl Operator for MathMapOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathMapOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/map", == 5);
-        let value = require_number!(eval_expr(&args[0], ctx)?);
-        let in_min = require_number!(eval_expr(&args[1], ctx)?);
-        let in_max = require_number!(eval_expr(&args[2], ctx)?);
-        let out_min = require_number!(eval_expr(&args[3], ctx)?);
-        let out_max = require_number!(eval_expr(&args[4], ctx)?);
+        let value = require_number!(args[0]);
+        let in_min = require_number!(args[1]);
+        let in_max = require_number!(args[2]);
+        let out_min = require_number!(args[3]);
+        let out_max = require_number!(args[4]);
 
         if (in_max - in_min).abs() < f64::EPSILON {
             return Ok(Value::Number(out_min));
@@ -398,8 +398,8 @@ pub(super) fn below(rng: &mut rand_chacha::ChaCha20Rng, bound: u64) -> u64 {
 
 /// math/random - Random float in [0, 1)
 pub struct MathRandomOp;
-impl Operator for MathRandomOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathRandomOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "random", == 0);
         drawn(ctx, "math/random", &[], |rng| {
             use rand_chacha::rand_core::RngCore;
@@ -410,11 +410,10 @@ impl Operator for MathRandomOp {
 
 /// math/randomInt - Random integer in range
 pub struct MathRandomIntOp;
-impl Operator for MathRandomIntOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathRandomIntOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "randomInt", >= 2);
-        let whole = |arg: &SExpression, what: &str| -> Result<i64, OrbitalError> {
-            let v = eval_expr(arg, ctx)?;
+        let whole = |v: &Value, what: &str| -> Result<i64, OrbitalError> {
             if !v.is_numeric() {
                 return Err(v.kind_error("int").into());
             }
@@ -423,8 +422,8 @@ impl Operator for MathRandomIntOp {
                     .into()
             })
         };
-        let min = whole(&args[0], "min")?;
-        let max = whole(&args[1], "max")?;
+        let min = whole(args[0], "min")?;
+        let max = whole(args[1], "max")?;
 
         if max < min {
             return Ok(Value::Null);
@@ -444,9 +443,9 @@ impl Operator for MathRandomIntOp {
 
 /// math/mod - Modulo (remainder) - aliases existing ModOp
 pub struct MathModOp;
-impl Operator for MathModOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        ModOp.evaluate(args, ctx)
+impl StrictOperator for MathModOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
+        ModOp.apply(args, ctx)
     }
 }
 
@@ -456,114 +455,114 @@ impl Operator for MathModOp {
 
 /// math/sin
 pub struct MathSinOp;
-impl Operator for MathSinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathSinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/sin", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(Value::Number(libm::sin(n)))
     }
 }
 
 /// math/cos
 pub struct MathCosOp;
-impl Operator for MathCosOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathCosOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/cos", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(Value::Number(libm::cos(n)))
     }
 }
 
 /// math/tan
 pub struct MathTanOp;
-impl Operator for MathTanOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathTanOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/tan", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(Value::Number(libm::tan(n)))
     }
 }
 
 /// math/atan2 (y, x)
 pub struct MathAtan2Op;
-impl Operator for MathAtan2Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathAtan2Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/atan2", >= 2);
-        let y = require_number!(eval_expr(&args[0], ctx)?);
-        let x = require_number!(eval_expr(&args[1], ctx)?);
+        let y = require_number!(args[0]);
+        let x = require_number!(args[1]);
         Ok(Value::Number(libm::atan2(y, x)))
     }
 }
 
 /// math/asin
 pub struct MathAsinOp;
-impl Operator for MathAsinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathAsinOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/asin", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(nan_to_null(libm::asin(n)))
     }
 }
 
 /// math/acos
 pub struct MathAcosOp;
-impl Operator for MathAcosOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathAcosOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/acos", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(nan_to_null(libm::acos(n)))
     }
 }
 
 /// math/atan
 pub struct MathAtanOp;
-impl Operator for MathAtanOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathAtanOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/atan", 1);
-        let n = require_number!(eval_expr(&args[0], ctx)?);
+        let n = require_number!(args[0]);
         Ok(Value::Number(libm::atan(n)))
     }
 }
 
 /// math/hypot (a, b) = sqrt(a²+b²)
 pub struct MathHypotOp;
-impl Operator for MathHypotOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathHypotOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/hypot", >= 2);
-        let a = require_number!(eval_expr(&args[0], ctx)?);
-        let b = require_number!(eval_expr(&args[1], ctx)?);
+        let a = require_number!(args[0]);
+        let b = require_number!(args[1]);
         Ok(Value::Number(libm::hypot(a, b)))
     }
 }
 
 /// math/deg-rad = deg·π/180
 pub struct MathDegRadOp;
-impl Operator for MathDegRadOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathDegRadOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/deg-rad", 1);
-        let d = require_number!(eval_expr(&args[0], ctx)?);
+        let d = require_number!(args[0]);
         Ok(Value::Number(d * std::f64::consts::PI / 180.0))
     }
 }
 
 /// math/rad-deg = rad·180/π
 pub struct MathRadDegOp;
-impl Operator for MathRadDegOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathRadDegOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/rad-deg", 1);
-        let r = require_number!(eval_expr(&args[0], ctx)?);
+        let r = require_number!(args[0]);
         Ok(Value::Number(r * 180.0 / std::f64::consts::PI))
     }
 }
 
 /// math/wrap (v, min, max) → wrap into [min,max)
 pub struct MathWrapOp;
-impl Operator for MathWrapOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathWrapOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/wrap", >= 3);
-        let v = require_number!(eval_expr(&args[0], ctx)?);
-        let min = require_number!(eval_expr(&args[1], ctx)?);
-        let max = require_number!(eval_expr(&args[2], ctx)?);
+        let v = require_number!(args[0]);
+        let min = require_number!(args[1]);
+        let max = require_number!(args[2]);
         let r = max - min;
         if r <= 0.0 {
             return Ok(Value::Number(min));
@@ -575,12 +574,12 @@ impl Operator for MathWrapOp {
 
 /// math/approach (cur, target, maxD)
 pub struct MathApproachOp;
-impl Operator for MathApproachOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MathApproachOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "math/approach", >= 3);
-        let cur = require_number!(eval_expr(&args[0], ctx)?);
-        let target = require_number!(eval_expr(&args[1], ctx)?);
-        let max_d = require_number!(eval_expr(&args[2], ctx)?);
+        let cur = require_number!(args[0]);
+        let target = require_number!(args[1]);
+        let max_d = require_number!(args[2]);
         let diff = target - cur;
         let result = if diff.abs() <= max_d {
             target

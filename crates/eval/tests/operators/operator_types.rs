@@ -1,6 +1,7 @@
 // D-12 / EXEC-EVAL-1: an operator that reads an argument of the wrong kind raises the typed `TypeMismatch` it reports;
 // the kernel runs no separate per-call signature check. The fixture is canonical in orbital-core `tests/baked/operator-types`.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use serde::Deserialize;
 use std::path::PathBuf;
 use {
@@ -42,15 +43,15 @@ fn fixture() -> Fixture {
         .join("tests/baked/operator-types/operator-types.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
-    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("operator-types.json malformed: {e}"))
+    from_json_str(&raw).unwrap_or_else(|e| panic!("operator-types.json malformed: {e}"))
 }
 
 fn run(case: &Case) -> Result<serde_json::Value, OrbitalError> {
     let mut builder = BindingContextBuilder::new();
     if let Some(entity) = &case.entity {
-        builder = builder.entity(serde_json::from_value::<Value>(entity.clone()).unwrap());
+        builder = builder.entity(from_json_value::<Value>(&entity).unwrap());
     }
-    let sexpr = serde_json::from_value(case.expr.clone()).unwrap();
+    let sexpr = from_json_value(&case.expr).unwrap();
     let value = Evaluator::new().evaluate(&sexpr, &builder.build())?;
     Ok(serde_json::to_value(value).unwrap())
 }
@@ -136,7 +137,7 @@ fn every_shared_case_agrees() {
 
 #[test]
 fn the_message_shape_is_the_twin_of_the_js_error() {
-    let sexpr = serde_json::from_value(serde_json::json!(["str/upper", 5])).unwrap();
+    let sexpr = from_json_value(&serde_json::json!(["str/upper", 5])).unwrap();
     let err = Evaluator::new()
         .evaluate(&sexpr, &BindingContextBuilder::new().build())
         .unwrap_err();

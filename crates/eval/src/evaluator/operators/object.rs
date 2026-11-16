@@ -11,15 +11,15 @@ use orbital_core_base::value::{value_map_with_capacity, ValueMap};
 /// Used with set effect for dynamic field paths
 /// Example: ["path", "formValues", "@payload.fieldId"] => "formValues.customerName"
 pub struct PathOp;
-impl Operator for PathOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for PathOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "path", 1);
 
         // Evaluate each segment and join with "."
         let segments: Result<Vec<String>, _> = args
             .iter()
             .map(|arg| -> Result<String, OrbitalError> {
-                Ok(eval_expr(arg, ctx)?.text()?.to_string())
+                Ok(arg.text()?.to_string())
             })
             .collect();
 
@@ -31,11 +31,17 @@ impl Operator for PathOp {
 /// is a dotted path, `\.` escaping a dot; any computed operand (a binding or a call) is ONE whole key, so a Map key
 /// that contains a dot is read as written. The kernel cannot tell a Map from a record at run time (both are objects), so the
 /// operand's form decides.
-fn key_path(operand: &SExpression, key: String) -> String {
-    match operand {
-        SExpression::String(text) if !text.starts_with('@') => key,
-        _ => key.replace('\\', "\\\\").replace('.', "\\."),
+fn key_path(literal: bool, key: String) -> String {
+    if literal {
+        key
+    } else {
+        key.replace('\\', "\\\\").replace('.', "\\.")
     }
+}
+
+/// Whether an operand is written as a literal string: not a binding, not a call.
+pub(super) fn written_literal(operand: &SExpression) -> bool {
+    matches!(operand, SExpression::String(text) if !text.starts_with('@'))
 }
 
 // ============================================================================
@@ -44,11 +50,12 @@ fn key_path(operand: &SExpression, key: String) -> String {
 
 /// object/entries - Get key-value pairs as [[key, value], ...]
 pub struct ObjectEntriesOp;
-impl Operator for ObjectEntriesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectEntriesOp);
+impl OwningOperator for ObjectEntriesOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/entries", 1);
 
-        let obj = eval_expr(&args[0], ctx)?;
+        let obj = std::mem::take(&mut args[0]);
         match obj {
             Value::Object(map) => {
                 let entries: Vec<Value> = map
@@ -70,19 +77,62 @@ impl Operator for ObjectSetOp {
         require_arity!(args, "object/set", >= 3);
 
         let obj = eval_expr(&args[0], ctx)?;
-        let path = key_path(&args[1], eval_expr(&args[1], ctx)?.text()?.to_string());
+        let key = eval_expr(&args[1], ctx)?;
         let value = eval_expr(&args[2], ctx)?;
+        set_at(obj, &key, written_literal(&args[1]), value)
+    }
 
-        let mut result = match obj {
-            Value::Object(o) => Value::Object(o),
-            _ => return Err(obj.kind_error("object").into()),
-        };
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
 
-        if !result.set_path(&path, value) {
-            return Ok(Value::Null);
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        if args.len() < 3 {
+            return Some(Err(arity("object/set", 3, args.len())));
         }
+        let (obj, value) = (std::mem::take(&mut args[0]), std::mem::take(&mut args[2]));
+        Some(set_at(obj, &args[1], site.literal(1), value))
+    }
+}
 
-        Ok(result)
+fn arity(operator: &str, expected: usize, actual: usize) -> OrbitalError {
+    OrbitalError::Eval(EvalError::ArityMismatch { operator: operator.to_string(), expected, actual })
+}
+
+fn set_at(obj: Value, key: &Value, literal: bool, value: Value) -> EvalResult {
+    let path = key_path(literal, key.text()?.to_string());
+    let mut result = match obj {
+        Value::Object(o) => Value::Object(o),
+        _ => return Err(obj.kind_error("object").into()),
+    };
+    if !result.set_path(&path, value) {
+        return Ok(Value::Null);
+    }
+    Ok(result)
+}
+
+fn has_at(obj: &Value, key: &Value, literal: bool) -> EvalResult {
+    let path = key_path(literal, key.text()?.to_string());
+    match obj {
+        Value::Object(_) | Value::Sealed(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
+        _ => Err(obj.kind_error("object").into()),
+    }
+}
+
+/// The value at `key` of `obj`, `None` when nothing is there.
+fn found_at(obj: &Value, key: &Value, literal: bool) -> Result<Option<Value>, OrbitalError> {
+    let path = match (key, obj) {
+        (Value::Number(_) | Value::Int(_), Value::Array(_)) => super::array::whole_count(key, "object/get", "index")?.to_string(),
+        _ => key_path(literal, key.text()?.to_string()),
+    };
+    Ok(obj.get_path(&path).cloned())
+}
+
+fn gettable(obj: &Value) -> Result<(), OrbitalError> {
+    if matches!(obj, Value::Object(_) | Value::Array(_) | Value::Sealed(_)) {
+        Ok(())
+    } else {
+        Err(obj.kind_error("object").into())
     }
 }
 
@@ -92,24 +142,30 @@ impl Operator for ObjectHasOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/has", >= 2);
 
-        super::with_operand(&args[0], ctx, |obj| {
-            let path = key_path(&args[1], eval_expr(&args[1], ctx)?.text()?.to_string());
-            match obj {
-                Value::Object(_) | Value::Sealed(_) => Ok(Value::Bool(obj.get_path(&path).is_some())),
-                _ => Err(obj.kind_error("object").into()),
-            }
-        })
+        super::with_operand(&args[0], ctx, |obj| has_at(obj, &eval_expr(&args[1], ctx)?, written_literal(&args[1])))
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        if args.len() < 2 {
+            return Some(Err(arity("object/has", 2, args.len())));
+        }
+        Some(has_at(&args[0], &args[1], site.literal(1)))
     }
 }
 
 /// object/merge - Shallow merge objects
 pub struct ObjectMergeOp;
-impl Operator for ObjectMergeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectMergeOp);
+impl OwningOperator for ObjectMergeOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         let mut result = ValueMap::default();
 
-        for arg in args {
-            let val = eval_expr(arg, ctx)?;
+        for arg in args.iter_mut() {
+            let val = std::mem::take(arg);
             match val {
                 Value::Object(obj) => {
                     for (k, v) in obj {
@@ -130,11 +186,12 @@ impl Operator for ObjectMergeOp {
 
 /// object/fromEntries - Create object from entries
 pub struct ObjectFromEntriesOp;
-impl Operator for ObjectFromEntriesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectFromEntriesOp);
+impl OwningOperator for ObjectFromEntriesOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "fromEntries", 1);
 
-        let entries = eval_expr(&args[0], ctx)?;
+        let entries = std::mem::take(&mut args[0]);
         let array = match entries {
             Value::Array(a) => a,
             _ => {
@@ -165,8 +222,9 @@ impl Operator for ObjectFromEntriesOp {
 
 /// object/deepMerge - Deep merge objects
 pub struct ObjectDeepMergeOp;
-impl Operator for ObjectDeepMergeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectDeepMergeOp);
+impl OwningOperator for ObjectDeepMergeOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         fn deep_merge(base: ValueMap, overlay: ValueMap) -> ValueMap {
             let mut result = base;
             for (key, value) in overlay {
@@ -190,8 +248,8 @@ impl Operator for ObjectDeepMergeOp {
 
         let mut result = ValueMap::default();
 
-        for arg in args {
-            let val = eval_expr(arg, ctx)?;
+        for arg in args.iter_mut() {
+            let val = std::mem::take(arg);
             match val {
                 Value::Object(obj) => result = deep_merge(result, obj.into_inner()),
                 _ => return Err(val.kind_error("object").into()),
@@ -204,12 +262,13 @@ impl Operator for ObjectDeepMergeOp {
 
 /// object/pick - Pick specific keys
 pub struct ObjectPickOp;
-impl Operator for ObjectPickOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectPickOp);
+impl OwningOperator for ObjectPickOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "pick", >= 2);
 
-        let obj = eval_expr(&args[0], ctx)?;
-        let keys_val = eval_expr(&args[1], ctx)?;
+        let obj = std::mem::take(&mut args[0]);
+        let keys_val = std::mem::take(&mut args[1]);
 
         let source = match obj {
             Value::Object(o) => o,
@@ -247,12 +306,13 @@ impl Operator for ObjectPickOp {
 
 /// object/omit - Omit specific keys
 pub struct ObjectOmitOp;
-impl Operator for ObjectOmitOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectOmitOp);
+impl OwningOperator for ObjectOmitOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "omit", >= 2);
 
-        let obj = eval_expr(&args[0], ctx)?;
-        let keys_val = eval_expr(&args[1], ctx)?;
+        let obj = std::mem::take(&mut args[0]);
+        let keys_val = std::mem::take(&mut args[1]);
 
         let source = match obj {
             Value::Object(o) => o,
@@ -401,27 +461,28 @@ impl Operator for ObjectMapKeysOp {
 
 /// object/equals - Deep equality check
 pub struct ObjectEqualsOp;
-impl Operator for ObjectEqualsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ObjectEqualsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/equals", >= 2);
-        let obj1 = eval_expr(&args[0], ctx)?;
-        let obj2 = eval_expr(&args[1], ctx)?;
-        for obj in [&obj1, &obj2] {
+        let obj1 = args[0];
+        let obj2 = args[1];
+        for obj in [obj1, obj2] {
             if obj.as_object().is_none() {
                 return Err(obj.kind_error("object").into());
             }
         }
 
-        Ok(Value::Bool(deep_equals(&obj1, &obj2)))
+        Ok(Value::Bool(deep_equals(obj1, obj2)))
     }
 }
 
 /// object/clone - Shallow clone
 pub struct ObjectCloneOp;
-impl Operator for ObjectCloneOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectCloneOp);
+impl OwningOperator for ObjectCloneOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/clone", 1);
-        let obj = eval_expr(&args[0], ctx)?;
+        let obj = std::mem::take(&mut args[0]);
 
         match obj {
             Value::Object(o) => Ok(Value::Object(o)),
@@ -432,10 +493,10 @@ impl Operator for ObjectCloneOp {
 
 /// object/deepClone - Deep clone
 pub struct ObjectDeepCloneOp;
-impl Operator for ObjectDeepCloneOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ObjectDeepCloneOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/deepClone", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         if val.as_object().is_none() {
             return Err(val.kind_error("object").into());
         }
@@ -457,7 +518,7 @@ impl Operator for ObjectDeepCloneOp {
             }
         }
 
-        Ok(deep_clone(&val))
+        Ok(deep_clone(val))
     }
 }
 
@@ -466,11 +527,11 @@ impl Operator for ObjectDeepCloneOp {
 // ============================================================================
 
 pub struct ObjectKeysOp;
-impl Operator for ObjectKeysOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ObjectKeysOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/keys", 1);
 
-        let obj = eval_expr(&args[0], ctx)?;
+        let obj = args[0];
         match obj {
             Value::Object(map) => {
                 let keys: Vec<Value> = map.keys().map(|k| Value::string(k.clone())).collect();
@@ -482,11 +543,12 @@ impl Operator for ObjectKeysOp {
 }
 
 pub struct ObjectValuesOp;
-impl Operator for ObjectValuesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ObjectValuesOp);
+impl OwningOperator for ObjectValuesOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "object/values", 1);
 
-        let obj = eval_expr(&args[0], ctx)?;
+        let obj = std::mem::take(&mut args[0]);
         match obj {
             Value::Object(map) => {
                 let values: Vec<Value> = map.into_inner().into_values().collect();
@@ -504,17 +566,8 @@ impl Operator for ObjectGetOp {
         require_arity!(args, "object/get", >= 2);
 
         let found = super::with_operand(&args[0], ctx, |obj| {
-            if !matches!(obj, Value::Object(_) | Value::Array(_) | Value::Sealed(_)) {
-                return Err(obj.kind_error("object").into());
-            }
-            let key = eval_expr(&args[1], ctx)?;
-            let path = match (&key, obj) {
-                (Value::Number(_) | Value::Int(_), Value::Array(_)) => {
-                    super::array::whole_count(&key, "object/get", "index")?.to_string()
-                }
-                _ => key_path(&args[1], key.text()?.to_string()),
-            };
-            Ok(obj.get_path(&path).cloned())
+            gettable(obj)?;
+            found_at(obj, &eval_expr(&args[1], ctx)?, written_literal(&args[1]))
         })?;
 
         match found {
@@ -524,6 +577,24 @@ impl Operator for ObjectGetOp {
                 None => Ok(Value::Null),
             },
         }
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    /// The default (operand 2) is evaluated on demand: the site gives it as a callable.
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        if args.len() < 2 {
+            return Some(Err(arity("object/get", 2, args.len())));
+        }
+        let found = gettable(&args[0]).and_then(|()| found_at(&args[0], &args[1], site.literal(1)));
+        Some(match found {
+            Err(error) => Err(error),
+            Ok(Some(value)) => Ok(value),
+            Ok(None) if args.len() > 2 => site.invoke(2, Vec::new()),
+            Ok(None) => Ok(Value::Null),
+        })
     }
 }
 

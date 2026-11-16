@@ -269,12 +269,13 @@ pub fn sign_manifest(unsigned: &Json, key_id: &str, seed: &[u8; 32]) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::{from_json_str, from_json_value};
     use crate::codec::{ed25519_public_key, ed25519_verify};
 
     const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 
     fn signed_bytes_and_signature(text: &str) -> (Vec<u8>, [u8; 64]) {
-        let mut value: Json = serde_json::from_str(text).unwrap();
+        let mut value: Json = from_json_str(text).unwrap();
         let signature = value.as_object_mut().unwrap().remove("signature").unwrap();
         assert_eq!(signature["alg"], SIGNATURE_ALG);
         assert_eq!(signature["key_id"], "deploy-1");
@@ -317,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_program_without_deployment_is_the_one_unit_main_and_a_bad_artifact_hash_or_unit_is_refused() {
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({ "name": "App", "orbitals": [] })).unwrap();
+        let schema: OrbitalSchema = from_json_value(&(serde_json::json!({ "name": "App", "orbitals": [] }))).unwrap();
         assert_eq!(unit_names(&schema), vec!["main".to_string()]);
         let digest = sha256_hex(b"x");
         let manifest = Manifest::build(&schema, "main", &digest).unwrap();
@@ -327,7 +328,7 @@ mod tests {
     }
 
     fn manifest_credentials(config: Json, effects: Json) -> Result<BTreeMap<String, Vec<String>>, ManifestBuildError> {
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "App",
             "orbitals": [{
                 "name": "Api",
@@ -341,7 +342,7 @@ mod tests {
                     }
                 }]
             }]
-        }))
+        })))
         .unwrap();
         Manifest::build(&schema, "main", &sha256_hex(b"x")).map(|m| m.credentials)
     }

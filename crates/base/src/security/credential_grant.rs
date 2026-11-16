@@ -1,5 +1,6 @@
 //! The OAuth authorization-code exchange as pure functions: the token request a host sends and the reading of its
 //! answer. No I/O and no clock; the caller posts the request and supplies `now`.
+use crate::json_value::{from_json_slice, from_json_str};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -250,7 +251,7 @@ fn refused(message: &str) -> GrantError {
 }
 
 fn parse_service_account(text: &str) -> Result<ServiceAccount, GrantError> {
-    let document: ServiceAccountDocument = serde_json::from_str(text)
+    let document: ServiceAccountDocument = from_json_str(text)
         .map_err(|_| refused("the signing credential is not a service-account JSON document"))?;
     match document.kind.as_deref() {
         Some(SERVICE_ACCOUNT_TYPE) => {}
@@ -395,7 +396,7 @@ pub fn parse_json_token_response(
             _ => malformed(&format!("the token endpoint answered HTTP {status}")),
         });
     }
-    let parsed: serde_json::Value = serde_json::from_str(body)
+    let parsed: serde_json::Value = from_json_str(body)
         .map_err(|_| malformed("the token endpoint did not answer a JSON object"))?;
     let fields = parsed
         .as_object()
@@ -522,7 +523,7 @@ fn label_of(id_token: &str) -> Option<String> {
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
-    let claims: IdClaims = serde_json::from_slice(&bytes).ok()?;
+    let claims: IdClaims = from_json_slice(&bytes).ok()?;
     claims.email.filter(|email| !email.is_empty())
 }
 
@@ -532,7 +533,7 @@ pub fn parse_token_response(
     now_ms: i64,
 ) -> Result<TokenGrant, GrantError> {
     let malformed = |message: &str| GrantError::new(GrantErrorKind::Malformed, message);
-    let parsed: TokenBody = serde_json::from_str(body)
+    let parsed: TokenBody = from_json_str(body)
         .map_err(|_| malformed("the token endpoint did not answer a token JSON object"))?;
     if let Some(error) = parsed.error {
         let kind = match error.as_str() {
@@ -795,7 +796,7 @@ mod tests {
     }
     fn jwt_fixture() -> serde_json::Value {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/security/jwt-bearer.json");
-        serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+        from_json_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
     }
 
     fn spec() -> AssertionSpec {
@@ -826,7 +827,7 @@ mod tests {
     fn decoded_part(jwt: &str, index: usize) -> serde_json::Value {
         let part = jwt.split('.').nth(index).unwrap();
         let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(part).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        from_json_slice(&bytes).unwrap()
     }
 
     #[test]

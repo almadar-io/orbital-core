@@ -7,6 +7,7 @@
 //! reads before inline substitutes them with the knob's value, so a caller
 //! runs it on the parsed program and on every behavior file `uses` loads
 //! (an atom's knobs are typed in the atom).
+use crate::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -333,7 +334,7 @@ fn check_expr(expr: &Value, secrets: &[&str], path: &str, out: &mut Vec<SecretFl
         let credential = if head == "credential-status" {
             let slot = items
                 .get(1)
-                .and_then(|selection| serde_json::from_value::<crate::value::Value>(selection.clone()).ok())
+                .and_then(|selection| from_json_value::<crate::value::Value>(&selection).ok())
                 .and_then(|selection| {
                     crate::http_wire::parse_credential_status_slot(&selection).ok()
                 });

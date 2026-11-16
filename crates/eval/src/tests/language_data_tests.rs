@@ -1,4 +1,5 @@
 #[cfg(not(feature = "std"))]
+use orbital_core_base::json_value::from_json_str;
 use std::prelude::v1::*;
 #[allow(unused_imports)]
 use crate::language_loader::install_language_bundle;
@@ -146,7 +147,7 @@ mod tests {
         assert!(err.to_string().contains("protocols"), "{err}");
 
         let manifest = dir.join("package.json");
-        let mut declared: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        let mut declared: Value = orbital_core_base::json_value::from_json_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
         declared["orbLanguage"].as_object_mut().unwrap().remove("protocols");
         fs::write(&manifest, declared.to_string()).unwrap();
         let err = load_language_data(&tmp.0, &tmp.0.join("store")).unwrap_err();
@@ -243,7 +244,7 @@ mod tests {
         let tmp = Tmp::new("old-core");
         let dir = install_core(&tmp.0, "10.1.0", "1.2.0");
         let manifest = dir.join("package.json");
-        let mut declared: Value = serde_json::from_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
+        let mut declared: Value = orbital_core_base::json_value::from_json_str(&fs::read_to_string(&manifest).unwrap()).unwrap();
         let block = declared["orbLanguage"].as_object_mut().unwrap();
         block.remove("version");
         block.insert("compiler".into(), json!(">=17.0.0"));
@@ -324,7 +325,7 @@ mod tests {
     }
 
     fn table(op: &str, category_targets: &str) -> String {
-        let mut doc: Value = serde_json::from_str(&format!(
+        let mut doc: Value = orbital_core_base::json_value::from_json_str(&format!(
             r#"{{"categories":{{"arithmetic":{{"description":"","target":["rust","ts"]}},"other":{{"description":"","target":{category_targets}}},"effect":{{"description":"","target":[]}}}},
                 "operators":{{"+":{{"category":"arithmetic","minArity":2,"returnType":"number"}},"{op}":{{"category":"other","minArity":0,"returnType":"number"}},
                 "emit":{{"category":"effect","minArity":1,"returnType":"void","busExcluded":["INIT","LOAD","$MOUNT"]}},
@@ -352,7 +353,7 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("operator `-`") && msg.contains("@almadar/std@8.2.0"), "{msg}");
 
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["std"]["operators"]["categories"]["other"] = json!({"target": ["rust"], "zzNewerField": {}});
         v["std"]["operators"]["categories"]["other"].as_object_mut().unwrap().remove("description");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
@@ -361,7 +362,7 @@ mod tests {
     }
 
     fn table_with_option_since(since: Value) -> Value {
-        let mut v: Value = serde_json::from_str(&table("-", r#"["rust"]"#)).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&table("-", r#"["rust"]"#)).unwrap();
         v["operators"]["+"]["params"] = json!([
             {"name": "a", "type": "number"},
             {"name": "options", "type": {"kind": "object", "fields": {"key": "string", "emit": {"kind": "object", "fields": {"onMessage": "string"}}}}}
@@ -379,7 +380,7 @@ mod tests {
         assert_eq!(data.running, "18.0.5");
         assert!(data.operators.contains("\"optionSince\""));
 
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["std"]["operators"] = table;
         let (_, ops, _) = parse_language_bundle(&v.to_string(), "18.0.5").unwrap();
         assert_eq!(ops.running, "18.0.5");
@@ -408,7 +409,7 @@ mod tests {
     fn a_table_without_the_bus_excluded_events_or_the_dispatch_target_options_is_refused() {
         for (op, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
             let tmp = Tmp::new(&format!("ops-no-{field}"));
-            let mut v: Value = serde_json::from_str(&table("-", r#"["rust"]"#)).unwrap();
+            let mut v: Value = orbital_core_base::json_value::from_json_str(&table("-", r#"["rust"]"#)).unwrap();
             v["operators"][op].as_object_mut().unwrap().remove(field);
             install_std(&tmp.0, "^1.2", &v.to_string());
             let err = load_operator_data_for(&tmp.0, &tmp.0.join("store"), "17.12.0").unwrap_err();
@@ -476,7 +477,7 @@ mod tests {
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
         assert!(!err.needs_install());
         assert!(err.to_string().contains("zz/not-implemented"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["language"] = json!("2.0.0");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INCOMPATIBLE");
@@ -519,12 +520,12 @@ mod tests {
                 "eventContracts": {"contracts": {}}, "services": {"services": {}},
                 "bindingRules": {"guard": {"allowed": ["zz"]}},
                 "programTypes": {"OrbitalValue": {"type": "object", "properties": {"behavior": {"type": "string", "required": true}}}},
-                "protocols": serde_json::from_str::<Value>(PROTOCOLS).unwrap(),
+                "protocols": orbital_core_base::json_value::from_json_str::<Value>(PROTOCOLS).unwrap(),
                 "themes": [{"name": "zz", "tokens": {}}]
             },
             "std": {
                 "version": "8.2.0", "language": language,
-                "operators": serde_json::from_str::<Value>(&table(extra_op, r#"["rust"]"#)).unwrap()
+                "operators": orbital_core_base::json_value::from_json_str::<Value>(&table(extra_op, r#"["rust"]"#)).unwrap()
             },
             "vocabularies": [{
                 "package": "lolo-zz", "version": "1.0.0", "language": language,
@@ -564,35 +565,35 @@ mod tests {
     fn edge_a_bundle_missing_a_part_or_themes_is_invalid() {
         let err = parse_language_bundle(r#"{"core":{}}"#, "17.12.0").unwrap_err();
         assert_eq!(err.code(), "ORB_LANGUAGE_DATA_INVALID");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["themes"] = json!([]);
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.themes"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v.as_object_mut().unwrap().remove("vocabularies");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("vocabularies"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["vocabularies"][0]["language"] = json!("^2");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("lolo-zz"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("bindingRules");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.bindingRules"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("programTypes");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.programTypes"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["programTypes"] = json!({"OrbitalValue": {"type": "nonsense"}});
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("OrbitalValue"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"].as_object_mut().unwrap().remove("protocols");
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("core.protocols"), "{err}");
-        let mut v: Value = serde_json::from_str(&bundle("^1.2", "-")).unwrap();
+        let mut v: Value = orbital_core_base::json_value::from_json_str(&bundle("^1.2", "-")).unwrap();
         v["core"]["protocols"] = json!([]);
         let err = parse_language_bundle(&v.to_string(), "17.12.0").unwrap_err();
         assert!(err.to_string().contains("no rows"), "{err}");

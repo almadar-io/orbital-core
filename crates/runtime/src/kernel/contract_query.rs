@@ -2,6 +2,7 @@
 //! JSON answer. A host asks the kernel which external inputs the program declares, which entities a provider may read,
 //! which handler an inbound hook names, what an inbound delivery's payload and answer are, which orbital owns an
 //! entity, and which rows a viewer may read: it carries none of these rules itself (EXEC-BOUND).
+use orbital_core_base::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -339,7 +340,7 @@ impl RuntimeKernel {
                     None,
                     &entity,
                 )?;
-                serde_json::from_str(&scoped).map_err(|e| format!("parse scoped rows: {e}"))
+                from_json_str(&scoped).map_err(|e| format!("parse scoped rows: {e}"))
             }
         }
     }
@@ -535,6 +536,7 @@ pub fn contract_query_without_program(query: ContractQuery) -> Result<serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use crate::entity_source::InMemoryEntityCache;
     use crate::kernel::{KernelConfig, RuntimeEnvironment};
     use serde_json::json;
@@ -545,7 +547,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "inbound": ["hook"],
             "typeContractVersion": 1,
@@ -578,7 +580,7 @@ mod tests {
     }
 
     fn ask(k: &RuntimeKernel, query: serde_json::Value) -> serde_json::Value {
-        k.contract_query(serde_json::from_value(query).expect("query"))
+        k.contract_query(from_json_value(&query).expect("query"))
             .expect("answer")
     }
 
@@ -592,7 +594,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -661,7 +663,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -705,7 +707,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -740,7 +742,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -773,7 +775,7 @@ mod tests {
     #[test]
     fn a_program_surface_holds_every_trait_and_the_browser_entities() {
         let kernel = surface_kernel();
-        let shelf: OrbitalSchema = serde_json::from_value(json!({
+        let shelf: OrbitalSchema = from_json_value(&json!({
             "name": "Shelves",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -817,7 +819,7 @@ mod tests {
     fn a_transition_without_await_render_round_trips_unchanged() {
         let transition = json!({ "from": "a", "to": "b", "event": "GO" });
         let parsed: orbital_core_base::schema::TransitionDefinition =
-            serde_json::from_value(transition.clone()).expect("transition");
+            from_json_value(&transition).expect("transition");
         assert_eq!(parsed.await_render, None);
         assert_eq!(serde_json::to_value(&parsed).expect("json"), transition);
     }
@@ -827,7 +829,7 @@ mod tests {
         let k = surface_kernel();
         let err = k
             .contract_query(
-                serde_json::from_value(json!({ "kind": "traitSurface", "trait": "Nope" }))
+                from_json_value(&json!({ "kind": "traitSurface", "trait": "Nope" }))
                     .expect("query"),
             )
             .expect_err("unknown trait");
@@ -856,19 +858,19 @@ mod tests {
     #[test]
     fn a_host_with_no_program_gets_the_kernels_empty_answers() {
         assert!(contract_query_without_program(
-            serde_json::from_value(json!({ "kind": "findExternalInput", "orbital": "Cal", "trait": "Push", "event": "ADD" })).expect("query")
+            from_json_value(&json!({ "kind": "findExternalInput", "orbital": "Cal", "trait": "Push", "event": "ADD" })).expect("query")
         )
         .expect("answer")
         .is_null());
         assert_eq!(
             contract_query_without_program(
-                serde_json::from_value(json!({ "kind": "externalInputs" })).expect("query")
+                from_json_value(&json!({ "kind": "externalInputs" })).expect("query")
             )
             .expect("answer"),
             json!([])
         );
         let hook = contract_query_without_program(
-            serde_json::from_value(json!({ "kind": "findInbound", "name": "hook" }))
+            from_json_value(&json!({ "kind": "findInbound", "name": "hook" }))
                 .expect("query"),
         )
         .expect("answer");
@@ -1018,7 +1020,7 @@ mod tests {
             Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
             KernelConfig::default(),
         );
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App", "typeContractVersion": 1,
             "orbitals": [{
                 "name": "People",

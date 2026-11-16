@@ -252,13 +252,13 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
 /// the dispatch clock; otherwise `{ error, kind }`, kind one of malformed, algorithm, key, signature, claim, expired,
 /// not-yet-valid, issuer, audience.
 pub struct JwsVerifyOp;
-impl Operator for JwsVerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for JwsVerifyOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "jws/verify", == 3);
-        let token = eval_expr(&args[0], ctx)?;
-        let keys = eval_expr(&args[1], ctx)?;
-        let options = options_of(&eval_expr(&args[2], ctx)?)?;
-        let Value::Array(keys) = &keys else {
+        let token = args[0];
+        let keys = args[1];
+        let options = options_of(args[2])?;
+        let Value::Array(keys) = keys else {
             return Err(OrbitalError::Eval(keys.kind_error("array")));
         };
         if let Some(bad) = keys.iter().find(|key| !matches!(key, Value::Object(_))) {

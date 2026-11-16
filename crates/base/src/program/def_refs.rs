@@ -61,10 +61,11 @@ pub(crate) fn decide(at: usize, shared: bool) -> DefWrite {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::{from_json_slice, from_json_str, from_json_value};
     use crate::schema::sexpr::SExpression;
 
     fn repeated() -> SExpression {
-        let presets: SExpression = serde_json::from_value(serde_json::json!({ "naqsh": { "fill": "#0d0f1e" }, "glass": { "fill": "#ffffff" } })).unwrap();
+        let presets: SExpression = from_json_value(&(serde_json::json!({ "naqsh": { "fill": "#0d0f1e" }, "glass": { "fill": "#ffffff" } }))).unwrap();
         let read = |name: &str| SExpression::Array(vec![SExpression::from("object/get"), presets.clone(), SExpression::from(name)].into());
         SExpression::Array(vec![read("a"), read("b"), read("c")].into())
     }
@@ -76,7 +77,7 @@ mod tests {
         let with_defs = to_vec_with_defs(&tree).unwrap();
         assert!(with_defs.len() < plain.len(), "{} >= {}", with_defs.len(), plain.len());
         assert_eq!(String::from_utf8_lossy(&with_defs).matches("#0d0f1e").count(), 1);
-        let back: SExpression = serde_json::from_slice(&with_defs).unwrap();
+        let back: SExpression = from_json_slice(&with_defs).unwrap();
         assert_eq!(serde_json::to_vec(&back).unwrap(), plain);
     }
 
@@ -90,30 +91,30 @@ mod tests {
 
     #[test]
     fn control_a_tree_with_no_shared_subtree_has_no_reference() {
-        let tree: SExpression = serde_json::from_value(serde_json::json!(["do", ["set", "@entity.a", 1], ["set", "@entity.b", 2]])).unwrap();
+        let tree: SExpression = from_json_value(&(serde_json::json!(["do", ["set", "@entity.a", 1], ["set", "@entity.b", 2]]))).unwrap();
         let written = String::from_utf8(to_vec_with_defs(&tree).unwrap()).unwrap();
         assert!(!written.contains(DEF_MARKER), "{written}");
     }
 
     #[test]
     fn edge_a_reference_to_an_id_never_written_is_refused() {
-        let bad = serde_json::from_str::<SExpression>(r#"["object/get", {"$def": 7}, "a"]"#);
+        let bad = from_json_str::<SExpression>(r#"["object/get", {"$def": 7}, "a"]"#);
         assert!(bad.is_err());
     }
 
     #[test]
     fn edge_a_program_written_with_defs_reads_back_as_its_plain_form() {
-        let program: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let program: crate::schema::OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "app", "orbitals": [{ "name": "A", "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] }, "traits": [{ "name": "T", "linkedEntity": "E", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
                 { "from": "idle", "to": "idle", "event": "X", "effects": [["set", "@entity.v", { "big": [1, 2, 3, 4, 5, 6, 7, 8] }]] },
                 { "from": "idle", "to": "idle", "event": "Y", "effects": [["set", "@entity.v", { "big": [1, 2, 3, 4, 5, 6, 7, 8] }]] }
             ] } }] }]
-        }))
+        })))
         .unwrap();
         let plain = serde_json::to_vec(&program).unwrap();
         let with_defs = to_vec_with_defs(&program).unwrap();
         assert!(String::from_utf8_lossy(&with_defs).contains(DEF_MARKER));
-        let back: crate::schema::OrbitalSchema = serde_json::from_slice(&with_defs).unwrap();
+        let back: crate::schema::OrbitalSchema = from_json_slice(&with_defs).unwrap();
         assert_eq!(serde_json::to_vec(&back).unwrap(), plain);
     }
 }

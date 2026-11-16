@@ -1,5 +1,6 @@
 //! The `oauth` row kind: a granted access token (and its refresh token) the store holds for one (name, principal), and the
 //! exchange that creates it. The program that asked never sees a token; it gets `{connected, label}`.
+use orbital_core_base::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -185,7 +186,7 @@ pub(super) struct OauthRecord {
 
 impl OauthRecord {
     pub(super) fn parse(plaintext: &str) -> Option<Self> {
-        serde_json::from_str::<Self>(plaintext)
+        from_json_str::<Self>(plaintext)
             .ok()
             .filter(|record| record.v == RECORD_VERSION && !record.access.is_empty())
     }

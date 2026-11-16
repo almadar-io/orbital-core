@@ -20,7 +20,7 @@ impl Driver for R0ClientDriver {
     type Open = EmbeddedSession;
 
     fn open(&self, fixture: &Fixture, scenario: &Scenario) -> Result<EmbeddedSession, String> {
-        let schema: OrbitalSchema = serde_json::from_value(fixture.schema.clone())
+        let schema: OrbitalSchema = orbital_core::json_value::from_json_value(&fixture.schema)
             .map_err(|e| format!("{}: schema: {e}", fixture.name))?;
         let orbital_traits: Vec<String> = schema
             .orbitals
@@ -43,7 +43,7 @@ impl Driver for R0ClientDriver {
 impl Session for EmbeddedSession {
     fn dispatch(&self, step: &Step) -> Result<Json, String> {
         let payload: Value = match &step.payload {
-            Some(p) => serde_json::from_value(p.clone()).map_err(|e| format!("payload: {e}"))?,
+            Some(p) => orbital_core::json_value::from_json_value(&p).map_err(|e| format!("payload: {e}"))?,
             None => Value::Object(Default::default()),
         };
         let wire = self

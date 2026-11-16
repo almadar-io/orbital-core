@@ -1,6 +1,7 @@
 // G-CROSS-335, EXEC-EVAL-10: an emit is checked once, where it is emitted, against its emitter's declaration of it; one
 // that contradicts it refuses the dispatch. A listener's declared payload is a view it reads through, not a check.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::kernel::{KernelError, RuntimeKernel};
@@ -15,7 +16,7 @@ fn kernel_declaring(sent: Json, emits: Json) -> RuntimeKernel {
 }
 
 fn kernel_with_types(sent: Json, emits: Json, types: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main", "types": types,
@@ -93,7 +94,7 @@ fn envelope(id: &str, payload: Json) -> orbital_core_base::envelope::Envelope {
             trait_name: Some("Receiver".into()),
         },
         event: "RECEIVE".into(),
-        payload: serde_json::from_value(payload).unwrap(),
+        payload: from_json_value(&payload).unwrap(),
         causal_id: "c".into(),
         hop: 1,
         listen: None,
@@ -145,7 +146,7 @@ fn control_an_emit_fitting_a_qualified_type_is_delivered() {
 }
 
 fn completing_kernel(sent: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -196,7 +197,7 @@ fn row_asks(request: &orbital_core_runtime::resumable::IoRequest) -> orbital_cor
 #[test]
 fn a_completion_whose_cascade_emits_a_refused_payload_is_rerouted_to_its_failure_route() {
     let k = completing_kernel(json!({ "n": "one" }));
-    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), from_json_value::<Value>(&json!({ "n": 1 })).unwrap(), false, &row_asks);
     assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
     assert!(delivered.result.is_ok(), "{:?}", delivered.result.as_ref().err());
     let error = delivered.payload.get_path("error").and_then(Value::as_str).unwrap_or_default().to_string();
@@ -206,13 +207,13 @@ fn a_completion_whose_cascade_emits_a_refused_payload_is_rerouted_to_its_failure
 #[test]
 fn control_a_completion_whose_own_payload_breaks_its_route_fires_the_failure_route() {
     let k = completing_kernel(json!({ "n": 1 }));
-    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": "one" })).unwrap(), false, &row_asks);
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), from_json_value::<Value>(&json!({ "n": "one" })).unwrap(), false, &row_asks);
     assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
     assert!(delivered.result.is_ok(), "{:?}", delivered.result.as_ref().err());
 }
 
 fn completing_kernel_running(done_effects: Json) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -241,7 +242,7 @@ fn completing_kernel_running(done_effects: Json) -> RuntimeKernel {
 #[test]
 fn a_completion_whose_step_effect_fails_is_undone_and_rerouted_to_its_failure_route() {
     let k = completing_kernel_running(json!([["set", "@entity.n", ["+", 1, "x"]]]));
-    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), from_json_value::<Value>(&json!({ "n": 1 })).unwrap(), false, &row_asks);
     assert_eq!((delivered.event.as_str(), delivered.failed), ("FAILED", true));
     let error = delivered.payload.get_path("error").and_then(Value::as_str).unwrap_or_default().to_string();
     assert!(error.contains("DONE"), "the failure names the failed step: {error}");
@@ -252,7 +253,7 @@ fn a_completion_whose_step_effect_fails_is_undone_and_rerouted_to_its_failure_ro
 #[test]
 fn control_a_completion_whose_step_effects_run_stays_on_its_success_route() {
     let k = completing_kernel_running(json!([["set", "@entity.n", ["+", 1, 2]]]));
-    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), serde_json::from_value::<Value>(json!({ "n": 1 })).unwrap(), false, &row_asks);
+    let delivered = k.dispatch_route(&completing_site(), "k1", "DONE".to_string(), from_json_value::<Value>(&json!({ "n": 1 })).unwrap(), false, &row_asks);
     assert_eq!((delivered.event.as_str(), delivered.failed), ("DONE", false));
     let snapshot = k.snapshot_trait("Asker", Some(orbital_core_runtime::process_result::RUNTIME_SINGLETON));
     assert_eq!(snapshot.state, "done");

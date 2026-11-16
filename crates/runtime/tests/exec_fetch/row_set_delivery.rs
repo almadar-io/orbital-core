@@ -4,6 +4,7 @@
 //! (EXEC-RENDER-3 / Q6), and a kernel write to the referenced entity type repaints the slot with reason `rows-changed`.
 //! The same fixtures run on the JS engine in `almadar-runtime/test/row-set-delivery-twin.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_base::client_effect::ClientEffect, orbital_core_runtime::effects::RepaintReason};
 use orbital_core_runtime::resumable::{BlockingHost, HostAnswered, IoReply, IoRequest, Progress};
 use {orbital_core_runtime::row_query::{as_row_set_marker, QueryCapabilities, RowProjection}, orbital_core_base::row_set::{row_set_marker, RowPredicate, RowSetRef}};
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use crate::support::identity;
 
 fn v(j: &Json) -> Value {
-    serde_json::from_value(j.clone()).expect("a value")
+    from_json_value(&j).expect("a value")
 }
 
 fn j(value: &Value) -> Json {
@@ -33,7 +34,7 @@ fn schema(extra_fetch: Json, persistence: &str) -> OrbitalSchema {
     for (k, val) in extra_fetch.as_object().unwrap() {
         fetch[k] = val.clone();
     }
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rsd",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -267,7 +268,7 @@ fn rows_changed_paints(k: &RuntimeKernel) -> Vec<(String, Json)> {
 }
 
 fn server_says(k: &RuntimeKernel, response: Json) {
-    let response: EventResponse = serde_json::from_value(response).expect("a response");
+    let response: EventResponse = from_json_value(&response).expect("a response");
     k.apply_server_response(&response, &HashSet::new()).unwrap();
 }
 

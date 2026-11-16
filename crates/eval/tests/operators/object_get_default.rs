@@ -1,15 +1,16 @@
 // `(object/get obj path default)` returns the evaluated default when the path is absent; twin of almadar-evaluator `StdLibraryEvaluator.test.ts` "object/get default".
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 
 fn eval(expr: serde_json::Value) -> serde_json::Value {
     let ctx = BindingContextBuilder::new()
         .payload(
-            serde_json::from_value::<Value>(serde_json::json!({ "fallback": "from-payload" }))
+            from_json_value::<Value>(&serde_json::json!({ "fallback": "from-payload" }))
                 .unwrap(),
         )
         .build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     serde_json::to_value(Evaluator::new().evaluate(&sexpr, &ctx).unwrap()).unwrap()
 }
 
@@ -107,14 +108,14 @@ mod literal_dotted_keys {
 fn a_binding_path_reads_an_escaped_dot_as_one_literal_key() {
     let ctx = BindingContextBuilder::new()
         .payload(
-            serde_json::from_value::<Value>(
-                serde_json::json!({ "http.method": "GET", "http": { "method": "nested" }, "a": { "b.c": 7 } }),
+            from_json_value::<Value>(
+                &(serde_json::json!({ "http.method": "GET", "http": { "method": "nested" }, "a": { "b.c": 7 } }))
             )
             .unwrap(),
         )
         .build();
     let read = |binding: &str| {
-        let sexpr = serde_json::from_value(serde_json::json!(binding)).unwrap();
+        let sexpr = from_json_value(&serde_json::json!(binding)).unwrap();
         serde_json::to_value(Evaluator::new().evaluate(&sexpr, &ctx).unwrap()).unwrap()
     };
     assert_eq!(read("@payload.http\\.method"), serde_json::json!("GET"));

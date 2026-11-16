@@ -7,6 +7,7 @@
 //! There is no index file: the old `behaviors-registry.json` carried exactly
 //! these values, written by a TS extraction. The rules here are that
 //! extraction's, ported 1:1.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -382,7 +383,7 @@ pub fn hand_authored_behaviors(lolo_root: &Path) -> Result<HashSet<String>, Stri
             } else if path.file_name().is_some_and(|n| n == HAND_AUTHORED_FILE) {
                 let raw = fs::read_to_string(&path)
                     .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-                let parsed: BTreeMap<String, serde_json::Value> = serde_json::from_str(&raw)
+                let parsed: BTreeMap<String, serde_json::Value> = from_json_str(&raw)
                     .map_err(|e| format!("{} is not a JSON object: {e}", path.display()))?;
                 for entry in parsed.values() {
                     if let Some(board) = entry.get("board").and_then(|b| b.as_str()) {

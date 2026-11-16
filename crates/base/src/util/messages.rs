@@ -4,6 +4,7 @@
 //! so one merged catalog per locale serves a whole program without two
 //! behaviors' keys colliding, and nothing at runtime has to know which
 //! behavior an expression came from.
+use crate::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -181,7 +182,7 @@ pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, na
                 issues.extend(qualify_message_key_value(slot, namespace, &at));
             }
         }
-        if let Ok(qualified) = serde_json::from_value(value) {
+        if let Ok(qualified) = from_json_value(&value) {
             *default = qualified;
         }
     });
@@ -226,6 +227,7 @@ pub fn config_message_keys(schema: &crate::schema::OrbitalSchema) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
     use serde_json::json;
 
     #[test]
@@ -557,6 +559,7 @@ pub fn check_catalogs(
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
+    use crate::json_value::from_json_str;
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -698,7 +701,7 @@ mod catalog_tests {
     }
 
     fn knob_schema() -> crate::schema::OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "panel",
             "orbitals": [{
                 "name": "Panel",
@@ -744,7 +747,7 @@ mod catalog_tests {
     fn edge_a_qualified_knob_value_is_invalid() {
         let mut schema = knob_schema();
         let json = serde_json::to_string(&schema).unwrap().replace(r#""default":"title""#, r#""default":"x:title""#);
-        schema = serde_json::from_str(&json).unwrap();
+        schema = from_json_str(&json).unwrap();
         assert_eq!(
             qualify_config_message_keys(&mut schema, "panel"),
             vec![MessageKeyIssue::Invalid { path: "Panel.Own.config.label".into(), key: "x:title".into() }]

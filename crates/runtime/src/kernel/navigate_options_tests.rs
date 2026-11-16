@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 /// §157 `navigate-route-params`: the third `navigate` argument's `crumb` must
@@ -33,9 +34,9 @@ fn navigate_carries_crumb_options() {
 /// EXEC-EVAL-4: a mistyped operator call in navigate params is the effect's failure, as in render props.
 #[test]
 fn a_mistyped_call_in_navigate_params_fails_resolution() {
-    let expr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_value(serde_json::json!(
+    let expr: orbital_core_base::schema::sexpr::SExpression = from_json_value(&(serde_json::json!(
         ["navigate", "/items", { "tags": ["str/join", ["array/filter", "not-a-list", ["fn", "x", true]], ", "] }]
-    ))
+    )))
     .unwrap();
     let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("table").expect("a navigate effect");
     let resolved = resolve_effect_bindings(effect, &BindingContextBuilder::new().build());
@@ -44,9 +45,9 @@ fn a_mistyped_call_in_navigate_params_fails_resolution() {
 
 #[test]
 fn control_a_well_typed_call_in_navigate_params_resolves_to_its_value() {
-    let expr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_value(serde_json::json!(
+    let expr: orbital_core_base::schema::sexpr::SExpression = from_json_value(&(serde_json::json!(
         ["navigate", "/items", { "tags": ["str/join", ["array/filter", ["a", "b"], ["fn", "x", true]], ", "] }]
-    ))
+    )))
     .unwrap();
     let effect = orbital_core_base::effect_types::parse_effect(&expr).expect("table").expect("a navigate effect");
     let Ok(Effect::Navigate { params: Some(params), .. }) = resolve_effect_bindings(effect, &BindingContextBuilder::new().build()) else {

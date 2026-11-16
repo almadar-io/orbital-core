@@ -1,12 +1,13 @@
+use crate::json_value::from_json_value;
 use super::*;
 use crate::schema::types::FieldDefinition;
 
 fn tuple_field() -> FieldDefinition {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "position",
         "type": "tuple",
         "properties": { "2": { "type": "string" }, "0": { "type": "number" }, "10": { "type": "boolean" }, "1": { "type": "number" } }
-    }))
+    })))
     .unwrap()
 }
 

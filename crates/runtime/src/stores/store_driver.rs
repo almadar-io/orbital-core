@@ -1,6 +1,7 @@
 //! EXEC-STORE-4 mapping: a row ask on a store-bound entity becomes one typed verb event for its driver
 //! orbital (`spec/store/row-store.lolo`), and the driver's keyed reply becomes the same [`IoAnswer`] a host
 //! would have given. Mapping only: parking and resuming the asking run is the kernel's.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -127,7 +128,7 @@ struct FailedReply {
 }
 
 fn to_value<T: Serialize>(record: &T) -> Value {
-    serde_json::from_value(serde_json::to_value(record).expect("verb records serialize"))
+    from_json_value(&serde_json::to_value(record).expect("verb records serialize"))
         .expect("serialized verb records are values")
 }
 
@@ -215,7 +216,7 @@ pub fn reply_key(payload: &Value) -> Option<&str> {
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(event: &str, payload: &Value) -> Result<T, ReplyError> {
-    serde_json::from_value(value_to_json(payload)).map_err(|e| ReplyError::Malformed {
+    from_json_value(&value_to_json(payload)).map_err(|e| ReplyError::Malformed {
         event: event.to_string(),
         message: e.to_string(),
     })
@@ -302,7 +303,7 @@ mod tests {
     use crate::row_query::{RowWriteFailureMode, RowWriteOp};
 
     fn json(v: serde_json::Value) -> Value {
-        serde_json::from_value(v).unwrap()
+        from_json_value(&v).unwrap()
     }
 
     fn read() -> IoRequest {
@@ -314,9 +315,7 @@ mod tests {
 
     fn take(guarded: bool) -> IoRequest {
         let guard = guarded.then(|| {
-            serde_json::from_value(
-                serde_json::json!({"kind": "compare", "field": "used", "op": "==", "value": false}),
-            )
+            from_json_value(&(serde_json::json!({"kind": "compare", "field": "used", "op": "==", "value": false})))
             .unwrap()
         });
         IoRequest::WriteRows {

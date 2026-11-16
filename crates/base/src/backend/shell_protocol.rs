@@ -9,6 +9,7 @@
 //!
 //! [`IR_VERSION`] is the one contract between `orb` and its shells: a shell
 //! accepts a range of IR versions and refuses a request outside it.
+use crate::json_value::from_json_slice;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -460,7 +461,7 @@ pub fn describe(binary: &Path) -> Result<ShellDescription, ShellFailure> {
             ),
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(|e| {
+    from_json_slice(&output.stdout).map_err(|e| {
         ShellFailure::new(
             CODE_NOT_RUNNABLE,
             format!("{} describe printed no description: {e}", binary.display()),
@@ -588,6 +589,7 @@ fn ship_kernel_from(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::{from_json_str, from_json_value};
 
     fn nested(depth: usize) -> String {
         format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
@@ -703,7 +705,7 @@ mod tests {
             "ORB_LANGUAGE_DATA_INCOMPATIBLE"
         );
         assert_eq!(
-            serde_json::from_value::<ShellDescription>(json).unwrap(),
+            from_json_value::<ShellDescription>(&json).unwrap(),
             broken
         );
 
@@ -714,7 +716,7 @@ mod tests {
         );
         let older = serde_json::json!({"name": "old", "version": "1.0.0", "irVersions": {"min": 1, "max": 1}});
         assert_eq!(
-            serde_json::from_value::<ShellDescription>(older)
+            from_json_value::<ShellDescription>(&older)
                 .unwrap()
                 .language_problem,
             None
@@ -728,12 +730,12 @@ mod tests {
         let json = serde_json::to_value(&shipping).unwrap();
         assert_eq!(json["webClient"], "/opt/shell/templates/almadar-web-client");
         assert_eq!(
-            serde_json::from_value::<ShellDescription>(json).unwrap(),
+            from_json_value::<ShellDescription>(&json).unwrap(),
             shipping
         );
         let older = serde_json::json!({ "name": "fake", "version": "1.0.0", "irVersions": { "min": 1, "max": 1 } });
         assert_eq!(
-            serde_json::from_value::<ShellDescription>(older)
+            from_json_value::<ShellDescription>(&older)
                 .unwrap()
                 .web_client,
             None
@@ -755,7 +757,7 @@ mod tests {
         );
         let json = serde_json::to_string(&EmitReply::Ok(output)).unwrap();
         assert!(
-            matches!(serde_json::from_str::<EmitReply>(&json).unwrap(), EmitReply::Ok(o) if o.files[0].content == "hi")
+            matches!(from_json_str::<EmitReply>(&json).unwrap(), EmitReply::Ok(o) if o.files[0].content == "hi")
         );
     }
 
@@ -833,12 +835,12 @@ mod tests {
     #[test]
     fn the_request_and_reply_round_trip_as_json() {
         let json = serde_json::to_string(&request(IR_VERSION)).unwrap();
-        let back: GenerateRequest = serde_json::from_str(&json).unwrap();
+        let back: GenerateRequest = from_json_str(&json).unwrap();
         assert_eq!(back.ir_version, IR_VERSION);
         assert_eq!(back.module.name, "App");
         let reply = ShellReply::Error(ShellFailure::new(CODE_GENERATE_FAILED, "boom"));
         assert_eq!(
-            serde_json::from_str::<ShellReply>(&serde_json::to_string(&reply).unwrap()).unwrap(),
+            from_json_str::<ShellReply>(&serde_json::to_string(&reply).unwrap()).unwrap(),
             reply
         );
     }

@@ -70,15 +70,16 @@ pub fn projected_through_mapping<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     #[test]
     fn named_source_provenance_does_not_read_rows_but_real_projection_does() {
-        let mut field: PayloadField = serde_json::from_value(serde_json::json!({
+        let mut field: PayloadField = from_json_value(&(serde_json::json!({
             "name":"row","type":"object","projectedFrom":{"type":"Shared"}
-        })).unwrap();
+        }))).unwrap();
         assert!(projected_payload(&[field.clone()], |_| panic!("Named source is not a row projection")).is_empty());
         field.projected_from.as_mut().unwrap().field = Some("label".into());
-        let rows = vec![serde_json::from_value(serde_json::json!({"label":"kept"})).unwrap()];
+        let rows = vec![from_json_value(&(serde_json::json!({"label":"kept"}))).unwrap()];
         assert_eq!(projected_payload(&[field], |_| Some(&rows))["row"], Value::string("kept"));
     }
 }

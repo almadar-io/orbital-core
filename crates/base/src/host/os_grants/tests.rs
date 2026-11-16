@@ -1,3 +1,4 @@
+use crate::json_value::from_json_value;
 use super::*;
 use super::requirements::{ffi_need, gpu_need, kernel_need, mem_need, need_of};
 use serde_json::json;
@@ -281,7 +282,7 @@ fn stdio_sys_and_desktop_grant_only_what_is_listed() {
 
 #[test]
 fn dev_grants_cover_a_register_window_and_an_irq_line_only() {
-    let g: OsGrants = serde_json::from_value(json!({
+    let g: OsGrants = from_json_value(&json!({
         "dev": [
             {"target": "mmio:0x09000000+0x1000", "kinds": ["read", "write"]},
             {"target": "irq:33", "kinds": ["wait", "ack"]}
@@ -372,7 +373,7 @@ fn a_mem_grant_bounds_arena_capacity_and_free_needs_its_own_kind() {
     assert!(mem_grants("arena:1024", vec![MemKind::Free]).allows(&free));
     assert!(!OsGrants::default().allows(&create(1)), "control: closed by default");
     assert!(g.entry_problems().is_empty());
-    let both: OsGrants = serde_json::from_value(json!({"mem": [{"target": "arena:64", "kinds": ["create", "free"]}]})).expect("mem");
+    let both: OsGrants = from_json_value(&json!({"mem": [{"target": "arena:64", "kinds": ["create", "free"]}]})).expect("mem");
     assert!(both.allows(&create(64)) && both.allows(&free));
 }
 
@@ -405,7 +406,7 @@ fn mem_calls_need_the_capacity_they_name() {
 }
 
 fn exprs(args: serde_json::Value) -> Vec<SExpression> {
-    serde_json::from_value(args).expect("args")
+    from_json_value(&args).expect("args")
 }
 
 #[test]
@@ -441,7 +442,7 @@ fn arena_new_of_kind_shared_needs_a_shared_target() {
     assert_eq!(need(json!(["bump", 256])), Ok(vec![OsRequirement::Mem { kind: MemKind::Create, capacity: Some(256) }]), "control");
     assert_eq!(need(json!(["@entity.kind", 256])), Err(0), "a computed kind is not literal");
     assert_eq!(need(json!(["shared", "@entity.size"])), Err(1), "a computed capacity is not literal");
-    let grant: OsGrantNeed = serde_json::from_value(json!({"kind": "mem", "access": "create", "capacity": 1, "arenaKind": 0})).expect("need");
+    let grant: OsGrantNeed = from_json_value(&json!({"kind": "mem", "access": "create", "capacity": 1, "arenaKind": 0})).expect("need");
     assert_eq!(grant, OsGrantNeed::Mem { access: MemKind::Create, capacity: Some(1), arena_kind: Some(0) });
     let atomic = mem_need(&exprs(json!(["@x", 0])), MemKind::Atomic, (None, None), &never);
     assert_eq!(atomic, Ok(vec![OsRequirement::Mem { kind: MemKind::Atomic, capacity: None }]));
@@ -466,7 +467,7 @@ fn a_gpu_grant_allows_only_the_kinds_it_lists() {
     assert!(g.allows(&need(GpuKind::Open)) && g.allows(&need(GpuKind::Compute)));
     assert!(!g.allows(&need(GpuKind::Render)) && !g.allows(&need(GpuKind::Readback)), "control: each kind is its own");
     assert!(!OsGrants::default().allows(&need(GpuKind::Open)), "control: closed by default");
-    let both: OsGrants = serde_json::from_value(json!({"gpu": [{"target": "device:64", "kinds": ["render", "readback"]}]})).expect("gpu");
+    let both: OsGrants = from_json_value(&json!({"gpu": [{"target": "device:64", "kinds": ["render", "readback"]}]})).expect("gpu");
     assert!(both.allows(&need(GpuKind::Render)) && both.allows(&need(GpuKind::Readback)) && !both.allows(&need(GpuKind::Open)));
     assert!(g.entry_problems().is_empty());
 }
@@ -490,9 +491,9 @@ fn gpu_needs_come_from_the_literal_command_list() {
     assert_eq!(commands(json!([{"compute": {}, "render": {}}])), Vec::new(), "an entry with two keys is not a command");
     assert_eq!(commands(json!("@entity.commands")), Vec::new(), "control: a non-literal list gives no requirement");
     assert_eq!(gpu_need(&exprs(json!(["@device"])), GpuKind::Open, None), vec![OsRequirement::Gpu { kind: GpuKind::Open }]);
-    let grant: OsGrantNeed = serde_json::from_value(json!({"kind": "gpu", "access": "open", "commands": 1})).expect("need");
+    let grant: OsGrantNeed = from_json_value(&json!({"kind": "gpu", "access": "open", "commands": 1})).expect("need");
     assert_eq!(grant, OsGrantNeed::Gpu { access: GpuKind::Open, commands: Some(1) });
-    let bare: OsGrantNeed = serde_json::from_value(json!({"kind": "gpu", "access": "readback"})).expect("need");
+    let bare: OsGrantNeed = from_json_value(&json!({"kind": "gpu", "access": "readback"})).expect("need");
     assert_eq!(bare, OsGrantNeed::Gpu { access: GpuKind::Readback, commands: None });
     let deferred = |_: &SExpression| false;
     assert_eq!(need_of(&grant, &exprs(json!(["@d", [{"render": {}}]])), &deferred), Ok(vec![render()]));
@@ -587,7 +588,7 @@ fn queue_introspect_and_guest_grants_each_admit_their_own_kind() {
     }
     assert!(!all.allows(&apply("math/add")), "control: no apply grant");
     assert!(all.entry_problems().is_empty());
-    let g: OsGrants = serde_json::from_value(json!({"kernel": [{"target": "queue", "kinds": ["reorder"]}]})).expect("kernel");
+    let g: OsGrants = from_json_value(&json!({"kernel": [{"target": "queue", "kinds": ["reorder"]}]})).expect("kernel");
     assert!(g.allows(&OsRequirement::Kernel { kind: KernelKind::Reorder, operator: None }));
 }
 
@@ -731,7 +732,7 @@ fn ffi_atoms_union_and_covers() {
     assert_eq!(covers(&a, &ffi_grants(&[("l", "g", "() -> void")])), Ok(()));
     assert_eq!(covers(&a, &ffi_grants(&[("l", "h", "() -> void")])), Err(vec!["ffi \"l\" h".to_string()]));
     assert!(covers(&a, &ffi_grants(&[("l", "f", "(i32) -> i32")])).is_err(), "a different signature is not the held grant");
-    let parsed: OsGrants = serde_json::from_value(json!({"ffi": [{"library": "l", "symbol": "f", "signature": "() -> void"}]})).expect("ffi");
+    let parsed: OsGrants = from_json_value(&json!({"ffi": [{"library": "l", "symbol": "f", "signature": "() -> void"}]})).expect("ffi");
     assert_eq!(parsed.ffi.len(), 1);
 }
 
@@ -740,7 +741,7 @@ fn device_calls_need_their_window_or_line() {
     let call = |op, args: serde_json::Value| {
         os_requirements(
             op,
-            &serde_json::from_value::<Vec<SExpression>>(args).expect("args"),
+            &from_json_value::<Vec<SExpression>>(&args).expect("args"),
         )
     };
     let mmio = |offset, width, kind| OsRequirement::Dev {
@@ -781,7 +782,7 @@ fn device_calls_need_their_window_or_line() {
     let deferred =
         |arg: &SExpression| matches!(arg, SExpression::String(s) if s.starts_with("@config."));
     let args: Vec<SExpression> =
-        serde_json::from_value(json!(["@config.base", 24, 4])).expect("args");
+        from_json_value(&json!(["@config.base", 24, 4])).expect("args");
     assert_eq!(
         os_requirements_deferring(OsOp::MmioRead, &args, &deferred),
         Ok(vec![]),
@@ -791,7 +792,7 @@ fn device_calls_need_their_window_or_line() {
 
 #[test]
 fn grants_deserialize_from_the_documented_spellings() {
-    let g: OsGrants = serde_json::from_value(json!({
+    let g: OsGrants = from_json_value(&json!({
         "fs": [{"glob": "/data/**", "modes": ["read", "create"]}],
         "exec": ["git"],
         "net": [{"target": "db.internal:5432", "kinds": ["tcp", "listen"]}],
@@ -806,13 +807,13 @@ fn grants_deserialize_from_the_documented_spellings() {
     assert!(g.sys_allows(SysKind::PowerState));
     assert!(g.desktop_allows(DesktopKind::Power));
     assert!(!g.is_empty());
-    let empty: OsGrants = serde_json::from_value(json!({})).expect("empty");
+    let empty: OsGrants = from_json_value(&json!({})).expect("empty");
     assert!(empty.is_empty());
-    assert!(serde_json::from_value::<OsGrants>(json!({"sys": ["gpu"]})).is_err());
+    assert!(from_json_value::<OsGrants>(&json!({"sys": ["gpu"]})).is_err());
 }
 
 fn call(op: OsOp, args: serde_json::Value) -> Result<Vec<OsRequirement>, usize> {
-    let args: Vec<SExpression> = serde_json::from_value(args).expect("args");
+    let args: Vec<SExpression> = from_json_value(&args).expect("args");
     os_requirements(op, &args)
 }
 
@@ -1184,10 +1185,10 @@ fn a_requirement_is_the_tagged_wire_shape_and_round_trips() {
     ];
     for (need, wire) in cases {
         assert_eq!(serde_json::to_value(&need).unwrap(), wire);
-        assert_eq!(serde_json::from_value::<OsRequirement>(wire).unwrap(), need);
+        assert_eq!(from_json_value::<OsRequirement>(&wire).unwrap(), need);
     }
-    assert!(serde_json::from_value::<OsRequirement>(json!({"need":"fs","path":"/a"})).is_err());
-    assert!(serde_json::from_value::<OsRequirement>(json!({"need":"nope"})).is_err());
+    assert!(from_json_value::<OsRequirement>(&json!({"need":"fs","path":"/a"})).is_err());
+    assert!(from_json_value::<OsRequirement>(&json!({"need":"nope"})).is_err());
 }
 
 #[test]
@@ -1233,7 +1234,7 @@ fn allows_is_the_one_dispatch_over_the_family_matchers() {
 
 #[test]
 fn an_orbital_holds_the_app_level_plus_its_own_and_the_program_the_union() {
-    let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+    let schema: crate::schema::OrbitalSchema = from_json_value(&json!({
         "name": "p", "version": "1.0.0",
         "osGrants": {"stdio": ["out"]},
         "orbitals": [
@@ -1254,7 +1255,7 @@ fn an_orbital_holds_the_app_level_plus_its_own_and_the_program_the_union() {
 
 #[test]
 fn an_egress_origin_grants_no_raw_socket() {
-    let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+    let schema: crate::schema::OrbitalSchema = from_json_value(&json!({
         "name": "p", "version": "1.0.0", "egress": ["https://api.example.com"],
         "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": []}]
     }))
@@ -1769,7 +1770,7 @@ fn anchored_entries_round_trip_split_into_atoms_and_report_bad_shapes() {
         json!({"fs": [{"anchor": "exe-dir", "glob": "agent/**", "modes": ["read", "meta"]}],
                "exec": [{"anchor": {"env": "ORB_BUN_PATH"}}, {"anchor": "exe-dir", "path": "bun"}]})
     );
-    assert_eq!(serde_json::from_value::<OsGrants>(wire).unwrap(), g);
+    assert_eq!(from_json_value::<OsGrants>(&wire).unwrap(), g);
     assert!(
         serde_json::to_value(OsGrants::default())
             .unwrap()
@@ -2463,7 +2464,7 @@ fn a_host_resolves_an_anchored_path_under_its_anchor_or_refuses_it() {
         ..boot(Some("/opt/orb"), &[("D", "/srv/a")])
     };
     let at = |v: serde_json::Value| {
-        AnchoredPath::from_value(&serde_json::from_value::<Value>(v).unwrap()).expect("anchored")
+        AnchoredPath::from_value(&from_json_value::<Value>(&v).unwrap()).expect("anchored")
     };
     assert_eq!(
         host.resolve_path(&at(json!({"anchor": "cwd", "path": "docs/a.md"}))),
@@ -2607,22 +2608,16 @@ fn a_tree_is_covered_only_by_a_double_star_grant_that_contains_its_root() {
 
 #[test]
 fn a_grant_naming_an_unknown_family_or_field_is_refused() {
-    assert!(serde_json::from_value::<OsGrants>(
-        json!({"files": [{"glob": "/tmp/**", "modes": ["read"]}]})
-    )
+    assert!(from_json_value::<OsGrants>(&json!({"files": [{"glob": "/tmp/**", "modes": ["read"]}]}))
     .is_err());
-    assert!(serde_json::from_value::<OsGrants>(
-        json!({"fs": [{"glob": "/tmp/**", "modes": ["read"], "recursive": true}]})
-    )
+    assert!(from_json_value::<OsGrants>(&json!({"fs": [{"glob": "/tmp/**", "modes": ["read"], "recursive": true}]}))
     .is_err());
-    assert!(serde_json::from_value::<OsGrants>(json!({"anchored": {"files": []}})).is_err());
+    assert!(from_json_value::<OsGrants>(&json!({"anchored": {"files": []}})).is_err());
 }
 
 #[test]
 fn control_known_families_and_fields_still_parse() {
-    let grants = serde_json::from_value::<OsGrants>(
-        json!({"fs": [{"glob": "/tmp/**", "modes": ["read"]}], "env": ["HOME"]}),
-    )
+    let grants = from_json_value::<OsGrants>(&json!({"fs": [{"glob": "/tmp/**", "modes": ["read"]}], "env": ["HOME"]}))
     .expect("known families parse");
     assert_eq!(
         grants,
@@ -2636,7 +2631,7 @@ fn control_known_families_and_fields_still_parse() {
 #[test]
 fn a_host_pattern_grant_matches_exactly_one_leading_label_at_its_port() {
     let grants = |target: &str| -> OsGrants {
-        serde_json::from_value(json!({ "net": [{ "target": target, "kinds": ["tcp"] }] })).unwrap()
+        from_json_value(&json!({ "net": [{ "target": target, "kinds": ["tcp"] }] })).unwrap()
     };
     let pattern = grants("*.notify.windows.com:443");
     for host in ["db5.notify.windows.com", "DB5.Notify.Windows.COM", "a-b_1.notify.windows.com"] {
@@ -2701,7 +2696,7 @@ mod static_check {
         if !app.is_null() {
             schema["osGrants"] = app;
         }
-        serde_json::from_value(schema).expect("schema")
+        from_json_value(&schema).expect("schema")
     }
 
     fn one(grants: serde_json::Value, effects: serde_json::Value) -> Vec<OsGrantFinding> {
@@ -2811,7 +2806,7 @@ mod static_check {
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": transitions } }],
             "pages": []
         }] });
-        let schema: OrbitalSchema = serde_json::from_value(schema).expect("schema");
+        let schema: OrbitalSchema = from_json_value(&schema).expect("schema");
         let written = findings(&schema, OsGrantPass::Written);
         assert!(!has(&written, OsGrantFindingCode::BindingMismatch), "the finished pass alone checks bindings: {written:?}");
         findings(&schema, OsGrantPass::Final).into_iter().filter(|f| f.code == OsGrantFindingCode::BindingMismatch).collect()
@@ -3639,7 +3634,7 @@ mod static_check {
         let mut schema = program(json!(null), orbitals);
         let written = authored
             .iter()
-            .map(|(name, grants)| (name.to_string(), serde_json::from_value(grants.clone()).expect("grants")))
+            .map(|(name, grants)| (name.to_string(), from_json_value(&grants).expect("grants")))
             .collect();
         prune_composed_unused_grants(&mut schema, &written).expect("table");
         schema
@@ -3759,13 +3754,9 @@ mod static_check {
 
 #[test]
 fn an_unknown_fs_mode_is_refused_when_grants_are_decoded() {
-    let refused = serde_json::from_value::<OsGrants>(
-        json!({ "fs": [{ "glob": "/data/**", "modes": ["execute"] }] }),
-    );
+    let refused = from_json_value::<OsGrants>(&json!({ "fs": [{ "glob": "/data/**", "modes": ["execute"] }] }));
     assert!(refused.is_err());
-    let known: OsGrants = serde_json::from_value(
-        json!({ "fs": [{ "glob": "/data/**", "modes": ["read", "meta"] }] }),
-    )
+    let known: OsGrants = from_json_value(&json!({ "fs": [{ "glob": "/data/**", "modes": ["read", "meta"] }] }))
     .expect("known modes decode");
     assert_eq!(known.fs[0].modes, vec![FsMode::Read, FsMode::Meta]);
 }
@@ -3794,19 +3785,19 @@ fn the_grants_report_prints_codes_and_via_in_kebab_case_and_reads_back() {
         "an absent field is an absent key: {json}"
     );
     assert_eq!(
-        serde_json::from_value::<OsGrantsReport>(json).unwrap(),
+        from_json_value::<OsGrantsReport>(&json).unwrap(),
         report
     );
     let bad = json!({ "findings": [{ "code": "missing", "site": "s", "via": "elsewhere" }] });
     assert!(
-        serde_json::from_value::<OsGrantsReport>(bad).is_err(),
+        from_json_value::<OsGrantsReport>(&bad).is_err(),
         "control: an unknown via is refused"
     );
 }
 
 #[test]
 fn a_grant_table_answers_each_orbital_with_its_own_set_plus_the_app_level() {
-    let schema: crate::schema::OrbitalSchema = serde_json::from_value(json!({
+    let schema: crate::schema::OrbitalSchema = from_json_value(&json!({
         "name": "p", "version": "1.0.0",
         "osGrants": {"stdio": ["out"]},
         "orbitals": [
@@ -3886,7 +3877,7 @@ fn the_target_positions_are_the_ones_the_operator_table_grants_on() {
 }
 
 fn grants_of(value: serde_json::Value) -> OsGrants {
-    serde_json::from_value(value).expect("grants")
+    from_json_value(&value).expect("grants")
 }
 
 #[test]
@@ -3991,7 +3982,7 @@ fn a_drive_rooted_windows_path_is_its_drive_then_its_segments() {
 
     let host = boot(None, &[("D", r"C:\Users\r\.almadar\derived")]);
     let at = |v: serde_json::Value| {
-        AnchoredPath::from_value(&serde_json::from_value::<Value>(v).unwrap()).expect("anchored")
+        AnchoredPath::from_value(&from_json_value::<Value>(&v).unwrap()).expect("anchored")
     };
     assert_eq!(host.resolve_path(&at(json!({"anchor": {"env": "D"}, "path": "a"}))), Ok("C:/Users/r/.almadar/derived/a".to_string()));
     let granted = anchored(vec![AnchoredFsGrant { anchor: GrantAnchor::Env("D".into()), glob: "**".into(), modes: vec![FsMode::Write] }], vec![]);

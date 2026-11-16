@@ -7,6 +7,7 @@
 //! interface version the sources were generated against, the pattern registry
 //! version, the coverage list, and the `sources` / `fixtures` directories. A
 //! shell refuses a pack whose interface differs from the one it emits against.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -189,7 +190,7 @@ pub fn load_renderer_pack(
     };
     let raw = fs::read_to_string(&manifest).map_err(|e| invalid(&manifest, e.to_string()))?;
     let value: Value =
-        serde_json::from_str(&raw).map_err(|e| invalid(&manifest, format!("invalid JSON: {e}")))?;
+        from_json_str(&raw).map_err(|e| invalid(&manifest, format!("invalid JSON: {e}")))?;
     let block = value
         .get("orbRenderer")
         .and_then(Value::as_object)

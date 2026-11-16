@@ -1,9 +1,10 @@
 //! `set` evaluates the members of an object literal; a literal with none is stored as written.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
 fn row(effect: serde_json::Value) -> Value {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "SetObject",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Page",
@@ -16,7 +17,7 @@ fn row(effect: serde_json::Value) -> Value {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -25,7 +26,7 @@ fn row(effect: serde_json::Value) -> Value {
     );
     kernel.register_schema(schema).unwrap();
     let payload: Value =
-        serde_json::from_value(serde_json::json!({ "data": { "id": "abc", "n": 3 } })).unwrap();
+        from_json_value(&(serde_json::json!({ "data": { "id": "abc", "n": 3 } }))).unwrap();
     let outcomes = kernel.dispatch("Holder", None, "GO", payload).unwrap();
     outcomes
         .into_iter()
@@ -51,9 +52,9 @@ fn a_literal_with_computed_members_is_stored_evaluated() {
         "label": ["str/concat", "p-", ["object/get", "@payload.data", "id"]],
         "nested": { "again": ["object/get", "@payload.data", "n"] }
     }])));
-    let expected: Value = serde_json::from_value(serde_json::json!({
+    let expected: Value = from_json_value(&(serde_json::json!({
         "id": "abc", "n": 3, "label": "p-abc", "nested": { "again": 3 }
-    }))
+    })))
     .unwrap();
     assert_eq!(stored, expected);
 }
@@ -63,9 +64,7 @@ fn control_a_literal_with_no_computed_member_is_stored_as_written() {
     let stored = prof(&row(
         serde_json::json!(["set", "@entity.prof", { "id": "fixed", "n": 7, "tags": ["a", "b"] }]),
     ));
-    let expected: Value = serde_json::from_value(
-        serde_json::json!({ "id": "fixed", "n": 7, "tags": ["a", "b"] }),
-    )
+    let expected: Value = from_json_value(&(serde_json::json!({ "id": "fixed", "n": 7, "tags": ["a", "b"] })))
     .unwrap();
     assert_eq!(stored, expected);
 }
@@ -75,7 +74,7 @@ fn control_a_bound_member_resolves() {
     let stored = prof(&row(
         serde_json::json!(["set", "@entity.prof", { "id": "@payload.data.id" }]),
     ));
-    let expected: Value = serde_json::from_value(serde_json::json!({ "id": "abc" })).unwrap();
+    let expected: Value = from_json_value(&(serde_json::json!({ "id": "abc" }))).unwrap();
     assert_eq!(stored, expected);
 }
 

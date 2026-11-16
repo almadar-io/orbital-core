@@ -1,6 +1,7 @@
 //! G-CROSS-335: a row a host answers is checked once, where it arrives, against its entity's declared fields; a row
 //! that does not fit fails the asking effect as a store failure.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
@@ -22,7 +23,7 @@ fn kernel() -> RuntimeKernel {
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -54,7 +55,7 @@ fn schema() -> OrbitalSchema {
 /// The events the fetch answered with, when the host lists `rows`.
 fn answered(rows: serde_json::Value) -> Vec<String> {
     let kernel = kernel();
-    let rows: Vec<Value> = serde_json::from_value(rows).unwrap();
+    let rows: Vec<Value> = from_json_value(&rows).unwrap();
     let progress = kernel
         .start_dispatch("Browse", None, "LOAD", Value::Null, None, None)
         .unwrap();
@@ -90,8 +91,8 @@ fn answered_by_page(effect: serde_json::Value, rows: serde_json::Value) -> Vec<S
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
         KernelConfig::default(),
     );
-    kernel.register_schema(serde_json::from_value(schema).unwrap()).unwrap();
-    let rows: Vec<Value> = serde_json::from_value(rows).unwrap();
+    kernel.register_schema(from_json_value(&schema).unwrap()).unwrap();
+    let rows: Vec<Value> = from_json_value(&rows).unwrap();
     let progress = kernel.start_dispatch("Browse", None, "LOAD", Value::Null, None, None).unwrap();
     let outcomes = drive_blocking(&kernel, progress, &|request| match request {
         IoRequest::QueryRows { .. } => IoAnswer::Page(Ok(orbital_core_runtime::row_query::RowPage { rows: rows.clone(), total: rows.len() })),
@@ -178,9 +179,9 @@ fn a_host_seed_whose_row_contradicts_its_entity_is_refused_and_writes_nothing() 
     let mut runtime = serde_json::to_value(schema()).unwrap();
     runtime["orbitals"][0]["entity"]["persistence"] = json!("runtime");
     let server =
-        orbital_core_runtime::embed::EmbeddedServer::new(serde_json::from_value(runtime).unwrap())
+        orbital_core_runtime::embed::EmbeddedServer::new(from_json_value(&runtime).unwrap())
             .unwrap();
-    let rows = |v: serde_json::Value| -> Vec<Value> { serde_json::from_value(v).unwrap() };
+    let rows = |v: serde_json::Value| -> Vec<Value> { from_json_value(&v).unwrap() };
     let refused = server.seed_rows(
         "Note",
         &rows(json!([{ "id": "n1", "count": 1 }, { "id": "n2", "count": "2" }])),

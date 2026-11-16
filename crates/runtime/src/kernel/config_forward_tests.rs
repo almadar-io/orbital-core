@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 /// Build a minimal `TraitDefinition` with a `config` map of `key → default
@@ -13,11 +14,11 @@ fn trait_with_config(name: &str, cfg: &[(&str, &str)]) -> TraitDefinition {
             )
         })
         .collect();
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": name,
         "stateMachine": { "states": [], "transitions": [] },
         "config": config,
-    }))
+    })))
     .expect("trait fixture")
 }
 

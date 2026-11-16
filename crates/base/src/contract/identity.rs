@@ -314,6 +314,7 @@ fn hashed_id(kind: IdKind, data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     fn seq_entropy() -> impl FnMut(usize) -> Vec<u8> {
         let mut ctr: u64 = 0;
@@ -472,7 +473,7 @@ mod tests {
                 }
             }
         }"#;
-        let ledger: IdentityLedger = serde_json::from_str(json).unwrap();
+        let ledger: IdentityLedger = from_json_str(json).unwrap();
         assert_eq!(ledger.schema_version, 1);
         assert_eq!(
             ledger.resolve_name(IdKind::Entity, "PotteryClass"),

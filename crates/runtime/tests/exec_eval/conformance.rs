@@ -1,5 +1,6 @@
 //! EXEC-EVAL / EXEC-LANG conformance: how the kernel evaluator reads operands, nulls, types and calls.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::value::Value;
@@ -10,12 +11,12 @@ use serde_json::{json, Value as Json};
 use std::sync::Arc;
 
 fn value(json: Json) -> Value {
-    serde_json::from_value(json).unwrap()
+    from_json_value(&json).unwrap()
 }
 
 fn eval_with(expr: Json, payload: Json) -> Result<Value, String> {
     let ctx = BindingContextBuilder::new().payload(value(payload)).build();
-    let expr: SExpression = serde_json::from_value(expr).unwrap();
+    let expr: SExpression = from_json_value(&expr).unwrap();
     Evaluator::new().evaluate(&expr, &ctx).map_err(|e| e.to_string())
 }
 
@@ -139,7 +140,7 @@ fn set_kernel(call: Json) -> RuntimeKernel {
     );
     kernel
         .register_schema(
-            serde_json::from_value(json!({
+            from_json_value(&json!({
                 "name": "App",
                 "typeContractVersion": 1, "orbitals": [{
                     "name": "AppOrbital",

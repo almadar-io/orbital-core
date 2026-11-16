@@ -2,6 +2,7 @@
 // one frame per private trait or `[shared]` entity, a `put` the first time the client is told of it and a `set` per
 // field that changed after.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse, LifecycleEvent, MountSeed}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::{json, Value as Json};
@@ -11,7 +12,7 @@ fn schema() -> OrbitalSchema {
         json!({ "name": name, "linkedEntity": entity,
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": arms } })
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -130,7 +131,7 @@ fn list_schema(bump_resets_the_list: bool) -> OrbitalSchema {
     if bump_resets_the_list {
         bump.push(json!(["set", "@entity.items", "@entity.items"]));
     }
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -205,7 +206,7 @@ fn doc_schema(extra_traits: Vec<Json>) -> OrbitalSchema {
         json!({ "name": "ReaderB", "linkedEntity": "Doc3", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] } }),
     ];
     traits.extend(extra_traits);
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -237,7 +238,7 @@ fn control_a_shared_field_no_trait_wrote_is_absent_from_every_row() {
 }
 
 fn cascade_schema(second_writes: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -279,7 +280,7 @@ fn cascade_steps_writing_different_fields_leave_both() {
 }
 
 fn quiet_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -328,7 +329,7 @@ fn failing_schema(with_failure: bool) -> OrbitalSchema {
         effects.push(json!(["set", "@entity.w", "also"]));
     }
     effects.push(json!(["set", "@entity.x", "after"]));
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -367,7 +368,7 @@ fn control_the_same_step_without_the_failure_reports_all_three_sets() {
 
 fn handoff_schema() -> OrbitalSchema {
     let machine = |arms: Json| json!({ "states": [{ "name": "idle", "isInitial": true }], "transitions": arms });
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -450,14 +451,14 @@ fn control_the_client_view_keeps_an_emit_whose_emitter_is_client_run() {
 #[test]
 fn a_server_trait_completion_carries_no_payload_to_the_browser() {
     let server = EmbeddedServer::new(handoff_schema()).unwrap();
-    let payload = serde_json::from_value(json!({ "text": "big" })).unwrap();
+    let payload = from_json_value(&json!({ "text": "big" })).unwrap();
     assert_eq!(server.kernel().browser_completion_payload("Source", &payload), orbital_core_base::value::Value::Null);
 }
 
 #[test]
 fn control_a_client_trait_completion_keeps_its_payload() {
     let server = EmbeddedServer::new(handoff_schema()).unwrap();
-    let payload: orbital_core_base::value::Value = serde_json::from_value(json!({ "text": "big" })).unwrap();
+    let payload: orbital_core_base::value::Value = from_json_value(&json!({ "text": "big" })).unwrap();
     assert_eq!(server.kernel().browser_completion_payload("ClientSource", &payload), payload);
 }
 
@@ -482,7 +483,7 @@ fn a_server_fetch_mount_keeps_its_external_emit_for_a_client_listener() {
     use orbital_core_runtime::embed::EmbeddedKernel;
     use std::collections::HashSet;
 
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App", "typeContractVersion": 1, "orbitals": [{
             "name": "Main", "id": "orb_todo",
             "entity": { "name": "Todo", "persistence": "runtime", "fields": [
@@ -533,7 +534,7 @@ fn a_server_fetch_mount_keeps_its_external_emit_for_a_client_listener() {
 
 fn mount_batch_schema(sibling_writes: bool) -> OrbitalSchema {
     let sibling_effects = if sibling_writes { json!([["set", "@entity.v", "fresh"]]) } else { json!([]) };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1,
         "orbitals": [{
@@ -589,7 +590,7 @@ fn an_intrinsic_field_of_a_shared_entity_reaches_the_client_in_its_traits_own_fr
                 { "from": "idle", "to": "idle", "event": "NEXT", "effects": [["set", "@entity.page", 2], ["set", "@entity.tag", name]] }
             ] } })
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App", "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Pg", "shared": true, "persistence": "runtime", "fields": [
@@ -620,7 +621,7 @@ fn held_schema() -> OrbitalSchema {
         all.extend(names.iter().map(|n| json!({ "name": n, "type": "string" })));
         Json::Array(all)
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

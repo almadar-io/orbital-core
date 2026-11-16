@@ -178,9 +178,10 @@ fn row_misfit_against(entity_type: &str, shape: &DeclaredShape, row: &Value) -> 
 #[cfg(test)]
 mod shape_tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
 
     fn entity(fields: serde_json::Value) -> EntityDefinition {
-        serde_json::from_value(serde_json::json!({ "name": "Note", "fields": fields })).unwrap()
+        from_json_value(&(serde_json::json!({ "name": "Note", "fields": fields }))).unwrap()
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 fn port() -> IoPort {
@@ -5,7 +6,7 @@ fn port() -> IoPort {
 }
 
 fn row(id: &str) -> Value {
-    serde_json::from_value(serde_json::json!({ "id": id })).unwrap()
+    from_json_value(&(serde_json::json!({ "id": id }))).unwrap()
 }
 
 fn read(id: &str) -> IoRequest {

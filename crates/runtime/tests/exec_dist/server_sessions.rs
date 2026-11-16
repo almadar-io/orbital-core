@@ -2,6 +2,7 @@
 // and the kernel frees a session once its live streams have all dropped and nothing of its own runs. Native twins:
 // the session tests of orbital-shell-rust `host::runtime`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply};
@@ -9,7 +10,7 @@ use orbital_core_base::schema::types::OrbitalSchema;
 use serde_json::json;
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -34,7 +35,7 @@ fn request(event: &str, client: &str, name: Option<&str>) -> EventRequest {
         event: event.to_string(),
         target_trait: Some("Editor".to_string()),
         client_id: Some(client.to_string()),
-        payload: name.map(|name| serde_json::from_value(json!({ "name": name })).unwrap()),
+        payload: name.map(|name| from_json_value(&json!({ "name": name })).unwrap()),
         ..Default::default()
     }
 }
@@ -117,7 +118,7 @@ fn mount(client: &str, carried: Option<&str>) -> EventRequest {
         event: "INIT".to_string(),
         client_id: Some(client.to_string()),
         mount: Some(vec![MountSeed { r#trait: "Editor".to_string(), event: LifecycleEvent::Init }]),
-        entity_by_trait: carried.map(|name| serde_json::from_value(json!({ "Editor": { "name": name } })).unwrap()),
+        entity_by_trait: carried.map(|name| from_json_value(&json!({ "Editor": { "name": name } })).unwrap()),
         ..Default::default()
     }
 }
@@ -228,7 +229,7 @@ fn exec_tick_4_control_another_clients_mount_outlives_a_freed_session() {
 #[test]
 fn exec_dist_9_a_fresh_mount_never_seeds_the_carried_state_of_a_trait_it_does_not_restore() {
     use orbital_core_runtime::effects::response::TraitFrom;
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App", "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Draft", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }, { "name": "seen", "type": "string" }] },

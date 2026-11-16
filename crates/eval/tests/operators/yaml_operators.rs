@@ -2,13 +2,14 @@
 //! exactly as `json/parse` does. One document only; anchors and aliases resolve; the 1.1 spellings (`yes`, `on`, `<<`)
 //! are plain strings; what a JSON value cannot hold (a non-string key, a custom tag, NaN, an infinity) is null.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::context::BindingContextBuilder;
 use orbital_core_eval::evaluator::Evaluator;
 use serde_json::{json, Value as Json};
 
 fn run(expr: Json) -> Result<Json, String> {
-    let sexpr = serde_json::from_value(expr).map_err(|e| e.to_string())?;
+    let sexpr = from_json_value(&expr).map_err(|e| e.to_string())?;
     let ctx = BindingContextBuilder::new().build();
     Evaluator::new()
         .evaluate(&sexpr, &ctx)

@@ -3,6 +3,7 @@
 // re-count as `RuntimeKernel::resolve_rows`; twin of row_set_delivery.rs' `resolve_rows_*` on a directly readable
 // store, and of `almadar-runtime/test/kernel-host-resolve-rows.test.ts` on the JS host.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use crate::support::identity;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerResolve};
 use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest};
@@ -12,11 +13,11 @@ use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::
 use serde_json::{json, Value as Json};
 
 fn v(j: &Json) -> Value {
-    serde_json::from_value(j.clone()).expect("a value")
+    from_json_value(&j).expect("a value")
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rsr",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -67,7 +68,7 @@ fn reference(total_mode: Option<&str>) -> RowSetRef {
     if let Some(mode) = total_mode {
         query["total"] = json!(mode);
     }
-    serde_json::from_value(json!({ "entityType": "Ticket", "ids": ["t2", "t5"], "total": 4, "query": query })).unwrap()
+    from_json_value(&json!({ "entityType": "Ticket", "ids": ["t2", "t5"], "total": 4, "query": query })).unwrap()
 }
 
 fn server() -> EmbeddedServer {
@@ -193,7 +194,7 @@ fn the_json_api_round_trips_a_flight() {
         identity::sign_in_as(server.kernel(), "u1", "u1", json!({}));
     }
     let mut typed = twin.resolve_rows(&reference, Some("u1")).unwrap();
-    let mut out: Json = serde_json::from_str(
+    let mut out: Json = from_json_str(
         &server
             .resolve_rows_json(&serde_json::to_string(&reference).unwrap(), Some("u1"))
             .unwrap(),
@@ -211,7 +212,7 @@ fn the_json_api_round_trips_a_flight() {
                 replies.iter().cloned().map(IoReply::from).collect(),
             )
             .unwrap();
-        out = serde_json::from_str(
+        out = from_json_str(
             &server
                 .resume_resolve_json(out["flight"].as_u64().unwrap(), &serde_json::to_string(&replies).unwrap())
                 .unwrap(),

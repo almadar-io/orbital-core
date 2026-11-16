@@ -1,5 +1,6 @@
 //! The embedded service registry: actions, params and credentials.
 
+use crate::json_value::from_json_str;
 use super::*;
 
 /// The raw services-registry.json text, from the installed `@almadar/core`.
@@ -166,7 +167,7 @@ pub fn parse_service_registry_data(raw: &str) -> Result<ServiceRegistryData, ser
         #[serde(default)]
         services: HashMap<String, ServiceEntry>,
     }
-    let registry: ServicesRegistry = serde_json::from_str(raw)?;
+    let registry: ServicesRegistry = from_json_str(raw)?;
     let mut data = ServiceRegistryData::default();
     for (name, entry) in registry.services {
         let mut actions = HashSet::new();
@@ -226,7 +227,7 @@ pub fn parse_service_catalog(raw: &str) -> Result<Vec<EmbeddedService>, serde_js
         #[serde(default)]
         services: HashMap<String, EmbeddedService>,
     }
-    let registry: ServicesRegistry = serde_json::from_str(raw)?;
+    let registry: ServicesRegistry = from_json_str(raw)?;
     let mut catalog: Vec<EmbeddedService> = registry
         .services
         .into_iter()

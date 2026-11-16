@@ -376,6 +376,7 @@ impl ServerBridge for KernelBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -385,7 +386,7 @@ mod tests {
             json!({ "from": "reading", "to": state, "event": event,
                 "effects": [["render-ui", "main", { "type": "typography", "content": "@payload" }]] })
         };
-        let schema = serde_json::from_value(json!({
+        let schema = from_json_value(&json!({
             "name": "Reader",
             "osGrants": { "fs": [{ "glob": format!("{}/**", granted.display()), "modes": ["read"] }] },
             "typeContractVersion": 1, "orbitals": [{

@@ -5,6 +5,7 @@
 //! value (byte-equal modulo key order). A core field or discriminant the Rust mirror
 //! does not carry goes red here, not in a native shell's `apply_server_response`.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::fixtures::event_wire_cases;
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
 
@@ -20,16 +21,16 @@ fn every_fixture_case_round_trips_through_the_rust_mirror() {
                 "request.json",
                 case.request(),
                 (|v: serde_json::Value| {
-                    serde_json::from_value::<EventRequest>(v)
+                    from_json_value::<EventRequest>(&v)
                         .map(|r| serde_json::to_value(r).unwrap())
                 })
                     as fn(serde_json::Value) -> serde_json::Result<serde_json::Value>,
             ),
             ("response.json", case.response(), |v| {
-                serde_json::from_value::<EventResponse>(v).map(|r| serde_json::to_value(r).unwrap())
+                from_json_value::<EventResponse>(&v).map(|r| serde_json::to_value(r).unwrap())
             }),
         ] {
-            let original: serde_json::Value = serde_json::from_str(raw).unwrap();
+            let original: serde_json::Value = from_json_str(raw).unwrap();
             let back = parse(original.clone()).unwrap_or_else(|e| {
                 panic!(
                     "{}/{file}: does not deserialize into the Rust mirror: {e}",

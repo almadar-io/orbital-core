@@ -1,12 +1,13 @@
 // A keyed `call-service` echoes its key beside the record it answers with (D-A82); an unkeyed one is unchanged.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
 fn schema(options: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -70,7 +71,7 @@ fn routes(keyed: bool) -> Json {
 }
 
 fn ok() -> IoAnswer {
-    IoAnswer::Service(Ok(serde_json::from_value(json!({ "answer": 42 })).unwrap()))
+    IoAnswer::Service(Ok(from_json_value(&json!({ "answer": 42 })).unwrap()))
 }
 
 #[test]
@@ -113,7 +114,7 @@ fn an_unkeyed_failure_has_no_key() {
 fn a_keyed_result_that_is_not_a_record_is_left_unchanged() {
     let response = run(
         routes(true),
-        IoAnswer::Service(Ok(serde_json::from_value(json!(7)).unwrap())),
+        IoAnswer::Service(Ok(from_json_value(&json!(7)).unwrap())),
     );
     assert_eq!(payload(&response, "OK").as_number(), Some(7.0));
 }

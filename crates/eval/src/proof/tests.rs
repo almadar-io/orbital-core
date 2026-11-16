@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use std::sync::Arc;
 use orbital_core_base::schema::types::{EntityRef, TraitReference};
@@ -10,7 +11,7 @@ fn program(transitions: J, ticks: J, expects: J) -> OrbitalSchema {
 }
 
 fn program_with(persistence: &str, transitions: J, ticks: J, expects: J) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "orbitals": [{
             "name": "Shop",
@@ -93,7 +94,7 @@ fn record_contract_required_nullable_payload_does_not_prove_a_nonnull_invariant(
             ["nullable"] = json!(nullable);
         wire["orbitals"][0]["traits"][0]["stateMachine"]["events"][2]["payloadSchema"][0]
             ["required"] = json!(required);
-        let schema: OrbitalSchema = serde_json::from_value(wire).unwrap();
+        let schema: OrbitalSchema = from_json_value(&wire).unwrap();
         let verdict = only(&schema);
         if proved {
             assert_eq!(verdict, Verdict::Proved);
@@ -125,7 +126,7 @@ fn record_contract_presence_proof_distinguishes_an_absent_field_from_present_nul
         wire["typeContractVersion"] = json!(1);
         wire["orbitals"][0]["entity"]["fields"][1]["required"] = json!(false);
         wire["orbitals"][0]["entity"]["fields"][1]["nullable"] = json!(true);
-        let schema: OrbitalSchema = serde_json::from_value(wire).unwrap();
+        let schema: OrbitalSchema = from_json_value(&wire).unwrap();
         let verdict = only(&schema);
         if expected {
             assert_eq!(verdict, Verdict::Proved, "present-null is present");
@@ -605,7 +606,7 @@ fn configured(transitions: J, knobs: J) -> OrbitalSchema {
     };
     let td = std::sync::Arc::make_mut(td);
     let knobs: orbital_core_base::collections::IndexMap<String, ConfigField> =
-        serde_json::from_value(knobs).unwrap();
+        from_json_value(&knobs).unwrap();
     td.config = Some(knobs);
     schema
 }
@@ -757,7 +758,7 @@ fn another_traits_write_is_unproved_not_violated() {
         J::Null,
         state_holds("paid", json!([">=", "@entity.total", 0])),
     );
-    let refund: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+    let refund: orbital_core_base::schema::types::TraitDefinition = from_json_value(&json!({
         "name": "Refund", "linkedEntity": "Order",
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
             "events": [{ "key": "REFUND", "name": "Refund" }],
@@ -797,7 +798,7 @@ fn a_config_bound_target_is_resolved_and_an_unknown_one_is_unproved() {
         if let TraitReference::Inline(td) = &mut schema.orbitals[0].traits[0] {
             let td = std::sync::Arc::make_mut(td);
             let field: ConfigField =
-                serde_json::from_value(json!({ "type": "entity", "default": default }))
+                from_json_value(&json!({ "type": "entity", "default": default }))
                     .unwrap();
             td.config = Some(orbital_core_base::collections::IndexMap::from([(
                 "target".to_string(),
@@ -993,8 +994,8 @@ fn every_proved_implication_holds_in_the_evaluator() {
     let bools = [None, Some(true), Some(false)];
     for (assume, goal) in cases {
         let (assume, goal): (SExpression, SExpression) = (
-            serde_json::from_value(assume).unwrap(),
-            serde_json::from_value(goal).unwrap(),
+            from_json_value(&assume).unwrap(),
+            from_json_value(&goal).unwrap(),
         );
         let mut t = Translator::new(&vars);
         let f = Formula::and(vec![
@@ -1270,7 +1271,7 @@ fn the_ensures_assumes_the_guard_and_the_source_states_holds() {
     };
     let td = std::sync::Arc::make_mut(td);
     td.state_machine.states[0].holds =
-        Some(serde_json::from_value(json!([">=", "@entity.paid", 0])).unwrap());
+        Some(from_json_value(&json!([">=", "@entity.paid", 0])).unwrap());
     assert_eq!(
         of_kind(&schema, true),
         vec![(of_kind(&schema, true)[0].0.clone(), Verdict::Proved)]
@@ -1320,7 +1321,7 @@ fn a_body_invariant_and_a_body_holds_are_owed_like_spec_ones() {
     let EntityRef::Inline(def) = &mut schema.orbitals[0].entity else {
         panic!()
     };
-    def.invariants = Some(vec![serde_json::from_value(json!([
+    def.invariants = Some(vec![from_json_value(&json!([
         ">=",
         "@entity.total",
         0
@@ -1480,7 +1481,7 @@ fn the_prove_report_prints_a_violated_row_proposition_with_its_counterexample_an
     assert_eq!(finding["proposition"]["entity"], "Order", "{report}");
     assert_eq!(finding["proposition"]["expr"], json!([">=", "@entity.total", 0.0]), "{report}");
     assert!(finding["counterexample"]["payload"]["total"].as_f64().unwrap() < 0.0, "{report}");
-    assert_eq!(serde_json::from_value::<ProveReport>(report.clone()).unwrap(), prove_report(&program(
+    assert_eq!(from_json_value::<ProveReport>(&report).unwrap(), prove_report(&program(
         json!([{ "from": "open", "to": "open", "event": "ADD",
             "effects": [["persist", "create", "Order", { "total": "@payload.total" }]] }]), J::Null, inv.clone())), "the report decodes to what was printed");
     let guarded = json!([{ "from": "open", "to": "open", "event": "ADD", "guard": [">=", "@payload.total", 0],
@@ -1508,7 +1509,7 @@ fn with_heavy_trait(mut schema: OrbitalSchema, target: J) -> OrbitalSchema {
     let ifs: Vec<J> = (0..7)
         .map(|i| json!(["if", [">", "@payload.n", i], ["persist", "update", target, "@payload.id", { "n": i }]]))
         .collect();
-    let heavy: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+    let heavy: orbital_core_base::schema::types::TraitDefinition = from_json_value(&json!({
         "name": "Heavy",
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
             "events": [{ "key": "GO", "name": "Go", "payloadSchema": [
@@ -1627,7 +1628,7 @@ fn tool_loop(tools: J, holds: J) -> OrbitalSchema {
     };
     let td = std::sync::Arc::make_mut(td);
     let knobs: orbital_core_base::collections::IndexMap<String, ConfigField> =
-        serde_json::from_value(json!({ "tools": { "type": "array", "default": tools } })).unwrap();
+        from_json_value(&json!({ "tools": { "type": "array", "default": tools } })).unwrap();
     td.config = Some(knobs);
     schema
 }
@@ -1659,7 +1660,7 @@ fn a_proposition_with_a_non_config_free_read_keeps_the_solver_path() {
 }
 
 fn with_foreign_writer(mut schema: OrbitalSchema, effects: J) -> OrbitalSchema {
-    let writer: orbital_core_base::schema::types::TraitDefinition = serde_json::from_value(json!({
+    let writer: orbital_core_base::schema::types::TraitDefinition = from_json_value(&json!({
         "name": "Seeder",
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
             "events": [{ "key": "GO", "name": "Go", "payloadSchema": [{ "name": "ops", "type": "string" }] }],

@@ -387,10 +387,11 @@ fn element_issues<V: PayloadValue>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn fields(v: Value) -> Vec<PayloadField> {
-        serde_json::from_value(v).expect("fields")
+        from_json_value(&v).expect("fields")
     }
 
     fn fill() -> Vec<PayloadField> {

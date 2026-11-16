@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 
 #[test]
@@ -104,7 +105,7 @@ fn child_failures_keep_the_canonical_argument_order() {
 
 #[test]
 fn synthesized_batch_requests_keep_their_lowered_contracts() {
-    let batch: SExpression = serde_json::from_value(serde_json::json!([
+    let batch: SExpression = from_json_value(&serde_json::json!([
         "persist", "batch", [["create", "Task", {"id":"@entity.id"}]]
     ]))
     .expect("batch input");
@@ -268,7 +269,7 @@ fn control_binary_arithmetic_of_two_operands_is_unchanged() {
 
 fn fetch_with(options: serde_json::Value) -> OirEffect {
     let expr: SExpression =
-        serde_json::from_value(serde_json::json!(["fetch", "Doc", options])).unwrap();
+        from_json_value(&serde_json::json!(["fetch", "Doc", options])).unwrap();
     match lower_sexpr(&expr).expect("lowers") {
         OirExpr::Effect { effect } => *effect,
         other => panic!("not an effect: {other:?}"),
@@ -325,9 +326,9 @@ fn the_list_marker_is_stripped_and_nothing_else() {
 fn a_marked_batch_tuple_is_an_op_tuple_and_lowers_with_one_marker() {
     use orbital_core_base::persist_batch::{is_op_tuple, op_tuple};
     let marked: SExpression =
-        serde_json::from_value(serde_json::json!(["list", "delete", "E", "@r.id"])).unwrap();
+        from_json_value(&serde_json::json!(["list", "delete", "E", "@r.id"])).unwrap();
     let bare: SExpression =
-        serde_json::from_value(serde_json::json!(["delete", "E", "@r.id"])).unwrap();
+        from_json_value(&serde_json::json!(["delete", "E", "@r.id"])).unwrap();
     assert!(is_op_tuple(&marked), "a data-marked tuple is an op tuple");
     assert_eq!(
         op_tuple(&marked).map(|t| t.len()),
@@ -336,7 +337,7 @@ fn a_marked_batch_tuple_is_an_op_tuple_and_lowers_with_one_marker() {
     );
     assert!(is_op_tuple(&bare), "control: a bare tuple still is");
     let batch = |tuple: serde_json::Value| -> String {
-        let call: SExpression = serde_json::from_value(serde_json::json!([
+        let call: SExpression = from_json_value(&serde_json::json!([
             "persist",
             "batch",
             ["array/map", "@payload.xs", ["fn", "r", tuple]]
@@ -359,7 +360,7 @@ fn a_marked_batch_tuple_is_an_op_tuple_and_lowers_with_one_marker() {
 #[test]
 fn a_browser_tab_effect_lowers_with_its_request_key_and_routes() {
     use orbital_core_base::tab::TabOp;
-    let open: SExpression = serde_json::from_value(serde_json::json!([
+    let open: SExpression = from_json_value(&serde_json::json!([
         "browser/tab-open",
         { "url": "@config.searchUrl", "active": false },
         { "key": "@entity.id", "emit": { "success": "OPENED", "failure": "OPEN_FAILED" } }
@@ -388,7 +389,7 @@ fn a_browser_tab_effect_lowers_with_its_request_key_and_routes() {
     );
     for tab_op in TabOp::ALL {
         let bare: SExpression =
-            serde_json::from_value(serde_json::json!([tab_op.name(), {}])).expect("s-expression");
+            from_json_value(&serde_json::json!([tab_op.name(), {}])).expect("s-expression");
         let OirExpr::Effect { effect } = lower_sexpr(&bare).expect("lowers") else {
             panic!("not an effect")
         };
@@ -399,10 +400,10 @@ fn a_browser_tab_effect_lowers_with_its_request_key_and_routes() {
 #[test]
 fn control_a_browser_tab_effect_without_a_request_is_invalid() {
     let none: SExpression =
-        serde_json::from_value(serde_json::json!(["browser/tab-list"])).expect("s-expression");
+        from_json_value(&serde_json::json!(["browser/tab-list"])).expect("s-expression");
     assert!(lower_sexpr(&none).is_err());
     let many: SExpression =
-        serde_json::from_value(serde_json::json!(["browser/tab-list", {}, {}, {}]))
+        from_json_value(&serde_json::json!(["browser/tab-list", {}, {}, {}]))
             .expect("s-expression");
     assert!(lower_sexpr(&many).is_err());
 }
@@ -417,7 +418,7 @@ fn the_retired_oal_family_no_longer_resolves_to_an_operator() {
 
 #[test]
 fn identical_subtrees_at_different_positions_each_lower_in_place() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"["if", ["=", "@a", 1], ["+", ["-", 2, 3], ["-", 2, 3]], ["+", ["-", 2, 3], 9]]"#,
     )
     .unwrap();
@@ -435,7 +436,7 @@ fn identical_subtrees_at_different_positions_each_lower_in_place() {
 
 #[test]
 fn control_distinct_subtrees_lower_in_place() {
-    let expr: SExpression = serde_json::from_str(r#"["+", ["-", 2, 3], ["-", 4, 5]]"#).unwrap();
+    let expr: SExpression = from_json_str(r#"["+", ["-", 2, 3], ["-", 4, 5]]"#).unwrap();
     let product = |a: f64, b: f64| OirExpr::sub(OirExpr::number(a), OirExpr::number(b));
     assert_eq!(
         lower_sexpr(&expr),
@@ -451,7 +452,7 @@ fn a_raw_callback_body_that_reads_the_element_lowers_to_a_lambda() {
         r#"["+", "@item", "@index"]"#,
     ] {
         let expr: SExpression =
-            serde_json::from_str(&format!(r#"["array/map", [1, 2], {body}]"#)).unwrap();
+            from_json_str(&format!(r#"["array/map", [1, 2], {body}]"#)).unwrap();
         let lowered = format!("{:?}", lower_sexpr(&expr).unwrap());
         assert!(
             lowered.contains("Lambda"),
@@ -459,7 +460,7 @@ fn a_raw_callback_body_that_reads_the_element_lowers_to_a_lambda() {
         );
     }
     let constant: SExpression =
-        serde_json::from_str(r#"["array/map", [1, 2], ["fn", "x", "@x"]]"#).unwrap();
+        from_json_str(r#"["array/map", [1, 2], ["fn", "x", "@x"]]"#).unwrap();
     assert_eq!(
         format!("{:?}", lower_sexpr(&constant).unwrap())
             .matches("Lambda")
@@ -471,23 +472,23 @@ fn a_raw_callback_body_that_reads_the_element_lowers_to_a_lambda() {
 
 #[test]
 fn a_raw_callback_body_becomes_the_lambda_the_compiler_lowers_it_to() {
-    let mut expr: SExpression = serde_json::from_str(
+    let mut expr: SExpression = from_json_str(
         r#"["set", "@entity.bars", ["array/map", "@entity.values", {"value": "@item", "label": ["str/concat", "", "@item"]}]]"#,
     )
     .unwrap();
     raw_callbacks_as_lambdas(&mut expr);
-    let expected: SExpression = serde_json::from_str(
+    let expected: SExpression = from_json_str(
         r#"["set", "@entity.bars", ["array/map", "@entity.values", ["fn", ["item", "index"], {"value": "@item", "label": ["str/concat", "", "@item"]}]]]"#,
     )
     .unwrap();
     assert_eq!(expr, expected);
     let reduce: SExpression =
-        serde_json::from_str(r#"["array/reduce", [1, 2], 0, ["+", "@acc", "@item"]]"#).unwrap();
+        from_json_str(r#"["array/reduce", [1, 2], 0, ["+", "@acc", "@item"]]"#).unwrap();
     let mut wrapped = reduce.clone();
     raw_callbacks_as_lambdas(&mut wrapped);
     assert_eq!(
         wrapped,
-        serde_json::from_str::<SExpression>(
+        from_json_str::<SExpression>(
             r#"["array/reduce", [1, 2], 0, ["fn", ["acc", "item"], ["+", "@acc", "@item"]]]"#
         )
         .unwrap()
@@ -503,7 +504,7 @@ fn control_a_written_lambda_a_value_slot_and_quoted_data_stay_as_written() {
         r#"["quote", ["array/map", [1], ["+", "@item", 1]]]"#,
         r#"["array/findIndex", [1, 2], [">", "@item", 1]]"#,
     ] {
-        let original: SExpression = serde_json::from_str(json).unwrap();
+        let original: SExpression = from_json_str(json).unwrap();
         let mut expr = original.clone();
         raw_callbacks_as_lambdas(&mut expr);
         assert_eq!(expr, original, "{json}");

@@ -30,45 +30,49 @@ fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
 }
 
 fn string_arg(arg: &SExpression, ctx: &BindingContext) -> Result<String, OrbitalError> {
-    Ok(eval_expr(arg, ctx)?.text().map(str::to_string)?)
+    string_of(&eval_expr(arg, ctx)?)
+}
+
+fn string_of(value: &Value) -> Result<String, OrbitalError> {
+    Ok(value.text().map(str::to_string)?)
 }
 
 /// str/encode-uri-component
 pub struct StrEncodeUriComponentOp;
-impl Operator for StrEncodeUriComponentOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrEncodeUriComponentOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/encode-uri-component", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(Value::string(codec::encode_uri_component(&s)))
     }
 }
 
 /// str/decode-uri-component - JS decodeURIComponent; malformed input answers null, a non-string input (null included) is a type mismatch
 pub struct StrDecodeUriComponentOp;
-impl Operator for StrDecodeUriComponentOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrDecodeUriComponentOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/decode-uri-component", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(codec::decode_uri_component(&s).map_or(Value::Null, Value::string))
     }
 }
 
 /// str/uri-component-valid - true iff str/decode-uri-component would succeed; a non-string input is a type mismatch
 pub struct StrUriComponentValidOp;
-impl Operator for StrUriComponentValidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for StrUriComponentValidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "str/uri-component-valid", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(Value::Bool(codec::decode_uri_component(&s).is_ok()))
     }
 }
 
 /// base64/encode - UTF-8 bytes, standard padded alphabet
 pub struct Base64EncodeOp;
-impl Operator for Base64EncodeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for Base64EncodeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/encode", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(Value::string(codec::base64_encode(s.as_bytes())))
     }
 }
@@ -81,20 +85,20 @@ fn decode_base64_text(s: &str) -> Result<String, String> {
 
 /// base64/decode - to UTF-8; invalid base64 or invalid UTF-8 answers null
 pub struct Base64DecodeOp;
-impl Operator for Base64DecodeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for Base64DecodeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/decode", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(decode_base64_text(&s).map_or(Value::Null, Value::string))
     }
 }
 
 /// base64/valid - true iff base64/decode would succeed; a non-string input is a type mismatch
 pub struct Base64ValidOp;
-impl Operator for Base64ValidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for Base64ValidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "base64/valid", == 1);
-        let s = string_arg(&args[0], ctx)?;
+        let s = string_of(args[0])?;
         Ok(Value::Bool(decode_base64_text(&s).is_ok()))
     }
 }
@@ -103,16 +107,17 @@ impl Operator for Base64ValidOp {
 /// UTF-8 of a string, "bytes" decodes standard padded base64 once and hashes the bytes (the hash/md5 reading). Another bit
 /// count, encoding or input kind, or invalid base64, answers null.
 pub struct HashShaOp;
-impl Operator for HashShaOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(HashShaOp);
+impl OwningOperator for HashShaOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hash/sha";
         require_arity!(args, OP, >= 3);
         require_at_most(args, OP, 4)?;
-        let bits = eval_expr(&args[0], ctx)?.number().map_err(OrbitalError::Eval)?;
-        let message = eval_expr(&args[1], ctx)?;
-        let encoding = string_arg(&args[2], ctx)?;
+        let bits = args[0].number().map_err(OrbitalError::Eval)?;
+        let message = std::mem::take(&mut args[1]);
+        let encoding = string_of(&args[2])?;
         let input = match args.get(3) {
-            Some(arg) => string_arg(arg, ctx)?,
+            Some(arg) => string_of(arg)?,
             None => "text".to_string(),
         };
         let Some(data) = message_bytes(message, &input)? else {
@@ -134,11 +139,11 @@ impl Operator for HashShaOp {
 
 /// hash/md5 (base64 bytes, encoding) - the base64 is decoded once and the bytes are hashed
 pub struct HashMd5Op;
-impl Operator for HashMd5Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for HashMd5Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/md5", == 2);
-        let bytes = bytes_in(&args[0], ctx)?;
-        let encoding = string_arg(&args[1], ctx)?;
+        let bytes = bytes_of(args[0])?;
+        let encoding = string_of(args[1])?;
         match bytes {
             Some(bytes) => digest_or_null(&codec::md5(&bytes), &encoding),
             None => Ok(Value::Null),
@@ -151,11 +156,11 @@ impl Operator for HashMd5Op {
 /// context, so the value never enters program data. The result is null when the context holds no value for that
 /// credential or the value is not non-empty hex, so a program can route the failure.
 pub struct HashScryptOp;
-impl Operator for HashScryptOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for HashScryptOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/scrypt", == 2);
-        let s = string_arg(&args[0], ctx)?;
-        let credential = string_arg(&args[1], ctx)?;
+        let s = string_of(args[0])?;
+        let credential = string_of(args[1])?;
         let Some(salt) = ctx.secret(&credential).and_then(codec::hex_decode) else {
             return Ok(Value::Null);
         };
@@ -170,17 +175,17 @@ impl Operator for HashScryptOp {
 /// is a credential slot: a secret-typed @config knob naming the credential whose value (its UTF-8 bytes) the kernel
 /// resolves into the evaluation. Null when the credential is not held or an operand is not canonical base64 or a count.
 pub struct HashPbkdf2Op;
-impl Operator for HashPbkdf2Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for HashPbkdf2Op {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hash/pbkdf2";
         require_arity!(args, OP, == 4);
-        let password = credential_value(&args[0], ctx)?;
-        let salt = bytes_in(&args[1], ctx)?;
-        let count = |arg: &SExpression| -> Result<Option<u32>, OrbitalError> {
-            whole_in(&eval_expr(arg, ctx)?, 1, i64::from(u32::MAX)).map(|n| n.map(|n| n as u32))
+        let password = credential_of(args[0], ctx)?;
+        let salt = bytes_of(args[1])?;
+        let count = |arg: &Value| -> Result<Option<u32>, OrbitalError> {
+            whole_in(arg, 1, i64::from(u32::MAX)).map(|n| n.map(|n| n as u32))
         };
-        let iterations = count(&args[2])?;
-        let length = count(&args[3])?;
+        let iterations = count(args[2])?;
+        let length = count(args[3])?;
         let (Some(password), Some(salt), Some(iterations), Some(length)) =
             (password, salt, iterations, length)
         else {
@@ -244,9 +249,13 @@ impl Operator for CredentialByteLengthOp {
 
 /// The bytes a bytes operand holds, or `None` when base64 text is not canonical; any other kind is a type mismatch.
 fn bytes_in(arg: &SExpression, ctx: &BindingContext) -> Result<Option<Vec<u8>>, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::Bytes(b) => Ok(Some(b.into_inner())),
-        Value::String(s) => Ok(codec::base64_decode(&s).ok()),
+    bytes_of(&eval_expr(arg, ctx)?)
+}
+
+fn bytes_of(value: &Value) -> Result<Option<Vec<u8>>, OrbitalError> {
+    match value {
+        Value::Bytes(b) => Ok(Some(b.to_vec())),
+        Value::String(s) => Ok(codec::base64_decode(s).ok()),
         other => Err(other.kind_error("bytes").into()),
     }
 }
@@ -277,14 +286,14 @@ fn whole_in(value: &Value, min: i64, max: i64) -> Result<Option<i64>, OrbitalErr
 }
 
 fn codec_options(
-    args: &[SExpression],
+    args: &[&Value],
     index: usize,
-    ctx: &BindingContext,
+    _ctx: &BindingContext,
     op: &str,
     keys: &[&str],
 ) -> Result<Option<Value>, OrbitalError> {
-    let value = match args.get(index) {
-        Some(arg) => eval_expr(arg, ctx)?,
+    let value = match args.get(index).copied() {
+        Some(arg) => arg.clone(),
         None => Value::Object(Default::default()),
     };
     let Value::Object(fields) = &value else {
@@ -353,12 +362,12 @@ fn codec_answer(
     Ok(answer.map_or(Value::Null, |decoded| Value::bytes(decoded.data)))
 }
 
-fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
+fn compress(args: &[&Value], ctx: &BindingContext, op: &str) -> EvalResult {
     require_arity!(args, op, >= 1);
     if args.len() > 2 {
         require_arity!(args, op, == 2);
     }
-    let data = bytes_in(&args[0], ctx)?;
+    let data = bytes_of(args[0])?;
     let gzip = op == "gzip/compress";
     let options = codec_options(
         args,
@@ -400,13 +409,13 @@ fn compress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult 
     codec_answer(Ok(codec::CodecDecoded { data: packed, crc }), &options)
 }
 
-fn decompress(args: &[SExpression], ctx: &BindingContext, op: &str) -> EvalResult {
+fn decompress(args: &[&Value], ctx: &BindingContext, op: &str) -> EvalResult {
     require_arity!(args, op, >= 2);
     if args.len() > 3 {
         require_arity!(args, op, == 3);
     }
-    let data = bytes_in(&args[0], ctx)?;
-    let max = whole_in(&eval_expr(&args[1], ctx)?, 0, i64::from(u32::MAX))?.map(|n| n as usize);
+    let data = bytes_of(args[0])?;
+    let max = whole_in(args[1], 0, i64::from(u32::MAX))?.map(|n| n as usize);
     let options = codec_options(args, 2, ctx, op, &["result"])?;
     let (Some(data), Some(max), Some(options)) = (data, max, options) else {
         return Ok(Value::Null);
@@ -455,14 +464,14 @@ fn brotli_decode(_data: &[u8], _max: usize, op: &str) -> Result<codec::CodecResu
 }
 
 pub struct GzipCompressOp;
-impl Operator for GzipCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GzipCompressOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         compress(args, ctx, "gzip/compress")
     }
 }
 pub struct GzipDecompressOp;
-impl Operator for GzipDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GzipDecompressOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         decompress(args, ctx, "gzip/decompress")
     }
 }
@@ -471,13 +480,13 @@ impl Operator for GzipDecompressOp {
 /// answer is { ok, entries, code }, otherwise a refusal, invalid base64 or a maxEntries that is not a whole number from 0
 /// answers null.
 pub struct TarEntriesOp;
-impl Operator for TarEntriesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TarEntriesOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "tar/entries";
         require_arity!(args, OP, >= 2);
         require_at_most(args, OP, 3)?;
-        let data = bytes_in(&args[0], ctx)?;
-        let max = whole_in(&eval_expr(&args[1], ctx)?, 0, i64::from(u32::MAX))?.map(|n| n as usize);
+        let data = bytes_of(args[0])?;
+        let max = whole_in(args[1], 0, i64::from(u32::MAX))?.map(|n| n as usize);
         let options = codec_options(args, 2, ctx, OP, &["result"])?;
         let (Some(data), Some(max), Some(options)) = (data, max, options) else {
             return Ok(Value::Null);
@@ -518,26 +527,30 @@ impl Operator for TarEntriesOp {
 }
 
 pub struct BrotliCompressOp;
-impl Operator for BrotliCompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BrotliCompressOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         compress(args, ctx, "brotli/compress")
     }
 }
 pub struct BrotliDecompressOp;
-impl Operator for BrotliDecompressOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BrotliDecompressOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         decompress(args, ctx, "brotli/decompress")
     }
 }
 
 /// The value of the credential an operator operand names, held in the evaluation by the kernel; `None` when it holds none.
 fn credential_value<'a>(arg: &SExpression, ctx: &'a BindingContext) -> Result<Option<&'a str>, OrbitalError> {
-    let name = string_arg(arg, ctx)?;
+    credential_of(&eval_expr(arg, ctx)?, ctx)
+}
+
+fn credential_of<'a>(value: &Value, ctx: &'a BindingContext) -> Result<Option<&'a str>, OrbitalError> {
+    let name = string_of(value)?;
     Ok(ctx.secret(&name))
 }
 
 /// The operand count of a call form that takes `max` operands at most, the operator name excluded; more is a typed arity error.
-fn require_at_most(args: &[SExpression], op: &str, max: usize) -> Result<(), OrbitalError> {
+fn require_at_most<T>(args: &[T], op: &str, max: usize) -> Result<(), OrbitalError> {
     if args.len() > max {
         return Err(OrbitalError::Eval(EvalError::ArityMismatch {
             operator: op.to_string(),
@@ -634,11 +647,11 @@ impl Operator for EcdsaP256SignOp {
 /// is a credential slot holding a PKCS#8 PEM private key of at least 2048 bits. Null when the credential is not held or is
 /// not such a key.
 pub struct RsaSignOp;
-impl Operator for RsaSignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RsaSignOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "rsa/sign", == 2);
-        let name = string_arg(&args[0], ctx)?;
-        let message = string_arg(&args[1], ctx)?;
+        let name = string_of(args[0])?;
+        let message = string_of(args[1])?;
         let Some(pem) = ctx.secret(&name) else {
             return Ok(Value::Null);
         };
@@ -683,11 +696,11 @@ impl Operator for Ed25519SignOp {
 /// kernel's sealed entropy, so the journal records the signature and a replay returns it. The key is a credential slot holding a
 /// PKCS#8 PEM private key of at least 2048 bits. Null when the credential is not held or is not such a key.
 pub struct RsaPssSignOp;
-impl Operator for RsaPssSignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RsaPssSignOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "rsa-pss/sign", == 2);
-        let name = string_arg(&args[0], ctx)?;
-        let message = string_arg(&args[1], ctx)?;
+        let name = string_of(args[0])?;
+        let message = string_of(args[1])?;
         let Some(pem) = ctx.secret(&name) else {
             return Ok(Value::Null);
         };
@@ -701,10 +714,10 @@ impl Operator for RsaPssSignOp {
 /// 65-byte SEC1 public key and the 32-byte shared x coordinate with the SEC1 `peer` point. The ephemeral secret never
 /// leaves the operator. Null when the peer is not a point on the curve.
 pub struct EcdhP256EphemeralOp;
-impl Operator for EcdhP256EphemeralOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EcdhP256EphemeralOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ecdh/p256-ephemeral", == 1);
-        let Some(peer) = bytes_in(&args[0], ctx)? else {
+        let Some(peer) = bytes_of(args[0])? else {
             return Ok(Value::Null);
         };
         ctx.sealed("ecdh/p256-ephemeral", &[Value::string(codec::base64_encode(&peer))], |seed| {
@@ -723,13 +736,13 @@ impl Operator for EcdhP256EphemeralOp {
     }
 }
 
-fn gcm(args: &[SExpression], ctx: &BindingContext, op: &str, seal: bool) -> EvalResult {
+fn gcm(args: &[&Value], _ctx: &BindingContext, op: &str, seal: bool) -> EvalResult {
     require_arity!(args, op, == 4);
     let (key, nonce, data, aad) = (
-        bytes_in(&args[0], ctx)?,
-        bytes_in(&args[1], ctx)?,
-        bytes_in(&args[2], ctx)?,
-        bytes_in(&args[3], ctx)?,
+        bytes_of(args[0])?,
+        bytes_of(args[1])?,
+        bytes_of(args[2])?,
+        bytes_of(args[3])?,
     );
     let (Some(key), Some(nonce), Some(data), Some(aad)) = (key, nonce, data, aad) else {
         return Ok(Value::Null);
@@ -745,8 +758,8 @@ fn gcm(args: &[SExpression], ctx: &BindingContext, op: &str, seal: bool) -> Eval
 /// aes-gcm/seal (key, nonce, plaintext, aad) - AES-128-GCM; ciphertext followed by the 16-byte tag. Null when the key is not
 /// 16 bytes, the nonce not 12, or an operand is not canonical base64.
 pub struct AesGcmSealOp;
-impl Operator for AesGcmSealOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AesGcmSealOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         gcm(args, ctx, "aes-gcm/seal", true)
     }
 }
@@ -754,21 +767,21 @@ impl Operator for AesGcmSealOp {
 /// aes-gcm/open (key, nonce, sealed, aad) - AES-128-GCM open of ciphertext followed by its tag. Null when the tag does not
 /// verify or an operand is malformed.
 pub struct AesGcmOpenOp;
-impl Operator for AesGcmOpenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for AesGcmOpenOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         gcm(args, ctx, "aes-gcm/open", false)
     }
 }
 
 /// rsa/verify (n, e, message, signature) - RSASSA-PKCS1-v1_5 SHA-256; answers the verdict code, a non-canonical base64 operand is invalid
 pub struct RsaVerifyOp;
-impl Operator for RsaVerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RsaVerifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "rsa/verify", == 4);
-        let n = bytes_in(&args[0], ctx)?;
-        let e = bytes_in(&args[1], ctx)?;
-        let message = string_arg(&args[2], ctx)?;
-        let signature = bytes_in(&args[3], ctx)?;
+        let n = bytes_of(args[0])?;
+        let e = bytes_of(args[1])?;
+        let message = string_of(args[2])?;
+        let signature = bytes_of(args[3])?;
         let (Some(n), Some(e), Some(signature)) = (n, e, signature) else {
             return Ok(Value::string("invalid"));
         };
@@ -778,13 +791,13 @@ impl Operator for RsaVerifyOp {
 
 /// ecdsa/p256-verify (x, y, message, signature) - ECDSA P-256 SHA-256 over a raw r||s signature; answers the verdict code
 pub struct EcdsaP256VerifyOp;
-impl Operator for EcdsaP256VerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EcdsaP256VerifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ecdsa/p256-verify", == 4);
-        let x = bytes_in(&args[0], ctx)?;
-        let y = bytes_in(&args[1], ctx)?;
-        let message = string_arg(&args[2], ctx)?;
-        let signature = bytes_in(&args[3], ctx)?;
+        let x = bytes_of(args[0])?;
+        let y = bytes_of(args[1])?;
+        let message = string_of(args[2])?;
+        let signature = bytes_of(args[3])?;
         let (Some(x), Some(y), Some(signature)) = (x, y, signature) else {
             return Ok(Value::string("invalid"));
         };
@@ -794,13 +807,13 @@ impl Operator for EcdsaP256VerifyOp {
 
 /// rsa-pss/verify (n, e, message, signature) - RSASSA-PSS SHA-256, salt 32; answers the verdict code of rsa/verify
 pub struct RsaPssVerifyOp;
-impl Operator for RsaPssVerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RsaPssVerifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "rsa-pss/verify", == 4);
-        let n = bytes_in(&args[0], ctx)?;
-        let e = bytes_in(&args[1], ctx)?;
-        let message = string_arg(&args[2], ctx)?;
-        let signature = bytes_in(&args[3], ctx)?;
+        let n = bytes_of(args[0])?;
+        let e = bytes_of(args[1])?;
+        let message = string_of(args[2])?;
+        let signature = bytes_of(args[3])?;
         let (Some(n), Some(e), Some(signature)) = (n, e, signature) else {
             return Ok(Value::string("invalid"));
         };
@@ -810,13 +823,13 @@ impl Operator for RsaPssVerifyOp {
 
 /// ecdsa/p384-verify (x, y, message, signature) - ECDSA P-384 SHA-384 over a raw r||s signature; answers the verdict code
 pub struct EcdsaP384VerifyOp;
-impl Operator for EcdsaP384VerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EcdsaP384VerifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ecdsa/p384-verify", == 4);
-        let x = bytes_in(&args[0], ctx)?;
-        let y = bytes_in(&args[1], ctx)?;
-        let message = string_arg(&args[2], ctx)?;
-        let signature = bytes_in(&args[3], ctx)?;
+        let x = bytes_of(args[0])?;
+        let y = bytes_of(args[1])?;
+        let message = string_of(args[2])?;
+        let signature = bytes_of(args[3])?;
         let (Some(x), Some(y), Some(signature)) = (x, y, signature) else {
             return Ok(Value::string("invalid"));
         };
@@ -828,12 +841,12 @@ impl Operator for EcdsaP384VerifyOp {
 /// answers valid, mismatch (the signature, or a key that is not a curve point, does not verify), length (a key not 32 bytes
 /// or a signature not 64) or invalid (an operand is not canonical padded base64)
 pub struct Ed25519VerifyOp;
-impl Operator for Ed25519VerifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for Ed25519VerifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ed25519/verify", == 3);
-        let public = bytes_in(&args[0], ctx)?;
-        let message = string_arg(&args[1], ctx)?;
-        let signature = bytes_in(&args[2], ctx)?;
+        let public = bytes_of(args[0])?;
+        let message = string_of(args[1])?;
+        let signature = bytes_of(args[2])?;
         let (Some(public), Some(signature)) = (public, signature) else {
             return Ok(Value::string("invalid"));
         };

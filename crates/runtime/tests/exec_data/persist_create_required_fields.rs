@@ -7,6 +7,7 @@
 //! field, and any field declaring a `default` — shared with `@almadar/runtime`'s
 //! `missingRequiredFields`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::effect_types::{Effect, EffectOutcome};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
@@ -26,7 +27,7 @@ fn obj(pairs: &[(&str, Value)]) -> Value {
 /// `@intrinsic` (the trait's own frame, never a persisted column). Neither
 /// of the latter two should ever be reported missing.
 fn note_create_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -57,7 +58,7 @@ fn note_create_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -66,7 +67,7 @@ fn note_create_schema() -> OrbitalSchema {
 /// it from an imported atom's entity, so it must never gate `ChatMessage`'s
 /// own `persist create` even though it is omitted.
 fn chat_message_create_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -96,7 +97,7 @@ fn chat_message_create_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 

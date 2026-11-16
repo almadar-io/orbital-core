@@ -1,6 +1,7 @@
 // EXEC-CONC-7 guest sessions: `program/open` runs a program value as a guest kernel the opener's kernel keeps, with
 // its own rows; `program/dispatch` and `program/inputs` reach it by its handle; `program/close` ends it.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::effect_types::RuntimeEnvironment;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_base::value::Value;
@@ -53,7 +54,7 @@ fn guest() -> serde_json::Value {
 const EMIT: &str = r#"{ "success": "ANSWERED", "failure": "REFUSED" }"#;
 
 fn emit() -> serde_json::Value {
-    serde_json::from_str(EMIT).unwrap()
+    from_json_str(EMIT).unwrap()
 }
 
 /// An opener whose `GO` runs `effect`; `ANSWERED` keeps the answer, `REFUSED` the failure, `OPENED` the guest handle.
@@ -64,7 +65,7 @@ fn opener(transitions: serde_json::Value) -> RuntimeKernel {
         json!({ "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.refused", "@payload"]] }),
     ];
     all.extend(transitions.as_array().unwrap().iter().cloned());
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Playground",
         "typeContractVersion": 1,
         "orbitals": [{
@@ -99,7 +100,7 @@ fn entity(kernel: &RuntimeKernel) -> serde_json::Value {
 
 fn run(kernel: &RuntimeKernel, event: &str) -> serde_json::Value {
     let payload = if event == "GO" {
-        serde_json::from_value(json!({ "program": guest() })).unwrap()
+        from_json_value(&json!({ "program": guest() })).unwrap()
     } else {
         Value::Null
     };
@@ -260,7 +261,7 @@ fn policed(options: serde_json::Value, event: &str) -> serde_json::Value {
             ["program/dispatch", "Notes.Writer.WRITE", {}, { "guest": "@entity.guest", "emit": emit() }]
         ] }
     ]));
-    let program: Value = serde_json::from_value(json!({ "program": policed_guest() })).unwrap();
+    let program: Value = from_json_value(&json!({ "program": policed_guest() })).unwrap();
     kernel.dispatch("Opener", None, "GO", program).unwrap();
     if !event.is_empty() {
         kernel.dispatch("Opener", None, event, Value::Null).unwrap();
@@ -423,7 +424,7 @@ fn a_click_on_a_painted_guest_control_reaches_the_guest_through_the_openers_decl
     let kernel = painting_opener();
     run(&kernel, "GO");
     run(&kernel, "PAINT");
-    kernel.dispatch("Opener", None, "DiaryList.ADD", serde_json::from_value(json!({ "text": "clicked" })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "DiaryList.ADD", from_json_value(&json!({ "text": "clicked" })).unwrap()).unwrap();
     let after = entity(&kernel);
     assert_eq!(after["clicked"]["address"], "DiaryList.ADD", "{after}");
     assert_eq!(after["clicked"]["event"], "ADD", "{after}");
@@ -474,7 +475,7 @@ fn a_guest_control_naming_its_event_through_a_callback_prop_is_routed_too() {
     let kernel = painting_opener();
     run(&kernel, "GO");
     run(&kernel, "PAINT");
-    kernel.dispatch("Opener", None, "DiaryList.PICK_RANGE", serde_json::from_value(json!({ "value": "1M" })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "DiaryList.PICK_RANGE", from_json_value(&json!({ "value": "1M" })).unwrap()).unwrap();
     let after = entity(&kernel);
     assert_eq!(after["clicked"]["address"], "DiaryList.PICK_RANGE", "{after}");
     assert_eq!(after["clicked"]["payload"]["value"], "1M", "{after}");
@@ -501,7 +502,7 @@ fn a_bare_event_dispatch_reaches_every_guest_trait_that_handles_it_and_answers_i
 
 /// A browser kernel whose `Stage` delivers a guest control as `GUEST_CONTROL`; `LOCAL` paints its slot itself.
 fn browser_stage() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Playground",
         "typeContractVersion": 1,
         "orbitals": [{
@@ -532,7 +533,7 @@ fn browser_stage() -> RuntimeKernel {
 
 /// A server leg's answer in which the server ran `Stage` and painted a guest-view on `main`.
 fn server_painted_guest_view() -> orbital_core_runtime::effects::response::EventResponse {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "success": true,
         "transitioned": true,
         "clientEffectsByTrait": [{
@@ -557,7 +558,7 @@ fn a_guest_view_the_server_painted_for_a_browser_trait_routes_its_clicks() {
     kernel
         .apply_server_response(&server_painted_guest_view(), &std::collections::HashSet::new())
         .unwrap();
-    kernel.dispatch("Stage", None, "DiaryList.ADD", serde_json::from_value(json!({ "text": "x" })).unwrap()).unwrap();
+    kernel.dispatch("Stage", None, "DiaryList.ADD", from_json_value(&json!({ "text": "x" })).unwrap()).unwrap();
     let after = stage_entity(&kernel);
     assert_eq!(after["clicked"]["guest"], "guest-7", "{after}");
     assert_eq!(after["clicked"]["address"], "DiaryList.ADD", "{after}");
@@ -591,7 +592,7 @@ fn open_with_rows(rows: serde_json::Value) -> serde_json::Value {
             ["program/open", "@payload.program", { "rows": "@payload.rows" }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
         ] }
     ]));
-    let payload = serde_json::from_value(json!({ "program": listing_guest(), "rows": rows })).unwrap();
+    let payload = from_json_value(&json!({ "program": listing_guest(), "rows": rows })).unwrap();
     kernel.dispatch("Opener", None, "GO", payload).unwrap();
     entity(&kernel)
 }
@@ -650,7 +651,7 @@ fn open_store_bound(options: serde_json::Value, entity_level: bool) -> serde_jso
         ] }
     ]));
     let rows = json!([{ "entity": "DiaryNote", "rows": [{ "id": "n1", "text": "Seeded note" }] }]);
-    let payload = serde_json::from_value(json!({ "program": store_bound_guest(entity_level), "rows": rows })).unwrap();
+    let payload = from_json_value(&json!({ "program": store_bound_guest(entity_level), "rows": rows })).unwrap();
     kernel.dispatch("Opener", None, "GO", payload).unwrap();
     entity(&kernel)
 }
@@ -730,7 +731,7 @@ fn click_nested(address: &str) -> serde_json::Value {
             ["program/dispatch", address, {}, { "guest": "@entity.guest", "emit": emit() }]
         ] }
     ]));
-    kernel.dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": nested_control_guest() })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": nested_control_guest() })).unwrap()).unwrap();
     assert!(entity(&kernel)["guest"].as_str().is_some(), "{}", entity(&kernel));
     run(&kernel, "CLICK")
 }
@@ -759,14 +760,14 @@ fn session_opener() -> RuntimeKernel {
 
 fn open_in_session(kernel: &RuntimeKernel, session: &str) -> String {
     let _in_session = kernel.enter_session(session);
-    let payload = serde_json::from_value(json!({ "program": guest() })).unwrap();
+    let payload = from_json_value(&json!({ "program": guest() })).unwrap();
     kernel.dispatch("Opener", None, "GO", payload).unwrap();
     serde_json::to_value(&kernel.snapshot_trait("Opener", None).entity).unwrap()["guest"].as_str().unwrap().to_string()
 }
 
 fn read_guest(kernel: &RuntimeKernel, session: &str, handle: &str) -> serde_json::Value {
     let _in_session = kernel.enter_session(session);
-    kernel.dispatch("Opener", None, "READ_GUEST", serde_json::from_value(json!({ "guest": handle })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "READ_GUEST", from_json_value(&json!({ "guest": handle })).unwrap()).unwrap();
     serde_json::to_value(&kernel.snapshot_trait("Opener", None).entity).unwrap()
 }
 
@@ -921,7 +922,7 @@ fn shop_opener() -> RuntimeKernel {
 }
 
 fn shop_event(kernel: &RuntimeKernel, event: &str, payload: serde_json::Value) -> serde_json::Value {
-    kernel.dispatch("Opener", None, event, serde_json::from_value(payload).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, event, from_json_value(&payload).unwrap()).unwrap();
     entity(kernel)
 }
 
@@ -1204,7 +1205,7 @@ fn translated_guest(messages: bool) -> serde_json::Value {
 fn open_value(program: serde_json::Value) -> serde_json::Value {
     let kernel = opener(json!([open_transition()]));
     kernel
-        .dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": program })).unwrap())
+        .dispatch("Opener", None, "GO", from_json_value(&json!({ "program": program })).unwrap())
         .unwrap();
     entity(&kernel)
 }
@@ -1240,7 +1241,7 @@ fn a_guest_create_form_save_without_an_id_is_admitted() {
             ["program/dispatch", "Diary.DiaryList.SAVE", { "data": { "text": "new" } }, { "guest": "@entity.guest", "emit": emit() }]
         ] }
     ]));
-    kernel.dispatch("Opener", None, "GO", serde_json::from_value(json!({ "program": program })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": program })).unwrap()).unwrap();
     let after = run(&kernel, "SAVE");
     assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
     assert!(painted(&after["got"]).contains(&"saved".to_string()), "{after}");

@@ -1,5 +1,6 @@
 // A fold can run an arm that owes the host a leg (a browser-stored refetch after a persist's success): the fold hands that leg back instead of losing it (twin of `applyOrbitalEventResponse`'s own continuations, `almadar-runtime/src/evaluation/client-role.ts`; ui `OrbPreview.browser-stored-entity`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::EmbeddedKernel;
 use {orbital_core_base::bus_event::{BusEventSource, EmittedEvent}, orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
@@ -7,7 +8,7 @@ use std::collections::HashSet;
 
 fn kernel(local: bool) -> EmbeddedKernel {
     let dispatch = if local { json!("client") } else { json!(null) };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "books",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
@@ -133,7 +134,7 @@ fn pager() -> EmbeddedKernel {
 }
 
 fn pager_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "paging",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Board",
@@ -193,7 +194,7 @@ fn a_server_listener_a_client_step_reaches_in_the_fold_is_posted() {
 /// lands on an arm that only emits `AFTER` to itself; `AFTER` needs the server. `deep` false: `AFTER` does nothing.
 fn framed(deep: bool) -> EmbeddedKernel {
     let after = if deep { json!([["fetch", "Invoice", {}]]) } else { json!([]) };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "framing",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Wire",
@@ -273,7 +274,7 @@ fn finder(resolver_init: bool) -> EmbeddedKernel {
     if resolver_init {
         resolver.push(json!({ "from": "idle", "to": "idle", "event": "INIT" }));
     }
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "finder",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Finder",
@@ -336,7 +337,7 @@ fn control_a_host_emit_reaches_a_client_only_listener_with_an_init_arm() {
 /// G-CROSS-438: `Figures` (`[client]`) zeroes its count on INIT and takes the loaded count from `FIGURES_READ`, which the server
 /// trait `Fetcher` emits from its own INIT.
 fn figures() -> EmbeddedKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "home",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Home",
@@ -366,7 +367,7 @@ fn host_read() -> EventResponse {
         transitioned: true,
         emitted_events: vec![EmittedEvent {
             event: "FIGURES_READ".to_string(),
-            payload: Some(serde_json::from_value(json!({ "count": 3 })).unwrap()),
+            payload: Some(from_json_value(&json!({ "count": 3 })).unwrap()),
             source: Some(BusEventSource { r#trait: Some("Fetcher".to_string()), ..Default::default() }),
         }],
         ..Default::default()

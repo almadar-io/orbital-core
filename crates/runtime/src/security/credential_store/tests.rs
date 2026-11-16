@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 
 fn fixture() -> Value {
@@ -5,7 +6,7 @@ fn fixture() -> Value {
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/credential-store.json"
     );
-    serde_json::from_str(&std::fs::read_to_string(path).expect("fixture"))
+    from_json_str(&std::fs::read_to_string(path).expect("fixture"))
         .expect("fixture json")
 }
 
@@ -383,7 +384,7 @@ fn the_file_store_round_trips_and_keeps_the_js_row_shape() {
         Some("per-user-0001")
     );
     let text = std::fs::read_to_string(&path).expect("file");
-    let rows: Vec<Value> = serde_json::from_str(&text).expect("rows");
+    let rows: Vec<Value> = from_json_str(&text).expect("rows");
     let row = rows
         .iter()
         .find(|r| r["envVar"] == "STRIPE_KEY")
@@ -1054,7 +1055,7 @@ mod oauth_connect {
 
         fn jwt_fixture() -> Value {
             let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/security/jwt-bearer.json");
-            serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
+            from_json_str(&std::fs::read_to_string(path).expect("fixture")).expect("json")
         }
 
         const SA_NOW_MS: i64 = 1_700_000_000_000;
@@ -1679,7 +1680,7 @@ mod oauth_connect {
         }
 
         fn request(json: Value) -> Result<CredentialGrant, crate::credential_admin::ConnectFailure> {
-            CredentialGrant::from_request(&serde_json::from_value(json).unwrap(), Some("viewer-1"))
+            CredentialGrant::from_request(&from_json_value(&json).unwrap(), Some("viewer-1"))
         }
 
         #[test]
@@ -1763,7 +1764,7 @@ mod oauth_connect {
             use crate::embed::wire::CredentialGrantWire;
             for ask in [jwt_grant(Some("u1")), bank_grant(), stored_refresh_grant(), zoom_grant(), metadata_grant()] {
                 let wire = serde_json::to_string(&CredentialGrantWire::from(&ask)).unwrap();
-                let back: CredentialGrant = serde_json::from_str::<CredentialGrantWire>(&wire).unwrap().into();
+                let back: CredentialGrant = from_json_str::<CredentialGrantWire>(&wire).unwrap().into();
                 assert_eq!(back, ask);
             }
         }

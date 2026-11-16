@@ -1,12 +1,13 @@
 // Runtime Spec 5.3: a trait's own emit that it handles from its new state runs within the same dispatch, before fan-out. Twin of almadar-runtime `same-trait-cascade.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "loop",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

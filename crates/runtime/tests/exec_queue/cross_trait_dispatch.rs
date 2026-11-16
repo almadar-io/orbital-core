@@ -3,13 +3,14 @@
 //! a `CREATE` from a source trait (the button's owner) has to open a *different* trait's
 //! modal via its `listens` entry — not just process the source trait in isolation.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::client_effect::ClientEffect;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use std::sync::Arc;
 
 fn two_trait_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -46,7 +47,7 @@ fn two_trait_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -125,7 +126,7 @@ fn create_from_wrong_source_does_not_open_modal() {
 /// `main` render-ui — the effect the client indexes under `trait_content[Peer]`, which is what
 /// makes the `@trait.Peer` leaf in the primary's children resolve.
 fn composed_peer_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -150,7 +151,7 @@ fn composed_peer_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -198,7 +199,7 @@ fn listens_cascade_schema(with_mapping: bool) -> OrbitalSchema {
                 "effects": [["set", "@entity.id", "@payload.id"]] }]
         }
     });
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -214,7 +215,7 @@ fn listens_cascade_schema(with_mapping: bool) -> OrbitalSchema {
                 target_trait
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -226,7 +227,7 @@ fn bare_listen_route_forwards_source_payload_unchanged() {
             "Source",
             Some("row-1"),
             "SAVE",
-            serde_json::from_value(serde_json::json!({"id": "abc123", "row": {"id": "abc123"}}))
+            from_json_value(&(serde_json::json!({"id": "abc123", "row": {"id": "abc123"}})))
                 .unwrap(),
         )
         .unwrap();
@@ -246,7 +247,7 @@ fn with_listen_route_remaps_payload() {
             "Source",
             Some("row-1"),
             "SAVE",
-            serde_json::from_value(serde_json::json!({"id": "abc123", "row": {"id": "abc123"}}))
+            from_json_value(&(serde_json::json!({"id": "abc123", "row": {"id": "abc123"}})))
                 .unwrap(),
         )
         .unwrap();
@@ -290,7 +291,7 @@ impl orbital_core_runtime::effects::ServiceHandler for Gate {
 }
 
 fn lane_kernel() -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "lane",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -337,7 +338,7 @@ fn lane_kernel() -> (Arc<RuntimeKernel>, Arc<dyn EntitySource>) {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
         service_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>),
@@ -366,7 +367,7 @@ fn added(outcomes: &orbital_core_runtime::resumable::DispatchOutcomes) -> Vec<se
 /// `ADD` as `who`, parked where its `Echo` listener's step asks the host: `Counter`'s transition has committed, its
 /// listener cascade has not.
 fn parked_between_transition_and_listener(kernel: &RuntimeKernel, who: &str) -> (orbital_core_runtime::resumable::DispatchContinuation, Vec<orbital_core_runtime::resumable::PendingRequest>) {
-    let payload: Value = serde_json::from_value(serde_json::json!({ "who": who })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "who": who }))).unwrap();
     match kernel.start_dispatch("Counter", None, "ADD", payload, None, None).unwrap() {
         orbital_core_runtime::resumable::Progress::Await { continuation, requests } => (continuation, requests),
         orbital_core_runtime::resumable::Progress::Done(_) => panic!("ADD did not park in its listener"),
@@ -667,7 +668,7 @@ impl Nested {
         dispatched
             .map(|outcomes| {
                 let response = orbital_core_runtime::effects::response::EventResponse::from_process_results(&outcomes, "Target", &event);
-                serde_json::from_value(serde_json::to_value(&response).expect("a response serializes")).expect("a response is a value")
+                from_json_value(&serde_json::to_value(&response).expect("a response serializes")).expect("a response is a value")
             })
             .map_err(|e| orbital_core_runtime::effects::SubstrateFailure { message: e.to_string(), errors: Vec::new() })
     }
@@ -696,7 +697,7 @@ fn asking_kernel(keyed: bool) -> Asking {
     if keyed {
         options["key"] = serde_json::json!("k1");
     }
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "asking",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -722,7 +723,7 @@ fn asking_kernel(keyed: bool) -> Asking {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
         substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
@@ -844,7 +845,7 @@ struct Live {
 
 fn live_kernel() -> Live {
     use orbital_core_runtime::os_host::completion::{KernelCompletionSink, StreamPoll};
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "live",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -864,7 +865,7 @@ fn live_kernel() -> Live {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
         substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
@@ -961,7 +962,7 @@ fn two_listener_schema() -> OrbitalSchema {
             }
         })
     };
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -973,14 +974,14 @@ fn two_listener_schema() -> OrbitalSchema {
                 target("Mapped", serde_json::json!({ "id": "@payload.id" }))
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
 #[test]
 fn listeners_of_one_delivery_keep_one_shared_payload_in_their_outcomes() {
     let kernel = kernel_with(two_listener_schema());
-    let payload: Value = serde_json::from_value(serde_json::json!({ "id": "abc123", "rows": [1, 2, 3] })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "id": "abc123", "rows": [1, 2, 3] }))).unwrap();
     let outcomes = kernel.dispatch("Source", Some("row-1"), "SAVE", payload).unwrap();
     let of = |name: &str| &outcomes.iter().find(|(t, _)| t == name).unwrap_or_else(|| panic!("{name} should fire")).1;
     assert!(Arc::ptr_eq(&of("TargetA").payload, &of("TargetB").payload), "bare listeners share the delivered payload, never a copy each");
@@ -1016,7 +1017,7 @@ struct Reading {
 
 fn reading_kernel() -> Reading {
     use orbital_core_runtime::os_host::completion::KernelCompletionSink;
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "reading",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -1044,7 +1045,7 @@ fn reading_kernel() -> Reading {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
         substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::SubstrateHandler>),
@@ -1116,7 +1117,7 @@ fn an_unkeyed_substrate_read_completes_while_a_keyed_dependencies_read_is_in_fli
 #[test]
 fn a_keyed_call_the_host_refuses_at_once_takes_its_failure_route() {
     use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "calls", "typeContractVersion": 1, "orbitals": [{
             "name": "Ui",
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "string" }] },
@@ -1126,7 +1127,7 @@ fn a_keyed_call_the_host_refuses_at_once_takes_its_failure_route() {
                     { "from": "loading", "to": "ready", "event": "LOADED", "effects": [["set", "@entity.seen", "loaded"]] },
                     { "from": "loading", "to": "ready", "event": "FAILED", "effects": [["set", "@entity.seen", "failed"]] }] } }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig {
         service_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered) as Arc<dyn orbital_core_runtime::effects::ServiceHandler>),
@@ -1148,7 +1149,7 @@ fn a_keyed_call_the_host_refuses_at_once_takes_its_failure_route() {
 #[test]
 fn a_keyed_call_on_a_kernel_with_no_service_answerer_takes_its_failure_route() {
     use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoAnswer, IoRequest};
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "calls", "typeContractVersion": 1, "orbitals": [{
             "name": "Ui",
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "string" }] },
@@ -1158,7 +1159,7 @@ fn a_keyed_call_on_a_kernel_with_no_service_answerer_takes_its_failure_route() {
                     { "from": "loading", "to": "ready", "event": "LOADED", "effects": [["set", "@entity.seen", "loaded"]] },
                     { "from": "loading", "to": "ready", "event": "FAILED", "effects": [["set", "@entity.seen", "failed"]] }] } }]
         }]
-    }))
+    })))
     .unwrap();
     let config = orbital_core_runtime::config::KernelConfig::default();
     let store = Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>;

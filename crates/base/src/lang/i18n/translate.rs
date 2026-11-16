@@ -2,6 +2,7 @@
 //! sigils -> canonical English. Never touches any other string value (a
 //! user's entity name, a label, free text, …) — only the four positions the
 //! `.orb` schema itself gives grammatical meaning to.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -103,7 +104,7 @@ fn walk(value: &mut Value, lang: &Lang, in_expression: bool) {
 pub fn detect_and_translate(
     content: &str,
 ) -> Result<(String, Option<&'static Lang>), serde_json::Error> {
-    let mut value: Value = serde_json::from_str(content)?;
+    let mut value: Value = from_json_str(content)?;
     let detected = match &value {
         Value::Object(map) => lang::for_orb_top_level_keys(map.keys().map(String::as_str)),
         _ => None,

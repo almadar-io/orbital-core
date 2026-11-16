@@ -21,9 +21,11 @@ pub mod effects;
 pub mod embedded_traits;
 pub mod gated_traits;
 pub mod expr;
+pub mod layout;
 pub mod literal;
 pub mod pretty;
 pub mod render;
+pub mod step;
 pub mod types;
 pub mod validation;
 

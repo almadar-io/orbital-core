@@ -1,6 +1,7 @@
 //! EXEC-DATA conformance: what writing rows does to the trait that wrote them.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use serde_json::json;
 use crate::support::TestKernel;
@@ -32,7 +33,7 @@ fn exec_data_4_a_create_never_re_addresses_the_trait_that_ran_it() {
 
 #[test]
 fn exec_data_1_a_seeder_stamps_absent_or_blank_timestamps_and_keeps_authored_ones() {
-    let instances: Vec<orbital_core_base::schema::sexpr::SObject> = serde_json::from_value(json!([
+    let instances: Vec<orbital_core_base::schema::sexpr::SObject> = from_json_value(&json!([
         { "title": "fresh" },
         { "title": "dated", "createdAt": "2020-01-01T00:00:00Z", "updatedAt": "" }
     ]))
@@ -40,7 +41,7 @@ fn exec_data_1_a_seeder_stamps_absent_or_blank_timestamps_and_keeps_authored_one
     let now = "2026-10-26T00:00:00.000Z";
     let now_ms = 1_792_972_800_000.0;
     let fields: Vec<orbital_core_base::schema::FieldDefinition> =
-        serde_json::from_value(json!([{ "name": "createdAt", "type": "string" }, { "name": "updatedAt", "type": "string" }])).unwrap();
+        from_json_value(&json!([{ "name": "createdAt", "type": "string" }, { "name": "updatedAt", "type": "string" }])).unwrap();
     let rows = orbital_core_runtime::instance_rows("Note", &fields, &instances, now_ms);
 
     assert_eq!(rows[0].get_path("createdAt"), Some(&Value::from(now)), "absent is the seeding instant");
@@ -52,10 +53,10 @@ fn exec_data_1_a_seeder_stamps_absent_or_blank_timestamps_and_keeps_authored_one
 #[test]
 fn exec_data_1_a_seeder_stamp_follows_the_declared_field_type() {
     let field = |ty: &str| -> Vec<orbital_core_base::schema::FieldDefinition> {
-        serde_json::from_value(json!([{ "name": "createdAt", "type": ty }, { "name": "updatedAt", "type": ty }])).unwrap()
+        from_json_value(&json!([{ "name": "createdAt", "type": ty }, { "name": "updatedAt", "type": ty }])).unwrap()
     };
     let instances: Vec<orbital_core_base::schema::sexpr::SObject> =
-        serde_json::from_value(json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
+        from_json_value(&json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
     let now_ms = 1_792_972_800_000.0;
     let stamp = |ty: &str| orbital_core_runtime::instance_rows("Note", &field(ty), &instances, now_ms);
 
@@ -77,7 +78,7 @@ fn exec_data_1_a_seeder_stamp_follows_the_declared_field_type() {
 #[test]
 fn exec_data_1_a_seeder_stamps_only_a_declared_timestamp_field() {
     let instances: Vec<orbital_core_base::schema::sexpr::SObject> =
-        serde_json::from_value(json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
+        from_json_value(&json!([{ "title": "fresh" }, { "title": "kept", "createdAt": 5 }])).unwrap();
     let now_ms = 1_792_972_800_000.0;
 
     let rows = orbital_core_runtime::instance_rows("Note", &[], &instances, now_ms);
@@ -87,7 +88,7 @@ fn exec_data_1_a_seeder_stamps_only_a_declared_timestamp_field() {
     assert_eq!(rows[1].get_path("updatedAt"), None);
 
     let only_created: Vec<orbital_core_base::schema::FieldDefinition> =
-        serde_json::from_value(json!([{ "name": "createdAt", "type": "number" }])).unwrap();
+        from_json_value(&json!([{ "name": "createdAt", "type": "number" }])).unwrap();
     let rows = orbital_core_runtime::instance_rows("Note", &only_created, &instances, now_ms);
     assert_eq!(rows[0].get_path("createdAt"), Some(&Value::from(now_ms)), "control: the declared field is stamped");
     assert_eq!(rows[0].get_path("updatedAt"), None, "control: the undeclared sibling is not");
@@ -96,7 +97,7 @@ fn exec_data_1_a_seeder_stamps_only_a_declared_timestamp_field() {
 fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
     use orbital_core_runtime::entity_source::EntitySource;
     let cache = std::sync::Arc::new(orbital_core_runtime::entity_source::InMemoryEntityCache::new());
-    let row = |v: serde_json::Value| -> Value { serde_json::from_value(v).unwrap() };
+    let row = |v: serde_json::Value| -> Value { from_json_value(&v).unwrap() };
     cache.write("Note", "a", &row(json!({ "id": "a", "fromA": "A-field" }))).unwrap();
     cache.write("Note", "b", &row(json!({ "id": "b", "fromB": "B-field" }))).unwrap();
     TestKernel::server().source(cache).build(json!({
@@ -118,7 +119,7 @@ fn carried_kernel(shared: bool) -> orbital_core_runtime::kernel::RuntimeKernel {
 
 fn read_with_carried(kernel: &orbital_core_runtime::kernel::RuntimeKernel, carried: serde_json::Value) -> (Option<String>, Option<String>) {
     let mut by_trait = orbital_core_base::value::ValueMap::default();
-    by_trait.insert("Reader".into(), serde_json::from_value(carried).unwrap());
+    by_trait.insert("Reader".into(), from_json_value(&carried).unwrap());
     kernel.seed_leg(&[], Some(&by_trait), Some("a"));
     let outcomes = kernel.dispatch("Reader", Some("a"), "READ", Value::Null).unwrap();
     assert!(outcomes.iter().any(|(t, r)| t == "Reader" && r.executed), "the read ran");

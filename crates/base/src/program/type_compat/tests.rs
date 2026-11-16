@@ -64,7 +64,7 @@ fn a_field_ref_is_string_kind_at_run_time() {
 fn an_int_entity_field_fits_an_int_slot_widens_to_number_and_a_number_field_does_not_narrow() {
     use crate::ir::types::{field_shape, OirType};
     let field = |ty: &str| -> crate::schema::FieldDefinition {
-        serde_json::from_value(serde_json::json!({ "name": "f", "type": ty })).unwrap()
+        from_json_value(&(serde_json::json!({ "name": "f", "type": ty }))).unwrap()
     };
     let int_field = field_shape(&field("int")).unwrap();
     let number_field = field_shape(&field("number")).unwrap();
@@ -197,7 +197,7 @@ fn nullable_assignment_requires_a_guard_or_explicit_unwrap() {
 
 #[test]
 fn record_contract_checks_additional_values_and_required_nullable_presence() {
-    let ty = |json| serde_json::from_value::<crate::ir::types::OirType>(json).unwrap();
+    let ty = |json| from_json_value::<crate::ir::types::OirType>(&json).unwrap();
     let target = ty(serde_json::json!({"kind":"struct","fields":[
         {"name":"id","fieldType":{"kind":"string"},"required":false}
     ],"additional":{"kind":"number"}}));
@@ -321,6 +321,7 @@ fn checked_assignment_requires_known_identity_preserving_evidence() {
         "ordinary assignment unchanged"
     );
 }
+use crate::json_value::from_json_value;
 use super::{checked_sub_with_named, enum_value_is_member, oir_type_satisfies_field, sub};
 use crate::ir::types::OirType;
 

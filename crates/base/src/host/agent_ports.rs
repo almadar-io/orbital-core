@@ -7,6 +7,7 @@
 //! plan is before the host is asked. The kernel (`orbital-core-runtime` `kernel/agent_ports`) runs the plan;
 //! the host runs the dispatch. Twin of `@almadar/core` `src/access/agentPorts.ts`; one corpus
 //! (`crates/runtime/tests/fixtures/agent-ports/vectors.json`) pins both.
+use crate::json_value::{from_json_str, from_json_value};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -68,7 +69,7 @@ fn object<const N: usize>(pairs: [(&str, Value); N]) -> Value {
 fn through_json<T: serde::Serialize>(value: &T) -> Value {
     serde_json::to_value(value)
         .ok()
-        .and_then(|json| serde_json::from_value::<Value>(json).ok())
+        .and_then(|json| from_json_value::<Value>(&json).ok())
         .unwrap_or(Value::Null)
 }
 
@@ -189,7 +190,7 @@ fn select_option(raw: Option<&Value>) -> Result<Vec<Selection>, String> {
             Some(declared) => Some(
                 serde_json::to_value(declared)
                     .ok()
-                    .and_then(|json| serde_json::from_value::<Vec<PayloadField>>(json).ok())
+                    .and_then(|json| from_json_value::<Vec<PayloadField>>(&json).ok())
                     .ok_or_else(|| {
                         "program/inputs: a select payload must be a list of payload fields"
                             .to_string()
@@ -418,7 +419,7 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
             } else {
                 source.as_str()
             };
-            Ok(match serde_json::from_str::<Value>(source) {
+            Ok(match from_json_str::<Value>(source) {
                 Ok(parsed @ Value::Object(_)) => Arguments::Payload(parsed),
                 _ => Arguments::Refused,
             })
@@ -509,7 +510,7 @@ fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
     };
     serde_json::to_value(schema)
         .ok()
-        .and_then(|json| serde_json::from_value::<Vec<PayloadField>>(json).ok())
+        .and_then(|json| from_json_value::<Vec<PayloadField>>(&json).ok())
         .map(|contract| (Some(contract), request))
         .ok_or_else(|| "program/dispatch: schema must be a list of payload fields".to_string())
 }
@@ -641,7 +642,7 @@ mod tests {
     const VECTORS: &str = include_str!("../../../runtime/tests/fixtures/agent-ports/vectors.json");
 
     fn fixture() -> Json {
-        serde_json::from_str(VECTORS).expect("the shared vectors parse")
+        from_json_str(VECTORS).expect("the shared vectors parse")
     }
 
     fn norm(json: Json) -> Json {
@@ -661,7 +662,7 @@ mod tests {
     }
 
     fn schema_of(fixture: &Json) -> OrbitalSchema {
-        serde_json::from_value(fixture["schema"].clone()).expect("the vectors' schema deserializes")
+        from_json_value(&fixture["schema"]).expect("the vectors' schema deserializes")
     }
 
     fn args_of(case: &Json) -> Vec<Value> {
@@ -669,7 +670,7 @@ mod tests {
             .as_array()
             .expect("args")
             .iter()
-            .map(|a| serde_json::from_value::<Value>(a.clone()).expect("an argument"))
+            .map(|a| from_json_value::<Value>(&a).expect("an argument"))
             .collect()
     }
 
@@ -797,7 +798,7 @@ mod tests {
             items: None,
             relation: None,
         }];
-        let sent = serde_json::from_value::<Value>(serde_json::json!({ "n": "x" })).unwrap();
+        let sent = from_json_value::<Value>(&(serde_json::json!({ "n": "x" }))).unwrap();
         let issues = issues_value(&payload_issues(&fields, &sent), &sent);
         assert_eq!(
             as_json(&Value::array(issues)),
@@ -853,7 +854,7 @@ mod tests {
     #[test]
     fn g_behaviors_018_a_relation_field_refuses_an_object_and_accepts_an_id() {
         let fields = vec![payload_field("assignee", "relation", Some(to_one("TeamMember")))];
-        let sent = |json: serde_json::Value| serde_json::from_value::<Value>(json).unwrap();
+        let sent = |json: serde_json::Value| from_json_value::<Value>(&json).unwrap();
         assert!(
             payload_issues(&fields, &sent(serde_json::json!({ "assignee": "member-1" }))).is_empty(),
             "control: a valid id string is accepted"
@@ -872,7 +873,7 @@ mod tests {
         let fields = vec![payload_field("members", "relation", Some(many))];
         let schema = as_json(&payload_schema_to_json_schema(&fields));
         assert_eq!(schema["properties"]["members"], serde_json::json!({ "type": "array", "items": { "type": "string" } }));
-        let sent = |json: serde_json::Value| serde_json::from_value::<Value>(json).unwrap();
+        let sent = |json: serde_json::Value| from_json_value::<Value>(&json).unwrap();
         assert!(payload_issues(&fields, &sent(serde_json::json!({ "members": ["a", "b"] }))).is_empty());
         assert_eq!(payload_issues(&fields, &sent(serde_json::json!({ "members": {} }))).len(), 1);
         assert_eq!(payload_issues(&fields, &sent(serde_json::json!({ "members": [{}] }))).len(), 1);
@@ -880,7 +881,7 @@ mod tests {
 
     #[test]
     fn g_behaviors_018_the_wire_and_the_evaluator_check_one_fixture_identically() {
-        let fields: Vec<PayloadField> = serde_json::from_value(serde_json::json!([
+        let fields: Vec<PayloadField> = from_json_value(&(serde_json::json!([
             { "name": "title", "type": "string", "required": true },
             { "name": "at", "type": "instant" },
             { "name": "assignee", "type": "relation", "relation": { "entity": "TeamMember", "cardinality": "one" } },
@@ -888,7 +889,7 @@ mod tests {
             { "name": "tags", "type": "[string]", "values": ["new", "sale"] },
             { "name": "rows", "type": "[object]", "properties": [{ "name": "id", "type": "string", "required": true }] },
             { "name": "roles", "type": "object", "properties": [] }
-        ]))
+        ])))
         .expect("fields");
         let wire_schema = crate::payload_check::payload_json_schema(&fields);
         assert_eq!(as_json(&payload_schema_to_json_schema(&fields)), norm(wire_schema), "one schema on both paths");
@@ -899,7 +900,7 @@ mod tests {
             serde_json::json!([]),
         ];
         for sent in sends {
-            let kernel = serde_json::from_value::<Value>(sent.clone()).unwrap();
+            let kernel = from_json_value::<Value>(&sent).unwrap();
             let on_the_wire = serde_json::to_value(crate::payload_check::payload_issues(&fields, &sent)).unwrap();
             let in_the_kernel = serde_json::to_value(payload_issues(&fields, &kernel)).unwrap();
             assert_eq!(on_the_wire, in_the_kernel, "{sent}");
@@ -922,7 +923,7 @@ mod tests {
     }
 
     fn value(json: Json) -> Value {
-        serde_json::from_value(json).expect("a value")
+        from_json_value(&json).expect("a value")
     }
 
     #[test]
@@ -1051,7 +1052,7 @@ mod tests {
     #[test]
     fn the_dispatch_target_options_and_the_bus_excluded_events_are_the_operator_table_s() {
         let data = crate::language_data::operator_data().expect("the installed operator table");
-        let table: Json = serde_json::from_str(&data.operators).unwrap();
+        let table: Json = from_json_str(&data.operators).unwrap();
         let listed = |op: &str, field: &str| -> Vec<String> {
             table["operators"][op][field].as_array().unwrap().iter().map(|v| v.as_str().unwrap().to_string()).collect()
         };

@@ -4,6 +4,7 @@
 //! gates, downstream crates' wire tests and `orb verify --server`'s fixture pass
 //! all read through here, never a path of their own. Loaded once; a missing or
 //! malformed set panics naming the file (callers run where core is installed).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -97,7 +98,7 @@ fn load(dir: &Path) -> Fixtures {
 /// The installed core's declared fixture directory.
 pub fn installed_fixtures_dir() -> PathBuf {
     let root = &crate::language_data::language_data_after_preflight().root;
-    let manifest: serde_json::Value = serde_json::from_str(&read(&root.join("package.json")))
+    let manifest: serde_json::Value = from_json_str(&read(&root.join("package.json")))
         .unwrap_or_else(|e| panic!("{}/package.json: {e}", root.display()));
     let rel = manifest["orbLanguage"]["fixtures"]
         .as_str()

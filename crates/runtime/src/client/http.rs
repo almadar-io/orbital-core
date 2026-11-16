@@ -3,6 +3,7 @@
 //! The blocking HTTP transport a client renderer posts events through
 //! (`SyncServerBridge`, feature `client-http`). All server-side effects (fetch,
 //! persist, call-service) are delegated through it.
+use orbital_core_base::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -162,7 +163,7 @@ fn read_frames(
             }
             *seen = Some(number);
         }
-        match serde_json::from_str::<FeedFrame>(&text) {
+        match from_json_str::<FeedFrame>(&text) {
             Ok(FeedFrame::Dispatch { orbital_name, request, response }) => {
                 if !deliver(PushedDispatch { orbital_name, request, response }) {
                     return;

@@ -1,5 +1,6 @@
 //! Field, record and payload shapes derived from declared types.
 
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 
 /// What a declared type leaves without a shape.
@@ -544,11 +545,11 @@ impl DeclaredShape {
 
     /// Decode one supported shape, preserving its diagnostic and legacy bare-type form.
     pub fn read(text: &str) -> Result<Self, serde_json::Error> {
-        let value: serde_json::Value = serde_json::from_str(text)?;
+        let value: serde_json::Value = from_json_str(text)?;
         if value.get("version").is_some() || value.get("type").is_some() && value.get("kind").is_none() {
-            return serde_json::from_value(value);
+            return from_json_value(&value);
         }
-        let ty: OirType = serde_json::from_value(value)?;
+        let ty: OirType = from_json_value(&value)?;
         Ok(Self { version: None, name: None, ty, named: Default::default() })
     }
 

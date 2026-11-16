@@ -12,8 +12,24 @@ pub struct AsOp;
 impl Operator for AsOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "as", == 2);
-        let target = super::json::shape_operand(&args[1])?;
-        let value = eval_expr(&args[0], ctx)?;
+        super::json::shape_operand(&args[1])?;
+        cast(eval_expr(&args[0], ctx)?, &args[1])
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "as", 2);
+        let shape = super::json::written_shape(args, site, 1);
+        Some(cast(std::mem::take(&mut args[0]), &shape))
+    }
+}
+
+fn cast(value: Value, shape: &SExpression) -> EvalResult {
+    let target = super::json::shape_operand(shape)?;
+    {
         match target.as_str() {
             "CallKey" => match value {
                 Value::String(ref s) if !s.is_empty() => Ok(value),
@@ -25,7 +41,7 @@ impl Operator for AsOp {
                     actual: other.type_name().into(),
                 })),
             },
-            other => match super::json::run_time_shape(&args[1])? {
+            other => match super::json::run_time_shape(shape)? {
                 // A declared shape narrows: the value when it fits, null when it does not (a failable result).
                 Some((shape, declared)) => {
                     match super::arg_types::misfit_of_shape(&value, &declared) {

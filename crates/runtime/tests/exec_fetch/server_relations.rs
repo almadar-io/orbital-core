@@ -3,6 +3,7 @@
 // column-bearing nodes list. JS twins: `populate-self-relation-depth`, `populate-relations-auxiliary-entity`,
 // `relation-options-injection` in `almadar-runtime/test`.
 
+use orbital_core_base::json_value::from_json_value;
 use std::sync::Arc;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -41,7 +42,7 @@ fn notes_schema(note_is_primary: bool) -> OrbitalSchema {
         orbital["entity"] = task;
         orbital["auxiliaryEntities"] = json!([note_entity()]);
     }
-    serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital] })).unwrap()
+    from_json_value(&json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital] })).unwrap()
 }
 
 type Store = HashMap<String, Vec<Json>>;
@@ -66,7 +67,7 @@ fn drive(
                                 .get(&entity_type)
                                 .into_iter()
                                 .flatten()
-                                .map(|r| Arc::new(serde_json::from_value(r.clone()).unwrap()))
+                                .map(|r| Arc::new(from_json_value(&r).unwrap()))
                                 .collect())),
                             IoRequest::ReadRow { .. } => IoAnswer::Row(Err("no row".to_string())),
                             other => panic!("the fixture asks for {other:?}"),
@@ -183,7 +184,7 @@ fn control_a_fetch_without_include_leaves_ids() {
     let mut value = serde_json::to_value(&mut schema).unwrap();
     value["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"] =
         json!([["fetch", "Note", { "emit": { "success": "NotesLoaded" } }]]);
-    let schema: OrbitalSchema = serde_json::from_value(value).unwrap();
+    let schema: OrbitalSchema = from_json_value(&value).unwrap();
     let server = EmbeddedServer::new(schema).unwrap();
     let store = Store::from([(
         "Note".to_string(),
@@ -211,7 +212,7 @@ fn editor_schema(display: Option<&str>) -> OrbitalSchema {
         Some(field) => json!({ "entity": "Staff", "cardinality": "one", "display": field }),
         None => json!({ "entity": "Staff", "cardinality": "one" }),
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
             { "name": "StaffOrbital",
@@ -302,5 +303,5 @@ fn edge_the_display_field_is_read_from_the_target_row_whatever_its_name() {
 fn control_a_node_without_relation_fields_and_the_wrapper_stay_untouched() {
     let render = open(Some("name"));
     assert!(render[2].get("relationsData").is_none());
-    let _: Value = serde_json::from_value(render).unwrap();
+    let _: Value = from_json_value(&render).unwrap();
 }

@@ -40,13 +40,34 @@ pub struct JsonParseOp;
 impl Operator for JsonParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/parse", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let s = val.text()?;
-        shape_operand(&args[1])?;
-        let Ok(parsed) = parse_json::<serde_json::Value>(s).map(json_to_value) else {
-            return Ok(Value::Null);
-        };
-        typed_decode("json/parse", parsed, &args[1])
+        parse_as(&eval_expr(&args[0], ctx)?, &args[1])
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "json/parse", 2);
+        Some(parse_as(&args[0], &written_shape(args, site, 1)))
+    }
+}
+
+fn parse_as(val: &Value, shape: &SExpression) -> EvalResult {
+    let s = val.text()?;
+    shape_operand(shape)?;
+    let Ok(parsed) = parse_json::<serde_json::Value>(s).map(json_to_value) else {
+        return Ok(Value::Null);
+    };
+    typed_decode("json/parse", parsed, shape)
+}
+
+/// The shape operand at `index` as the expression it was written as: its text when it was a literal string, else an
+/// expression no shape reader accepts.
+pub(super) fn written_shape(args: &[Value], site: &dyn CallSite, index: usize) -> SExpression {
+    match &args[index] {
+        Value::String(text) if site.literal(index) => SExpression::String(text.clone()),
+        _ => SExpression::Null,
     }
 }
 
@@ -121,18 +142,18 @@ pub(super) fn run_time_shape(
 }
 
 pub struct JsonValidOp;
-impl Operator for JsonValidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for JsonValidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.len() != 1 {
             return Err(OrbitalError::Eval(EvalError::InvalidArgument(
                 "json/valid: expected exactly one argument".into(),
             )));
         }
-        match eval_expr(&args[0], ctx)? {
+        match args[0] {
             Value::String(text) => {
                 // Syntax validity must not depend on numeric or Unicode value conversion.
                 Ok(Value::Bool(
-                    parse_json::<serde::de::IgnoredAny>(&text).is_ok(),
+                    parse_json::<serde::de::IgnoredAny>(text).is_ok(),
                 ))
             }
             other => Err(OrbitalError::Eval(EvalError::TypeMismatch {
@@ -145,11 +166,12 @@ impl Operator for JsonValidOp {
 
 /// `(json/nodes v)`: `v` and every value nested in it, pre-order (a list's items in order, an object's values in key order).
 pub struct JsonNodesOp;
-impl Operator for JsonNodesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(JsonNodesOp);
+impl OwningOperator for JsonNodesOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/nodes", == 1);
         let mut nodes = Vec::new();
-        let mut stack = vec![eval_expr(&args[0], ctx)?];
+        let mut stack = vec![std::mem::take(&mut args[0])];
         while let Some(value) = stack.pop() {
             match &value {
                 Value::Array(items) => stack.extend(items.iter().rev().cloned()),
@@ -228,12 +250,12 @@ fn structural_record_key(map: &ValueMap, open: &str, out: &mut String) -> Result
 /// `v` (O(size)). A record's field order does not change it; a list and a record never share a key. A NaN has one key
 /// though it is unequal to itself; a lambda has none (an error).
 pub struct ValueKeyOp;
-impl Operator for ValueKeyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValueKeyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "value/key", == 1);
-        let value = eval_expr(&args[0], ctx)?;
+        let value = args[0];
         let mut key = String::new();
-        structural_key(&value, &mut key)?;
+        structural_key(value, &mut key)?;
         Ok(Value::string(key))
     }
 }
@@ -241,12 +263,12 @@ impl Operator for ValueKeyOp {
 /// `(value/depth v)`: the deepest nesting of `v`, as an int. A scalar (a lambda included) is 0; a list or a record is
 /// 1 + the greatest depth among its items, so an empty one is 1. One iterative walk, O(size).
 pub struct ValueDepthOp;
-impl Operator for ValueDepthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValueDepthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "value/depth", == 1);
-        let value = eval_expr(&args[0], ctx)?;
+        let value = args[0];
         let mut deepest = 0usize;
-        let mut stack = vec![(&value, 0usize)];
+        let mut stack = vec![(value, 0usize)];
         while let Some((node, depth)) = stack.pop() {
             match node {
                 Value::Array(items) => {
@@ -275,8 +297,9 @@ impl Operator for ValueDepthOp {
 /// collects every object that carries a listed key, under that key (an object carrying several listed keys is a hit
 /// under each), as `{path, node, at}` in the same result map; a key that is also a head or prefix shares its list.
 pub struct TreeIndexOp;
-impl Operator for TreeIndexOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(TreeIndexOp);
+impl OwningOperator for TreeIndexOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "tree/index", >= 2);
         if args.len() > 3 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -285,13 +308,13 @@ impl Operator for TreeIndexOp {
                 actual: args.len(),
             }));
         }
-        let value = eval_expr(&args[0], ctx)?;
+        let value = std::mem::take(&mut args[0]);
         let invalid = || {
             OrbitalError::Eval(EvalError::InvalidArgument(
                 "tree/index: heads must be a list of strings".to_string(),
             ))
         };
-        let Value::Array(listed) = eval_expr(&args[1], ctx)? else {
+        let Value::Array(listed) = &args[1] else {
             return Err(invalid());
         };
         let mut found: Vec<(String, Vec<Value>)> = Vec::with_capacity(listed.len());
@@ -310,8 +333,7 @@ impl Operator for TreeIndexOp {
             let option_error = |what: String| {
                 OrbitalError::Eval(EvalError::InvalidArgument(format!("tree/index: {what}")))
             };
-            let options = eval_expr(options, ctx)?;
-            let Value::Object(map) = &options else {
+            let Value::Object(map) = options else {
                 return Err(option_error(format!(
                     "options must be a record, not {}",
                     options.type_name()
@@ -438,10 +460,10 @@ impl Operator for TreeIndexOp {
 }
 
 pub struct JsonStringifyOp;
-impl Operator for JsonStringifyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for JsonStringifyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "json/stringify", 1);
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         let flag = |options: &Value, key: &str| -> Result<bool, OrbitalError> {
             match options {
                 Value::Object(map) => match map.get(key) {
@@ -458,17 +480,16 @@ impl Operator for JsonStringifyOp {
                 )))),
             }
         };
-        let (pretty, sorted) = match args.get(1) {
+        let (pretty, sorted) = match args.get(1).copied() {
             None => (false, false),
             Some(options) => {
-                let options = eval_expr(options, ctx)?;
-                (flag(&options, "pretty")?, flag(&options, "sorted")?)
+                (flag(options, "pretty")?, flag(options, "sorted")?)
             }
         };
         if !sorted {
-            return Ok(Value::String(orbital_core_base::json_value::value_json_string(&val, pretty).into()));
+            return Ok(Value::String(orbital_core_base::json_value::value_json_string(val, pretty).into()));
         }
-        let json = value_to_json(&val);
+        let json = value_to_json(val);
         let json = if sorted {
             crate::util::canonical_json::canonical_json(&json)
         } else {

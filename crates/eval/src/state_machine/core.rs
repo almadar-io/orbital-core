@@ -355,7 +355,7 @@ mod tests {
                     event_id: None,
                     guard: None,
                     effects: Some(vec![
-                        serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                     ]),
                     ensures: None,
                     await_render: None,
@@ -366,11 +366,11 @@ mod tests {
                     event: "SAVE".to_string(),
                     event_id: None,
                     guard: Some(
-                        serde_json::from_str(r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#).unwrap(),
                     ),
                     effects: Some(vec![
-                        serde_json::from_str(r#"["persist", "create", "User", "@payload.data"]"#).unwrap(),
-                        serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["persist", "create", "User", "@payload.data"]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
                     ]),
                     ensures: None,
                     await_render: None,
@@ -382,7 +382,7 @@ mod tests {
                     event_id: None,
                     guard: None,
                     effects: Some(vec![
-                        serde_json::from_str(r#"["navigate", "/users"]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["navigate", "/users"]"#).unwrap(),
                     ]),
                     ensures: None,
                     await_render: None,
@@ -394,7 +394,7 @@ mod tests {
                     event_id: None,
                     guard: None,
                     effects: Some(vec![
-                        serde_json::from_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
                     ]),
                     ensures: None,
                     await_render: None,
@@ -409,7 +409,7 @@ mod tests {
             to: to.to_string(),
             event: "KEY".to_string(),
             event_id: None,
-            guard: guard.map(|g| serde_json::from_str(g).unwrap()),
+            guard: guard.map(|g| orbital_core_base::json_value::from_json_str(g).unwrap()),
             effects: None,
             ensures: None,
             await_render: None,
@@ -458,8 +458,8 @@ mod tests {
     /// `modal_machine` with its first guard replaced by one the evaluator cannot run.
     fn machine_with_a_throwing_first_guard(second_guard: &str) -> StateMachine {
         let mut machine = modal_machine();
-        machine.transitions[0].guard = Some(serde_json::from_str(r#"["=", 1]"#).unwrap());
-        machine.transitions[1].guard = Some(serde_json::from_str(second_guard).unwrap());
+        machine.transitions[0].guard = Some(orbital_core_base::json_value::from_json_str(r#"["=", 1]"#).unwrap());
+        machine.transitions[1].guard = Some(orbital_core_base::json_value::from_json_str(second_guard).unwrap());
         machine
     }
 

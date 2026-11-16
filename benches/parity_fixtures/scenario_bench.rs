@@ -80,7 +80,7 @@ pub fn load_fixtures(dir: &Path) -> Result<Vec<Fixture>, String> {
         .iter()
         .map(|path| {
             let file = path.display().to_string();
-            let raw: Json = serde_json::from_str(
+            let raw: Json = orbital_core::json_value::from_json_str(
                 &std::fs::read_to_string(path).map_err(|e| format!("read {file}: {e}"))?,
             )
             .map_err(|e| format!("parse {file}: {e}"))?;
@@ -278,7 +278,7 @@ pub fn compare_traces(
 
 /// The traces a `@almadar-io/kernel-bench-tool` bench result file recorded, by workload key.
 pub fn reference_traces(path: &Path) -> Result<HashMap<String, Json>, String> {
-    let result: Json = serde_json::from_str(
+    let result: Json = orbital_core::json_value::from_json_str(
         &std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?,
     )
     .map_err(|e| format!("parse {}: {e}", path.display()))?;

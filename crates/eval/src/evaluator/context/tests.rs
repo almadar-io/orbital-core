@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_str;
 use super::*;
 
 fn sample_payload() -> Value {
@@ -583,7 +584,7 @@ fn render_ui_lambdas_stay_unevaluated() {
 }
 
 fn eval_json(json: &str, ctx: &BindingContext) -> Value {
-    let expr: orbital_core_base::schema::sexpr::SExpression = serde_json::from_str(json).unwrap();
+    let expr: orbital_core_base::schema::sexpr::SExpression = from_json_str(json).unwrap();
     crate::evaluator::Evaluator::new().evaluate(&expr, ctx).unwrap()
 }
 

@@ -2,6 +2,7 @@
 //! mirrored byte-identically under `tests/fixtures/operators/`; the TS twin in `@almadar/evaluator` reads the
 //! same file).
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ fn crate_path(rel: &str) -> PathBuf {
 fn eval(op: &str, args: &[Json]) -> Result<Json, String> {
     let mut expr = vec![Json::String(op.to_string())];
     expr.extend(args.iter().cloned());
-    let sexpr = serde_json::from_value(Json::Array(expr)).map_err(|e| e.to_string())?;
+    let sexpr = from_json_value(&Json::Array(expr)).map_err(|e| e.to_string())?;
     let ctx = BindingContextBuilder::new().build();
     Evaluator::new()
         .evaluate(&sexpr, &ctx)
@@ -35,7 +36,7 @@ fn eval(op: &str, args: &[Json]) -> Result<Json, String> {
 
 fn cases() -> Vec<Case> {
     let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/xml-vectors.json")).unwrap();
-    serde_json::from_str(&raw).unwrap()
+    from_json_str(&raw).unwrap()
 }
 
 #[test]
@@ -64,7 +65,7 @@ fn a_non_string_input_is_an_error_and_a_missing_shape_is_an_arity_error() {
 #[test]
 fn the_arxiv_feed_vector_maps_to_what_the_arxiv_provider_returns() {
     let fixture = crate_path("tests/fixtures/operators/arxiv-search.json");
-    let fixture: Json = serde_json::from_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
+    let fixture: Json = from_json_str(&std::fs::read_to_string(fixture).unwrap()).unwrap();
     let body = fixture["exchanges"][0]["response"]["body"].clone();
     let expected = fixture["outcome"]["data"]["results"].clone();
     let feed = eval("xml/parse", &[body, json!("AtomFeed")]).unwrap();

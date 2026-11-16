@@ -24,7 +24,7 @@
 //! let ctx = BindingContext::new();
 //!
 //! // Simple arithmetic
-//! let expr: SExpression = serde_json::from_str(r#"["+", 1, 2, 3]"#).unwrap();
+//! let expr: SExpression = orbital_core_base::json_value::from_json_str(r#"["+", 1, 2, 3]"#).unwrap();
 //! let result = evaluator.evaluate(&expr, &ctx).unwrap();
 //! assert_eq!(result, Value::Number(6.0));
 //! ```

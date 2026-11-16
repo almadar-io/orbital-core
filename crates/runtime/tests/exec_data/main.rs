@@ -1,7 +1,5 @@
 //! EXEC-DATA family: rows, frames and their addressing.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod kernel_get_state_singleton;

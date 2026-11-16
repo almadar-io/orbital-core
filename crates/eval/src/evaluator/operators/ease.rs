@@ -64,23 +64,23 @@ fn bounce_out(t: f64) -> f64 {
 }
 
 pub struct EaseApplyOp;
-impl Operator for EaseApplyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EaseApplyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ease/apply", >= 2);
-        let curve = eval_expr(&args[0], ctx)?;
+        let curve = args[0];
         let curve = curve.text()?;
-        let t = require_number!(eval_expr(&args[1], ctx)?).clamp(0.0, 1.0);
+        let t = require_number!(args[1]).clamp(0.0, 1.0);
         Ok(Value::Number(ease_curve(curve, t)))
     }
 }
 
 pub struct EaseSmoothstepOp;
-impl Operator for EaseSmoothstepOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EaseSmoothstepOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ease/smoothstep", >= 3);
-        let edge0 = require_number!(eval_expr(&args[0], ctx)?);
-        let edge1 = require_number!(eval_expr(&args[1], ctx)?);
-        let x = require_number!(eval_expr(&args[2], ctx)?);
+        let edge0 = require_number!(args[0]);
+        let edge1 = require_number!(args[1]);
+        let x = require_number!(args[2]);
         if edge0 == edge1 {
             return Ok(Value::Number(0.0));
         }

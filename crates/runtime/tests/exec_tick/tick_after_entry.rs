@@ -1,5 +1,6 @@
 // EXEC-TICK-8: a tick with `afterEntryMs` runs only once its row has been in its state that long (a state's `for Ns`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::config::KernelConfig;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -8,7 +9,7 @@ use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::
 use serde_json::json;
 
 fn kernel(clock: Arc<AtomicU64>) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

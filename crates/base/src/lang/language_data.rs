@@ -10,6 +10,7 @@
 //! (`orbLanguage.version`) it provides, which must be one this kernel reads
 //! ([`LANGUAGE_READS`]); every other package's `language` range is checked
 //! against that version. There is no embedded fallback and no env override.
+use crate::json_value::{from_json_str, from_json_value};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -316,7 +317,7 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
         path: data.root.clone(),
         reason,
     };
-    let doc: Value = serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+    let doc: Value = from_json_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
     let section = |name: &str| {
         doc.get(name)
             .and_then(Value::as_object)
@@ -329,11 +330,11 @@ pub fn check_operator_entries(data: &OperatorData) -> Result<(), LanguageDataErr
         reason: e.to_string(),
     };
     for (name, meta) in section("categories")? {
-        serde_json::from_value::<EmbeddedCategory>(meta.clone()).map_err(|e| unreadable(format!("category `{name}`"), e))?;
+        from_json_value::<EmbeddedCategory>(&meta).map_err(|e| unreadable(format!("category `{name}`"), e))?;
     }
     let operators = section("operators")?;
     for (name, meta) in operators {
-        let operator = serde_json::from_value::<EmbeddedOperator>(meta.clone()).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
+        let operator = from_json_value::<EmbeddedOperator>(&meta).map_err(|e| unreadable(format!("operator `{name}`"), e))?;
         check_option_since(data, name, meta, &operator)?;
     }
     for (name, field) in [("emit", "busExcluded"), ("program/dispatch", "targetOptions")] {
@@ -411,7 +412,7 @@ pub fn release_newer(since: &str, running: &str) -> Result<bool, semver::Error> 
 /// Operators whose canonical category targets `rust` but that the evaluator
 /// cannot resolve, sorted.
 pub fn unimplemented_rust_operators(table: &str, implemented: OperatorProbe) -> Result<Vec<String>, String> {
-    let doc: Value = serde_json::from_str(table).map_err(|e| format!("invalid JSON: {e}"))?;
+    let doc: Value = from_json_str(table).map_err(|e| format!("invalid JSON: {e}"))?;
     let categories = doc
         .get("categories")
         .and_then(Value::as_object)
@@ -516,7 +517,7 @@ pub fn read_language_block(
     };
     let raw = fs::read_to_string(&package_json).map_err(|e| invalid(e.to_string()))?;
     let value: Value =
-        serde_json::from_str(&raw).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+        from_json_str(&raw).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
     // Its own top-level key, never inside `orb`: an `orb` block is a behavior
     // package to every orb binary, and older binaries reject one without the
     // behavior fields — so a language block there would break them all.
@@ -686,7 +687,7 @@ pub fn language_bundle_json() -> Result<String, LanguageDataError> {
         reason,
     };
     let part = |field: &str, text: &str| {
-        serde_json::from_str::<Value>(text).map_err(|e| invalid(format!("`{field}` is not JSON: {e}")))
+        from_json_str::<Value>(text).map_err(|e| invalid(format!("`{field}` is not JSON: {e}")))
     };
     let themes = language
         .themes
@@ -748,7 +749,7 @@ pub fn parse_language_bundle(
         reason,
     };
     let value: Value =
-        serde_json::from_str(bundle).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+        from_json_str(bundle).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
     let part = |name: &str| -> Result<&serde_json::Map<String, Value>, LanguageDataError> {
         value
             .get(name)
@@ -845,7 +846,7 @@ pub fn bundle_pack(entry: &Value, language: &str) -> Result<crate::i18n::packs::
         .get("vocabulary")
         .cloned()
         .ok_or_else(|| format!("{package}: missing `vocabulary`"))
-        .and_then(|v| serde_json::from_value(v).map_err(|e| format!("{package}: {e}")))?;
+        .and_then(|v| from_json_value(&v).map_err(|e| format!("{package}: {e}")))?;
     Ok(crate::i18n::packs::VocabularyPack {
         package,
         version: text("version")?,
@@ -921,7 +922,7 @@ pub fn certify_operator_data(data: &OperatorData, implemented: OperatorProbe) ->
 /// Refuses an operator table that predates this orb: every os operation the binary carries must be declared in it.
 fn certify_os_operator_coverage(data: &OperatorData) -> Result<(), LanguageDataError> {
     let invalid = |reason: String| LanguageDataError::Invalid { path: data.root.clone(), reason };
-    let doc: Value = serde_json::from_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
+    let doc: Value = from_json_str(&data.operators).map_err(|e| invalid(format!("invalid JSON: {e}")))?;
     let declared = doc.get("operators").and_then(Value::as_object).ok_or_else(|| invalid("missing `operators`".into()))?;
     let lacking: Vec<&str> = crate::os::OsOp::ALL.iter().map(|op| op.name()).filter(|name| !declared.contains_key(*name)).collect();
     if lacking.is_empty() {

@@ -1,5 +1,6 @@
 //! EXEC-SEED conformance: the dispatch stamp, the mount hold and the mount batch.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use orbital_core_runtime::effects::response::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::kernel::RuntimeKernel;
@@ -91,7 +92,7 @@ fn body_state(kernel: &RuntimeKernel) -> String {
 }
 
 fn leg(awaiting: &[&str]) -> Value {
-    serde_json::from_value(json!({ "_awaitingInit": awaiting })).unwrap()
+    from_json_value(&json!({ "_awaitingInit": awaiting })).unwrap()
 }
 
 fn seeds(list: &[(&str, &str)]) -> Vec<MountSeed> {

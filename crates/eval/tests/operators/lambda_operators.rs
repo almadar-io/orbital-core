@@ -1,5 +1,6 @@
 // Every lambda-taking operator applies its `(fn …)` per element, never treating the closure as a truthy value. Twin of almadar-evaluator `lambda-operators.test.ts` (identical table).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator};
 use serde_json::{json, Value as Json};
 
@@ -22,7 +23,7 @@ fn normalize(v: Json) -> Json {
 
 fn eval(expr: Json) -> Json {
     let ctx = BindingContextBuilder::new().build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     normalize(serde_json::to_value(Evaluator::new().evaluate(&sexpr, &ctx).unwrap()).unwrap())
 }
 

@@ -10,62 +10,62 @@ use super::*;
 // ============================================================================
 
 pub struct EqOp;
-impl Operator for EqOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EqOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "=", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
+        let a = args[0];
+        let b = args[1];
         Ok(Value::Bool(a == b))
     }
 }
 
 pub struct NeOp;
-impl Operator for NeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "!=", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
+        let a = args[0];
+        let b = args[1];
         Ok(Value::Bool(a != b))
     }
 }
 
 pub struct LtOp;
-impl Operator for LtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for LtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "<", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(a.compare(&b)? == std::cmp::Ordering::Less))
+        let a = args[0];
+        let b = args[1];
+        Ok(Value::Bool(a.compare(b)? == std::cmp::Ordering::Less))
     }
 }
 
 pub struct GtOp;
-impl Operator for GtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, ">", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(a.compare(&b)? == std::cmp::Ordering::Greater))
+        let a = args[0];
+        let b = args[1];
+        Ok(Value::Bool(a.compare(b)? == std::cmp::Ordering::Greater))
     }
 }
 
 pub struct LeOp;
-impl Operator for LeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for LeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "<=", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(a.compare(&b)? != std::cmp::Ordering::Greater))
+        let a = args[0];
+        let b = args[1];
+        Ok(Value::Bool(a.compare(b)? != std::cmp::Ordering::Greater))
     }
 }
 
 pub struct GeOp;
-impl Operator for GeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, ">=", >= 2);
-        let a = eval_expr(&args[0], ctx)?;
-        let b = eval_expr(&args[1], ctx)?;
-        Ok(Value::Bool(a.compare(&b)? != std::cmp::Ordering::Less))
+        let a = args[0];
+        let b = args[1];
+        Ok(Value::Bool(a.compare(b)? != std::cmp::Ordering::Less))
     }
 }
 
@@ -112,8 +112,8 @@ impl Operator for DefaultOp {
 }
 
 pub struct NotOp;
-impl Operator for NotOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NotOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         if args.is_empty() {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
                 operator: "not".to_string(),
@@ -121,7 +121,7 @@ impl Operator for NotOp {
                 actual: 0,
             }));
         }
-        let val = eval_expr(&args[0], ctx)?;
+        let val = args[0];
         Ok(Value::Bool(!val.boolean()?))
     }
 }
@@ -194,9 +194,9 @@ impl Operator for LetOp {
 
 /// list - literal array constructor: evaluate each argument, collect to an array.
 pub struct ListOp;
-impl Operator for ListOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let items: Result<Vec<Value>, _> = args.iter().map(|a| eval_expr(a, ctx)).collect();
-        Ok(Value::array(items?))
+impl StrictOperator for ListOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
+        let items: Vec<Value> = args.iter().map(|a| (*a).clone()).collect();
+        Ok(Value::array(items))
     }
 }

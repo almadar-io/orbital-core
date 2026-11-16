@@ -90,6 +90,27 @@ macro_rules! operator_kind {
                     }
                 }
             }
+
+            /// The operator on operands already evaluated (see [`Operator::apply_values`]).
+            pub fn apply_values(
+                &self,
+                args: &mut [orbital_core_base::value::Value],
+                site: &dyn super::CallSite,
+                ctx: &BindingContext,
+            ) -> Option<EvalResult> {
+                match self {
+                    $( OperatorKind::$variant => $struct_path.apply_values(args, site, ctx), )+
+                    OperatorKind::BehaviorCompositionStubOp(name) => BehaviorCompositionStubOp(name).apply_values(args, site, ctx),
+                }
+            }
+
+            /// How the operator takes its operands (EXEC-EVAL-3b).
+            pub fn evaluation(&self) -> orbital_core_base::language::registry::OperatorEvaluation {
+                match self {
+                    $( OperatorKind::$variant => $struct_path.evaluation(), )+
+                    OperatorKind::BehaviorCompositionStubOp(name) => BehaviorCompositionStubOp(name).evaluation(),
+                }
+            }
         }
     };
 }

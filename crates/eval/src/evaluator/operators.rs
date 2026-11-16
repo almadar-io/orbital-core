@@ -13,6 +13,7 @@ use std::prelude::v1::*;
 
 use super::context::BindingContext;
 use orbital_core_base::error::{EvalError, OrbitalError};
+use orbital_core_base::language::registry::OperatorEvaluation;
 use orbital_core_base::schema::sexpr::SExpression;
 use orbital_core_base::value::Value;
 use orbital_core_base::value::ValueMap;
@@ -24,6 +25,133 @@ pub type EvalResult = Result<Value, OrbitalError>;
 pub trait Operator {
     /// Evaluate this operator with the given arguments and context
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult;
+
+    /// How the operator takes its operands (EXEC-EVAL-3b), as the operator table declares it.
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Form
+    }
+
+    /// The operator on operands already evaluated: the entry compiled code calls. `site` answers what only the call
+    /// site knows. `None` for an operator that evaluates its own operands.
+    fn apply_values(&self, _args: &mut [Value], _site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        None
+    }
+}
+
+/// What a call site gives an operator besides its evaluated operands.
+pub trait CallSite: Sync {
+    /// Whether operand `index` was written as a literal string (not a binding, not a call).
+    fn literal(&self, index: usize) -> bool;
+
+    /// Run the callable given at operand `index`: a lambda, or an operand the operator evaluates on demand.
+    fn invoke(&self, index: usize, values: Vec<Value>) -> EvalResult;
+}
+
+/// An operator that reads every operand as a value: its operands are evaluated left to right before it runs.
+pub trait StrictOperator {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult;
+}
+
+impl<T: StrictOperator> Operator for T {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        apply_strict(self, args, ctx)
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Strict
+    }
+
+    fn apply_values(&self, args: &mut [Value], _site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        let operands: Vec<&Value> = args.iter().collect();
+        Some(self.apply(&operands, ctx))
+    }
+}
+
+/// A strict operator that keeps or changes an operand it is given (a list it appends to, a record it merges into):
+/// it is handed its operands owned, so a value nothing else holds is changed in place (a linear local included).
+pub trait OwningOperator {
+    fn apply_owned(&self, args: &mut [Value], ctx: &BindingContext) -> EvalResult;
+}
+
+/// The operands of an owning operator, each evaluated by [`eval_expr`] in order.
+pub(crate) fn apply_owning<O: OwningOperator + ?Sized>(operator: &O, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+    if args.len() <= INLINE_OPERANDS {
+        let mut owned: [Value; INLINE_OPERANDS] = Default::default();
+        for (slot, expr) in owned.iter_mut().zip(args) {
+            *slot = eval_expr(expr, ctx)?;
+        }
+        return operator.apply_owned(&mut owned[..args.len()], ctx);
+    }
+    let mut owned = Vec::with_capacity(args.len());
+    for expr in args {
+        owned.push(eval_expr(expr, ctx)?);
+    }
+    operator.apply_owned(&mut owned, ctx)
+}
+
+macro_rules! owning_operator {
+    ($($operator:ty),+ $(,)?) => {
+        $(impl $crate::evaluator::operators::Operator for $operator {
+            fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+                $crate::evaluator::operators::apply_owning(self, args, ctx)
+            }
+
+            fn evaluation(&self) -> orbital_core_base::language::registry::OperatorEvaluation {
+                orbital_core_base::language::registry::OperatorEvaluation::Strict
+            }
+
+            fn apply_values(
+                &self,
+                args: &mut [Value],
+                _site: &dyn $crate::evaluator::operators::CallSite,
+                ctx: &BindingContext,
+            ) -> Option<EvalResult> {
+                Some($crate::evaluator::operators::OwningOperator::apply_owned(self, args, ctx))
+            }
+        })+
+    };
+}
+
+const INLINE_OPERANDS: usize = 4;
+
+/// The operands of a strict operator, in order: a plain binding is read where it is bound (as [`with_operand`] reads
+/// it) unless a trace is recording, every other operand is evaluated by [`eval_expr`].
+fn apply_strict<O: StrictOperator + ?Sized>(operator: &O, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+    let traced = super::trace::is_active();
+    let bound = |expr: &SExpression| -> Option<&Value> {
+        if traced {
+            return None;
+        }
+        match expr {
+            SExpression::String(s) => s.strip_prefix('@').and_then(|path| ctx.resolve_borrowed(path)),
+            _ => None,
+        }
+    };
+    let null = Value::Null;
+    if args.len() <= INLINE_OPERANDS {
+        let mut held: [Option<&Value>; INLINE_OPERANDS] = [None; INLINE_OPERANDS];
+        let mut owned: [Value; INLINE_OPERANDS] = Default::default();
+        for (i, expr) in args.iter().enumerate() {
+            held[i] = bound(expr);
+            if held[i].is_none() {
+                owned[i] = eval_expr(expr, ctx)?;
+            }
+        }
+        let mut operands: [&Value; INLINE_OPERANDS] = [&null; INLINE_OPERANDS];
+        for i in 0..args.len() {
+            operands[i] = held[i].unwrap_or(&owned[i]);
+        }
+        return operator.apply(&operands[..args.len()], ctx);
+    }
+    let mut held: Vec<Option<&Value>> = Vec::with_capacity(args.len());
+    let mut owned: Vec<Value> = Vec::with_capacity(args.len());
+    for expr in args {
+        let value = bound(expr);
+        owned.push(if value.is_none() { eval_expr(expr, ctx)? } else { Value::Null });
+        held.push(value);
+    }
+    let operands: Vec<&Value> = held.iter().zip(&owned).map(|(bound, value)| bound.unwrap_or(value)).collect();
+    operator.apply(&operands, ctx)
 }
 
 pub mod arg_types;

@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 use crate::entity_source::{EntitySource, InMemoryEntityCache, QueryAnswer};
@@ -18,7 +19,7 @@ fn parse_checked<T: DeserializeOwned>(text: &str, contract: &str) -> Result<T, S
         }
         _ => return Err(format!("unknown memory store input type: {contract}")),
     }
-    serde_json::from_value(raw).map_err(|error| format!("parse memory store input: {error}"))
+    from_json_value(&raw).map_err(|error| format!("parse memory store input: {error}"))
 }
 
 fn validate_entity_row(row: &serde_json::Value) -> Result<(), String> {
@@ -159,10 +160,11 @@ impl MemoryStoreApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
     use serde_json::{json, Value as Json};
 
     fn decoded(result: Result<String, String>) -> Json {
-        serde_json::from_str(&result.unwrap()).unwrap()
+        from_json_str(&result.unwrap()).unwrap()
     }
 
     #[test]

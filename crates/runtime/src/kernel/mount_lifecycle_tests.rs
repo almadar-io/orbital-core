@@ -2,11 +2,12 @@
 //! run on the current mount (riya, 2026-09-24: SineLevelData's INIT seeded
 //! the body's skate curve before SineBody's own INIT reset it). JS twin:
 //! `evaluation/mount-lifecycle.ts`.
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Boot",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
@@ -36,7 +37,7 @@ fn kernel() -> RuntimeKernel {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
@@ -215,7 +216,7 @@ fn an_unmounted_trait_keeps_nothing_held() {
 }
 
 fn kernel_with_listener_without_a_lifecycle_arm() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Boot",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
@@ -233,7 +234,7 @@ fn kernel_with_listener_without_a_lifecycle_arm() -> RuntimeKernel {
                     "transitions": [{ "from": "idle", "to": "seeded", "event": "SET" }] } }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,

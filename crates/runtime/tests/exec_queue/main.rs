@@ -1,7 +1,5 @@
 //! EXEC-QUEUE family: who hears an emit, the cascade worklist and keyed completions.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod call_service_site;

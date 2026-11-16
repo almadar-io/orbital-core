@@ -342,6 +342,7 @@ pub fn is_match_pattern(pattern: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     #[test]
@@ -385,7 +386,7 @@ mod tests {
                 "command": { "kind": "apply", "elementId": "el-1", "styles": [{ "property": "display", "value": "none" }] }
             })
         );
-        let back: TabAsk = serde_json::from_value(serde_json::to_value(&ask).unwrap()).unwrap();
+        let back: TabAsk = from_json_value(&serde_json::to_value(&ask).unwrap()).unwrap();
         assert_eq!(back, ask);
     }
 

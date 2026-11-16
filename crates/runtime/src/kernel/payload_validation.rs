@@ -160,14 +160,15 @@ pub fn format_payload_failures(failures: &[PayloadFailure]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use serde_json::json;
 
     fn field(name: &str, ty: &str, required: bool) -> PayloadField {
-        serde_json::from_value(json!({ "name": name, "type": ty, "required": required })).unwrap()
+        from_json_value(&json!({ "name": name, "type": ty, "required": required })).unwrap()
     }
 
     fn payload(value: serde_json::Value) -> Value {
-        serde_json::from_value(value).unwrap()
+        from_json_value(&value).unwrap()
     }
 
     #[test]
@@ -214,7 +215,7 @@ mod tests {
 
     #[test]
     fn scalar_maps_and_closed_literals_use_the_declared_shape_checker() {
-        let schema: Vec<PayloadField> = serde_json::from_value(json!([
+        let schema: Vec<PayloadField> = from_json_value(&json!([
             {"name": "count", "type": "number"},
             {"name": "mode", "type": "string", "values": ["on", "off"]},
             {"name": "counts", "type": "object", "items": {"name": "", "type": "number"}}
@@ -242,7 +243,7 @@ mod tests {
 
     #[test]
     fn nested_array_records_reject_a_misfit_at_its_declared_path() {
-        let schema: Vec<PayloadField> = serde_json::from_value(json!([{
+        let schema: Vec<PayloadField> = from_json_value(&json!([{
             "name": "rows", "type": "[object]", "properties": [
                 {"name": "count", "type": "number", "required": true}
             ]
@@ -267,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_member_without_bang_may_be_absent_but_null_needs_a_nullable_declaration() {
-        let schema: Vec<PayloadField> = serde_json::from_value(json!([{
+        let schema: Vec<PayloadField> = from_json_value(&json!([{
             "name": "viewer", "type": "object", "required": true, "properties": [
                 {"name": "id", "type": "string", "required": true},
                 {"name": "role", "type": "string", "required": false},
@@ -298,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_misfit_names_the_type_declared_at_its_own_path() {
-        let schema: Vec<PayloadField> = serde_json::from_value(json!([
+        let schema: Vec<PayloadField> = from_json_value(&json!([
             {"name": "units", "type": "[object]", "properties": [
                 {"name": "content", "type": "string", "required": true}
             ]},

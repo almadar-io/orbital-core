@@ -2,31 +2,31 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use super::bytes::{big_endian_arg, decode_int, decode_uint, width_arg};
+use super::bytes::{big_endian_of, decode_int, decode_uint, width_of};
 use super::macros::*;
 use super::*;
 
-fn handle_arg(arg: &SExpression, ctx: &BindingContext, kind: &str) -> Result<Value, OrbitalError> {
-    match eval_expr(arg, ctx)? {
+fn handle_arg<'a>(arg: &'a Value, kind: &str) -> Result<&'a Value, OrbitalError> {
+    match arg {
         handle @ Value::Sealed(_) => Ok(handle),
         other => Err(other.kind_error(kind).into()),
     }
 }
 
-fn int_arg(arg: &SExpression, ctx: &BindingContext) -> Result<i64, OrbitalError> {
-    Ok(eval_expr(arg, ctx)?.int()?)
+fn int_arg(arg: &Value) -> Result<i64, OrbitalError> {
+    Ok(arg.int()?)
 }
 
 /// mem/read (borrow, offset, length) - `length` bytes at `offset` of the block a live borrow holds
 pub struct MemReadOp;
-impl Operator for MemReadOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MemReadOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "mem/read";
         require_arity!(args, OP, == 3);
-        let borrow = handle_arg(&args[0], ctx, "Borrow")?;
-        let offset = int_arg(&args[1], ctx)?;
-        let length = int_arg(&args[2], ctx)?;
-        let data = ctx.kernel_mem(OP)?.read(&borrow, offset, length).map_err(OrbitalError::Eval)?;
+        let borrow = handle_arg(args[0], "Borrow")?;
+        let offset = int_arg(args[1])?;
+        let length = int_arg(args[2])?;
+        let data = ctx.kernel_mem(OP)?.read(borrow, offset, length).map_err(OrbitalError::Eval)?;
         Ok(Value::bytes(data))
     }
 }
@@ -34,39 +34,39 @@ impl Operator for MemReadOp {
 /// mem/read-uint (borrow, offset, width, endian) - the unsigned integer in width bytes at offset; a width-8 value
 /// above i64::MAX answers null
 pub struct MemReadUintOp;
-impl Operator for MemReadUintOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MemReadUintOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         read_field(args, ctx, "mem/read-uint", decode_uint)
     }
 }
 
 /// mem/read-int (borrow, offset, width, endian) - the two's-complement signed integer in width bytes at offset
 pub struct MemReadIntOp;
-impl Operator for MemReadIntOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MemReadIntOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         read_field(args, ctx, "mem/read-int", decode_int)
     }
 }
 
-fn read_field(args: &[SExpression], ctx: &BindingContext, op: &str, decode: fn(&[u8], bool) -> Value) -> EvalResult {
+fn read_field(args: &[&Value], ctx: &BindingContext, op: &str, decode: fn(&[u8], bool) -> Value) -> EvalResult {
     require_arity!(args, op, == 4);
-    let borrow = handle_arg(&args[0], ctx, "Borrow")?;
-    let offset = int_arg(&args[1], ctx)?;
-    let (Some(width), Some(big)) = (width_arg(&args[2], ctx)?, big_endian_arg(&args[3], ctx)?) else {
+    let borrow = handle_arg(args[0], "Borrow")?;
+    let offset = int_arg(args[1])?;
+    let (Some(width), Some(big)) = (width_of(args[2])?, big_endian_of(args[3])?) else {
         return Ok(Value::Null);
     };
-    let field = ctx.kernel_mem(op)?.read(&borrow, offset, width as i64).map_err(OrbitalError::Eval)?;
+    let field = ctx.kernel_mem(op)?.read(borrow, offset, width as i64).map_err(OrbitalError::Eval)?;
     Ok(decode(&field, big))
 }
 
 /// mem/length (handle) - the length in bytes of a live block, or of the block a live borrow holds
 pub struct MemLengthOp;
-impl Operator for MemLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for MemLengthOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "mem/length";
         require_arity!(args, OP, == 1);
-        let handle = handle_arg(&args[0], ctx, "Block or Borrow")?;
-        let length = ctx.kernel_mem(OP)?.length(&handle).map_err(OrbitalError::Eval)?;
+        let handle = handle_arg(args[0], "Block or Borrow")?;
+        let length = ctx.kernel_mem(OP)?.length(handle).map_err(OrbitalError::Eval)?;
         Ok(Value::Int(length))
     }
 }

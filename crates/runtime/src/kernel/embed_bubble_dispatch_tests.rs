@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 use orbital_core_base::schema::types::ListenSource;
@@ -8,7 +9,7 @@ use orbital_core_base::schema::types::ListenSource;
 /// source `NoteCatalog`. Generic names so the fixture stands on its own,
 /// same shape as the real corpus.
 fn notes_like_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -53,7 +54,7 @@ fn notes_like_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -63,7 +64,7 @@ fn notes_like_schema() -> OrbitalSchema {
 /// an `Effect::Emit` produced inside a transition does NOT bubble past the
 /// trait that produced it, only the seed event does.
 fn internal_emit_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -125,7 +126,7 @@ fn internal_emit_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -300,14 +301,14 @@ fn double_delivery_schema(route: serde_json::Value, via_mid: bool) -> OrbitalSch
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] }
         }));
     }
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
             "traits": traits
         }]
-    }))
+    })))
     .unwrap()
 }
 

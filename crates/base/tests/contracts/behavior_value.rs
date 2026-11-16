@@ -1,12 +1,13 @@
 //! Twin of `@almadar/core` `__tests__/behavior-value.test.ts`.
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_base::value::Value;
 use orbital_core_base::schema::behavior_value::{
     apply_trait_overrides, is_trait_value, parse_trait_value_literal, TraitValueRef,
 };
 
 fn v(json: &str) -> Value {
-    serde_json::from_str(json).expect("value json")
+    from_json_str(json).expect("value json")
 }
 
 fn kanban() -> Value {

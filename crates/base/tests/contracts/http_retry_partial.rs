@@ -1,10 +1,11 @@
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use orbital_core_base::ir::OirType;
 use orbital_core_base::http_wire::{parse_retry, HttpRefusal, HttpRetry, RetryDelay, RetryOn, RetryOperand};
 use serde_json::json;
 
 fn literal(value: serde_json::Value) -> RetryOperand {
-    RetryOperand::Literal(serde_json::from_value(value).unwrap())
+    RetryOperand::Literal(from_json_value(&value).unwrap())
 }
 
 fn typed_array(inner: OirType) -> RetryOperand {
@@ -69,7 +70,7 @@ fn concrete_operand(value: Value, expand_items: bool) -> RetryOperand {
 }
 
 fn equivalent(value: serde_json::Value, expand_items: bool) {
-    let value: Value = serde_json::from_value(value).unwrap();
+    let value: Value = from_json_value(&value).unwrap();
     let Value::Object(map) = &value else {
         panic!("retry fixture is not an object")
     };
@@ -143,7 +144,7 @@ fn concrete_invalid_policies_preserve_runtime_error_order_and_message() {
             "retry.noResponseMax must be a whole number from zero through max",
         ),
     ] {
-        let value: Value = serde_json::from_value(policy).unwrap();
+        let value: Value = from_json_value(&policy).unwrap();
         let Value::Object(map) = &value else {
             panic!("retry fixture is not an object")
         };
@@ -526,7 +527,7 @@ fn exact_legacy_two_to_64_delay_saturates_but_the_next_float_is_rejected() {
     let boundary = 18446744073709551616.0_f64;
     let above = f64::from_bits(boundary.to_bits() + 1);
     for field in ["backoffMs", "scheduleMs"] {
-        let mut value: Value = serde_json::from_value(json!({"max":1,"on":["5xx"]})).unwrap();
+        let mut value: Value = from_json_value(&json!({"max":1,"on":["5xx"]})).unwrap();
         let Value::Object(map) = &mut value else {
             panic!("retry fixture is not an object")
         };
@@ -671,12 +672,12 @@ fn dynamic_numeric_fields_allow_u32_max_cap_but_not_the_next_integer() {
 
 #[test]
 fn exact_status_code_on_entries_parse_and_defer_like_tags() {
-    let parsed = parse_retry(&serde_json::from_value(json!({"max":1,"on":[503,"429",503],"backoffMs":0})).unwrap()).unwrap();
+    let parsed = parse_retry(&from_json_value(&json!({"max":1,"on":[503,"429",503],"backoffMs":0})).unwrap()).unwrap();
     assert_eq!(parsed.on, vec![RetryOn::Status(503), RetryOn::TooManyRequests]);
     let wire = serde_json::to_value(&parsed).unwrap();
     assert_eq!(wire["on"], json!([503, "429"]));
-    assert_eq!(serde_json::from_value::<HttpRetry>(wire).unwrap(), parsed);
-    assert!(serde_json::from_value::<HttpRetry>(json!({"max":1,"on":[99],"backoffMs":0})).is_err());
+    assert_eq!(from_json_value::<HttpRetry>(&wire).unwrap(), parsed);
+    assert!(from_json_value::<HttpRetry>(&json!({"max":1,"on":[99],"backoffMs":0})).is_err());
     deferred(backoff(
         literal(json!(1)),
         RetryOperand::Items(vec![literal(json!(503)), RetryOperand::Typed(OirType::Number)]),

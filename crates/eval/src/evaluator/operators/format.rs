@@ -281,8 +281,8 @@ fn render(n: f64, locale: &Locale, min: usize, max: usize, shift: i32) -> String
     }
 }
 
-fn number_arg(expr: &SExpression, ctx: &BindingContext) -> Result<f64, OrbitalError> {
-    Ok(require_number!(eval_expr(expr, ctx)?))
+fn number_arg(value: &Value) -> Result<f64, OrbitalError> {
+    Ok(require_number!(value))
 }
 
 enum Digits {
@@ -307,13 +307,13 @@ fn fraction_digits(options: &ValueMap, key: &str) -> Result<Digits, OrbitalError
 
 /// format/number - locale grouping and fraction digits (`decimals`, or `minimumFractionDigits` / `maximumFractionDigits`)
 pub struct FormatNumberOp;
-impl Operator for FormatNumberOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatNumberOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/number", 1);
-        let n = number_arg(&args[0], ctx)?;
-        let options = match args.get(1) {
-            Some(expr) => match eval_expr(expr, ctx)? {
-                Value::Object(map) => map,
+        let n = number_arg(args[0])?;
+        let options = match args.get(1).copied() {
+            Some(value) => match value {
+                Value::Object(map) => map.clone(),
                 Value::Null => ValueMap::default().into(),
                 other => {
                     return Err(OrbitalError::Eval(EvalError::TypeMismatch {
@@ -359,13 +359,13 @@ impl Operator for FormatNumberOp {
 
 /// format/percent - the value times one hundred with `decimals` fraction digits and a percent sign
 pub struct FormatPercentOp;
-impl Operator for FormatPercentOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatPercentOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/percent", 1);
-        let n = number_arg(&args[0], ctx)?;
-        let decimals = match args.get(1) {
-            Some(expr) => {
-                let d = number_arg(expr, ctx)?;
+        let n = number_arg(args[0])?;
+        let decimals = match args.get(1).copied() {
+            Some(value) => {
+                let d = number_arg(value)?;
                 if d.fract() != 0.0 || !(0.0..=100.0).contains(&d) {
                     return Ok(Value::Null);
                 }
@@ -382,13 +382,13 @@ impl Operator for FormatPercentOp {
 
 /// format/currency - an amount in an ISO currency, written as English writes it
 pub struct FormatCurrencyOp;
-impl Operator for FormatCurrencyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatCurrencyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/currency", >= 2);
-        let n = number_arg(&args[0], ctx)?;
-        let code = eval_expr(&args[1], ctx)?.text()?.to_string();
-        let locale = match args.get(2) {
-            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
+        let n = number_arg(args[0])?;
+        let code = args[1].text()?.to_string();
+        let locale = match args.get(2).copied() {
+            Some(value) => value.text()?.to_string(),
             None => "en-US".to_string(),
         };
         if !matches!(locale.as_str(), "en" | "en-US") {
@@ -452,10 +452,10 @@ fn js_number(n: f64) -> String {
 
 /// format/bytes - a size in B, KB, MB, GB, TB or PB (1024 steps), one decimal below ten, none from ten
 pub struct FormatBytesOp;
-impl Operator for FormatBytesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatBytesOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/bytes", 1);
-        let bytes = number_arg(&args[0], ctx)?;
+        let bytes = number_arg(args[0])?;
         if !bytes.is_finite() || bytes < 0.0 {
             return Ok(Value::Null);
         }
@@ -481,12 +481,12 @@ impl Operator for FormatBytesOp {
 
 /// format/list - items joined as natural language with `and` (or the given word)
 pub struct FormatListOp;
-impl Operator for FormatListOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatListOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/list", 1);
-        let value = eval_expr(&args[0], ctx)?;
-        let style = match args.get(1) {
-            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
+        let value = args[0];
+        let style = match args.get(1).copied() {
+            Some(style) => style.text()?.to_string(),
             None => "and".to_string(),
         };
         let items: Vec<String> = value
@@ -510,12 +510,12 @@ impl Operator for FormatListOp {
 
 /// format/phone - a phone number's digits grouped for the `US` format (the default) or as `ddd-ddd-rest`
 pub struct FormatPhoneOp;
-impl Operator for FormatPhoneOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatPhoneOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/phone", 1);
-        let text = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let format = match args.get(1) {
-            Some(expr) => eval_expr(expr, ctx)?.text()?.to_string(),
+        let text = args[0].text()?.to_string();
+        let format = match args.get(1).copied() {
+            Some(format) => format.text()?.to_string(),
             None => "US".to_string(),
         };
         let digits: String = text.chars().filter(char::is_ascii_digit).collect();

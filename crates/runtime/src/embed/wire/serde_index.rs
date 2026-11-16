@@ -128,6 +128,8 @@ fn serde_attrs(attrs: &[Attribute]) -> Attrs {
                 ("skip" | "skip_deserializing", None) => out.skip = true,
                 ("skip_serializing_if", _) => out.skippable = true,
                 ("skip_serializing" | "serialize_with" | "bound", _) => {}
+                // The derive still describes the form; a delegating impl reads it through a `Value` (P-036).
+                ("remote", Some(v)) if v == "Self" => {}
                 ("flatten", None) => out.flatten = true,
                 ("transparent", None) => out.custom = Some("transparent".to_string()),
                 ("alias", _) => out.alias = true,

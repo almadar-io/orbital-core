@@ -346,9 +346,10 @@ impl SExpression {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     fn sexpr(json: &str) -> SExpression {
-        serde_json::from_str(json).expect("fixture must parse")
+        from_json_str(json).expect("fixture must parse")
     }
 
     fn uses(json: &str, site: EffectSite) -> Vec<EffectUse> {

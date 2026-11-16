@@ -6,6 +6,7 @@
 //! binding interpolation, scan or rewrite can reach inside it, and any JSON
 //! parser restores `x`. `@almadar/core`'s `encodeQuoteBody` produces the same
 //! bytes (shared fixture `fixtures/quote/cases.json`).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -52,7 +53,7 @@ pub fn encode_quote_body(expr: &SExpression) -> String {
 
 /// Decode a `(quote x)` body back to `x`; `None` when the body is not JSON.
 pub fn decode_quote_body(body: &str) -> Option<SExpression> {
-    serde_json::from_str(body).ok()
+    from_json_str(body).ok()
 }
 
 /// The IR call `["quote", <body>]` for `expr`.
@@ -83,7 +84,7 @@ pub fn quoted_oir_value(value: &crate::ir::types::OirValue) -> Option<crate::ir:
     match value {
         OirValue::Array(items) if items.len() == 2 => match (&items[0], &items[1]) {
             (OirValue::String(head), OirValue::String(body)) if head == QUOTE_HEAD => {
-                serde_json::from_str(body).ok()
+                from_json_str(body).ok()
             }
             _ => None,
         },

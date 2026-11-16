@@ -367,15 +367,16 @@ impl<'de> Deserialize<'de> for ClientEffect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
     use crate::value::ValueMap;
 
     fn roundtrip(effect: &ClientEffect, expected_json: &str) {
         let json = serde_json::to_string(effect).unwrap();
-        let actual: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let expected: serde_json::Value = serde_json::from_str(expected_json).unwrap();
+        let actual: serde_json::Value = from_json_str(&json).unwrap();
+        let expected: serde_json::Value = from_json_str(expected_json).unwrap();
         assert_eq!(actual, expected, "serialize mismatch for {effect:?}");
 
-        let back: ClientEffect = serde_json::from_str(expected_json).unwrap();
+        let back: ClientEffect = from_json_str(expected_json).unwrap();
         assert_eq!(&back, effect, "deserialize mismatch for {expected_json}");
     }
 
@@ -433,7 +434,7 @@ mod tests {
         // Arity-2 is what we EMIT for no params; but arity-3 with a null params slot
         // must still decode as the no-params case (the wire is broader than what we
         // choose to emit — TS may send `undefined` there, which JSON-stringifies null).
-        let decoded: ClientEffect = serde_json::from_str(r#"["navigate","/notes",null]"#).unwrap();
+        let decoded: ClientEffect = from_json_str(r#"["navigate","/notes",null]"#).unwrap();
         assert_eq!(decoded, effect);
     }
 
@@ -621,7 +622,7 @@ mod tests {
             (r#"["host-ask",3,[]]"#, "op must be a string"),
             (r#"["host-ask","audio/play-sound","footstep"]"#, "args must be an array"),
         ] {
-            let err = serde_json::from_str::<ClientEffect>(wire).unwrap_err().to_string();
+            let err = from_json_str::<ClientEffect>(wire).unwrap_err().to_string();
             assert!(err.contains(reason), "{wire}: {err}");
         }
     }
@@ -653,7 +654,7 @@ mod tests {
             r#"["render-ui","detail",{"type":"detail-panel"},{"title":"Note"}]"#,
             r#"["render-ui","toast",{"type":"toast"},null,3]"#,
         ] {
-            let err = serde_json::from_str::<ClientEffect>(wire)
+            let err = from_json_str::<ClientEffect>(wire)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("takes a slot and a pattern"), "{wire}: {err}");

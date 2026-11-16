@@ -1,6 +1,7 @@
 // EXEC-LOAD-2: a request that names a `uses lazy` orbital loads it through the server's lazy source; a name no lazy page
 // declares is still not found. Twin of the native host's first-request test.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::types::OrbitalSchema;
 use orbital_core_runtime::effects::response::EventRequest;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
@@ -15,7 +16,7 @@ impl LazySource for Files {
     fn read(&self, file: &str) -> Result<LazyProgram, String> {
         self.0.fetch_add(1, Ordering::SeqCst);
         assert_eq!(file, "lazy/Late.orb");
-        let schema = serde_json::from_value(json!({
+        let schema = from_json_value(&json!({
             "name": "Late", "typeContractVersion": 1,
             "orbitals": [{ "name": "Late",
                 "entity": { "name": "Memo", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -31,7 +32,7 @@ impl LazySource for Files {
 }
 
 fn importer() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{ "name": "Main",
             "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },

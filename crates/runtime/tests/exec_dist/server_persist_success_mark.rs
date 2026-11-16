@@ -3,6 +3,7 @@
 // plain `emit` are not marked. JS twin: `deliverEmit(..., fromPersistSuccess)` -> `liveBroadcastSink`
 // (`target: 'peers'`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
@@ -10,7 +11,7 @@ use serde_json::json;
 
 fn schema() -> OrbitalSchema {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -82,7 +83,7 @@ fn marked(response: &EventResponse, event: &str) -> Option<bool> {
 #[test]
 fn the_success_envelope_of_a_persist_is_marked() {
     let response = save(IoAnswer::Row(
-        Ok(serde_json::from_value(json!({})).unwrap()),
+        Ok(from_json_value(&json!({})).unwrap()),
     ));
     assert_eq!(marked(&response, "SAVED"), Some(true));
 }
@@ -90,7 +91,7 @@ fn the_success_envelope_of_a_persist_is_marked() {
 #[test]
 fn a_plain_emit_beside_it_is_not() {
     let response = save(IoAnswer::Row(
-        Ok(serde_json::from_value(json!({})).unwrap()),
+        Ok(from_json_value(&json!({})).unwrap()),
     ));
     assert_eq!(marked(&response, "PLAIN"), Some(false));
 }

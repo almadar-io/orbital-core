@@ -648,6 +648,7 @@ pub fn expr_leg_touches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
 
     #[test]
     fn an_empty_or_one_element_array_expression_touches_nothing() {
@@ -661,7 +662,7 @@ mod tests {
     }
 
     fn v(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).expect("a core value")
+        from_json_value(&json).expect("a core value")
     }
 
     #[test]
@@ -773,7 +774,7 @@ mod tests {
     }
 
     fn call(service: &str) -> Vec<crate::schema::sexpr::SExpression> {
-        serde_json::from_value(serde_json::json!([service, "send", {}])).expect("args")
+        from_json_value(&(serde_json::json!([service, "send", {}]))).expect("args")
     }
 
     fn rt(names: &[&str]) -> Vec<String> {
@@ -849,13 +850,13 @@ mod tests {
     #[test]
     fn a_trace_subscription_is_placed_at_run_time_and_any_other_live_feed_stays_on_the_server() {
         use crate::schema::sexpr::SExpression;
-        let options = |kind: &str| -> SExpression { serde_json::from_value(serde_json::json!({ "kind": kind, "traits": ["Board"] })).expect("sexpr") };
+        let options = |kind: &str| -> SExpression { from_json_value(&(serde_json::json!({ "kind": kind, "traits": ["Board"] }))).expect("sexpr") };
         assert_eq!(effect_site("program/live", &[options("trace")], &Residence::none()), RunsOn::Any);
         assert_eq!(effect_site("program/live", &[options("bus")], &Residence::none()), RunsOn::Server);
         assert_eq!(effect_site("program/live", &[], &Residence::none()), RunsOn::Server);
         assert_eq!(effect_site("cancel-call", &[], &Residence::none()), RunsOn::Any, "placed by the keys a client host holds");
         assert_eq!(runs_on("cancel-call"), RunsOn::Server, "control: the table keeps it a server call");
-        let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "kind": "trace" })).expect("value");
+        let evaluated: crate::value::Value = from_json_value(&(serde_json::json!({ "kind": "trace" }))).expect("value");
         assert!(is_trace_subscription("program/live", &[evaluated.clone()]));
         assert!(!is_trace_subscription("program/dispatch", &[evaluated]));
     }
@@ -863,22 +864,22 @@ mod tests {
     #[test]
     fn a_mounted_reflection_is_answered_where_it_runs_and_the_whole_program_stays_on_the_server() {
         use crate::schema::sexpr::SExpression;
-        let options = |mounted: serde_json::Value| -> SExpression { serde_json::from_value(serde_json::json!({ "mounted": mounted })).expect("sexpr") };
+        let options = |mounted: serde_json::Value| -> SExpression { from_json_value(&(serde_json::json!({ "mounted": mounted }))).expect("sexpr") };
         assert_eq!(effect_site("program/self", &[options(serde_json::json!(true))], &Residence::none()), RunsOn::Any);
         assert_eq!(effect_site("program/self", &[options(serde_json::json!(false))], &Residence::none()), RunsOn::Server);
         assert_eq!(effect_site("program/self", &[], &Residence::none()), RunsOn::Server);
         assert_eq!(effect_site("program/live", &[options(serde_json::json!(true))], &Residence::none()), RunsOn::Server, "control: only program/self");
-        let evaluated: crate::value::Value = serde_json::from_value(serde_json::json!({ "mounted": true })).expect("value");
+        let evaluated: crate::value::Value = from_json_value(&(serde_json::json!({ "mounted": true }))).expect("value");
         assert!(is_mounted_reflection("program/self", &[evaluated.clone()]));
         assert!(is_local_mounted_reflection("program/self", &[evaluated.clone()]));
         assert!(!is_mounted_reflection("program/inputs", &[evaluated]));
-        let guest = |v: serde_json::Value| -> SExpression { serde_json::from_value(v).expect("sexpr") };
+        let guest = |v: serde_json::Value| -> SExpression { from_json_value(&v).expect("sexpr") };
         assert_eq!(
             effect_site("program/self", &[guest(serde_json::json!({ "mounted": true, "guest": "@entity.guest" }))], &Residence::none()),
             RunsOn::Server,
             "a guest's tree is read where the guest was opened"
         );
-        let guest_value: crate::value::Value = serde_json::from_value(serde_json::json!({ "mounted": true, "guest": "g1" })).expect("value");
+        let guest_value: crate::value::Value = from_json_value(&(serde_json::json!({ "mounted": true, "guest": "g1" }))).expect("value");
         assert!(is_mounted_reflection("program/self", &[guest_value.clone()]));
         assert!(!is_local_mounted_reflection("program/self", &[guest_value]));
     }
@@ -887,7 +888,7 @@ mod tests {
     fn a_browser_only_call_is_not_server_work_for_the_dispatch_rule() {
         let residence = Residence::none().with_browser_services(["browser-svc".to_string()]);
         let expr: crate::schema::sexpr::SExpression =
-            serde_json::from_value(serde_json::json!(["call-service", "browser-svc", "openTab", {}]))
+            from_json_value(&(serde_json::json!(["call-service", "browser-svc", "openTab", {}])))
                 .expect("expr");
         assert!(!sexpr_runs_server_effect(&expr, &residence));
         assert!(

@@ -1,5 +1,6 @@
 // A request that names no trait is handed to every trait whose held state has an arm for the event, not to the orbital's first trait (twin of `evaluateOrbitalEvent` discovery, `almadar-runtime/src/evaluation/evaluateOrbitalEvent.ts`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
@@ -23,7 +24,7 @@ fn go(to: &str, text: &str) -> Json {
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

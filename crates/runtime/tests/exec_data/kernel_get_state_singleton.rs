@@ -1,6 +1,7 @@
 //! A trait instance dispatched without an entity id lives under the runtime singleton's reserved key (EXEC-DATA-2); reading it without
 //! an entity id must address the same instance (C ABI `get_state`/`snapshot`, `ClientRuntime`).
 
+use orbital_core_base::json_value::from_json_str;
 use orbital_core_runtime::embed::EmbeddedKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use std::path::Path;
@@ -10,7 +11,7 @@ fn kernel(slug: &str) -> EmbeddedKernel {
         .join("tests/fixtures/embed/resolved")
         .join(format!("{slug}.json"));
     let schema: OrbitalSchema =
-        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        from_json_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     EmbeddedKernel::new(schema, "c").unwrap()
 }
 

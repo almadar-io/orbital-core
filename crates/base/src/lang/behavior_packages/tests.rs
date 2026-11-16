@@ -1,3 +1,4 @@
+use crate::json_value::from_json_str;
 use super::*;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -85,7 +86,7 @@ fn fake_package_with_core(
 ) -> PathBuf {
     let pkg_dir = fake_package(node_modules, name, prefix, version);
     let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
-    let mut pkg_json: Value = serde_json::from_str(&raw).unwrap();
+    let mut pkg_json: Value = from_json_str(&raw).unwrap();
     let obj = pkg_json.as_object_mut().unwrap();
     if let Some(range) = core_dependency {
         obj.insert(
@@ -396,7 +397,7 @@ fn live_package(node_modules: &Path, name: &str, prefix: &str, files: &[&str]) -
         fs::write(path, "").unwrap();
     }
     let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
-    let mut pkg_json: Value = serde_json::from_str(&raw).unwrap();
+    let mut pkg_json: Value = from_json_str(&raw).unwrap();
     let orb = pkg_json["orb"].as_object_mut().unwrap();
     orb.remove("registry");
     orb.insert("source".to_string(), Value::String("behaviors/lolo".to_string()));
@@ -877,7 +878,7 @@ fn find_npm_package_missing_or_unparseable_returns_none() {
 
 fn set_language_range(pkg_dir: &Path, range: &str) {
     let raw = fs::read_to_string(pkg_dir.join("package.json")).unwrap();
-    let mut json: Value = serde_json::from_str(&raw).unwrap();
+    let mut json: Value = from_json_str(&raw).unwrap();
     json["orb"]["language"] = Value::String(range.to_string());
     fs::write(pkg_dir.join("package.json"), serde_json::to_string_pretty(&json).unwrap()).unwrap();
 }
@@ -920,7 +921,7 @@ fn edge_a_package_still_declaring_compiler_and_no_language_is_invalid() {
     let node_modules = tmp.path().join("node_modules");
     let pkg = fake_package(&node_modules, "pkg-a", "pa", "1.0.0");
     let raw = fs::read_to_string(pkg.join("package.json")).unwrap();
-    let mut json: Value = serde_json::from_str(&raw).unwrap();
+    let mut json: Value = from_json_str(&raw).unwrap();
     let orb = json["orb"].as_object_mut().unwrap();
     orb.remove("language");
     orb.insert("compiler".into(), Value::String(">=4.10.0".into()));

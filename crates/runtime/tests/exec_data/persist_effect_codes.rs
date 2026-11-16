@@ -3,6 +3,7 @@
 // `@almadar/runtime` `persist-effect-codes.test.ts` (canonical source orbital-core
 // `fixtures/effect-codes`, mirrored into `tests/baked/`).
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use orbital_core_runtime::resumable::{BlockingHost, IoRequest};
@@ -35,7 +36,7 @@ fn vector() -> Vector {
         .join("tests/baked/effect-codes/persist-codes.json");
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{} unreadable: {e}", path.display()));
-    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("persist-codes.json malformed: {e}"))
+    from_json_str(&raw).unwrap_or_else(|e| panic!("persist-codes.json malformed: {e}"))
 }
 
 fn run(vector: &Vector, case: &Case) -> EventResponse {
@@ -45,7 +46,7 @@ fn run(vector: &Vector, case: &Case) -> EventResponse {
         Default::default(),
     );
     kernel.register_schema(vector.schema.clone()).unwrap();
-    let payload: Value = serde_json::from_value(case.payload.clone()).unwrap();
+    let payload: Value = from_json_value(&case.payload).unwrap();
     let outcomes = kernel
         .dispatch("Editor", None, &case.event, payload)
         .unwrap();
@@ -95,7 +96,7 @@ fn store_program_seeded(bound: bool, seeded: bool) -> OrbitalSchema {
 
 /// `query`: the driver's declared `queryCapabilities` and whether it answers ROWS_QUERY (`true`) or declines it.
 fn store_program_querying(bound: bool, seeded: bool, query: Option<bool>) -> OrbitalSchema {
-    serde_json::from_value(store_program_json(bound, seeded, query)).unwrap()
+    from_json_value(&store_program_json(bound, seeded, query)).unwrap()
 }
 
 fn mirror_batch_field() -> serde_json::Value {
@@ -181,7 +182,7 @@ fn store_run_program(program: OrbitalSchema, bound: bool, event: &str, id: &str)
     kernel.register_schema(program).unwrap();
     let host_rows = InMemoryEntityCache::new();
     let asked = std::sync::Mutex::new(Vec::new());
-    let payload: Value = serde_json::from_value(serde_json::json!({ "id": id })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "id": id }))).unwrap();
     let progress = kernel.start_dispatch("Desk", None, event, payload, None, None).unwrap();
     let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
         let ticket = matches!(request, IoRequest::ReadRow { entity_type, .. } | IoRequest::DeleteRow { entity_type, .. } if entity_type == "Ticket");
@@ -234,7 +235,7 @@ fn a_dispatch_started_while_the_seed_is_in_flight_writes_the_seed_before_its_fir
         Default::default(),
     ));
     kernel.register_schema(store_program_seeded(true, true)).unwrap();
-    let payload = || -> Value { serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap() };
+    let payload = || -> Value { from_json_value(&(serde_json::json!({ "id": "t1" }))).unwrap() };
     let first = kernel.start_dispatch("Desk", None, "LOOK", payload(), None, None).unwrap();
     let seed_asks = match &first {
         Progress::Await { requests, .. } => requests
@@ -289,7 +290,7 @@ fn resolve_t1_in(program: OrbitalSchema, bound: bool) -> Result<orbital_core_run
         Default::default(),
     );
     kernel.register_schema(program).unwrap();
-    let reference = serde_json::from_value(serde_json::json!({ "entityType": "Ticket", "ids": ["t1"], "total": 1, "query": {} })).unwrap();
+    let reference = from_json_value(&(serde_json::json!({ "entityType": "Ticket", "ids": ["t1"], "total": 1, "query": {} }))).unwrap();
     let host_rows = InMemoryEntityCache::new();
     let mut progress = kernel.start_resolve_rows(&reference, None).map_err(|e| e.to_string())?;
     loop {
@@ -366,7 +367,7 @@ fn a_misfit_row_from_a_store_driver_answers_the_fetchs_failure_event() {
     let read = &mut program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"][0]["effects"][0][2]["row"];
     assert_eq!(read["used"], serde_json::json!(false), "the driver's ROW_READ answer");
     read["used"] = serde_json::json!("yes");
-    let seen = store_run_program(serde_json::from_value(program).unwrap(), true, "LOOK", "t1").0;
+    let seen = store_run_program(from_json_value(&program).unwrap(), true, "LOOK", "t1").0;
     assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "UNSEEN"), "the failure route fires: {seen:?}");
     assert!(!seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
     let control = store_run(true, "LOOK", "t1");
@@ -379,7 +380,7 @@ fn a_misfit_row_from_a_store_driver_answers_the_fetchs_failure_event() {
         desk["transitions"].as_array_mut().unwrap().push(serde_json::json!({ "from": "idle", "to": "idle", "event": "LIST",
             "effects": [["fetch", "Ticket", { "limit": 10, "emit": { "success": "SEEN", "failure": "UNSEEN" } }]] }));
         program["orbitals"][1]["traits"][0]["stateMachine"]["transitions"][2]["effects"][0][2]["rows"][0]["used"] = used;
-        store_run_program(serde_json::from_value(program).unwrap(), true, "LIST", "t1").0
+        store_run_program(from_json_value(&program).unwrap(), true, "LIST", "t1").0
     };
     let listed = listing(serde_json::json!(7));
     assert!(listed.iter().any(|r| r["effect"] == "emit" && r["target"] == "UNSEEN"), "a listed misfit row fails the fetch: {listed:?}");
@@ -404,7 +405,7 @@ fn two_step_driver_program(boot: bool) -> OrbitalSchema {
     if boot {
         program["orbitals"][1]["pages"] = serde_json::json!([{ "name": "Bg", "path": "", "protocol": "boot", "traits": [{ "ref": "RowsDriver" }] }]);
     }
-    serde_json::from_value(program).unwrap()
+    from_json_value(&program).unwrap()
 }
 
 fn look_in_session(boot: bool) -> Vec<serde_json::Value> {
@@ -417,7 +418,7 @@ fn look_in_session(boot: bool) -> Vec<serde_json::Value> {
     assert_eq!(kernel.program_wide("RowsDriver"), boot);
     let host_rows = InMemoryEntityCache::new();
     let _viewer = kernel.enter_session("tab-a");
-    let payload: Value = serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "id": "t1" }))).unwrap();
     let progress = kernel.start_dispatch("Desk", None, "LOOK", payload, None, None).unwrap();
     let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
         BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)
@@ -455,10 +456,10 @@ fn guarded_take(id: &str, guarded: bool) -> serde_json::Value {
     );
     kernel.register_schema(program).unwrap();
     for (row, used) in [("t1", false), ("t2", true)] {
-        let data: Value = serde_json::from_value(serde_json::json!({ "id": row, "used": used })).unwrap();
+        let data: Value = from_json_value(&(serde_json::json!({ "id": row, "used": used }))).unwrap();
         kernel_create(&kernel, &data);
     }
-    let payload: Value = serde_json::from_value(serde_json::json!({ "id": id })).unwrap();
+    let payload: Value = from_json_value(&(serde_json::json!({ "id": id }))).unwrap();
     let event = if guarded { "TAKE_UNUSED" } else { "TAKE" };
     let outcomes = kernel.dispatch("Desk", None, event, payload).unwrap();
     let response = EventResponse::from_process_results(&outcomes, "Desk", event);
@@ -498,7 +499,7 @@ fn a_bound_entitys_guarded_take_sends_the_compiled_guard_to_its_driver() {
 // EXEC-STORE-6: an entity that declares `@index` paths bound to a driver whose `queryCapabilities.indexes` is
 // `runtime` or `deploy` has them sent to the driver once, as one ROWS_ENSURE_INDEXES, before its first row ask.
 fn indexed_store_program(realization: Option<&str>, ensure_fails: bool) -> OrbitalSchema {
-    serde_json::from_value(indexed_store_json(realization, ensure_fails)).unwrap()
+    from_json_value(&indexed_store_json(realization, ensure_fails)).unwrap()
 }
 
 fn indexed_store_json(realization: Option<&str>, ensure_fails: bool) -> serde_json::Value {
@@ -542,7 +543,7 @@ fn run_events(program: OrbitalSchema, events: &[&str]) -> (Vec<Vec<serde_json::V
     let asked = std::sync::Mutex::new(Vec::new());
     let mut results = Vec::new();
     for event in events {
-        let payload: Value = serde_json::from_value(serde_json::json!({ "id": "t1" })).unwrap();
+        let payload: Value = from_json_value(&(serde_json::json!({ "id": "t1" }))).unwrap();
         let progress = kernel.start_dispatch("Desk", None, event, payload, None, None).unwrap();
         let outcomes = orbital_core_runtime::resumable::drive_blocking(&kernel, progress, &|request| {
             asked.lock().unwrap().push(request.clone());
@@ -595,7 +596,7 @@ fn a_driver_declaring_its_capabilities_on_its_driver_trait_is_sent_the_declared_
     // Lowering quotes a list whose head reads as an operator: `compareOps: ["==", "<"]` is `["list", "==", "<"]`.
     config["queryCapabilities"]["default"]["compareOps"] = serde_json::json!(["list", "==", "<"]);
     program["orbitals"][1]["traits"][0]["config"] = config;
-    let (_, asked) = run_events(serde_json::from_value(program).unwrap(), &["LOOK"]);
+    let (_, asked) = run_events(from_json_value(&program).unwrap(), &["LOOK"]);
     assert_eq!(ensured(&asked).len(), 1, "{asked:?}");
 }
 
@@ -640,13 +641,13 @@ fn control_a_driver_declaring_nothing_is_sent_no_ensure() {
 #[test]
 fn control_an_entity_declaring_no_paths_is_sent_no_ensure() {
     let (_, asked) = run_events(
-        serde_json::from_value({
+        from_json_value(&({
             let mut p = store_program_json(true, false, Some(true));
             let mut c = serde_json::to_value(orbital_core_runtime::row_query::QueryCapabilities::full()).unwrap();
             c["indexes"] = serde_json::json!("runtime");
             p["orbitals"][1]["config"] = serde_json::json!({ "queryCapabilities": { "type": "QueryCapabilities", "default": c } });
             p
-        })
+        }))
         .unwrap(),
         &["LOOK"],
     );
@@ -670,7 +671,7 @@ fn counted_failing_ensure_program() -> OrbitalSchema {
         ["persist", "create", "Mirror", { "id": "@payload.key", "batch": { "entityType": "@payload.entityType", "indexes": "@payload.indexes" } }],
         ["emit", "STORE_FAILED", { "key": "@payload.key", "message": "cannot create index" }]
     ]);
-    serde_json::from_value(program).unwrap()
+    from_json_value(&program).unwrap()
 }
 
 /// The ensure verb ran once per `ensured` mirror batch the host was asked to create.
@@ -692,4 +693,37 @@ fn control_a_successful_ensure_is_asked_once_and_writes_pass() {
         let text = serde_json::to_string(result).unwrap();
         assert!(!text.contains("could not ensure the indexes") && !result.is_empty(), "{text}");
     }
+}
+
+// EXEC-STORE-4: a driver that reads a host file before replying (std-row-store-file: ROW_READ, then os/read-file,
+// then ROW_FOUND from the read's route) answers the ask; the reply arrives after the driver's own host ask.
+fn file_reading_driver_program() -> OrbitalSchema {
+    let mut program = store_program_json(true, false, None);
+    let driver = &mut program["orbitals"][1]["traits"][0]["stateMachine"];
+    driver["states"].as_array_mut().unwrap().push(serde_json::json!({ "name": "loading" }));
+    for key in ["RD_FILE", "RD_FILE_FAILED"] {
+        driver["events"].as_array_mut().unwrap().push(serde_json::json!({ "key": key, "name": key }));
+    }
+    let transitions = driver["transitions"].as_array_mut().unwrap();
+    transitions.retain(|t| t["event"] != "ROW_READ");
+    transitions.push(serde_json::json!({ "from": "ready", "to": "loading", "event": "ROW_READ",
+        "effects": [["os/read-file", { "anchor": "cwd", "path": "rows/Ticket.json" }, { "emit": { "success": "RD_FILE", "failure": "RD_FILE_FAILED" } }]] }));
+    transitions.push(serde_json::json!({ "from": "loading", "to": "ready", "event": "RD_FILE_FAILED",
+        "effects": [["emit", "ROW_FOUND", { "key": "@entity.id", "row": { "id": "t1", "used": false } }]] }));
+    transitions.push(serde_json::json!({ "from": "loading", "to": "ready", "event": "RD_FILE",
+        "effects": [["emit", "ROW_FOUND", { "key": "@entity.id", "row": { "id": "t1", "used": true } }]] }));
+    program["osGrants"] = serde_json::json!({ "fs": [{ "anchor": "cwd", "path": "rows/**", "ops": ["read"] }] });
+    from_json_value(&program).unwrap()
+}
+
+#[test]
+fn a_driver_that_reads_a_host_file_before_replying_answers_the_fetch() {
+    let (seen, asked) = store_run_program(file_reading_driver_program(), true, "LOOK", "t1");
+    assert!(
+        asked.iter().any(|r| matches!(r, IoRequest::Os { op: orbital_core_base::os::OsOp::ReadFile, .. })),
+        "the driver's file read reached the host: {asked:?}"
+    );
+    assert!(seen.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "{seen:?}");
+    let control = store_run(true, "LOOK", "t1");
+    assert!(control.iter().any(|r| r["effect"] == "emit" && r["target"] == "SEEN"), "control: a driver that replies at once: {control:?}");
 }

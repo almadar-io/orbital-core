@@ -10,14 +10,11 @@ use super::*;
 const LOCALE_OPTION: &str = "locale";
 
 pub struct I18nTOp;
-impl Operator for I18nTOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for I18nTOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "i18n/t", >= 1);
-        let key = eval_expr(&args[0], ctx)?.text()?.to_string();
-        let params = match args.get(1) {
-            Some(params) => Some(eval_expr(params, ctx)?),
-            None => None,
-        };
+        let key = args[0].text()?.to_string();
+        let params = args.get(1).copied();
         let map = match &params {
             Some(params) => Some(params.as_object().ok_or_else(|| params.kind_error("object"))?),
             None => None,
@@ -45,8 +42,8 @@ impl Operator for I18nTOp {
 
 /// `i18n/direction`: the reading direction of the active locale (`rtl` or `ltr`), null until the host sets a locale.
 pub struct I18nDirectionOp;
-impl Operator for I18nDirectionOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for I18nDirectionOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         if args.len() > 1 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
                 operator: "i18n/direction".to_string(),
@@ -55,7 +52,7 @@ impl Operator for I18nDirectionOp {
             }));
         }
         if let Some(options) = args.first() {
-            let options = eval_expr(options, ctx)?;
+            let options: &Value = options;
             let map = options.as_object().ok_or_else(|| options.kind_error("object"))?;
             if let Some(locale) = map.get(LOCALE_OPTION) {
                 return Ok(Value::string(orbital_core_base::messages::locale_direction(locale.text()?)));

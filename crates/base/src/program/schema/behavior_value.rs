@@ -6,6 +6,7 @@
 //! `{"behavior": "<spec>", "orbital": "<Pascal>", ...§8b import body}`, spelled
 //! `<spec>.orbitals.<Pascal>`. A local embed (`@trait.X`) is a different, string
 //! form and never a behavior value.
+use crate::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -524,7 +525,7 @@ pub fn into_program_with_orbital_imports(mut program: Value) -> Result<Value, St
     for i in at {
         let entry = crate::json_value::value_to_json(&program["orbitals"][i]);
         let converted = orbital_import_from_value(&entry)?;
-        program["orbitals"][i] = serde_json::from_value(converted).map_err(|e| e.to_string())?;
+        program["orbitals"][i] = from_json_value(&converted).map_err(|e| e.to_string())?;
     }
     Ok(program)
 }
@@ -569,7 +570,7 @@ mod tests {
     use super::*;
 
     fn val(json: serde_json::Value) -> Value {
-        serde_json::from_value(json).expect("literal")
+        from_json_value(&json).expect("literal")
     }
 
     #[test]

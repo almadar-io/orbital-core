@@ -21,11 +21,11 @@ fn whole_i64(value: &Value) -> Result<i64, OrbitalError> {
 
 /// format/ordinal - Format number as ordinal (1st, 2nd, etc.)
 pub struct FormatOrdinalOp;
-impl Operator for FormatOrdinalOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatOrdinalOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/ordinal", 1);
-        let val = eval_expr(&args[0], ctx)?;
-        let num = whole_i64(&val)?;
+        let val = args[0];
+        let num = whole_i64(val)?;
         let suffix = match (num % 10, num % 100) {
             (1, 11) | (2, 12) | (3, 13) => "th",
             (1, _) => "st",
@@ -39,12 +39,12 @@ impl Operator for FormatOrdinalOp {
 
 /// format/plural - Format with plural form
 pub struct FormatPluralOp;
-impl Operator for FormatPluralOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatPluralOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/plural", >= 3);
-        let count = whole_i64(&eval_expr(&args[0], ctx)?)?;
-        let singular = eval_expr(&args[1], ctx)?.text()?.to_string();
-        let plural = eval_expr(&args[2], ctx)?.text()?.to_string();
+        let count = whole_i64(args[0])?;
+        let singular = args[1].text()?.to_string();
+        let plural = args[2].text()?.to_string();
         let word = if count == 1 { singular } else { plural };
         Ok(Value::string(format!("{} {}", count, word)))
     }

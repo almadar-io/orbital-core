@@ -222,8 +222,8 @@ pub(crate) fn instant_value(ms: f64) -> Result<Value, OrbitalError> {
 
 /// time/today - midnight UTC today, as an instant
 pub struct TimeTodayOp;
-impl Operator for TimeTodayOp {
-    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeTodayOp {
+    fn apply(&self, _args: &[&Value], ctx: &BindingContext) -> EvalResult {
         let day = 24.0 * 60.0 * 60.0 * 1000.0;
         render_moment((ctx.now_millis() / day).floor() * day, Shape::DateTime)
     }
@@ -231,10 +231,10 @@ impl Operator for TimeTodayOp {
 
 /// time/toDate - the UTC calendar day of a moment, as a date (a date answers itself)
 pub struct TimeToDateOp;
-impl Operator for TimeToDateOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeToDateOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/toDate", 1);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let m = Moment::of(args[0])?;
         let day = 24.0 * 60.0 * 60.0 * 1000.0;
         render_moment((m.ms / day).floor() * day, Shape::Date)
     }
@@ -242,22 +242,22 @@ impl Operator for TimeToDateOp {
 
 /// time/toInstant - a moment as a UTC instant; a date is its midnight UTC
 pub struct TimeToInstantOp;
-impl Operator for TimeToInstantOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeToInstantOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/toInstant", 1);
-        render_moment(Moment::of(&eval_expr(&args[0], ctx)?)?.ms, Shape::DateTime)
+        render_moment(Moment::of(args[0])?.ms, Shape::DateTime)
     }
 }
 
 pub struct TimeNowOp;
-impl Operator for TimeNowOp {
-    fn evaluate(&self, _args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeNowOp {
+    fn apply(&self, _args: &[&Value], ctx: &BindingContext) -> EvalResult {
         render_moment(ctx.now_millis(), Shape::DateTime)
     }
 }
 
-fn unit_arg(arg: &SExpression, ctx: &BindingContext) -> Result<TimeUnit, OrbitalError> {
-    TimeUnit::parse(eval_expr(arg, ctx)?.text()?)
+fn unit_arg(arg: &Value) -> Result<TimeUnit, OrbitalError> {
+    TimeUnit::parse(arg.text()?)
 }
 
 /// Shift a moment, keeping its shape. A date shifts by whole days or longer only.
@@ -277,23 +277,23 @@ fn shift_moment(m: Moment, amount: f64, unit: TimeUnit, op: &str) -> EvalResult 
 
 /// time/add - add a duration to a date or datetime
 pub struct TimeAddOp;
-impl Operator for TimeAddOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeAddOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/add", >= 3);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
-        let amount = require_number!(eval_expr(&args[1], ctx)?);
-        shift_moment(m, amount, unit_arg(&args[2], ctx)?, "time/add")
+        let m = Moment::of(args[0])?;
+        let amount = require_number!(args[1]);
+        shift_moment(m, amount, unit_arg(args[2])?, "time/add")
     }
 }
 
 /// time/subtract - subtract a duration from a date or datetime
 pub struct TimeSubtractOp;
-impl Operator for TimeSubtractOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeSubtractOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/subtract", >= 3);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
-        let amount = require_number!(eval_expr(&args[1], ctx)?);
-        shift_moment(m, -amount, unit_arg(&args[2], ctx)?, "time/subtract")
+        let m = Moment::of(args[0])?;
+        let amount = require_number!(args[1]);
+        shift_moment(m, -amount, unit_arg(args[2])?, "time/subtract")
     }
 }
 
@@ -307,14 +307,10 @@ fn same_shape(a: Moment, b: Moment, op: &str) -> Result<(), OrbitalError> {
     }))
 }
 
-fn pair(
-    args: &[SExpression],
-    ctx: &BindingContext,
-    op: &str,
-) -> Result<(Moment, Moment), OrbitalError> {
+fn pair(args: &[&Value], op: &str) -> Result<(Moment, Moment), OrbitalError> {
     let (a, b) = (
-        Moment::of(&eval_expr(&args[0], ctx)?)?,
-        Moment::of(&eval_expr(&args[1], ctx)?)?,
+        Moment::of(args[0])?,
+        Moment::of(args[1])?,
     );
     same_shape(a, b, op)?;
     Ok((a, b))
@@ -322,15 +318,15 @@ fn pair(
 
 /// time/diff - signed difference in ms, or in whole units of the third argument
 pub struct TimeDiffOp;
-impl Operator for TimeDiffOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeDiffOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/diff", >= 2);
-        let (a, b) = pair(args, ctx, "time/diff")?;
+        let (a, b) = pair(args, "time/diff")?;
         let (ts1, ts2) = (a.ms, b.ms);
         let diff_ms = ts1 - ts2;
 
         if args.len() > 2 {
-            let unit = unit_arg(&args[2], ctx)?;
+            let unit = unit_arg(args[2])?;
             let result = match unit.fixed_millis() {
                 Some(ms) => (diff_ms / ms).trunc(),
                 None => {
@@ -351,30 +347,30 @@ impl Operator for TimeDiffOp {
 
 /// time/epoch-ms - a time as milliseconds since the Unix epoch, a number
 pub struct TimeEpochMsOp;
-impl Operator for TimeEpochMsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeEpochMsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/epoch-ms", == 1);
-        let moment = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let moment = Moment::of(args[0])?;
         Ok(crate::evaluator::operators::util::int_or_number(moment.ms))
     }
 }
 
 /// time/isBefore
 pub struct TimeIsBeforeOp;
-impl Operator for TimeIsBeforeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsBeforeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isBefore", >= 2);
-        let (a, b) = pair(args, ctx, "time/isBefore")?;
+        let (a, b) = pair(args, "time/isBefore")?;
         Ok(Value::Bool(a.ms < b.ms))
     }
 }
 
 /// time/isAfter
 pub struct TimeIsAfterOp;
-impl Operator for TimeIsAfterOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsAfterOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isAfter", >= 2);
-        let (a, b) = pair(args, ctx, "time/isAfter")?;
+        let (a, b) = pair(args, "time/isAfter")?;
         Ok(Value::Bool(a.ms > b.ms))
     }
 }
@@ -455,11 +451,11 @@ pub fn parse_iso(text: &str) -> Option<(i64, Shape)> {
 
 /// time/parse - ISO text to a `date` (text with no time) or a `datetime` (text with a time and zone); unparseable text answers null
 pub struct TimeParseOp;
-impl Operator for TimeParseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeParseOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/parse", 1);
-        match eval_expr(&args[0], ctx)? {
-            Value::String(text) => match parse_iso(&text) {
+        match args[0] {
+            Value::String(text) => match parse_iso(text) {
                 Some((ms, shape)) => render_moment(ms as f64, shape),
                 None => Ok(Value::Null),
             },
@@ -470,21 +466,21 @@ impl Operator for TimeParseOp {
 
 /// time/valid - true iff time/parse would succeed on a string; a non-string input is a type mismatch
 pub struct TimeValidOp;
-impl Operator for TimeValidOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeValidOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/valid", 1);
-        let input = eval_expr(&args[0], ctx)?;
+        let input = args[0];
         Ok(Value::Bool(parse_iso(input.text()?).is_some()))
     }
 }
 
 /// time/format - format a date or datetime with moment-style tokens, in UTC
 pub struct TimeFormatOp;
-impl Operator for TimeFormatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeFormatOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/format", >= 2);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
-        let format = eval_expr(&args[1], ctx)?;
+        let m = Moment::of(args[0])?;
+        let format = args[1];
         Ok(Value::string(format_moment_tokens(m, format.text()?)?))
     }
 }
@@ -497,10 +493,10 @@ macro_rules! calendar_part {
     ($name:ident, $op:literal, $at:ident, $body:expr) => {
         #[doc = concat!($op, " - read one calendar part of a date or datetime (UTC)")]
         pub struct $name;
-        impl Operator for $name {
-            fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        impl StrictOperator for $name {
+            fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
                 require_arity!(args, $op, 1);
-                let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+                let m = Moment::of(args[0])?;
                 let $at = utc(m.ms)?;
                 Ok(Value::Int(i64::from($body)))
             }
@@ -512,10 +508,10 @@ macro_rules! time_of_day_part {
     ($name:ident, $op:literal, $at:ident, $body:expr) => {
         #[doc = concat!($op, " - read the time of day of a datetime (UTC); a date refuses")]
         pub struct $name;
-        impl Operator for $name {
-            fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        impl StrictOperator for $name {
+            fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
                 require_arity!(args, $op, 1);
-                let ms = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day($op)?;
+                let ms = Moment::of(args[0])?.at_time_of_day($op)?;
                 let $at = utc(ms)?;
                 Ok(Value::Int(i64::from($body)))
             }
@@ -548,12 +544,12 @@ time_of_day_part!(
 
 /// time/isBetween - start <= date <= end
 pub struct TimeIsBetweenOp;
-impl Operator for TimeIsBetweenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsBetweenOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isBetween", >= 3);
-        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?;
-        let start = Moment::of(&eval_expr(&args[1], ctx)?)?;
-        let end = Moment::of(&eval_expr(&args[2], ctx)?)?;
+        let ts = Moment::of(args[0])?;
+        let start = Moment::of(args[1])?;
+        let end = Moment::of(args[2])?;
         same_shape(ts, start, "time/isBetween")?;
         same_shape(ts, end, "time/isBetween")?;
         Ok(Value::Bool(ts.ms >= start.ms && ts.ms <= end.ms))
@@ -562,12 +558,12 @@ impl Operator for TimeIsBetweenOp {
 
 /// time/isSame - the same moment, or the same unit-bucket with a third argument
 pub struct TimeIsSameOp;
-impl Operator for TimeIsSameOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsSameOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isSame", >= 2);
-        let (a, b) = pair(args, ctx, "time/isSame")?;
+        let (a, b) = pair(args, "time/isSame")?;
         if args.len() > 2 {
-            let unit = unit_arg(&args[2], ctx)?;
+            let unit = unit_arg(args[2])?;
             if unit.below_a_day() && (a.shape == Shape::Date || b.shape == Shape::Date) {
                 return Err(needs_time_of_day("time/isSame"));
             }
@@ -687,30 +683,30 @@ pub(super) fn format_moment_tokens(m: Moment, format: &str) -> Result<String, Or
 
 /// time/isPast - an instant before now; a date carries no instant and refuses
 pub struct TimeIsPastOp;
-impl Operator for TimeIsPastOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsPastOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isPast", 1);
-        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/isPast")?;
+        let ts = Moment::of(args[0])?.at_time_of_day("time/isPast")?;
         Ok(Value::Bool(ts < ctx.now_millis()))
     }
 }
 
 /// time/isFuture - an instant after now; a date carries no instant and refuses
 pub struct TimeIsFutureOp;
-impl Operator for TimeIsFutureOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsFutureOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isFuture", 1);
-        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/isFuture")?;
+        let ts = Moment::of(args[0])?.at_time_of_day("time/isFuture")?;
         Ok(Value::Bool(ts > ctx.now_millis()))
     }
 }
 
 /// time/isToday - the date or datetime falls on today's UTC date
 pub struct TimeIsTodayOp;
-impl Operator for TimeIsTodayOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeIsTodayOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/isToday", 1);
-        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.ms;
+        let ts = Moment::of(args[0])?.ms;
         const MS_PER_DAY: f64 = 86400000.0;
         Ok(Value::Bool(
             (ts / MS_PER_DAY).floor() == (ctx.now_millis() / MS_PER_DAY).floor(),
@@ -720,10 +716,10 @@ impl Operator for TimeIsTodayOp {
 
 /// time/duration - Format duration human-readable
 pub struct TimeDurationOp;
-impl Operator for TimeDurationOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeDurationOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/duration", 1);
-        let ms = require_number!(eval_expr(&args[0], ctx)?);
+        let ms = require_number!(args[0]);
 
         let total_seconds = (ms / 1000.0).abs() as u64;
         let days = total_seconds / 86400;

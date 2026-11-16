@@ -1,6 +1,7 @@
 //! EXEC-CONC conformance: what the straight-through dispatch may answer in place.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use serde_json::json;
 use crate::support::TestKernel;
@@ -124,7 +125,7 @@ fn exec_conc_5_control_a_dispatch_on_a_fork_leaves_the_parent_session_alone() {
 }
 
 fn lane_schema() -> orbital_core_base::schema::types::OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -145,7 +146,7 @@ fn lane_schema() -> orbital_core_base::schema::types::OrbitalSchema {
                   } }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -163,7 +164,7 @@ fn answered(requests: Vec<orbital_core_runtime::resumable::PendingRequest>) -> V
         .into_iter()
         .map(|pending| IoReply {
             id: pending.id,
-            answer: IoAnswer::Service(Ok(serde_json::from_value(serde_json::json!({ "ok": true })).unwrap())),
+            answer: IoAnswer::Service(Ok(from_json_value(&(serde_json::json!({ "ok": true }))).unwrap())),
         })
         .collect()
 }
@@ -231,7 +232,7 @@ mod client_fold_order {
     use std::collections::HashSet;
 
     fn client() -> EmbeddedKernel {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = orbital_core_base::json_value::from_json_value(&json!({
             "name": "books", "typeContractVersion": 1, "orbitals": [{
                 "name": "Books",
                 "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
@@ -371,7 +372,7 @@ fn tick_pair(rival_first: bool, surge: serde_json::Value) -> orbital_core_base::
         "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "events": [], "transitions": [] },
         "ticks": [{ "name": "surge", "interval": 1000, "effects": [["emit", "SURGE", {}]] }] });
     let traits = if rival_first { json!([rival, driver]) } else { json!([driver, rival]) };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "x", "typeContractVersion": 1, "orbitals": [{
             "name": "M", "entity": { "name": "Board", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "score", "type": "number", "default": 0 }] },
             "traits": traits }]})).unwrap()

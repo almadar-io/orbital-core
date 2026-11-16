@@ -236,10 +236,11 @@ pub fn repaint_lifecycle_event(def: &TraitDefinition, state: &str) -> Option<&'s
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use serde_json::json;
 
     fn def(value: serde_json::Value) -> TraitDefinition {
-        serde_json::from_value(value).unwrap()
+        from_json_value(&value).unwrap()
     }
 
     fn host() -> TraitDefinition {

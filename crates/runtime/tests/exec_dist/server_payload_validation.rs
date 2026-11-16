@@ -3,6 +3,7 @@
 // JS twin: `PayloadValidator.validateEventPayload` + `evaluateOrbitalEvent` step 3
 // (`payload-validation-scope.test.ts`, `payload-validation-container.test.ts`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use serde_json::{json, Value as Json};
@@ -22,7 +23,7 @@ fn schema() -> OrbitalSchema {
             }
         })
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1,
         "orbitals": [{
@@ -45,7 +46,7 @@ fn send(target: Option<&str>, payload: Json) -> EventResponse {
     let request = EventRequest {
         event: "SEND".to_string(),
         target_trait: target.map(str::to_string),
-        payload: Some(serde_json::from_value(payload).unwrap()),
+        payload: Some(from_json_value(&payload).unwrap()),
         ..Default::default()
     };
     let mut progress = server.start("ChatOrbital", request).unwrap();
@@ -151,7 +152,7 @@ mod kernel_dispatch {
     }
 
     fn payload(value: Json) -> Value {
-        serde_json::from_value(value).unwrap()
+        from_json_value(&value).unwrap()
     }
 
     #[test]
@@ -217,11 +218,11 @@ fn dispatch_checks_orbital_aliases_and_entity_rows_through_named_definitions() {
         Default::default(),
     );
     kernel
-        .register_schema(serde_json::from_value(program).unwrap())
+        .register_schema(from_json_value(&program).unwrap())
         .unwrap();
     let bad = kernel.payload_rejection(
         [("ChatComposer", "SEND")],
-        &serde_json::from_value(json!({"data": {"rows": [{"id": 42}]}})).unwrap(),
+        &from_json_value(&json!({"data": {"rows": [{"id": 42}]}})).unwrap(),
     );
     assert!(
         bad.as_deref()
@@ -231,7 +232,7 @@ fn dispatch_checks_orbital_aliases_and_entity_rows_through_named_definitions() {
     assert!(kernel
         .payload_rejection(
             [("ChatComposer", "SEND")],
-            &serde_json::from_value(json!({"data": {"rows": [{"id": "ok"}]}})).unwrap()
+            &from_json_value(&json!({"data": {"rows": [{"id": "ok"}]}})).unwrap()
         )
         .is_none());
 }
@@ -261,7 +262,7 @@ fn entity_row_kernel() -> orbital_core_runtime::kernel::RuntimeKernel {
         ]}
     ]);
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), Default::default());
-    kernel.register_schema(serde_json::from_value(program).unwrap()).unwrap();
+    kernel.register_schema(from_json_value(&program).unwrap()).unwrap();
     kernel
 }
 
@@ -270,7 +271,7 @@ fn an_entity_typed_payload_is_its_working_row_so_a_create_without_an_id_is_admit
     let kernel = entity_row_kernel();
     let rejection = kernel.payload_rejection(
         [("ChatComposer", "SEND")],
-        &serde_json::from_value(json!({"data": {"body": "hello"}})).unwrap(),
+        &from_json_value(&json!({"data": {"body": "hello"}})).unwrap(),
     );
     assert!(rejection.is_none(), "{rejection:?}");
 }
@@ -280,11 +281,11 @@ fn control_an_entity_typed_payload_still_refuses_a_field_of_the_wrong_kind() {
     let kernel = entity_row_kernel();
     let rejection = kernel.payload_rejection(
         [("ChatComposer", "SEND")],
-        &serde_json::from_value(json!({"data": {"body": 7}})).unwrap(),
+        &from_json_value(&json!({"data": {"body": 7}})).unwrap(),
     );
     assert!(rejection.as_deref().is_some_and(|error| error.contains("data.body")), "{rejection:?}");
     assert!(
-        kernel.payload_rejection([("ChatComposer", "SEND")], &serde_json::from_value(json!({})).unwrap()).is_some(),
+        kernel.payload_rejection([("ChatComposer", "SEND")], &from_json_value(&json!({})).unwrap()).is_some(),
         "control: the required `data` itself must be present"
     );
 }
@@ -317,13 +318,13 @@ mod native_record_event_admission {
             Default::default(),
         );
         kernel
-            .register_schema(serde_json::from_value(program).unwrap())
+            .register_schema(from_json_value(&program).unwrap())
             .unwrap();
         kernel
     }
 
     fn dispatch(kernel: &RuntimeKernel, payload: Json, accepted: bool) {
-        let payload: Value = serde_json::from_value(payload).unwrap();
+        let payload: Value = from_json_value(&payload).unwrap();
         let outcome = kernel.dispatch("ChatComposer", None, "SEND", payload);
         if accepted {
             let outcome = outcome.expect("a contract-admitted payload executes");
@@ -361,7 +362,7 @@ mod native_record_event_admission {
             Default::default(),
         );
         let refused = unstamped
-            .register_schema(serde_json::from_value(program(None, field.clone())).unwrap());
+            .register_schema(from_json_value(&(program(None, field.clone()))).unwrap());
         assert!(
             matches!(&refused, Err(KernelError::UnresolvedProgram { program }) if program == "App"),
             "{refused:?}"
@@ -378,7 +379,7 @@ mod native_record_event_admission {
         use orbital_core_runtime::embed::EmbeddedKernel;
         let field = json!({"name": "value", "type": "string", "required": false});
         let build = |stamp: Option<u32>| -> OrbitalSchema {
-            serde_json::from_value(program(stamp, field.clone())).unwrap()
+            from_json_value(&(program(stamp, field.clone()))).unwrap()
         };
         let refusal = |error: Option<EntryError>| {
             assert!(
@@ -411,7 +412,7 @@ mod native_record_event_admission {
             if let Some(stamp) = stamp {
                 p["typeContractVersion"] = json!(stamp);
             }
-            serde_json::from_value(p).unwrap()
+            from_json_value(&p).unwrap()
         };
         assert!(matches!(
             stamped.fork_program(control(None)).err(),
@@ -439,7 +440,7 @@ mod native_record_event_admission {
         let kernel = kernel(program);
         dispatch(&kernel, json!({"data": {"nested": {"value": "ok"}}}), true);
         let bad: Value =
-            serde_json::from_value(json!({"data": {"nested": {"value": 42}}})).unwrap();
+            from_json_value(&json!({"data": {"nested": {"value": 42}}})).unwrap();
         let rejection = kernel.payload_rejection([("ChatComposer", "SEND")], &bad);
         assert!(
             rejection
@@ -481,7 +482,7 @@ mod declared_input_admission {
     use std::sync::Arc;
 
     fn kernel(environment: RuntimeEnvironment) -> RuntimeKernel {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "orbitals": [{
@@ -510,7 +511,7 @@ mod declared_input_admission {
     }
 
     fn payload(value: Json) -> Value {
-        serde_json::from_value(value).unwrap()
+        from_json_value(&value).unwrap()
     }
 
     #[test]

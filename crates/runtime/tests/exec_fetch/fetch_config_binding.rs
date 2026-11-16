@@ -2,13 +2,14 @@
 // (a detail pane filtered to the conversation its sibling selected), while `["object/get", "@entity", …]`
 // stays the candidate row. JS twin: `interpolateFilterTraitRefs` + `chat-thread-opens-seeded-conversation`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::json;
 use std::sync::Arc;
 
 fn thread_loads(initial_filter_value: &str, active_channel: &str) -> Vec<String> {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "Chat",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
@@ -50,9 +51,7 @@ fn thread_loads(initial_filter_value: &str, active_channel: &str) -> Vec<String>
         source
             .create(
                 "Message",
-                &serde_json::from_value(
-                    json!({ "id": id, "channel": channel, "content": content }),
-                )
+                &from_json_value(&json!({ "id": id, "channel": channel, "content": content }))
                 .unwrap(),
             )
             .unwrap();

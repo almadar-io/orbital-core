@@ -2,6 +2,7 @@
 //! `frame-60hz-100` / `frame-60hz-1000` (one frame tick per trait, one `set` each, a shared
 //! entity). Allocations per frame are pinned and only ever go down; time per frame is printed.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::embed::EmbeddedKernel;
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde_json::json;
@@ -63,7 +64,7 @@ fn kernel(ticking: usize) -> EmbeddedKernel {
     let pages_traits: Vec<_> = (0..ticking)
         .map(|i| json!({ "ref": format!("FrameTicker{i}"), "refId": format!("trt_bench_{i}") }))
         .collect();
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "frame-bench",
         "typeContractVersion": 1, "orbitals": [{
             "name": "TickCounterOrbital",
@@ -234,8 +235,8 @@ fn browse_wire_sizes() {
     let path = std::env::var("BROWSE_ORB").expect("BROWSE_ORB names the lowered .orb");
     let trait_name = std::env::var("BROWSE_TRAIT").expect("BROWSE_TRAIT names the trait");
     let text = std::fs::read_to_string(path).unwrap();
-    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(json.get("orb").cloned().unwrap_or(json)).unwrap();
+    let json: serde_json::Value = from_json_str(&text).unwrap();
+    let schema: orbital_core_base::schema::types::OrbitalSchema = from_json_value(&json.get("orb").cloned().unwrap_or(json)).unwrap();
     let bound: Vec<(String, Option<String>)> = schema
         .orbitals
         .iter()

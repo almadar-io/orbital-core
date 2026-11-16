@@ -2,12 +2,13 @@
 // `_metadata.serverListens` with an `any` source) leaves the forwarding step as a leg, also when the front was reached
 // by another client trait's emit (std-kflow's dashboard → knowledge-paths-front → knowledge-paths).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use serde_json::json;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 
 fn kernel(server_source: serde_json::Value) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1,
         "_metadata": { "serverListens": [{ "orbital": "Paths", "listen": {
@@ -80,7 +81,7 @@ fn control_a_forward_no_server_orbital_hears_posts_nothing() {
 /// The kflow shape at mount: `Board` (`[client]`) asks from its INIT before `Desk` (`[client]`) mounts, so the ask is held
 /// for Desk's INIT (EXEC-SEED-2); Desk's answer to it is a forward only the host hears.
 fn held_schema(server_source: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1,
         "_metadata": { "serverListens": [{ "orbital": "Paths", "listen": {
@@ -216,7 +217,7 @@ fn control_a_mount_whose_held_ask_reaches_no_server_orbital_posts_no_hop() {
 /// The kflow fold: the host answers the front's map ask (`MAP_RESULT`); the front's own `NEXT` then forwards its queued
 /// list ask, which only the host hears.
 fn fold_schema(server_source: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1,
         "_metadata": { "serverListens": [{ "orbital": "Paths", "listen": {
@@ -278,7 +279,7 @@ fn control_a_fold_whose_forward_no_server_orbital_hears_hands_back_nothing() {
 }
 
 fn wizard_server() -> orbital_core_runtime::embed::EmbeddedServer {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
         "orbitals": [{ "name": "Steps",
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },

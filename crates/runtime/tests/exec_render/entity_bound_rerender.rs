@@ -1,5 +1,6 @@
 // A client kernel repaints every mounted trait whose last `render-ui` reads an entity that a dispatch or tick just changed. Twin of the web's `RenderBindingMarker` path (`deferEntityBindings` in `almadar-runtime`, `resolveRenderBindingMarkers` in `almadar-ui`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::client_effect::ClientEffect;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -26,7 +27,7 @@ fn arm(event: &str, effects: Json) -> Json {
 }
 
 fn schema(persistence: &str, shared: bool) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "rerender",
         "typeContractVersion": 1, "orbitals": [
             {
@@ -282,7 +283,7 @@ fn a_leaf_that_also_reads_the_payload_stays_frozen_like_the_webs_eager_leaf() {
         "Hud",
         None,
         "TAGGED",
-        serde_json::from_value(tagged).unwrap(),
+        from_json_value(&tagged).unwrap(),
         None,
     )
     .unwrap();
@@ -322,7 +323,7 @@ fn control_a_remount_forgets_every_prior_render() {
 #[test]
 fn rows_written_into_the_store_repaint_a_client_resident_entity() {
     let (k, cache) = mounted("runtime", false);
-    let row: Value = serde_json::from_value(json!({ "id": "singleton", "level": 7 })).unwrap();
+    let row: Value = from_json_value(&json!({ "id": "singleton", "level": 7 })).unwrap();
     cache.write("Gauge", "singleton", &row).unwrap();
     let rerenders = k.rerender_stale();
     let gauge: Vec<_> = rerenders
@@ -338,7 +339,7 @@ fn rows_written_into_the_store_repaint_a_client_resident_entity() {
 #[test]
 fn control_a_persistent_entity_is_server_resolved_and_never_repainted_by_the_client() {
     let (k, cache) = mounted("persistent", false);
-    let row: Value = serde_json::from_value(json!({ "id": "singleton", "score": 5 })).unwrap();
+    let row: Value = from_json_value(&json!({ "id": "singleton", "score": 5 })).unwrap();
     cache.write("Board", "singleton", &row).unwrap();
     assert!(k.rerender_stale().iter().all(|r| r.trait_name != "Hud"));
 }
@@ -401,7 +402,7 @@ fn control_a_committed_dispatch_repaints_once_and_leaves_nothing_pending() {
 }
 
 fn host_backed_kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "hosted",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -430,7 +431,7 @@ fn host_backed_kernel() -> RuntimeKernel {
 
 fn host_answer(paints_hud: bool) -> EventResponse {
     let painted = json!({ "type": "typography", "content": "from the host" });
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "success": true, "transitioned": true, "states": {}, "emittedEvents": [],
         "frames": { "from": 0, "to": 0, "ops": [["set", { "Hud": { "id": "singleton", "score": 7 } }]] },
         "clientEffects": if paints_hud { json!([["render-ui", "hud", painted]]) } else { json!([]) },
@@ -465,7 +466,7 @@ fn control_a_host_answer_that_paints_nothing_leaves_the_bound_render_to_follow_t
 /// EXEC-ENDPOINT-3a) repaints a paint whose entity changed, as a client kernel does; std-learn-transport's own tick
 /// sets the field its own caption reads.
 fn guest_like_kernel(runs_client_traits: bool) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "guest", "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Steps", "persistence": "runtime",

@@ -143,6 +143,7 @@ impl<'de> Deserialize<'de> for NumWidth {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     #[test]
     fn every_width_has_one_spelling_and_its_edges_fit() {
@@ -193,8 +194,8 @@ mod tests {
     #[test]
     fn the_wire_names_only_the_sized_widths() {
         assert_eq!(serde_json::to_string(&NumWidth::U8).unwrap(), "\"u8\"");
-        assert_eq!(serde_json::from_str::<NumWidth>("\"i16\"").unwrap(), NumWidth::I16);
-        assert!(serde_json::from_str::<NumWidth>("\"i64\"").is_err(), "control: i64 is spelled int");
-        assert!(serde_json::from_str::<NumWidth>("\"f64\"").is_err());
+        assert_eq!(from_json_str::<NumWidth>("\"i16\"").unwrap(), NumWidth::I16);
+        assert!(from_json_str::<NumWidth>("\"i64\"").is_err(), "control: i64 is spelled int");
+        assert!(from_json_str::<NumWidth>("\"f64\"").is_err());
     }
 }

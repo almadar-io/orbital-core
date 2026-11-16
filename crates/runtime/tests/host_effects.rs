@@ -2,8 +2,8 @@
 // host ask each, the principal comes from the dispatch's @user and never the program, and a failure fires
 // the declared route with `{ error }` and no ask.
 
-#[path = "support/mod.rs"]
-mod support;
+use orbital_core_base::json_value::{from_json_str, from_json_value};
+use crate::support;
 
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::credential_admin::CredentialStanding;
@@ -16,7 +16,7 @@ fn schema(effect: Json) -> OrbitalSchema {
 }
 
 fn schema_with(effect: Json, grants: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "osGrants": grants,
         "typeContractVersion": 1, "orbitals": [{
@@ -44,7 +44,7 @@ fn go(user: Option<Json>) -> EventRequest {
     EventRequest {
         event: "GO".to_string(),
         target_trait: Some("Host".to_string()),
-        payload: Some(serde_json::from_value(json!({ "principal": "evil" })).unwrap()),
+        payload: Some(from_json_value(&json!({ "principal": "evil" })).unwrap()),
         client_id: user.map(|_| VIEWER_SESSION.to_string()),
         ..Default::default()
     }
@@ -401,7 +401,7 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
         },
         IoRequest::CredentialConnect {
             grant: Box::new(
-                orbital_core_runtime::credential_admin::CredentialGrant::from_request(&serde_json::from_value(connect_request()).unwrap(), None)
+                orbital_core_runtime::credential_admin::CredentialGrant::from_request(&from_json_value(&connect_request()).unwrap(), None)
                     .unwrap(),
             ),
         },
@@ -418,7 +418,7 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
     ];
     for request in requests {
         let wire = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
-        let back: IoRequest = serde_json::from_str::<IoRequestWire>(&wire).unwrap().into();
+        let back: IoRequest = from_json_str::<IoRequestWire>(&wire).unwrap().into();
         assert_eq!(back, request, "{wire}");
     }
     let refused = IoAnswer::CredentialConnect(Err(orbital_core_runtime::credential_admin::ConnectFailure::new(
@@ -427,17 +427,17 @@ fn the_wire_round_trips_every_new_ask_and_answer() {
     )));
     let wire = serde_json::to_value(IoAnswerWire::from(&refused)).unwrap();
     assert_eq!(wire, json!({ "kind": "credentialConnect", "result": { "error": { "kind": "invalid_grant", "message": "the code was already used" } } }));
-    assert_eq!(serde_json::from_value::<IoAnswerWire>(wire).map(IoAnswer::from).unwrap(), refused);
+    assert_eq!(from_json_value::<IoAnswerWire>(&wire).map(IoAnswer::from).unwrap(), refused);
     let wire =
         serde_json::to_value(IoAnswerWire::from(&IoAnswer::Random(Ok((vec![1, 2, 3]).into())))).unwrap();
     assert_eq!(
         wire,
         json!({ "kind": "random", "result": { "ok": "AQID" } })
     );
-    let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire).unwrap().into();
+    let back: IoAnswer = from_json_value::<IoAnswerWire>(&wire).unwrap().into();
     assert_eq!(back, IoAnswer::Random(Ok((vec![1, 2, 3]).into())));
     let bad: IoAnswerWire =
-        serde_json::from_value(json!({ "kind": "random", "result": { "ok": "!!" } })).unwrap();
+        from_json_value(&json!({ "kind": "random", "result": { "ok": "!!" } })).unwrap();
     assert!(matches!(IoAnswer::from(bad), IoAnswer::Random(Err(_))));
 }
 
@@ -598,7 +598,7 @@ mod credential_admin_effects {
 
     fn declaring() -> OrbitalSchema {
         let read = |knob: &str| json!(["hmac/sha", 256, "credential", format!("@config.{knob}"), "x", "hex"]);
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "osGrants": { "credentials": ["admin"] },
             "typeContractVersion": 1, "orbitals": [{
@@ -699,14 +699,14 @@ mod credential_admin_effects {
         let request = IoRequest::CredentialEnvTails { names: vec!["A".into(), "B".into()] };
         let wire = serde_json::to_value(IoRequestWire::from(&request)).unwrap();
         assert_eq!(wire, json!({ "kind": "credentialEnvTails", "names": ["A", "B"] }));
-        assert_eq!(IoRequest::from(serde_json::from_value::<IoRequestWire>(wire).unwrap()), request);
+        assert_eq!(IoRequest::from(from_json_value::<IoRequestWire>(&wire).unwrap()), request);
         for answer in [
             IoAnswer::CredentialEnvTails(Ok(EnvTails::Held { tails: vec![EnvTail { name: "A".into(), last4: Some("6789".into()) }, EnvTail { name: "B".into(), last4: None }] })),
             IoAnswer::CredentialEnvTails(Ok(EnvTails::Unsupported)),
             IoAnswer::CredentialEnvTails(Err("env unreadable".into())),
         ] {
             let wire = serde_json::to_value(IoAnswerWire::from(&answer)).unwrap();
-            let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire.clone()).unwrap().into();
+            let back: IoAnswer = from_json_value::<IoAnswerWire>(&wire).unwrap().into();
             assert_eq!(back, answer, "{wire}");
         }
         let unsupported = serde_json::to_value(IoAnswerWire::from(&IoAnswer::CredentialEnvTails(Ok(EnvTails::Unsupported)))).unwrap();
@@ -754,7 +754,7 @@ mod credential_admin_effects {
     #[test]
     fn a_credential_operand_is_resolved_by_the_kernel_and_never_reaches_program_data() {
         let schema_for = |call: Json| -> OrbitalSchema {
-            serde_json::from_value(json!({
+            from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Keys",
@@ -841,7 +841,7 @@ mod credential_admin_effects {
         ];
         for request in requests {
             let wire = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
-            let back: IoRequest = serde_json::from_str::<IoRequestWire>(&wire).unwrap().into();
+            let back: IoRequest = from_json_str::<IoRequestWire>(&wire).unwrap().into();
             assert_eq!(back, request, "{wire}");
         }
         assert!(!format!("{:?}", IoRequest::CredentialStoreWrite { service: "s".into(), name: "n".into(), value: "hunter2".into() }).contains("hunter2"));
@@ -859,7 +859,7 @@ mod credential_admin_effects {
         ];
         for answer in answers {
             let wire = serde_json::to_value(IoAnswerWire::from(&answer)).unwrap();
-            let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire.clone()).unwrap().into();
+            let back: IoAnswer = from_json_value::<IoAnswerWire>(&wire).unwrap().into();
             assert_eq!(back, answer, "{wire}");
         }
         let rotate = serde_json::to_value(IoAnswerWire::from(&IoAnswer::CredentialStoreRotate(Ok(RotateCounts { rotated: 1, already_current: 2, unreadable: 3 })))).unwrap();
@@ -921,7 +921,7 @@ mod os_effects {
     fn fetch_server(effect: Json, egress: Json) -> EmbeddedServer {
         let mut schema = serde_json::to_value(schema_with(effect, json!({}))).unwrap();
         schema["egress"] = egress;
-        EmbeddedServer::new(serde_json::from_value(schema).unwrap()).unwrap()
+        EmbeddedServer::new(from_json_value(&schema).unwrap()).unwrap()
     }
 
     fn fetch(url: &str) -> Json {
@@ -932,7 +932,7 @@ mod os_effects {
     fn a_fetch_of_a_declared_origin_asks_the_host_for_the_method_url_and_request_and_routes_its_answer() {
         let answer = json!({ "status": 404, "headers": [{ "name": "content-type", "value": "text/plain" }], "body": "bm9wZQ==" });
         let (response, seen) = run_on(fetch_server(fetch("https://api.example.test/items"), json!(["https://api.example.test"])), go(None), |_| {
-            IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap()))
+            IoAnswer::Os(Ok(from_json_value(&answer).unwrap()))
         });
         let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
         assert_eq!(*op, OsOp::Fetch);
@@ -964,7 +964,7 @@ mod os_effects {
         schema["egress"] = egress;
         schema["orbitals"][0]["name"] = json!("Side");
         schema["orbitals"][0]["traits"][0]["name"] = json!("SideHost");
-        serde_json::from_value(schema).unwrap()
+        from_json_value(&schema).unwrap()
     }
 
     #[test]
@@ -984,11 +984,11 @@ mod os_effects {
         let server = fetch_server(fetch("https://api.example.test/items"), json!(["https://api.example.test"]));
         server.kernel().register_schema(second_program(json!(["https://evil.example.test"]))).unwrap();
         let answer = json!({ "status": 200, "headers": [], "body": "" });
-        let (response, seen) = drive(&server, go(None), |_| IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap())));
+        let (response, seen) = drive(&server, go(None), |_| IoAnswer::Os(Ok(from_json_value(&answer).unwrap())));
         assert!(matches!(&seen[..], [IoRequest::Os { op: OsOp::Fetch, .. }]), "the first program reaches its own origin, saw {seen:?}");
         assert_eq!(payload_of(&response, "OK")["status"], json!(200));
         let request = EventRequest { target_trait: Some("SideHost".to_string()), ..go(None) };
-        let (response, asked) = drive_on(&server, "Side", request, |_| IoAnswer::Os(Ok(serde_json::from_value(answer.clone()).unwrap())));
+        let (response, asked) = drive_on(&server, "Side", request, |_| IoAnswer::Os(Ok(from_json_value(&answer).unwrap())));
         assert!(matches!(&asked[..], [IoRequest::Os { op: OsOp::Fetch, .. }]), "the second program reaches the origin it declares, saw {asked:?}");
         assert_eq!(payload_of(&response, "OK")["status"], json!(200));
     }
@@ -1030,7 +1030,7 @@ mod os_effects {
     fn a_streamed_fetch_of_a_declared_origin_reaches_the_host_raw_and_its_handle_answer_is_routed() {
         let head = json!({ "status": 200, "headers": [{ "name": "content-type", "value": "text/event-stream" }], "body": "", "handle": 3 });
         let (response, seen) = run_on(fetch_server(streamed_fetch("https://api.example.test/events"), json!(["https://api.example.test"])), go(None), |_| {
-            IoAnswer::Os(Ok(serde_json::from_value(head.clone()).unwrap()))
+            IoAnswer::Os(Ok(from_json_value(&head).unwrap()))
         });
         let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
         assert_eq!(*op, OsOp::Fetch);
@@ -1050,7 +1050,7 @@ mod os_effects {
     #[test]
     fn an_os_recv_on_a_handle_the_kernel_holds_no_tls_socket_for_is_the_hosts_to_answer() {
         let (response, seen) = run(json!(["os/recv", 3, 4096, routes()]), go(None), |_| {
-            IoAnswer::Os(Ok(serde_json::from_value(json!({ "data": "YWJj", "eof": false })).unwrap()))
+            IoAnswer::Os(Ok(from_json_value(&json!({ "data": "YWJj", "eof": false })).unwrap()))
         });
         let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
         assert_eq!(*op, OsOp::Recv);
@@ -1072,7 +1072,7 @@ mod os_effects {
         EventRequest {
             event: "GO".to_string(),
             target_trait: Some("Host".to_string()),
-            payload: Some(serde_json::from_value(json!({ "args": args })).unwrap()),
+            payload: Some(from_json_value(&json!({ "args": args })).unwrap()),
             ..Default::default()
         }
     }
@@ -1096,7 +1096,7 @@ mod os_effects {
     #[test]
     fn an_ffi_call_asks_the_host_with_the_granted_signature_and_plain_values() {
         let (response, seen) = run_on(ffi_server(), ffi_go(json!([0.0])), |_| {
-            IoAnswer::Os(Ok(serde_json::from_value(json!({ "value": 1.0, "buffers": [] })).unwrap()))
+            IoAnswer::Os(Ok(from_json_value(&json!({ "value": 1.0, "buffers": [] })).unwrap()))
         });
         let [IoRequest::Os { op, args, .. }] = &seen[..] else { panic!("one os ask, saw {seen:?}") };
         assert_eq!(*op, OsOp::FfiCall);
@@ -1149,7 +1149,7 @@ mod os_effects {
             let (response, seen) = run(
                 json!(["os/stdin-read", 2, routes()]),
                 go(None),
-                |_| IoAnswer::Os(Ok(serde_json::from_value(payload.clone()).unwrap())),
+                |_| IoAnswer::Os(Ok(from_json_value(&payload).unwrap())),
             );
             assert_eq!(seen.len(), 1);
             let IoRequest::Os { op, args, key, site, .. } = &seen[0] else { panic!("an os ask") };
@@ -1166,7 +1166,7 @@ mod os_effects {
         let (response, seen) = run(
             json!(["os/stdin-read", { "key": "in", "emit": { "success": "OK", "failure": "BAD", "onMessage": "BAD" } }]),
             go(None),
-            |_| IoAnswer::Os(Ok(serde_json::from_value(json!({ "eof": true })).unwrap())),
+            |_| IoAnswer::Os(Ok(from_json_value(&json!({ "eof": true })).unwrap())),
         );
         let IoRequest::Os { op, key, site, .. } = &seen[0] else { panic!("an os ask") };
         assert_eq!(*op, OsOp::StdinRead);
@@ -1191,14 +1191,14 @@ mod os_effects {
             wire,
             json!({ "kind": "os", "op": "os/tcp-connect", "args": ["db.internal", 5432.0], "key": "k" })
         );
-        let back: IoRequest = serde_json::from_value::<IoRequestWire>(wire).unwrap().into();
+        let back: IoRequest = from_json_value::<IoRequestWire>(&wire).unwrap().into();
         assert_eq!(back, request);
         for answer in [
-            IoAnswer::Os(Ok(serde_json::from_value(json!({ "sock": 7 })).unwrap())),
+            IoAnswer::Os(Ok(from_json_value(&json!({ "sock": 7 })).unwrap())),
             IoAnswer::Os(Err(OsError::new(OsErrorKind::NotFound, "no route"))),
         ] {
             let wire = serde_json::to_value(IoAnswerWire::from(&answer)).unwrap();
-            let back: IoAnswer = serde_json::from_value::<IoAnswerWire>(wire).unwrap().into();
+            let back: IoAnswer = from_json_value::<IoAnswerWire>(&wire).unwrap().into();
             assert_eq!(back, answer);
         }
         let failure = serde_json::to_value(IoAnswerWire::from(&IoAnswer::Os(Err(OsError::new(
@@ -1212,11 +1212,9 @@ mod os_effects {
     #[test]
     fn an_unknown_op_or_error_kind_on_the_wire_is_refused() {
         use orbital_core_runtime::embed::wire::{IoAnswerWire, IoRequestWire};
-        assert!(serde_json::from_value::<IoRequestWire>(json!({ "kind": "os", "op": "os/fork", "args": [] })).is_err());
-        assert!(serde_json::from_value::<IoRequestWire>(json!({ "kind": "os", "op": "os/path-join", "args": [] })).is_err());
-        assert!(serde_json::from_value::<IoAnswerWire>(
-            json!({ "kind": "os", "result": { "error": { "kind": "broken", "message": "m" } } })
-        )
+        assert!(from_json_value::<IoRequestWire>(&json!({ "kind": "os", "op": "os/fork", "args": [] })).is_err());
+        assert!(from_json_value::<IoRequestWire>(&json!({ "kind": "os", "op": "os/path-join", "args": [] })).is_err());
+        assert!(from_json_value::<IoAnswerWire>(&json!({ "kind": "os", "result": { "error": { "kind": "broken", "message": "m" } } }))
         .is_err());
     }
 
@@ -1235,7 +1233,7 @@ mod lowering {
     use serde_json::{json, Value as Json};
 
     fn lower(form: Json) -> Result<Box<OirEffect>, String> {
-        let form: SExpression = serde_json::from_value(form).unwrap();
+        let form: SExpression = orbital_core_base::json_value::from_json_value(&form).unwrap();
         match orbital_core_eval::lower::lower_sexpr(&form) {
             Ok(OirExpr::Effect { effect }) => Ok(effect),
             Ok(other) => Err(format!("not an effect: {other:?}")),
@@ -1421,7 +1419,7 @@ mod os_deferred {
     fn a_completion_under_the_host_key_fires_with_the_program_key() {
         let (_, seen) = run(keyed_wait(), go(None), |_| IoAnswer::ServiceDeferred);
         let IoRequest::Os { key: Some(key), site: Some(site), .. } = &seen[0] else { panic!("a keyed, routed os ask") };
-        let (event, payload) = completion_event(site, key, Ok(serde_json::from_value(json!({ "code": 0 })).unwrap())).expect("a routed outcome");
+        let (event, payload) = completion_event(site, key, Ok(from_json_value(&json!({ "code": 0 })).unwrap())).expect("a routed outcome");
         assert_eq!(event, "OK");
         assert_eq!(payload.get_path("key").and_then(|k| k.as_str().map(str::to_string)).as_deref(), Some("k"));
     }
@@ -1429,7 +1427,7 @@ mod os_deferred {
     #[test]
     fn control_the_same_keyed_wait_answered_with_a_result_fires_the_success_route_with_its_key() {
         let (response, _) = run(keyed_wait(), go(None), |_| {
-            IoAnswer::Os(Ok(serde_json::from_value(json!({ "code": 0 })).unwrap()))
+            IoAnswer::Os(Ok(from_json_value(&json!({ "code": 0 })).unwrap()))
         });
         assert_eq!(payload_of(&response, "OK"), json!({ "code": 0, "key": "k" }));
     }
@@ -1480,7 +1478,7 @@ mod os_completion {
     use std::time::Duration;
 
     fn supervisor(child_script: &str) -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -1565,7 +1563,7 @@ mod os_completion {
             Some(key) => json!({ "key": key, "emit": { "success": "ENV_OK", "failure": "ENV_BAD" } }),
             None => json!({ "emit": { "success": "ENV_OK", "failure": "ENV_BAD" } }),
         };
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -1624,7 +1622,7 @@ mod os_completion {
 
     fn reader() -> OrbitalSchema {
         let routes = |ok: &str| json!({ "success": ok, "failure": "READ_BAD" });
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -1685,8 +1683,8 @@ mod os_completion {
             op: OsOp::Spawn,
             args: vec![
                 Value::string("/bin/sh"),
-                serde_json::from_value(json!(["-c", "printf hi"])).unwrap(),
-                serde_json::from_value(json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
+                from_json_value(&json!(["-c", "printf hi"])).unwrap(),
+                from_json_value(&json!({ "stdin": "null", "stdout": "pipe", "stderr": "null" })).unwrap(),
             ],
             key: None,
             site: None, principal: None, orbital: None
@@ -1700,7 +1698,7 @@ mod os_completion {
     fn file_reader(path: &str) -> OrbitalSchema {
         let routes = |ok: &str| json!({ "success": ok, "failure": "BAD" });
         let keyed = |key: &str, ok: &str| json!({ "key": key, "emit": routes(ok) });
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -1846,7 +1844,7 @@ mod os_completion {
             options["key"] = json!(key);
         }
         let ask = json!(["os/stat", path, options]);
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -1954,7 +1952,7 @@ mod os_completion {
             Json::Array(call)
         };
         let (tmp_s, out_s) = (tmp.to_str().unwrap(), out.to_str().unwrap());
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -2094,7 +2092,7 @@ mod os_twin {
     #[test]
     fn the_embed_exports_name_the_deferring_ops_and_shape_a_completion_event() {
         use orbital_core_runtime::embed::{os_completion_event_json, os_deferring_ops_json};
-        let names: Vec<String> = serde_json::from_str(&os_deferring_ops_json().unwrap()).unwrap();
+        let names: Vec<String> = from_json_str(&os_deferring_ops_json().unwrap()).unwrap();
         let finite_fs = [
             "os/read-file", "os/write-file", "os/append-file", "os/open", "os/close", "os/read", "os/write", "os/seek",
             "os/truncate", "os/fsync", "os/copy", "os/rename", "os/remove", "os/link", "os/symlink", "os/readlink",
@@ -2106,9 +2104,9 @@ mod os_twin {
         assert!(!names.iter().any(|n| n == "os/cwd"), "control: os/cwd answers inline");
         let site = json!({ "trait": "Sup", "followOn": false, "emit": { "success": "DONE", "failure": "FAILED" } }).to_string();
         let ok = os_completion_event_json(&site, "k", &json!({ "ok": { "code": 3 } }).to_string()).unwrap();
-        assert_eq!(serde_json::from_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3, "key": "k" } }));
+        assert_eq!(from_json_str::<Json>(&ok).unwrap(), json!({ "event": "DONE", "payload": { "code": 3, "key": "k" } }));
         let failed = os_completion_event_json(&site, "k", &json!({ "error": { "kind": "closed", "message": "gone" } }).to_string()).unwrap();
-        assert_eq!(serde_json::from_str::<Json>(&failed).unwrap(), json!({ "event": "FAILED", "payload": { "error": "gone", "kind": "closed", "key": "k" } }));
+        assert_eq!(from_json_str::<Json>(&failed).unwrap(), json!({ "event": "FAILED", "payload": { "error": "gone", "kind": "closed", "key": "k" } }));
         let unrouted = json!({ "trait": "Sup", "followOn": false, "emit": {} }).to_string();
         assert_eq!(os_completion_event_json(&unrouted, "k", &json!({ "ok": {} }).to_string()).unwrap(), "null");
     }
@@ -2165,7 +2163,7 @@ mod os_twin {
             eprintln!("os_twin_fixture_replay: {} is absent (standalone checkout); skipped", path.display());
             return;
         };
-        let fixture: Json = serde_json::from_str(&raw).unwrap();
+        let fixture: Json = from_json_str(&raw).unwrap();
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().canonicalize().unwrap();
         let anchors_dir = tempfile::tempdir().unwrap();
@@ -2195,7 +2193,7 @@ mod os_twin {
         vars.insert("port".into(), json!(port));
         vars.insert("closedPort".into(), json!(closed));
 
-        let declared: OsGrants = serde_json::from_value(substitute(&vars, &fixture["grants"])).unwrap();
+        let declared: OsGrants = from_json_value(&substitute(&vars, &fixture["grants"])).unwrap();
         let anchors = orbital_core_runtime::os_host::OsAnchors {
             home: Some(anchors_root.join("home")),
             start: Some(anchors_root.join("start")),
@@ -2230,7 +2228,7 @@ mod os_twin {
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|a| serde_json::from_value(substitute(&vars, a)).unwrap())
+                .map(|a| from_json_value(&substitute(&vars, a)).unwrap())
                 .collect();
             let key = step.get("key").and_then(Json::as_str).map(str::to_string);
             let site = key.as_ref().map(|_| routed_site());
@@ -2340,7 +2338,7 @@ mod kv_asks {
     }
 
     fn v(json: Json) -> Value {
-        serde_json::from_value(json).expect("value")
+        orbital_core_base::json_value::from_json_value(&json).expect("value")
     }
 
     fn trace_slice() -> Json {
@@ -2477,7 +2475,7 @@ mod access_check_effects {
         program["orbitals"][0]["auxiliaryEntities"] = json!([{
             "name": "Open", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }]
         }]);
-        EmbeddedServer::new(serde_json::from_value(program).unwrap()).unwrap()
+        EmbeddedServer::new(from_json_value(&program).unwrap()).unwrap()
     }
 
     fn check(entity: &str, action: &str, owner: &str, viewer: Json) -> Json {
@@ -2595,7 +2593,7 @@ mod os_grants_per_orbital {
         if let Some(app) = app {
             program["osGrants"] = app;
         }
-        serde_json::from_value(program).unwrap()
+        from_json_value(&program).unwrap()
     }
 
     fn state_of(schema: OrbitalSchema, trait_name: &str) -> String {
@@ -2681,7 +2679,7 @@ mod mem_effects {
         transitions.push(json!({ "from": "idle", "to": "idle", "event": "OK" }));
         transitions.push(json!({ "from": "idle", "to": "idle", "event": "BAD" }));
         transitions.push(json!({ "from": "idle", "to": "idle", "event": "READ_OK" }));
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "osGrants": { "mem": [{ "target": "arena:1024", "kinds": ["create", "free"] }] },
             "typeContractVersion": 1, "orbitals": [{
@@ -2993,7 +2991,7 @@ mod kernel_effects {
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                     "transitions": [{ "from": "idle", "to": "idle", "event": trigger, "effects": effects }] } })
         };
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "osGrants": grants,
             "typeContractVersion": 1, "orbitals": [{
@@ -3234,7 +3232,7 @@ mod kernel_effects {
         }
 
         fn value(json: Json) -> Value {
-            serde_json::from_value(json).unwrap()
+            from_json_value(&json).unwrap()
         }
 
         /// A session holding a shared arena with one block, and the guest opened over it with `grants` and that arena.
@@ -3586,7 +3584,7 @@ mod gpu_effects {
         transitions.extend(extra);
         transitions.push(json!({ "from": "idle", "to": "idle", "event": "OK" }));
         transitions.push(json!({ "from": "idle", "to": "idle", "event": "BAD" }));
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "osGrants": grants,
             "typeContractVersion": 1, "orbitals": [{
@@ -3605,7 +3603,7 @@ mod gpu_effects {
     }
 
     fn j(value: Json) -> Value {
-        serde_json::from_value(value).unwrap()
+        from_json_value(&value).unwrap()
     }
 
     fn record(fields: Vec<(&str, Value)>) -> Value {
@@ -4203,7 +4201,7 @@ mod gpu_effects {
     }
 
     fn wire_of(json: String) -> Json {
-        serde_json::from_str(&json).expect("wire json")
+        from_json_str(&json).expect("wire json")
     }
 
     fn device_answer() -> Value {
@@ -4277,7 +4275,7 @@ mod gpu_effects {
     }
 
     fn client_with(grants: Json) -> orbital_core_runtime::embed::EmbeddedKernel {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "App",
             "osGrants": grants,
             "typeContractVersion": 1, "orbitals": [{

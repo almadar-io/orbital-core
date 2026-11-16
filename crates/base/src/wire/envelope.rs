@@ -165,6 +165,7 @@ pub fn envelope_id(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
 
     #[test]
     fn the_id_is_stable_hex_and_changes_with_each_part() {
@@ -218,14 +219,14 @@ mod tests {
             text.contains("\"causalId\":\"c\"") && text.contains("\"trait\":\"T\""),
             "{text}"
         );
-        assert_eq!(serde_json::from_str::<Envelope>(&text).unwrap(), envelope);
+        assert_eq!(from_json_str::<Envelope>(&text).unwrap(), envelope);
         let rejected = EnvelopeVerdict::Rejected(DeliverRefusal {
             kind: DeliverRefusalKind::HopCap,
             id: "i".into(),
         });
         let text = serde_json::to_string(&rejected).unwrap();
         assert_eq!(
-            serde_json::from_str::<EnvelopeVerdict>(&text).unwrap(),
+            from_json_str::<EnvelopeVerdict>(&text).unwrap(),
             rejected
         );
         assert_eq!(

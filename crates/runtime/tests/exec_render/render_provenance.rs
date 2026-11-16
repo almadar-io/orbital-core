@@ -1,11 +1,12 @@
 // Each client effect carries the transition that produced it: its own event key and from-state, a cascaded listener's included. Twin of `almadar-runtime/test/render-provenance.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "provenance",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

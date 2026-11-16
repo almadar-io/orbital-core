@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 /// A trait fixture carrying only what `EmbedIndex::build` reads: its own
@@ -20,7 +21,7 @@ fn trait_def(name: &str, id: &str, embeds: &[(&str, &str)]) -> TraitDefinition {
             .collect();
         json["traitEmbedIds"] = serde_json::Value::Object(map);
     }
-    serde_json::from_value(json).expect("trait fixture")
+    from_json_value(&json).expect("trait fixture")
 }
 
 fn defs(list: Vec<TraitDefinition>) -> HashMap<String, TraitDefinition> {

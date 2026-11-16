@@ -12,28 +12,25 @@ fn invalid(op: &str, detail: impl std::fmt::Display) -> OrbitalError {
     )))
 }
 
-fn decode_value(value: Value, op: &str) -> Result<Vec<u8>, OrbitalError> {
+fn decode_value(value: &Value, op: &str) -> Result<Vec<u8>, OrbitalError> {
     match value {
-        Value::Bytes(b) => Ok(b.into_inner()),
+        Value::Bytes(b) => Ok(b.to_vec()),
         Value::String(s) => {
-            codec::base64_decode(&s).map_err(|e| invalid(op, format!("base64 ({e})")))
+            codec::base64_decode(s).map_err(|e| invalid(op, format!("base64 ({e})")))
         }
         other => Err(other.kind_error("bytes").into()),
     }
 }
 
-fn bytes_arg(arg: &SExpression, ctx: &BindingContext, op: &str) -> Result<Vec<u8>, OrbitalError> {
-    decode_value(eval_expr(arg, ctx)?, op)
+fn bytes_arg(arg: &Value, op: &str) -> Result<Vec<u8>, OrbitalError> {
+    decode_value(arg, op)
 }
 
 /// The bytes a bytes argument holds, or `None` when base64 text is not standard base64; any other kind is an error.
-fn bytes_arg_or_none(
-    arg: &SExpression,
-    ctx: &BindingContext,
-) -> Result<Option<Vec<u8>>, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::Bytes(b) => Ok(Some(b.into_inner())),
-        Value::String(s) => Ok(codec::base64_decode(&s).ok()),
+fn bytes_arg_or_none(arg: &Value) -> Result<Option<Vec<u8>>, OrbitalError> {
+    match arg {
+        Value::Bytes(b) => Ok(Some(b.to_vec())),
+        Value::String(s) => Ok(codec::base64_decode(s).ok()),
         other => Err(other.kind_error("bytes").into()),
     }
 }
@@ -56,10 +53,10 @@ fn index(op: &str, len: usize, at: &Value) -> Result<usize, OrbitalError> {
 
 /// bytes/from-string - UTF-8 bytes of the text
 pub struct BytesFromStringOp;
-impl Operator for BytesFromStringOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesFromStringOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-string", == 1);
-        match eval_expr(&args[0], ctx)? {
+        match args[0] {
             Value::String(s) => Ok(Value::bytes(s.as_bytes().to_vec())),
             other => Err(other.kind_error("string").into()),
         }
@@ -68,10 +65,10 @@ impl Operator for BytesFromStringOp {
 
 /// bytes/to-string - decode as UTF-8; bytes that are not UTF-8 answer null
 pub struct BytesToStringOp;
-impl Operator for BytesToStringOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesToStringOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/to-string", == 1);
-        let Some(data) = bytes_arg_or_none(&args[0], ctx)? else {
+        let Some(data) = bytes_arg_or_none(args[0])? else {
             return Ok(Value::Null);
         };
         Ok(String::from_utf8(data).map_or(Value::Null, Value::string))
@@ -80,21 +77,21 @@ impl Operator for BytesToStringOp {
 
 /// bytes/valid-utf8 - whether the bytes are well-formed UTF-8
 pub struct BytesValidUtf8Op;
-impl Operator for BytesValidUtf8Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesValidUtf8Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/valid-utf8", == 1);
-        let data = bytes_arg(&args[0], ctx, "bytes/valid-utf8")?;
+        let data = bytes_arg(args[0], "bytes/valid-utf8")?;
         Ok(Value::Bool(std::str::from_utf8(&data).is_ok()))
     }
 }
 
 /// bytes/from-base64 - standard padded base64 text as the bytes it encodes; other text answers null
 pub struct BytesFromBase64Op;
-impl Operator for BytesFromBase64Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesFromBase64Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/from-base64", == 1);
-        match eval_expr(&args[0], ctx)? {
-            Value::String(s) => Ok(codec::base64_decode(&s).map_or(Value::Null, Value::bytes)),
+        match args[0] {
+            Value::String(s) => Ok(codec::base64_decode(s).map_or(Value::Null, Value::bytes)),
             other => Err(other.kind_error("string").into()),
         }
     }
@@ -102,20 +99,20 @@ impl Operator for BytesFromBase64Op {
 
 /// bytes/to-base64 - the bytes as their standard padded base64 text
 pub struct BytesToBase64Op;
-impl Operator for BytesToBase64Op {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesToBase64Op {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/to-base64", == 1);
-        let data = bytes_arg(&args[0], ctx, "bytes/to-base64")?;
+        let data = bytes_arg(args[0], "bytes/to-base64")?;
         Ok(Value::string(codec::base64_encode(&data)))
     }
 }
 
 /// bytes/length - decoded byte count
 pub struct BytesLengthOp;
-impl Operator for BytesLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesLengthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/length", == 1);
-        let len = match eval_expr(&args[0], ctx)? {
+        let len = match args[0] {
             Value::Bytes(b) => b.len(),
             other => decode_value(other, "bytes/length")?.len(),
         };
@@ -125,8 +122,8 @@ impl Operator for BytesLengthOp {
 
 /// bytes/slice (data, start, end?) - byte indexes; negatives count from the end, out-of-range clamps
 pub struct BytesSliceOp;
-impl Operator for BytesSliceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesSliceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/slice", >= 2);
         if args.len() > 3 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -135,12 +132,12 @@ impl Operator for BytesSliceOp {
                 actual: args.len(),
             }));
         }
-        let data = bytes_arg(&args[0], ctx, "bytes/slice")?;
-        let from = index("bytes/slice", data.len(), &eval_expr(&args[1], ctx)?)?;
+        let data = bytes_arg(args[0], "bytes/slice")?;
+        let from = index("bytes/slice", data.len(), args[1])?;
         let to = if args.len() == 3 {
-            match eval_expr(&args[2], ctx)? {
+            match args[2] {
                 Value::Null => data.len(),
-                other => index("bytes/slice", data.len(), &other)?,
+                other => index("bytes/slice", data.len(), other)?,
             }
         } else {
             data.len()
@@ -154,14 +151,14 @@ impl Operator for BytesSliceOp {
 
 /// bytes/concat (parts) - join a list of bytes values in order
 pub struct BytesConcatOp;
-impl Operator for BytesConcatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesConcatOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/concat", == 1);
-        let parts = require_array!(eval_expr(&args[0], ctx)?);
+        let parts = require_array!(args[0]);
         let mut held = Vec::with_capacity(parts.len());
-        for part in parts {
+        for part in parts.iter() {
             held.push(match part {
-                Value::Bytes(b) => b,
+                Value::Bytes(b) => b.clone(),
                 other => orbital_core_base::value::Shared::new(decode_value(other, "bytes/concat")?),
             });
         }
@@ -175,11 +172,11 @@ impl Operator for BytesConcatOp {
 
 /// bytes/xor (data, key) - data XOR key repeated cyclically; an empty key answers null
 pub struct BytesXorOp;
-impl Operator for BytesXorOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesXorOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/xor", == 2);
-        let mut data = bytes_arg(&args[0], ctx, "bytes/xor")?;
-        let key = bytes_arg(&args[1], ctx, "bytes/xor")?;
+        let mut data = bytes_arg(args[0], "bytes/xor")?;
+        let key = bytes_arg(args[1], "bytes/xor")?;
         if key.is_empty() {
             return Ok(Value::Null);
         }
@@ -192,18 +189,17 @@ impl Operator for BytesXorOp {
 
 /// bytes/equals - same decoded bytes, compared in constant time (the one `constant_time_eq_bytes`)
 pub struct BytesEqualsOp;
-impl Operator for BytesEqualsOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesEqualsOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/equals", == 2);
-        let a = bytes_arg(&args[0], ctx, "bytes/equals")?;
-        let b = bytes_arg(&args[1], ctx, "bytes/equals")?;
+        let a = bytes_arg(args[0], "bytes/equals")?;
+        let b = bytes_arg(args[1], "bytes/equals")?;
         Ok(Value::Bool(orbital_core_base::inbound::constant_time_eq_bytes(&a, &b)))
     }
 }
 
 /// A whole-number argument; a number that is not whole is `None`, a non-number is a type mismatch.
-fn whole(arg: &SExpression, ctx: &BindingContext) -> Result<Option<i64>, OrbitalError> {
-    let value = eval_expr(arg, ctx)?;
+fn whole(value: &Value) -> Result<Option<i64>, OrbitalError> {
     if value.is_numeric() {
         Ok(value.as_int())
     } else {
@@ -211,14 +207,14 @@ fn whole(arg: &SExpression, ctx: &BindingContext) -> Result<Option<i64>, Orbital
     }
 }
 
-pub(super) fn width_arg(arg: &SExpression, ctx: &BindingContext) -> Result<Option<usize>, OrbitalError> {
-    Ok(whole(arg, ctx)?.filter(|n| matches!(n, 1 | 2 | 4 | 8)).map(|n| n as usize))
+pub(super) fn width_of(value: &Value) -> Result<Option<usize>, OrbitalError> {
+    Ok(whole(value)?.filter(|n| matches!(n, 1 | 2 | 4 | 8)).map(|n| n as usize))
 }
 
-pub(super) fn big_endian_arg(arg: &SExpression, ctx: &BindingContext) -> Result<Option<bool>, OrbitalError> {
-    match eval_expr(arg, ctx)? {
-        Value::String(s) if s == "be" => Ok(Some(true)),
-        Value::String(s) if s == "le" => Ok(Some(false)),
+pub(super) fn big_endian_of(value: &Value) -> Result<Option<bool>, OrbitalError> {
+    match value {
+        Value::String(s) if s.as_str() == "be" => Ok(Some(true)),
+        Value::String(s) if s.as_str() == "le" => Ok(Some(false)),
         Value::String(_) => Ok(None),
         other => Err(other.kind_error("string").into()),
     }
@@ -226,8 +222,8 @@ pub(super) fn big_endian_arg(arg: &SExpression, ctx: &BindingContext) -> Result<
 
 /// bytes/index-of (data, needle, from?) - first byte offset of needle at or after from (negatives count from the end), else -1
 pub struct BytesIndexOfOp;
-impl Operator for BytesIndexOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesIndexOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/index-of", >= 2);
         if args.len() > 3 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -236,12 +232,12 @@ impl Operator for BytesIndexOfOp {
                 actual: args.len(),
             }));
         }
-        let data = bytes_arg(&args[0], ctx, "bytes/index-of")?;
-        let needle = bytes_arg(&args[1], ctx, "bytes/index-of")?;
+        let data = bytes_arg(args[0], "bytes/index-of")?;
+        let needle = bytes_arg(args[1], "bytes/index-of")?;
         let from = if args.len() == 3 {
-            match eval_expr(&args[2], ctx)? {
+            match args[2] {
                 Value::Null => 0,
-                other => index("bytes/index-of", data.len(), &other)?,
+                other => index("bytes/index-of", data.len(), other)?,
             }
         } else {
             0
@@ -259,11 +255,11 @@ impl Operator for BytesIndexOfOp {
 
 /// bytes/at (data, i) - the byte at i as 0-255; null when i is outside the data
 pub struct BytesAtOp;
-impl Operator for BytesAtOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesAtOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "bytes/at", == 2);
-        let data = bytes_arg(&args[0], ctx, "bytes/at")?;
-        let Some(at) = whole(&args[1], ctx)? else {
+        let data = bytes_arg(args[0], "bytes/at")?;
+        let Some(at) = whole(args[1])? else {
             return Ok(Value::Null);
         };
         Ok(usize::try_from(at)
@@ -276,8 +272,8 @@ impl Operator for BytesAtOp {
 /// bytes/read-uint (data, offset, width, endian) - the unsigned integer in width bytes at offset; null when they run
 /// past the data. A width-8 value above i64::MAX answers null.
 pub struct BytesReadUintOp;
-impl Operator for BytesReadUintOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesReadUintOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         read_field(args, ctx, "bytes/read-uint", decode_uint)
     }
 }
@@ -285,19 +281,19 @@ impl Operator for BytesReadUintOp {
 /// bytes/read-int (data, offset, width, endian) - the two's-complement signed integer in width bytes at offset; null
 /// when they run past the data
 pub struct BytesReadIntOp;
-impl Operator for BytesReadIntOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesReadIntOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         read_field(args, ctx, "bytes/read-int", decode_int)
     }
 }
 
-fn read_field(args: &[SExpression], ctx: &BindingContext, op: &str, decode: fn(&[u8], bool) -> Value) -> EvalResult {
+fn read_field(args: &[&Value], _ctx: &BindingContext, op: &str, decode: fn(&[u8], bool) -> Value) -> EvalResult {
     require_arity!(args, op, == 4);
-    let data = bytes_arg(&args[0], ctx, op)?;
+    let data = bytes_arg(args[0], op)?;
     let (Some(offset), Some(width), Some(big)) = (
-        whole(&args[1], ctx)?,
-        width_arg(&args[2], ctx)?,
-        big_endian_arg(&args[3], ctx)?,
+        whole(args[1])?,
+        width_of(args[2])?,
+        big_endian_of(args[3])?,
     ) else {
         return Ok(Value::Null);
     };
@@ -333,14 +329,14 @@ pub(super) fn decode_int(field: &[u8], big: bool) -> Value {
 
 /// bytes/write-uint (value, width, endian) - value as width bytes; a value the width cannot hold answers null
 pub struct BytesWriteUintOp;
-impl Operator for BytesWriteUintOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BytesWriteUintOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "bytes/write-uint";
         require_arity!(args, OP, == 3);
         let (Some(value), Some(width), Some(big)) = (
-            whole(&args[0], ctx)?,
-            width_arg(&args[1], ctx)?,
-            big_endian_arg(&args[2], ctx)?,
+            whole(args[0])?,
+            width_of(args[1])?,
+            big_endian_of(args[2])?,
         ) else {
             return Ok(Value::Null);
         };

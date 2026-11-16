@@ -1,5 +1,6 @@
 //! What an orbital imports and contributes: imported traits, contributed entities, and the page a navigate reaches.
 
+use crate::json_value::from_json_value;
 use super::*;
 
 pub(super) fn name_of(v: &Value) -> Option<&str> {
@@ -155,7 +156,7 @@ pub(super) fn navigate_target_of(node: &Value) -> Option<String> {
     match &arr[1] {
         Value::String(s) => (!s.starts_with('@')).then(|| s.clone()),
         other => {
-            extract_static_path_prefix(&serde_json::from_value::<SExpression>(other.clone()).ok()?)
+            extract_static_path_prefix(&from_json_value::<SExpression>(&other).ok()?)
         }
     }
 }

@@ -274,8 +274,8 @@ impl From<serde_json::Error> for DeepJsonError {
     }
 }
 
-fn check_depth(bytes: &[u8]) -> Result<(), DeepJsonError> {
-    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+fn check_depth(bytes: &[u8]) -> Result<usize, DeepJsonError> {
+    let (mut depth, mut deepest, mut in_string, mut escaped) = (0usize, 0usize, false, false);
     for &b in bytes {
         if in_string {
             match (escaped, b) {
@@ -293,26 +293,80 @@ fn check_depth(bytes: &[u8]) -> Result<(), DeepJsonError> {
                 if depth > MAX_JSON_DEPTH {
                     return Err(DeepJsonError::TooDeep { limit: MAX_JSON_DEPTH });
                 }
+                deepest = deepest.max(depth);
             }
             b']' | b'}' => depth = depth.saturating_sub(1),
             _ => {}
         }
     }
-    Ok(())
+    Ok(deepest)
+}
+
+/// Text nested at most this deep is read on the caller's stack.
+const SHALLOW_DEPTH: usize = 64;
+
+/// Stack reserved per nesting level when a deeper text is read on a grown stack.
+#[cfg(feature = "std")]
+const STACK_PER_LEVEL: usize = 16 * 1024;
+
+#[cfg(feature = "std")]
+fn on_deep_stack<R>(depth: usize, run: impl FnOnce() -> R) -> R {
+    if depth <= SHALLOW_DEPTH {
+        return run();
+    }
+    stacker::grow(depth.saturating_mul(STACK_PER_LEVEL).max(1 << 20), run)
+}
+
+#[cfg(not(feature = "std"))]
+fn on_deep_stack<R>(_depth: usize, run: impl FnOnce() -> R) -> R {
+    run()
 }
 
 /// Parse JSON up to [`MAX_JSON_DEPTH`] levels: a resolved program nests as deep as its expressions. The depth is
-/// pre-scanned so every host refuses at the same bound; std builds then grow the stack, others recurse natively.
+/// pre-scanned so every host refuses at the same bound. Each type is compiled for one plain text reader; a deep
+/// text is read on one grown stack (std builds) instead of growing the stack at every level.
 pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, DeepJsonError> {
-    check_depth(bytes)?;
-    let mut de = serde_json::Deserializer::from_slice(bytes);
-    de.disable_recursion_limit();
-    #[cfg(feature = "std")]
-    let value = T::deserialize(serde_stacker::Deserializer::new(&mut de))?;
-    #[cfg(not(feature = "std"))]
-    let value = T::deserialize(&mut de)?;
-    de.end()?;
-    Ok(value)
+    let depth = check_depth(bytes)?;
+    on_deep_stack(depth, || {
+        let mut de = serde_json::Deserializer::from_slice(bytes);
+        de.disable_recursion_limit();
+        let value = T::deserialize(&mut de)?;
+        de.end()?;
+        Ok(value)
+    })
+}
+
+/// The kernel's one JSON text entry: [`from_deep_json`] with `serde_json`'s error type. Nesting past
+/// [`MAX_JSON_DEPTH`] is a custom error.
+pub fn from_json_slice<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    from_deep_json(bytes).map_err(|e| match e {
+        DeepJsonError::Json(e) => e,
+        too_deep => <serde_json::Error as serde::de::Error>::custom(too_deep),
+    })
+}
+
+/// [`from_json_slice`] over text.
+pub fn from_json_str<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, serde_json::Error> {
+    from_json_slice(text.as_bytes())
+}
+
+/// Reads a value through a `Value`, so the derived reader `read` (a `#[serde(remote = "Self")]` derive) is compiled
+/// for `&Value` alone rather than once per deserializer. For the heavy internally tagged enums.
+pub fn deserialize_via_value<'de, D, T>(
+    deserializer: D,
+    read: fn(&serde_json::Value) -> Result<T, serde_json::Error>,
+) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+    read(&value).map_err(<D::Error as serde::de::Error>::custom)
+}
+
+/// The kernel's one `Value` entry: deserializes from a borrowed `Value`, so each type is compiled
+/// for one `Value` deserializer and the caller keeps (and never clones) its value.
+pub fn from_json_value<T: serde::de::DeserializeOwned>(value: &serde_json::Value) -> Result<T, serde_json::Error> {
+    T::deserialize(value)
 }
 
 /// [`from_deep_json`] for a host wire string, its failure worded `parse {what}: {error}`.
@@ -389,5 +443,64 @@ mod float_parse_tests {
         for (text, x) in [("0.5", 0.5), ("1.25", 1.25), ("-3", -3.0), ("1e3", 1000.0)] {
             assert_eq!(kernel_parse(text).to_bits(), f64::to_bits(x), "{text}");
         }
+    }
+}
+
+#[cfg(test)]
+mod json_entry_tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn json_entry_parses_past_serde_json_default_depth_up_to_the_kernel_bound() {
+        assert!(serde_json::from_str::<serde_json::Value>(&nested(200)).is_err());
+        assert!(from_json_str::<serde_json::Value>(&nested(200)).is_ok());
+        assert!(from_json_str::<serde_json::Value>(&nested(MAX_JSON_DEPTH)).is_ok());
+        let err = from_json_str::<serde_json::Value>(&nested(MAX_JSON_DEPTH + 1)).unwrap_err();
+        assert_eq!(err.to_string(), "nesting exceeds 8192 levels");
+    }
+
+    #[test]
+    fn json_entry_control_keeps_serde_json_errors_and_values() {
+        #[derive(serde::Deserialize, Debug, PartialEq)]
+        struct Row {
+            id: String,
+            n: f64,
+        }
+        let text = r#"{"id":"a","n":1.5}"#;
+        assert_eq!(from_json_str::<Row>(text).unwrap(), serde_json::from_str::<Row>(text).unwrap());
+        let value: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(from_json_value::<Row>(&value).unwrap(), serde_json::from_value::<Row>(value.clone()).unwrap());
+        let bad = r#"{"id":1}"#;
+        assert_eq!(
+            from_json_str::<Row>(bad).unwrap_err().to_string(),
+            serde_json::from_str::<Row>(bad).unwrap_err().to_string()
+        );
+        assert!(from_json_str::<Row>("{} trailing").is_err());
+    }
+}
+
+#[cfg(test)]
+mod json_entry_depth_tests {
+    use super::*;
+
+    fn nested_call(depth: usize) -> String {
+        format!("{}1{}", "[\"f\",".repeat(depth), "]".repeat(depth))
+    }
+
+    #[test]
+    fn a_recursive_kernel_type_reads_at_the_full_bound_on_a_test_thread() {
+        let expr = from_json_str::<crate::schema::SExpression>(&nested_call(MAX_JSON_DEPTH)).expect("reads at the bound");
+        // Dropping a tree this deep overflows a test thread's stack (G-ORBITAL-CORE-199).
+        core::mem::forget(expr);
+        assert!(from_json_str::<crate::schema::SExpression>(&nested_call(MAX_JSON_DEPTH + 1)).is_err());
+    }
+
+    #[test]
+    fn a_shallow_text_reads_on_the_callers_stack_control() {
+        assert_eq!(from_json_str::<crate::schema::SExpression>(&nested_call(3)).is_ok(), true);
     }
 }

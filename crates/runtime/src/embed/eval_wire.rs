@@ -2,6 +2,7 @@
 //! row-access owner (`entity_access`) behind JSON strings, so a host renders with the kernel's semantics
 //! and never carries a second evaluator. A render hands its binding context once and every expression it
 //! binds in one `evaluate_many` crossing.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -83,7 +84,7 @@ impl EvalContextWire {
             builder = builder.messages(messages);
         }
         for (name, value) in self.locals.unwrap_or_default() {
-            let value = serde_json::from_value::<Value>(value)
+            let value = from_json_value::<Value>(&value)
                 .map_err(|e| format!("local `{name}`: {e}"))?;
             builder = builder.local(&name, value);
         }
@@ -370,9 +371,9 @@ pub fn check_mutation_json(
     policy_json: Option<&str>,
     entity_type: &str,
 ) -> Result<String, String> {
-    let operation = match serde_json::from_value::<MutationOpWire>(serde_json::Value::String(
+    let operation = match from_json_value::<MutationOpWire>(&(serde_json::Value::String(
         operation.to_string(),
-    ))
+    )))
     .map_err(|e| format!("parse operation: {e}"))?
     {
         MutationOpWire::Create => PersistOperation::Create,
@@ -760,6 +761,7 @@ pub fn trace_effects_json(context_json: &str, effects_json: &str) -> Result<Stri
 
 #[cfg(test)]
 mod trace_effects_tests {
+    use orbital_core_base::json_value::from_json_str;
     use super::trace_effects_json;
     use serde_json::{json, Value as Json};
 
@@ -784,7 +786,7 @@ mod trace_effects_tests {
 
     fn trace(entity: Json, effects: Json) -> Json {
         let context = json!({ "entity": entity, "state": "idle" });
-        serde_json::from_str(&trace_effects_json(&context.to_string(), &effects.to_string()).unwrap()).unwrap()
+        from_json_str(&trace_effects_json(&context.to_string(), &effects.to_string()).unwrap()).unwrap()
     }
 
     #[test]
@@ -878,7 +880,7 @@ mod resolve_values_tests {
     use serde_json::{json, Value as Json};
 
     fn resolve(context: Json, values: Json) -> Json {
-        serde_json::from_str(&resolve_values_json(&context.to_string(), &values.to_string()).unwrap()).unwrap()
+        orbital_core_base::json_value::from_json_str(&resolve_values_json(&context.to_string(), &values.to_string()).unwrap()).unwrap()
     }
 
     fn nested_values(depth: usize) -> String {
@@ -940,7 +942,7 @@ mod field_update_wire_tests {
 
     fn verdict(patch: Json, program_step: bool) -> Json {
         let rules = json!([{ "field": "teamId", "update": { "server": "set by the membership flow" } }]);
-        serde_json::from_str(
+        orbital_core_base::json_value::from_json_str(
             &check_field_updates_json(&json!({ "user": { "id": "u1" } }).to_string(), &json!({ "id": "u1", "teamId": "" }).to_string(), &patch.to_string(), &rules.to_string(), program_step, "Member").unwrap(),
         )
         .unwrap()

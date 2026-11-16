@@ -1,12 +1,13 @@
 // `array/pmap` and `array/preduce` answer what their sequential twins answer; `array/preduce` groups by a fixed chunk
 // of 1024, so a non-associative fold has one answer however many threads ran it.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_base::error::OrbitalError, orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator};
 use serde_json::{json, Value as Json};
 
 fn run(expr: Json) -> Result<Json, OrbitalError> {
     let ctx = BindingContextBuilder::new().build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     Evaluator::new().evaluate(&sexpr, &ctx).map(|value| serde_json::to_value(value).unwrap())
 }
 

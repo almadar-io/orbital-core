@@ -1,13 +1,14 @@
 //! The UI's own message catalogs (`ui/{en,ar,sl}.json`): the built-in labels every host paints when the program's
 //! catalog does not carry a key. `renderers/web/src/core/locales/*.json` are byte copies of these files.
 
+use crate::json_value::from_json_str;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 type Catalog = BTreeMap<String, String>;
 
 fn parse(source: &str) -> Catalog {
-    let json: serde_json::Value = serde_json::from_str(source).expect("built-in ui catalog");
+    let json: serde_json::Value = from_json_str(source).expect("built-in ui catalog");
     json.as_object()
         .expect("ui catalog is an object")
         .iter()

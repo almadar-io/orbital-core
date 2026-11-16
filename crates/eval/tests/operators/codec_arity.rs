@@ -1,9 +1,10 @@
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_base::error::{EvalError, OrbitalError}, orbital_core_base::schema::SExpression, orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder}, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
 fn context() -> BindingContext {
     BindingContextBuilder::new()
-        .payload(serde_json::from_value(json!({ "invalidBase64": "!" })).unwrap())
+        .payload(from_json_value(&json!({ "invalidBase64": "!" })).unwrap())
         .build()
         .with_secret("Jefe", "Jefe".to_string())
 }
@@ -11,7 +12,7 @@ fn context() -> BindingContext {
 fn evaluate(op: &str, args: &[Json], ctx: &BindingContext) -> Result<Value, OrbitalError> {
     let mut call = vec![json!(op)];
     call.extend(args.iter().cloned());
-    let expression: SExpression = serde_json::from_value(Json::Array(call)).unwrap();
+    let expression: SExpression = from_json_value(&Json::Array(call)).unwrap();
     Evaluator::new().evaluate(&expression, ctx)
 }
 

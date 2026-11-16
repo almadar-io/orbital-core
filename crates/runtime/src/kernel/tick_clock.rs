@@ -322,10 +322,11 @@ impl TickClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use serde_json::json;
 
     fn schema(ticks: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "t",
             "version": "1.0.0",
             "typeContractVersion": 1, "orbitals": [{

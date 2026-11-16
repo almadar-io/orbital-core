@@ -1,6 +1,7 @@
 // G-CROSS-357: a render-ui inside a `let` resolves its props after the step against the post-`set` entity (EXEC-STEP-4),
 // with the let bindings it ran under in scope, and a later repaint keeps them.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::client_effect::ClientEffect;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -12,7 +13,7 @@ fn arm(event: &str, effects: Json) -> Json {
 }
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "letscope",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

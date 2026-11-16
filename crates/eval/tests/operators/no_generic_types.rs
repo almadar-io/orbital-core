@@ -4,6 +4,7 @@
 //! variable's bound. The twin of `@almadar/std` `__tests__/operator-signatures.test.ts` and `@almadar/core`
 //! `__tests__/service-registry-no-generic-types.test.ts`, run against what the compiler actually reads.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::language::registry::{
     operators, EmbeddedOperator, OperatorTypeRef, OperatorTypeRefKind as K,
 };
@@ -129,7 +130,7 @@ fn every_variable_is_declared_and_every_result_variable_is_bound_by_a_parameter(
 #[test]
 fn the_service_contracts_declare_no_generic_type() {
     installed();
-    let registry: Value = serde_json::from_str(&language_data_after_preflight().services).unwrap();
+    let registry: Value = from_json_str(&language_data_after_preflight().services).unwrap();
     let mut found = Vec::new();
     fn visit(node: &Value, path: &str, found: &mut Vec<String>) {
         let Value::Object(map) = node else { return };
@@ -180,7 +181,7 @@ fn the_service_contracts_declare_no_generic_type() {
 
 #[test]
 fn control_the_scan_sees_a_generic_type() {
-    let bad: OperatorTypeRef = serde_json::from_value(serde_json::json!("any")).unwrap();
+    let bad: OperatorTypeRef = from_json_value(&serde_json::json!("any")).unwrap();
     let mut hits = 0;
     walk(&bad, "x", &mut |t, _| {
         if matches!(t, OperatorTypeRef::Primitive(p) if GENERIC.contains(&p.as_str())) {
@@ -189,6 +190,6 @@ fn control_the_scan_sees_a_generic_type() {
     });
     assert_eq!(hits, 1);
     let ok: OperatorTypeRef =
-        serde_json::from_value(serde_json::json!({ "kind": "array", "of": { "kind": "var", "name": "T" } })).unwrap();
+        from_json_value(&serde_json::json!({ "kind": "array", "of": { "kind": "var", "name": "T" } })).unwrap();
     assert_eq!(variables_of(&ok), BTreeSet::from(["T".to_string()]));
 }

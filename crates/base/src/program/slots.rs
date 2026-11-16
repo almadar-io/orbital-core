@@ -320,6 +320,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::json_value::from_json_value;
 
     #[test]
     fn classifies_every_canonical_slot() {
@@ -409,7 +410,7 @@ mod tests {
     /// `@Create denied` / `unresolved binding '@payload.id'` lines on `std-realtime-chat`.
     #[test]
     fn non_main_slot_transitions_excludes_null_content_close_arms() {
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "App",
             "orbitals": [{
                 "name": "Main",
@@ -433,7 +434,7 @@ mod tests {
                     }
                 }]
             }]
-        }))
+        })))
         .unwrap();
 
         let transitions = non_main_slot_transitions(&schema).expect("table");
@@ -447,7 +448,7 @@ mod tests {
 
     #[test]
     fn g_orb_068_a_modal_opened_from_two_routes_keeps_both() {
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "App",
             "orbitals": [{
                 "name": "Main",
@@ -468,7 +469,7 @@ mod tests {
                     ]
                 }]
             }]
-        }))
+        })))
         .unwrap();
         let mut routes: Vec<(String, String)> = modal_open_paths(&schema)
             .expect("table")

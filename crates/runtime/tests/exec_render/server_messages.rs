@@ -1,13 +1,14 @@
 // The server role evaluates `i18n/t` against the messages the program carries, in its declared locales, as the
 // viewer's locale (`EventRequest.locale`). JS twin: `almadar-runtime/test/i18n-viewer-locale.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::json;
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "site",
         "locales": ["en", "ar"],
         "typeContractVersion": 1, "orbitals": [{
@@ -32,7 +33,7 @@ fn schema() -> OrbitalSchema {
 
 fn with_messages() -> OrbitalSchema {
     let mut program = schema();
-    program.messages = Some(serde_json::from_value(json!({
+    program.messages = Some(from_json_value(&json!({
         "en": { "site:hero.title": "Hello", "site:posts.count": "{{n}} posts" },
         "ar": { "site:hero.title": "مرحبا", "site:posts.count": "{{n}} منشورات" }
     }))

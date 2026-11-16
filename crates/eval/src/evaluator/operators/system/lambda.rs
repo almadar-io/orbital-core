@@ -174,8 +174,8 @@ impl Operator for UnquoteOp {
 /// `(behavior/apply value overrides)` — records call-site overrides on a trait
 /// value (`schema::behavior_value`). Twin of `@almadar/core` `applyTraitOverrides`.
 pub struct BehaviorApplyOp;
-impl Operator for BehaviorApplyOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BehaviorApplyOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "behavior/apply", >= 2);
         if args.len() > 2 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -184,9 +184,9 @@ impl Operator for BehaviorApplyOp {
                 actual: args.len(),
             }));
         }
-        let value = super::eval_expr(&args[0], ctx)?;
-        let overrides = super::eval_expr(&args[1], ctx)?;
-        orbital_core_base::schema::behavior_value::apply_behavior_overrides(&value, &overrides)
+        let value = args[0];
+        let overrides = args[1];
+        orbital_core_base::schema::behavior_value::apply_behavior_overrides(value, overrides)
             .ok_or_else(|| {
                 OrbitalError::Eval(EvalError::TypeMismatch {
                     expected: "a behavior value and overrides of its kind".to_string(),
@@ -200,8 +200,8 @@ impl Operator for BehaviorApplyOp {
 /// `(behavior/ref specifier)` — a whole behavior as a value. Twin of
 /// `@almadar/evaluator` `evalBehaviorRef`.
 pub struct BehaviorRefOp;
-impl Operator for BehaviorRefOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for BehaviorRefOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "behavior/ref", >= 1);
         if args.len() > 1 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -210,7 +210,7 @@ impl Operator for BehaviorRefOp {
                 actual: args.len(),
             }));
         }
-        let spec = super::eval_expr(&args[0], ctx)?;
+        let spec = args[0].clone();
         let spec = match spec {
             Value::String(spec) => spec,
             other => return Err(other.kind_error("string").into()),

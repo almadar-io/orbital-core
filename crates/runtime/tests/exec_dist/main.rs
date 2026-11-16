@@ -1,7 +1,5 @@
 //! EXEC-DIST family: the client and server roles, legs and folds.
 
-#[path = "../support/mod.rs"]
-mod support;
 
 mod conformance;
 mod client_browser_leg;

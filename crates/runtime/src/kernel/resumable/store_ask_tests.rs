@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 
 fn bound_port() -> IoPort {
@@ -104,7 +105,7 @@ fn a_replayed_take_succeeds_once_and_a_missing_row_fails() {
 #[test]
 fn a_single_update_on_a_bound_entity_is_one_update_op_and_a_missing_row_fails() {
     let port = bound_port();
-    let data: Value = serde_json::from_value(serde_json::json!({"used": true})).unwrap();
+    let data: Value = from_json_value(&(serde_json::json!({"used": true}))).unwrap();
     let (_, end) = port.run_step(Vec::new(), || port.write("Ticket", "t1", &data));
     let update = IoRequest::WriteRows {
         batch: RowWriteBatch {
@@ -119,7 +120,7 @@ fn a_single_update_on_a_bound_entity_is_one_update_op_and_a_missing_row_fails() 
 }
 
 fn row(fields: serde_json::Value) -> Value {
-    serde_json::from_value(fields).unwrap()
+    from_json_value(&fields).unwrap()
 }
 
 fn create_of(request: &IoRequest) -> &Value {

@@ -12,6 +12,7 @@
 //! presets it references (`themeDefinitions`, written by `orb` from the
 //! installed `@almadar/core` — [`carry_theme_definitions`]); the compiler reads
 //! the installed set ([`ThemePresets::installed`]).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -82,7 +83,7 @@ impl ThemePresets {
     /// no directory at runtime; callers hand it a JSON string (baked in via
     /// `include_str!`, see [`Self::baked`]).
     pub fn from_json(json: &str) -> Result<Self, ThemeError> {
-        let def: ThemeDefinition = serde_json::from_str(json)?;
+        let def: ThemeDefinition = from_json_str(json)?;
         let mut definitions = HashMap::new();
         definitions.insert(def.name.clone(), def);
         Ok(Self { definitions })

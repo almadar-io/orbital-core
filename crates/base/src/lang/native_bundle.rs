@@ -2,6 +2,7 @@
 //! names the contract, shell version and feature set it was built for, and the SHA-256 of the library
 //! under each target directory (`<bundle>/<target>/<library>`). A shell refuses any other bundle.
 
+use crate::json_value::from_json_slice;
 use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
@@ -67,7 +68,7 @@ pub fn verified_libraries(
     let manifest_path = bundle.join("manifest.json");
     let bytes = std::fs::read(&manifest_path)
         .map_err(|source| NativeBundleError::Io { path: manifest_path.clone(), source })?;
-    let manifest: NativeBundleManifest = serde_json::from_slice(&bytes).map_err(|e| NativeBundleError::Manifest {
+    let manifest: NativeBundleManifest = from_json_slice(&bytes).map_err(|e| NativeBundleError::Manifest {
         path: manifest_path.clone(),
         message: e.to_string(),
     })?;

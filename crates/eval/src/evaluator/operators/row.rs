@@ -10,11 +10,11 @@ use orbital_core_base::row_set::RowPredicate;
 
 /// row/matches - `(row/matches pred row)`: `true` when `row` satisfies `pred`. An absent operand is an absent result; a value that is not a `RowPredicate` is an error.
 pub struct RowMatchesOp;
-impl Operator for RowMatchesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for RowMatchesOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "row/matches", == 2);
-        let pred = eval_expr(&args[0], ctx)?;
-        let row = eval_expr(&args[1], ctx)?;
+        let pred = args[0];
+        let row = args[1];
         if pred.is_null() || row.is_null() {
             return Ok(Value::Null);
         }
@@ -24,9 +24,9 @@ impl Operator for RowMatchesOp {
                 actual: row.type_name().into(),
             }));
         }
-        let pred = serde_json::from_value::<RowPredicate>(value_to_json(&pred)).map_err(|e| {
+        let pred = serde_json::from_value::<RowPredicate>(value_to_json(pred)).map_err(|e| {
             EvalError::InvalidArgument(format!("row/matches: not a RowPredicate: {e}"))
         })?;
-        Ok(Value::Bool(pred.matches(&row)))
+        Ok(Value::Bool(pred.matches(row)))
     }
 }

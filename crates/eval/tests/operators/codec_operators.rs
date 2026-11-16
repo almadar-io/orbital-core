@@ -2,6 +2,7 @@
 //! `fixtures/operators/codec-vectors.json`, mirrored byte-identically under
 //! `tests/fixtures/operators/`; the TS twin in `@almadar/evaluator` reads the same file).
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ fn crate_path(rel: &str) -> PathBuf {
 fn eval(op: &str, args: &[Json]) -> Result<Json, String> {
     let mut expr = vec![Json::String(op.to_string())];
     expr.extend(args.iter().cloned());
-    let sexpr = serde_json::from_value(Json::Array(expr)).map_err(|e| e.to_string())?;
+    let sexpr = from_json_value(&Json::Array(expr)).map_err(|e| e.to_string())?;
     let ctx = BindingContextBuilder::new().build();
     Evaluator::new()
         .evaluate(&sexpr, &ctx)
@@ -37,7 +38,7 @@ fn eval(op: &str, args: &[Json]) -> Result<Json, String> {
 fn every_shared_vector_matches() {
     let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/codec-vectors.json"))
         .unwrap();
-    let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
+    let cases: Vec<Case> = from_json_str(&raw).unwrap();
     assert!(!cases.is_empty());
     for case in &cases {
         let got = eval(&case.op, &case.args);
@@ -63,14 +64,14 @@ fn an_unknown_digest_encoding_answers_null_for_hash_and_errors_for_hmac() {
     assert_eq!(eval("hash/sha", &[json!(256), json!("abc"), json!("octal")]), Ok(Json::Null));
     assert!(eval("hmac/sha", &[json!(256), json!("bytes"), json!("aw=="), json!("m"), json!("octal")]).is_err());
     let held = BindingContextBuilder::new().build().with_secret("K", "k".to_string());
-    let expr = serde_json::from_value(json!(["hmac/sha", 256, "credential", "K", "m", "octal"])).unwrap();
+    let expr = from_json_value(&json!(["hmac/sha", 256, "credential", "K", "m", "octal"])).unwrap();
     assert!(Evaluator::new().evaluate(&expr, &held).is_err());
 }
 
 #[test]
 fn hmac_reads_its_key_from_a_held_credential_and_a_key_that_is_a_value_is_not_a_key() {
     let call = |ctx: &orbital_core_eval::evaluator::context::BindingContext| {
-        let expr = serde_json::from_value(json!(["hmac/sha", 256, "credential", "K", "m", "hex"])).unwrap();
+        let expr = from_json_value(&json!(["hmac/sha", 256, "credential", "K", "m", "hex"])).unwrap();
         Evaluator::new().evaluate(&expr, ctx)
     };
     let held = BindingContextBuilder::new().build().with_secret("K", "k".to_string());
@@ -95,7 +96,7 @@ fn missing_arguments_are_arity_errors() {
 #[test]
 fn every_shared_regex_vector_matches() {
     let raw = std::fs::read_to_string(crate_path("tests/fixtures/operators/regex-vectors.json")).unwrap();
-    let cases: Vec<Case> = serde_json::from_str(&raw).unwrap();
+    let cases: Vec<Case> = from_json_str(&raw).unwrap();
     assert!(cases.iter().any(|case| case.expect == Some(json!(true))));
     assert!(cases.iter().any(|case| case.expect == Some(json!(false))));
     assert!(cases.iter().any(|case| case.null));

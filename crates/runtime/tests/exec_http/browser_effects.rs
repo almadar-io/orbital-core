@@ -1,5 +1,6 @@
 // `browser/page-facts`, `browser/prompt` and `browser/embed` through the kernel: each is one journaled host ask (EXEC-HTTP-3).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_base::ir::PageFactField;
 use orbital_core_runtime::resumable::{answer_ports, IoAnswer, IoReply, IoRequest, ModelFailure, ModelFailureKind, PageFacts};
@@ -9,7 +10,7 @@ use serde_json::{json, Value as Json};
 const COLLECTOR: &str = "https://collector.example.com";
 
 fn schema(effect: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "egress": [COLLECTOR],
         "typeContractVersion": 1, "orbitals": [{
@@ -35,7 +36,7 @@ fn go() -> EventRequest {
     EventRequest {
         event: "GO".to_string(),
         target_trait: Some("Probe".to_string()),
-        payload: Some(serde_json::from_value(json!({ "body": "hello" })).unwrap()),
+        payload: Some(from_json_value(&json!({ "body": "hello" })).unwrap()),
         ..Default::default()
     }
 }

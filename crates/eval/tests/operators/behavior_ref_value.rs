@@ -1,16 +1,17 @@
 //! A whole behavior as a value (`.lolo` type `behavior`) and `(behavior/ref spec)` —
 //! twin of `@almadar/core` `behaviorRef` / `isBehaviorRefValue` and the evaluator op.
 
+use orbital_core_base::json_value::from_json_str;
 use {orbital_core_eval::evaluator::{eval_expr, BindingContext}, orbital_core_base::value::Value};
 use orbital_core_base::schema::behavior_value::{behavior_ref, is_behavior_ref_value, is_orbital_value, is_trait_value};
 use orbital_core_base::schema::{FieldType, SExpression};
 
 fn sx(json: &str) -> SExpression {
-    serde_json::from_str(json).expect("sexpr json")
+    from_json_str(json).expect("sexpr json")
 }
 
 fn val(json: &str) -> Value {
-    serde_json::from_str(json).expect("value json")
+    from_json_str(json).expect("value json")
 }
 
 fn ctx() -> BindingContext {
@@ -70,7 +71,7 @@ fn the_operator_refuses_a_bad_specifier_and_a_non_string() {
 
 #[test]
 fn behavior_is_a_field_type() {
-    let ft: FieldType = serde_json::from_str(r#""behavior""#).expect("field type");
+    let ft: FieldType = from_json_str(r#""behavior""#).expect("field type");
     assert_eq!(ft, FieldType::Behavior);
 }
 

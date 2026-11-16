@@ -1,5 +1,6 @@
 //! Which sigils each binding context allows.
 
+use crate::json_value::from_json_str;
 use super::*;
 
 // ============================================================================
@@ -16,7 +17,7 @@ pub struct BindingContextRule {
 pub fn binding_context_rules() -> &'static HashMap<String, Vec<String>> {
     static PARSED: OnceLock<HashMap<String, Vec<String>>> = OnceLock::new();
     PARSED.get_or_init(|| {
-        let rules: HashMap<String, BindingContextRule> = serde_json::from_str(
+        let rules: HashMap<String, BindingContextRule> = from_json_str(
             &crate::language_data::language_data_after_preflight().binding_rules,
         )
         .expect("installed binding-rules.json is corrupt — reinstall @almadar/core");

@@ -1,3 +1,4 @@
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 
 #[test]
@@ -6,7 +7,7 @@ fn a_payload_field_of_a_std_value_type_has_the_type_an_entity_field_of_it_has() 
         assert_eq!(payload_type_shape(word).unwrap(), ty, "{word}");
         assert_eq!(payload_type_shape(&format!("[{word}]")).unwrap(), OirType::array(ty.clone()), "[{word}]");
         let field: crate::schema::FieldDefinition =
-            serde_json::from_value(serde_json::json!({ "name": "f", "type": word })).unwrap();
+            from_json_value(&(serde_json::json!({ "name": "f", "type": word }))).unwrap();
         assert_eq!(payload_type_shape(word).unwrap(), field_shape(&field).unwrap(), "payload and entity agree on {word}");
     }
     assert_eq!(
@@ -118,24 +119,24 @@ fn declared_shape_contract_version_is_explicit_and_legacy_remains_unmarked() {
     let aliases = std::collections::BTreeMap::new();
     let built = DeclaredShape::with_named(None, OirType::String, &aliases).unwrap();
     assert!(serde_json::to_value(&built).unwrap().get("version").is_none());
-    let legacy: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({"name":"old","orbitals":[]})).unwrap();
+    let legacy: crate::schema::OrbitalSchema = from_json_value(&(serde_json::json!({"name":"old","orbitals":[]}))).unwrap();
     assert!(serde_json::to_value(legacy).unwrap().get("typeContractVersion").is_none());
-    let current: crate::schema::OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let current: crate::schema::OrbitalSchema = from_json_value(&(serde_json::json!({
         "name":"new","orbitals":[],"typeContractVersion":1,
         "types":{"Row":[{"name":"", "type":"object", "nullable":false, "additionalProperties":{"type":"string","nullable":false}}]}
-    })).unwrap();
+    }))).unwrap();
     assert_eq!(current.type_contract_version, Some(1));
     assert!(current.types.as_ref().unwrap().contains_key("Row"));
-    assert!(serde_json::from_value::<crate::schema::OrbitalSchema>(serde_json::json!({"name":"bad","orbitals":[],"typeContractVersion":2})).is_err());
+    assert!(from_json_value::<crate::schema::OrbitalSchema>(&(serde_json::json!({"name":"bad","orbitals":[],"typeContractVersion":2}))).is_err());
 }
 
 #[test]
 fn payload_container_items_preserve_explicit_nullable_value_contract() {
     for (container, key) in [("Map<string,string>", "value"), ("[string]", "inner")] {
-        let field: crate::schema::PayloadField = serde_json::from_value(serde_json::json!({
+        let field: crate::schema::PayloadField = from_json_value(&(serde_json::json!({
             "type":container, "nullable":false,
             "items":{"type":"string","nullable":true}
-        })).unwrap();
+        }))).unwrap();
         let shape = serde_json::to_value(payload_field_shape(&field).unwrap()).unwrap();
         assert_eq!(shape[key]["kind"], "optional", "{container}: {shape}");
         assert_eq!(shape[key]["inner"]["kind"], "string");
@@ -153,7 +154,7 @@ fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
         },
         "additionalProperties": {"type":"number", "nullable":true}
     });
-    let field: FieldDefinition = serde_json::from_value(value).unwrap();
+    let field: FieldDefinition = from_json_value(&value).unwrap();
     let wire = serde_json::to_value(&field).unwrap();
     assert_eq!(wire["nullable"], false);
     assert_eq!(wire["additionalProperties"]["nullable"], true);
@@ -166,11 +167,11 @@ fn explicit_nullable_and_additional_values_survive_schema_and_shape_readers() {
     assert_eq!(fields[0]["fieldType"]["kind"], "string");
     assert_eq!(fields[1]["required"], true);
     assert_eq!(fields[1]["fieldType"]["kind"], "optional");
-    let payload: crate::schema::PayloadField = serde_json::from_value(serde_json::json!({
+    let payload: crate::schema::PayloadField = from_json_value(&(serde_json::json!({
         "name":"row", "type":"object", "nullable":false,
         "properties":[{"name":"id", "type":"string", "required":false, "nullable":false}],
         "additionalProperties":{"type":"number", "nullable":true}
-    })).unwrap();
+    }))).unwrap();
     let payload_wire = serde_json::to_value(&payload).unwrap();
     assert_eq!(payload_wire["nullable"], false);
     assert_eq!(payload_wire["additionalProperties"]["nullable"], true);
@@ -338,7 +339,7 @@ fn page_initial_marker_round_trips_and_is_omitted_when_unset() {
     page.is_initial = true;
     let json = serde_json::to_string(&page).unwrap();
     assert!(json.contains("\"isInitial\":true"));
-    assert!(serde_json::from_str::<OirPage>(&json).unwrap().is_initial);
+    assert!(from_json_str::<OirPage>(&json).unwrap().is_initial);
 }
 
 #[test]
@@ -348,7 +349,7 @@ fn page_not_found_marker_round_trips_is_omitted_when_unset_and_selects_the_decla
     page.is_not_found = true;
     let json = serde_json::to_string(&page).unwrap();
     assert!(json.contains("\"isNotFound\":true"));
-    assert!(serde_json::from_str::<OirPage>(&json).unwrap().is_not_found);
+    assert!(from_json_str::<OirPage>(&json).unwrap().is_not_found);
     let mut module = module_of(&[("A", false), ("B", false)]);
     assert!(module.not_found_page().is_none(), "control: none declared");
     module.pages[1].is_not_found = true;
@@ -438,15 +439,15 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
     let OirType::FieldRef { record, .. } = field_shape(&alias).unwrap() else { panic!("a field reference") };
     assert!(matches!(*record, OirType::Struct { ref fields, .. } if fields.len() == 1 && fields[0].name == "x"));
     assert_eq!(serde_json::to_string(&FieldType::Field).unwrap(), "\"field\"");
-    assert_eq!(serde_json::from_str::<FieldType>("\"field\"").unwrap(), FieldType::Field);
+    assert_eq!(from_json_str::<FieldType>("\"field\"").unwrap(), FieldType::Field);
     // control: the neighbouring name-carrying tag keeps its own spelling.
     assert_eq!(serde_json::to_string(&FieldType::Event).unwrap(), "\"event\"");
 }
 
 #[test]
 fn a_bare_payload_object_has_a_record_shape_while_json_has_no_shape() {
-    let object: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "object"})).unwrap();
-    let json: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({"name": "data", "type": "json"})).unwrap();
+    let object: crate::schema::types::PayloadField = from_json_value(&(serde_json::json!({"name": "data", "type": "object"}))).unwrap();
+    let json: crate::schema::types::PayloadField = from_json_value(&(serde_json::json!({"name": "data", "type": "json"}))).unwrap();
     assert_eq!(payload_field_shape(&object).unwrap(), OirType::Struct { fields: Default::default(), additional: None });
     assert_eq!(
         payload_field_shape(&json),
@@ -686,7 +687,7 @@ fn field_shape_relation_without_definition_has_no_shape() {
 
 #[test]
 fn a_position_without_a_shape_is_a_typed_error_naming_where() {
-    let field = |json: serde_json::Value| -> FieldDefinition { serde_json::from_value(json).unwrap() };
+    let field = |json: serde_json::Value| -> FieldDefinition { from_json_value(&json).unwrap() };
     let bare_object = field(serde_json::json!({ "type": "object" }));
     assert_eq!(field_shape(&bare_object), Err(ShapeError::at(ShapeGap::ObjectWithoutShape)));
     let bare_array = field(serde_json::json!({ "type": "array" }));
@@ -746,7 +747,7 @@ fn test_oir_entity_shared_round_trips_true() {
     let serialized = serde_json::to_string(&entity).unwrap();
     assert!(serialized.contains("\"shared\":true"));
 
-    let deserialized: OirEntity = serde_json::from_str(&serialized).unwrap();
+    let deserialized: OirEntity = from_json_str(&serialized).unwrap();
     assert!(deserialized.shared);
 }
 
@@ -758,7 +759,7 @@ fn test_oir_entity_shared_defaults_false_when_absent() {
             "persistence": "persistent",
             "fields": []
         }"#;
-    let entity: OirEntity = serde_json::from_str(json).unwrap();
+    let entity: OirEntity = from_json_str(json).unwrap();
     assert!(!entity.shared);
 }
 
@@ -776,14 +777,14 @@ fn test_oir_field_intrinsic_round_trips_true() {
     field.intrinsic = true;
     let serialized = serde_json::to_string(&field).unwrap();
     assert!(serialized.contains("\"intrinsic\":true"));
-    let deserialized: OirField = serde_json::from_str(&serialized).unwrap();
+    let deserialized: OirField = from_json_str(&serialized).unwrap();
     assert!(deserialized.intrinsic);
 }
 
 #[test]
 fn test_oir_field_intrinsic_defaults_false_when_absent() {
     let json = r#"{ "name": "x", "fieldType": { "kind": "string" } }"#;
-    let field: OirField = serde_json::from_str(json).unwrap();
+    let field: OirField = from_json_str(json).unwrap();
     assert!(!field.intrinsic);
 }
 
@@ -845,7 +846,7 @@ fn test_oir_trait_dispatch_round_trips_declared_mode() {
     t.dispatch = Some(crate::schema::types::DispatchMode::Client);
     let serialized = serde_json::to_string(&t).unwrap();
     assert!(serialized.contains("\"dispatch\":\"client\""));
-    let deserialized: OirTrait = serde_json::from_str(&serialized).unwrap();
+    let deserialized: OirTrait = from_json_str(&serialized).unwrap();
     assert_eq!(deserialized.dispatch, Some(crate::schema::types::DispatchMode::Client));
 }
 
@@ -855,7 +856,7 @@ fn test_oir_trait_dispatch_defaults_absent() {
     assert_eq!(t.dispatch, None);
     let serialized = serde_json::to_string(&t).unwrap();
     assert!(!serialized.contains("\"dispatch\""));
-    let deserialized: OirTrait = serde_json::from_str(&serialized).unwrap();
+    let deserialized: OirTrait = from_json_str(&serialized).unwrap();
     assert_eq!(deserialized.dispatch, None);
 }
 
@@ -1021,7 +1022,7 @@ fn payload_fields_are_required_only_where_the_author_marked_them_sorted_by_name(
 
 #[test]
 fn a_named_payload_shape_references_declared_aliases_by_name_and_the_structural_shape_is_unchanged() {
-    let matched: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({
+    let matched: crate::schema::types::PayloadField = from_json_value(&(serde_json::json!({
         "name": "matched", "type": "union", "required": true, "projectedFrom": { "type": "Matched" },
         "properties": [
             { "name": "MatchedText", "type": "object", "projectedFrom": { "type": "MatchedText" },
@@ -1029,7 +1030,7 @@ fn a_named_payload_shape_references_declared_aliases_by_name_and_the_structural_
             { "name": "MatchedIndex", "type": "object", "projectedFrom": { "type": "MatchedIndex" },
               "properties": [{ "name": "index", "type": "int", "required": true }] }
         ]
-    }))
+    })))
     .unwrap();
     let declared = |n: &str| ["Matched", "MatchedText", "MatchedIndex"].contains(&n);
     assert_eq!(
@@ -1071,18 +1072,18 @@ fn a_named_payload_shape_references_declared_aliases_by_name_and_the_structural_
 
 #[test]
 fn a_named_record_lists_its_fields_in_name_order_and_a_union_keeps_its_arm_order() {
-    let record: Vec<crate::schema::types::PayloadField> = serde_json::from_value(serde_json::json!([
+    let record: Vec<crate::schema::types::PayloadField> = from_json_value(&(serde_json::json!([
         { "name": "type", "type": "string" }, { "name": "text", "type": "string", "required": true }
-    ]))
+    ])))
     .unwrap();
     let OirType::Struct { fields, .. } = declared_alias_shape_named(&record, &|_| false).unwrap() else { panic!("a record") };
     assert_eq!(fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["text", "type"]);
     let OirType::Struct { fields, .. } = declared_alias_shape(&record).unwrap() else { panic!("a record") };
     assert_eq!(fields.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["type", "text"], "control: the structural shape keeps declared order");
-    let union: crate::schema::types::PayloadField = serde_json::from_value(serde_json::json!({
+    let union: crate::schema::types::PayloadField = from_json_value(&(serde_json::json!({
         "name": "", "type": "union", "properties": [
             { "name": "Zed", "type": "object", "properties": [{ "name": "z", "type": "string" }] },
-            { "name": "Alpha", "type": "object", "properties": [{ "name": "a", "type": "string" }] } ] }))
+            { "name": "Alpha", "type": "object", "properties": [{ "name": "a", "type": "string" }] } ] })))
     .unwrap();
     let OirType::Union { variants } = declared_alias_shape_named(std::slice::from_ref(&union), &|_| false).unwrap() else { panic!("a union") };
     assert_eq!(variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(), ["Zed", "Alpha"], "union arms keep declared order");

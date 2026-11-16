@@ -1,10 +1,11 @@
+use crate::json_value::from_json_value;
 use super::*;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 fn run(tokens: Value, mode: ThemeMode, variant: Option<Value>) -> BTreeMap<String, String> {
-    let tokens: ThemeTokens = serde_json::from_value(tokens).unwrap();
-    let variant: Option<ThemeVariant> = variant.map(|v| serde_json::from_value(v).unwrap());
+    let tokens: ThemeTokens = from_json_value(&tokens).unwrap();
+    let variant: Option<ThemeVariant> = variant.map(|v| from_json_value(&v).unwrap());
     css_vars(&tokens, mode, variant.as_ref())
         .into_iter()
         .collect()
@@ -56,7 +57,7 @@ fn legacy_maps_use_their_prefixes() {
 fn empty_tokens_emit_nothing_and_only_set_keys_appear() {
     assert!(light(json!({})).is_empty());
     let v = css_vars(
-        &serde_json::from_value(json!({"colors": {"primary": "#ff0000"}})).unwrap(),
+        &from_json_value(&json!({"colors": {"primary": "#ff0000"}})).unwrap(),
         ThemeMode::Light,
         None,
     );
@@ -136,7 +137,7 @@ fn density_axis() {
         ])
     );
     let only = css_vars(
-        &serde_json::from_value(json!({"density": {"spacing": {"space3": "12px"}}})).unwrap(),
+        &from_json_value(&json!({"density": {"spacing": {"space3": "12px"}}})).unwrap(),
         ThemeMode::Light,
         None,
     );

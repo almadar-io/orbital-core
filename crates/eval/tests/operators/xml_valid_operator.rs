@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use {orbital_core_base::schema::SExpression, orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde::Deserialize;
 use serde_json::json;
@@ -15,7 +16,7 @@ struct Case {
 #[test]
 fn every_shared_xml_valid_vector_matches() {
     let cases: Vec<Case> =
-        serde_json::from_str(include_str!("../../../../tests/fixtures/operators/xml-valid-vectors.json")).unwrap();
+        from_json_str(include_str!("../../../../tests/fixtures/operators/xml-valid-vectors.json")).unwrap();
     assert!(cases.iter().any(|case| case.expect == Some(true)));
     assert!(cases.iter().any(|case| case.expect == Some(false)));
     assert!(cases.iter().any(|case| case.error));
@@ -60,12 +61,12 @@ fn legacy_xml_parse_preserves_empty_text_namespace_and_null_values() {
         ),
     ] {
         let parse: SExpression =
-            serde_json::from_value(json!(["xml/parse", input, "Row"])).unwrap();
-        let expected: Value = serde_json::from_value(expected).unwrap();
+            from_json_value(&json!(["xml/parse", input, "Row"])).unwrap();
+        let expected: Value = from_json_value(&expected).unwrap();
         assert_eq!(Evaluator::new().evaluate(&parse, &ctx).unwrap(), expected);
     }
     let null_input: SExpression =
-        serde_json::from_value(json!(["xml/parse", null, "Row"])).unwrap();
+        from_json_value(&json!(["xml/parse", null, "Row"])).unwrap();
     assert!(Evaluator::new().evaluate(&null_input, &ctx).is_err());
 }
 
@@ -74,7 +75,7 @@ fn xml_parse_answers_null_for_malformed_syntax() {
     let ctx = BindingContextBuilder::new().build();
     for input in ["", "plain text", "<a>", "<a></b>", "<a/><b/>"] {
         let parse: SExpression =
-            serde_json::from_value(json!(["xml/parse", input, "Row"])).unwrap();
+            from_json_value(&json!(["xml/parse", input, "Row"])).unwrap();
         assert_eq!(Evaluator::new().evaluate(&parse, &ctx).unwrap(), Value::Null, "{input}");
     }
 }

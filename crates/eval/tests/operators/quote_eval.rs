@@ -1,18 +1,19 @@
 //! G-CROSS-041: `(quote x)` evaluates to `x` as data on every evaluation path —
 //! twin of `@almadar/evaluator` `__tests__/quote.test.ts`.
 
+use orbital_core_base::json_value::from_json_str;
 use {orbital_core_eval::evaluator::{eval_expr, BindingContext}, orbital_core_base::value::Value};
 use orbital_core_base::schema::quote::quote_expr;
 use orbital_core_base::schema::SExpression;
 
 fn sx(json: &str) -> SExpression {
-    serde_json::from_str(json).expect("sexpr json")
+    from_json_str(json).expect("sexpr json")
 }
 
 fn ctx() -> BindingContext {
     let mut c = BindingContext::new();
-    c.set_entity(serde_json::from_str::<Value>(r#"{"total":40}"#).unwrap());
-    c.set_payload(serde_json::from_str::<Value>(r#"{"amount":7}"#).unwrap());
+    c.set_entity(from_json_str::<Value>(r#"{"total":40}"#).unwrap());
+    c.set_payload(from_json_str::<Value>(r#"{"amount":7}"#).unwrap());
     c
 }
 

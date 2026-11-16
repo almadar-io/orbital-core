@@ -1,4 +1,5 @@
 #[cfg(not(feature = "std"))]
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use std::prelude::v1::*;
 use base64::Engine;
 #[allow(unused_imports)]
@@ -34,7 +35,7 @@ mod tests {
         let mut expr = vec![serde_json::json!(op)];
         expr.extend(args.iter().cloned());
         let sexpr =
-            serde_json::from_value(serde_json::Value::Array(expr)).map_err(|e| e.to_string())?;
+            orbital_core_base::json_value::from_json_value(&serde_json::Value::Array(expr)).map_err(|e| e.to_string())?;
         crate::evaluator::Evaluator::new()
             .evaluate(&sexpr, &ctx)
             .map(|v| serde_json::to_value(v).unwrap())
@@ -43,7 +44,7 @@ mod tests {
 
     #[test]
     fn decode_uri_component_runs_every_shared_vector() {
-        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+        let cases: Vec<UriDecodeCase> = orbital_core_base::json_value::from_json_str(include_str!(
             "../../../../tests/fixtures/operators/uri-decode-vectors.json"
         ))
         .unwrap();
@@ -88,7 +89,7 @@ mod tests {
 
     #[test]
     fn uri_component_valid_runs_its_shared_vectors() {
-        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+        let cases: Vec<UriDecodeCase> = orbital_core_base::json_value::from_json_str(include_str!(
             "../../../../tests/fixtures/operators/uri-decode-vectors.json"
         ))
         .unwrap();
@@ -190,7 +191,7 @@ mod tests {
 
     #[test]
     fn md5_runs_every_shared_vector() {
-        let cases: Vec<UriDecodeCase> = serde_json::from_str(include_str!(
+        let cases: Vec<UriDecodeCase> = orbital_core_base::json_value::from_json_str(include_str!(
             "../../../../tests/fixtures/operators/md5-vectors.json"
         ))
         .unwrap();

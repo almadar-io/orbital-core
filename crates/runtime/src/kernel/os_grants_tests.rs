@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::entity_source::InMemoryEntityCache;
 use orbital_core_base::os_grants::{DesktopKind, FsMode, StdioKind};
@@ -5,7 +6,7 @@ use serde_json::json;
 use std::path::Path;
 
 fn schema(name: &str, grants: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({ "name": name, "osGrants": grants, "typeContractVersion": 1, "orbitals": [] })).unwrap()
+    from_json_value(&json!({ "name": name, "osGrants": grants, "typeContractVersion": 1, "orbitals": [] })).unwrap()
 }
 
 fn kernel() -> RuntimeKernel {
@@ -20,7 +21,7 @@ fn kernel() -> RuntimeKernel {
 fn a_kernel_with_no_grant_declaring_program_grants_nothing() {
     let k = kernel();
     k.register_schema(
-        serde_json::from_value(json!({ "name": "plain", "typeContractVersion": 1, "orbitals": [] })).unwrap(),
+        from_json_value(&json!({ "name": "plain", "typeContractVersion": 1, "orbitals": [] })).unwrap(),
     )
     .unwrap();
     assert!(k.os_grants().is_empty());
@@ -52,7 +53,7 @@ fn the_registered_programs_grants_are_unioned_without_duplicates() {
 
 #[test]
 fn an_orbitals_own_grants_reach_the_kernel_and_an_undeclared_one_does_not() {
-    let with_own: OrbitalSchema = serde_json::from_value(json!({
+    let with_own: OrbitalSchema = from_json_value(&json!({
         "name": "p", "version": "1.0.0",
         "typeContractVersion": 1, "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": [],
                       "osGrants": {"exec": ["git"]}}]
@@ -62,7 +63,7 @@ fn an_orbitals_own_grants_reach_the_kernel_and_an_undeclared_one_does_not() {
     k.register_schema(with_own).unwrap();
     assert!(k.os_grants().exec_allows("git"));
 
-    let without: OrbitalSchema = serde_json::from_value(json!({
+    let without: OrbitalSchema = from_json_value(&json!({
         "name": "q", "version": "1.0.0",
         "typeContractVersion": 1, "orbitals": [{"name": "A", "entity": {"name": "E", "fields": []}, "traits": [], "pages": []}]
     }))
@@ -78,7 +79,7 @@ fn grants_round_trip_through_the_schema_json() {
     let back = serde_json::to_value(&s).unwrap();
     assert_eq!(back["osGrants"]["env"], json!(["HOME"]));
     let plain: OrbitalSchema =
-        serde_json::from_value(json!({ "name": "p", "typeContractVersion": 1, "orbitals": [] })).unwrap();
+        from_json_value(&json!({ "name": "p", "typeContractVersion": 1, "orbitals": [] })).unwrap();
     assert!(serde_json::to_value(&plain)
         .unwrap()
         .get("osGrants")

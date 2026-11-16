@@ -1,3 +1,4 @@
+use crate::json_value::from_json_value;
 use super::OirInterval;
 
 /// G-ORBITAL-CORE-001: `orb` sends the module to its shell program as JSON; a cron tick
@@ -7,7 +8,7 @@ fn a_cron_interval_round_trips_as_json() {
     let cron = OirInterval::Cron { expression: "0 9 * * *".to_string() };
     let json = serde_json::to_value(&cron).expect("a cron interval serializes");
     assert_eq!(json, serde_json::json!({ "type": "cron", "expression": "0 9 * * *" }));
-    assert_eq!(serde_json::from_value::<OirInterval>(json).unwrap(), cron);
+    assert_eq!(from_json_value::<OirInterval>(&json).unwrap(), cron);
 }
 
 #[test]
@@ -19,6 +20,6 @@ fn control_the_fixed_intervals_keep_their_wire_form() {
         (OirInterval::Frame, serde_json::json!({ "type": "frame" })),
     ] {
         assert_eq!(serde_json::to_value(&interval).unwrap(), json);
-        assert_eq!(serde_json::from_value::<OirInterval>(json).unwrap(), interval);
+        assert_eq!(from_json_value::<OirInterval>(&json).unwrap(), interval);
     }
 }

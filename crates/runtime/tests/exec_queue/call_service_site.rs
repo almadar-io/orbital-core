@@ -3,6 +3,7 @@
 // cancelled or deferred. JS twins: `call-service-host-ports`, `call-service-live-message`,
 // `deferred-call-outcome`, `server-runtime-cancel-call` in `almadar-runtime/test`.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{CallRoutes, CallSite, IoAnswer, IoReply, IoRequest};
 use serde_json::{json, Value as Json};
@@ -15,12 +16,12 @@ use {
 const ROUTES: &str = r#"{ "key": "job", "emit": { "success": "ANSWERED", "failure": "ANSWER_FAILED", "cancelled": "STOPPED", "onMessage": "STEP" } }"#;
 
 fn call() -> Json {
-    let options: Json = serde_json::from_str(ROUTES).unwrap();
+    let options: Json = from_json_str(ROUTES).unwrap();
     json!(["call-service", "svc", "work", {}, options])
 }
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -121,7 +122,7 @@ fn emitted(response: &EventResponse) -> Vec<(&str, Option<&Value>)> {
 }
 
 fn ok() -> IoAnswer {
-    IoAnswer::Service(Ok(serde_json::from_value(json!({ "answer": 42 })).unwrap()))
+    IoAnswer::Service(Ok(from_json_value(&json!({ "answer": 42 })).unwrap()))
 }
 
 #[test]
@@ -211,7 +212,7 @@ fn a_deferred_call_fires_no_outcome_now() {
 }
 
 fn unrouted_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -263,7 +264,7 @@ fn control_a_call_that_succeeds_runs_the_effects_after_it() {
 // The arguments a `call-service` hands its provider are resolved like any effect's: a binding at any depth is its value
 // (JS twin: `EffectExecutor` `call-service` interpolates its params).
 fn args_schema(args: Json) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -285,7 +286,7 @@ fn asked_args(args: Json) -> Json {
                 event: "JUDGE".to_string(),
                 target_trait: Some("Judge".to_string()),
                 payload: Some(
-                    serde_json::from_value(json!({ "title": "Graphs 101", "tags": ["learn"] }))
+                    from_json_value(&json!({ "title": "Graphs 101", "tags": ["learn"] }))
                         .unwrap(),
                 ),
                 ..Default::default()
@@ -324,7 +325,7 @@ fn control_literal_call_service_arguments_pass_unchanged() {
 // state the transition entered, and a dispatch that moves the trait meanwhile keeps that move once the call answers
 // (G-CROSS-259, ruled 2026-10-18; JS host twin: `@almadar/runtime` `browser-host-midcall-state`, `browser-host-cancel-call`).
 fn overlap_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -451,7 +452,7 @@ fn a_call_result_after_another_dispatch_moved_the_trait_is_handled_from_the_move
 // EXEC-CONC-0/1: a KEYED ask commits its dispatch and frees the lane (the answer is handled as its own dispatch,
 // FIFO behind whatever holds the lane then); only an UNKEYED parked ask keeps the lane until the dispatch commits.
 fn lane_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

@@ -184,6 +184,7 @@ pub fn open_window(binary: &Path, renderer: &str, schema: &Path, server: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use orbital_core_base::shell_protocol::CODE_BAD_REQUEST;
 
     struct Fake;
@@ -223,9 +224,9 @@ mod tests {
     fn the_envelope_and_a_canvas_reply_round_trip_as_json() {
         let json = serde_json::to_value(coverage()).unwrap();
         assert_eq!(json["request"]["command"], "coverage");
-        assert!(matches!(serde_json::from_value::<DesktopEnvelope>(json).unwrap().request, DesktopRequest::Coverage { .. }));
+        assert!(matches!(from_json_value::<DesktopEnvelope>(&json).unwrap().request, DesktopRequest::Coverage { .. }));
         let reply = DesktopReply::Canvas(crate::client::render_probe::GameCanvasOutcome::Skip("no gpu".into()));
-        assert_eq!(serde_json::from_str::<DesktopReply>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
+        assert_eq!(from_json_str::<DesktopReply>(&serde_json::to_string(&reply).unwrap()).unwrap(), reply);
     }
 
     #[test]
@@ -242,10 +243,10 @@ mod tests {
     fn a_screenshot_viewport_is_optional_and_carries_physical_size_and_scale() {
         let base = r#"{"command":"screenshot","renderer":"dioxus","item":"i","schema":{"name":"A","typeContractVersion":1,"orbitals":[]},"outDir":"/tmp/o","route":"/""#;
         let with: DesktopRequest =
-            serde_json::from_str(&format!(r#"{base},"viewport":{{"width":1080,"height":2400,"scale":2.625}}}}"#)).unwrap();
+            from_json_str(&format!(r#"{base},"viewport":{{"width":1080,"height":2400,"scale":2.625}}}}"#)).unwrap();
         let DesktopRequest::Screenshot { viewport, .. } = with else { panic!("screenshot") };
         assert_eq!(viewport, Some(CaptureViewport { width: 1080, height: 2400, scale: 2.625 }));
-        let without: DesktopRequest = serde_json::from_str(&format!("{base}}}")).unwrap();
+        let without: DesktopRequest = from_json_str(&format!("{base}}}")).unwrap();
         let DesktopRequest::Screenshot { viewport, .. } = without else { panic!("screenshot") };
         assert_eq!(viewport, None, "control: an envelope without a viewport keeps the default window");
     }

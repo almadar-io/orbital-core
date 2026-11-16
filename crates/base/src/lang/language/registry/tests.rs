@@ -1,3 +1,4 @@
+use crate::json_value::from_json_str;
 use super::*;
 
 #[test]
@@ -29,7 +30,7 @@ fn a_contract_literal_union_reads_in_the_lolo_spelling_and_fits_a_string() {
 
 #[test]
 fn a_contract_list_type_reads_in_the_lolo_spelling() {
-    let shape: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+    let shape: serde_json::Map<String, serde_json::Value> = from_json_str(
         r#"{"steps":"AgentActivity[]","grid":"number[][]","name":"string","tags":{"type":"string[]"}}"#,
     )
     .unwrap();
@@ -156,7 +157,7 @@ fn an_action_without_a_usable_response_shape_has_none() {
 // own operator-completeness gate, like Python's).
 #[test]
 fn no_canonical_category_targets_a_mobile_shell() {
-    let doc: serde_json::Value = serde_json::from_str(operators_json()).unwrap();
+    let doc: serde_json::Value = from_json_str(operators_json()).unwrap();
     let forbidden = ["android", "ios", "kotlin", "swift", "mobile"];
     let mut offenders = Vec::new();
     for (cat, meta) in doc["categories"].as_object().unwrap() {
@@ -219,7 +220,7 @@ fn patterns_are_parsed_once_and_shared() {
 
 #[test]
 fn every_registry_pattern_survives_the_typed_parse() {
-    let raw: serde_json::Value = serde_json::from_str(patterns_json()).unwrap();
+    let raw: serde_json::Value = from_json_str(patterns_json()).unwrap();
     let raw = raw["patterns"].as_object().unwrap();
     assert_eq!(patterns().len(), raw.len());
     assert!(raw.keys().all(|name| patterns().contains_key(name)));

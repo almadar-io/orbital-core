@@ -598,6 +598,7 @@ pub fn missing_required_fields(required: &[String], data: &Value) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use orbital_core_eval::evaluator::context::BindingContextBuilder;
     use orbital_core_base::value::ValueMap;
 
@@ -810,7 +811,7 @@ mod role_satisfying_policy_tests {
     use serde_json::json;
 
     fn schema_with_employee_policy(update_policy: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(json!({
+        orbital_core_base::json_value::from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "EmployeeOrbital",
@@ -881,7 +882,7 @@ mod role_satisfying_policy_tests {
     /// haystack first, `@user.role` needle second.
     #[test]
     fn picks_a_role_from_a_reversed_array_includes_literal_array_haystack() {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = orbital_core_base::json_value::from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "EmployeeOrbital",

@@ -1,5 +1,6 @@
 // A persist's declared `emit.success` fires with the stored outcome: the row for create/update, `{ id, deleted }` for delete. Twin of almadar-runtime `persist-success-emit.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
@@ -11,7 +12,7 @@ fn arm(event: &str, effects: Json) -> Json {
 
 fn kernel() -> RuntimeKernel {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "persist-success",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -125,7 +126,7 @@ fn control_a_success_payload_carries_no_code_field() {
 
 fn guarded_kernel() -> RuntimeKernel {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "SAVE_FAILED" } });
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "persist-guarded",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -212,7 +213,7 @@ fn control_an_effect_with_no_emit_lists_no_emit_result() {
 }
 
 fn send_with(k: &RuntimeKernel, event: &str, payload: Json) -> Vec<(String, Json)> {
-    k.dispatch("Notes", None, event, serde_json::from_value(payload).unwrap())
+    k.dispatch("Notes", None, event, from_json_value(&payload).unwrap())
         .unwrap()
         .iter()
         .flat_map(|(_, r)| r.effect_results.iter())

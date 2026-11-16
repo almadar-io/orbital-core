@@ -50,6 +50,7 @@ impl DispatchMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use {crate::ir::types::{OirEntity, OirPersistence, OirTrait}};
     use crate::runs_on::Residence;
     use crate::schema::types::{EntityDefinition, TraitDefinition};
@@ -80,11 +81,11 @@ mod tests {
     }
 
     fn entity(runtime: bool) -> EntityDefinition {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "E",
             "persistence": if runtime { "runtime" } else { "persistent" },
             "fields": [{ "name": "id", "type": "string" }],
-        }))
+        })))
         .expect("entity fixture")
     }
 
@@ -99,7 +100,7 @@ mod tests {
         if let Some(mode) = dispatch {
             value["dispatch"] = serde_json::json!(mode);
         }
-        serde_json::from_value(value).expect("trait fixture")
+        from_json_value(&value).expect("trait fixture")
     }
 
     fn mode_of(t: &TraitDefinition, runtime: bool) -> DispatchMode {
@@ -143,16 +144,16 @@ mod tests {
             "name": "T", "dispatch": "local",
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] },
         });
-        assert!(serde_json::from_value::<TraitDefinition>(bad).is_err());
+        assert!(from_json_value::<TraitDefinition>(&bad).is_err());
     }
 
     #[test]
     fn the_retired_local_flag_is_refused_naming_dispatch() {
         for local in [true, false] {
-            let err = serde_json::from_value::<crate::schema::TraitReference>(serde_json::json!({
+            let err = from_json_value::<crate::schema::TraitReference>(&(serde_json::json!({
                 "name": "T", "local": local,
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [] },
-            }))
+            })))
             .unwrap_err()
             .to_string();
             assert!(err.contains("ORB_SCHEMA_RETIRED_TRAIT_KEY") && err.contains("`local`") && err.contains("dispatch"), "{err}");

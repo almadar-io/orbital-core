@@ -607,7 +607,7 @@ mod tests {
     }
 
     fn parse(text: &str) -> SExpression {
-        serde_json::from_str(text).unwrap()
+        orbital_core_base::json_value::from_json_str(text).unwrap()
     }
 
     fn sat(expr: &str, v: &Vars) -> Outcome {

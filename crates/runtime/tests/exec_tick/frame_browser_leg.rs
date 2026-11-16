@@ -1,11 +1,12 @@
 // A frame keeps each fired tick's `runTick` leg for browser-stored data (`TickDispatch.browser_leg`), so the host that owns the store receives the write (ui `tick-browser-store`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::EmbeddedKernel;
 use orbital_core_base::schema::types::OrbitalSchema;
 use serde_json::{json, Value};
 
 fn kernel(effects: Value) -> EmbeddedKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

@@ -1,12 +1,13 @@
 // A configured dispatch clock stamps exactly its time, on both the straight and the resumable entry; no clock is the wall clock.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::resumable::{drive_blocking, BlockingHost, IoRequest};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use std::sync::Arc;
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -43,7 +44,7 @@ fn schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 

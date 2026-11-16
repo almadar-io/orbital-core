@@ -626,18 +626,19 @@ pub(crate) fn emit_scene(sc: Option<&SceneTokens>, indent: &str) -> String {
 
 #[cfg(test)]
 mod motion_tests {
+    use crate::json_value::from_json_value;
     use super::emit_motion;
     use crate::schema::MotionTokens;
 
     /// The compiled app emits every motion var `@almadar/ui` `themeTokens.ts` `emitMotion` does.
     #[test]
     fn motion_emits_entry_shapes_busy_delay_and_awaiting_skeleton_like_the_runtime() {
-        let tokens: MotionTokens = serde_json::from_value(serde_json::json!({
+        let tokens: MotionTokens = from_json_value(&(serde_json::json!({
             "shapes": { "modalEnter": "scale(0.9)", "enterRise": "translateY(20px)", "enterScale": "scale(0.9)", "enterSlide": "translateX(8px)" },
             "entry": { "default": "rise", "stagger": "60ms" },
             "busyDelay": "450ms",
             "awaitingSkeleton": true
-        }))
+        })))
         .unwrap();
         let css = emit_motion(Some(&tokens), "");
         for line in [
@@ -652,9 +653,7 @@ mod motion_tests {
         ] {
             assert!(css.contains(line), "missing `{line}` in:\n{css}");
         }
-        let none: MotionTokens = serde_json::from_value(
-            serde_json::json!({ "entry": { "default": "none" }, "awaitingSkeleton": false }),
-        )
+        let none: MotionTokens = from_json_value(&(serde_json::json!({ "entry": { "default": "none" }, "awaitingSkeleton": false })))
         .unwrap();
         let css = emit_motion(Some(&none), "");
         assert!(

@@ -453,6 +453,7 @@ fn oklch_to_srgb(l: f64, c: f64, h: f64) -> Rgba {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use orbital_core_base::theme::{resolve_preset_key, ThemePresets};
     use serde_json::Value;
 
@@ -470,7 +471,7 @@ mod tests {
                 let name = p.file_stem().unwrap().to_string_lossy().into_owned();
                 (
                     name,
-                    serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap(),
+                    from_json_str(&std::fs::read_to_string(&p).unwrap()).unwrap(),
                 )
             })
             .collect();
@@ -604,7 +605,7 @@ mod tests {
     #[test]
     fn a_theme_with_only_primary_derives_the_series_by_rotating_hue() {
         let tokens: ThemeTokens =
-            serde_json::from_value(serde_json::json!({ "colors": { "primary": "#c2410c" } }))
+            from_json_value(&(serde_json::json!({ "colors": { "primary": "#c2410c" } })))
                 .unwrap();
         let theme = canvas_theme(&tokens);
         assert!(same_color("rgb(194, 65, 12)", &theme.series[0]));
@@ -613,7 +614,7 @@ mod tests {
 
     #[test]
     fn control_a_theme_with_no_colors_leaves_tones_unresolved_like_the_web() {
-        let tokens: ThemeTokens = serde_json::from_value(serde_json::json!({})).unwrap();
+        let tokens: ThemeTokens = from_json_value(&(serde_json::json!({}))).unwrap();
         let theme = canvas_theme(&tokens);
         assert_eq!(theme.tones["ink"], UNRESOLVED_COLOR);
         assert_eq!(theme.ground, "transparent");

@@ -1,6 +1,7 @@
 //! The vocabulary tables: English, built in (the grammar this binary
 //! implements; `en.json` is synced from `@almadar/core` by pattern-sync's
 //! `i18n` step), plus every installed language pack ([`super::packs`]).
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -54,7 +55,7 @@ pub struct I18nDefinition {
 /// The built-in English vocabulary.
 pub fn english() -> &'static I18nDefinition {
     static EN: OnceLock<I18nDefinition> = OnceLock::new();
-    EN.get_or_init(|| serde_json::from_str(include_str!("en.json")).expect("built-in en.json"))
+    EN.get_or_init(|| from_json_str(include_str!("en.json")).expect("built-in en.json"))
 }
 
 /// English plus every installed language pack, keyed by language code.

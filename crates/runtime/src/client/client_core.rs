@@ -10,6 +10,7 @@
 //! The async (threaded) send path stays in `DesktopApp` (it drives the egui frame
 //! loop); the synchronous [`ClientCore::drive_blocking`] path serves `GameApp` and
 //! the Layer-2 verifier.
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -1034,7 +1035,7 @@ impl ClientCore {
         render: &orbital_core_base::ir::types::AwaitRender,
     ) -> Option<SlotContent> {
         let node = serde_json::json!({ "type": "skeleton", "spec": render.skeleton });
-        let mut content = self.parse_pattern(&serde_json::from_value(node).ok()?)?;
+        let mut content = self.parse_pattern(&from_json_value(&node).ok()?)?;
         content.source_trait = Some(render.trait_name.clone());
         Some(content)
     }

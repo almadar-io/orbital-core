@@ -2,6 +2,7 @@
 // per-trait `effect-failed` rejection carrying the error. The failing transition stops at the throw: no later
 // effect runs and it paints nothing. JS twin: `effect-failure-contained.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::effects::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -26,7 +27,7 @@ fn schema_with_fields(fields: Vec<Json>, broken: Vec<Json>) -> OrbitalSchema {
             }
         })
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",

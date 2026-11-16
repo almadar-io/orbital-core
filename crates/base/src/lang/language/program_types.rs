@@ -3,6 +3,7 @@
 //!
 //! The data is `.orb` field definitions by type name, so the one `field_shape` that types a program's own struct
 //! aliases types these too.
+use crate::json_value::{from_json_str, from_json_value};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -26,11 +27,11 @@ pub fn parse(text: &str) -> Result<BTreeMap<String, OirType>, String> {
 /// The language value types' `.orb` field definitions by name, each checked to be a record.
 fn definitions(text: &str) -> Result<BTreeMap<String, FieldDefinition>, String> {
     let declared: BTreeMap<String, serde_json::Value> =
-        serde_json::from_str(text).map_err(|e| format!("invalid program types: {e}"))?;
+        from_json_str(text).map_err(|e| format!("invalid program types: {e}"))?;
     declared
         .into_iter()
         .map(|(name, value)| {
-            let field: FieldDefinition = serde_json::from_value(value)
+            let field: FieldDefinition = from_json_value(&value)
                 .map_err(|e| format!("program type `{name}`: invalid field definition: {e}"))?;
             check(&field).map_err(|reason| format!("program type `{name}`: {reason}"))?;
             Ok((name, field))
@@ -168,7 +169,7 @@ mod tests {
             ["behavior", "data", "pages", "source"].map(|n| Some(n.to_string()))
         );
         let map: FieldDefinition =
-            serde_json::from_value(json!({ "type": "object", "items": { "type": "string" } })).unwrap();
+            from_json_value(&json!({ "type": "object", "items": { "type": "string" } })).unwrap();
         assert!(members(map).is_empty(), "control: a map record declares no members");
     }
 

@@ -3,6 +3,7 @@
 //! totalCount }`, the first failure emits `{ error, code, index, completedCount }` and stops. Twin of the
 //! JS runtime's `EffectExecutor` / `ServerEffectHandlers` batch branch.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
@@ -15,7 +16,7 @@ fn arm(event: &str, effects: Json) -> Json {
 fn kernel() -> RuntimeKernel {
     let emit = json!({ "emit": { "success": "SAVED", "failure": "FAILED" } });
     let list = json!({ "emit": { "success": "LISTED" } });
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "persist-batch",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -63,7 +64,7 @@ fn send(k: &RuntimeKernel, event: &str, payload: Json) -> Vec<(String, Json)> {
         "Notes",
         None,
         event,
-        serde_json::from_value::<Value>(payload).unwrap(),
+        from_json_value::<Value>(&payload).unwrap(),
     )
     .unwrap()
     .iter()

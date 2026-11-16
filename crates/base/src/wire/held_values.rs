@@ -225,6 +225,7 @@ pub(crate) fn write<S: Serializer>(value: &Value, serializer: S) -> Held<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_str;
     use crate::client_effect::ClientEffect;
     use crate::js_readable::to_js_readable_json;
     use serde_json::json;
@@ -282,7 +283,7 @@ mod tests {
     }
 
     fn text(s: &str) -> serde_json::Value {
-        serde_json::from_str(s).expect("json")
+        from_json_str(s).expect("json")
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! EXEC-QUEUE conformance: who hears an emit, and what a listener's guard reads.
 
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::Value;
 use serde_json::{json, Value as Json};
 use crate::support::TestKernel;
@@ -75,7 +76,7 @@ fn name_only_listener_hears(source: Json) -> bool {
         key: None,
         subscription_id: SubscriptionId(0),
     };
-    let source: BusEventSource = serde_json::from_value(source).unwrap();
+    let source: BusEventSource = from_json_value(&source).unwrap();
     listener.matches_source(&source)
 }
 
@@ -130,7 +131,7 @@ fn sink_runs_in_fold(first: Json, second: Json) -> usize {
     let kernel = TestKernel::client().build(diamond(json!({}), json!({})));
     let done = |who: &str, payload: Json| EmittedEvent {
         event: "DONE".to_string(),
-        payload: Some(serde_json::from_value::<Value>(payload).unwrap()),
+        payload: Some(from_json_value::<Value>(&payload).unwrap()),
         source: Some(BusEventSource {
             orbital: Some("QueueOrbital".to_string()),
             r#trait: Some(who.to_string()),
@@ -160,7 +161,7 @@ fn job_kernel() -> orbital_core_runtime::kernel::RuntimeKernel {
     use orbital_core_base::schema::types::OrbitalSchema;
     use orbital_core_runtime::config::KernelConfig;
     use orbital_core_runtime::resumable::HostAnswered;
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "jobs",
         "typeContractVersion": 1, "orbitals": [{ "name": "Main",
             "entity": { "name": "Tally", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -280,7 +281,7 @@ fn exec_event_payload_1_a_kernel_refuses_a_payload_that_breaks_the_declared_even
         }]
     });
     let send = |kernel: &orbital_core_runtime::kernel::RuntimeKernel, payload: Json| {
-        kernel.dispatch("Composer", None, "SEND", serde_json::from_value::<Value>(payload).unwrap())
+        kernel.dispatch("Composer", None, "SEND", from_json_value::<Value>(&payload).unwrap())
     };
     let server = TestKernel::server().build(program.clone());
     let refused = |r: &Result<_, KernelError>, needle: &str| {

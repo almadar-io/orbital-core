@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use orbital_core_base::value::ValueMap;
 
@@ -288,10 +289,10 @@ fn key_ptr(row: &Value, name: &str) -> orbital_core_base::value::Shared<String> 
 fn rows_written_by_a_batch_share_field_names_with_the_stores_other_rows() {
     let cache = InMemoryEntityCache::new();
     cache.create("Deal", &obj(&[("id", Value::string("a")), ("owner", Value::string("u1"))])).unwrap();
-    let batch: RowWriteBatch = serde_json::from_value(serde_json::json!({
+    let batch: RowWriteBatch = from_json_value(&(serde_json::json!({
         "ops": [{"kind": "create", "entityType": "Deal", "data": {"id": "b", "owner": "u2"}}],
         "onFailure": "stop"
-    }))
+    })))
     .unwrap();
     assert!(cache.write_batch(&batch).is_some());
     let rows = cache.list("Deal").unwrap();
@@ -306,13 +307,13 @@ fn rows_written_by_a_batch_share_field_names_with_the_stores_other_rows() {
 fn apply_write_batch_across_shares_names_through_the_vocabulary_it_is_given() {
     use orbital_core_base::intern::KeyVocabulary;
     let make = || -> RowWriteBatch {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "ops": [
                 {"kind": "create", "entityType": "A", "data": {"id": "1", "title": "x"}},
                 {"kind": "create", "entityType": "B", "data": {"id": "2", "title": "y"}}
             ],
             "onFailure": "stop"
-        }))
+        })))
         .unwrap()
     };
     let run = |vocab: &mut KeyVocabulary| {

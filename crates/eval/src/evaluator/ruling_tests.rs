@@ -1,6 +1,7 @@
 //! Kernel rulings of 2026-10-18: declared arity is a bound, `__proto__` is an ordinary key, `validate/check` takes rules
 //! by field, `str/template` and `str/truncate` follow the kernel.
 #[cfg(not(feature = "std"))]
+use orbital_core_base::json_value::from_json_str;
 use std::prelude::v1::*;
 
 use crate::evaluator::context::BindingContext;
@@ -10,7 +11,7 @@ use orbital_core_base::value::Value;
 use serde::Deserialize;
 
 fn run(json: &str) -> Result<Value, String> {
-    let expr: SExpression = serde_json::from_str(json).unwrap();
+    let expr: SExpression = orbital_core_base::json_value::from_json_str(json).unwrap();
     // The kernel seals every dispatch, so a draw here has a boundary as it would there (EXEC-CRYPTO-2).
     let mut ctx = BindingContext::new();
     ctx.set_sealed_outputs(crate::evaluator::context::SealedOutputs::new(
@@ -334,7 +335,7 @@ fn same(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 }
 
 fn shared(raw: &str) -> Vec<String> {
-    let vectors: Vec<Vector> = serde_json::from_str(raw).unwrap();
+    let vectors: Vec<Vector> = orbital_core_base::json_value::from_json_str(raw).unwrap();
     assert!(vectors.len() >= 10, "the fixture is the contract");
     vectors
         .iter()
@@ -372,7 +373,7 @@ struct NullProbe {
 
 /// S3 ratchet: `operator[position]` sites whose declared type excludes null but which still accept it. Only shrinks.
 fn known_lenient() -> Vec<String> {
-    serde_json::from_str(include_str!(
+    orbital_core_base::json_value::from_json_str(include_str!(
         "../../../../tests/fixtures/operators/null-lenient-known.json"
     ))
     .unwrap()
@@ -380,7 +381,7 @@ fn known_lenient() -> Vec<String> {
 
 #[test]
 fn the_kernel_raises_on_a_null_operand_exactly_where_the_declared_type_excludes_null() {
-    let probes: Vec<NullProbe> = serde_json::from_str(include_str!(
+    let probes: Vec<NullProbe> = orbital_core_base::json_value::from_json_str(include_str!(
         "../../../../tests/fixtures/operators/null-operands.json"
     ))
     .unwrap();
@@ -498,7 +499,7 @@ fn format_number_honors_minimum_and_maximum_fraction_digits() {
 }
 
 fn value(json: &str) -> Value {
-    serde_json::from_str(json).unwrap()
+    orbital_core_base::json_value::from_json_str(json).unwrap()
 }
 
 /// A whole `@trait.X` string is a client-only frame reference: it evaluates to itself, as the value resolver and the

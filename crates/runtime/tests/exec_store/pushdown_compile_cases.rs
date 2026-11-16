@@ -2,13 +2,14 @@
 //! `tests/baked/pushdown`): each case is one fetch's filter and/or `@read` policy
 //! compiled for the entity's required fields, expecting the compiled slots or the interpreted reason.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_eval::evaluator::BindingContext;
 use orbital_core_runtime::row_query::{compile_predicate, PredicateRole};
 use orbital_core_base::value::Value;
 use serde_json::{json, Map, Value as Json};
 
 fn v(j: &Json) -> Value {
-    serde_json::from_value(j.clone()).expect("a value")
+    from_json_value(&j).expect("a value")
 }
 
 fn ctx_of(bindings: &Json) -> BindingContext {
@@ -36,7 +37,7 @@ fn norm(j: &Json) -> Json {
 fn every_compile_case_matches_the_shared_decision() {
     let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
         .join("tests/baked/pushdown/compile-cases.json");
-    let f: Json = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let f: Json = from_json_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let required: Vec<String> = f["requiredFields"]
         .as_array()
         .unwrap()

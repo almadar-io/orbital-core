@@ -1,11 +1,12 @@
 // A dispatch that delegated no effect still has a leg a stateful host is posted: the host holds the circuit state and must advance its copy (twin of `postServerLeg`'s `!carriesCircuitState` branch, `almadar-runtime/src/evaluation/client-role.ts`; ui `BrowserPlayground.wire`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::json;
 
 fn kernel() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "shop",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Shop",
@@ -40,7 +41,7 @@ fn go(t: &str, event: &str) -> orbital_core_runtime::kernel::ClientDispatch {
             t,
             None,
             event,
-            serde_json::from_value::<Value>(json!({ "q": 1 })).unwrap(),
+            from_json_value::<Value>(&json!({ "q": 1 })).unwrap(),
             Some("c1"),
         )
         .unwrap()
@@ -118,7 +119,7 @@ fn a_collected_leg_addresses_the_entity_the_caller_named_and_none_otherwise() {
 }
 
 fn launchpad_like() -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "pad",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Pad",

@@ -258,10 +258,11 @@ pub fn batch_placement(ops: &SExpression, residence: &Residence) -> BatchPlaceme
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn ops(v: serde_json::Value) -> SExpression {
-        serde_json::from_value(v).unwrap()
+        from_json_value(&v).unwrap()
     }
 
     #[test]
@@ -332,7 +333,7 @@ mod tests {
     }
 
     fn sx(v: serde_json::Value) -> SExpression {
-        serde_json::from_value(v).unwrap()
+        from_json_value(&v).unwrap()
     }
 
     #[test]

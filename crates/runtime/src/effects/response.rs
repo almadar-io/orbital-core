@@ -7,6 +7,7 @@
 //! missing a key still deserializes.
 //!
 //! Reference: builder/docs/Orbital_Pattern.orb
+use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -283,7 +284,7 @@ impl EventRequest {
         if option("viewer").is_some_and(|v| !v.is_null()) {
             return Err("program/dispatch: `viewer` is retired; a session's `@user` is its bound identity (identity/sign-in)".to_string());
         }
-        serde_json::from_value(serde_json::Value::Object(request))
+        from_json_value(&serde_json::Value::Object(request))
             .map_err(|e| format!("program/dispatch: not an event request: {e}"))
     }
 }
@@ -349,7 +350,7 @@ impl DeliveryRecord {
         let payload = fields.get("payload").filter(|p| !p.is_null()).cloned();
         let source = match fields.get("source") {
             None => BusEventSource::default(),
-            Some(source) => serde_json::to_value(source).and_then(serde_json::from_value).ok()?,
+            Some(source) => serde_json::to_value(source).and_then(|v| from_json_value(&v)).ok()?,
         };
         Some(Self { event, payload, source })
     }

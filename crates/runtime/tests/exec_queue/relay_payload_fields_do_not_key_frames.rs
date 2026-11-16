@@ -2,6 +2,7 @@
 // that happens to be called `orbitalName` or `entityId` never picks another frame: the listener's new state is the
 // one the next delivery sees. JS twin: `almadar-runtime/test/cross-orbital-relay-payload-fields-do-not-key-frames.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -34,7 +35,7 @@ fn kernel(field: &str) -> RuntimeKernel {
             }
         ]
     });
-    let schema: OrbitalSchema = serde_json::from_value(schema).unwrap();
+    let schema: OrbitalSchema = from_json_value(&schema).unwrap();
     crate::support::TestKernel::server().register(schema)
 }
 

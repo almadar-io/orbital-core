@@ -1168,6 +1168,7 @@ impl RuntimeKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use crate::effects::response::{EventRequest, EventResponse};
     use crate::embed::{EmbeddedServer, ServerProgress};
     use crate::resumable::{IoAnswer, IoReply, IoRequest};
@@ -1233,7 +1234,7 @@ mod tests {
         for event in ["CLOSED", "BAD"] {
             transitions.push(json!({ "from": "idle", "to": "idle", "event": event }));
         }
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "App",
             "typeContractVersion": 1,
             "osGrants": grants,
@@ -1472,7 +1473,7 @@ mod tests {
             wire.viewer = Some(json!({ "id": viewer }));
             {
                 let _session = server.kernel().enter_session(viewer);
-                server.kernel().bind_test_identity(serde_json::from_value(json!({ "id": viewer })).expect("viewer"));
+                server.kernel().bind_test_identity(from_json_value(&json!({ "id": viewer })).expect("viewer"));
             }
             let response = run(&server, &mut wire);
             assert!(payload(&response, "BAD").is_none(), "{viewer}");

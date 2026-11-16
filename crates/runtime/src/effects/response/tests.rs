@@ -1,7 +1,7 @@
 #[test]
 fn a_bus_event_source_round_trips_pending_key() {
     let wire = serde_json::json!({ "trait": "Form", "pendingKey": "k-1" });
-    let parsed: super::BusEventSource = serde_json::from_value(wire.clone()).expect("parses");
+    let parsed: super::BusEventSource = from_json_value(&wire).expect("parses");
     assert_eq!(parsed.pending_key.as_deref(), Some("k-1"));
     assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
     let bare = serde_json::to_value(super::BusEventSource::from_trait("Form")).unwrap();
@@ -13,19 +13,19 @@ fn a_mount_seed_accepts_only_lifecycle_events() {
     for e in ["INIT", "LOAD", "$MOUNT"] {
         let wire = serde_json::json!({ "trait": "T", "event": e });
         let seed: super::MountSeed =
-            serde_json::from_value(wire.clone()).expect("lifecycle parses");
+            from_json_value(&wire).expect("lifecycle parses");
         assert_eq!(seed.event.as_str(), e);
         assert_eq!(serde_json::to_value(&seed).unwrap(), wire);
     }
     let bad = serde_json::json!({ "trait": "T", "event": "SAVE" });
-    assert!(serde_json::from_value::<super::MountSeed>(bad).is_err());
+    assert!(from_json_value::<super::MountSeed>(&bad).is_err());
 }
 
 #[test]
 fn an_effect_failed_rejection_has_the_core_wire_shape() {
     let wire = serde_json::json!({ "code": "effect-failed", "trait": "Preview", "from": "idle", "event": "INIT", "error": "boom" });
     let parsed: super::TransitionRejection =
-        serde_json::from_value(wire.clone()).expect("parses");
+        from_json_value(&wire).expect("parses");
     assert_eq!(parsed.code, super::TransitionRejectionCode::EffectFailed);
     assert_eq!(parsed.error.as_deref(), Some("boom"));
     assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
@@ -35,7 +35,7 @@ fn an_effect_failed_rejection_has_the_core_wire_shape() {
 fn control_a_rejection_without_an_error_omits_the_field() {
     let wire = serde_json::json!({ "code": "no-matching-transition", "trait": "Preview", "event": "SAVE" });
     let parsed: super::TransitionRejection =
-        serde_json::from_value(wire.clone()).expect("parses");
+        from_json_value(&wire).expect("parses");
     assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
 }
 
@@ -132,6 +132,7 @@ fn bus_event_source_fields_are_exactly_the_wire_keys() {
     assert_eq!(keys, declared);
 }
 
+use orbital_core_base::json_value::from_json_value;
 use super::*;
 use crate::process_result::ProcessEventResult;
 
@@ -144,7 +145,7 @@ fn client_effect_by_trait_carries_the_optional_callsite_payload() {
         "effect": ["render-ui", "main", { "type": "timeline" }],
         "callsitePayload": { "data": [{ "id": "e1" }] }
     });
-    let parsed: ClientEffectByTrait = serde_json::from_value(wire.clone()).expect("wire shape");
+    let parsed: ClientEffectByTrait = from_json_value(&wire).expect("wire shape");
     assert!(parsed.callsite_payload.is_some());
     assert_eq!(
         serde_json::to_value(&parsed).unwrap()["callsitePayload"],
@@ -152,7 +153,7 @@ fn client_effect_by_trait_carries_the_optional_callsite_payload() {
     );
 
     let bare = serde_json::json!({ "traitName": "Body", "effect": ["render-ui", "main", { "type": "timeline" }] });
-    let parsed: ClientEffectByTrait = serde_json::from_value(bare).expect("wire shape");
+    let parsed: ClientEffectByTrait = from_json_value(&bare).expect("wire shape");
     assert!(parsed.callsite_payload.is_none());
     assert!(serde_json::to_value(&parsed)
         .unwrap()
@@ -272,7 +273,7 @@ fn control_an_unfired_step_is_no_hop() {
 
 fn bulk_value(rows: usize) -> Value {
     let rows: Vec<serde_json::Value> = (0..rows).map(|i| serde_json::json!({ "id": format!("u{i}"), "name": "unit" })).collect();
-    serde_json::from_value(serde_json::Value::Array(rows)).expect("rows parse")
+    from_json_value(&serde_json::Value::Array(rows)).expect("rows parse")
 }
 
 fn persist_create(rows: usize) -> Effect {
@@ -504,7 +505,7 @@ fn bus_event_source_round_trip_uses_trait_key() {
     let source = BusEventSource::from_trait("NotePersistor");
     let json = serde_json::to_value(&source).unwrap();
     assert_eq!(json, serde_json::json!({ "trait": "NotePersistor" }));
-    let back: BusEventSource = serde_json::from_value(json).unwrap();
+    let back: BusEventSource = from_json_value(&json).unwrap();
     assert_eq!(back, source);
 }
 
@@ -512,11 +513,11 @@ fn bus_event_source_round_trip_uses_trait_key() {
 fn a_server_effect_result_code_round_trips_every_core_value() {
     for code in ["not-found", "no-row-key", "duplicate-id", "denied", "derived-failed"] {
         let wire = serde_json::json!({ "effect": "persist", "success": false, "code": code });
-        let parsed: ServerEffectResult = serde_json::from_value(wire.clone()).expect("parses");
+        let parsed: ServerEffectResult = from_json_value(&wire).expect("parses");
         assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
     }
     let bad = serde_json::json!({ "effect": "persist", "success": false, "code": "forbidden" });
-    assert!(serde_json::from_value::<ServerEffectResult>(bad).is_err());
+    assert!(from_json_value::<ServerEffectResult>(&bad).is_err());
 }
 
 #[test]
@@ -546,7 +547,7 @@ fn server_effect_kind_is_spelled_like_the_effect_head() {
         serde_json::to_value(ServerEffectKind::FetchStream).unwrap(),
         serde_json::json!("fetch-stream")
     );
-    assert!(serde_json::from_value::<ServerEffectKind>(serde_json::json!("swap")).is_err());
+    assert!(from_json_value::<ServerEffectKind>(&(serde_json::json!("swap"))).is_err());
 }
 
 #[test]
@@ -557,7 +558,7 @@ fn event_request_round_trip_traits_and_entity_by_trait() {
         "traits": [{ "trait": "InlineButtonRender3", "from": "click" }],
         "entityByTrait": { "InlineButtonRender3": { "id": "1" } },
     });
-    let req: EventRequest = serde_json::from_value(json.clone()).unwrap();
+    let req: EventRequest = from_json_value(&json).unwrap();
     assert_eq!(req.event, "CREATE_DRAFT");
     assert_eq!(req.target_trait.as_deref(), Some("InlineButtonRender3"));
     assert_eq!(req.traits.as_ref().map(|t| t.len()), Some(1));
@@ -569,7 +570,7 @@ fn event_request_round_trip_traits_and_entity_by_trait() {
 #[test]
 fn event_request_carries_the_viewer_locale() {
     let req: EventRequest =
-        serde_json::from_value(serde_json::json!({ "event": "INIT", "locale": "ar" })).unwrap();
+        from_json_value(&(serde_json::json!({ "event": "INIT", "locale": "ar" }))).unwrap();
     assert_eq!(req.locale.as_deref(), Some("ar"));
     assert_eq!(
         serde_json::to_value(&req).unwrap().get("locale"),
@@ -580,7 +581,7 @@ fn event_request_carries_the_viewer_locale() {
 #[test]
 fn control_an_event_request_without_a_locale_serializes_none() {
     let req: EventRequest =
-        serde_json::from_value(serde_json::json!({ "event": "INIT" })).unwrap();
+        from_json_value(&(serde_json::json!({ "event": "INIT" }))).unwrap();
     assert_eq!(req.locale, None);
     assert_eq!(serde_json::to_value(&req).unwrap().get("locale"), None);
 }
@@ -624,11 +625,11 @@ fn a_dispatch_option_record_that_is_no_event_request_is_refused_with_the_reason(
 }
 
 fn record_by_serde(value: &orbital_core_base::value::Value) -> Option<super::DeliveryRecord> {
-    serde_json::to_value(value).and_then(serde_json::from_value).ok()
+    serde_json::to_value(value).and_then(|v| from_json_value(&v)).ok()
 }
 
 fn value_of(json: serde_json::Value) -> orbital_core_base::value::Value {
-    serde_json::from_value(json).unwrap()
+    from_json_value(&json).unwrap()
 }
 
 #[test]

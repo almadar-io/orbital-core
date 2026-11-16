@@ -5,6 +5,7 @@
 //! ancestor `node_modules` nearest first, the `~/.orb` user store last;
 //! nearest wins per package name). Twin of `@almadar/core/language-data`
 //! `readVocabularyPacks` and `@almadar/core/i18n` `registerVocabulary`.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -102,7 +103,7 @@ fn discover_for(
             }
             let raw = fs::read_to_string(&package_json)
                 .map_err(|e| invalid(&package_json, e.to_string()))?;
-            let manifest: Value = serde_json::from_str(&raw)
+            let manifest: Value = from_json_str(&raw)
                 .map_err(|e| invalid(&package_json, format!("invalid JSON: {e}")))?;
             let Some(block) = manifest.get(VOCABULARY_BLOCK) else {
                 continue;
@@ -172,7 +173,7 @@ fn read_pack(
     let file = dir.join(field("vocabulary")?);
     let raw = fs::read_to_string(&file).map_err(|e| invalid(&file, format!("{name}: {e}")))?;
     let definition: I18nDefinition =
-        serde_json::from_str(&raw).map_err(|e| invalid(&file, format!("{name}: {e}")))?;
+        from_json_str(&raw).map_err(|e| invalid(&file, format!("{name}: {e}")))?;
     Ok(VocabularyPack {
         package: name.to_string(),
         version,

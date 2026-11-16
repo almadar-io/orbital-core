@@ -63,7 +63,7 @@ mod tests {
         let value = json!({ "b": [1, { "d": 2, "c": "x y" }], "a": null });
         let compact = to_canonical_string(&value).unwrap();
         assert_eq!(compact, r#"{"a":null,"b":[1,{"c":"x y","d":2}]}"#);
-        let reparsed: serde_json::Value = serde_json::from_str(&to_canonical_string_pretty(&value).unwrap()).unwrap();
+        let reparsed: serde_json::Value = orbital_core_base::json_value::from_json_str(&to_canonical_string_pretty(&value).unwrap()).unwrap();
         assert_eq!(to_canonical_string(&reparsed).unwrap(), compact, "control: same value, same compact bytes");
     }
 
@@ -127,7 +127,7 @@ mod tests {
         let input = json!({ "n": [1.5, -0.0, 1e21, 7, u64::MAX], "b": { "d": "é\n", "c": [] }, "a": {} });
         let tree = into_canonical_json(input);
         let text = serde_json::to_string_pretty(&tree).unwrap();
-        let parsed: Value = serde_json::from_str(&text).unwrap();
+        let parsed: Value = orbital_core_base::json_value::from_json_str(&text).unwrap();
         assert_eq!(serde_json::to_string(&parsed).unwrap(), serde_json::to_string(&tree).unwrap());
     }
 

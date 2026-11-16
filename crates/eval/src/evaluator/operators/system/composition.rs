@@ -54,11 +54,11 @@ pub(super) fn start_of(ts: f64, unit: TimeUnit) -> f64 {
 
 /// time/startOf - start of a time period.
 pub struct TimeStartOfOp;
-impl Operator for TimeStartOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeStartOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/startOf", >= 2);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
-        let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
+        let m = Moment::of(args[0])?;
+        let unit = TimeUnit::parse(args[1].text()?)?;
         if m.shape == Shape::Date && unit.below_a_day() {
             return Err(needs_time_of_day("time/startOf"));
         }
@@ -68,12 +68,12 @@ impl Operator for TimeStartOfOp {
 
 /// time/endOf - last millisecond of a time period.
 pub struct TimeEndOfOp;
-impl Operator for TimeEndOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeEndOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/endOf", >= 2);
-        let m = Moment::of(&eval_expr(&args[0], ctx)?)?;
+        let m = Moment::of(args[0])?;
         let ts = m.ms;
-        let unit = TimeUnit::parse(eval_expr(&args[1], ctx)?.text()?)?;
+        let unit = TimeUnit::parse(args[1].text()?)?;
         if m.shape == Shape::Date && unit.below_a_day() {
             return Err(needs_time_of_day("time/endOf"));
         }
@@ -115,10 +115,10 @@ impl Operator for TimeEndOfOp {
 
 /// time/relative - human relative time ("2 hours ago", "in 3 days").
 pub struct TimeRelativeOp;
-impl Operator for TimeRelativeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for TimeRelativeOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/relative", 1);
-        let ts = Moment::of(&eval_expr(&args[0], ctx)?)?.at_time_of_day("time/relative")?;
+        let ts = Moment::of(args[0])?.at_time_of_day("time/relative")?;
         let now = ctx.now_millis();
         let diff = now - ts; // >0 past, <0 future
         let plural = |n: i64| if n == 1 { "" } else { "s" };
@@ -153,10 +153,10 @@ impl Operator for TimeRelativeOp {
 
 /// format/creditCard - mask all but the last 4 digits, grouped in 4s.
 pub struct FormatCreditCardOp;
-impl Operator for FormatCreditCardOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FormatCreditCardOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "format/creditCard", 1);
-        let card = eval_expr(&args[0], ctx)?;
+        let card = args[0];
         let digits: String = card
             .text()?
             .chars()

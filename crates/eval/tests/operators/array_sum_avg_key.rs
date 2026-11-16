@@ -1,11 +1,12 @@
 // `(array/sum arr key)` and `(array/avg arr key)` take an optional field name (the std operator table
 // declares `maxArity: 2`); twin of almadar-evaluator `evalArraySum` / `evalArrayAvg`.
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_eval::evaluator::context::BindingContextBuilder, orbital_core_eval::evaluator::Evaluator};
 
 fn eval(expr: serde_json::Value) -> serde_json::Value {
     let ctx = BindingContextBuilder::new().build();
-    let sexpr = serde_json::from_value(expr).unwrap();
+    let sexpr = from_json_value(&expr).unwrap();
     serde_json::to_value(Evaluator::new().evaluate(&sexpr, &ctx).unwrap()).unwrap()
 }
 
@@ -30,7 +31,7 @@ fn sum_by_field_counts_a_missing_or_null_field_as_nothing() {
 #[test]
 fn sum_by_field_refuses_a_non_numeric_field() {
     let rows = serde_json::json!([{ "amount": 10 }, { "amount": "x" }]);
-    let sexpr = serde_json::from_value(serde_json::json!(["array/sum", rows, "amount"])).unwrap();
+    let sexpr = from_json_value(&serde_json::json!(["array/sum", rows, "amount"])).unwrap();
     let err = Evaluator::new().evaluate(&sexpr, &BindingContextBuilder::new().build()).unwrap_err();
     assert!(err.to_string().contains("expected number, got string"), "{err}");
 }

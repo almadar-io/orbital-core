@@ -114,10 +114,11 @@ pub fn event_wires(schema: &OrbitalSchema) -> Vec<EventWire> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use serde_json::json;
 
     fn schema(listens: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "name": "app", "typeContractVersion": 1,
             "orbitals": [
                 { "name": "Cart", "entity": { "name": "Item", "fields": [{ "name": "id", "type": "string" }] },
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn edge_a_trait_never_hears_itself() {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "app", "typeContractVersion": 1,
             "orbitals": [{ "name": "O", "entity": { "name": "E", "fields": [{ "name": "id", "type": "string" }] },
                 "traits": [{ "name": "T", "emits": [{ "event": "X" }], "listens": [{ "event": "X", "triggers": "Y", "source": { "kind": "any" } }],

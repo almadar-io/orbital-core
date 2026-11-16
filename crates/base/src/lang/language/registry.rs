@@ -7,6 +7,7 @@
 //! plus running `cargo build` is enough to update the validator.
 //!
 //! See `docs/Lolo_Language_Spec_v3_PLAN.md` Section 8 for context.
+use crate::json_value::from_json_str;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -270,6 +271,18 @@ pub fn operator_glyph(name: &str) -> Option<&'static str> {
     operators().get(name)?.visual.as_ref()?.glyph.as_deref()
 }
 
+/// `strict`: every operand is evaluated, left to right, before the operator runs. `form`: the operator evaluates its
+/// operands itself (a control form, a callback, a raw expression).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OperatorEvaluation {
+    Strict,
+    /// The operator takes evaluated operands plus what its call site gives it: which operands were literals, and a
+    /// callable for each lambda or lazily evaluated operand.
+    Site,
+    Form,
+}
+
 /// Metadata for a single operator parsed from `operators.json`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct EmbeddedOperator {
@@ -361,6 +374,12 @@ pub struct EmbeddedOperator {
     /// (e.g. `(array/reduce arr (fn …) init)`).
     #[serde(rename = "lambdaArgPosition", default)]
     pub lambda_arg_position: Option<u32>,
+    /// How the evaluator runs the operator (EXEC-EVAL-3b); absent on operators the evaluator does not dispatch.
+    #[serde(default)]
+    pub evaluation: Option<OperatorEvaluation>,
+    /// The operands a `site` operator evaluates on demand, by position: each reaches it as a callable.
+    #[serde(rename = "lazyOperands", default)]
+    pub lazy_operands: Vec<u32>,
     /// The regex (shared dialect) a `validate/<semantic type>` operator matches its value against: the one definition,
     /// owned by `@almadar/core` `SEMANTIC_STRING_PATTERNS` and carried by the operator table.
     #[serde(default)]
@@ -548,7 +567,7 @@ pub struct OperatorsSchema {
 pub fn parsed_operators() -> &'static OperatorsSchema {
     static PARSED: OnceLock<OperatorsSchema> = OnceLock::new();
     PARSED.get_or_init(|| {
-        serde_json::from_str(operators_json())
+        from_json_str(operators_json())
             .expect("installed canonical-operators.json was validated at load")
     })
 }

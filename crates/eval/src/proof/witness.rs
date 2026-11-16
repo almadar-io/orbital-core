@@ -978,7 +978,7 @@ mod tests {
     }
 
     fn guard(expr: serde_json::Value) -> SExpression {
-        serde_json::from_value(expr).unwrap()
+        orbital_core_base::json_value::from_json_value(&expr).unwrap()
     }
 
     #[test]

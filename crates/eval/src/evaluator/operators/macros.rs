@@ -88,4 +88,20 @@ macro_rules! require_lambda {
     };
 }
 
-pub(crate) use {require_arity, require_array, require_lambda, require_number};
+
+/// In a value entry: answer the arity error when fewer than `$n` operands are given.
+macro_rules! require_arity_some {
+    ($args:expr, $op:expr, $n:expr) => {
+        if $args.len() < $n {
+            return Some(Err(::orbital_core_base::error::OrbitalError::Eval(
+                ::orbital_core_base::error::EvalError::ArityMismatch {
+                    operator: $op.to_string(),
+                    expected: $n,
+                    actual: $args.len(),
+                },
+            )));
+        }
+    };
+}
+
+pub(crate) use {require_arity, require_arity_some, require_array, require_lambda, require_number};

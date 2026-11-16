@@ -1,5 +1,6 @@
 // Runtime Spec Clause 2.3 on the Rust kernel: a `[shared]` entity is one frame for every trait bound to it, any other trait keeps a private frame over the row. Twin of `almadar-runtime/test/trait-frames.test.ts`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::effect_types::Effect;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
@@ -22,7 +23,7 @@ fn from(trait_name: &str, event: &str, triggers: &str) -> Json {
 }
 
 fn kernel() -> (RuntimeKernel, Arc<InMemoryEntityCache>) {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "frames",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -89,7 +90,7 @@ fn non_shared_traits_on_one_entity_keep_private_frames() {
 #[test]
 fn a_private_frame_layers_over_the_row_and_never_over_a_siblings_write() {
     let (k, cache) = kernel();
-    let row: Value = serde_json::from_value(json!({ "id": "singleton", "v": "row" })).unwrap();
+    let row: Value = from_json_value(&json!({ "id": "singleton", "v": "row" })).unwrap();
     cache.write("Note", "singleton", &row).unwrap();
     assert_eq!(
         seen(&k, "D_SEEN"),
@@ -184,7 +185,7 @@ fn intrinsic_kernel() -> RuntimeKernel {
             arm("READ", json!([["emit", "SEEN", { "page": "@entity.browsePage", "tag": "@entity.tag" }]]))
         ]))
     };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "frames", "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
             "entity": { "name": "Page", "shared": true, "persistence": "runtime", "fields": [
@@ -253,7 +254,7 @@ fn snapshot_and_restore_round_trip_both_halves_of_a_shared_trait_frame() {
 
 fn external_kernel(external: bool) -> RuntimeKernel {
     let scope = if external { json!("external") } else { Json::Null };
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "external-listen",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -279,7 +280,7 @@ fn external_kernel(external: bool) -> RuntimeKernel {
     let k = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, Default::default());
     k.register_schema(schema).unwrap();
     for (id, name) in [("i1", "a"), ("i2", "b"), ("i3", "c")] {
-        cache.write("Item", id, &serde_json::from_value(json!({ "id": id, "name": name })).unwrap()).unwrap();
+        cache.write("Item", id, &from_json_value(&json!({ "id": id, "name": name })).unwrap()).unwrap();
     }
     k
 }

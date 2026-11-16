@@ -1,5 +1,6 @@
 // What a host posts for a dispatch and a mount, and how it folds the answer (twins of `postServerLeg`, `postMountLeg`, `foldBase`/`changedSinceCarried` in `almadar-runtime/src/evaluation/client-role.ts`; ui `BrowserPlayground.wire`, `Chat.realtime-chat`, `Riya.boot-order`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::value::ValueMap;
 use orbital_core_runtime::effects::{LifecycleEvent, MountSeed};
 use orbital_core_runtime::embed::EmbeddedKernel;
@@ -11,7 +12,7 @@ use {
 };
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "shop",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Shop",
@@ -122,7 +123,7 @@ fn a_failing_seed_stops_the_mount_and_is_named() {
 }
 
 fn row(v: serde_json::Value) -> Value {
-    serde_json::from_value(v).unwrap()
+    from_json_value(&v).unwrap()
 }
 
 fn answer(rows: ValueMap) -> EventResponse {
@@ -330,7 +331,7 @@ fn control_a_mount_whose_seeds_all_ran_awaits_nothing() {
 // A leg to a stateful host carries the shared frames its traits read (G-CROSS-260): the host holds every other piece of
 // circuit state, but a client-side write into a `[shared]` frame is otherwise never seen by a host step reading that frame.
 fn shared_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "Chat",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
@@ -354,7 +355,7 @@ fn shared_schema() -> OrbitalSchema {
 #[test]
 fn a_stateful_leg_keeps_the_shared_frame_rows_and_drops_the_rest() {
     let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
-    let leg: orbital_core_runtime::effects::response::EventRequest = serde_json::from_value(json!({
+    let leg: orbital_core_runtime::effects::response::EventRequest = from_json_value(&json!({
         "event": "INIT",
         "targetTrait": "Thread",
         "traits": [{ "trait": "Thread", "from": "idle" }, { "trait": "Editor", "from": "idle" }],
@@ -374,7 +375,7 @@ fn a_stateful_leg_keeps_the_shared_frame_rows_and_drops_the_rest() {
 fn control_a_stateful_leg_with_no_shared_frame_carries_no_rows() {
     let k = EmbeddedKernel::new(shared_schema(), "c1").unwrap();
     let leg: orbital_core_runtime::effects::response::EventRequest =
-        serde_json::from_value(json!({
+        from_json_value(&json!({
             "event": "SAVE", "targetTrait": "Editor",
             "traits": [{ "trait": "Editor", "from": "idle" }],
             "entityByTrait": { "Editor": { "id": "n1" } }
@@ -392,7 +393,7 @@ fn a_kernel_built_stateful_leg_carries_the_shared_frame_as_it_was_before_the_dis
         "Room",
         None,
         "SELECT",
-        serde_json::from_value(json!({ "channel": "chan-1" })).unwrap(),
+        from_json_value(&json!({ "channel": "chan-1" })).unwrap(),
     )
     .unwrap();
     let wire = k
@@ -400,7 +401,7 @@ fn a_kernel_built_stateful_leg_carries_the_shared_frame_as_it_was_before_the_dis
             "Room",
             None,
             "SELECT",
-            serde_json::from_value(json!({ "channel": "chan-5" })).unwrap(),
+            from_json_value(&json!({ "channel": "chan-5" })).unwrap(),
         )
         .unwrap();
     let leg = serde_json::to_value(&wire.stateful_leg.expect("a stateful leg").leg).unwrap();
@@ -426,7 +427,7 @@ fn composer_schema() -> OrbitalSchema {
 }
 
 fn composer_schema_with(thread_init: serde_json::Value) -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "Chat",
         "typeContractVersion": 1, "orbitals": [{
             "name": "ChatOrbital",
@@ -546,7 +547,7 @@ fn control_a_reseed_leg_leaves_out_a_trait_the_client_holds_no_frame_for() {
 /// `Picker` (`[client]`) asks from its INIT; `Asker` (server) answers with a fetch. Mounted together, the ask is held for
 /// Asker's INIT (EXEC-SEED-2), so it runs in Asker's seed dispatch, not Picker's.
 fn held_ask_schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "picker",
         "typeContractVersion": 1, "orbitals": [{
             "name": "People",
@@ -617,7 +618,7 @@ fn control_a_client_only_seed_that_reaches_no_server_trait_still_posts_nothing()
 /// `A` (`[client]`) emits X from INIT; `B` (`[client]`) hears X and emits Y; `C` hears Y. With `server_c` C fetches.
 fn client_cascade_schema(server_c: bool) -> OrbitalSchema {
     let fetch: Vec<serde_json::Value> = if server_c { vec![json!(["fetch", "Person", {}])] } else { vec![] };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "cascade",
         "typeContractVersion": 1, "orbitals": [{
             "name": "People",
@@ -693,7 +694,7 @@ fn control_a_mount_seeds_client_only_cascade_that_reaches_no_server_trait_posts_
 /// loading->loading on ATTEMPT emits ASK to `Gh` (server), which fetches.
 fn client_retry_schema(server: bool) -> OrbitalSchema {
     let fetch: Vec<serde_json::Value> = if server { vec![json!(["fetch", "Person", {}])] } else { vec![] };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "retrying",
         "typeContractVersion": 1, "orbitals": [{
             "name": "People",
@@ -783,7 +784,7 @@ fn client_retry_two_hop_schema(server: bool) -> OrbitalSchema {
             t["dispatch"] = json!("optimistic");
         }
     }
-    serde_json::from_value(schema).unwrap()
+    from_json_value(&schema).unwrap()
 }
 
 fn permutations<'a>(items: &[&'a str]) -> Vec<Vec<&'a str>> {
@@ -844,7 +845,7 @@ fn client_to_pure_server_hop_schema(ask: bool) -> OrbitalSchema {
     } else {
         vec![json!(["set", "@entity.n", 1])]
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "finder",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Finder",
@@ -964,7 +965,7 @@ fn control_a_mount_that_opens_no_route_posts_none() {
 fn browser_chain_schema(page: serde_json::Value, direct: bool) -> OrbitalSchema {
     let data_source = if direct { "Link" } else { "Home" };
     let data_event = if direct { "LINKED" } else { "WANT" };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "linked",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Links",
@@ -1062,7 +1063,7 @@ fn mount_announce_schema() -> OrbitalSchema {
         }
         t
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "trail",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Docs",
@@ -1145,7 +1146,7 @@ fn client_only_route_schema(with_seeder: bool) -> OrbitalSchema {
                 { "from": "idle", "to": "seen", "event": "SEEN" },
                 { "from": "seen", "to": "seen", "event": "SEEN" }] } }));
     }
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "shell",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Home",

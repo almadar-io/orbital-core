@@ -725,6 +725,7 @@ impl KernelCompletionSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_value;
     use crate::resumable::CallRoutes;
     use orbital_core_base::value::ValueMap;
     use orbital_core_base::os::OsErrorKind;
@@ -832,7 +833,7 @@ mod tests {
         use crate::config::KernelConfig;
         use orbital_core_base::effect_types::RuntimeEnvironment;
         use orbital_core_base::schema::types::OrbitalSchema;
-        let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "App",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -843,7 +844,7 @@ mod tests {
                         "transitions": [{ "from": "idle", "to": "done", "event": "OK" }]
                     } }]
             }]
-        }))
+        })))
         .expect("schema");
         let kernel = Arc::new(RuntimeKernel::new(
             RuntimeEnvironment::Server,
@@ -914,7 +915,7 @@ mod tests {
     fn contract_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<(String, bool)>) {
         let (sink, kernel, ran) = lone_sink();
         drop(ran);
-        let schema: orbital_core_base::schema::types::OrbitalSchema = serde_json::from_value(serde_json::json!({
+        let schema: orbital_core_base::schema::types::OrbitalSchema = from_json_value(&(serde_json::json!({
             "name": "Contract", "typeContractVersion": 1, "orbitals": [{
                 "name": "C",
                 "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -929,7 +930,7 @@ mod tests {
                             { "from": "idle", "to": "idle", "event": "BAD" }]
                     } }]
             }]
-        }))
+        })))
         .unwrap();
         kernel.register_schema(schema).unwrap();
         let answer: Arc<CompletionAnswerer> = Arc::new(|request| match request {
@@ -1029,7 +1030,7 @@ mod tests {
     }
 
     fn boot_only_program() -> orbital_core_base::schema::types::OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        from_json_value(&(serde_json::json!({
             "name": "App", "typeContractVersion": 1,
             "orbitals": [{
                 "name": "Jobs",
@@ -1039,7 +1040,7 @@ mod tests {
                         { "from": "idle", "to": "idle", "event": "DONE", "effects": [] }] } }],
                 "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Bg" }] }]
             }]
-        }))
+        })))
         .expect("a program")
     }
 

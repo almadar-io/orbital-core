@@ -42,6 +42,7 @@ pub struct RenderReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
 
     #[test]
     fn a_report_round_trips_as_json_without_its_offenders() {
@@ -59,7 +60,7 @@ mod tests {
             stubbed: vec![],
         };
         let back: RenderReport =
-            serde_json::from_str(&serde_json::to_string(&report).unwrap()).unwrap();
+            from_json_str(&serde_json::to_string(&report).unwrap()).unwrap();
         assert_eq!(back, report);
         let mut judged = report.clone();
         judged.verdicts[0].offenders = vec!["o".into()];

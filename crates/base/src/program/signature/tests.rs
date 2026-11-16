@@ -1,3 +1,4 @@
+use crate::json_value::from_json_value;
 use super::*;
 use serde_json::json;
 
@@ -6,7 +7,7 @@ fn op(
     returns: serde_json::Value,
     max_arity: Option<u32>,
 ) -> EmbeddedOperator {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "category": "std-array",
         "minArity": 0,
         "maxArity": max_arity,
@@ -3340,7 +3341,7 @@ mod field_projection_contract {
             list(json!({ "kind": "fieldOf", "of": "R" })),
         ] {
             let mut operator = get();
-            operator.return_type = serde_json::from_value(returns).unwrap();
+            operator.return_type = from_json_value(&returns).unwrap();
             assert_eq!(projection(&operator), None);
         }
     }
@@ -3375,7 +3376,7 @@ mod field_projection_contract {
     fn field_projection_refuses_a_mismatched_return_variable() {
         let mut operator = get();
         operator.return_type =
-            serde_json::from_value(json!({ "kind": "fieldOf", "of": "Other" })).unwrap();
+            from_json_value(&json!({ "kind": "fieldOf", "of": "Other" })).unwrap();
         assert_eq!(projection(&operator), None);
     }
 

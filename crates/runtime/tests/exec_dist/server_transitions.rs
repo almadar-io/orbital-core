@@ -1,6 +1,7 @@
 // The server role reports every executed hop of a dispatch, in order: the seed's, the same-trait
 // cascade steps', each listener delivery's. JS twin: `almadar-runtime/test/server-transition-observer.test.ts`.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::effects::HopEffectStatus;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use orbital_core_runtime::resumable::{IoAnswer, IoReply, IoRequest};
@@ -8,7 +9,7 @@ use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orb
 use serde_json::json;
 
 fn schema() -> OrbitalSchema {
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -53,7 +54,7 @@ fn run(event: &str, target: &str) -> EventResponse {
     run_answering(
         event,
         target,
-        IoAnswer::Row(Ok(serde_json::from_value(json!({ "id": "i1" })).unwrap())),
+        IoAnswer::Row(Ok(from_json_value(&json!({ "id": "i1" })).unwrap())),
     )
 }
 
@@ -162,9 +163,9 @@ mod runtime_rows {
 
     fn fanout(persistence: &str) -> OrbitalSchema {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/emit-fanout.json");
-        let mut doc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
+        let mut doc: serde_json::Value = from_json_str(&std::fs::read_to_string(path).expect("fixture")).expect("json");
         doc["schema"]["orbitals"][0]["entity"]["persistence"] = json!(persistence);
-        serde_json::from_value(doc["schema"].clone()).expect("schema")
+        from_json_value(&doc["schema"]).expect("schema")
     }
 
     fn go(schema: OrbitalSchema) -> (EventResponse, Vec<IoRequest>) {
@@ -210,7 +211,7 @@ mod runtime_rows {
 
     fn adapter_calls() -> serde_json::Value {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/adapter-calls.json");
-        serde_json::from_str(&std::fs::read_to_string(path).expect("oracle")).expect("oracle json")
+        from_json_str(&std::fs::read_to_string(path).expect("oracle")).expect("oracle json")
     }
 
     #[test]
@@ -226,7 +227,7 @@ mod runtime_rows {
     fn schema_with_runtime_saver() -> OrbitalSchema {
         let mut doc = serde_json::to_value(schema()).unwrap();
         doc["orbitals"][0]["entity"]["persistence"] = json!("runtime");
-        serde_json::from_value(doc).unwrap()
+        from_json_value(&doc).unwrap()
     }
 }
 

@@ -1,6 +1,7 @@
 // A server response is the full picture of the orbital: every trait's held state, the dispatched traits'
 // new ones over them. JS twin: `allStates` at the end of `evaluateOrbitalEvent`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
 use {orbital_core_runtime::effects::response::{EventRequest, EventResponse}, orbital_core_base::schema::types::OrbitalSchema};
 use serde_json::json;
@@ -10,7 +11,7 @@ fn schema() -> OrbitalSchema {
         json!({ "name": name, "linkedEntity": "Item",
             "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }], "transitions": arms } })
     };
-    serde_json::from_value(json!({
+    from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [
             { "name": "Main",

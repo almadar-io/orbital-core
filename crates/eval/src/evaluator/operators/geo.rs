@@ -7,16 +7,16 @@
 use std::prelude::v1::*;
 
 use super::macros::*;
-use super::vector::{eval_fields, eval_vector, make_vec, CIRCLE, POINT, RECT, SEGMENT};
+use super::vector::{make_vec, read_fields, read_vector, CIRCLE, POINT, RECT, SEGMENT};
 use super::*;
 
 pub struct GeoAabbOverlapOp;
-impl Operator for GeoAabbOverlapOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoAabbOverlapOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/aabb-overlap";
         require_arity!(args, OP, >= 2);
-        let [ax, ay, aw, ah] = eval_fields(OP, "a", &args[0], ctx, RECT)?;
-        let [bx, by, bw, bh] = eval_fields(OP, "b", &args[1], ctx, RECT)?;
+        let [ax, ay, aw, ah] = read_fields(OP, "a", args[0], RECT)?;
+        let [bx, by, bw, bh] = read_fields(OP, "b", args[1], RECT)?;
         Ok(Value::Bool(
             ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by,
         ))
@@ -24,12 +24,12 @@ impl Operator for GeoAabbOverlapOp {
 }
 
 pub struct GeoCircleOverlapOp;
-impl Operator for GeoCircleOverlapOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoCircleOverlapOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/circle-overlap";
         require_arity!(args, OP, >= 2);
-        let [ax, ay, ar] = eval_fields(OP, "a", &args[0], ctx, CIRCLE)?;
-        let [bx, by, br] = eval_fields(OP, "b", &args[1], ctx, CIRCLE)?;
+        let [ax, ay, ar] = read_fields(OP, "a", args[0], CIRCLE)?;
+        let [bx, by, br] = read_fields(OP, "b", args[1], CIRCLE)?;
         let dx = ax - bx;
         let dy = ay - by;
         Ok(Value::Bool((dx * dx + dy * dy).sqrt() <= ar + br))
@@ -37,12 +37,12 @@ impl Operator for GeoCircleOverlapOp {
 }
 
 pub struct GeoRectCircleOverlapOp;
-impl Operator for GeoRectCircleOverlapOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoRectCircleOverlapOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/rect-circle-overlap";
         require_arity!(args, OP, >= 2);
-        let [rx, ry, rw, rh] = eval_fields(OP, "rect", &args[0], ctx, RECT)?;
-        let [cx, cy, cr] = eval_fields(OP, "circle", &args[1], ctx, CIRCLE)?;
+        let [rx, ry, rw, rh] = read_fields(OP, "rect", args[0], RECT)?;
+        let [cx, cy, cr] = read_fields(OP, "circle", args[1], CIRCLE)?;
         let nx = cx.clamp(rx, rx + rw);
         let ny = cy.clamp(ry, ry + rh);
         let dx = cx - nx;
@@ -52,12 +52,12 @@ impl Operator for GeoRectCircleOverlapOp {
 }
 
 pub struct GeoPointInRectOp;
-impl Operator for GeoPointInRectOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoPointInRectOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/point-in-rect";
         require_arity!(args, OP, >= 2);
-        let [px, py] = eval_fields(OP, "p", &args[0], ctx, POINT)?;
-        let [rx, ry, rw, rh] = eval_fields(OP, "rect", &args[1], ctx, RECT)?;
+        let [px, py] = read_fields(OP, "p", args[0], POINT)?;
+        let [rx, ry, rw, rh] = read_fields(OP, "rect", args[1], RECT)?;
         Ok(Value::Bool(
             px >= rx && px <= rx + rw && py >= ry && py <= ry + rh,
         ))
@@ -65,12 +65,12 @@ impl Operator for GeoPointInRectOp {
 }
 
 pub struct GeoPointInCircleOp;
-impl Operator for GeoPointInCircleOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoPointInCircleOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/point-in-circle";
         require_arity!(args, OP, >= 2);
-        let [px, py] = eval_fields(OP, "p", &args[0], ctx, POINT)?;
-        let [cx, cy, cr] = eval_fields(OP, "circle", &args[1], ctx, CIRCLE)?;
+        let [px, py] = read_fields(OP, "p", args[0], POINT)?;
+        let [cx, cy, cr] = read_fields(OP, "circle", args[1], CIRCLE)?;
         let dx = px - cx;
         let dy = py - cy;
         Ok(Value::Bool(dx * dx + dy * dy <= cr * cr))
@@ -78,12 +78,12 @@ impl Operator for GeoPointInCircleOp {
 }
 
 pub struct GeoReflectOp;
-impl Operator for GeoReflectOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoReflectOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/reflect";
         require_arity!(args, OP, >= 2);
-        let v = eval_vector(OP, "v", &args[0], ctx)?;
-        let n = eval_vector(OP, "n", &args[1], ctx)?;
+        let v = read_vector(OP, "v", args[0])?;
+        let n = read_vector(OP, "n", args[1])?;
         let dot = v.x * n.x + v.y * n.y + v.z * n.z;
         Ok(make_vec(
             v.x - 2.0 * dot * n.x,
@@ -95,12 +95,12 @@ impl Operator for GeoReflectOp {
 }
 
 pub struct GeoSegmentIntersectOp;
-impl Operator for GeoSegmentIntersectOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for GeoSegmentIntersectOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "geo/segment-intersect";
         require_arity!(args, OP, >= 2);
-        let [x1, y1, x2, y2] = eval_fields(OP, "a", &args[0], ctx, SEGMENT)?;
-        let [x3, y3, x4, y4] = eval_fields(OP, "b", &args[1], ctx, SEGMENT)?;
+        let [x1, y1, x2, y2] = read_fields(OP, "a", args[0], SEGMENT)?;
+        let [x3, y3, x4, y4] = read_fields(OP, "b", args[1], SEGMENT)?;
         let denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
         if denom == 0.0 {
             return Ok(Value::Null);

@@ -3,13 +3,14 @@
 //! data is all client-resident never touches the server. Twin of
 //! `@almadar/std` `effectSiteFor` + `@almadar/core` `isClientResident`.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::runs_on::{effect_site, sexpr_runs_server_effect, Residence, RunsOn, ENTITY_ARGS};
 use orbital_core_base::dispatch_mode::DispatchMode;
 use orbital_core_base::schema::{EntityDefinition, TraitDefinition};
 use serde_json::json;
 
 fn entity(value: serde_json::Value) -> EntityDefinition {
-    serde_json::from_value(value).expect("entity")
+    from_json_value(&value).expect("entity")
 }
 
 fn residence() -> Residence {
@@ -21,7 +22,7 @@ fn residence() -> Residence {
 }
 
 fn sexpr(value: serde_json::Value) -> orbital_core_base::schema::SExpression {
-    serde_json::from_value(value).expect("sexpr")
+    from_json_value(&value).expect("sexpr")
 }
 
 #[test]
@@ -43,7 +44,7 @@ fn control_an_entity_without_the_flag_serializes_without_it() {
 fn the_retired_entity_flags_are_refused() {
     for retired in ["local", "seedMock"] {
         let value = json!({ "name": "Invoice", "persistence": "persistent", "collection": "invoices", retired: true, "fields": [] });
-        assert!(serde_json::from_value::<EntityDefinition>(value).is_err(), "{retired}");
+        assert!(from_json_value::<EntityDefinition>(&value).is_err(), "{retired}");
     }
 }
 
@@ -108,7 +109,7 @@ fn trait_on(entity: &str, dispatch: Option<&str>, effects: serde_json::Value) ->
     if let Some(mode) = dispatch {
         value["dispatch"] = json!(mode);
     }
-    serde_json::from_value(value).expect("trait")
+    from_json_value(&value).expect("trait")
 }
 
 fn browser_invoice() -> EntityDefinition {

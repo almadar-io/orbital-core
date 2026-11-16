@@ -18,6 +18,7 @@
 //!      re-serialized, and walked as a generic `serde_json::Value` contains
 //!      zero `Value::Null` literals anywhere in its tree.
 
+use orbital_core_base::json_value::from_json_str;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -81,17 +82,17 @@ fn id_carrying_schema_with_ledger_round_trips_byte_stably() {
             }
         }
     }"#;
-    let schema: OrbitalSchema = serde_json::from_str(json).expect("parse id-carrying schema");
+    let schema: OrbitalSchema = from_json_str(json).expect("parse id-carrying schema");
     assert_eq!(schema.schema_version, Some(1));
     assert!(schema.ledger.is_some(), "ledger preserved");
 
     let once = serde_json::to_string(&schema).expect("serialize once");
-    let reparsed: OrbitalSchema = serde_json::from_str(&once).expect("re-parse");
+    let reparsed: OrbitalSchema = from_json_str(&once).expect("re-parse");
     let twice = serde_json::to_string(&reparsed).expect("serialize twice");
     assert_eq!(once, twice, "id-carrying schema is not byte-stable");
 
     // Spot-check the dual-carry id survived on the reference position.
-    let value: serde_json::Value = serde_json::from_str(&once).unwrap();
+    let value: serde_json::Value = from_json_str(&once).unwrap();
     assert_eq!(
         value["orbitals"][0]["traits"][0]["linkedEntityId"],
         "ent_01HZX5BBBBBBBBBBBBBBBBBB"
@@ -132,7 +133,7 @@ fn legacy_id_free_schema_loads_with_all_ids_none() {
             }]
         }]
     }"#;
-    let schema: OrbitalSchema = serde_json::from_str(json).expect("parse legacy schema");
+    let schema: OrbitalSchema = from_json_str(json).expect("parse legacy schema");
     assert_eq!(schema.schema_version, None);
     assert!(schema.ledger.is_none());
     assert!(schema.orbitals[0].id.is_none());
@@ -277,7 +278,7 @@ fn emit_payload_field_with_type_when_round_trips() {
     );
 
     let round_tripped: PayloadField =
-        serde_json::from_str(&json).expect("deserialize payload field with typeWhen");
+        from_json_str(&json).expect("deserialize payload field with typeWhen");
     let json2 =
         serde_json::to_string(&round_tripped).expect("re-serialize round-tripped payload field");
     assert_eq!(
@@ -345,19 +346,19 @@ fn shipped_std_agent_atom_roundtrips_value_preserving() {
             return;
         }
     };
-    let schema: OrbitalSchema = serde_json::from_str(&raw).expect("parse std-agent-context-window");
+    let schema: OrbitalSchema = from_json_str(&raw).expect("parse std-agent-context-window");
 
     let serialized = serde_json::to_string(&schema).expect("re-serialize");
     let _: OrbitalSchema =
-        serde_json::from_str(&serialized).expect("re-parse round-tripped output");
+        from_json_str(&serialized).expect("re-parse round-tripped output");
 
     // Structural canonicalization for data-preservation comparison: parse
     // the round-trip output as a generic Value and re-emit. The double pass
     // confirms the second serialization is stable.
     let value: serde_json::Value =
-        serde_json::from_str(&serialized).expect("re-parse round-tripped as value");
+        from_json_str(&serialized).expect("re-parse round-tripped as value");
     let canonical = serde_json::to_string(&value).expect("re-emit canonical");
-    let value2: serde_json::Value = serde_json::from_str(&canonical).expect("re-parse canonical");
+    let value2: serde_json::Value = from_json_str(&canonical).expect("re-parse canonical");
     assert_eq!(value, value2, "round-trip is not stable on second pass");
 }
 
@@ -402,11 +403,11 @@ fn full_schema_no_nulls_std_cart() {
 /// tree carries `skip_serializing_if = "Option::is_none"`, so unset
 /// optionals must not appear in the wire format at all.
 fn assert_no_nulls_round_trip(raw: &str, label: &str) {
-    let schema: OrbitalSchema = serde_json::from_str(raw)
+    let schema: OrbitalSchema = from_json_str(raw)
         .unwrap_or_else(|e| panic!("parse {} as OrbitalSchema: {}", label, e));
     let serialized = serde_json::to_string(&schema).expect("re-serialize OrbitalSchema");
     let value: serde_json::Value =
-        serde_json::from_str(&serialized).expect("re-parse serialized as generic Value");
+        from_json_str(&serialized).expect("re-parse serialized as generic Value");
 
     let mut path = String::new();
     let null_at = first_null_path(&value, &mut path);
@@ -565,7 +566,7 @@ fn expects_declarations_round_trip_and_stay_absent_when_unset() {
             }]
         }]
     }"#;
-    let schema: OrbitalSchema = serde_json::from_str(json).expect("parse expects-carrying schema");
+    let schema: OrbitalSchema = from_json_str(json).expect("parse expects-carrying schema");
     let expects = schema.orbitals[0]
         .expects
         .as_ref()
@@ -578,11 +579,11 @@ fn expects_declarations_round_trip_and_stay_absent_when_unset() {
         "expects wire JSON unexpectedly contains a null literal: {}",
         once
     );
-    let reparsed: OrbitalSchema = serde_json::from_str(&once).expect("re-parse");
+    let reparsed: OrbitalSchema = from_json_str(&once).expect("re-parse");
     let twice = serde_json::to_string(&reparsed).expect("serialize twice");
     assert_eq!(once, twice, "expects-carrying schema is not byte-stable");
 
-    let value: serde_json::Value = serde_json::from_str(&once).unwrap();
+    let value: serde_json::Value = from_json_str(&once).unwrap();
     let wire_expects = &value["orbitals"][0]["expects"];
     assert_eq!(wire_expects[0]["kind"], "identity");
     assert_eq!(wire_expects[0]["name"], "Customer");
@@ -603,7 +604,7 @@ fn expects_declarations_round_trip_and_stay_absent_when_unset() {
             "traits": []
         }]
     }"#;
-    let plain_schema: OrbitalSchema = serde_json::from_str(plain).expect("parse plain schema");
+    let plain_schema: OrbitalSchema = from_json_str(plain).expect("parse plain schema");
     assert!(plain_schema.orbitals[0].expects.is_none());
     let plain_once = serde_json::to_string(&plain_schema).expect("serialize plain");
     assert!(
@@ -635,7 +636,7 @@ fn orbital_types_map_round_trips_and_stays_absent_when_unset() {
             }
         }]
     }"#;
-    let schema: OrbitalSchema = serde_json::from_str(json).expect("parse types-carrying schema");
+    let schema: OrbitalSchema = from_json_str(json).expect("parse types-carrying schema");
     let types = schema.orbitals[0]
         .types
         .as_ref()
@@ -652,11 +653,11 @@ fn orbital_types_map_round_trips_and_stays_absent_when_unset() {
         "types wire JSON unexpectedly contains a null literal: {}",
         once
     );
-    let reparsed: OrbitalSchema = serde_json::from_str(&once).expect("re-parse");
+    let reparsed: OrbitalSchema = from_json_str(&once).expect("re-parse");
     let twice = serde_json::to_string(&reparsed).expect("serialize twice");
     assert_eq!(once, twice, "types-carrying schema is not byte-stable");
 
-    let value: serde_json::Value = serde_json::from_str(&once).unwrap();
+    let value: serde_json::Value = from_json_str(&once).unwrap();
     let wire_types = &value["orbitals"][0]["types"];
     assert_eq!(wire_types["PoApprovalPayload"][0]["name"], "id");
     assert_eq!(wire_types["PoApprovalPayload"][0]["type"], "string");
@@ -671,7 +672,7 @@ fn orbital_types_map_round_trips_and_stays_absent_when_unset() {
             "traits": []
         }]
     }"#;
-    let plain_schema: OrbitalSchema = serde_json::from_str(plain).expect("parse plain schema");
+    let plain_schema: OrbitalSchema = from_json_str(plain).expect("parse plain schema");
     assert!(plain_schema.orbitals[0].types.is_none());
     let plain_once = serde_json::to_string(&plain_schema).expect("serialize plain");
     assert!(
@@ -682,7 +683,7 @@ fn orbital_types_map_round_trips_and_stays_absent_when_unset() {
 }
 
 fn inline_trait_program_with_source_entity() -> OrbitalSchema {
-    serde_json::from_str(
+    from_json_str(
         r#"{
         "name": "Shared",
         "orbitals": [{
@@ -708,9 +709,9 @@ fn inline_trait_program_with_source_entity() -> OrbitalSchema {
 fn inline_traits_and_source_entities_serialize_flat_and_round_trip_byte_identically() {
     let schema = inline_trait_program_with_source_entity();
     let first = serde_json::to_string(&schema).expect("serializes");
-    let again: OrbitalSchema = serde_json::from_str(&first).expect("reloads");
+    let again: OrbitalSchema = from_json_str(&first).expect("reloads");
     assert_eq!(first, serde_json::to_string(&again).expect("serializes again"));
-    let value: serde_json::Value = serde_json::from_str(&first).expect("json");
+    let value: serde_json::Value = from_json_str(&first).expect("json");
     let inline = &value["orbitals"][0]["traits"][0];
     assert!(inline.get("stateMachine").is_some(), "an inline trait stays flat, never tagged");
     assert_eq!(inline["sourceEntityDefinition"]["name"], "Note");

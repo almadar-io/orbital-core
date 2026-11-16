@@ -1,5 +1,6 @@
 // An emit the dispatch itself consumed (its own arm for it, or a listener target) leaves marked `source.dispatched: true`, so a client fold does not run it again (G-ORB-275; twin of `TraitCascade` / `evaluateOrbitalEvent`).
 
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::kernel::RuntimeKernel};
 use {orbital_core_runtime::effects::response::EventResponse, orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::effect_types::RuntimeEnvironment, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -7,7 +8,7 @@ use std::sync::Arc;
 
 fn emitted_dispatched(orbitals: Json) -> Option<bool> {
     let schema: OrbitalSchema =
-        serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap();
+        from_json_value(&json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })).unwrap();
     let k = RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
@@ -104,8 +105,8 @@ fn edge_an_arm_for_the_emit_from_another_state_does_not_consume_it() {
 /// machine's guard) is never evaluated against the emitter's scope (orb site live-machine, 2026-10-19).
 fn quoted_emit(env: RuntimeEnvironment) -> (Vec<String>, Option<Json>) {
     let described = json!({ "guard": ["array/some", "@entity.transitions", ["fn", "t", true]], "states": ["a"] });
-    let body = orbital_core_base::schema::quote::encode_quote_body(&serde_json::from_value(described).unwrap());
-    let schema: OrbitalSchema = serde_json::from_value(json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital("Src", json!([source(json!([
+    let body = orbital_core_base::schema::quote::encode_quote_body(&from_json_value(&described).unwrap());
+    let schema: OrbitalSchema = from_json_value(&json!({ "name": "App", "typeContractVersion": 1, "orbitals": [orbital("Src", json!([source(json!([
         { "from": "idle", "to": "loading", "event": "GO", "effects": [["emit", "LOADED", { "result": ["quote", body] }]] }
     ]))]))] }))
     .unwrap();

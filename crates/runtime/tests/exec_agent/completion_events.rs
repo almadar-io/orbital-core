@@ -2,6 +2,7 @@
 // service result (call-service) or `{ result }` (substrate), `failure` carries `{ error }`, as JS
 // `EffectExecutor.ts` does. Twin of the JS runtime's call-service / program-effect emit tests.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_base::value::ValueMap;
 use orbital_core_runtime::effects::{
     ServiceCaller, ServiceHandler, SubstrateFailure, SubstrateHandler,
@@ -68,7 +69,7 @@ fn kernel_over(
     config: KernelConfig,
     source: Arc<dyn EntitySource>,
 ) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -103,7 +104,7 @@ fn after_go(kernel: &RuntimeKernel) -> (String, serde_json::Value) {
 const EMIT: &str = r#"{"emit": {"success": "DONE", "failure": "FAILED"}}"#;
 
 fn options() -> serde_json::Value {
-    serde_json::from_str(EMIT).unwrap()
+    from_json_str(EMIT).unwrap()
 }
 
 fn with_service(fail: bool) -> KernelConfig {
@@ -214,7 +215,7 @@ mod agent_ports {
     }
 
     fn as_value(json: &Json) -> Value {
-        serde_json::from_value::<Value>(json.clone()).expect("a value")
+        from_json_value::<Value>(&json).expect("a value")
     }
 
     /// Plays the host of a `program/dispatch`: a scripted response per event, answered raw as the host answers (the kernel shapes it).
@@ -233,7 +234,7 @@ mod agent_ports {
             let address = args[0].as_str().expect("a qualified address");
             let event = address.rsplit('.').next().expect("an event");
             let response: EventResponse =
-                serde_json::from_value(self.scripted[event].clone()).expect("a scripted response");
+                from_json_value(&self.scripted[event]).expect("a scripted response");
             Ok(as_value(
                 &serde_json::to_value(&response).expect("serializes"),
             ))
@@ -257,7 +258,7 @@ mod agent_ports {
             json!({ "from": "idle", "to": "done", "event": "DONE", "effects": [["set", "@entity.got", "@payload"]] }),
             json!({ "from": "idle", "to": "failed", "event": "FAILED", "effects": [["set", "@entity.got", "@payload"]] }),
         ]);
-        serde_json::from_value(fixture["schema"].clone()).expect("the vectors' schema")
+        from_json_value(&fixture["schema"]).expect("the vectors' schema")
     }
 
     fn play(fixture: &Json, case: &Json, host: Option<Arc<Dispatching>>) -> (String, Json) {
@@ -288,7 +289,7 @@ mod agent_ports {
 
     #[test]
     fn every_shared_vector_emits_the_same_trace_through_the_kernel() {
-        let fixture: Json = serde_json::from_str(VECTORS).expect("the shared vectors parse");
+        let fixture: Json = from_json_str(VECTORS).expect("the shared vectors parse");
         let cases = fixture["cases"].as_array().unwrap();
         assert!(
             cases.len() > 30,
@@ -329,7 +330,7 @@ mod agent_ports {
 
     #[test]
     fn edge_a_dispatch_with_no_host_fails_loudly_and_asks_nothing() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let case =
             json!({ "op": "program/dispatch", "args": ["Desk.Chat.ADD_NOTE", { "title": "x" }] });
         let (state, got) = play(&fixture, &case, None);
@@ -342,7 +343,7 @@ mod agent_ports {
 
     #[test]
     fn control_a_refused_dispatch_never_reaches_a_missing_host() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let case = json!({ "op": "program/dispatch", "args": ["Desk.Chat.SECRET", {}] });
         let (state, got) = play(&fixture, &case, None);
         assert_eq!(state, "done");
@@ -377,7 +378,7 @@ mod agent_ports {
     // missing field of a held root reads null (resolve_value, 2026-10-25), so the call is judged by its own argument check.
     #[test]
     fn an_unresolved_binding_fails_the_call_as_it_does_on_the_js_path() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         for (op, args, error) in [
             (
                 "persist/read-named",
@@ -406,7 +407,7 @@ mod agent_ports {
 
     #[test]
     fn control_a_binding_the_payload_resolves_is_used() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let effect = json!(["persist/read-named", "@payload.entity", options()]);
         let (state, got) = run_effect(&fixture, effect, json!({ "entity": "Tag" }));
         assert_eq!(state, "done");
@@ -424,7 +425,7 @@ mod agent_ports {
 
     #[test]
     fn a_keyed_ops_completion_echoes_its_key_on_success() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let effect = json!(["persist/read-named", "Tag", keyed(json!("k1"))]);
         let (state, got) = run_effect(&fixture, effect, json!({}));
         assert_eq!(state, "done");
@@ -437,7 +438,7 @@ mod agent_ports {
 
     #[test]
     fn a_keyed_ops_completion_echoes_its_key_on_failure() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let effect =
             json!(["program/dispatch", "Desk.Chat.ADD_NOTE", { "title": "x" }, keyed(json!("k1"))]);
         let (state, got) = run_effect(&fixture, effect, json!({}));
@@ -450,7 +451,7 @@ mod agent_ports {
 
     #[test]
     fn control_an_unkeyed_ops_completion_carries_no_key() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let effect = json!(["persist/read-named", "Tag", options()]);
         let (state, got) = run_effect(&fixture, effect, json!({}));
         assert_eq!(state, "done");
@@ -459,7 +460,7 @@ mod agent_ports {
 
     #[test]
     fn edge_a_bound_key_is_echoed_resolved() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let effect = json!(["persist/read-named", "Tag", keyed(json!("@payload.k"))]);
         let (state, got) = run_effect(&fixture, effect, json!({ "k": "from-payload" }));
         assert_eq!(state, "done");
@@ -483,7 +484,7 @@ mod agent_ports {
         answer: orbital_core_runtime::resumable::IoAnswer,
     ) -> (Option<String>, bool, String, Json) {
         use orbital_core_runtime::resumable::{BlockingHost, IoReply, IoRequest, Progress};
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let config = KernelConfig {
             substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered)
                 as Arc<dyn SubstrateHandler>),
@@ -538,7 +539,7 @@ mod agent_ports {
         use orbital_core_runtime::resumable::{
             BlockingHost, IoAnswer, IoReply, IoRequest, Progress,
         };
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let config = KernelConfig {
             substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered)
                 as Arc<dyn SubstrateHandler>),
@@ -697,7 +698,7 @@ mod agent_ports {
     }
 
     fn read_as(user: Json) -> Json {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "Policy",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Main",
@@ -802,7 +803,7 @@ mod agent_ports {
 
     #[test]
     fn an_inbound_dispatch_asks_the_host_to_deliver_and_answers_the_handlers_status_and_body() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let host = Arc::new(Recording {
             asked: Mutex::new(Vec::new()),
             answer: |_, _| json!({ "status": 202, "body": "queued" }),
@@ -835,7 +836,7 @@ mod agent_ports {
 
     #[test]
     fn a_dispatch_event_request_asks_the_host_with_its_options_and_answers_what_it_answers() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let host = Arc::new(Recording {
             asked: Mutex::new(Vec::new()),
             answer: |_, _| json!({ "success": true, "transitioned": false }),
@@ -880,7 +881,7 @@ mod agent_ports {
 
     #[test]
     fn program_inputs_answers_the_hosts_last_trace_steps() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let host = Arc::new(Recording {
             asked: Mutex::new(Vec::new()),
             answer: |_, _| json!([{ "seq": 1 }]),
@@ -920,7 +921,7 @@ mod agent_ports {
 
     /// `Desk.Chat` moves idle -> busy on `GO`, whose effect reads the running states; `STAY` fires nothing.
     fn state_reading_kernel() -> RuntimeKernel {
-        let schema: OrbitalSchema = serde_json::from_value(json!({
+        let schema: OrbitalSchema = from_json_value(&json!({
             "name": "Desk",
             "typeContractVersion": 1, "orbitals": [{
                 "name": "Desk",
@@ -953,7 +954,7 @@ mod agent_ports {
         let kernel = state_reading_kernel();
         kernel.dispatch("Chat", None, "GO", Value::Null).unwrap();
         let snapshot = kernel.snapshot_trait("Chat", None);
-        let got: Json = serde_json::from_str(
+        let got: Json = from_json_str(
             serde_json::to_value(&snapshot.entity).unwrap()["got"]
                 .as_str()
                 .unwrap_or("null"),
@@ -984,7 +985,7 @@ mod agent_ports {
 
     #[test]
     fn program_inputs_answers_the_orbitals_running_states_and_the_counters() {
-        let fixture: Json = serde_json::from_str(VECTORS).unwrap();
+        let fixture: Json = from_json_str(VECTORS).unwrap();
         let (state, got) = run_hosted(
             &fixture,
             json!(["program/inputs", { "state": "Desk", "stats": true }, options()]),
@@ -1057,13 +1058,13 @@ mod substrate_arguments {
             *host.seen.lock(),
             vec![vec![
                 Value::string("p"),
-                serde_json::from_value::<Value>(json!({ "nested": "p" })).unwrap()
+                from_json_value::<Value>(&json!({ "nested": "p" })).unwrap()
             ]]
         );
     }
 
     fn as_value_of(json: serde_json::Value) -> Value {
-        serde_json::from_value::<Value>(json).unwrap()
+        from_json_value::<Value>(&json).unwrap()
     }
 }
 

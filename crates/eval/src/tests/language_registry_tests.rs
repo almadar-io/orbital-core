@@ -1,4 +1,5 @@
 #[cfg(not(feature = "std"))]
+use orbital_core_base::json_value::from_json_str;
 use std::prelude::v1::*;
 #[allow(unused_imports)]
 use orbital_core_base::language::registry::*;
@@ -9,7 +10,7 @@ use orbital_core_base::language::registry::*;
 // Fails when a canonical rust-target op lands without a Rust impl/registration.
 #[test]
 fn rust_evaluator_covers_every_canonical_rust_operator() {
-    let doc: serde_json::Value = serde_json::from_str(operators_json()).unwrap();
+    let doc: serde_json::Value = orbital_core_base::json_value::from_json_str(operators_json()).unwrap();
     let rust_cats: std::collections::HashSet<String> = doc["categories"]
         .as_object()
         .unwrap()

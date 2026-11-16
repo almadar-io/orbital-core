@@ -5,6 +5,7 @@
 //! which this store no longer reads or writes.
 //! Everything here compiles on wasm32 except the file medium; a host whose rows answer asynchronously keeps the store over
 //! [`RecordedCredentialRows`] and applies the recorded writes itself.
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -192,7 +193,7 @@ impl FileCredentialRows {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(format!("credential file {}: {error}", self.path.display())),
         };
-        let rows = match serde_json::from_str::<Value>(&text) {
+        let rows = match from_json_str::<Value>(&text) {
             Ok(Value::Array(rows)) => rows,
             Ok(_) => {
                 return Err(format!(
@@ -276,7 +277,7 @@ impl StoreCredentialRows {
     }
 
     fn value(json: &Value) -> Result<orbital_core_base::value::Value, String> {
-        serde_json::from_value(json.clone()).map_err(|e| e.to_string())
+        from_json_value(&json).map_err(|e| e.to_string())
     }
 }
 

@@ -1,8 +1,9 @@
+use orbital_core_base::json_value::from_json_value;
 use {orbital_core_base::error::{EvalError, OrbitalError}, orbital_core_base::schema::{SExpression, SequentialBindings}, orbital_core_eval::evaluator::context::{BindingContext, BindingContextBuilder}, orbital_core_eval::evaluator::Evaluator, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
 
 fn args(value: Json) -> Vec<SExpression> {
-    serde_json::from_value(value).unwrap()
+    from_json_value(&value).unwrap()
 }
 
 fn evaluate(arguments: Vec<SExpression>, ctx: &BindingContext) -> Result<Value, OrbitalError> {
@@ -92,10 +93,10 @@ fn sequential_bindings_wrapper_recognizes_only_the_canonical_let_form() {
         json!(["Let", [], null]), json!(["sequential", [], null]),
         json!(["let"]), json!(["let", []]), json!(["let", {}, null]),
     ] {
-        let expression: SExpression = serde_json::from_value(invalid).unwrap();
+        let expression: SExpression = from_json_value(&invalid).unwrap();
         assert!(expression.sequential_bindings().is_none());
     }
-    let expression: SExpression = serde_json::from_value(json!([
+    let expression: SExpression = from_json_value(&json!([
         "let", [["x", 1]], null, ["base64/decode", "!"]
     ])).unwrap();
     let view = expression.sequential_bindings().unwrap();

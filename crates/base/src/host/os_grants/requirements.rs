@@ -4,7 +4,7 @@ use super::*;
 
 /// One thing an `os/` call needs from the grants, read from its literal arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "need", rename_all = "kebab-case")]
+#[serde(remote = "Self", tag = "need", rename_all = "kebab-case")]
 pub enum OsRequirement {
     Fs { path: String, mode: FsMode },
     /// Every path under `root` (which ends in `/`): the target is a `str/concat` whose static prefix is
@@ -42,6 +42,18 @@ pub enum OsRequirement {
     Ffi { library: String, symbol: String },
     /// A gpu call: a device opened, work of `kind` submitted, or a buffer read back.
     Gpu { kind: GpuKind },
+}
+
+impl serde::Serialize for OsRequirement {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        OsRequirement::serialize(self, serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for OsRequirement {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        crate::json_value::deserialize_via_value(deserializer, |value| OsRequirement::deserialize(value))
+    }
 }
 
 impl OsRequirement {

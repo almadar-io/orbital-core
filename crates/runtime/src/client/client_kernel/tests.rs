@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 use crate::entity_source::EntitySource;
 use orbital_core_base::sync::Mutex;
@@ -12,7 +13,7 @@ use {
 /// that sibling's own INIT. `local` traits keep the dispatch client-only.
 #[test]
 fn remount_holds_a_seed_until_the_receivers_init() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "Boot",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Level",
@@ -31,7 +32,7 @@ fn remount_holds_a_seed_until_the_receivers_init() {
                     ] } }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let kernel = ClientKernel::new(schema, None).unwrap();
     kernel.remount(["Seeder", "Body"]);
@@ -43,7 +44,7 @@ fn remount_holds_a_seed_until_the_receivers_init() {
 }
 
 fn persisted_awaited_with_watcher_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -94,7 +95,7 @@ fn persisted_awaited_with_watcher_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -104,7 +105,7 @@ fn persisted_awaited_with_watcher_schema() -> OrbitalSchema {
 /// uses, reproduced here so the ClientKernel-level test proves the bridge is
 /// never even consulted, not just that the leg comes back empty.
 fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -128,7 +129,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -137,7 +138,7 @@ fn hybrid_with_stray_persist_schema() -> OrbitalSchema {
 /// still produce a server leg despite the entity being runtime-only (e.g. a
 /// multiplayer sync call) — the scenario `RuntimeOptimistic` rollback exists for.
 fn runtime_optimistic_with_call_service_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -167,7 +168,7 @@ fn runtime_optimistic_with_call_service_schema() -> OrbitalSchema {
                 }
             }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -249,7 +250,7 @@ fn client_kernel_hybrid_local_never_posts() {
 /// listener's leg (orbital-core keeps it: `client_env_local_seed_posts_its_cascade_server_work`).
 #[test]
 fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -271,7 +272,7 @@ fn a_local_seed_posts_the_server_work_its_cascade_reaches() {
                     ] } }
             ]
         }]
-    }))
+    })))
     .unwrap();
     let server = Arc::new(ScriptedBridge::new(vec![Ok(EventResponse::success(""))]));
     let kernel =
@@ -531,7 +532,7 @@ fn client_kernel_runtime_optimistic_restores_on_error() {
 }
 
 fn optimistic_with_bound_sibling_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -564,7 +565,7 @@ fn optimistic_with_bound_sibling_schema() -> OrbitalSchema {
                 }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -725,9 +726,7 @@ fn orbital(name: &str, entity: &str, traits: Vec<serde_json::Value>) -> serde_js
 }
 
 fn schema_of(orbitals: Vec<serde_json::Value>) -> OrbitalSchema {
-    serde_json::from_value(
-        serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals }),
-    )
+    from_json_value(&(serde_json::json!({ "name": "App", "typeContractVersion": 1, "orbitals": orbitals })))
     .unwrap()
 }
 
@@ -736,7 +735,7 @@ const BEAT_TICK: &str =
 const QUIET_TICK: &str = r#"[{ "name": "beat", "interval": 1000, "effects": [] }]"#;
 
 fn ticks(raw: &str) -> serde_json::Value {
-    serde_json::from_str(raw).unwrap()
+    from_json_str(raw).unwrap()
 }
 
 fn fan_out_kernel(tick: &str) -> ClientKernel {
@@ -950,7 +949,7 @@ fn control_an_absent_or_empty_applies_to_means_every_state() {
 
 fn mount_schema() -> OrbitalSchema {
     let loading = |label: &str| serde_json::json!(["render-ui", "main", { "type": "skeleton", "variant": "text", "content": label }]);
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "MountApp",
         "typeContractVersion": 1, "orbitals": [{
             "name": "PageOrbital",
@@ -974,7 +973,7 @@ fn mount_schema() -> OrbitalSchema {
                     ] } }
             ]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1102,7 +1101,7 @@ fn a_server_fetch_mount_returns_the_client_listeners_render_and_state() {
     raw["orbitals"][0]["pages"] = serde_json::json!([
         { "name": "Home", "path": "/", "traits": [{ "ref": "List" }, { "ref": "TodoView" }] }
     ]);
-    let schema: OrbitalSchema = serde_json::from_value(raw).unwrap();
+    let schema: OrbitalSchema = from_json_value(&raw).unwrap();
     let server = Arc::new(RecordingServer {
         server: crate::client::bridge::KernelBridge::new(schema.clone()).unwrap(),
         sent: Mutex::new(Vec::new()),
@@ -1157,7 +1156,7 @@ fn a_failed_mount_leg_is_reported() {
 }
 
 fn books_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "books", "typeContractVersion": 1, "orbitals": [{
             "name": "Books",
             "entity": { "name": "Invoice", "persistence": "persistent", "collection": "invoices",
@@ -1170,7 +1169,7 @@ fn books_schema() -> OrbitalSchema {
                         { "from": "browsing", "to": "browsing", "event": "ADD", "effects": [["persist", "create", "Invoice", {}, { "emit": { "success": "ADDED" } }]] },
                         { "from": "browsing", "to": "loading", "event": "ADDED", "effects": [["fetch", "Invoice", {}]] }] } }]
         }]
-    }))
+    })))
     .unwrap()
 }
 
@@ -1303,7 +1302,7 @@ fn control_an_event_nobody_listens_to_delivers_nothing() {
 fn a_settled_answer_carries_the_servers_own_renders_and_undelivered_emits() {
     let render = crate::effects::response::ClientEffectByTrait {
         trait_name: "Persistor".to_string(),
-        effect: serde_json::from_value(serde_json::json!(["render-ui", "main", { "type": "typography", "content": "From server" }])).unwrap(),
+        effect: from_json_value(&(serde_json::json!(["render-ui", "main", { "type": "typography", "content": "From server" }]))).unwrap(),
         event: None,
         from_state: None,
         callsite_payload: None,
@@ -1339,7 +1338,7 @@ fn a_settled_answer_carries_the_servers_own_renders_and_undelivered_emits() {
 /// with `direct`, LINKED itself) and fetches. One route page places the three.
 fn browser_chain_kernel(direct: bool) -> (ClientKernel, Arc<RecordingBridge>) {
     let (data_source, data_event) = if direct { ("Link", "LINKED") } else { ("Home", "WANT") };
-    let schema: OrbitalSchema = serde_json::from_value(serde_json::json!({
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
         "name": "linked",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Links",
@@ -1366,7 +1365,7 @@ fn browser_chain_kernel(direct: bool) -> (ClientKernel, Arc<RecordingBridge>) {
             ],
             "pages": [{ "name": "Linked", "path": "/:id", "traits": [{ "ref": "Link" }, { "ref": "Home" }, { "ref": "Data" }] }]
         }]
-    }))
+    })))
     .unwrap();
     let bridge = Arc::new(RecordingBridge::new());
     let kernel = ClientKernel::new(schema, Some(Arc::clone(&bridge) as Arc<dyn ServerBridge>)).unwrap();
@@ -1397,7 +1396,7 @@ fn control_a_settled_mount_whose_seed_emits_straight_to_the_server_trait_posts_n
 /// G-ORBITAL-CORE-146 + EXEC-SEED-7: the native client kernel delivers a route's `$MOUNT` to its `[client]` route
 /// listeners before the seeds, and posts the server work their cascade reaches before the mount leg.
 fn mount_announce_schema() -> OrbitalSchema {
-    serde_json::from_value(serde_json::json!({
+    from_json_value(&(serde_json::json!({
         "name": "Trail",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Docs",
@@ -1426,7 +1425,7 @@ fn mount_announce_schema() -> OrbitalSchema {
             "entity": { "name": "Trail", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": []
         }]
-    }))
+    })))
     .unwrap()
 }
 

@@ -1,5 +1,6 @@
 //! Deriving a behavior's expectations from its program.
 
+use crate::json_value::from_json_value;
 use super::*;
 
 /// Derive the `expects` declarations of `orbital_name` from `schema` (the program's `.orb`
@@ -408,7 +409,7 @@ pub fn derive_expectations(
     let expectations = expectations
         .into_iter()
         .map(|e| {
-            serde_json::from_value::<ExpectDeclaration>(e)
+            from_json_value::<ExpectDeclaration>(&e)
                 .map_err(|err| format!("derived expectation is not an ExpectDeclaration: {err}"))
         })
         .collect::<Result<Vec<_>, _>>()?;

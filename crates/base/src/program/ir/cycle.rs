@@ -73,10 +73,11 @@ pub fn boxed_fields(module: &OirModule) -> BTreeMap<String, Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::json_value::from_json_value;
     use crate::ir::OirField;
 
     fn entity(name: &str, fields: Vec<OirField>) -> OirEntity {
-        let mut e: OirEntity = serde_json::from_value(serde_json::json!({ "name": name, "collection": name, "persistence": "runtime", "fields": [] })).expect("entity");
+        let mut e: OirEntity = from_json_value(&(serde_json::json!({ "name": name, "collection": name, "persistence": "runtime", "fields": [] }))).expect("entity");
         e.fields = fields;
         e
     }

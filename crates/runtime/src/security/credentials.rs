@@ -103,6 +103,7 @@ impl Credentials {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::from_json_str;
 
     fn map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
@@ -164,7 +165,7 @@ mod tests {
     #[test]
     fn the_source_vector_the_js_host_replays_is_answered_by_the_native_host() {
         let raw = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/credentials-source.json")).unwrap();
-        let vector: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let vector: serde_json::Value = from_json_str(&raw).unwrap();
         let text = |value: &serde_json::Value| value.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string())).collect::<HashMap<_, _>>();
         let cases = vector["cases"].as_array().unwrap();
         assert!(cases.len() >= 8);

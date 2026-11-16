@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::{parse_schema, EntityDefinition, EntityRef};
 use serde_json::{json, Value};
 
@@ -44,7 +45,7 @@ fn declared_policy_and_entity_keys_round_trip() {
         "visual_prompt": "A record", "assetRef": {"role": "record", "category": "document",
             "animations": ["idle"], "style": "vector", "variant": "blue", "dimension": "2d", "aspect": "1:1"}
     });
-    let direct: EntityDefinition = serde_json::from_value(value.clone()).unwrap();
+    let direct: EntityDefinition = from_json_value(&value).unwrap();
     assert!(direct.read_policy.is_some());
     assert_eq!(serde_json::to_value(direct).unwrap(), value);
     let loaded = parse_schema(&schema(value)).unwrap();
@@ -58,7 +59,7 @@ fn entity_reference_variants_preserve_wire_format() {
         json!({"extends": "Base.entity", "extendsId": "base-entity", "name": "Record",
             "fields": [], "persistence": "runtime", "collection": "records"}),
     ] {
-        let entity: EntityRef = serde_json::from_value(value.clone()).unwrap();
+        let entity: EntityRef = from_json_value(&value).unwrap();
         assert!(entity.is_reference());
         assert_eq!(serde_json::to_value(entity).unwrap(), value);
     }

@@ -1,3 +1,4 @@
+use crate::json_value::from_json_str;
 use super::*;
 
 fn parsed_effect(expr: &SExpression) -> Option<Effect> {
@@ -5,14 +6,14 @@ fn parsed_effect(expr: &SExpression) -> Option<Effect> {
 }
 
 fn log_of(src: &str) -> Option<(LogLevel, String)> {
-    match parsed_effect(&serde_json::from_str::<SExpression>(src).unwrap())? {
+    match parsed_effect(&from_json_str::<SExpression>(src).unwrap())? {
         Effect::Log { level, message, .. } => Some((level, message.as_str()?.to_string())),
         _ => None,
     }
 }
 
 fn custom_of(src: &str) -> (Vec<Value>, bool) {
-    match parsed_effect(&serde_json::from_str::<SExpression>(src).unwrap()) {
+    match parsed_effect(&from_json_str::<SExpression>(src).unwrap()) {
         Some(Effect::Custom { args, emit, .. }) => (args, emit.is_some()),
         other => panic!("not a custom effect: {other:?}"),
     }
@@ -59,7 +60,7 @@ fn an_unknown_log_level_is_not_a_log_effect() {
 }
 
 fn failed_with(src: &str) -> EffectResult {
-    EffectResult::failed(parsed_effect(&serde_json::from_str::<SExpression>(src).unwrap()).unwrap(), "no row")
+    EffectResult::failed(parsed_effect(&from_json_str::<SExpression>(src).unwrap()).unwrap(), "no row")
 }
 
 // A failure the program routed to its declared `emit.failure` is handled, whatever the effect's kind (G-ORBITAL-CORE-035).
@@ -86,14 +87,14 @@ fn control_a_failure_with_no_declared_failure_route_is_not_handled() {
 
 #[test]
 fn edge_a_success_is_never_a_routed_failure() {
-    let fetch = parsed_effect(&serde_json::from_str::<SExpression>(r#"["fetch", "Contact", {"emit": {"failure": "LOAD_FAILED"}}]"#).unwrap()).unwrap();
+    let fetch = parsed_effect(&from_json_str::<SExpression>(r#"["fetch", "Contact", {"emit": {"failure": "LOAD_FAILED"}}]"#).unwrap()).unwrap();
     assert_eq!(EffectResult::executed(fetch).routed_failure(), None);
 }
 
 #[test]
 fn test_parse_emit_effect() {
     let expr: SExpression =
-        serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "123"}]"#).unwrap();
+        from_json_str(r#"["emit", "USER_REGISTERED", {"userId": "123"}]"#).unwrap();
 
     let effect = parsed_effect(&expr).unwrap();
     match effect {
@@ -160,7 +161,7 @@ fn client_kind_matches_kinds() {
 
 #[test]
 fn parse_call_service_reads_the_key_option() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"["call-service", "test-svc", "run", {"items": []}, {"key": "batch-1", "emit": {"cancelled": "C"}}]"#,
     )
     .unwrap();
@@ -173,7 +174,7 @@ fn parse_call_service_reads_the_key_option() {
 #[test]
 fn parse_call_service_without_options_has_no_key() {
     let expr: SExpression =
-        serde_json::from_str(r#"["call-service", "test-svc", "run", {}]"#).unwrap();
+        from_json_str(r#"["call-service", "test-svc", "run", {}]"#).unwrap();
     match parsed_effect(&expr).unwrap() {
         Effect::CallService { key, .. } => assert_eq!(key, None),
         other => panic!("expected CallService, got {other:?}"),
@@ -183,7 +184,7 @@ fn parse_call_service_without_options_has_no_key() {
 #[test]
 fn parse_host_effects_read_their_argument_and_emit() {
     let random: SExpression =
-        serde_json::from_str(r#"["random-bytes", 32, {"emit": {"success": "S", "failure": "F"}}]"#).unwrap();
+        from_json_str(r#"["random-bytes", 32, {"emit": {"success": "S", "failure": "F"}}]"#).unwrap();
     match parsed_effect(&random).unwrap() {
         Effect::RandomBytes { bytes, emit, .. } => {
             assert_eq!(bytes, Value::Number(32.0));
@@ -192,7 +193,7 @@ fn parse_host_effects_read_their_argument_and_emit() {
         other => panic!("expected RandomBytes, got {other:?}"),
     }
     for (head, status) in [("credential-status", true), ("credential-forget", false)] {
-        let expr: SExpression = serde_json::from_str(&format!(r#"["{head}", "tok", {{"emit": {{"success": "S"}}}}]"#)).unwrap();
+        let expr: SExpression = from_json_str(&format!(r#"["{head}", "tok", {{"emit": {{"success": "S"}}}}]"#)).unwrap();
         let parsed = parsed_effect(&expr).unwrap();
         assert_eq!(parsed.operator(), head);
         assert_eq!(matches!(parsed, Effect::CredentialStatus { .. }), status);
@@ -202,7 +203,7 @@ fn parse_host_effects_read_their_argument_and_emit() {
     for op in crate::credential_admin::CredentialAdminOp::ALL {
         let request = if op.takes_request() { r#"{"service": "s"}, "# } else { "" };
         let expr: SExpression =
-            serde_json::from_str(&format!(r#"["{}", {request}{{"emit": {{"success": "S", "failure": "F"}}}}]"#, op.name())).unwrap();
+            from_json_str(&format!(r#"["{}", {request}{{"emit": {{"success": "S", "failure": "F"}}}}]"#, op.name())).unwrap();
         match parsed_effect(&expr).unwrap() {
             Effect::CredentialAdmin { op: parsed, request, emit } => {
                 assert_eq!(parsed, op);
@@ -212,11 +213,11 @@ fn parse_host_effects_read_their_argument_and_emit() {
             other => panic!("expected CredentialAdmin, got {other:?}"),
         }
         assert!(is_known_effect_name(op.name()));
-        let bare: SExpression = serde_json::from_str(&format!(r#"["{}"]"#, op.name())).unwrap();
+        let bare: SExpression = from_json_str(&format!(r#"["{}"]"#, op.name())).unwrap();
         assert_eq!(parsed_effect(&bare).is_none(), op.takes_request(), "{}: only an effect that takes a request needs one", op.name());
     }
     assert!(!is_known_effect_name("credential-purge"));
-    let check: SExpression = serde_json::from_str(
+    let check: SExpression = from_json_str(
         r#"["access-check", {"entity": "Note", "action": "read", "row": {}, "viewer": null}, {"emit": {"success": "S", "failure": "F"}}]"#,
     )
     .unwrap();
@@ -228,12 +229,12 @@ fn parse_host_effects_read_their_argument_and_emit() {
         other => panic!("expected AccessCheck, got {other:?}"),
     }
     assert!(is_known_effect_name("access-check"));
-    assert!(parsed_effect(&serde_json::from_str(r#"["access-check"]"#).unwrap()).is_none(), "control: the request is required");
+    assert!(parsed_effect(&from_json_str(r#"["access-check"]"#).unwrap()).is_none(), "control: the request is required");
 }
 
 #[test]
 fn credential_connect_parses_its_request_and_emit() {
-    let expr: SExpression = serde_json::from_str(
+    let expr: SExpression = from_json_str(
         r#"["credential-connect", {"credential": "tok", "clientId": "cid"}, {"emit": {"success": "S", "failure": "F"}}]"#,
     )
     .unwrap();
@@ -246,19 +247,19 @@ fn credential_connect_parses_its_request_and_emit() {
         }
         other => panic!("expected CredentialConnect, got {other:?}"),
     }
-    assert!(parsed_effect(&serde_json::from_str(r#"["credential-connect"]"#).unwrap()).is_none(), "control: the request is required");
+    assert!(parsed_effect(&from_json_str(r#"["credential-connect"]"#).unwrap()).is_none(), "control: the request is required");
 }
 
 #[test]
 fn parse_fetch_reads_the_key_option() {
     let keyed: SExpression =
-        serde_json::from_str(r#"["fetch", "Task", {"key": "@payload.kind", "emit": {"success": "S"}}]"#).unwrap();
+        from_json_str(r#"["fetch", "Task", {"key": "@payload.kind", "emit": {"success": "S"}}]"#).unwrap();
     match parsed_effect(&keyed).unwrap() {
         Effect::Fetch { key, .. } => assert_eq!(key.as_ref().and_then(Value::as_str), Some("@payload.kind")),
         other => panic!("expected Fetch, got {other:?}"),
     }
     for unkeyed in [r#"["fetch", "Task"]"#, r#"["fetch", "Task", {"key": null}]"#] {
-        let expr: SExpression = serde_json::from_str(unkeyed).unwrap();
+        let expr: SExpression = from_json_str(unkeyed).unwrap();
         match parsed_effect(&expr).unwrap() {
             Effect::Fetch { key, .. } => assert_eq!(key, None, "{unkeyed}"),
             other => panic!("expected Fetch, got {other:?}"),
@@ -295,10 +296,10 @@ fn g_orbital_core_138_a_table_missing_an_os_operator_is_a_typed_error_at_parse_e
     });
     assert!(installed.is_ok(), "the child process starts with no table installed");
 
-    let control = parse_effect(&serde_json::from_str::<SExpression>(r#"["os/read-file", "/x"]"#).unwrap());
+    let control = parse_effect(&from_json_str::<SExpression>(r#"["os/read-file", "/x"]"#).unwrap());
     assert!(matches!(control, Ok(Some(Effect::Os { .. }))), "control: an operator the table declares parses");
 
-    let refused = parse_effect(&serde_json::from_str::<SExpression>(r#"["gpu/device-open"]"#).unwrap());
+    let refused = parse_effect(&from_json_str::<SExpression>(r#"["gpu/device-open"]"#).unwrap());
     let fault = refused.expect_err("an operator the binary knows and the table lacks is a typed error");
     assert_eq!(fault.code(), crate::language_data::CODE_INVALID);
     assert!(fault.to_string().contains("gpu/device-open"), "{fault}");

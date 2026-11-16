@@ -3,6 +3,7 @@
 //! for an event leg to replay under (owner ruling 2026-10-12, drift D-1). Server-owned data in a
 //! browser-run tick is an `orb validate` error (`ORB_T_CLIENT_TICK_SERVER_EFFECT`).
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::effects::RunTick;
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::{RuntimeKernel, TickDispatch}};
 use orbital_core_runtime::ServerLegCollector;
@@ -11,7 +12,7 @@ use serde_json::{json, Value as Json};
 use std::sync::Arc;
 
 fn tick_of(effects: Json) -> TickDispatch {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

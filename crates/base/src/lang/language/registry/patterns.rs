@@ -1,5 +1,6 @@
 //! Embedded UI patterns, their props and payload shapes, installed behaviors and theme names.
 
+use crate::json_value::{from_json_str, from_json_value};
 use super::*;
 
 /// The raw patterns-registry.json text, from the installed `@almadar/core`.
@@ -228,7 +229,7 @@ struct PatternEntry(Option<EmbeddedPattern>);
 impl<'de> Deserialize<'de> for PatternEntry {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
-        Ok(PatternEntry(serde_json::from_value::<EmbeddedPattern>(value).ok()))
+        Ok(PatternEntry(from_json_value::<EmbeddedPattern>(&value).ok()))
     }
 }
 
@@ -242,7 +243,7 @@ struct PatternsFile {
 pub fn patterns() -> &'static HashMap<String, EmbeddedPattern> {
     PATTERNS.get_or_init(|| {
         // patterns-registry.json shape: { version, exportedAt, patterns: { name: PatternEntry } }
-        let file: PatternsFile = serde_json::from_str(patterns_json())
+        let file: PatternsFile = from_json_str(patterns_json())
             .expect("installed patterns-registry.json is corrupt or has no 'patterns' object — reinstall @almadar/core");
         file.patterns
             .into_iter()

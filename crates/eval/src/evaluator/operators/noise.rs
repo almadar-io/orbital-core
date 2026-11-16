@@ -67,11 +67,11 @@ fn perlin(x: f64, y: f64, seed: f64) -> f64 {
     lerp(x1, x2, v)
 }
 
-fn arg_number(args: &[SExpression], i: usize, ctx: &BindingContext) -> EvalResult2 {
-    Ok(eval_expr(&args[i], ctx)?.number()?)
+fn arg_number(args: &[&Value], i: usize, _ctx: &BindingContext) -> EvalResult2 {
+    Ok(args[i].number()?)
 }
 
-fn seed_arg(args: &[SExpression], i: usize, ctx: &BindingContext) -> EvalResult2 {
+fn seed_arg(args: &[&Value], i: usize, ctx: &BindingContext) -> EvalResult2 {
     match args.get(i) {
         Some(_) => arg_number(args, i, ctx),
         None => Ok(0.0),
@@ -81,8 +81,8 @@ fn seed_arg(args: &[SExpression], i: usize, ctx: &BindingContext) -> EvalResult2
 type EvalResult2 = Result<f64, OrbitalError>;
 
 pub struct NoisePerlinOp;
-impl Operator for NoisePerlinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NoisePerlinOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "noise/perlin", >= 2);
         let x = arg_number(args, 0, ctx)?;
         let y = arg_number(args, 1, ctx)?;
@@ -92,8 +92,8 @@ impl Operator for NoisePerlinOp {
 }
 
 pub struct NoiseSimplexOp;
-impl Operator for NoiseSimplexOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NoiseSimplexOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "noise/simplex", >= 2);
         let x = arg_number(args, 0, ctx)?;
         let y = arg_number(args, 1, ctx)?;
@@ -107,8 +107,8 @@ impl Operator for NoiseSimplexOp {
 }
 
 pub struct NoiseFbmOp;
-impl Operator for NoiseFbmOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NoiseFbmOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "noise/fbm", >= 3);
         let x = arg_number(args, 0, ctx)?;
         let y = arg_number(args, 1, ctx)?;

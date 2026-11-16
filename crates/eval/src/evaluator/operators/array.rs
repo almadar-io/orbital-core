@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 /// The numbers `array/sum` / `max` / `min` / `avg` fold: each element (or its `args[1]` field), which must be a
 /// number or an int; any other kind, or an object missing the field, is an error.
-fn numbers_of(args: &[SExpression], ctx: &BindingContext) -> Result<Vec<Value>, OrbitalError> {
-    let arr = eval_expr(&args[0], ctx)?;
+fn numbers_of(args: &[&Value], _ctx: &BindingContext) -> Result<Vec<Value>, OrbitalError> {
+    let arr = args[0];
     let array = require_array!(arr);
-    let key = match args.get(1) {
-        Some(k) => Some(eval_expr(k, ctx)?.text()?.to_string()),
+    let key = match args.get(1).copied() {
+        Some(k) => Some(k.text()?.to_string()),
         None => None,
     };
     let mut numbers = Vec::with_capacity(array.len());
@@ -58,6 +58,11 @@ pub enum Callback<'a> {
         params: Vec<String>,
         body: Arc<SExpression>,
     },
+    /// The callable the call site gives at an operand position (a value entry, see [`CallSite::invoke`]).
+    Site {
+        site: &'a dyn CallSite,
+        index: usize,
+    },
 }
 
 impl<'a> Callback<'a> {
@@ -92,7 +97,10 @@ impl<'a> Callback<'a> {
     /// Run the callback on one element. `values` are bound to the params in order, and `@item`/`@index` to the first
     /// two (twin of almadar-evaluator's `evalWithItem`/`evalLambda`).
     pub fn apply(&self, values: Vec<Value>, ctx: &BindingContext) -> EvalResult {
-        let values: Vec<Arc<Value>> = values.into_iter().map(Arc::new).collect();
+        if let Callback::Site { site, index } = self {
+            return site.invoke(*index, values);
+        }
+        let values: Vec<Arc<Value>> /* shared so `item`, `index` and the params bind the same values */ = values.into_iter().map(Arc::new).collect();
         let mut child = ctx.child();
         if let Some(item) = values.first() {
             child.set_local_shared(crate::evaluator::LocalName::Fixed("item"), Arc::clone(item));
@@ -119,6 +127,7 @@ impl<'a> Callback<'a> {
                 }
                 eval_expr(body, &child)
             }
+            Callback::Site { .. } => unreachable!("a site callback is answered before the bindings"),
         }
     }
 }
@@ -214,71 +223,72 @@ impl Operator for CountOp {
 }
 
 pub struct ArrayLenOp;
-impl Operator for ArrayLenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayLenOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/len", 1);
-        super::with_operand(&args[0], ctx, |val| match val {
+        let val = args[0];
+        match val {
             Value::Array(items) => Ok(super::util::int_of(items.len())),
             other => Err(other.kind_error("array").into()),
-        })
+        }
     }
 }
 
 pub struct FirstOp;
-impl Operator for FirstOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for FirstOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "first", 1);
-        super::with_operand(&args[0], ctx, |val| match val {
+        let val = args[0];
+        match val {
             Value::Array(arr) => Ok(arr.first().cloned().unwrap_or(Value::Null)),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "array".to_string(),
                 actual: val.type_name().to_string(),
             })),
-        })
+        }
     }
 }
 
 pub struct LastOp;
-impl Operator for LastOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for LastOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "last", 1);
-        super::with_operand(&args[0], ctx, |val| match val {
+        let val = args[0];
+        match val {
             Value::Array(arr) => Ok(arr.last().cloned().unwrap_or(Value::Null)),
             _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
                 expected: "array".to_string(),
                 actual: val.type_name().to_string(),
             })),
-        })
+        }
     }
 }
 
 pub struct NthOp;
-impl Operator for NthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for NthOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "nth", >= 2);
-        super::with_operand(&args[0], ctx, |arr| {
-            let idx = eval_expr(&args[1], ctx)?;
-            let Value::Array(array) = arr else {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "array".to_string(),
-                    actual: arr.type_name().to_string(),
-                }));
-            };
-            let position = whole_count(&idx, "nth", "index")?;
-            Ok(array.get(position).cloned().unwrap_or(Value::Null))
-        })
+        let arr = args[0];
+        let idx = args[1];
+        let Value::Array(array) = arr else {
+            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+                expected: "array".to_string(),
+                actual: arr.type_name().to_string(),
+            }));
+        };
+        let position = whole_count(idx, "nth", "index")?;
+        Ok(array.get(position).cloned().unwrap_or(Value::Null))
     }
 }
 
 pub struct IncludesOp;
-impl Operator for IncludesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for IncludesOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "includes", >= 2);
-        super::with_operand(&args[0], ctx, |arr| {
-            let item = eval_expr(&args[1], ctx)?;
-            let items = arr.as_array().ok_or_else(|| arr.kind_error("array"))?;
-            Ok(Value::Bool(items.contains(&item)))
-        })
+        let arr = args[0];
+        let item = args[1];
+        let items = arr.as_array().ok_or_else(|| arr.kind_error("array"))?;
+        Ok(Value::Bool(items.contains(item)))
     }
 }
 
@@ -288,15 +298,54 @@ impl Operator for MapOp {
         require_arity!(args, "map", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
         let array = require_array!(arr);
-
-        let callback = Callback::of(&args[1], ctx)?;
-        let results: Result<Vec<Value>, _> = array
-            .into_iter()
-            .enumerate()
-            .map(|(i, item)| callback.apply(vec![item, super::util::int_of(i)], ctx))
-            .collect();
-        Ok(Value::array(results?))
+        map_each(array, &Callback::of(&args[1], ctx)?, ctx)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "map", 2);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| map_each(array, &Callback::Site { site, index: 1 }, ctx)))
+    }
+}
+
+fn listed(value: Value) -> Result<Shared<Vec<Value>>, OrbitalError> {
+    Ok(require_array!(value))
+}
+
+fn map_each(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext) -> EvalResult {
+    let results: Result<Vec<Value>, _> = array
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| callback.apply(vec![item, super::util::int_of(i)], ctx))
+        .collect();
+    Ok(Value::array(results?))
+}
+
+/// The first element the predicate accepts with its position, or every element it accepts.
+fn accepted(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext, all: bool) -> Result<Vec<Value>, OrbitalError> {
+    let mut kept = Vec::new();
+    for (i, item) in array.into_iter().enumerate() {
+        if callback.apply(vec![item.clone(), super::util::int_of(i)], ctx)?.boolean()? {
+            kept.push(item);
+            if !all {
+                break;
+            }
+        }
+    }
+    Ok(kept)
+}
+
+/// Whether the predicate answers `wanted` for some element: `some` looks for a `true`, `every` for a `false`.
+fn any_answers(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext, wanted: bool) -> Result<bool, OrbitalError> {
+    for (i, item) in array.into_iter().enumerate() {
+        if callback.apply(vec![item, super::util::int_of(i)], ctx)?.boolean()? == wanted {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub struct FilterOp;
@@ -305,18 +354,20 @@ impl Operator for FilterOp {
         require_arity!(args, "filter", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
         let array = require_array!(arr);
+        Ok(Value::array(accepted(array, &Callback::of(&args[1], ctx)?, ctx, true)?))
+    }
 
-        let callback = Callback::of(&args[1], ctx)?;
-        let mut kept = Vec::new();
-        for (i, item) in array.into_iter().enumerate() {
-            if callback
-                .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
-                .boolean()?
-            {
-                kept.push(item);
-            }
-        }
-        Ok(Value::array(kept))
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "filter", 2);
+        Some(
+            listed(std::mem::take(&mut args[0]))
+                .and_then(|array| accepted(array, &Callback::Site { site, index: 1 }, ctx, true))
+                .map(Value::array),
+        )
     }
 }
 
@@ -328,18 +379,20 @@ impl Operator for FindOp {
         let predicate = &args[1];
 
         let array = require_array!(arr);
+        Ok(accepted(array, &Callback::of(predicate, ctx)?, ctx, false)?.pop().unwrap_or(Value::Null))
+    }
 
-        let callback = Callback::of(predicate, ctx)?;
-        for (i, item) in array.into_iter().enumerate() {
-            if callback
-                .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
-                .boolean()?
-            {
-                return Ok(item);
-            }
-        }
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
 
-        Ok(Value::Null)
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "find", 2);
+        Some(
+            listed(std::mem::take(&mut args[0]))
+                .and_then(|array| accepted(array, &Callback::Site { site, index: 1 }, ctx, false))
+                .map(|mut found| found.pop().unwrap_or(Value::Null)),
+        )
     }
 }
 
@@ -349,18 +402,18 @@ impl Operator for FindOp {
 
 /// array/slice - Extract portion of array
 pub struct ArraySliceOp;
-impl Operator for ArraySliceOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArraySliceOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         // ["slice", arr, start, end?]
         require_arity!(args, "slice", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let start = eval_expr(&args[1], ctx)?;
+        let arr = args[0];
+        let start = args[1];
 
         let array = require_array!(arr);
 
-        let start_idx = whole_count(&start, "slice", "start")?.min(array.len());
-        let end_idx = match args.get(2) {
-            Some(end) => whole_count(&eval_expr(end, ctx)?, "slice", "end")?.min(array.len()),
+        let start_idx = whole_count(start, "slice", "start")?.min(array.len());
+        let end_idx = match args.get(2).copied() {
+            Some(end) => whole_count(end, "slice", "end")?.min(array.len()),
             None => array.len(),
         };
 
@@ -374,12 +427,12 @@ impl Operator for ArraySliceOp {
 
 /// array/concat - Concatenate arrays
 pub struct ArrayConcatOp;
-impl Operator for ArrayConcatOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayConcatOp);
+impl OwningOperator for ArrayConcatOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         let mut result = Vec::new();
-        for arg in args {
-            let val = eval_expr(arg, ctx)?;
-            result.extend(require_array!(val));
+        for arg in args.iter_mut() {
+            result.extend(require_array!(std::mem::take(arg)));
         }
         Ok(Value::array(result))
     }
@@ -387,11 +440,12 @@ impl Operator for ArrayConcatOp {
 
 /// array/append - Add element to end of array
 pub struct ArrayAppendOp;
-impl Operator for ArrayAppendOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayAppendOp);
+impl OwningOperator for ArrayAppendOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "append", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let item = eval_expr(&args[1], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
+        let item = std::mem::take(&mut args[1]);
 
         let mut array = require_array!(arr);
 
@@ -445,24 +499,25 @@ fn sort_order(a: &Value, b: &Value) -> std::cmp::Ordering {
 /// both directions. Twin of
 /// almadar-evaluator `evalArraySort`.
 pub struct ArraySortOp;
-impl Operator for ArraySortOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArraySortOp);
+impl OwningOperator for ArraySortOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sort", 1);
-        let arr = eval_expr(&args[0], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
         let mut array = require_array!(arr);
 
         let key = match args.get(1) {
-            Some(k) => match eval_expr(k, ctx)? {
+            Some(k) => match k {
                 Value::Null => None,
                 Value::String(s) if s.is_empty() => None,
-                Value::String(s) => Some(s),
+                Value::String(s) => Some(s.clone()),
                 other => return Err(other.kind_error("string").into()),
             },
             None => None,
         };
         let ascending = match args.get(2) {
             Some(d) => {
-                let dir = eval_expr(d, ctx)?;
+                let dir = d;
                 match dir.text()? {
                     "asc" => true,
                     "desc" => false,
@@ -526,10 +581,11 @@ impl Operator for ArraySortOp {
 
 /// array/unique - Remove duplicates
 pub struct ArrayUniqueOp;
-impl Operator for ArrayUniqueOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayUniqueOp);
+impl OwningOperator for ArrayUniqueOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "unique", 1);
-        let arr = eval_expr(&args[0], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
 
         let array = require_array!(arr);
 
@@ -556,16 +612,16 @@ impl Operator for ArrayUniqueOp {
 
 /// array/indexOf - Find index of element
 pub struct ArrayIndexOfOp;
-impl Operator for ArrayIndexOfOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayIndexOfOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "indexOf", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let needle = eval_expr(&args[1], ctx)?;
+        let arr = args[0];
+        let needle = args[1];
 
         let array = require_array!(arr);
 
         for (i, item) in array.iter().enumerate() {
-            if *item == needle {
+            if *item == *needle {
                 return Ok(super::util::int_of(i));
             }
         }
@@ -583,18 +639,20 @@ impl Operator for ArrayEveryOp {
         let predicate = &args[1];
 
         let array = require_array!(arr);
+        Ok(Value::Bool(!any_answers(array, &Callback::of(predicate, ctx)?, ctx, false)?))
+    }
 
-        let callback = Callback::of(predicate, ctx)?;
-        for (i, item) in array.into_iter().enumerate() {
-            if !callback
-                .apply(vec![item, super::util::int_of(i)], ctx)?
-                .boolean()?
-            {
-                return Ok(Value::Bool(false));
-            }
-        }
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
 
-        Ok(Value::Bool(true))
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "every", 2);
+        Some(
+            listed(std::mem::take(&mut args[0]))
+                .and_then(|array| any_answers(array, &Callback::Site { site, index: 1 }, ctx, false))
+                .map(|refused| Value::Bool(!refused)),
+        )
     }
 }
 
@@ -607,25 +665,27 @@ impl Operator for ArraySomeOp {
         let predicate = &args[1];
 
         let array = require_array!(arr);
+        Ok(Value::Bool(any_answers(array, &Callback::of(predicate, ctx)?, ctx, true)?))
+    }
 
-        let callback = Callback::of(predicate, ctx)?;
-        for (i, item) in array.into_iter().enumerate() {
-            if callback
-                .apply(vec![item, super::util::int_of(i)], ctx)?
-                .boolean()?
-            {
-                return Ok(Value::Bool(true));
-            }
-        }
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
 
-        Ok(Value::Bool(false))
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "some", 2);
+        Some(
+            listed(std::mem::take(&mut args[0]))
+                .and_then(|array| any_answers(array, &Callback::Site { site, index: 1 }, ctx, true))
+                .map(Value::Bool),
+        )
     }
 }
 
 /// array/sum - Sum numeric array
 pub struct ArraySumOp;
-impl Operator for ArraySumOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArraySumOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "sum", 1);
         let numbers = numbers_of(args, ctx)?;
         if all_ints(&numbers) {
@@ -649,11 +709,12 @@ impl Operator for ArraySumOp {
 
 /// array/prepend - Add element to beginning
 pub struct ArrayPrependOp;
-impl Operator for ArrayPrependOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayPrependOp);
+impl OwningOperator for ArrayPrependOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "prepend", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let item = eval_expr(&args[1], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
+        let item = std::mem::take(&mut args[1]);
 
         let mut array = require_array!(arr);
 
@@ -664,12 +725,13 @@ impl Operator for ArrayPrependOp {
 
 /// array/insert - Insert element at index
 pub struct ArrayInsertOp;
-impl Operator for ArrayInsertOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayInsertOp);
+impl OwningOperator for ArrayInsertOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "insert", >= 3);
-        let arr = eval_expr(&args[0], ctx)?;
-        let idx = whole_count(&eval_expr(&args[1], ctx)?, "insert", "index")?;
-        let item = eval_expr(&args[2], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
+        let idx = whole_count(&args[1], "insert", "index")?;
+        let item = std::mem::take(&mut args[2]);
 
         let mut array = require_array!(arr);
 
@@ -687,11 +749,12 @@ impl Operator for ArrayInsertOp {
 
 /// array/remove - Remove element at index
 pub struct ArrayRemoveOp;
-impl Operator for ArrayRemoveOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayRemoveOp);
+impl OwningOperator for ArrayRemoveOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "remove", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let idx = whole_count(&eval_expr(&args[1], ctx)?, "remove", "index")?;
+        let arr = std::mem::take(&mut args[0]);
+        let idx = whole_count(&args[1], "remove", "index")?;
 
         let mut array = require_array!(arr);
 
@@ -709,10 +772,11 @@ impl Operator for ArrayRemoveOp {
 
 /// array/reverse - Reverse order
 pub struct ArrayReverseOp;
-impl Operator for ArrayReverseOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayReverseOp);
+impl OwningOperator for ArrayReverseOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "reverse", 1);
-        let arr = eval_expr(&args[0], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
 
         let mut array = require_array!(arr);
 
@@ -723,10 +787,11 @@ impl Operator for ArrayReverseOp {
 
 /// array/flatten - Flatten nested arrays (one level)
 pub struct ArrayFlattenOp;
-impl Operator for ArrayFlattenOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayFlattenOp);
+impl OwningOperator for ArrayFlattenOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "flatten", 1);
-        let arr = eval_expr(&args[0], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
 
         let array = require_array!(arr);
 
@@ -743,11 +808,12 @@ impl Operator for ArrayFlattenOp {
 
 /// array/zip - Combine arrays pairwise
 pub struct ArrayZipOp;
-impl Operator for ArrayZipOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayZipOp);
+impl OwningOperator for ArrayZipOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "zip", >= 2);
-        let arr1 = eval_expr(&args[0], ctx)?;
-        let arr2 = eval_expr(&args[1], ctx)?;
+        let arr1 = std::mem::take(&mut args[0]);
+        let arr2 = std::mem::take(&mut args[1]);
 
         let array1 = match arr1 {
             Value::Array(a) => a,
@@ -791,29 +857,42 @@ impl Operator for ArrayFindIndexOp {
 
         // Handle lambda predicate
         let (params, body) = require_lambda!(predicate);
-
-        for (i, item) in array.into_iter().enumerate() {
+        first_index(array, |item, index| {
             let mut child_ctx = ctx.child();
             if !params.is_empty() {
                 child_ctx.set_local(&params[0], item);
             }
             if params.len() > 1 {
-                child_ctx.set_local(&params[1], super::util::int_of(i));
+                child_ctx.set_local(&params[1], index);
             }
-            let result = eval_expr(&body, &child_ctx)?;
-            if result.boolean()? {
-                return Ok(super::util::int_of(i));
-            }
-        }
-
-        Ok(Value::Int(-1))
+            eval_expr(&body, &child_ctx)
+        })
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "findIndex", 2);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| first_index(array, |item, index| site.invoke(1, vec![item, index]))))
+    }
+}
+
+/// The position of the first element `test` accepts, -1 when it accepts none.
+fn first_index(array: Shared<Vec<Value>>, mut test: impl FnMut(Value, Value) -> EvalResult) -> EvalResult {
+    for (i, item) in array.into_iter().enumerate() {
+        if test(item, super::util::int_of(i))?.boolean()? {
+            return Ok(super::util::int_of(i));
+        }
+    }
+    Ok(Value::Int(-1))
 }
 
 /// array/avg - Average of numeric array
 pub struct ArrayAvgOp;
-impl Operator for ArrayAvgOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayAvgOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "avg", 1);
         let nums = floats_of(&numbers_of(args, ctx)?)?;
         if nums.is_empty() {
@@ -888,11 +967,12 @@ impl Operator for ArrayGroupByOp {
 
 /// array/take - Take first n elements
 pub struct ArrayTakeOp;
-impl Operator for ArrayTakeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayTakeOp);
+impl OwningOperator for ArrayTakeOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "take", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let n = whole_count(&eval_expr(&args[1], ctx)?, "take", "count")?;
+        let arr = std::mem::take(&mut args[0]);
+        let n = whole_count(&args[1], "take", "count")?;
 
         let array = require_array!(arr);
 
@@ -903,11 +983,12 @@ impl Operator for ArrayTakeOp {
 
 /// array/drop - Drop first n elements
 pub struct ArrayDropOp;
-impl Operator for ArrayDropOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayDropOp);
+impl OwningOperator for ArrayDropOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "drop", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let n = whole_count(&eval_expr(&args[1], ctx)?, "drop", "count")?;
+        let arr = std::mem::take(&mut args[0]);
+        let n = whole_count(&args[1], "drop", "count")?;
 
         let array = require_array!(arr);
 
@@ -918,20 +999,20 @@ impl Operator for ArrayDropOp {
 
 /// array/range - Generate numeric range
 pub struct ArrayRangeOp;
-impl Operator for ArrayRangeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayRangeOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "range", 1);
 
-        let first = eval_expr(&args[0], ctx)?;
-        let end = match args.get(1) {
-            Some(end) => match eval_expr(end, ctx)? {
+        let first = args[0].clone();
+        let end = match args.get(1).copied() {
+            Some(end) => match end {
                 Value::Null => None,
-                end => Some(end),
+                end => Some(end.clone()),
             },
             None => None,
         };
-        let step = match args.get(2) {
-            Some(step) => eval_expr(step, ctx)?,
+        let step = match args.get(2).copied() {
+            Some(step) => step.clone(),
             None => Value::Int(1),
         };
         let (start, end) = match end {
@@ -989,10 +1070,11 @@ impl Operator for ArrayRangeOp {
 
 /// array/shuffle - Randomize order
 pub struct ArrayShuffleOp;
-impl Operator for ArrayShuffleOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayShuffleOp);
+impl OwningOperator for ArrayShuffleOp {
+    fn apply_owned(&self, args: &mut [Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "shuffle", 1);
-        let arr = eval_expr(&args[0], ctx)?;
+        let arr = std::mem::take(&mut args[0]);
 
         let array = require_array!(arr);
 
@@ -1080,11 +1162,12 @@ impl Operator for ArrayPartitionOp {
 
 /// array/takeLast - Take last n elements
 pub struct ArrayTakeLastOp;
-impl Operator for ArrayTakeLastOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayTakeLastOp);
+impl OwningOperator for ArrayTakeLastOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "takeLast", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let n = whole_count(&eval_expr(&args[1], ctx)?, "takeLast", "count")?;
+        let arr = std::mem::take(&mut args[0]);
+        let n = whole_count(&args[1], "takeLast", "count")?;
 
         let array = require_array!(arr);
 
@@ -1097,11 +1180,12 @@ impl Operator for ArrayTakeLastOp {
 
 /// array/dropLast - Drop last n elements
 pub struct ArrayDropLastOp;
-impl Operator for ArrayDropLastOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayDropLastOp);
+impl OwningOperator for ArrayDropLastOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "dropLast", >= 2);
-        let arr = eval_expr(&args[0], ctx)?;
-        let n = whole_count(&eval_expr(&args[1], ctx)?, "dropLast", "count")?;
+        let arr = std::mem::take(&mut args[0]);
+        let n = whole_count(&args[1], "dropLast", "count")?;
 
         let array = require_array!(arr);
 
@@ -1165,29 +1249,28 @@ impl Operator for ReduceOp {
         let array = require_array!(arr);
 
         let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
-        let mut accumulator = initial;
         let linear = params.first().is_some_and(|acc| read_once(&body, acc));
-        for item in array {
-            let mut child_ctx = ctx.child();
-
-            // Bind parameters: first param is accumulator, second is current item
-            if !params.is_empty() {
-                let acc = std::mem::replace(&mut accumulator, Value::Null);
-                if linear {
-                    child_ctx.set_linear_local(&params[0], acc);
-                } else {
-                    child_ctx.set_local(&params[0], acc);
-                }
-            }
-            if params.len() >= 2 {
-                child_ctx.set_local(&params[1], item);
-            }
-
-            accumulator = eval_expr(&body, &child_ctx)?;
-        }
-
-        Ok(accumulator)
+        folded(array, initial, |acc, item| fold_step(&params, &body, linear, acc, item, ctx))
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "reduce", 3);
+        let initial = std::mem::take(&mut args[1]);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| folded(array, initial, |acc, item| site.invoke(2, vec![acc, item]))))
+    }
+}
+
+/// `array` folded left to right from `initial`: each step is given the accumulator and the element, both owned.
+fn folded(array: Shared<Vec<Value>>, initial: Value, mut step: impl FnMut(Value, Value) -> EvalResult) -> EvalResult {
+    let mut accumulator = initial;
+    for item in array {
+        accumulator = step(accumulator, item)?;
+    }
+    Ok(accumulator)
 }
 
 /// Elements per `array/preduce` chunk; the grouping is part of the operator's meaning, so a result never depends on
@@ -1274,8 +1357,8 @@ impl Operator for ArrayPreduceOp {
 
 /// array/max - Maximum value in array
 pub struct ArrayMaxOp;
-impl Operator for ArrayMaxOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayMaxOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/max", 1);
         let numbers = numbers_of(args, ctx)?;
         if all_ints(&numbers) {
@@ -1294,8 +1377,8 @@ impl Operator for ArrayMaxOp {
 
 /// array/min - Minimum value in array
 pub struct ArrayMinOp;
-impl Operator for ArrayMinOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ArrayMinOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/min", 1);
         let numbers = numbers_of(args, ctx)?;
         if all_ints(&numbers) {
@@ -1315,11 +1398,12 @@ impl Operator for ArrayMinOp {
 /// array/removeItem - return a new array with the first element equal to `item`
 /// removed (others kept; unchanged if no match).
 pub struct ArrayRemoveItemOp;
-impl Operator for ArrayRemoveItemOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayRemoveItemOp);
+impl OwningOperator for ArrayRemoveItemOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/removeItem", >= 2);
-        let item = eval_expr(&args[1], ctx)?;
-        let mut array = require_array!(eval_expr(&args[0], ctx)?);
+        let item = std::mem::take(&mut args[1]);
+        let mut array = require_array!(std::mem::take(&mut args[0]));
         let mut found = None;
         for (pos, v) in array.iter().enumerate() {
             if *v == item {
@@ -1359,11 +1443,12 @@ fn cosine_similarity(a: &[Value], b: &[Value]) -> Result<Option<f64>, OrbitalErr
 /// array/cosine - Cosine similarity between two numeric arrays. Pure math,
 /// no side effects — works on arrays the caller already has (embeddings).
 pub struct ArrayCosineOp;
-impl Operator for ArrayCosineOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayCosineOp);
+impl OwningOperator for ArrayCosineOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/cosine", >= 2);
-        let a = require_array!(eval_expr(&args[0], ctx)?);
-        let b = require_array!(eval_expr(&args[1], ctx)?);
+        let a = require_array!(std::mem::take(&mut args[0]));
+        let b = require_array!(std::mem::take(&mut args[1]));
         Ok(cosine_similarity(&a, &b)?.map_or(Value::Null, Value::Number))
     }
 }
@@ -1373,11 +1458,12 @@ impl Operator for ArrayCosineOp {
 /// has no runner-up, so margin is 0 — a margin-gate must abstain rather
 /// than fabricate confidence from a comparison never made.
 pub struct ArrayNearestOp;
-impl Operator for ArrayNearestOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+owning_operator!(ArrayNearestOp);
+impl OwningOperator for ArrayNearestOp {
+    fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "array/nearest", >= 2);
-        let query = require_array!(eval_expr(&args[0], ctx)?);
-        let candidates = require_array!(eval_expr(&args[1], ctx)?);
+        let query = require_array!(std::mem::take(&mut args[0]));
+        let candidates = require_array!(std::mem::take(&mut args[1]));
         if candidates.is_empty() {
             return Ok(Value::Null);
         }

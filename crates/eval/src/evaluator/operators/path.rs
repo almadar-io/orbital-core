@@ -33,22 +33,12 @@ fn read_cell(op: &str, param: &str, v: &Value) -> Result<Cell, EvalError> {
     })
 }
 
-fn eval_cell(
-    op: &str,
-    param: &str,
-    arg: &SExpression,
-    ctx: &BindingContext,
-) -> Result<Cell, OrbitalError> {
-    Ok(read_cell(op, param, &eval_expr(arg, ctx)?)?)
+fn eval_cell(op: &str, param: &str, arg: &Value) -> Result<Cell, OrbitalError> {
+    Ok(read_cell(op, param, arg)?)
 }
 
-fn eval_extent(
-    op: &str,
-    param: &str,
-    arg: &SExpression,
-    ctx: &BindingContext,
-) -> Result<i64, OrbitalError> {
-    Ok(whole(op, param, eval_expr(arg, ctx)?.number()?)?)
+fn eval_extent(op: &str, param: &str, arg: &Value) -> Result<i64, OrbitalError> {
+    Ok(whole(op, param, arg.number()?)?)
 }
 
 fn key(c: Cell) -> String {
@@ -71,24 +61,24 @@ fn neighbor_offsets(diagonal: bool) -> Vec<(i64, i64)> {
     offs
 }
 
-fn arg_bool(args: &[SExpression], i: usize, ctx: &BindingContext) -> Result<bool, OrbitalError> {
+fn arg_bool(args: &[&Value], i: usize) -> Result<bool, OrbitalError> {
     match args.get(i) {
-        Some(a) => Ok(eval_expr(a, ctx)?.boolean()?),
+        Some(a) => Ok(a.boolean()?),
         None => Ok(false),
     }
 }
 
 pub struct PathAstarOp;
-impl Operator for PathAstarOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for PathAstarOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "path/astar";
         require_arity!(args, OP, >= 5);
-        let start = eval_cell(OP, "start", &args[0], ctx)?;
-        let goal = eval_cell(OP, "goal", &args[1], ctx)?;
-        let blocked = read_blocked(OP, &eval_expr(&args[2], ctx)?)?;
-        let w = eval_extent(OP, "w", &args[3], ctx)?;
-        let h = eval_extent(OP, "h", &args[4], ctx)?;
-        let diagonal = arg_bool(args, 5, ctx)?;
+        let start = eval_cell(OP, "start", args[0])?;
+        let goal = eval_cell(OP, "goal", args[1])?;
+        let blocked = read_blocked(OP, args[2])?;
+        let w = eval_extent(OP, "w", args[3])?;
+        let h = eval_extent(OP, "h", args[4])?;
+        let diagonal = arg_bool(args, 5)?;
         let offs = neighbor_offsets(diagonal);
 
         let heuristic = |c: Cell| -> i64 {
@@ -192,16 +182,16 @@ impl Operator for PathAstarOp {
 }
 
 pub struct PathReachableOp;
-impl Operator for PathReachableOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for PathReachableOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         const OP: &str = "path/reachable";
         require_arity!(args, OP, >= 5);
-        let start = eval_cell(OP, "start", &args[0], ctx)?;
-        let steps = eval_extent(OP, "steps", &args[1], ctx)?;
-        let blocked = read_blocked(OP, &eval_expr(&args[2], ctx)?)?;
-        let w = eval_extent(OP, "w", &args[3], ctx)?;
-        let h = eval_extent(OP, "h", &args[4], ctx)?;
-        let diagonal = arg_bool(args, 5, ctx)?;
+        let start = eval_cell(OP, "start", args[0])?;
+        let steps = eval_extent(OP, "steps", args[1])?;
+        let blocked = read_blocked(OP, args[2])?;
+        let w = eval_extent(OP, "w", args[3])?;
+        let h = eval_extent(OP, "h", args[4])?;
+        let diagonal = arg_bool(args, 5)?;
         let offs = neighbor_offsets(diagonal);
 
         let mut visited: HashSet<String> = HashSet::new();

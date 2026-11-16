@@ -3,6 +3,7 @@
 // the correctness scenarios of persist_success_emit, client_fetch_success_emit, same_trait_cascade,
 // dispatch_roots, cross_trait_dispatch and completion_events.
 
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use orbital_core_runtime::effects::{
     LifecycleEvent, MountSeed, ServiceHandler, SubstrateFailure, SubstrateHandler,
 };
@@ -481,7 +482,7 @@ fn build(setup: &Setup, resumable: bool) -> (RuntimeKernel, Arc<dyn EntitySource
         Arc::new(InMemoryEntityCache::new())
     };
     for (entity, row) in &setup.seed_rows {
-        let row: Value = serde_json::from_value(row.clone()).unwrap();
+        let row: Value = from_json_value(&row).unwrap();
         let id = row.as_object().unwrap()["id"].as_str().unwrap().to_string();
         store.write(entity, &id, &row).unwrap();
     }
@@ -501,7 +502,7 @@ fn build(setup: &Setup, resumable: bool) -> (RuntimeKernel, Arc<dyn EntitySource
         });
     }
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
-    let schema: OrbitalSchema = serde_json::from_value(setup.schema.clone()).unwrap();
+    let schema: OrbitalSchema = from_json_value(&setup.schema).unwrap();
     kernel.register_schema(schema).unwrap();
     kernel.mount_traits(setup.mounted.iter().copied());
     (kernel, store)
@@ -580,7 +581,7 @@ fn trace_of(outcomes: &DispatchOutcomes) -> Json {
 /// The world after the steps: every trait's state and frame, every stored row.
 fn world_of(setup: &Setup, kernel: &RuntimeKernel, store: &Arc<dyn EntitySource>) -> Json {
     let mut states = serde_json::Map::new();
-    let schema: OrbitalSchema = serde_json::from_value(setup.schema.clone()).unwrap();
+    let schema: OrbitalSchema = from_json_value(&setup.schema).unwrap();
     for orbital in &schema.orbitals {
         for t in &orbital.traits {
             if let Some(name) = t.trait_name() {
@@ -1084,11 +1085,11 @@ fn embedded_server(setup: &Setup) -> (EmbeddedServer, Arc<dyn EntitySource>) {
         Arc::new(InMemoryEntityCache::new())
     };
     for (entity, row) in &setup.seed_rows {
-        let row: Value = serde_json::from_value(row.clone()).unwrap();
+        let row: Value = from_json_value(&row).unwrap();
         let id = row.as_object().unwrap()["id"].as_str().unwrap().to_string();
         store.write(entity, &id, &row).unwrap();
     }
-    let schema: OrbitalSchema = serde_json::from_value(setup.schema.clone()).unwrap();
+    let schema: OrbitalSchema = from_json_value(&setup.schema).unwrap();
     let server = EmbeddedServer::new(schema).unwrap();
     server.mount(setup.mounted.iter().map(|t| t.to_string()).collect());
     (server, store)
@@ -1102,7 +1103,7 @@ fn json_answers(setup: &Setup, store: &Arc<dyn EntitySource>, requests: &[Json])
         .rev()
         .map(|pending| {
             let id = pending["id"].clone();
-            let wire: IoRequestWire = serde_json::from_value(pending["request"].clone()).unwrap();
+            let wire: IoRequestWire = from_json_value(&pending["request"]).unwrap();
             let request = IoRequest::from(wire);
             let answer = BlockingHost {
                 source: store,
@@ -1122,7 +1123,7 @@ enum Wire {
 }
 
 fn wire_of(text: &str) -> Wire {
-    let value: Json = serde_json::from_str(text).unwrap();
+    let value: Json = from_json_str(text).unwrap();
     match value["status"].as_str().unwrap() {
         "done" => {
             // The blocking responses carry no hop trace and no emitter ids: both are the server role's
@@ -1319,7 +1320,7 @@ fn the_sessions_identity_travels_to_the_service_as_its_caller() {
         call["caller"],
         json!({ "principal": "u1", "role": "admin" })
     );
-    let wire: IoRequestWire = serde_json::from_value(call).unwrap();
+    let wire: IoRequestWire = from_json_value(&call).unwrap();
     assert!(
         matches!(IoRequest::from(wire), IoRequest::CallService { caller: Some(ServiceCaller { principal, .. }), .. } if principal == "u1")
     );
@@ -1493,7 +1494,7 @@ fn the_wire_round_trips_every_request_and_answer() {
     ];
     for request in requests {
         let text = serde_json::to_string(&IoRequestWire::from(&request)).unwrap();
-        let back: IoRequestWire = serde_json::from_str(&text).unwrap();
+        let back: IoRequestWire = from_json_str(&text).unwrap();
         assert_eq!(IoRequest::from(back), request, "{text}");
     }
     let answers = vec![
@@ -1517,7 +1518,7 @@ fn the_wire_round_trips_every_request_and_answer() {
     ];
     for answer in answers {
         let text = serde_json::to_string(&IoAnswerWire::from(&answer)).unwrap();
-        let back: IoAnswerWire = serde_json::from_str(&text).unwrap();
+        let back: IoAnswerWire = from_json_str(&text).unwrap();
         assert_eq!(IoAnswer::from(back), answer, "{text}");
     }
     let _ = (
@@ -2167,7 +2168,7 @@ fn placed_kernel(program: &Json, unit: Option<&str>) -> (RuntimeKernel, Arc<dyn 
     let store: Arc<dyn EntitySource> = Arc::new(InMemoryEntityCache::new());
     let config = KernelConfig { unit: unit.map(str::to_string), ..KernelConfig::default() };
     let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config);
-    kernel.register_schema(serde_json::from_value::<OrbitalSchema>(program.clone()).unwrap()).unwrap();
+    kernel.register_schema(from_json_value::<OrbitalSchema>(&program).unwrap()).unwrap();
     (kernel, store)
 }
 
@@ -2508,7 +2509,7 @@ fn the_after_view_reads_the_row_a_step_persisted() {
     });
     let setup = Setup::new(schema, &["Note"], vec![dispatch("Notes", "HIT")]);
     let (kernel, store) = build(&setup, true);
-    store.write("Note", "singleton", &serde_json::from_value(json!({ "id": "singleton", "hits": 4 })).unwrap()).unwrap();
+    store.write("Note", "singleton", &from_json_value(&json!({ "id": "singleton", "hits": 4 })).unwrap()).unwrap();
     kernel.set_record_entity_after(true);
     let outcomes = drive_blocking(&kernel, start_step(&kernel, &setup.steps[0]), &host_answers(&setup, &store)).unwrap();
     assert_eq!(entity_views(&outcomes, "hits"), vec![("Notes".to_string(), Some(4.0), Some(Some(5.0)))]);

@@ -1,5 +1,6 @@
 //! Transitions and what they carry: guards, ticks, listeners and emits.
 
+use crate::json_value::from_json_value;
 use super::*;
 
 /// Transition definition
@@ -66,7 +67,7 @@ pub fn await_render_rows_from_resolved(resolved: &serde_json::Value) -> Vec<Awai
             let Some(renders) = transition.get("awaitRender") else {
                 continue;
             };
-            let renders: Vec<AwaitRender> = match serde_json::from_value(renders.clone()) {
+            let renders: Vec<AwaitRender> = match from_json_value(&renders) {
                 Ok(renders) => renders,
                 Err(error) => {
                     tracing::warn!(trait_name = %name, %error, "unreadable awaitRender skipped");

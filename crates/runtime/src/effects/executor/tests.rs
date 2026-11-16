@@ -1,3 +1,4 @@
+use orbital_core_base::json_value::{from_json_str, from_json_value};
 use super::*;
 use orbital_core_base::value::ValueMap;
 use orbital_core_base::events::bus::shared_bus;
@@ -549,8 +550,8 @@ fn test_execute_all_from_sexpr() {
     let executor = EffectExecutor::server().with_event_bus(bus.clone());
 
     let effects: Vec<SExpression> = vec![
-        serde_json::from_str(r#"["emit", "EVENT_1", null]"#).unwrap(),
-        serde_json::from_str(r#"["log", "Test message", "info"]"#).unwrap(),
+        from_json_str(r#"["emit", "EVENT_1", null]"#).unwrap(),
+        from_json_str(r#"["log", "Test message", "info"]"#).unwrap(),
     ];
 
     let ctx = BindingContext::new();
@@ -898,11 +899,11 @@ mod derived_fields {
     use serde_json::json;
 
     fn v(j: serde_json::Value) -> Value {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn s(j: serde_json::Value) -> SExpression {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn lower_email() -> SExpression {
@@ -1252,7 +1253,7 @@ mod derived_fields {
             indexed.write("Person", id, &row).unwrap();
             plain.write("Person", id, &row).unwrap();
         }
-        let query: RowQuery = serde_json::from_value(json!({ "filter": { "kind": "compare", "field": "emailKey", "op": "==", "value": "a@b.c" } })).unwrap();
+        let query: RowQuery = from_json_value(&json!({ "filter": { "kind": "compare", "field": "emailKey", "op": "==", "value": "a@b.c" } })).unwrap();
         let want = plain.query_page("Person", &query).unwrap_rows();
         assert_eq!(plain.rows_visited(), 4, "an undeclared cache scans every row");
         let got = indexed.query_page("Person", &query).unwrap_rows();
@@ -1268,7 +1269,7 @@ mod in_memory_read_access {
     use serde_json::json;
 
     fn v(j: serde_json::Value) -> Value {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn store(
@@ -1592,7 +1593,7 @@ mod fetch_option_evaluation {
     use serde_json::json;
 
     fn v(j: serde_json::Value) -> Value {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn run(
@@ -1608,7 +1609,7 @@ mod fetch_option_evaluation {
         }
         let executor = EffectExecutor::server().with_fetch_handler(persistence);
         let raw: SExpression =
-            serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
+            from_json_value(&json!(["fetch", "Row", options])).unwrap();
         let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("table").expect("fetch parses");
         let mut ctx = BindingContext::new();
         ctx.payload = Arc::new(v(payload));
@@ -1756,7 +1757,7 @@ mod fetch_option_evaluation {
         let executor = EffectExecutor::server().with_fetch_handler(persistence);
         let fetch = |options: serde_json::Value| {
             let raw: SExpression =
-                serde_json::from_value(json!(["fetch", "Row", options])).unwrap();
+                from_json_value(&json!(["fetch", "Row", options])).unwrap();
             let effect = orbital_core_base::effect_types::parse_effect(&raw).expect("table").expect("fetch parses");
             let mut ctx = BindingContext::new();
             ctx.payload = Arc::new(v(json!({})));
@@ -1822,11 +1823,11 @@ mod field_updates {
     use serde_json::json;
 
     fn v(j: serde_json::Value) -> Value {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn s(j: serde_json::Value) -> SExpression {
-        serde_json::from_value(j).unwrap()
+        from_json_value(&j).unwrap()
     }
 
     fn own_row() -> Value {

@@ -2,6 +2,7 @@
 // runtime passes `{ principal: user.id, role: user.role }` (`effect-stage.ts`). Providers that act
 // for a person (workspace, connections, credentials) read it instead of a host-supplied guess.
 
+use orbital_core_base::json_value::from_json_value;
 use crate::support::identity;
 use orbital_core_runtime::effects::{ServiceCaller, ServiceHandler};
 use {orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache}, orbital_core_runtime::config::KernelConfig, orbital_core_runtime::kernel::RuntimeKernel};
@@ -33,7 +34,7 @@ impl ServiceHandler for Recording {
 }
 
 fn kernel(handler: Arc<Recording>) -> RuntimeKernel {
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",

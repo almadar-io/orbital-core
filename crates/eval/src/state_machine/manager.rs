@@ -487,7 +487,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: Some(vec![
-                            serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
                         ensures: None,
                         await_render: None,
@@ -498,11 +498,11 @@ mod tests {
                         event: "SAVE".to_string(),
                         event_id: None,
                         guard: Some(
-                            serde_json::from_str(r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["and", ["!=", "@payload.data.email", ""], ["!=", "@payload.data.name", ""]]"#).unwrap(),
                         ),
                         effects: Some(vec![
-                            serde_json::from_str(r#"["persist", "create", "User", "@payload.data"]"#).unwrap(),
-                            serde_json::from_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["persist", "create", "User", "@payload.data"]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["emit", "USER_REGISTERED", {"userId": "@payload.data.id"}]"#).unwrap(),
                         ]),
                         ensures: None,
                         await_render: None,
@@ -524,7 +524,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: Some(vec![
-                            serde_json::from_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["render-ui", "main", {"type": "entity-detail"}]"#).unwrap(),
                         ]),
                         ensures: None,
                         await_render: None,
@@ -536,7 +536,7 @@ mod tests {
                         event_id: None,
                         guard: None,
                         effects: Some(vec![
-                            serde_json::from_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["render-ui", "main", {"type": "form-section"}]"#).unwrap(),
                         ]),
                         ensures: None,
                         await_render: None,
@@ -547,10 +547,10 @@ mod tests {
                         event: "SAVE".to_string(),
                         event_id: None,
                         guard: Some(
-                            serde_json::from_str(r#"["!=", "@payload.data.name", ""]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["!=", "@payload.data.name", ""]"#).unwrap(),
                         ),
                         effects: Some(vec![
-                            serde_json::from_str(r#"["persist", "update", "User", "@entity.id", "@payload.data"]"#).unwrap(),
+                            orbital_core_base::json_value::from_json_str(r#"["persist", "update", "User", "@entity.id", "@payload.data"]"#).unwrap(),
                         ]),
                         ensures: None,
                         await_render: None,
@@ -970,9 +970,9 @@ mod tests {
                     event: "CLOSE".to_string(),
                     event_id: None,
                     guard: Some(
-                        serde_json::from_str(r#"["=", "@user.role", "clinician"]"#).unwrap(),
+                        orbital_core_base::json_value::from_json_str(r#"["=", "@user.role", "clinician"]"#).unwrap(),
                     ),
-                    effects: Some(vec![serde_json::from_str(
+                    effects: Some(vec![orbital_core_base::json_value::from_json_str(
                         r#"["set", "@entity.limitSeen", "@config.limit"]"#,
                     )
                     .unwrap()]),

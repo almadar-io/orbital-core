@@ -1,5 +1,6 @@
 // `appliesTo` lists the trait states a tick runs in (G-ORB-181); an absent or empty list runs it in every state.
 
+use orbital_core_base::json_value::from_json_value;
 use orbital_core_runtime::kernel::RuntimeKernel;
 use {orbital_core_base::schema::types::OrbitalSchema, orbital_core_base::value::Value};
 use serde_json::{json, Value as Json};
@@ -10,7 +11,7 @@ fn kernel(applies_to: Json) -> RuntimeKernel {
     if !applies_to.is_null() {
         tick["appliesTo"] = applies_to;
     }
-    let schema: OrbitalSchema = serde_json::from_value(json!({
+    let schema: OrbitalSchema = from_json_value(&json!({
         "name": "App",
         "typeContractVersion": 1, "orbitals": [{
             "name": "Main",
@@ -164,7 +165,7 @@ fn g_orbital_core_173_registering_while_a_dispatch_and_the_idle_check_run_never_
         std::thread::spawn(move || {
             for index in 0..400 {
                 let name = format!("Extra{index}");
-                let schema: OrbitalSchema = serde_json::from_value(json!({
+                let schema: OrbitalSchema = from_json_value(&json!({
                     "name": name, "typeContractVersion": 1, "orbitals": [{
                         "name": name,
                         "entity": { "name": name, "fields": [{ "name": "id", "type": "string" }] },
