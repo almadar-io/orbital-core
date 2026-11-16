@@ -434,7 +434,7 @@ impl ClientKernel {
         entity_id: Option<&str>,
     ) -> Result<EventResponse, BridgeError> {
         let _ordered = self.begin_order.lock();
-        let orbital = self.owning_orbital(trait_name)?;
+        let orbital = &self.owning_orbital(trait_name)?;
         let ticked = self
             .embedded
             .kernel()
@@ -577,7 +577,7 @@ impl ClientKernel {
         self.embedded.tick_count()
     }
 
-    fn owning_orbital(&self, trait_name: &str) -> Result<&str, BridgeError> {
+    fn owning_orbital(&self, trait_name: &str) -> Result<String, BridgeError> {
         self.embedded
             .owning_orbital(trait_name)
             .map_err(BridgeError::Server)
@@ -686,7 +686,7 @@ impl ClientKernel {
         event: &str,
         payload: Value,
     ) -> Result<BegunDispatch, BridgeError> {
-        let orbital = self.owning_orbital(trait_name)?;
+        let orbital = &self.owning_orbital(trait_name)?;
         let dispatch = self
             .embedded
             .kernel()
@@ -817,7 +817,7 @@ impl ClientKernel {
         }
         let _flight = begun.flight.as_ref().map(Flight::claim).transpose()?;
         let mut groups: Vec<(
-            &str,
+            String,
             Option<crate::effects::response::LegResidence>,
             Vec<&(crate::effects::response::MountSeed, BegunDispatch)>,
         )> = Vec::new();
@@ -863,7 +863,7 @@ impl ClientKernel {
                     }
                 }
             };
-            let response = match bridge.send_request(orbital, &request) {
+            let response = match bridge.send_request(&orbital, &request) {
                 Ok(response) => response,
                 Err(e) => {
                     rollback();
@@ -889,7 +889,7 @@ impl ClientKernel {
             for position in self.embedded.mount_hop_positions(&b.dispatch, &seeds) {
                 let leg = &b.dispatch.server_legs[position];
                 let orbital = self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
-                let response = bridge.send_request(orbital, leg)?;
+                let response = bridge.send_request(&orbital, leg)?;
                 settled = self.fold_answer(bridge.as_ref(), &response, &std::collections::HashSet::new(), settled)?;
                 settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
             }
@@ -963,7 +963,7 @@ impl ClientKernel {
         for leg in &dispatch.server_legs {
             let leg_orbital =
                 self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
-            let posted = bridge.send_request(leg_orbital, leg);
+            let posted = bridge.send_request(&leg_orbital, leg);
             match dispatch.mode {
                 DispatchMode::RuntimeOptimistic => match posted {
                     Ok(server_response) if server_response.success => {

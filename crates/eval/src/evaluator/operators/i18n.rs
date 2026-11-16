@@ -87,7 +87,7 @@ mod tests {
     }
 
     fn call(json: serde_json::Value) -> SExpression {
-        serde_json::from_value(json).unwrap()
+        orbital_core_base::json_value::from_json_value(&json).unwrap()
     }
 
     fn ctx_all(locale: &str, catalogs: &[(&str, &[(&str, &str)])]) -> crate::evaluator::context::BindingContext {

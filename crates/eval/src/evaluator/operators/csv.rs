@@ -184,7 +184,7 @@ mod tests {
     fn non_string_input_is_a_type_mismatch_and_text_parses() {
         let run = |input: serde_json::Value| {
             let expr: SExpression =
-                serde_json::from_value(serde_json::json!(["csv/parse", input])).unwrap();
+                orbital_core_base::json_value::from_json_value(&serde_json::json!(["csv/parse", input])).unwrap();
             eval_expr(&expr, &BindingContext::default())
         };
         assert!(run(serde_json::Value::Null).is_err());

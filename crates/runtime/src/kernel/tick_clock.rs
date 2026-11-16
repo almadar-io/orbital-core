@@ -191,6 +191,15 @@ impl TickClock {
         }
     }
 
+    /// Take the ticks of a program loaded after this clock was built (a lazy page), each `(trait, tick)` once.
+    pub fn extend(&mut self, loaded: TickClock) {
+        for entry in loaded.entries {
+            if !self.entries.iter().any(|e| e.trait_name == entry.trait_name && e.tick_name == entry.tick_name) {
+                self.entries.push(entry);
+            }
+        }
+    }
+
     /// The host's report of whether `trait_name`'s rendered output is on screen. A `[visible]`
     /// tick of an off-screen trait keeps its schedule but its fires are dropped (LOLO §11, the
     /// web's `useClientTicks` `offScreen`).

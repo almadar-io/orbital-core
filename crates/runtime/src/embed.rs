@@ -189,7 +189,7 @@ pub fn mount_leg_request(
 pub struct EmbeddedKernel {
     kernel: RuntimeKernel,
     entities: Arc<InMemoryEntityCache>,
-    trait_owners: TraitOwners,
+    trait_owners: Mutex<Arc<TraitOwners>>,
     client_id: String,
     ticks: Mutex<TickClock>,
     /// The mounted traits whose ticks run; `None` until a host declares a mount (the whole schema).
@@ -248,7 +248,7 @@ impl EmbeddedKernel {
         Ok(Self {
             kernel,
             entities,
-            trait_owners,
+            trait_owners: Mutex::new(Arc::new(trait_owners)),
             client_id: client_id.into(),
             ticks: Mutex::new(ticks),
             mounted: Mutex::new(None),
@@ -269,8 +269,8 @@ impl EmbeddedKernel {
         &self.entities
     }
 
-    pub fn trait_owners(&self) -> &TraitOwners {
-        &self.trait_owners
+    pub fn trait_owners(&self) -> Arc<TraitOwners> {
+        Arc::clone(&self.trait_owners.lock())
     }
 
     pub fn client_id(&self) -> &str {
@@ -278,8 +278,25 @@ impl EmbeddedKernel {
     }
 
     /// The orbital declaring `trait_name`; an error for an unknown or ambiguous trait.
-    pub fn owning_orbital(&self, trait_name: &str) -> Result<&str, String> {
-        self.trait_owners.owning_orbital(trait_name)
+    pub fn owning_orbital(&self, trait_name: &str) -> Result<String, String> {
+        self.trait_owners.lock().owning_orbital(trait_name).map(str::to_string)
+    }
+
+    /// Load a lazy page's program into this kernel (EXEC-LOAD-2: the viewer's kernel loads a lazy page when its route
+    /// first needs it), so the frames its session sends for that page's traits are this kernel's own. A program whose
+    /// orbitals are all registered already is loaded.
+    pub fn register_lazy(&self, schema: OrbitalSchema) -> Result<(), EntryError> {
+        if schema.orbitals.is_empty() {
+            return Err(EntryError::NoOrbitals);
+        }
+        if schema.orbitals.iter().all(|o| self.kernel.get_orbital(&o.name).is_some()) {
+            return Ok(());
+        }
+        let ticks = TickClock::from_schema(&schema);
+        self.kernel.register_schema(schema).map_err(EntryError::Register)?;
+        *self.trait_owners.lock() = Arc::new(TraitOwners::from_kernel(&self.kernel));
+        self.ticks.lock().extend(ticks);
+        Ok(())
     }
 
     fn dispatch_wire(
@@ -301,10 +318,9 @@ impl EmbeddedKernel {
             .stateful_leg
             .map(|stateful| {
                 let target = stateful.leg.target_trait.as_deref().unwrap_or_default();
-                self.trait_owners
-                    .owning_orbital(target)
-                    .map(|o| StatefulLegWire {
-                        orbital: o.to_string(),
+                self.owning_orbital(target)
+                    .map(|orbital| StatefulLegWire {
+                        orbital,
                         leg: stateful.leg,
                         awaiting: stateful.awaiting,
                     })
@@ -315,10 +331,7 @@ impl EmbeddedKernel {
             .into_iter()
             .map(|leg| {
                 let target = leg.target_trait.as_deref().unwrap_or_default();
-                self.trait_owners.owning_orbital(target).map(|o| RoutedLeg {
-                    orbital: o.to_string(),
-                    leg,
-                })
+                self.owning_orbital(target).map(|orbital| RoutedLeg { orbital, leg })
             })
             .collect::<Result<Vec<_>, String>>()?;
         let steps = batch_steps(&dispatch.outcomes);
@@ -350,7 +363,7 @@ impl EmbeddedKernel {
         event: &str,
         payload: Value,
     ) -> Result<DispatchWire, String> {
-        let orbital = self.owning_orbital(trait_name)?;
+        let orbital = &self.owning_orbital(trait_name)?;
         let dispatch = self
             .kernel
             .dispatch_with_server_leg(
@@ -532,7 +545,7 @@ impl EmbeddedKernel {
         else {
             return Ok(None);
         };
-        let orbital = self.owning_orbital(&dispatch.seed.0)?;
+        let orbital = &self.owning_orbital(&dispatch.seed.0)?;
         let mut wire = self.dispatch_wire(orbital, dispatch)?;
         let browser_run = self.kernel.browser_run_traits();
         let mut listeners: Vec<String> = Vec::new();
@@ -873,10 +886,7 @@ impl EmbeddedKernel {
             .into_iter()
             .map(|leg| {
                 let target = leg.target_trait.as_deref().unwrap_or_default();
-                self.trait_owners.owning_orbital(target).map(|o| RoutedLeg {
-                    orbital: o.to_string(),
-                    leg,
-                })
+                self.owning_orbital(target).map(|orbital| RoutedLeg { orbital, leg })
             })
             .collect::<Result<Vec<_>, String>>()?;
         let applied = outcomes
@@ -1067,7 +1077,7 @@ impl EmbeddedKernel {
             }
         };
         for (trait_name, tick) in due {
-            let orbital = self.owning_orbital(&trait_name)?;
+            let orbital = &self.owning_orbital(&trait_name)?;
             match self.kernel.dispatch_tick_own(&trait_name, None, &tick, Some(&self.client_id)) {
                 Ok(dispatched) => {
                     dropped_server_effects += dispatched.discarded_server_effects;
@@ -1220,7 +1230,8 @@ impl EmbeddedKernel {
     pub fn snapshot(&self) -> SnapshotWire {
         let mut states = serde_json::Map::new();
         let mut ambiguous_traits = Vec::new();
-        for (trait_name, orbitals) in self.trait_owners.iter() {
+        let owners = self.trait_owners();
+        for (trait_name, orbitals) in owners.iter() {
             if orbitals.len() > 1 {
                 ambiguous_traits.push(AmbiguousTrait {
                     trait_name: trait_name.clone(),
@@ -1354,6 +1365,15 @@ impl EmbeddedKernel {
         *self.departed.lock() = key.map(|key| (key, held));
         let all: Vec<String> = self.entered.lock().keys().cloned().collect();
         self.unmount(all)
+    }
+
+    /// [`Self::leave`] for the page entered under `mount_key` only: a page that closes after the next page of the same
+    /// kernel entered (one kernel per program, its lazy pages loaded into it) already left then, and leaves nothing.
+    pub fn leave_mount(&self, mount_key: &str) -> Vec<Left> {
+        if self.mount_key.lock().as_deref() != Some(mount_key) {
+            return Vec::new();
+        }
+        self.leave()
     }
 
     /// One leg per orbital, in the order its first trait left, releasing every `(trait, orbital)` of it.

@@ -119,7 +119,7 @@ mod tests {
     }
 
     fn eval_with(form: serde_json::Value, ctx: &BindingContext) -> EvalResult {
-        let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+        let expr: SExpression = orbital_core_base::json_value::from_json_value(&form).expect("s-expression");
         eval_expr(&expr, ctx)
     }
 

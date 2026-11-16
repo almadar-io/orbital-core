@@ -1063,7 +1063,7 @@ mod tests {
     use super::*;
 
     fn replace_pattern(text: &str, pattern: &str, replacement: &str) -> Value {
-        let expr: SExpression = serde_json::from_value(serde_json::json!([
+        let expr: SExpression = orbital_core_base::json_value::from_json_value(&serde_json::json!([
             "str/replace-pattern",
             text,
             pattern,
@@ -1132,7 +1132,7 @@ mod tests {
 
     fn to_int(text: &str) -> Value {
         let expr: SExpression =
-            serde_json::from_value(serde_json::json!(["str/to-int", text])).expect("s-expression");
+            orbital_core_base::json_value::from_json_value(&serde_json::json!(["str/to-int", text])).expect("s-expression");
         eval_expr(&expr, &BindingContext::default()).expect("evaluates")
     }
 
@@ -1185,12 +1185,12 @@ mod tests {
             assert_eq!(to_int(text), Value::Null, "{text:?}");
         }
         let expr: SExpression =
-            serde_json::from_value(serde_json::json!(["str/to-int", 5])).unwrap();
+            orbital_core_base::json_value::from_json_value(&serde_json::json!(["str/to-int", 5])).unwrap();
         assert!(eval_expr(&expr, &BindingContext::default()).is_err());
     }
 
     fn run(json: serde_json::Value) -> EvalResult {
-        let expr: SExpression = serde_json::from_value(json).expect("s-expression");
+        let expr: SExpression = orbital_core_base::json_value::from_json_value(&json).expect("s-expression");
         eval_expr(&expr, &BindingContext::default())
     }
 
@@ -1267,14 +1267,14 @@ mod tests {
         ctx.set_local("i", Value::Int(1152921504606846977));
         ctx.set_local("b", Value::bytes(vec![1, 2]));
         let expr: SExpression =
-            serde_json::from_value(serde_json::json!(["str/concat", "@i", "-", "@b"])).unwrap();
+            orbital_core_base::json_value::from_json_value(&serde_json::json!(["str/concat", "@i", "-", "@b"])).unwrap();
         assert_eq!(
             eval_expr(&expr, &ctx).unwrap(),
             Value::string("1152921504606846977-AQI=".to_string())
         );
         ctx.set_local("n", Value::Int(2));
         let expr: SExpression =
-            serde_json::from_value(serde_json::json!(["str/repeat", "a", "@n"])).unwrap();
+            orbital_core_base::json_value::from_json_value(&serde_json::json!(["str/repeat", "a", "@n"])).unwrap();
         assert_eq!(
             eval_expr(&expr, &ctx).unwrap(),
             Value::string("aa".to_string())
@@ -1284,7 +1284,7 @@ mod tests {
         let mut call = vec![serde_json::json!("str/find-pattern")];
         call.extend(args.as_array().expect("args").iter().cloned());
         let expr: SExpression =
-            serde_json::from_value(serde_json::Value::Array(call)).expect("s-expression");
+            orbital_core_base::json_value::from_json_value(&serde_json::Value::Array(call)).expect("s-expression");
         eval_expr(&expr, &BindingContext::default()).expect("evaluates")
     }
 

@@ -3,6 +3,7 @@
 
 mod conformance;
 mod client_browser_leg;
+mod client_lazy_page;
 mod client_core_server_resolve;
 mod client_fetch_success_emit;
 mod client_only_ignores_host_state;

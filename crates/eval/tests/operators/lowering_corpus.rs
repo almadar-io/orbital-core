@@ -80,7 +80,7 @@ fn lowering_of_a_corpus() {
     let mut changed: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut samples: BTreeMap<(String, String), (String, String)> = BTreeMap::new();
     for line in file.lines() {
-        let entry: Value = serde_json::from_str(&line.expect("line")).expect("json line");
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
         let mut found = Vec::new();
         expressions(&entry["orb"], false, &mut found);
         for raw in found {
@@ -173,7 +173,7 @@ fn step_form_of_a_corpus() {
     let mut not_run: BTreeMap<String, usize> = BTreeMap::new();
     let mut drift = Vec::new();
     for line in file.lines() {
-        let entry: Value = serde_json::from_str(&line.expect("line")).expect("json line");
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
         let mut found = Vec::new();
         expressions(&entry["orb"], false, &mut found);
         for raw in found {

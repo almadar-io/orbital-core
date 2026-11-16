@@ -602,7 +602,7 @@ mod tests {
     #[test]
     fn a_json_total_union_admits_nested_data_and_reports_a_lambda_at_its_path() {
         let named = total_union("V?");
-        let data: Value = serde_json::from_value(
+        let data: Value = orbital_core_base::json_value::from_json_value(&
             serde_json::json!({ "a": [1, "x", { "b": [true, null] }], "c": null }),
         )
         .unwrap();
@@ -624,7 +624,7 @@ mod tests {
     #[test]
     fn a_non_nullable_item_null_misfits_and_a_nullable_one_admits_it() {
         let named = total_union("V");
-        let data: Value = serde_json::from_value(serde_json::json!([1, null])).unwrap();
+        let data: Value = orbital_core_base::json_value::from_json_value(&serde_json::json!([1, null])).unwrap();
         assert!(
             first_misfit(&data, &v(), &named).is_some(),
             "the strict contract refuses a null item"
@@ -654,13 +654,13 @@ mod tests {
         };
         let strict = |value: &Value, ty: &OirType| first_misfit(value, ty, &named);
         let null_content: Value =
-            serde_json::from_value(serde_json::json!([{ "content": null }])).unwrap();
+            orbital_core_base::json_value::from_json_value(&serde_json::json!([{ "content": null }])).unwrap();
         let found = strict(&null_content, &in_list).unwrap();
         assert_eq!(
             (found.path.as_str(), found.actual, found.expected.as_str()),
             ("[0].content", "null", "string")
         );
-        let bad_map: Value = serde_json::from_value(serde_json::json!({ "k": "x" })).unwrap();
+        let bad_map: Value = orbital_core_base::json_value::from_json_value(&serde_json::json!({ "k": "x" })).unwrap();
         let found = strict(&bad_map, &in_map).unwrap();
         assert_eq!(
             (found.path.as_str(), found.expected.as_str()),
@@ -671,7 +671,7 @@ mod tests {
             (found.path.as_str(), found.expected.as_str()),
             ("", "number")
         );
-        let fits: Value = serde_json::from_value(serde_json::json!([{ "content": "ok" }])).unwrap();
+        let fits: Value = orbital_core_base::json_value::from_json_value(&serde_json::json!([{ "content": "ok" }])).unwrap();
         assert_eq!(
             strict(&fits, &in_list),
             None,
@@ -696,7 +696,7 @@ mod tests {
         };
         let named = BTreeMap::new();
         let check = |json: serde_json::Value| {
-            let value: Value = serde_json::from_value(json).unwrap();
+            let value: Value = orbital_core_base::json_value::from_json_value(&json).unwrap();
             first_misfit(&value, &shape, &named)
         };
         assert_eq!(check(serde_json::json!({"id": "u"})), None);

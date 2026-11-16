@@ -131,7 +131,7 @@ mod tests {
     use super::*;
 
     fn eval(form: &str) -> EvalResult {
-        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        let expr: SExpression = orbital_core_base::json_value::from_json_str(form).expect("s-expression");
         eval_expr(&expr, &BindingContext::default())
     }
 
@@ -205,11 +205,11 @@ mod tests {
     #[test]
     fn an_int_operand_works_and_the_result_is_an_int() {
         let ctx = BindingContext::default();
-        let expr: SExpression = serde_json::from_str(r#"["bit/xor", 1, 3]"#).unwrap();
+        let expr: SExpression = orbital_core_base::json_value::from_json_str(r#"["bit/xor", 1, 3]"#).unwrap();
         assert!(matches!(eval_expr(&expr, &ctx), Ok(Value::Int(2))));
         let mut ctx = BindingContext::default();
         ctx.set_local("w", Value::Int(4294967295));
-        let expr: SExpression = serde_json::from_str(r#"["bit/not", "@w"]"#).unwrap();
+        let expr: SExpression = orbital_core_base::json_value::from_json_str(r#"["bit/not", "@w"]"#).unwrap();
         assert!(matches!(eval_expr(&expr, &ctx), Ok(Value::Int(0))));
         ctx.set_local("w", Value::Int(4294967296));
         assert_eq!(eval_expr(&expr, &ctx).unwrap(), Value::Null, "control: an int past 32 bits answers null");

@@ -94,7 +94,7 @@ mod tests {
     use super::*;
 
     fn eval(form: &str) -> EvalResult {
-        let expr: SExpression = serde_json::from_str(form).expect("s-expression");
+        let expr: SExpression = orbital_core_base::json_value::from_json_str(form).expect("s-expression");
         eval_expr(&expr, &BindingContext::default())
     }
 

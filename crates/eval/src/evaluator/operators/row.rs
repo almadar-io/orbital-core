@@ -24,7 +24,7 @@ impl StrictOperator for RowMatchesOp {
                 actual: row.type_name().into(),
             }));
         }
-        let pred = serde_json::from_value::<RowPredicate>(value_to_json(pred)).map_err(|e| {
+        let pred = orbital_core_base::json_value::from_json_value::<RowPredicate>(&value_to_json(pred)).map_err(|e| {
             EvalError::InvalidArgument(format!("row/matches: not a RowPredicate: {e}"))
         })?;
         Ok(Value::Bool(pred.matches(row)))

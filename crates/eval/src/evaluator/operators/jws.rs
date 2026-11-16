@@ -63,7 +63,7 @@ fn options_of(value: &Value) -> Result<Options, OrbitalError> {
 
 fn segment_json(segment: &str) -> Option<Json> {
     let bytes = codec::base64url_decode(segment).ok()?;
-    match serde_json::from_slice::<serde_json::Value>(&bytes).ok()? {
+    match orbital_core_base::json_value::from_json_slice::<serde_json::Value>(&bytes).ok()? {
         serde_json::Value::Object(map) => Some(map),
         _ => None,
     }
@@ -225,7 +225,7 @@ fn verify(token: &str, keys: &[Value], options: &Options, now_ms: f64) -> EvalRe
     }
     let mut list = Vec::with_capacity(leaves.len());
     for (name, value) in leaves {
-        let value = serde_json::from_value::<Value>(value.clone()).map_err(|error| invalid(error.to_string()))?;
+        let value = orbital_core_base::json_value::from_json_value::<Value>(&value).map_err(|error| invalid(error.to_string()))?;
         list.push(Value::Object(
             [("name", Value::string(name.as_str())), ("value", value)]
                 .into_iter()
@@ -276,12 +276,12 @@ mod tests {
     const INSIDE_WINDOW_MS: f64 = 1_800_000_000_000.0;
 
     fn fixture() -> serde_json::Value {
-        serde_json::from_str(FIXTURE).expect("fixture")
+        orbital_core_base::json_value::from_json_str(FIXTURE).expect("fixture")
     }
 
     fn call_at(now: f64, token: &str, keys: serde_json::Value, options: serde_json::Value) -> EvalResult {
         let form = serde_json::json!(["jws/verify", token, keys, options]);
-        let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+        let expr: SExpression = orbital_core_base::json_value::from_json_value(&form).expect("s-expression");
         let mut ctx = BindingContext::default();
         ctx.now = Some(now);
         eval_expr(&expr, &ctx)
@@ -479,10 +479,10 @@ mod tests {
     fn a_sealed_value_is_not_built_by_a_literal_a_cast_or_a_wire_round_trip() {
         let answer = call(&token("rs256_valid"), opts());
         let wire = serde_json::to_value(&answer).expect("serializes");
-        let back: Value = serde_json::from_value(wire).expect("deserializes");
+        let back: Value = orbital_core_base::json_value::from_json_value(&wire).expect("deserializes");
         assert!(!back.is_sealed_as("Verified"), "a wire round trip never yields a seal");
         assert_ne!(back, answer);
-        let forged: SExpression = serde_json::from_value(serde_json::json!(
+        let forged: SExpression = orbital_core_base::json_value::from_json_value(&serde_json::json!(
             { "subject": "root", "issuer": "i", "audience": "a", "claims": [], "expiresAt": 1 }
         ))
         .expect("literal");
@@ -491,7 +491,7 @@ mod tests {
             serde_json::json!(["as", { "subject": "root" }, "Verified"]),
             serde_json::json!(["json/parse", "{}", "Verified"]),
         ] {
-            let expr: SExpression = serde_json::from_value(form).expect("s-expression");
+            let expr: SExpression = orbital_core_base::json_value::from_json_value(&form).expect("s-expression");
             assert!(eval_expr(&expr, &BindingContext::default()).is_err());
         }
     }
