@@ -15,6 +15,7 @@ use crate::ir::effects::OirEffect;
 use crate::ir::expr::{OirBinding, OirBindingRoot};
 use crate::ir::layout::{PathStep, Repr};
 
+pub mod abi;
 pub mod lower;
 
 pub use lower::{lower_step, StepRefusal};

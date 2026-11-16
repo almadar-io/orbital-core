@@ -32,10 +32,7 @@ pub struct WgslBinding {
 
 /// Parses and validates `source`; the bindings of every bound global, or naga's rendered error.
 pub fn check_wgsl(source: &str) -> Result<Vec<WgslBinding>, String> {
-    let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
-    let info = Validator::new(ValidationFlags::all(), Capabilities::default())
-        .validate(&module)
-        .map_err(|e| e.emit_to_string(source))?;
+    let (module, info) = validate(source, Capabilities::default())?;
     let mut bindings = Vec::new();
     for (handle, global) in module.global_variables.iter() {
         let Some(at) = &global.binding else { continue };
@@ -66,4 +63,55 @@ pub fn check_wgsl(source: &str) -> Result<Vec<WgslBinding>, String> {
         });
     }
     Ok(bindings)
+}
+
+/// Parses and validates `source` against what every host can run, the WebGL2 fallback included; naga's rendered
+/// error when it is not.
+pub fn check_wgsl_portable(source: &str) -> Result<(), String> {
+    validate(source, Capabilities::empty()).map(|_| ())
+}
+
+fn validate(
+    source: &str,
+    capabilities: Capabilities,
+) -> Result<(naga::Module, naga::valid::ModuleInfo), String> {
+    let module = naga::front::wgsl::parse_str(source).map_err(|e| e.emit_to_string(source))?;
+    let info = Validator::new(ValidationFlags::all(), capabilities)
+        .validate(&module)
+        .map_err(|e| e.emit_to_string(source))?;
+    Ok((module, info))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_wgsl, check_wgsl_portable};
+
+    const CUBE_ARRAY: &str = "@group(0) @binding(0) var t: texture_cube_array<f32>;
+@group(0) @binding(1) var s: sampler;
+@fragment fn main() -> @location(0) vec4<f32> { return textureSample(t, s, vec3<f32>(0.0, 0.0, 1.0), 0); }";
+
+    const PLAIN: &str =
+        "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }";
+
+    #[test]
+    fn the_portable_profile_refuses_what_some_host_lacks() {
+        assert!(
+            check_wgsl_portable(CUBE_ARRAY).is_err(),
+            "cube-array textures are not on every host"
+        );
+        assert!(
+            check_wgsl(CUBE_ARRAY).is_ok(),
+            "control: the compute profile accepts them"
+        );
+        assert!(
+            check_wgsl_portable(PLAIN).is_ok(),
+            "control: a plain shader is portable"
+        );
+    }
+
+    #[test]
+    fn a_portable_error_names_the_source_problem() {
+        let err = check_wgsl_portable("fn shade(").expect_err("a broken module");
+        assert!(!err.is_empty());
+    }
 }

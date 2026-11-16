@@ -214,3 +214,147 @@ fn step_form_of_a_corpus() {
         println!("DRIFT {case}");
     }
 }
+
+/// Every effect node in `expr`, outermost first.
+fn effects_in<'a>(expr: &'a orbital_core_base::ir::expr::OirExpr, out: &mut Vec<&'a orbital_core_base::ir::effects::OirEffect>) {
+    if let orbital_core_base::ir::expr::OirExpr::Effect { effect } = expr {
+        out.push(effect);
+    }
+    for child in expr.child_exprs() {
+        effects_in(child, out);
+    }
+}
+
+/// What the kernel hands an effect for one operand written as `written` (`kernel/effect_bindings.rs`,
+/// `step_effects.rs::set_value`): `set` evaluates a list or record and reads a string as a binding, a template or
+/// itself; `emit` resolves its payload dropping unset bindings; every other effect resolves the value as a template.
+fn kernel_operand(kind: &str, written: &SExpression, ctx: &orbital_core_eval::evaluator::context::BindingContext) -> Result<orbital_core_base::value::Value, String> {
+    use orbital_core_base::value::Value as V;
+    use orbital_core_eval::evaluator::context::BindingContext;
+    let value = V::from(written.clone());
+    let text = |error: orbital_core_base::error::EvalError| orbital_core_base::error::OrbitalError::Eval(error).to_string();
+    match kind {
+        "set" => match &value {
+            V::Array(_) | V::Object(_) => eval_expr(written, ctx).map_err(|error| error.to_string()),
+            V::String(s) if BindingContext::binding_token_end(s, 0) == Some(s.len()) => Ok(ctx.resolve_binding(s).unwrap_or(V::Null)),
+            V::String(s) if s.starts_with('@') => Ok(ctx.resolve_value(&value).into_owned()),
+            _ => Ok(value),
+        },
+        "emit" => ctx.resolve_dropping_unset_checked(&value).map_err(text),
+        _ => ctx.resolve_value_checked(&value).map(std::borrow::Cow::into_owned).map_err(text),
+    }
+}
+
+/// Whether the kernel's value differs from the evaluated one only where a binding has no value: the evaluator
+/// answers null, the kernel's resolver keeps the binding's text or leaves the key out.
+fn same_but_for_unset(evaluated: &orbital_core_base::value::Value, kernel: &orbital_core_base::value::Value) -> bool {
+    use orbital_core_base::value::Value as V;
+    use orbital_core_eval::evaluator::context::BindingContext;
+    match (evaluated, kernel) {
+        (V::Null, V::String(s)) => BindingContext::binding_token_end(s, 0) == Some(s.len()),
+        (V::Array(a), V::Array(b)) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| same_but_for_unset(x, y)),
+        (V::Object(a), V::Object(b)) => {
+            b.keys().all(|key| a.contains_key(key))
+                && a.iter().all(|(key, x)| match b.get(key) {
+                    Some(y) => same_but_for_unset(x, y),
+                    None => x.is_null(),
+                })
+        }
+        (a, b) => a == b,
+    }
+}
+
+#[test]
+#[ignore = "tool: ORB_LOWER_CORPUS=<orb lower output lines> compares each effect operand's step value with the kernel's resolution"]
+fn effect_operands_of_a_corpus() {
+    use crate::step_runner::{run, step_of};
+    use orbital_core_base::ir::expr::OirBindingRoot;
+    preflight().expect("the installed language data must load");
+    let path = std::env::var("ORB_LOWER_CORPUS").expect("ORB_LOWER_CORPUS");
+    let file = std::io::BufReader::new(std::fs::File::open(path).expect("corpus file"));
+    // The roots a step always has, each holding no field: a missing key is null, as in a running kernel.
+    let empty = || orbital_core_base::value::Value::object(orbital_core_base::value::ValueMap::default());
+    let ctx = BindingContextBuilder::new().entity(empty()).payload(empty()).config(empty()).user(empty()).build();
+    let mut seen = BTreeSet::new();
+    // kind -> [agree, both fail, reads a local, no step form, drift, differs only on unset bindings]
+    let mut table: BTreeMap<String, [usize; 6]> = BTreeMap::new();
+    let mut samples: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut no_operands: BTreeMap<String, usize> = BTreeMap::new();
+    for line in file.lines() {
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
+        let mut found = Vec::new();
+        expressions(&entry["orb"], false, &mut found);
+        for raw in found {
+            if !seen.insert(raw.to_string()) {
+                continue;
+            }
+            let expr: SExpression = from_json_value(&raw).expect("an expression");
+            let Ok(lowered) = lower_sexpr(&expr) else { continue };
+            let mut effects = Vec::new();
+            effects_in(&lowered, &mut effects);
+            for effect in effects {
+                let kind = effect.kind().to_string();
+                let children = effect.child_exprs();
+                if children.is_empty() {
+                    *no_operands.entry(kind.clone()).or_default() += 1;
+                }
+                for child in children {
+                    let row = table.entry(kind.clone()).or_default();
+                    if child.collect_bindings().iter().any(|b| matches!(b.root, OirBindingRoot::Local(_))) {
+                        row[2] += 1;
+                        continue;
+                    }
+                    let Some(written) = child.to_sexpression() else {
+                        row[3] += 1;
+                        continue;
+                    };
+                    let stepped = match step_of(&written).and_then(|module| run(&module, &ctx)) {
+                        Ok(ran) => ran,
+                        Err(_) => {
+                            row[3] += 1;
+                            continue;
+                        }
+                    };
+                    let kernel = kernel_operand(&kind, &written, &ctx);
+                    match (&stepped, &kernel) {
+                        (Ok(a), Ok(b)) if a == b => row[0] += 1,
+                        (Err(_), Err(_)) => row[1] += 1,
+                        (Ok(a), Ok(b)) if same_but_for_unset(a, b) => {
+                            row[5] += 1;
+                            let list = samples.entry(format!("unset:{kind}")).or_default();
+                            if list.len() < 3 {
+                                list.push(format!("{}\n    step   {a:?}\n    kernel {b:?}", serde_json::to_string(&written).unwrap_or_default()));
+                            }
+                        }
+                        _ => {
+                            row[4] += 1;
+                            let list = samples.entry(kind.clone()).or_default();
+                            if list.len() < 6 {
+                                list.push(format!("{}\n    step   {stepped:?}\n    kernel {kernel:?}", serde_json::to_string(&written).unwrap_or_default()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut total = [0usize; 6];
+    for row in table.values() {
+        for (sum, n) in total.iter_mut().zip(row) {
+            *sum += n;
+        }
+    }
+    println!("OPERANDS kind\tagree\tboth_fail\treads_local\tno_step_form\tdrift\tunset_only");
+    println!("OPERANDS TOTAL\t{}\t{}\t{}\t{}\t{}\t{}", total[0], total[1], total[2], total[3], total[4], total[5]);
+    for (kind, [agree, both, local, none, drift, unset]) in &table {
+        println!("OPERANDS {kind}\t{agree}\t{both}\t{local}\t{none}\t{drift}\t{unset}");
+    }
+    for (kind, count) in &no_operands {
+        println!("NO_OPERANDS {kind}\t{count}");
+    }
+    for (kind, list) in &samples {
+        for sample in list {
+            println!("DRIFT {kind} {sample}");
+        }
+    }
+}

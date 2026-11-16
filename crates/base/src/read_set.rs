@@ -137,6 +137,14 @@ impl ReadSet {
         merged || (self.paths.iter().all(|(path, seen)| &stamp(path) == seen) && self.includes.iter().all(ReadSet::is_current))
     }
 
+    /// Whether this set read `path` and it is still in the state it was read in; `false` for a path the set never read.
+    pub fn path_is_current(&self, path: &Path) -> bool {
+        fn recorded<'a>(set: &'a ReadSet, path: &Path) -> Option<&'a Option<String>> {
+            set.paths.get(path).or_else(|| set.includes.iter().find_map(|included| recorded(included, path)))
+        }
+        recorded(self, path).is_some_and(|seen| &stamp(path) == seen)
+    }
+
     pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
         let mut all = BTreeMap::new();
         self.collect(&mut all);
