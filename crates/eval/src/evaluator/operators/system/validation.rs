@@ -385,84 +385,51 @@ impl StrictOperator for ValidateNoneOfOp {
     }
 }
 
-/// One field's rules: each is a rule name and its evaluated arguments.
+/// One field's rules: each is a rule name and its arguments.
 pub(super) type FieldRules = Vec<(String, Vec<Value>)>;
 
-pub(super) fn rule_list(field: &str, list: Vec<Value>) -> Result<FieldRules, OrbitalError> {
+/// The rules of one field: each a record `{ rule, args? }`, `rule` the rule's name and `args` its arguments.
+pub(super) fn rule_list(field: &str, list: &[Value]) -> Result<FieldRules, OrbitalError> {
     let broken = |actual: &str| {
         OrbitalError::Eval(EvalError::TypeMismatch {
-            expected: format!("a rule `[name, args…]` for field `{field}`"),
+            expected: format!("a rule `{{ rule, args? }}` for field `{field}`"),
             actual: actual.to_string(),
         })
     };
-    list.into_iter()
-        .map(|rule| match rule {
-            Value::Array(parts) => {
-                let mut parts = parts.into_iter();
-                match parts.next() {
-                    Some(Value::String(name)) => Ok((name.into_inner(), parts.collect())),
-                    _ => Err(broken("a list without a rule name")),
-                }
-            }
-            other => Err(broken(other.type_name())),
+    list.iter()
+        .map(|rule| {
+            let record = rule.as_object().ok_or_else(|| broken(rule.type_name()))?;
+            let name = match record.get("rule") {
+                Some(Value::String(name)) => name.to_string(),
+                _ => return Err(broken("a record without a rule name")),
+            };
+            let args = match record.get("args") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(args)) => args.to_vec(),
+                Some(other) => return Err(broken(&format!("args that are {}", other.type_name()))),
+            };
+            Ok((name, args))
         })
         .collect()
 }
 
-/// The rules argument of `validate/check`: an object of field to rule list. A literal object is read as data, so
-/// a rule `["minLength", 2]` is a rule and not a call of `validate/minLength`; its rule arguments are evaluated.
-pub(super) fn rules_by_field(
-    expr: &SExpression,
-    ctx: &BindingContext,
-) -> Result<Vec<(String, FieldRules)>, OrbitalError> {
+/// The rules argument of `validate/check`: a record of field to rule list.
+pub(super) fn rules_by_field(rules: &Value) -> Result<Vec<(String, FieldRules)>, OrbitalError> {
     let mismatch = |actual: &str| {
         OrbitalError::Eval(EvalError::TypeMismatch {
             expected: "rules by field (an object of rule lists)".to_string(),
             actual: actual.to_string(),
         })
     };
-    if let SExpression::Object(fields) = expr {
-        return fields
-            .iter()
-            .map(|(field, list)| {
-                let SExpression::Array(rules) = list else {
-                    return Err(mismatch("a field whose rules are not a list"));
-                };
-                let evaluated = rules
-                    .iter()
-                    .map(|rule| match rule {
-                        SExpression::Array(parts)
-                            if matches!(parts.first(), Some(SExpression::String(_))) =>
-                        {
-                            let mut out = vec![eval_literal_head(&parts[0])];
-                            for part in &parts[1..] {
-                                out.push(eval_expr(part, ctx)?);
-                            }
-                            Ok(Value::array(out))
-                        }
-                        _ => Ok(Value::Null),
-                    })
-                    .collect::<Result<Vec<_>, OrbitalError>>()?;
-                Ok((field.to_string(), rule_list(field, evaluated)?))
-            })
-            .collect();
-    }
-    match eval_expr(expr, ctx)? {
+    match rules {
         Value::Object(fields) => fields
-            .into_iter()
+            .iter()
             .map(|(field, list)| match list {
-                Value::Array(rules) => Ok((field.to_string(), rule_list(&field, rules.into_inner())?)),
+                Value::Array(rules) => Ok((field.to_string(), rule_list(field, rules)?)),
                 other => Err(mismatch(other.type_name())),
             })
             .collect(),
         other => Err(mismatch(other.type_name())),
-    }
-}
-
-pub(super) fn eval_literal_head(head: &SExpression) -> Value {
-    match head {
-        SExpression::String(name) => Value::string(name.clone()),
-        _ => Value::Null,
     }
 }
 
@@ -527,15 +494,15 @@ pub(super) fn rule_holds(
 /// applied to a present value or argument of the wrong kind, is a type mismatch; an absent or null field skips the
 /// value rules (`required` owns presence).
 pub struct ValidateCheckOp;
-impl Operator for ValidateCheckOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for ValidateCheckOp {
+    fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "validate/check", >= 2);
-        let value = eval_expr(&args[0], ctx)?;
+        let value = args[0];
         let object = value
             .as_object()
             .ok_or_else(|| value.kind_error("object"))?;
         let mut errors = Vec::new();
-        for (field, rules) in rules_by_field(&args[1], ctx)? {
+        for (field, rules) in rules_by_field(args[1])? {
             let field_value = object.get(&field).cloned().unwrap_or(Value::Null);
             for (name, rule_args) in rules {
                 if rule_holds(&name, &field_value, &rule_args)? == Some(false) {

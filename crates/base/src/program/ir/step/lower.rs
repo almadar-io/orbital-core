@@ -315,24 +315,7 @@ impl Lowerer<'_> {
 
     /// `body` as a function of this module taking `params`, with the values it captures from the enclosing function.
     fn lift(&mut self, params: &[String], body: &OirExpr) -> Result<(u32, Vec<Arg>), StepRefusal> {
-        // A callback is given two values even when it names one parameter, and reads the second as `@index`.
-        let padded: Vec<String>;
-        let params = match params {
-            [only] if only != "index" => {
-                padded = vec![only.clone(), "index".to_string()];
-                padded.as_slice()
-            }
-            params => params,
-        };
-        let mut lifted = Builder::new(params);
-        // A callback's first two values are also `@item` and `@index` (the evaluator binds them before the params).
-        for (alias, position) in [("item", 0), ("index", 1)] {
-            if let Some((_, value)) = lifted.params.get(position) {
-                let value = *value;
-                lifted.scopes[0].insert(0, (alias.to_string(), value));
-            }
-        }
-        self.stack.push(lifted);
+        self.stack.push(Builder::new(params));
         let answer = self.expr(body);
         let mut builder = self.stack.pop().expect("the function being lifted");
         let value = answer?;
@@ -636,7 +619,7 @@ mod tests {
         );
         assert_eq!(
             text(&expr),
-            "fn0() {\nb0:\n  %0: boxed = 2  ; 1\n  %1: boxed = closure fn1[move %0]  ; 2\n  return move %1\n}\nfn1(x %0, index %1, capture k %2) {\nb0:\n  %3: boxed = call +(%0, %2) !  ; 3\n  return move %3\n}\n"
+            "fn0() {\nb0:\n  %0: boxed = 2  ; 1\n  %1: boxed = closure fn1[move %0]  ; 2\n  return move %1\n}\nfn1(x %0, capture k %1) {\nb0:\n  %2: boxed = call +(%0, %1) !  ; 3\n  return move %2\n}\n"
         );
     }
 
@@ -669,7 +652,7 @@ mod tests {
         );
         assert_eq!(
             text(&expr),
-            "fn0() {\nb0:\n  %0: boxed = read @payload.xs  ; 1\n  %1: boxed = call-site array/map(move %0, fn1[]) !  ; 0\n  return move %1\n}\nfn1(x %0, index %1) {\nb0:\n  %2: boxed = read @payload.n  ; 5\n  %3: boxed = call +(%0, move %2) !  ; 3\n  return move %3\n}\n"
+            "fn0() {\nb0:\n  %0: boxed = read @payload.xs  ; 1\n  %1: boxed = call-site array/map(move %0, fn1[]) !  ; 0\n  return move %1\n}\nfn1(x %0) {\nb0:\n  %1: boxed = read @payload.n  ; 5\n  %2: boxed = call +(%0, move %1) !  ; 3\n  return move %2\n}\n"
         );
     }
 

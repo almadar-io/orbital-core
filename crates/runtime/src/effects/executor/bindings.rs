@@ -174,14 +174,14 @@ impl EffectExecutor {
         }
     }
 
-    /// Resolve every `@`-binding in a value — the canonical walker lives on
-    /// `BindingContext::resolve_value`; this is a thin forwarder for in-executor callers.
+    /// Resolve every `@`-binding in a `persist` effect's data — the canonical walker lives on
+    /// `BindingContext::resolve_data`; this is a thin forwarder for in-executor callers.
     pub(super) fn resolve_value_bindings<'v>(
         &self,
         value: &'v Value,
         ctx: &BindingContext,
     ) -> std::borrow::Cow<'v, Value> {
-        ctx.resolve_value(value)
+        ctx.resolve_data(value)
     }
 
     /// Resolve a `persist` effect's `data` argument for real, not just

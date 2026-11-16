@@ -77,6 +77,37 @@ fn rows_inlined(
     })
 }
 
+/// `ty` with every record member declared without `!` admitting null: in a payload a member that may be missing is
+/// null when it is (EXEC-EVAL-9, G-ORBITAL-CORE-207), so null and absent are one thing there. A member declared `!`
+/// keeps its type, and an entity row is not walked (a row is checked as every row is).
+fn missing_is_null(ty: OirType) -> OirType {
+    let members = |fields: &[orbital_core_base::ir::types::OirField], wrap: bool| -> Vec<orbital_core_base::ir::types::OirField> {
+        fields
+            .iter()
+            .cloned()
+            .map(|mut field| {
+                field.field_type = missing_is_null(field.field_type);
+                if wrap && !field.required && !matches!(field.field_type, OirType::Optional { .. }) {
+                    field.field_type = OirType::optional(field.field_type);
+                }
+                field
+            })
+            .collect()
+    };
+    match ty {
+        OirType::Struct { fields, additional } => OirType::Struct {
+            fields: members(&fields, true).into(),
+            additional: additional.map(|value| Box::new(missing_is_null(*value))),
+        },
+        OirType::Union { variants } => OirType::Union { variants: members(&variants, false).into() },
+        OirType::Array { inner } => OirType::array(missing_is_null(*inner)),
+        OirType::Optional { inner } => OirType::optional(missing_is_null(*inner)),
+        OirType::Tuple { items } => OirType::Tuple { items: items.into_iter().map(missing_is_null).collect() },
+        OirType::Map { key, value } => OirType::Map { key, value: Box::new(missing_is_null(*value)) },
+        other => other,
+    }
+}
+
 /// `entity_row` answers a registered entity's row shape: a field typed by that entity is its row, checked as every row
 /// is (EXEC-EVAL-10), and never through a program alias that happens to share the entity's name.
 pub(crate) fn validate_event_payload_with_context(
@@ -103,10 +134,12 @@ pub(crate) fn validate_event_payload_with_context(
                     failures.push(fail(PayloadFailureReason::Missing));
                 }
             }
+            Some(Value::Null) if field.required != Some(true) => {}
             Some(value) => {
                 let declared = payload_field_shape_with_entity(field, &|name| entity_row(name).is_some())
+                    .map(missing_is_null)
                     .and_then(|shape| rows_inlined(shape, entity_row))
-                    .and_then(|shape| DeclaredShape::with_resolver(None, shape, resolve));
+                    .and_then(|shape| DeclaredShape::with_resolver(None, shape, &|name: &str| Ok(resolve(name)?.map(missing_is_null))));
                 let declared = match declared {
                     Ok(declared) => declared,
                     Err(error) => {
@@ -267,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn a_member_without_bang_may_be_absent_but_null_needs_a_nullable_declaration() {
+    fn a_member_without_bang_may_be_absent_or_null_and_a_member_with_bang_may_be_neither() {
         let schema: Vec<PayloadField> = from_json_value(&json!([{
             "name": "viewer", "type": "object", "required": true, "properties": [
                 {"name": "id", "type": "string", "required": true},
@@ -283,13 +316,16 @@ mod tests {
         for ok in [
             json!({"viewer": {"id": "u"}}),
             json!({"viewer": {"id": "u", "permissions": null}, "tag": null}),
+            json!({"viewer": {"id": "u", "role": null}}),
+            json!({"viewer": {"id": "u"}, "note": null}),
         ] {
             assert!(versioned(ok).is_empty());
         }
         for (bad, field) in [
-            (json!({"viewer": {"id": "u", "role": null}}), "viewer.role"),
             (json!({"viewer": {"id": null}}), "viewer.id"),
-            (json!({"viewer": {"id": "u"}, "note": null}), "note"),
+            (json!({"viewer": null}), "viewer"),
+            (json!({"viewer": {"id": "u", "role": 3}}), "viewer.role"),
+            (json!({"viewer": {"id": "u"}, "note": 3}), "note"),
         ] {
             let failures = versioned(bad);
             assert_eq!(failures.len(), 1, "{field}");

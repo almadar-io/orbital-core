@@ -158,7 +158,7 @@ fn the_primary_entitys_defaults_never_reach_a_trait_bound_to_another_entity() {
             _ => None,
         })
         .expect("D_SEEN");
-    assert!(payload.get("w").is_none(), "an unset `@entity.w` is an absent prop: {payload}");
+    assert_eq!(payload.get("w"), Some(&json!(null)), "an unset `@entity.w` is null: {payload}");
     assert_eq!(payload["v"], json!("none"));
 }
 

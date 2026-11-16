@@ -374,16 +374,16 @@ mod agent_ports {
         (snapshot.state, norm(entity["got"].clone()))
     }
 
-    // A binding whose root the kernel has not populated stays unresolved, and the call fails as it does on the JS path. A
-    // missing field of a held root reads null (resolve_value, 2026-10-25), so the call is judged by its own argument check.
+    // A binding that holds no value is null in an effect's data, whether or not its root is populated (EXEC-EVAL-9,
+    // G-ORBITAL-CORE-207), so the call is judged by its own argument check.
     #[test]
-    fn an_unresolved_binding_fails_the_call_as_it_does_on_the_js_path() {
+    fn an_unresolved_binding_is_null_and_the_call_fails_its_own_argument_check() {
         let fixture: Json = from_json_str(VECTORS).unwrap();
         for (op, args, error) in [
             (
                 "persist/read-named",
                 json!(["@entity.unset"]),
-                "persist/read-named: arguments must be JSON data",
+                "persist/read-named: the entity name must be text",
             ),
             (
                 "program/dispatch",

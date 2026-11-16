@@ -240,8 +240,8 @@ fn kernel_operand(kind: &str, written: &SExpression, ctx: &orbital_core_eval::ev
             V::String(s) if s.starts_with('@') => Ok(ctx.resolve_value(&value).into_owned()),
             _ => Ok(value),
         },
-        "emit" => ctx.resolve_dropping_unset_checked(&value).map_err(text),
-        _ => ctx.resolve_value_checked(&value).map(std::borrow::Cow::into_owned).map_err(text),
+        "emit" => ctx.resolve_data_checked(&value).map(std::borrow::Cow::into_owned).map_err(text),
+        _ => ctx.resolve_data_checked(&value).map(std::borrow::Cow::into_owned).map_err(text),
     }
 }
 
@@ -356,5 +356,161 @@ fn effect_operands_of_a_corpus() {
         for sample in list {
             println!("DRIFT {kind} {sample}");
         }
+    }
+}
+
+/// Every lambda in `expr` whose body reads `@item` or `@index` without naming it as a parameter (its own or an
+/// enclosing lambda's), as the operator that takes it and the name read.
+fn implicit_reads(expr: &orbital_core_base::ir::expr::OirExpr, head: &str, declared: &[String], out: &mut Vec<(String, String)>) {
+    use orbital_core_base::ir::expr::{OirBindingRoot, OirExpr};
+    match expr {
+        OirExpr::Lambda { params, body } => {
+            let mut inner = declared.to_vec();
+            inner.extend(params.iter().cloned());
+            implicit_reads(body, head, &inner, out);
+        }
+        OirExpr::Binding { binding } => {
+            if let OirBindingRoot::Local(name) = &binding.root {
+                if (name == "item" || name == "index") && !declared.contains(name) {
+                    out.push((head.to_string(), name.clone()));
+                }
+            }
+        }
+        OirExpr::Call { function, args } => {
+            let bound: Vec<String> = match (function.as_str(), args.first()) {
+                ("let", Some(OirExpr::Array { items })) => items
+                    .iter()
+                    .filter_map(|pair| match pair {
+                        OirExpr::Array { items } => match items.first() {
+                            Some(OirExpr::String { value }) => Some(value.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let mut inner = declared.to_vec();
+            inner.extend(bound);
+            for arg in args {
+                implicit_reads(arg, function, &inner, out);
+            }
+        }
+        other => {
+            for child in other.child_exprs() {
+                implicit_reads(child, head, declared, out);
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore = "tool: ORB_LOWER_CORPUS=<orb lower output lines> lists lambdas that read @item or @index without declaring it"]
+fn implicit_callback_names_of_a_corpus() {
+    preflight().expect("the installed language data must load");
+    let path = std::env::var("ORB_LOWER_CORPUS").expect("ORB_LOWER_CORPUS");
+    let file = std::io::BufReader::new(std::fs::File::open(path).expect("corpus file"));
+    let mut by_operator: BTreeMap<(String, String), usize> = BTreeMap::new();
+    let mut programs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut samples: Vec<String> = Vec::new();
+    for line in file.lines() {
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
+        let mut found = Vec::new();
+        expressions(&entry["orb"], false, &mut found);
+        for raw in found {
+            let expr: SExpression = from_json_value(&raw).expect("an expression");
+            let Ok(lowered) = lower_sexpr(&expr) else { continue };
+            let mut reads = Vec::new();
+            implicit_reads(&lowered, "", &[], &mut reads);
+            if reads.is_empty() {
+                continue;
+            }
+            *programs.entry(entry["path"].as_str().unwrap_or("?").to_string()).or_default() += reads.len();
+            if samples.len() < 5 {
+                samples.push(raw.to_string());
+            }
+            for key in reads {
+                *by_operator.entry(key).or_default() += 1;
+            }
+        }
+    }
+    println!("IMPLICIT reads={} programs={}", by_operator.values().sum::<usize>(), programs.len());
+    for ((operator, name), count) in &by_operator {
+        println!("IMPLICIT_BY {operator}\t@{name}\t{count}");
+    }
+    for (program, count) in &programs {
+        println!("IMPLICIT_IN {count}\t{program}");
+    }
+    for sample in &samples {
+        println!("IMPLICIT_SAMPLE {sample}");
+    }
+}
+
+/// Every operator call written inside a render pattern: the kernel evaluates it when it resolves the pattern, so its
+/// callbacks are bound by the operator, not by the renderer. A bare `fn` is a render-time lambda and is not entered.
+fn calls_in_pattern<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
+    match node {
+        Value::Array(items) => match items.first().and_then(Value::as_str) {
+            Some("fn") => {}
+            Some(head) if orbital_core_eval::evaluator::operators::get_operator(head).is_some() => out.push(node),
+            _ => items.iter().for_each(|item| calls_in_pattern(item, out)),
+        },
+        Value::Object(map) => map.values().for_each(|value| calls_in_pattern(value, out)),
+        _ => {}
+    }
+}
+
+#[test]
+#[ignore = "tool: ORB_LOWER_CORPUS=<orb lower output lines> lists render-pattern operator calls whose lambdas read @item or @index undeclared"]
+fn implicit_callback_names_in_render_patterns_of_a_corpus() {
+    preflight().expect("the installed language data must load");
+    let path = std::env::var("ORB_LOWER_CORPUS").expect("ORB_LOWER_CORPUS");
+    let file = std::io::BufReader::new(std::fs::File::open(path).expect("corpus file"));
+    let mut programs: BTreeMap<String, usize> = BTreeMap::new();
+    let mut names: BTreeMap<String, usize> = BTreeMap::new();
+    let mut samples: Vec<String> = Vec::new();
+    for line in file.lines() {
+        let entry: Value = orbital_core_base::json_value::from_json_str(&line.expect("line")).expect("json line");
+        let mut found = Vec::new();
+        expressions(&entry["orb"], false, &mut found);
+        let mut renders = Vec::new();
+        fn render_effects<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
+            if let Value::Array(items) = node {
+                if items.first().and_then(Value::as_str) == Some("render-ui") {
+                    out.extend(items.iter().skip(2));
+                } else {
+                    items.iter().for_each(|item| render_effects(item, out));
+                }
+            }
+        }
+        found.iter().for_each(|raw| render_effects(raw, &mut renders));
+        let mut calls = Vec::new();
+        renders.iter().for_each(|content| calls_in_pattern(content, &mut calls));
+        for call in calls {
+            let Ok(expr) = from_json_value::<SExpression>(call) else { continue };
+            let Ok(lowered) = lower_sexpr(&expr) else { continue };
+            let mut reads = Vec::new();
+            implicit_reads(&lowered, "", &[], &mut reads);
+            if reads.is_empty() {
+                continue;
+            }
+            *programs.entry(entry["path"].as_str().unwrap_or("?").to_string()).or_default() += reads.len();
+            for (_, name) in reads {
+                *names.entry(name).or_default() += 1;
+            }
+            if samples.len() < 4 {
+                samples.push(call.to_string());
+            }
+        }
+    }
+    println!("RENDER_IMPLICIT reads={} programs={}", names.values().sum::<usize>(), programs.len());
+    for (name, count) in &names {
+        println!("RENDER_IMPLICIT_NAME @{name}\t{count}");
+    }
+    for (program, count) in &programs {
+        println!("RENDER_IMPLICIT_IN {count}\t{program}");
+    }
+    for sample in &samples {
+        println!("RENDER_IMPLICIT_SAMPLE {sample}");
     }
 }

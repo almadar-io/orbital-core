@@ -73,11 +73,6 @@ impl BindingContextBuilder {
         self
     }
 
-    pub fn entity_store(mut self, entity_type: &str, entities: Vec<Value>) -> Self {
-        Arc::make_mut(&mut self.context.entity_stores).insert(entity_type.to_string(), entities);
-        self
-    }
-
     pub fn build(self) -> BindingContext {
         self.context
     }

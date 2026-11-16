@@ -14,6 +14,7 @@ mod embed_host_posting;
 mod fold_host_ran_listeners;
 mod frame_versions;
 mod mounted_reflection;
+mod optimistic_local_steps;
 mod route_precedence;
 mod runs_on_delegation;
 mod server_emit_stamp;

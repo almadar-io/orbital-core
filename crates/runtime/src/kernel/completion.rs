@@ -252,7 +252,7 @@ pub(super) fn persist_completion_emit(
                     if let Some(id) = id {
                         payload.insert(
                             "id".into(),
-                            ctx.resolve_value(&Value::string(id.clone())).into_owned(),
+                            ctx.resolve_data(&Value::string(id.clone())).into_owned(),
                         );
                     }
                     payload.insert("deleted".into(), Value::Bool(true));

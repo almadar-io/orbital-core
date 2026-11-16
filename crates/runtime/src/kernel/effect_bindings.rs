@@ -23,11 +23,11 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
         }
         Effect::Emit { event, payload } => Effect::Emit {
             event,
-            payload: ctx.resolve_dropping_unset_checked(&payload)?,
+            payload: ctx.resolve_data_checked(&payload)?.into_owned(),
         },
         Effect::Log { level, message, data } => Effect::Log {
             level,
-            message: ctx.resolve_value_checked(&message)?.into_owned(),
+            message: ctx.resolve_data_checked(&message)?.into_owned(),
             data,
         },
         Effect::Navigate {
@@ -35,7 +35,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             params,
             options,
         } => Effect::Navigate {
-            path: match ctx.resolve_value_checked(&path)?.into_owned() {
+            path: match ctx.resolve_data_checked(&path)?.into_owned() {
                 route @ Value::String(_) => route,
                 other => {
                     return Err(EvalError::InvalidArgument(format!(
@@ -47,7 +47,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             params: params
                 .map(|p| {
                     p.iter()
-                        .map(|(k, v)| Ok((k.clone(), ctx.resolve_value_checked(v)?.into_owned())))
+                        .map(|(k, v)| Ok((k.clone(), ctx.resolve_data_checked(v)?.into_owned())))
                         .collect::<Result<_, EvalError>>()
                 })
                 .transpose()?,
@@ -56,7 +56,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
                     Ok::<_, EvalError>(orbital_core_base::effect_types::NavigateOperands {
                         crumb: o
                             .crumb
-                            .map(|c| Ok::<_, EvalError>(Value::string(ctx.resolve_value_checked(&c)?.into_owned().to_string_value())))
+                            .map(|c| Ok::<_, EvalError>(Value::string(ctx.resolve_data_checked(&c)?.into_owned().to_string_value())))
                             .transpose()?,
                     })
                 })
@@ -71,12 +71,12 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
         } => Effect::CallService {
             service,
             method,
-            args: ctx.resolve_value_checked(&args)?.into_owned(),
+            args: ctx.resolve_data_checked(&args)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::BrowserPageFacts { fields, key, emit } => Effect::BrowserPageFacts {
-            fields: ctx.resolve_value_checked(&fields)?.into_owned(),
+            fields: ctx.resolve_data_checked(&fields)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
@@ -87,7 +87,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             emit,
         } => Effect::BrowserTab {
             op,
-            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            request: ctx.resolve_data_checked(&request)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
@@ -97,18 +97,18 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             key,
             emit,
         } => Effect::BrowserPrompt {
-            text: ctx.resolve_value_checked(&text)?.into_owned(),
-            schema: ctx.resolve_value_checked(&schema)?.into_owned(),
+            text: ctx.resolve_data_checked(&text)?.into_owned(),
+            schema: ctx.resolve_data_checked(&schema)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::BrowserEmbed { texts, key, emit } => Effect::BrowserEmbed {
-            texts: ctx.resolve_value_checked(&texts)?.into_owned(),
+            texts: ctx.resolve_data_checked(&texts)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::CancelCall { key } => Effect::CancelCall {
-            key: match ctx.resolve_value_checked(&key)?.into_owned() {
+            key: match ctx.resolve_data_checked(&key)?.into_owned() {
                 list @ Value::Array(_) => list,
                 other => Value::string(other.to_string_value()),
             },
@@ -123,7 +123,7 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             args: args
                 .iter()
                 .map(|arg| {
-                    ctx.resolve_value_checked(arg)
+                    ctx.resolve_data_checked(arg)
                         .map(std::borrow::Cow::into_owned)
                 })
                 .collect::<Result<_, EvalError>>()?,
@@ -131,29 +131,29 @@ pub(super) fn resolve_effect_bindings(effect: Effect, ctx: &BindingContext) -> R
             emit,
         },
         Effect::RandomBytes { bytes, key, emit } => Effect::RandomBytes {
-            bytes: ctx.resolve_value_checked(&bytes)?.into_owned(),
+            bytes: ctx.resolve_data_checked(&bytes)?.into_owned(),
             key: key.map(|k| resolve_call_key(&k, ctx)).transpose()?,
             emit,
         },
         Effect::CredentialStatus { credential, emit } => Effect::CredentialStatus {
-            credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            credential: ctx.resolve_data_checked(&credential)?.into_owned(),
             emit,
         },
         Effect::CredentialForget { credential, emit } => Effect::CredentialForget {
-            credential: ctx.resolve_value_checked(&credential)?.into_owned(),
+            credential: ctx.resolve_data_checked(&credential)?.into_owned(),
             emit,
         },
         Effect::CredentialConnect { request, emit } => Effect::CredentialConnect {
-            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            request: ctx.resolve_data_checked(&request)?.into_owned(),
             emit,
         },
         Effect::CredentialAdmin { op, request, emit } => Effect::CredentialAdmin {
             op,
-            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            request: ctx.resolve_data_checked(&request)?.into_owned(),
             emit,
         },
         Effect::AccessCheck { request, emit } => Effect::AccessCheck {
-            request: ctx.resolve_value_checked(&request)?.into_owned(),
+            request: ctx.resolve_data_checked(&request)?.into_owned(),
             emit,
         },
         other => other,
@@ -179,7 +179,7 @@ pub(super) fn resolved_custom_or_failed(
     };
     let mut resolved = Vec::with_capacity(args.len() + 1);
     for arg in args.iter().chain(key) {
-        match ctx.resolve_value_checked(arg) {
+        match ctx.resolve_data_checked(arg) {
             Ok(value) => resolved.push(value.into_owned()),
             Err(fault) => {
                 effect_results.push(EffectResult::failed(
@@ -323,7 +323,7 @@ pub(super) fn resolve_render_slot(slot: String, ctx: &BindingContext) -> Result<
 }
 
 pub(super) fn resolve_call_key(key: &Value, ctx: &BindingContext) -> Result<Value, EvalError> {
-    let value = ctx.resolve_value_checked(key)?;
+    let value = ctx.resolve_data_checked(key)?;
     orbital_core_base::effect_types::call_key_text(&value)
         .map(|text| Value::string(text.to_string()))
 }

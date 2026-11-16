@@ -274,7 +274,7 @@ fn str_truncate_keeps_len_characters_then_appends_the_suffix() {
 #[test]
 fn validate_check_min_max_range_rules_run_as_rules_not_as_calls() {
     let result = ok(r#"["validate/check", {"age": 17, "n": 70, "r": 5},
-        {"age": [["min", 18]], "n": [["max", 65]], "r": [["range", 1, 10]]}]"#);
+        {"age": [{"rule": "min", "args": [18]}], "n": [{"rule": "max", "args": [65]}], "r": [{"rule": "range", "args": [1, 10]}]}]"#);
     let Value::Object(map) = result else {
         panic!("not an object")
     };
@@ -287,7 +287,7 @@ fn validate_check_min_max_range_rules_run_as_rules_not_as_calls() {
         ])
     );
     let control = ok(
-        r#"["validate/check", {"age": 18, "n": 65}, {"age": [["min", 18]], "n": [["max", 65]]}]"#,
+        r#"["validate/check", {"age": 18, "n": 65}, {"age": [{"rule": "min", "args": [18]}], "n": [{"rule": "max", "args": [65]}]}]"#,
     );
     let Value::Object(map) = control else {
         panic!("not an object")
@@ -298,7 +298,7 @@ fn validate_check_min_max_range_rules_run_as_rules_not_as_calls() {
 #[test]
 fn validate_check_rule_arguments_are_evaluated_and_a_predicate_is_refused() {
     let bound = ok(
-        r#"["let", [["floor", 3]], ["validate/check", {"s": "ab"}, {"s": [["minLength", "@floor"]]}]]"#,
+        r#"["let", [["floor", 3]], ["validate/check", {"s": "ab"}, {"s": [{"rule": "minLength", "args": ["@floor"]}]}]]"#,
     );
     let Value::Object(map) = bound else {
         panic!("not an object")

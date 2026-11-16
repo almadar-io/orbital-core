@@ -1,7 +1,5 @@
-//! A binding that holds no value, written in an effect's data (G-ORBITAL-CORE-207). The owner ruled 2026-11-16 that it is
-//! null everywhere (EXEC-EVAL-9). The kernel still leaves the field out of an `emit` payload and keeps an unset knob's
-//! text; the ignored tests are the rule to turn on once the programs that rely on that are migrated.
-
+//! EXEC-EVAL-9 in an effect's data: a binding that holds no value is null wherever it is written. It is never left
+//! out of its record and never passed on as its own text (G-ORBITAL-CORE-207, owner ruling 2026-11-16).
 
 use crate::support::TestKernel;
 use orbital_core_base::effect_types::Effect;
@@ -59,20 +57,17 @@ fn control_an_emit_carries_a_field_whose_binding_holds_a_value() {
 }
 
 #[test]
-#[ignore = "G-ORBITAL-CORE-207: the rule after the programs are migrated; today the field is left out or the text is kept"]
 fn an_emit_field_whose_binding_holds_no_value_is_null() {
     assert_eq!(emitted(emit(), json!({})), value(json!({ "a": null, "c": "none", "d": [null] })));
 }
 
 #[test]
-#[ignore = "G-ORBITAL-CORE-207: the rule after the programs are migrated; today the field is left out or the text is kept"]
 fn an_emit_field_bound_to_an_unset_knob_is_null() {
     let effects = json!([["emit", "SEEN", { "a": "@config.unset", "b": 1 }]]);
     assert_eq!(emitted(effects, json!({})), value(json!({ "a": null, "b": 1 })));
 }
 
 #[test]
-#[ignore = "G-ORBITAL-CORE-207: the rule after the programs are migrated; today the field is left out or the text is kept"]
 fn a_navigate_to_an_unset_knob_fails_and_never_goes_to_the_knobs_own_text() {
     let kernel = TestKernel::server().build(program(json!([["navigate", "@config.unset"]])));
     let result = kernel.process_event("Notes", Some("singleton"), "GO", value(json!({}))).expect("the step runs");

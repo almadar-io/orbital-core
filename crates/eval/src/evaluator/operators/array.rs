@@ -94,36 +94,23 @@ impl<'a> Callback<'a> {
         }
     }
 
-    /// Run the callback on one element. `values` are bound to the params in order, and `@item`/`@index` to the first
-    /// two (twin of almadar-evaluator's `evalWithItem`/`evalLambda`).
+    /// Run the callback on one element: `values` are bound to the parameters it declares, in order, and to nothing
+    /// else (G-ORBITAL-CORE-205: no implicit `@item` or `@index`).
     pub fn apply(&self, values: Vec<Value>, ctx: &BindingContext) -> EvalResult {
         if let Callback::Site { site, index } = self {
             return site.invoke(*index, values);
         }
-        let values: Vec<Arc<Value>> /* shared so `item`, `index` and the params bind the same values */ = values.into_iter().map(Arc::new).collect();
         let mut child = ctx.child();
-        if let Some(item) = values.first() {
-            child.set_local_shared(crate::evaluator::LocalName::Fixed("item"), Arc::clone(item));
-        }
-        if let Some(index) = values.get(1) {
-            child.set_local_shared(
-                crate::evaluator::LocalName::Fixed("index"),
-                Arc::clone(index),
-            );
-        }
         match self {
             Callback::Literal { params, body } => {
-                for (param, value) in params.iter().zip(&values) {
-                    child.set_local_shared(
-                        crate::evaluator::LocalName::Shared((*param).clone()),
-                        Arc::clone(value),
-                    );
+                for (param, value) in params.iter().zip(values) {
+                    child.set_local(crate::evaluator::LocalName::Shared((*param).clone()), value);
                 }
                 eval_expr(body, &child)
             }
             Callback::Lambda { params, body } => {
-                for (param, value) in params.iter().zip(&values) {
-                    child.set_local_shared(param, Arc::clone(value));
+                for (param, value) in params.iter().zip(values) {
+                    child.set_local(param, value);
                 }
                 eval_expr(body, &child)
             }
@@ -177,31 +164,6 @@ impl Operator for CountOp {
             }));
         }
 
-        // Check if this is a count query: ["count", "EntityType", filterExpr]
-        if args.len() >= 2 {
-            if let SExpression::String(entity_type) = &args[0] {
-                // This is a count query over an entity store
-                if let Some(entities) = ctx.get_entities(entity_type) {
-                    if args.len() > 1 {
-                        // Apply filter
-                        let filter = &args[1];
-                        let mut count = 0usize;
-                        for entity in entities.iter() {
-                            let mut child_ctx = ctx.child();
-                            child_ctx.set_entity((*entity).clone());
-                            if eval_expr(filter, &child_ctx)?.boolean()? {
-                                count += 1;
-                            }
-                        }
-                        return Ok(super::util::int_of(count));
-                    } else {
-                        return Ok(super::util::int_of(entities.len()));
-                    }
-                }
-            }
-        }
-
-        // Regular array count, with an optional predicate
         super::with_operand(&args[0], ctx, |val| {
             let arr = val.as_array().ok_or_else(|| val.kind_error("array"))?;
             let Some(predicate) = args.get(1) else {
@@ -217,10 +179,6 @@ impl Operator for CountOp {
 
     fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
         require_arity_some!(args, "count", 1);
-        // The count query over a registered entity store reads its filter under each row as `@entity`: no value entry.
-        if args.len() >= 2 && site.literal(0) && matches!(&args[0], Value::String(name) if ctx.get_entities(name).is_some()) {
-            return None;
-        }
         let Some(arr) = args[0].as_array() else {
             return Some(Err(args[0].kind_error("array").into()));
         };

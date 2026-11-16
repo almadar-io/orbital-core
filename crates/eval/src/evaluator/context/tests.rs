@@ -421,38 +421,6 @@ fn test_nonexistent_path() {
     assert_eq!(ctx.resolve("payload.nonexistent.deep"), None);
 }
 
-#[test]
-fn test_entity_stores() {
-    let connections = vec![
-        {
-            let mut c = ValueMap::default();
-            c.insert(
-                "requesterId".into(),
-                Value::string("user-1"),
-            );
-            c.insert("status".into(), Value::string("accepted"));
-            Value::object(c)
-        },
-        {
-            let mut c = ValueMap::default();
-            c.insert(
-                "requesterId".into(),
-                Value::string("user-1"),
-            );
-            c.insert("status".into(), Value::string("pending"));
-            Value::object(c)
-        },
-    ];
-
-    let ctx = BindingContextBuilder::new()
-        .entity_store("Connection", connections.clone())
-        .build();
-
-    let stored = ctx.get_entities("Connection");
-    assert!(stored.is_some());
-    assert_eq!(stored.unwrap().len(), 2);
-}
-
 /// Regression pin (std-multi-party-transaction stack overflow): a runtime
 /// value can contain its OWN binding token — `(set @entity.audit (concat
 /// @entity.audit {…}))` on an entity whose `audit` was still the
@@ -621,10 +589,10 @@ fn a_nested_callback_does_not_copy_an_enclosing_big_binding() {
 }
 
 #[test]
-fn an_inner_callback_shadows_the_outer_item_and_index_and_sees_outer_params() {
+fn an_inner_callback_sees_outer_params_and_the_index_it_declares() {
     let ctx = BindingContext::new();
     let out = eval_json(
-        r#"["array/map", ["list", 10, 20], ["fn", "x", ["array/map", ["list", 1, 2, 3], ["fn", "y", ["+", ["*", "@x", 100], "@y", ["*", "@index", 1000]]]]]]"#,
+        r#"["array/map", ["list", 10, 20], ["fn", "x", ["array/map", ["list", 1, 2, 3], ["fn", ["y", "index"], ["+", ["*", "@x", 100], "@y", ["*", "@index", 1000]]]]]]"#,
         &ctx,
     );
     let expect = |x: f64| Value::Array((0..3).map(|i| Value::Number(x * 100.0 + (i + 1) as f64 + i as f64 * 1000.0)).collect());
@@ -661,4 +629,51 @@ fn a_child_binding_never_leaks_into_its_parent() {
     assert_eq!(child.remove_local("a"), Some(Value::Number(2.0)));
     assert_eq!(child.resolve("a"), None, "a removed local is gone from the child, as with a copied map");
     assert_eq!(parent.resolve("a"), Some(Value::Number(1.0)));
+}
+
+fn json_value(text: &str) -> Value {
+    from_json_str(text).expect("a value")
+}
+
+/// Every root a step holds, each with no field, and a config with one knob.
+fn data_context() -> BindingContext {
+    BindingContextBuilder::new()
+        .payload(json_value("{}"))
+        .entity(json_value("{}"))
+        .config(json_value(r#"{ "set": "v", "forward": "@payload.missing" }"#))
+        .build()
+}
+
+#[test]
+fn effect_data_reads_a_binding_that_holds_no_value_as_null() {
+    let ctx = data_context();
+    let written = json_value(
+        r#"{ "a": "@payload.missing", "b": "@config.unset", "c": "@config.forward", "d": ["@config.unset", "@entity.missing"], "e": "@nowhere.x" }"#,
+    );
+    assert_eq!(
+        ctx.resolve_data_checked(&written).expect("resolves").into_owned(),
+        json_value(r#"{ "a": null, "b": null, "c": null, "d": [null, null], "e": null }"#)
+    );
+    assert_eq!(ctx.resolve_data_checked(&Value::string("@config.unset")).expect("resolves").into_owned(), Value::Null);
+    assert_eq!(ctx.resolve_data_checked(&Value::string("@nowhere.x")).expect("resolves").into_owned(), Value::Null);
+}
+
+#[test]
+fn control_effect_data_carries_the_value_a_binding_holds_and_keeps_a_trait_frame() {
+    let ctx = data_context();
+    let written = json_value(r#"{ "a": "@config.set", "t": "@trait.Panel", "n": 1 }"#);
+    assert_eq!(
+        ctx.resolve_data_checked(&written).expect("resolves").into_owned(),
+        json_value(r#"{ "a": "v", "t": "@trait.Panel", "n": 1 }"#)
+    );
+}
+
+#[test]
+fn control_a_render_pattern_still_leaves_out_a_prop_whose_knob_is_unset_and_keeps_an_unheld_root() {
+    let ctx = data_context();
+    let pattern = json_value(r#"{ "type": "button", "label": "@config.unset", "row": "@item.name", "title": "@payload.missing" }"#);
+    assert_eq!(
+        ctx.resolve_value_checked(&pattern).expect("resolves").into_owned(),
+        json_value(r#"{ "type": "button", "row": "@item.name", "title": null }"#)
+    );
 }

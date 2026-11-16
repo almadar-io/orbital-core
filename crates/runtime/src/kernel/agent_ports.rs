@@ -96,7 +96,7 @@ impl RuntimeKernel {
         };
         let mut resolved: Vec<Value> = Vec::with_capacity(args.len());
         for arg in args {
-            match ctx.resolve_value_checked(arg) {
+            match ctx.resolve_data_checked(arg) {
                 Ok(value) => resolved.push(value.into_owned()),
                 Err(fault) => {
                     return EffectResult::failed(

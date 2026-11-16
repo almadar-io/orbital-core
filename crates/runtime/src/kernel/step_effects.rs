@@ -608,7 +608,7 @@ impl RuntimeKernel {
     ) {
         let key = match effect {
             Effect::Custom { key: Some(key), .. } => ctx
-                .resolve_value_checked(key)
+                .resolve_data_checked(key)
                 .ok()
                 .and_then(|k| k.as_str().map(str::to_string)),
             _ => None,

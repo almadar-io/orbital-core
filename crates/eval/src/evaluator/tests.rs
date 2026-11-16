@@ -1158,41 +1158,6 @@ fn test_connection_slots_guard() {
     );
 }
 
-#[test]
-fn test_dunbar_number_guard() {
-    // Guard: ["<", ["array/count", "Connection", ["and", ...]], 150]
-    // This tests the count operator with entity store
-
-    let connections: Vec<Value> = (0..50)
-        .map(|i| {
-            let mut c = ValueMap::default();
-            c.insert("requesterId".into(), Value::string("user-1"));
-            c.insert(
-                "status".into(),
-                Value::string(if i < 30 { "accepted" } else { "pending" }.to_string()),
-            );
-            Value::object(c)
-        })
-        .collect();
-
-    let mut user = ValueMap::default();
-    user.insert("id".into(), Value::string("user-1"));
-
-    let ctx = BindingContextBuilder::new()
-        .user(Value::object(user))
-        .entity_store("Connection", connections)
-        .build();
-
-    // Count accepted connections for current user
-    let count_expr = r#"["array/count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]]"#;
-    let count = eval_with_ctx(count_expr, &ctx);
-    assert_eq!(count, Value::Number(30.0));
-
-    // Full Dunbar guard: < 150 connections
-    let guard = r#"["<", ["array/count", "Connection", ["and", ["=", "@entity.requesterId", "@user.id"], ["=", "@entity.status", "accepted"]]], 150]"#;
-    assert_eq!(eval_with_ctx(guard, &ctx), Value::Bool(true));
-}
-
 // ========================================================================
 // Evaluator API Tests
 // ========================================================================
@@ -1931,19 +1896,19 @@ fn validate_checkers_raise_on_a_wrong_kind_while_the_type_predicates_stay_total(
     assert!(eval_err(r#"["validate/pattern", null, "a"]"#).contains("Type mismatch"));
     assert!(eval_err(r#"["validate/pattern", "a", 1]"#).contains("Type mismatch"));
     assert_eq!(eval(r#"["validate/pattern", "a", "a"]"#), Value::Bool(true));
-    assert!(eval_err(r#"["validate/check", 5, {"a": [["required"]]}]"#).contains("expected object"));
-    assert!(eval_err(r#"["validate/check", {"a": 1}, {"a": [["minLength", 2]]}]"#).contains("Type mismatch"));
-    let failed = eval(r#"["validate/check", {}, {"age": [["required"], ["min", 18]]}]"#);
+    assert!(eval_err(r#"["validate/check", 5, {"a": [{"rule": "required"}]}]"#).contains("expected object"));
+    assert!(eval_err(r#"["validate/check", {"a": 1}, {"a": [{"rule": "minLength", "args": [2]}]}]"#).contains("Type mismatch"));
+    let failed = eval(r#"["validate/check", {}, {"age": [{"rule": "required"}, {"rule": "min", "args": [18]}]}]"#);
     assert_eq!(failed, eval(r#"{"valid": false, "errors": ["age: required validation failed"]}"#));
     assert_eq!(
-        eval(r#"["validate/check", {"age": null}, {"age": [["min", 18]]}]"#),
+        eval(r#"["validate/check", {"age": null}, {"age": [{"rule": "min", "args": [18]}]}]"#),
         eval(r#"{"valid": true, "errors": []}"#)
     );
-    assert!(eval_err(r#"["validate/check", {"age": "x"}, {"age": [["min", 18]]}]"#).contains("Type mismatch"));
-    assert!(eval_err(r#"["validate/check", {"a": "xy"}, {"a": [["minLength", "2"]]}]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["validate/check", {"age": "x"}, {"age": [{"rule": "min", "args": [18]}]}]"#).contains("Type mismatch"));
+    assert!(eval_err(r#"["validate/check", {"a": "xy"}, {"a": [{"rule": "minLength", "args": ["2"]}]}]"#).contains("Type mismatch"));
     assert!(eval_err(r#"["validate/check", {"a": "xy"}, null]"#).contains("rules by field"));
     assert_eq!(
-        eval(r#"["validate/check", {"a": "xy"}, {"a": [["minLength", 2], ["string"]]}]"#),
+        eval(r#"["validate/check", {"a": "xy"}, {"a": [{"rule": "minLength", "args": [2]}, {"rule": "string"}]}]"#),
         eval(r#"{"valid": true, "errors": []}"#)
     );
     assert_eq!(eval(r#"["validate/string", null]"#), Value::Bool(false));
@@ -2858,12 +2823,12 @@ fn test_validate_none_of() {
 
 #[test]
 fn test_validate_check() {
-    let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [["number"]]}]"#)
+    let Value::Object(passed) = eval(r#"["validate/check", {"n": 10}, {"n": [{"rule": "number"}]}]"#)
     else {
         panic!("not an object")
     };
     assert_eq!(passed["valid"], Value::Bool(true));
-    let Value::Object(failed) = eval(r#"["validate/check", {"n": "x"}, {"n": [["number"]]}]"#)
+    let Value::Object(failed) = eval(r#"["validate/check", {"n": "x"}, {"n": [{"rule": "number"}]}]"#)
     else {
         panic!("not an object")
     };
@@ -2885,9 +2850,12 @@ fn nums(values: &[f64]) -> Value {
 }
 
 #[test]
-fn map_fn_lambda_also_binds_index_like_the_ts_evaluator() {
-    // std-stats maps metrics with `(fn metric { position: @index … })`.
-    let out = eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
+fn a_map_lambda_reads_the_index_only_when_it_declares_it() {
+    let undeclared = eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);
+    for row in undeclared.as_array().expect("array") {
+        assert_eq!(row.as_object().and_then(|o| o.get("position")), Some(&Value::Null), "an undeclared `@index` is unbound");
+    }
+    let out = eval(r#"["array/map", [10, 20], ["fn", ["m", "index"], {"v": "@m", "position": "@index"}]]"#);
     let rows = out.as_array().expect("array");
     assert_eq!(
         rows[0].as_object().and_then(|o| o.get("position")),
@@ -2953,12 +2921,8 @@ fn raw_callback_params_match_what_the_evaluator_binds() {
     );
     assert!(eval_err(r#"["array/filter", [1, 2, 3], [">", "@item", 1]]"#).contains("Type mismatch"));
     assert!(eval_err(r#"["array/filter", [1, 2, 3], true]"#).contains("expected function"));
-    // The index is bound whether the predicate is a raw body or a `(fn …)` that names only the element, as
-    // the JS evaluator's `evalWithItem` always does.
-    assert_eq!(
-        eval(r#"["array/filter", [10, 20, 30], ["fn", "b", ["<", "@index", 2]]]"#),
-        nums(&[10.0, 20.0])
-    );
+    // A `(fn …)` that names only the element does not see the index (G-ORBITAL-CORE-205).
+    assert!(eval_err(r#"["array/filter", [10, 20, 30], ["fn", "b", ["<", "@index", 2]]]"#).contains("Type mismatch"));
     assert_eq!(
         eval(r#"["array/filter", [10, 20, 30], ["fn", ["b", "i"], ["<", "@i", 2]]]"#),
         nums(&[10.0, 20.0]),

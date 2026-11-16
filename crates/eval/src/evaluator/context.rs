@@ -29,6 +29,8 @@ use std::sync::Arc;
 struct Walk {
     expanding: Vec<String>,
     fault: Option<EvalError>,
+    /// The value is an effect's data, not a render pattern: a binding that holds no value is null (EXEC-EVAL-9).
+    data: bool,
 }
 
 /// Where an unseeded `prob/*` stream gets its seed: the kernel's journaled `Random` ask, supplied per dispatch.
@@ -197,14 +199,6 @@ pub struct BindingContext {
     /// Local bindings (`let`, callback params, `@item`/`@index`): a chain of shared frames, so a child scope
     /// pushes one frame instead of copying every enclosing binding.
     locals: Arc<LocalFrame>,
-    /// Custom bindings for entity types (for `count` queries).
-    ///
-    /// Shared via `Arc` so cloning a child context (hot path in map/filter/reduce)
-    /// is a refcount bump rather than a deep clone of every entity collection.
-    entity_stores: Arc<HashMap<String, Vec<Value>>>,
-    /// Resolve a whole-string binding that holds no value to an absent prop (see
-    /// [`Self::resolve_dropping_unset`]) instead of leaving its token for a later resolver.
-    drop_unset: bool,
     /// Credential values the kernel resolved for this evaluation, by credential name. Only an operator that takes a
     /// credential slot (`hash/scrypt`'s salt) reads them; they are never reachable as a binding.
     secrets: Arc<SecretValues>,
@@ -503,23 +497,6 @@ impl BindingContext {
         Arc::make_mut(&mut self.locals)
     }
 
-    /// Register an entity store for count queries
-    pub fn register_entity_store(&mut self, entity_type: &str, entities: Vec<Value>) -> &mut Self {
-        Arc::make_mut(&mut self.entity_stores).insert(entity_type.to_string(), entities);
-        self
-    }
-
-    /// Share a pre-built set of entity stores without deep-cloning the map.
-    pub fn set_entity_stores(&mut self, stores: Arc<HashMap<String, Vec<Value>>>) -> &mut Self {
-        self.entity_stores = stores;
-        self
-    }
-
-    /// Get entities of a specific type
-    pub fn get_entities(&self, entity_type: &str) -> Option<&Vec<Value>> {
-        self.entity_stores.get(entity_type)
-    }
-
     /// The `let` bindings in scope here; `None` outside every `let`.
     pub fn local_scope(&self) -> Option<LocalScope> {
         let mut frame = Some(&*self.locals);
@@ -562,8 +539,6 @@ impl BindingContext {
             from_state: self.from_state.clone(),
             to_state: self.to_state.clone(),
             locals: Arc::clone(&self.locals),
-            entity_stores: Arc::clone(&self.entity_stores),
-            drop_unset: self.drop_unset,
             secrets: Arc::clone(&self.secrets),
             prob: Arc::clone(&self.prob),
             prob_entropy: self.prob_entropy.clone(),
@@ -596,20 +571,6 @@ impl BindingContext {
         linear.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
-    /// Create a child context with a specific item bound (for map/filter)
-    pub fn with_item(&self, item: Value) -> Self {
-        let mut child = self.child();
-        child.set_local(crate::evaluator::LocalName::Fixed("item"), item);
-        child
-    }
-
-    /// Create a child context with index and item bound (for map with index)
-    pub fn with_item_and_index(&self, item: Value, index: usize) -> Self {
-        let mut child = self.child();
-        child.set_local(crate::evaluator::LocalName::Fixed("item"), item);
-        child.set_local(crate::evaluator::LocalName::Fixed("index"), operators::util::int_of(index));
-        child
-    }
 }
 
 use super::operators;

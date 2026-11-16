@@ -338,7 +338,7 @@ mod native_record_event_admission {
     }
 
     #[test]
-    fn native_record_event_admission_separates_presence_from_null_for_all_four_forms() {
+    fn native_record_event_admission_takes_null_as_missing_for_a_member_without_bang_in_all_four_forms() {
         for (required, nullable) in [(false, false), (true, false), (false, true), (true, true)] {
             let kernel = kernel(program(
                 Some(1),
@@ -347,7 +347,7 @@ mod native_record_event_admission {
                 }),
             ));
             dispatch(&kernel, json!({}), !required);
-            dispatch(&kernel, json!({"value": null}), nullable);
+            dispatch(&kernel, json!({"value": null}), nullable || !required);
             dispatch(&kernel, json!({"value": "ok"}), true);
             dispatch(&kernel, json!({"value": 42}), false);
         }

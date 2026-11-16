@@ -25,12 +25,6 @@ pub struct StateMachineManager {
 
     /// Current state for each trait instance
     states: HashMap<TraitInstanceId, TraitState>,
-
-    /// Entity data stores for count queries.
-    ///
-    /// Shared via `Arc` so each event's evaluation context references the same
-    /// stores instead of deep-cloning the whole map per event.
-    entity_stores: Arc<HashMap<String, Vec<Value>>>,
 }
 
 impl Default for StateMachineManager {
@@ -46,7 +40,6 @@ impl StateMachineManager {
             core: StateMachineCore::new(),
             trait_definitions: HashMap::new(),
             states: HashMap::new(),
-            entity_stores: Arc::new(HashMap::new()),
         }
     }
 
@@ -56,7 +49,6 @@ impl StateMachineManager {
             core: StateMachineCore::with_evaluator(evaluator),
             trait_definitions: HashMap::new(),
             states: HashMap::new(),
-            entity_stores: Arc::new(HashMap::new()),
         }
     }
 
@@ -86,11 +78,6 @@ impl StateMachineManager {
     /// Get a registered trait definition
     pub fn get_trait(&self, name: &str) -> Option<&TraitDefinition> {
         self.trait_definitions.get(name).map(|t| &**t)
-    }
-
-    /// Register an entity store for count queries
-    pub fn register_entity_store(&mut self, entity_type: &str, entities: Vec<Value>) {
-        Arc::make_mut(&mut self.entity_stores).insert(entity_type.to_string(), entities);
     }
 
     /// Get or create a trait state
@@ -148,9 +135,7 @@ impl StateMachineManager {
     /// context (§157 `identity`: guard/transition evaluation must see the exact
     /// same `payload`/`state`/`entity`/`user`/`config`/`currentTheme` the kernel
     /// already assembled for this dispatch — never a second, poorer context
-    /// built from scratch). `entity_stores` (this manager's multi-entity index
-    /// for `count`/aggregate guards) is layered on top, since it is
-    /// manager-local state the caller cannot supply. Guards like
+    /// built from scratch). Guards like
     /// `(when ["=", "@user.role", "clinician"])` and `@config.*` reads only see
     /// real values through this path; `process_event`/`process_event_with_entity`
     /// below (which build a state+entity-only context) remain for callers with
@@ -176,15 +161,13 @@ impl StateMachineManager {
             core,
             trait_definitions,
             states,
-            entity_stores,
         } = self;
 
         let trait_def = trait_definitions.get(trait_name).unwrap();
         let state = states.get(&instance_id).unwrap();
         let current_state = state.current_state.clone();
 
-        let mut ctx = base_ctx.child();
-        ctx.set_entity_stores(Arc::clone(entity_stores));
+        let ctx = base_ctx.child();
 
         let result = core.process_event_shared(trait_def, &current_state, payload, &ctx)?;
 
@@ -224,15 +207,13 @@ impl StateMachineManager {
             core,
             trait_definitions,
             states,
-            entity_stores,
         } = self;
 
         let trait_def = trait_definitions.get(trait_name).unwrap();
         let state = states.get(&instance_id).unwrap();
         let current_state = state.current_state.clone();
 
-        // Build evaluation context (borrows entity_stores by Arc, not by deep clone).
-        let ctx = Self::build_context_with(state, entity_stores);
+        let ctx = Self::build_context_with(state);
 
         // Process through core
         let result = core.process_event_shared(trait_def, &current_state, payload, &ctx)?;
@@ -271,7 +252,6 @@ impl StateMachineManager {
             core,
             trait_definitions,
             states,
-            entity_stores,
         } = self;
 
         // Update entity data
@@ -285,7 +265,7 @@ impl StateMachineManager {
         let current_state = state.current_state.clone();
 
         // Build evaluation context with entity data
-        let mut ctx = Self::build_context_with(state, entity_stores);
+        let mut ctx = Self::build_context_with(state);
         ctx.set_entity(entity_data);
 
         // Process through core
@@ -302,11 +282,8 @@ impl StateMachineManager {
         Ok(result)
     }
 
-    /// Build evaluation context, sharing the given entity stores by `Arc`.
-    fn build_context_with(
-        state: &TraitState,
-        entity_stores: &Arc<HashMap<String, Vec<Value>>>,
-    ) -> BindingContext {
+    /// Build evaluation context from a trait state.
+    fn build_context_with(state: &TraitState) -> BindingContext {
         let mut builder =
             BindingContextBuilder::new().state(Value::string(state.current_state.clone()));
 
@@ -314,11 +291,7 @@ impl StateMachineManager {
             builder = builder.entity(entity_data.clone());
         }
 
-        // Share entity stores by Arc instead of deep-cloning every collection.
-        let mut ctx = builder.build();
-        ctx.set_entity_stores(Arc::clone(entity_stores));
-
-        ctx
+        builder.build()
     }
 
     /// Initialize a trait at a specific state (for testing or recovery)
@@ -408,7 +381,6 @@ impl StateMachineManager {
         ManagerStats {
             registered_traits: self.trait_definitions.len(),
             active_instances: self.states.len(),
-            entity_stores: self.entity_stores.len(),
         }
     }
 }
@@ -418,7 +390,6 @@ impl StateMachineManager {
 pub struct ManagerStats {
     pub registered_traits: usize,
     pub active_instances: usize,
-    pub entity_stores: usize,
 }
 
 #[cfg(test)]
@@ -922,12 +893,9 @@ mod tests {
             .get_or_create_state("UserManagement", Some("user-2"))
             .unwrap();
 
-        manager.register_entity_store("User", vec![Value::Null]);
-
         let stats = manager.stats();
         assert_eq!(stats.registered_traits, 1);
         assert_eq!(stats.active_instances, 2);
-        assert_eq!(stats.entity_stores, 1);
     }
 
     fn create_gated_trait() -> TraitDefinition {

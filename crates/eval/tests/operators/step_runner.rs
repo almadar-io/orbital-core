@@ -291,13 +291,13 @@ fn a_callback_runs_as_a_lifted_function_with_its_captures() {
     let payload = serde_json::json!({ "xs": [1, 2, 3, 4], "n": 2, "rows": [{ "v": 1 }, { "v": 5 }], "text": "ada" });
     agree(serde_json::json!(["array/map", "@payload.xs", ["fn", "x", ["*", "@x", "@payload.n"]]]), payload.clone());
     agree(serde_json::json!(["array/map", "@payload.xs", ["fn", ["x", "i"], ["+", "@x", "@i"]]]), payload.clone());
-    agree(serde_json::json!(["array/filter", "@payload.rows", ["fn", "row", [">", "@item.v", "@payload.n"]]]), payload.clone());
+    agree(serde_json::json!(["array/filter", "@payload.rows", ["fn", "row", [">", "@row.v", "@payload.n"]]]), payload.clone());
     agree(serde_json::json!(["array/find", "@payload.xs", ["fn", "x", [">", "@x", "@payload.n"]]]), payload.clone());
     agree(serde_json::json!(["array/find", "@payload.xs", ["fn", "x", [">", "@x", 9]]]), payload.clone());
     agree(serde_json::json!(["array/some", "@payload.xs", ["fn", "x", ["=", "@x", 3]]]), payload.clone());
     agree(serde_json::json!(["array/every", "@payload.xs", ["fn", "x", ["<", "@x", 3]]]), payload.clone());
     agree(
-        serde_json::json!(["let", [["k", 10]], ["array/map", "@payload.xs", ["fn", "x", ["+", "@x", "@k", "@index"]]]]),
+        serde_json::json!(["let", [["k", 10]], ["array/map", "@payload.xs", ["fn", ["x", "index"], ["+", "@x", "@k", "@index"]]]]),
         payload.clone(),
     );
     agree(serde_json::json!(["array/map", "@payload.xs", ["fn", "x", ["+", "@x", "@payload.text"]]]), payload.clone());
@@ -321,13 +321,34 @@ fn a_shape_written_as_a_literal_reaches_the_reader() {
 }
 
 #[test]
-fn what_cannot_be_called_on_values_is_refused_by_name() {
+fn rules_written_as_records_are_checked_on_values() {
+    let payload = serde_json::json!({ "o": { "name": "", "age": 20 }, "floor": 18, "text": "ada" });
+    let rules = serde_json::json!({ "name": [{ "rule": "required" }], "age": [{ "rule": "min", "args": ["@payload.floor"] }] });
+    agree(serde_json::json!(["validate/check", "@payload.o", rules]), payload.clone());
+    agree(serde_json::json!(["validate/check", "@payload.text", rules]), payload.clone());
+    agree(serde_json::json!(["validate/check", "@payload.o", { "name": [["required"]] }]), payload.clone());
+    agree(serde_json::json!(["validate/check", "@payload.o", "@payload.text"]), payload);
+}
+
+#[test]
+fn the_operators_with_no_value_entry_are_the_control_forms_and_six_named_ones() {
     preflight().expect("the installed language data must load");
-    let refused = |source: serde_json::Value| {
-        let expr: SExpression = from_json_value(&source).expect("an expression");
-        step_of(&expr).expect_err("refused")
-    };
-    assert_eq!(refused(serde_json::json!(["validate/check", "@payload.o", "@payload.rules"])), "form operator: validate/check");
+    let forms: Vec<&str> = orbital_core_eval::evaluator::operators::DISPATCHED_NAMES
+        .iter()
+        .copied()
+        .filter(|name| {
+            operators().get(*name).and_then(|operator| operator.evaluation)
+                == Some(orbital_core_base::language::registry::OperatorEvaluation::Form)
+        })
+        .collect();
+    // The control forms lower to blocks; the six after them evaluate their own operands and have no step form.
+    assert_eq!(
+        forms,
+        [
+            "and", "or", "default", "if", "do", "when", "let", "fn", "unquote",
+            "behavior/compose", "behavior/wire", "behavior/detect-layout", "behavior/pipe", "prob/infer", "prob/posterior",
+        ]
+    );
 }
 
 #[test]

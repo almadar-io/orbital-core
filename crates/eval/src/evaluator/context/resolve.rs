@@ -235,6 +235,26 @@ impl BindingContext {
         }
     }
 
+    /// An effect's data resolved: as [`Self::resolve_value`], except that a whole-string binding that holds no value
+    /// is null wherever it is written (EXEC-EVAL-9), never left out of its record and never kept as its own text. A
+    /// `@trait.X` frame stays. A render pattern is not data: it goes through [`Self::resolve_value`].
+    pub fn resolve_data<'v>(&self, value: &'v Value) -> std::borrow::Cow<'v, Value> {
+        self.resolve_value_guarded(value, &mut Walk { data: true, ..Walk::default() })
+    }
+
+    /// [`Self::resolve_data`] with [`Self::resolve_value_checked`]'s report of a failed embedded call.
+    pub fn resolve_data_checked<'v>(
+        &self,
+        value: &'v Value,
+    ) -> Result<std::borrow::Cow<'v, Value>, EvalError> {
+        let mut walk = Walk { data: true, ..Walk::default() };
+        let resolved = self.resolve_value_guarded(value, &mut walk);
+        match walk.fault {
+            Some(fault) => Err(fault),
+            None => Ok(resolved),
+        }
+    }
+
     /// Resolve only `@config.*` leaves inside a render-time lambda body, mirror
     /// of the JS runtime's `resolveConfigLeavesInLambdaBody`
     /// (`packages/almadar-runtime/src/BindingResolver.ts` ~232-266). A lambda
@@ -308,7 +328,7 @@ impl BindingContext {
                             Some(resolved) => Cow::Owned(resolved),
                             // A held root missing only the path reads null, as an expression does; a root the kernel
                             // has not populated keeps its token.
-                            None if self.root_is_held(s) => Cow::Owned(Value::Null),
+                            None if walk.data || self.root_is_held(s) => Cow::Owned(Value::Null),
                             None => Cow::Borrowed(value),
                         };
                     }
@@ -343,6 +363,7 @@ impl BindingContext {
                             }
                             other => Cow::Owned(other),
                         },
+                        None if walk.data && s.starts_with("@config.") => Cow::Owned(Value::Null),
                         None => Cow::Borrowed(value),
                     }
                 } else if s.contains('@') {
@@ -362,7 +383,7 @@ impl BindingContext {
             Value::Object(map) => {
                 let mut resolved_map: Option<ValueMap> = None;
                 for (key, val) in map {
-                    if self.is_unset_config_binding(val) {
+                    if !walk.data && self.is_unset_config_binding(val) {
                         resolved_map
                             .get_or_insert_with(|| map.clone().into_inner())
                             .shift_remove(key);
@@ -427,7 +448,7 @@ impl BindingContext {
                 }
                 let mut resolved_arr: Option<Vec<Value>> = None;
                 for (i, val) in arr.iter().enumerate() {
-                    if self.is_unset_config_binding(val) {
+                    if !walk.data && self.is_unset_config_binding(val) {
                         resolved_arr.get_or_insert_with(|| arr.clone().into_inner())[i] = Value::Null;
                         continue;
                     }
@@ -444,10 +465,10 @@ impl BindingContext {
         }
     }
 
-    /// A whole-string binding that holds no value, which an object leaves out as the JS runtime's `undefined`:
+    /// A whole-string binding that holds no value, which a render pattern leaves out as an absent prop:
     /// an `@config.<knob>` that is unset (declared without a default, or never declared) or forwards to an
-    /// unset `@callsitePayload.<path>`, an `@callsitePayload.<path>` of a trait not yet composed, an
-    /// `@event.<path>` the delivery in flight does not carry, and (when `drop_unset`) any other.
+    /// unset `@callsitePayload.<path>`, an `@callsitePayload.<path>` of a trait not yet composed, and an
+    /// `@event.<path>` the delivery in flight does not carry. In an effect's data it is null ([`Self::resolve_data`]).
     pub fn is_unset_config_binding(&self, value: &Value) -> bool {
         let Value::String(s) = value else {
             return false;
@@ -457,8 +478,7 @@ impl BindingContext {
         }
         let rooted = s.starts_with("@config.")
             || s.starts_with("@callsitePayload.")
-            || (s.starts_with("@event.") && matches!(&*self.event, Value::Object(_)))
-            || (self.drop_unset && s.starts_with('@') && !s.starts_with("@trait."));
+            || (s.starts_with("@event.") && matches!(&*self.event, Value::Object(_)));
         rooted && self.resolves_to_nothing(s)
     }
 
@@ -480,22 +500,5 @@ impl BindingContext {
             }
         }
         false
-    }
-
-    /// [`Self::resolve_value`] for a value no later layer resolves (an `emit` payload, read only by the
-    /// listeners it reaches): a whole-string binding with no value is an absent prop, as `undefined` is
-    /// in the JS runtime. A client-resolved `@trait.*` token stays.
-    pub fn resolve_dropping_unset(&self, value: &Value) -> Value {
-        let mut ctx = self.clone();
-        ctx.drop_unset = true;
-        ctx.resolve_value(value).into_owned()
-    }
-
-    /// [`Self::resolve_dropping_unset`] with [`Self::resolve_value_checked`]'s typed-mismatch report.
-    pub fn resolve_dropping_unset_checked(&self, value: &Value) -> Result<Value, EvalError> {
-        let mut ctx = self.clone();
-        ctx.drop_unset = true;
-        ctx.resolve_value_checked(value)
-            .map(std::borrow::Cow::into_owned)
     }
 }

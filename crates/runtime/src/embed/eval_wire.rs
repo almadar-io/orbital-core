@@ -45,9 +45,6 @@ pub struct EvalContextWire {
     /// Local bindings (`@name`), as a `let` would bind them.
     #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonObject", optional))]
     pub locals: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Entity rows by type, for `count` queries over a store.
-    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: Array<JsonValue> }", optional))]
-    pub entity_stores: Option<HashMap<String, Vec<Value>>>,
 }
 
 impl EvalContextWire {
@@ -87,9 +84,6 @@ impl EvalContextWire {
             let value = from_json_value::<Value>(&value)
                 .map_err(|e| format!("local `{name}`: {e}"))?;
             builder = builder.local(&name, value);
-        }
-        for (entity_type, rows) in self.entity_stores.unwrap_or_default() {
-            builder = builder.entity_store(&entity_type, rows);
         }
         let mut ctx = builder.build();
         if let Some(callsite) = self.callsite_payload {
