@@ -61,6 +61,8 @@ pub enum Op {
     SiteCall { operator: String, operands: Vec<SiteOperand> },
     /// An effect, with the values of its child expressions in the effect's own order.
     Effect { effect: Box<OirEffect>, operands: Vec<Arg> },
+    /// An effect the operator table declares and the lowering leaves as a call: its head and its operand values.
+    HostEffect { head: String, operands: Vec<Arg> },
     List { items: Vec<Arg> },
     Record { fields: Vec<(String, Arg)> },
     /// A lifted lambda (a function of this module) closed over the values it captures.
@@ -79,7 +81,7 @@ pub enum SiteOperand {
 
 impl Op {
     pub fn raises(&self) -> bool {
-        matches!(self, Op::Truth { .. } | Op::Call { .. } | Op::SiteCall { .. } | Op::Effect { .. })
+        matches!(self, Op::Truth { .. } | Op::Call { .. } | Op::SiteCall { .. } | Op::Effect { .. } | Op::HostEffect { .. })
     }
 }
 
@@ -219,6 +221,11 @@ impl fmt::Display for Inst {
             }
             Op::Effect { effect, operands } => {
                 write!(f, "effect {}(", effect.kind())?;
+                args(f, operands)?;
+                f.write_str(")")?;
+            }
+            Op::HostEffect { head, operands } => {
+                write!(f, "host-effect {head}(")?;
                 args(f, operands)?;
                 f.write_str(")")?;
             }

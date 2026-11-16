@@ -5,7 +5,7 @@
 use orbital_core_base::error::OrbitalError;
 use orbital_core_base::ir::expr::OirBinding;
 use orbital_core_base::ir::layout::PathStep;
-use orbital_core_base::ir::step::lower::{CallMode, RootLayouts};
+use orbital_core_base::ir::step::lower::{CallHead, CallMode, RootLayouts};
 use orbital_core_base::ir::step::{lower_step, Arg, Op, SiteOperand, StepModule, StepRefusal, Terminator, ValueId};
 use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::language::registry::operators;
@@ -23,7 +23,11 @@ pub fn step_of(expr: &SExpression) -> Result<StepModule, String> {
     let lowered = lower_sexpr(expr).map_err(|error| format!("lowering: {error}"))?;
     let mode = |name: &str| {
         let operator = operators().get(name)?;
-        Some(CallMode { evaluation: operator.evaluation?, lazy: operator.lazy_operands.clone() })
+        match operator.evaluation {
+            Some(evaluation) => Some(CallHead::Operator(CallMode { evaluation, lazy: operator.lazy_operands.clone() })),
+            None if operator.has_side_effects => Some(CallHead::Effect),
+            None => None,
+        }
     };
     lower_step(&lowered, &RootLayouts::default(), &mode).map_err(|refusal| refusal_name(&refusal))
 }
@@ -163,6 +167,7 @@ impl Machine<'_> {
                         Value::object(record)
                     }
                     Op::Effect { effect, .. } => return Err(Stop::NotRun(format!("effect {}", effect.kind()))),
+                    Op::HostEffect { head, .. } => return Err(Stop::NotRun(format!("effect {head}"))),
                     Op::Closure { .. } => return Err(Stop::NotRun("closure value".to_string())),
                 };
                 values.insert(inst.result, value);
@@ -322,6 +327,109 @@ fn what_cannot_be_called_on_values_is_refused_by_name() {
         let expr: SExpression = from_json_value(&source).expect("an expression");
         step_of(&expr).expect_err("refused")
     };
-    assert_eq!(refused(serde_json::json!(["tree/fold", "@payload.o", {}, "a", "b"])), "form operator: tree/fold");
-    assert_eq!(refused(serde_json::json!(["quote", ["+", 1, 2]])), "quoted code: quote");
+    assert_eq!(refused(serde_json::json!(["validate/check", "@payload.o", "@payload.rules"])), "form operator: validate/check");
+}
+
+#[test]
+fn quoted_data_and_a_template_with_live_holes_agree_with_the_evaluator() {
+    let payload = serde_json::json!({ "v": 7, "text": "ada" });
+    agree(serde_json::json!(["quote", "[\"emit\",\"A\"]"]), payload.clone());
+    agree(serde_json::json!(["quote", "{"]), payload.clone());
+    agree(serde_json::json!(["quasiquote", "[\"set\",\"x\",[\"unquote\",0]]", ["+", "@payload.v", 1]]), payload.clone());
+    agree(serde_json::json!(["quasiquote", "[\"unquote\",0]"]), payload.clone());
+    agree(serde_json::json!(["quasiquote", "[\"unquote\",0]", ["+", "@payload.text", 1]]), payload);
+}
+
+#[test]
+fn callbacks_that_bind_their_own_parameters_agree_with_the_evaluator() {
+    let payload = serde_json::json!({
+        "xs": [1, 2, 3, 4, 5], "n": 2, "text": "ada",
+        "rows": [{ "stage": "a", "v": 1 }, { "stage": "b", "v": 2 }, { "stage": "a", "v": 3 }],
+        "o": { "a": 1, "b": 0, "c": 5 }
+    });
+    for source in [
+        serde_json::json!(["array/count", "@payload.xs"]),
+        serde_json::json!(["array/count", "@payload.xs", ["fn", "x", [">", "@x", "@payload.n"]]]),
+        serde_json::json!(["array/count", "@payload.text", ["fn", "x", true]]),
+        serde_json::json!(["array/groupBy", "@payload.rows", "stage"]),
+        serde_json::json!(["array/groupBy", "@payload.rows", "missing"]),
+        serde_json::json!(["array/groupBy", "@payload.xs", ["fn", "x", ["str/concat", "k", ["%", "@x", 2]]]]),
+        serde_json::json!(["array/groupBy", "@payload.xs", ["fn", "x", "@x"]]),
+        serde_json::json!(["array/reject", "@payload.xs", ["fn", ["x", "i"], [">", "@x", "@i"]]]),
+        serde_json::json!(["array/reject", "@payload.xs", ["fn", "x", [">", "@x", "@payload.n"]]]),
+        serde_json::json!(["array/partition", "@payload.xs", ["fn", "x", [">", "@x", "@payload.n"]]]),
+        serde_json::json!(["array/partition", "@payload.xs", ["fn", "x", "@x"]]),
+        serde_json::json!(["array/pmap", "@payload.xs", ["fn", "x", ["*", "@x", "@payload.n"]]]),
+        serde_json::json!(["array/pmap", "@payload.xs", ["fn", "x", ["+", "@x", "@payload.text"]]]),
+        serde_json::json!(["array/preduce", "@payload.xs", 10, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]),
+        serde_json::json!(["array/preduce", [], 10, ["fn", ["acc", "x"], ["+", "@acc", "@x"]]]),
+        serde_json::json!(["object/mapValues", "@payload.o", ["fn", "v", ["*", "@v", 100]]]),
+        serde_json::json!(["object/mapValues", "@payload.o", ["fn", ["v", "k"], ["str/concat", "@k", "@v"]]]),
+        serde_json::json!(["object/mapValues", "@payload.xs", ["fn", "v", "@v"]]),
+        serde_json::json!(["object/filter", "@payload.o", ["fn", ["k", "v"], [">", "@v", 0]]]),
+        serde_json::json!(["object/mapKeys", "@payload.o", ["fn", "k", ["str/upper", "@k"]]]),
+        serde_json::json!(["object/mapKeys", "@payload.o", ["fn", "k", 1]]),
+    ] {
+        agree(source, payload.clone());
+    }
+}
+
+#[test]
+fn a_fold_over_a_declared_shape_agrees_with_the_evaluator() {
+    let declaration = serde_json::json!({"name":"Value","type":"union","values":["string","array"],"properties":{
+        "string":{"type":"string"},
+        "array":{"type":"array","items":{"type":"union","values":["Value"]}}
+    }})
+    .to_string();
+    let step = serde_json::json!(["fn", ["n", "k"], ["if", ["validate/array", "@n"], ["array/flatten", "@k"], ["list", "@n"]]]);
+    let payload = serde_json::json!({ "tree": ["a", ["b", ["c"]]], "n": 3 });
+    agree(serde_json::json!(["tree/fold", "@payload.tree", step, "Value", declaration]), payload.clone());
+    agree(serde_json::json!(["tree/fold", "@payload.n", step, "Value", declaration]), payload.clone());
+    agree(serde_json::json!(["tree/fold", null, step, "Value", declaration]), payload.clone());
+    agree(serde_json::json!(["tree/fold", "@payload.tree", step, "Value", "{"]), payload);
+}
+
+#[test]
+fn an_operand_drawn_many_times_and_the_text_readers_agree_with_the_evaluator() {
+    let payload = serde_json::json!({ "n": 3, "xml": "<a id=\"1\"><b>x</b></a>", "yaml": "a: 1\n", "text": "ada" });
+    agree(serde_json::json!(["prob/sample", "@payload.n", ["+", "@payload.n", 1]]), payload.clone());
+    agree(serde_json::json!(["prob/sample", 0, ["+", "@payload.text", 1]]), payload.clone());
+    agree(serde_json::json!(["prob/sample", 2, ["+", "@payload.text", 1]]), payload.clone());
+    agree(serde_json::json!(["xml/parse", "@payload.xml", "Row"]), payload.clone());
+    agree(serde_json::json!(["xml/parse", "@payload.xml", "Row", ["list", ["list", "b"]]]), payload.clone());
+    agree(serde_json::json!(["xml/parse", "@payload.text", "Row"]), payload.clone());
+    agree(serde_json::json!(["yaml/parse", "@payload.yaml", "number"]), payload.clone());
+    agree(serde_json::json!(["yaml/parse", "@payload.n", "number"]), payload);
+}
+
+#[test]
+fn a_credential_operator_reads_its_operands_as_values() {
+    let payload = serde_json::json!({ "slot": "missing", "text": "ada", "n": 3 });
+    agree(serde_json::json!(["credential/byte-length", "@payload.slot"]), payload.clone());
+    agree(serde_json::json!(["credential/byte-length", "@payload.slot", "nope"]), payload.clone());
+    agree(serde_json::json!(["hash/md5-credential", "@payload.slot", "@payload.text", "hex"]), payload.clone());
+    agree(serde_json::json!(["hmac/sha", 256, "credential", "@payload.slot", "@payload.text", "hex"]), payload.clone());
+    agree(serde_json::json!(["hmac/sha", 256, "bytes", "YQ==", "@payload.text", "hex"]), payload.clone());
+    agree(serde_json::json!(["hmac/sha", 256, "other", "YQ==", "@payload.text", "hex"]), payload.clone());
+    agree(serde_json::json!(["ecdsa/p256-sign", "@payload.slot", "@payload.text"]), payload.clone());
+    agree(serde_json::json!(["ed25519/sign", "@payload.slot", "@payload.n"]), payload);
+}
+
+#[test]
+fn a_table_effect_left_as_a_call_lowers_and_is_not_run_here() {
+    preflight().expect("the installed language data must load");
+    let expr: SExpression =
+        from_json_value(&serde_json::json!(["theme/set", "@payload.k", { "emit": { "success": "A", "failure": "B" } }])).expect("an expression");
+    let module = step_of(&expr).expect("lowers");
+    assert!(module.to_string().contains("host-effect theme/set("), "{module}");
+    let ctx = BindingContextBuilder::new().build();
+    assert_eq!(run(&module, &ctx), Err("effect theme/set".to_string()));
+}
+
+#[test]
+fn control_a_head_the_table_does_not_know_is_a_list_not_an_effect() {
+    preflight().expect("the installed language data must load");
+    let expr: SExpression = from_json_value(&serde_json::json!(["not/an-operator", 1])).expect("an expression");
+    let module = step_of(&expr).expect("lowers");
+    assert!(!module.to_string().contains("host-effect"), "{module}");
 }

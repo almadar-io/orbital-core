@@ -5,7 +5,7 @@ use std::prelude::v1::*;
 use super::macros::*;
 use super::util::deep_equals;
 use super::*;
-use orbital_core_base::value::{value_map_with_capacity, ValueMap};
+use orbital_core_base::value::{value_map_with_capacity, Shared, ValueMap};
 
 /// path - Build a dot-separated path string from segments
 /// Used with set effect for dynamic field paths
@@ -346,6 +346,17 @@ impl OwningOperator for ObjectOmitOp {
     }
 }
 
+/// The record an operand holds, owned; any other kind is a type mismatch.
+fn record_of(obj: Value) -> Result<Shared<ValueMap>, OrbitalError> {
+    match obj {
+        Value::Object(o) => Ok(o),
+        _ => Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: "object".to_string(),
+            actual: obj.type_name().to_string(),
+        })),
+    }
+}
+
 /// object/mapValues - Transform all values
 pub struct ObjectMapValuesOp;
 impl Operator for ObjectMapValuesOp {
@@ -354,35 +365,29 @@ impl Operator for ObjectMapValuesOp {
 
         let obj = eval_expr(&args[0], ctx)?;
         let mapper = eval_expr(&args[1], ctx)?;
-
-        let source = match obj {
-            Value::Object(o) => o,
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "object".to_string(),
-                    actual: obj.type_name().to_string(),
-                }))
-            }
-        };
-
-        // Handle lambda mapper
-        let (params, body) = require_lambda!(mapper);
-
-        let mut result = value_map_with_capacity(source.len());
-        for (key, value) in source {
-            let mut child_ctx = ctx.child();
-            if !params.is_empty() {
-                child_ctx.set_local(&params[0], value);
-            }
-            if params.len() > 1 {
-                child_ctx.set_local(&params[1], Value::string(key.clone()));
-            }
-            let new_value = eval_expr(&body, &child_ctx)?;
-            result.insert(key, new_value);
-        }
-
-        Ok(Value::object(result))
+        let source = record_of(obj)?;
+        let mapped = super::array::bound_lambda(&mapper, ctx)?;
+        values_mapped(source, mapped)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "mapValues", 2);
+        Some(record_of(std::mem::take(&mut args[0])).and_then(|source| values_mapped(source, |values| site.invoke(1, values))))
+    }
+}
+
+/// `source` with each value replaced by what `mapped` answers for `(value, key)`.
+fn values_mapped(source: Shared<ValueMap>, mut mapped: impl FnMut(Vec<Value>) -> EvalResult) -> EvalResult {
+    let mut result = value_map_with_capacity(source.len());
+    for (key, value) in source {
+        let new_value = mapped(vec![value, Value::string(key.clone())])?;
+        result.insert(key, new_value);
+    }
+    Ok(Value::object(result))
 }
 
 /// object/filter - Filter by predicate
@@ -392,29 +397,33 @@ impl Operator for ObjectFilterOp {
         require_arity!(args, "object/filter", >= 2);
 
         let obj = eval_expr(&args[0], ctx)?;
-
-        let source = match obj {
-            Value::Object(o) => o,
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "object".to_string(),
-                    actual: obj.type_name().to_string(),
-                }))
-            }
-        };
-
-        let mut result = ValueMap::default();
-        let callback = super::array::Callback::of(&args[1], ctx)?;
-        for (key, value) in source {
-            let should_include =
-                callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
-            if should_include.boolean()? {
-                result.insert(key, value);
-            }
-        }
-
-        Ok(Value::object(result))
+        let source = record_of(obj)?;
+        entries_kept(source, &super::array::Callback::of(&args[1], ctx)?, ctx)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "object/filter", 2);
+        Some(
+            record_of(std::mem::take(&mut args[0]))
+                .and_then(|source| entries_kept(source, &super::array::Callback::Site { site, index: 1 }, ctx)),
+        )
+    }
+}
+
+/// The entries of `source` the callback accepts, given `(key, value)`.
+fn entries_kept(source: Shared<ValueMap>, callback: &super::array::Callback, ctx: &BindingContext) -> EvalResult {
+    let mut result = ValueMap::default();
+    for (key, value) in source {
+        let should_include = callback.apply(vec![Value::string(key.clone()), value.clone()], ctx)?;
+        if should_include.boolean()? {
+            result.insert(key, value);
+        }
+    }
+    Ok(Value::object(result))
 }
 
 // ============================================================================
@@ -429,34 +438,29 @@ impl Operator for ObjectMapKeysOp {
 
         let obj = eval_expr(&args[0], ctx)?;
         let mapper = eval_expr(&args[1], ctx)?;
-
-        let source = match obj {
-            Value::Object(o) => o,
-            _ => {
-                return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "object".to_string(),
-                    actual: obj.type_name().to_string(),
-                }))
-            }
-        };
-
-        let (params, body) = require_lambda!(mapper);
-
-        let mut result = value_map_with_capacity(source.len());
-        for (key, value) in source {
-            let mut child_ctx = ctx.child();
-            if !params.is_empty() {
-                child_ctx.set_local(&params[0], Value::string(key));
-            }
-            if params.len() > 1 {
-                child_ctx.set_local(&params[1], value.clone());
-            }
-            let new_key = eval_expr(&body, &child_ctx)?.text()?.to_string();
-            result.insert(new_key.into(), value);
-        }
-
-        Ok(Value::object(result))
+        let source = record_of(obj)?;
+        let mapped = super::array::bound_lambda(&mapper, ctx)?;
+        keys_mapped(source, mapped)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "mapKeys", 2);
+        Some(record_of(std::mem::take(&mut args[0])).and_then(|source| keys_mapped(source, |values| site.invoke(1, values))))
+    }
+}
+
+/// `source` with each key replaced by the text `mapped` answers for `(key, value)`.
+fn keys_mapped(source: Shared<ValueMap>, mut mapped: impl FnMut(Vec<Value>) -> EvalResult) -> EvalResult {
+    let mut result = value_map_with_capacity(source.len());
+    for (key, value) in source {
+        let new_key = mapped(vec![Value::string(key), value.clone()])?.text()?.to_string();
+        result.insert(new_key.into(), value);
+    }
+    Ok(Value::object(result))
 }
 
 /// object/equals - Deep equality check

@@ -351,7 +351,7 @@ pub fn bake_list_shapes(schema: &mut OrbitalSchema) -> Result<(), serde_json::Er
             object.remove("types");
         }
         if bake_value(&mut tree, &types) {
-            let mut baked: Orbital = serde_json::from_value(tree)?;
+            let mut baked: Orbital = orbital_core_base::json_value::from_json_value(&tree)?;
             baked.types = Some(types);
             *orbital = baked;
         }
@@ -386,13 +386,34 @@ impl Operator for XmlParseOp {
             None => Vec::new(),
         };
         super::json::shape_operand(&args[1])?;
-        let input = eval_expr(&args[0], ctx)?;
-        let Ok(mut value) = parse_xml(input.text()?) else {
-            return Ok(Value::Null);
-        };
-        apply_list_paths(&mut value, &paths);
-        Ok(value)
+        parsed_with_lists(&eval_expr(&args[0], ctx)?, &paths)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "xml/parse", 2);
+        let paths = match args.get_mut(2).map(std::mem::take) {
+            Some(listed) => list_paths_of(listed),
+            None => Ok(Vec::new()),
+        };
+        let shape = super::json::written_shape(args, site, 1);
+        Some(paths.and_then(|paths| {
+            super::json::shape_operand(&shape)?;
+            parsed_with_lists(&args[0], &paths)
+        }))
+    }
+}
+
+/// The value XML text decodes to, with each of `paths` read as a list; null when the text is not XML.
+fn parsed_with_lists(input: &Value, paths: &[Vec<String>]) -> EvalResult {
+    let Ok(mut value) = parse_xml(input.text()?) else {
+        return Ok(Value::Null);
+    };
+    apply_list_paths(&mut value, paths);
+    Ok(value)
 }
 
 #[cfg(test)]
@@ -426,7 +447,7 @@ mod tests {
     fn field(name: &str, ty: &str, properties: Option<Vec<PayloadField>>) -> PayloadField {
         PayloadField {
             properties: properties.map(Into::into),
-            ..serde_json::from_value(serde_json::json!({ "name": name, "type": ty })).unwrap()
+            ..orbital_core_base::json_value::from_json_value(&serde_json::json!({ "name": name, "type": ty })).unwrap()
         }
     }
 
@@ -501,7 +522,7 @@ mod tests {
     }
 
     fn schema_with(call: serde_json::Value, types: serde_json::Value) -> OrbitalSchema {
-        serde_json::from_value(serde_json::json!({
+        orbital_core_base::json_value::from_json_value(&serde_json::json!({
             "name": "app",
             "orbitals": [{
                 "name": "O",
@@ -575,7 +596,7 @@ mod tests {
     #[test]
     fn a_null_input_or_shape_is_a_type_mismatch_and_text_parses() {
         let run = |form: serde_json::Value| {
-            let expr: SExpression = serde_json::from_value(form).unwrap();
+            let expr: SExpression = orbital_core_base::json_value::from_json_value(&form).unwrap();
             eval_expr(&expr, &BindingContext::default())
         };
         assert!(run(serde_json::json!(["xml/parse", null, "Shape"])).is_err());

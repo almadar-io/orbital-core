@@ -111,21 +111,20 @@ impl Pcm {
 }
 
 fn load(
-    args: &[SExpression],
+    args: &[&Value],
     ctx: &BindingContext,
     op: &str,
     power_of_two: bool,
 ) -> Result<(Pcm, Framing, Vec<usize>), OrbitalError> {
-    let borrow = match eval_expr(&args[0], ctx)? {
+    let borrow = match args[0] {
         handle @ Value::Sealed(_) => handle,
         other => return Err(other.kind_error("Borrow").into()),
     };
-    let spec = eval_expr(&args[1], ctx)?;
-    let framing = framing(&spec, op, power_of_two)?;
+    let framing = framing(args[1], op, power_of_two)?;
     let memory = ctx.kernel_mem(op)?;
-    let length = memory.length(&borrow).map_err(OrbitalError::Eval)?;
+    let length = memory.length(borrow).map_err(OrbitalError::Eval)?;
     let data = memory
-        .read(&borrow, 0, length)
+        .read(borrow, 0, length)
         .map_err(OrbitalError::Eval)?;
     if data.len() % (4 * framing.channels) != 0 {
         return Err(invalid(op, "the block is not a whole number of f32 frames"));
@@ -212,13 +211,12 @@ fn fft(re: &mut [f64], im: &mut [f64]) {
 
 /// signal/frames (borrow, spec) - one row per analysis frame of the PCM block, one mean FFT magnitude per band
 pub struct SignalFramesOp;
-impl Operator for SignalFramesOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for SignalFramesOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "signal/frames";
         require_arity!(args, OP, == 2);
-        let spec = eval_expr(&args[1], ctx)?;
-        let rate = sample_rate_of(&spec, OP)?;
-        let bands = bands_of(&spec, OP)?;
+        let rate = sample_rate_of(args[1], OP)?;
+        let bands = bands_of(args[1], OP)?;
         let (pcm, framing, frames) = load(args, ctx, OP, true)?;
         let window = framing.window;
         let hann: Vec<f64> = (0..window)
@@ -263,8 +261,8 @@ impl Operator for SignalFramesOp {
 
 /// signal/envelope (borrow, spec) - the RMS of each analysis frame of the PCM block
 pub struct SignalEnvelopeOp;
-impl Operator for SignalEnvelopeOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for SignalEnvelopeOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "signal/envelope";
         require_arity!(args, OP, == 2);
         let (pcm, framing, frames) = load(args, ctx, OP, false)?;

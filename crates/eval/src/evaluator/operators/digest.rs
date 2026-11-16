@@ -29,9 +29,6 @@ fn digest_or_null(bytes: &[u8], encoding: &str) -> EvalResult {
     Ok(encode_digest(bytes, encoding).map_or(Value::Null, Value::string))
 }
 
-fn string_arg(arg: &SExpression, ctx: &BindingContext) -> Result<String, OrbitalError> {
-    string_of(&eval_expr(arg, ctx)?)
-}
 
 fn string_of(value: &Value) -> Result<String, OrbitalError> {
     Ok(value.text().map(str::to_string)?)
@@ -200,12 +197,12 @@ impl StrictOperator for HashPbkdf2Op {
 /// `suffix`, as lower-case hex or standard base64: the first step of the Postgres md5 login, whose password never
 /// becomes a program value. The credential is a slot as in hash/pbkdf2. Null when it is not held.
 pub struct HashMd5CredentialOp;
-impl Operator for HashMd5CredentialOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for HashMd5CredentialOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "hash/md5-credential", == 3);
-        let suffix = string_arg(&args[1], ctx)?;
-        let encoding = string_arg(&args[2], ctx)?;
-        let Some(value) = credential_value(&args[0], ctx)? else {
+        let suffix = string_of(args[1])?;
+        let encoding = string_of(args[2])?;
+        let Some(value) = credential_of(args[0], ctx)? else {
             return Ok(Value::Null);
         };
         let mut data = value.as_bytes().to_vec();
@@ -218,8 +215,8 @@ impl Operator for HashMd5CredentialOp {
 /// `encode` (base64, uri or form) when one is given, so a program can frame a wire message around a segment the host
 /// fills in. The credential is a slot as in hash/pbkdf2. Null when it is not held.
 pub struct CredentialByteLengthOp;
-impl Operator for CredentialByteLengthOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for CredentialByteLengthOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "credential/byte-length", 1);
         if args.len() > 2 {
             return Err(OrbitalError::Eval(EvalError::ArityMismatch {
@@ -231,7 +228,7 @@ impl Operator for CredentialByteLengthOp {
         let encode = match args.get(1) {
             None => None,
             Some(arg) => {
-                let name = string_arg(arg, ctx)?;
+                let name = string_of(arg)?;
                 Some(SegmentEncode::from_name(&name).ok_or_else(|| {
                     OrbitalError::Eval(EvalError::InvalidArgument(format!(
                         "credential/byte-length: encode must be one of {}",
@@ -240,7 +237,7 @@ impl Operator for CredentialByteLengthOp {
                 })?)
             }
         };
-        Ok(credential_value(&args[0], ctx)?.map_or(Value::Null, |value| {
+        Ok(credential_of(args[0], ctx)?.map_or(Value::Null, |value| {
             let length = encode.map_or(value.len(), |encode| encode.apply(value).len());
             super::util::int_of(length)
         }))
@@ -248,10 +245,6 @@ impl Operator for CredentialByteLengthOp {
 }
 
 /// The bytes a bytes operand holds, or `None` when base64 text is not canonical; any other kind is a type mismatch.
-fn bytes_in(arg: &SExpression, ctx: &BindingContext) -> Result<Option<Vec<u8>>, OrbitalError> {
-    bytes_of(&eval_expr(arg, ctx)?)
-}
-
 fn bytes_of(value: &Value) -> Result<Option<Vec<u8>>, OrbitalError> {
     match value {
         Value::Bytes(b) => Ok(Some(b.to_vec())),
@@ -540,10 +533,6 @@ impl StrictOperator for BrotliDecompressOp {
 }
 
 /// The value of the credential an operator operand names, held in the evaluation by the kernel; `None` when it holds none.
-fn credential_value<'a>(arg: &SExpression, ctx: &'a BindingContext) -> Result<Option<&'a str>, OrbitalError> {
-    credential_of(&eval_expr(arg, ctx)?, ctx)
-}
-
 fn credential_of<'a>(value: &Value, ctx: &'a BindingContext) -> Result<Option<&'a str>, OrbitalError> {
     let name = string_of(value)?;
     Ok(ctx.secret(&name))
@@ -570,27 +559,27 @@ fn require_at_most<T>(args: &[T], op: &str, max: usize) -> Result<(), OrbitalErr
 /// up as a credential, and a `prefix` is an error. `input` "text" (default) signs the UTF-8 of the message, "bytes" decodes it
 /// as standard padded base64 first (the hash/sha reading). A non-canonical base64 key or message, or an unknown `input`, answers null.
 pub struct HmacShaOp;
-impl Operator for HmacShaOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for HmacShaOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         const OP: &str = "hmac/sha";
         require_arity!(args, OP, >= 5);
         require_at_most(args, OP, 7)?;
-        let bits = eval_expr(&args[0], ctx)?.number().map_err(OrbitalError::Eval)?;
-        let key_form = string_arg(&args[1], ctx)?;
-        let message = eval_expr(&args[3], ctx)?;
-        let encoding = string_arg(&args[4], ctx)?;
+        let bits = args[0].number().map_err(OrbitalError::Eval)?;
+        let key_form = string_of(args[1])?;
+        let message = args[3].clone();
+        let encoding = string_of(args[4])?;
         // A null input holds its place before `prefix` and reads as the default (Signature::rejects_null).
-        let input = match args.get(5).map(|arg| eval_expr(arg, ctx)).transpose()? {
+        let input = match args.get(5).copied() {
             None | Some(Value::Null) => "text".to_string(),
             Some(Value::String(text)) => text.to_string(),
             Some(_) => return Err(OrbitalError::Eval(EvalError::InvalidArgument("hmac/sha: input is \"text\" or \"bytes\"".into()))),
         };
         let prefix = match args.get(6) {
-            Some(arg) => Some(string_arg(arg, ctx)?),
+            Some(arg) => Some(string_of(arg)?),
             None => None,
         };
         let key = match key_form.as_str() {
-            "credential" => credential_value(&args[2], ctx)?.map(|value| {
+            "credential" => credential_of(args[2], ctx)?.map(|value| {
                 let mut keyed = prefix.unwrap_or_default().into_bytes();
                 keyed.extend_from_slice(value.as_bytes());
                 keyed
@@ -601,7 +590,7 @@ impl Operator for HmacShaOp {
                         "{OP}: a prefix joins a credential value, the \"bytes\" key form takes none"
                     ))));
                 }
-                bytes_in(&args[2], ctx)?
+                bytes_of(args[2])?
             }
             other => {
                 return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
@@ -631,11 +620,11 @@ impl Operator for HmacShaOp {
 /// ecdsa/p256-sign (credential, message) - ECDSA P-256 / SHA-256, RFC 6979 deterministic, 64 raw r||s bytes. The key is a
 /// credential slot holding a PKCS#8 PEM private key. Null when the credential is not held or is not such a key.
 pub struct EcdsaP256SignOp;
-impl Operator for EcdsaP256SignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EcdsaP256SignOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ecdsa/p256-sign", == 2);
-        let message = string_arg(&args[1], ctx)?;
-        let Some(pem) = credential_value(&args[0], ctx)? else {
+        let message = string_of(args[1])?;
+        let Some(pem) = credential_of(args[0], ctx)? else {
             return Ok(Value::Null);
         };
         Ok(codec::ecdsa_p256_sha256_sign(pem, message.as_bytes())
@@ -665,11 +654,11 @@ impl StrictOperator for RsaSignOp {
 /// ecdsa/p384-sign (credential, message) - ECDSA P-384 / SHA-384, RFC 6979 deterministic, 96 raw r||s bytes. The key is a
 /// credential slot holding a PKCS#8 PEM private key. Null when the credential is not held or is not such a key.
 pub struct EcdsaP384SignOp;
-impl Operator for EcdsaP384SignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for EcdsaP384SignOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ecdsa/p384-sign", == 2);
-        let message = string_arg(&args[1], ctx)?;
-        let Some(pem) = credential_value(&args[0], ctx)? else {
+        let message = string_of(args[1])?;
+        let Some(pem) = credential_of(args[0], ctx)? else {
             return Ok(Value::Null);
         };
         Ok(codec::ecdsa_p384_sha384_sign(pem, message.as_bytes())
@@ -680,11 +669,11 @@ impl Operator for EcdsaP384SignOp {
 /// ed25519/sign (credential, message) - Ed25519 (RFC 8032), deterministic, 64 bytes. The key is a credential slot holding the
 /// 32-byte seed as standard padded base64. Null when the credential is not held or is not such a seed.
 pub struct Ed25519SignOp;
-impl Operator for Ed25519SignOp {
-    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+impl StrictOperator for Ed25519SignOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "ed25519/sign", == 2);
-        let message = string_arg(&args[1], ctx)?;
-        let Some(held) = credential_value(&args[0], ctx)? else {
+        let message = string_of(args[1])?;
+        let Some(held) = credential_of(args[0], ctx)? else {
             return Ok(Value::Null);
         };
         let seed = codec::base64_decode(held).ok().and_then(|bytes| <[u8; 32]>::try_from(bytes).ok());

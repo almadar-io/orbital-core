@@ -15,7 +15,7 @@ use crate::language::registry::OperatorEvaluation;
 /// Why an expression has no step form yet.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum StepRefusal {
-    /// Code held as data (`quote`, `quasiquote`, `unquote`): the lowering does not keep the quoted form as written.
+    /// A form that only has meaning inside another (`unquote` outside a template, `fn` as a call head).
     Quoted(String),
     /// An operator that evaluates its own operands and has no entry over values.
     FormOperator(String),
@@ -33,6 +33,15 @@ pub struct CallMode {
     pub evaluation: OperatorEvaluation,
     /// The operands a `site` operator evaluates on demand, by position.
     pub lazy: Vec<u32>,
+}
+
+/// What the operator table says a call head is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallHead {
+    /// An evaluator operator, with how it takes its operands.
+    Operator(CallMode),
+    /// An effect the kernel runs by name on its operand values.
+    Effect,
 }
 
 /// The representations of the roots an expression may read; a root not given is a dynamic value.
@@ -125,7 +134,7 @@ impl Builder {
 /// The uses in `op` that hand a value over, last first.
 fn handed_over(op: &mut Op) -> Vec<&mut Arg> {
     match op {
-        Op::Call { args, .. } | Op::Effect { operands: args, .. } | Op::List { items: args } | Op::Closure { captures: args, .. } => {
+        Op::Call { args, .. } | Op::Effect { operands: args, .. } | Op::HostEffect { operands: args, .. } | Op::List { items: args } | Op::Closure { captures: args, .. } => {
             args.iter_mut().rev().collect()
         }
         Op::Record { fields } => fields.iter_mut().rev().map(|(_, arg)| arg).collect(),
@@ -144,7 +153,7 @@ fn handed_over(op: &mut Op) -> Vec<&mut Arg> {
 
 fn uses(op: &Op) -> Vec<ValueId> {
     match op {
-        Op::Call { args, .. } | Op::Effect { operands: args, .. } | Op::List { items: args } | Op::Closure { captures: args, .. } => {
+        Op::Call { args, .. } | Op::Effect { operands: args, .. } | Op::HostEffect { operands: args, .. } | Op::List { items: args } | Op::Closure { captures: args, .. } => {
             args.iter().map(|arg| arg.value).collect()
         }
         Op::Record { fields } => fields.iter().map(|(_, arg)| arg.value).collect(),
@@ -221,7 +230,7 @@ fn mark_moves(function: &mut StepFunction) {
 
 struct Lowerer<'a> {
     roots: &'a RootLayouts,
-    mode: &'a dyn Fn(&str) -> Option<CallMode>,
+    mode: &'a dyn Fn(&str) -> Option<CallHead>,
     stack: Vec<Builder>,
     functions: Vec<Option<StepFunction>>,
     source: u32,
@@ -335,10 +344,17 @@ impl Lowerer<'_> {
 
     fn call(&mut self, operator: &str, operands: &[&OirExpr], source: u32) -> Lowered {
         let lazy = match (self.mode)(operator) {
-            Some(CallMode { evaluation: OperatorEvaluation::Strict, .. }) => None,
-            Some(CallMode { evaluation: OperatorEvaluation::Site, lazy }) => Some(lazy),
-            Some(CallMode { evaluation: OperatorEvaluation::Form, .. }) => {
+            Some(CallHead::Operator(CallMode { evaluation: OperatorEvaluation::Strict, .. })) => None,
+            Some(CallHead::Operator(CallMode { evaluation: OperatorEvaluation::Site, lazy })) => Some(lazy),
+            Some(CallHead::Operator(CallMode { evaluation: OperatorEvaluation::Form, .. })) => {
                 return Err(StepRefusal::FormOperator(operator.to_string()))
+            }
+            Some(CallHead::Effect) => {
+                let mut values = Vec::with_capacity(operands.len());
+                for operand in operands {
+                    values.push(Arg::of(self.expr(operand)?));
+                }
+                return Ok(self.boxed(Op::HostEffect { head: operator.to_string(), operands: values }, source));
             }
             None => return Err(StepRefusal::NoMode(operator.to_string())),
         };
@@ -373,7 +389,7 @@ impl Lowerer<'_> {
     fn form(&mut self, name: &str, args: &[OirExpr], source: u32) -> Option<Lowered> {
         let malformed = |what: &str| Some(Err(StepRefusal::Malformed(format!("{name}: {what}"))));
         Some(match name {
-            "quote" | "quasiquote" | "unquote" | "fn" => Err(StepRefusal::Quoted(name.to_string())),
+            "unquote" | "fn" => Err(StepRefusal::Quoted(name.to_string())),
             "do" => {
                 let mut last = None;
                 for arg in args {
@@ -516,7 +532,7 @@ impl Lowerer<'_> {
 pub fn lower_step(
     expr: &OirExpr,
     roots: &RootLayouts,
-    mode: &dyn Fn(&str) -> Option<CallMode>,
+    mode: &dyn Fn(&str) -> Option<CallHead>,
 ) -> Result<StepModule, StepRefusal> {
     let mut lowerer = Lowerer { roots, mode, stack: vec![Builder::new(&[])], functions: vec![None], source: 0 };
     let value = lowerer.expr(expr)?;
@@ -530,15 +546,17 @@ pub fn lower_step(
 mod tests {
     use super::*;
 
-    fn mode(name: &str) -> Option<CallMode> {
+    fn mode(name: &str) -> Option<CallHead> {
         let (evaluation, lazy) = match name {
+            "theme/set" => return Some(CallHead::Effect),
+            "quote" => (OperatorEvaluation::Site, vec![]),
             "+" | "-" | "*" | "=" | ">" | "not" | "str/concat" | "array/len" => (OperatorEvaluation::Strict, vec![]),
             "object/get" => (OperatorEvaluation::Site, vec![2]),
             "array/map" => (OperatorEvaluation::Site, vec![]),
             "tree/fold" => (OperatorEvaluation::Form, vec![]),
             _ => return None,
         };
-        Some(CallMode { evaluation, lazy })
+        Some(CallHead::Operator(CallMode { evaluation, lazy }))
     }
 
     fn at(path: &str) -> OirExpr {
@@ -656,11 +674,27 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_keeps_its_encoded_body_as_a_literal_operand() {
+        assert_eq!(
+            text(&call("quote", vec![OirExpr::string("[1]")])),
+            "fn0() {\nb0:\n  %0: boxed = \"[1]\"  ; 1\n  %1: boxed = call-site quote(literal move %0) !  ; 0\n  return move %1\n}\n"
+        );
+    }
+
+    #[test]
+    fn a_table_effect_left_as_a_call_is_an_effect_on_its_operand_values() {
+        assert_eq!(
+            text(&call("theme/set", vec![at("@payload.k")])),
+            "fn0() {\nb0:\n  %0: boxed = read @payload.k  ; 1\n  %1: boxed = host-effect theme/set(move %0) !  ; 0\n  return move %1\n}\n"
+        );
+    }
+
+    #[test]
     fn what_has_no_value_entry_is_refused_by_name() {
         let roots = RootLayouts::default();
         let refused = |expr: OirExpr| lower_step(&expr, &roots, &mode).expect_err("refused");
         assert_eq!(refused(call("tree/fold", vec![at("@payload.o")])), StepRefusal::FormOperator("tree/fold".to_string()));
-        assert_eq!(refused(call("quote", vec![OirExpr::number(1.0)])), StepRefusal::Quoted("quote".to_string()));
+        assert_eq!(refused(call("unquote", vec![OirExpr::number(1.0)])), StepRefusal::Quoted("unquote".to_string()));
         assert_eq!(refused(call("agent/generate", vec![])), StepRefusal::NoMode("agent/generate".to_string()));
         assert_eq!(refused(call("let", vec![OirExpr::number(1.0)])), StepRefusal::Malformed("let: a binding list and a body".to_string()));
     }

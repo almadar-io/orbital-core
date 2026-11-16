@@ -47,7 +47,7 @@ fn definition_of(text: &str) -> Result<Rc<FieldDefinition>, OrbitalError> {
     if let Some(known) = DEFINITIONS.with(|d| d.borrow().get(text).cloned()) {
         return Ok(known);
     }
-    let parsed: FieldDefinition = serde_json::from_str(text)
+    let parsed: FieldDefinition = orbital_core_base::json_value::from_json_str(text)
         .map_err(|e| bad(format!("the definition is not a field definition: {e}")))?;
     let parsed = Rc::new(parsed);
     DEFINITIONS.with(|d| d.borrow_mut().insert(text.to_string(), parsed.clone()));
@@ -181,9 +181,8 @@ struct Fold<'a> {
     shape: &'a str,
     root: &'a str,
     def: &'a FieldDefinition,
-    params: &'a [String],
-    body: &'a SExpression,
-    ctx: &'a BindingContext,
+    /// The step, given `(node childResults)`.
+    step: &'a dyn Fn(Value, Value) -> EvalResult,
 }
 
 impl Fold<'_> {
@@ -306,10 +305,7 @@ impl Fold<'_> {
                 Value::object(out)
             }
         };
-        let mut step_ctx = self.ctx.child();
-        step_ctx.set_local(&self.params[0], frame.value.clone());
-        step_ctx.set_local(&self.params[1], child_results);
-        eval_expr(self.body, &step_ctx)
+        (self.step)(frame.value.clone(), child_results)
     }
 
     fn run(&self, root: &Value) -> EvalResult {
@@ -350,15 +346,7 @@ pub struct TreeFoldOp;
 impl Operator for TreeFoldOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "tree/fold", >= 3);
-        let SExpression::String(shape) = &args[2] else {
-            return Err(bad("the third argument names the value's type"));
-        };
-        let Some(SExpression::String(text)) = args.get(3) else {
-            return Err(bad(format!(
-                "the declaration of {shape} was not written into the call"
-            )));
-        };
-        let def = definition_of(text)?;
+        let (shape, def) = declared(args[2].as_str(), args.get(3).and_then(SExpression::as_str))?;
         let value = eval_expr(&args[0], ctx)?;
         let Value::Lambda(lambda) = eval_expr(&args[1], ctx)? else {
             return Err(bad("the step is a (fn (node childResults) …)"));
@@ -367,16 +355,42 @@ impl Operator for TreeFoldOp {
         if params.len() != 2 {
             return Err(bad("the step takes exactly (node childResults)"));
         }
-        Fold {
-            shape,
-            root: def.name.as_deref().unwrap_or(shape),
-            def: &def,
-            params: &params,
-            body: &body,
-            ctx,
-        }
-        .run(&value)
+        let step = |node: Value, child_results: Value| {
+            let mut step_ctx = ctx.child();
+            step_ctx.set_local(&params[0], node);
+            step_ctx.set_local(&params[1], child_results);
+            eval_expr(body, &step_ctx)
+        };
+        Fold { shape, root: def.name.as_deref().unwrap_or(shape), def: &def, step: &step }.run(&value)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "tree/fold", 3);
+        let written = |index: usize| match args.get(index) {
+            Some(Value::String(text)) if site.literal(index) => Some(text.as_str()),
+            _ => None,
+        };
+        let step = |node: Value, child_results: Value| site.invoke(1, vec![node, child_results]);
+        Some(declared(written(2), written(3)).and_then(|(shape, def)| {
+            Fold { shape, root: def.name.as_deref().unwrap_or(shape), def: &def, step: &step }.run(&args[0])
+        }))
+    }
+}
+
+/// The type name and declaration a fold's call wrote as its third and fourth operands (each `None` when not written
+/// as a string).
+fn declared<'a>(shape: Option<&'a str>, text: Option<&str>) -> Result<(&'a str, Rc<FieldDefinition>), OrbitalError> {
+    let Some(shape) = shape else {
+        return Err(bad("the third argument names the value's type"));
+    };
+    let Some(text) = text else {
+        return Err(bad(format!("the declaration of {shape} was not written into the call")));
+    };
+    Ok((shape, definition_of(text)?))
 }
 
 #[cfg(test)]
@@ -393,9 +407,9 @@ mod tests {
             }})
             .to_string();
         let expression = |value| {
-            let body: SExpression = serde_json::from_value(value).unwrap();
+            let body: SExpression = orbital_core_base::json_value::from_json_value(&value).unwrap();
             let quoted = orbital_core_base::schema::quote::quote_expr(&body);
-            serde_json::from_value::<SExpression>(json!([
+            orbital_core_base::json_value::from_json_value::<SExpression>(&json!([
                 "tree/fold",
                 quoted,
                 [
@@ -416,7 +430,7 @@ mod tests {
         let context = BindingContext::new();
         assert_eq!(
             eval_expr(&expression(json!(["a", ["b"]])), &context).unwrap(),
-            serde_json::from_value::<Value>(json!(["a", "b"])).unwrap()
+            orbital_core_base::json_value::from_json_value::<Value>(&json!(["a", "b"])).unwrap()
         );
         let error = eval_expr(&expression(json!(3)), &context)
             .unwrap_err()

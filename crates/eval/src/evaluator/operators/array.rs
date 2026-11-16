@@ -207,19 +207,40 @@ impl Operator for CountOp {
             let Some(predicate) = args.get(1) else {
                 return Ok(super::util::int_of(arr.len()));
             };
-            let mut count = 0usize;
-            let callback = Callback::of(predicate, ctx)?;
-            for (i, item) in arr.iter().enumerate() {
-                if callback
-                    .apply(vec![item.clone(), super::util::int_of(i)], ctx)?
-                    .boolean()?
-                {
-                    count += 1;
-                }
-            }
-            Ok(super::util::int_of(count))
+            counted(arr, &Callback::of(predicate, ctx)?, ctx)
         })
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "count", 1);
+        // The count query over a registered entity store reads its filter under each row as `@entity`: no value entry.
+        if args.len() >= 2 && site.literal(0) && matches!(&args[0], Value::String(name) if ctx.get_entities(name).is_some()) {
+            return None;
+        }
+        let Some(arr) = args[0].as_array() else {
+            return Some(Err(args[0].kind_error("array").into()));
+        };
+        Some(if args.len() < 2 {
+            Ok(super::util::int_of(arr.len()))
+        } else {
+            counted(arr, &Callback::Site { site, index: 1 }, ctx)
+        })
+    }
+}
+
+/// How many elements of `arr` the callback accepts.
+fn counted(arr: &[Value], callback: &Callback, ctx: &BindingContext) -> EvalResult {
+    let mut count = 0usize;
+    for (i, item) in arr.iter().enumerate() {
+        if callback.apply(vec![item.clone(), super::util::int_of(i)], ctx)?.boolean()? {
+            count += 1;
+        }
+    }
+    Ok(super::util::int_of(count))
 }
 
 pub struct ArrayLenOp;
@@ -913,56 +934,65 @@ impl Operator for ArrayGroupByOp {
         let key_fn = eval_expr(&args[1], ctx)?;
 
         let array = require_array!(arr);
-
-        let mut groups: orbital_core_base::collections::IndexMap<String, Vec<Value>> = Default::default();
-
-        // A field-name key (`"stage"`) groups by that field's text; a missing or null key is an error (the program
-        // `default`s it), never an implicit group.
         if let Value::String(field) = &key_fn {
-            for item in array {
-                let row = item.as_object().ok_or_else(|| item.kind_error("object"))?;
-                let key = match row.get(field.as_str()) {
-                    Some(Value::String(text)) => text.to_string(),
-                    Some(Value::Null) | None => {
-                        return Err(EvalError::InvalidArgument(format!(
-                            "array/groupBy: an item has no `{field}` key; default it to group the item"
-                        ))
-                        .into())
-                    }
-                    Some(other) => return Err(other.kind_error("string").into()),
-                };
-                groups.entry(key).or_default().push(item);
-            }
-            return Ok(Value::Object(
-                groups
-                    .into_iter()
-                    .map(|(k, v)| (k.into(), Value::array(v)))
-                    .collect(),
-            ));
+            return grouped(array, |item, _| field_group(item, field));
         }
-
-        // Handle lambda key function
-        let (params, body) = require_lambda!(key_fn);
-
-        for (i, item) in array.into_iter().enumerate() {
-            let mut child_ctx = ctx.child();
-            if !params.is_empty() {
-                child_ctx.set_local(&params[0], item.clone());
-            }
-            if params.len() > 1 {
-                child_ctx.set_local(&params[1], super::util::int_of(i));
-            }
-            let key = eval_expr(&body, &child_ctx)?.text()?.to_string();
-            groups.entry(key).or_default().push(item);
-        }
-
-        let result: ValueMap = groups
-            .into_iter()
-            .map(|(k, v)| (k.into(), Value::array(v)))
-            .collect();
-
-        Ok(Value::object(result))
+        let key = bound_lambda(&key_fn, ctx)?;
+        grouped(array, |item, i| Ok(key(vec![item.clone(), super::util::int_of(i)])?.text()?.to_string()))
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "groupBy", 2);
+        let key_fn = std::mem::take(&mut args[1]);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| match &key_fn {
+            Value::String(field) => grouped(array, |item, _| field_group(item, field)),
+            _ => grouped(array, |item, i| Ok(site.invoke(1, vec![item.clone(), super::util::int_of(i)])?.text()?.to_string())),
+        }))
+    }
+}
+
+/// A lambda value as the function of its own parameters (`@item` and `@index` are not bound): how an operator that
+/// reads its callback as a value runs it.
+pub(super) fn bound_lambda<'a>(
+    callable: &Value,
+    ctx: &'a BindingContext,
+) -> Result<impl Fn(Vec<Value>) -> EvalResult + Sync + Send + 'a, OrbitalError> {
+    let (params, body) = require_lambda!(callable);
+    Ok(move |values: Vec<Value>| {
+        let mut child = ctx.child();
+        for (param, value) in params.iter().zip(values) {
+            child.set_local(param, value);
+        }
+        eval_expr(&body, &child)
+    })
+}
+
+/// The group a field-name key (`"stage"`) puts `item` in: that field's text. A missing or null key is an error (the
+/// program `default`s it), never an implicit group.
+fn field_group(item: &Value, field: &str) -> Result<String, OrbitalError> {
+    let row = item.as_object().ok_or_else(|| item.kind_error("object"))?;
+    match row.get(field) {
+        Some(Value::String(text)) => Ok(text.to_string()),
+        Some(Value::Null) | None => Err(EvalError::InvalidArgument(format!(
+            "array/groupBy: an item has no `{field}` key; default it to group the item"
+        ))
+        .into()),
+        Some(other) => Err(other.kind_error("string").into()),
+    }
+}
+
+/// The items of `array` by the group `key_of` gives each, groups in first-seen order.
+fn grouped(array: Shared<Vec<Value>>, mut key_of: impl FnMut(&Value, usize) -> Result<String, OrbitalError>) -> EvalResult {
+    let mut groups: orbital_core_base::collections::IndexMap<String, Vec<Value>> = Default::default();
+    for (i, item) in array.into_iter().enumerate() {
+        let key = key_of(&item, i)?;
+        groups.entry(key).or_default().push(item);
+    }
+    Ok(Value::Object(groups.into_iter().map(|(k, v)| (k.into(), Value::array(v))).collect()))
 }
 
 /// array/take - Take first n elements
@@ -1100,26 +1130,31 @@ impl Operator for ArrayRejectOp {
         let predicate = eval_expr(&args[1], ctx)?;
 
         let array = require_array!(arr);
-
-        let (params, body) = require_lambda!(predicate);
-
-        let mut result = Vec::new();
-        for (i, item) in array.into_iter().enumerate() {
-            let mut child_ctx = ctx.child();
-            if !params.is_empty() {
-                child_ctx.set_local(&params[0], item.clone());
-            }
-            if params.len() > 1 {
-                child_ctx.set_local(&params[1], super::util::int_of(i));
-            }
-            let should_reject = eval_expr(&body, &child_ctx)?;
-            if !should_reject.boolean()? {
-                result.push(item);
-            }
-        }
-
-        Ok(Value::array(result))
+        let test = bound_lambda(&predicate, ctx)?;
+        Ok(Value::array(parted(array, test)?.1))
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "reject", 2);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| Ok(Value::array(parted(array, |values| site.invoke(1, values))?.1))))
+    }
+}
+
+/// The items of `array` the test accepts, then the ones it does not; the test is given the item and its index.
+fn parted(array: Shared<Vec<Value>>, mut test: impl FnMut(Vec<Value>) -> EvalResult) -> Result<(Vec<Value>, Vec<Value>), OrbitalError> {
+    let (mut matches, mut non_matches) = (Vec::new(), Vec::new());
+    for (i, item) in array.into_iter().enumerate() {
+        if test(vec![item.clone(), super::util::int_of(i)])?.boolean()? {
+            matches.push(item);
+        } else {
+            non_matches.push(item);
+        }
+    }
+    Ok((matches, non_matches))
 }
 
 /// array/partition - Split by predicate
@@ -1131,33 +1166,22 @@ impl Operator for ArrayPartitionOp {
         let predicate = eval_expr(&args[1], ctx)?;
 
         let array = require_array!(arr);
-
-        let (params, body) = require_lambda!(predicate);
-
-        let mut matches = Vec::new();
-        let mut non_matches = Vec::new();
-
-        for (i, item) in array.into_iter().enumerate() {
-            let mut child_ctx = ctx.child();
-            if !params.is_empty() {
-                child_ctx.set_local(&params[0], item.clone());
-            }
-            if params.len() > 1 {
-                child_ctx.set_local(&params[1], super::util::int_of(i));
-            }
-            let result = eval_expr(&body, &child_ctx)?;
-            if result.boolean()? {
-                matches.push(item);
-            } else {
-                non_matches.push(item);
-            }
-        }
-
-        Ok(Value::array(vec![
-            Value::array(matches),
-            Value::array(non_matches),
-        ]))
+        let test = bound_lambda(&predicate, ctx)?;
+        parted(array, test).map(halves)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "partition", 2);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| parted(array, |values| site.invoke(1, values)).map(halves)))
+    }
+}
+
+fn halves((matches, non_matches): (Vec<Value>, Vec<Value>)) -> Value {
+    Value::array(vec![Value::array(matches), Value::array(non_matches)])
 }
 
 /// array/takeLast - Take last n elements
@@ -1299,10 +1323,24 @@ impl Operator for ArrayPmapOp {
         require_arity!(args, "array/pmap", >= 2);
         let arr = eval_expr(&args[0], ctx)?;
         let items: Vec<Value> = require_array!(arr).into_iter().collect();
-        let callback = Callback::of(&args[1], ctx)?;
-        let results = indexed(items.len(), |i| callback.apply(vec![items[i].clone(), super::util::int_of(i)], ctx))?;
-        Ok(Value::array(results))
+        each_in_parallel(items, &Callback::of(&args[1], ctx)?, ctx)
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "array/pmap", 2);
+        Some(
+            listed(std::mem::take(&mut args[0]))
+                .and_then(|array| each_in_parallel(array.into_iter().collect(), &Callback::Site { site, index: 1 }, ctx)),
+        )
+    }
+}
+
+fn each_in_parallel(items: Vec<Value>, callback: &Callback, ctx: &BindingContext) -> EvalResult {
+    indexed(items.len(), |i| callback.apply(vec![items[i].clone(), super::util::int_of(i)], ctx)).map(Value::array)
 }
 
 fn fold_step(params: &[String], body: &SExpression, linear: bool, acc: Value, item: Value, ctx: &BindingContext) -> EvalResult {
@@ -1332,23 +1370,38 @@ impl Operator for ArrayPreduceOp {
         let items: Vec<Value> = require_array!(arr).into_iter().collect();
         let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
         let linear = params.first().is_some_and(|acc| read_once(&body, acc));
+        folded_in_chunks(&items, initial, |acc, item| fold_step(&params, &body, linear, acc, item, ctx))
+    }
 
-        let chunks: Vec<&[Value]> = items.chunks(PREDUCE_CHUNK).collect();
-        let folded = indexed(chunks.len(), |c| {
-            let mut rest = chunks[c].iter().cloned();
-            let mut accumulator = rest.next().unwrap_or(Value::Null);
-            for item in rest {
-                accumulator = fold_step(&params, &body, linear, accumulator, item, ctx)?;
-            }
-            Ok(accumulator)
-        })?;
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
 
-        let mut accumulator = initial;
-        for chunk in folded {
-            accumulator = fold_step(&params, &body, linear, accumulator, chunk, ctx)?;
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "array/preduce", 3);
+        let initial = std::mem::take(&mut args[1]);
+        Some(listed(std::mem::take(&mut args[0])).and_then(|array| {
+            let items: Vec<Value> = array.into_iter().collect();
+            folded_in_chunks(&items, initial, |acc, item| site.invoke(2, vec![acc, item]))
+        }))
+    }
+}
+
+fn folded_in_chunks(items: &[Value], initial: Value, step: impl Fn(Value, Value) -> EvalResult + Sync + Send) -> EvalResult {
+    let chunks: Vec<&[Value]> = items.chunks(PREDUCE_CHUNK).collect();
+    let folded = indexed(chunks.len(), |c| {
+        let mut rest = chunks[c].iter().cloned();
+        let mut accumulator = rest.next().unwrap_or(Value::Null);
+        for item in rest {
+            accumulator = step(accumulator, item)?;
         }
         Ok(accumulator)
+    })?;
+    let mut accumulator = initial;
+    for chunk in folded {
+        accumulator = step(accumulator, chunk)?;
     }
+    Ok(accumulator)
 }
 
 // ============================================================================

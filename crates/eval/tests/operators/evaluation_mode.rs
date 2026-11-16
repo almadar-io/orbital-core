@@ -2,7 +2,7 @@
 //! declaration is the implementation's: a strict operator's operands are evaluated before it runs, a form evaluates
 //! its own.
 
-use orbital_core_base::language::registry::{operators, OperatorEvaluation};
+use orbital_core_base::language::registry::operators;
 use orbital_core_eval::evaluator::operators::{get_operator, DISPATCHED_NAMES};
 use orbital_core_eval::language_loader::preflight;
 

@@ -44,23 +44,44 @@ impl Operator for FnOp {
 /// `(quote x)` — an S-expression held as data (G-CROSS-041): the encoded body
 /// (`schema::quote`) decodes to `x`, returned without evaluating or resolving it.
 pub struct QuoteOp;
+
+/// The data an encoded `form` body holds; `written` is the body when it was written as a string.
+fn decoded(form: &str, written: Option<&str>) -> EvalResult {
+    let Some(body) = written else {
+        return Err(OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("an encoded {form} body (string)"),
+            actual: format!("a non-string {form} argument"),
+        }));
+    };
+    orbital_core_base::schema::quote::decode_quote_body(body).map(Value::from).ok_or_else(|| {
+        OrbitalError::Eval(EvalError::TypeMismatch {
+            expected: format!("an encoded {form} body (JSON)"),
+            actual: format!("a malformed {form} body"),
+        })
+    })
+}
+
+/// The encoded body operand of a value entry: its text when the call site wrote it as a literal string.
+fn written_body<'a>(args: &'a [Value], site: &dyn CallSite) -> Option<&'a str> {
+    match args.first() {
+        Some(Value::String(body)) if site.literal(0) => Some(body.as_str()),
+        _ => None,
+    }
+}
+
 impl Operator for QuoteOp {
     fn evaluate(&self, args: &[SExpression], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "quote", 1);
-        let SExpression::String(body) = &args[0] else {
-            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "an encoded quote body (string)".to_string(),
-                actual: "a non-string quote argument".to_string(),
-            }));
-        };
-        orbital_core_base::schema::quote::decode_quote_body(body)
-            .map(Value::from)
-            .ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "an encoded quote body (JSON)".to_string(),
-                    actual: "a malformed quote body".to_string(),
-                })
-            })
+        decoded("quote", args[0].as_str())
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "quote", 1);
+        Some(decoded("quote", written_body(args, site)))
     }
 }
 
@@ -124,39 +145,39 @@ pub(super) fn fill_markers(value: Value, holes: &[Value]) -> Value {
     }
 }
 
+/// `template` with each hole marker replaced by its value in `holes`.
+fn instantiated(template: Value, holes: &[Value]) -> EvalResult {
+    if let Some(kind) = holes.iter().find_map(non_data_kind) {
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "quasiquote: a hole evaluated to a {kind} value, which cannot be held as program data"
+        ))));
+    }
+    let markers = count_markers(&template);
+    if markers != holes.len() {
+        return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+            "quasiquote: template has {markers} hole(s), got {} value(s)",
+            holes.len()
+        ))));
+    }
+    Ok(fill_markers(template, holes))
+}
+
 impl Operator for QuasiquoteOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
-        let Some(SExpression::String(body)) = args.first() else {
-            return Err(OrbitalError::Eval(EvalError::TypeMismatch {
-                expected: "an encoded quasiquote body (string)".to_string(),
-                actual: "a non-string quasiquote argument".to_string(),
-            }));
-        };
-        let template = orbital_core_base::schema::quote::decode_quote_body(body)
-            .map(Value::from)
-            .ok_or_else(|| {
-                OrbitalError::Eval(EvalError::TypeMismatch {
-                    expected: "an encoded quasiquote body (JSON)".to_string(),
-                    actual: "a malformed quasiquote body".to_string(),
-                })
-            })?;
+        let template = decoded("quasiquote", args.first().and_then(SExpression::as_str))?;
         let holes = args[1..]
             .iter()
             .map(|e| super::eval_expr(e, ctx))
             .collect::<Result<Vec<_>, _>>()?;
-        if let Some(kind) = holes.iter().find_map(non_data_kind) {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "quasiquote: a hole evaluated to a {kind} value, which cannot be held as program data"
-            ))));
-        }
-        let markers = count_markers(&template);
-        if markers != holes.len() {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
-                "quasiquote: template has {markers} hole(s), got {} value(s)",
-                holes.len()
-            ))));
-        }
-        Ok(fill_markers(template, &holes))
+        instantiated(template, &holes)
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        Some(decoded("quasiquote", written_body(args, site)).and_then(|template| instantiated(template, args.get(1..).unwrap_or_default())))
     }
 }
 

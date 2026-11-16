@@ -164,12 +164,25 @@ pub struct YamlParseOp;
 impl Operator for YamlParseOp {
     fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "yaml/parse", >= 2);
-        let val = eval_expr(&args[0], ctx)?;
-        let s = val.text()?;
-        super::json::shape_operand(&args[1])?;
-        let Some(parsed) = parse_yaml(s) else {
-            return Ok(Value::Null);
-        };
-        super::json::typed_decode("yaml/parse", parsed, &args[1])
+        parse_as(&eval_expr(&args[0], ctx)?, &args[1])
     }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "yaml/parse", 2);
+        Some(parse_as(&args[0], &super::json::written_shape(args, site, 1)))
+    }
+}
+
+/// The value YAML text decodes to when it is of the written shape; null when the text is not YAML or does not fit.
+fn parse_as(val: &Value, shape: &SExpression) -> EvalResult {
+    let s = val.text()?;
+    super::json::shape_operand(shape)?;
+    let Some(parsed) = parse_yaml(s) else {
+        return Ok(Value::Null);
+    };
+    super::json::typed_decode("yaml/parse", parsed, shape)
 }

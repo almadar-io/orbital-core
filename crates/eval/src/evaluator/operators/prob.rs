@@ -166,14 +166,33 @@ prob_strict_op!(ProbConditionOp, "prob/condition", 1, |args, ctx| {
     Ok(Value::Null)
 });
 
-prob_op!(ProbSampleOp, "prob/sample", 2, |args, ctx| {
-    let n = super::array::whole_count(&eval_expr(&args[0], ctx)?, "prob/sample", "n")?;
+/// prob/sample (n, expr) - `expr` evaluated `n` times, each a fresh draw.
+pub struct ProbSampleOp;
+
+fn sampled(count: &Value, mut draw: impl FnMut() -> EvalResult) -> EvalResult {
+    let n = super::array::whole_count(count, "prob/sample", "n")?;
     let mut out = Vec::with_capacity(n);
     for _ in 0..n {
-        out.push(eval_expr(&args[1], ctx)?);
+        out.push(draw()?);
     }
     Ok(Value::array(out))
-});
+}
+
+impl Operator for ProbSampleOp {
+    fn evaluate(&self, args: &[SExpression], ctx: &BindingContext) -> EvalResult {
+        require_arity!(args, "prob/sample", == 2);
+        sampled(&eval_expr(&args[0], ctx)?, || eval_expr(&args[1], ctx))
+    }
+
+    fn evaluation(&self) -> OperatorEvaluation {
+        OperatorEvaluation::Site
+    }
+
+    fn apply_values(&self, args: &mut [Value], site: &dyn CallSite, _ctx: &BindingContext) -> Option<EvalResult> {
+        require_arity_some!(args, "prob/sample", 2);
+        Some(sampled(&args[0], || site.invoke(1, Vec::new())))
+    }
+}
 
 /// One sample of a model: `set @entity.field` writes the sample's own copy of the entity, under the flat key JS wrote.
 /// `do`, `if` and `when` pass their statements through; any other expression is evaluated.
@@ -422,7 +441,7 @@ mod tests {
     }
 
     fn vectors() -> Vec<Vector> {
-        serde_json::from_str(include_str!(
+        orbital_core_base::json_value::from_json_str(include_str!(
             "../../../../../tests/fixtures/operators/prob-vectors.json"
         ))
         .unwrap()
@@ -434,9 +453,9 @@ mod tests {
     ) -> Result<serde_json::Value, String> {
         let mut builder = BindingContextBuilder::new();
         if let Some(entity) = entity {
-            builder = builder.entity(serde_json::from_value::<Value>(entity.clone()).unwrap());
+            builder = builder.entity(orbital_core_base::json_value::from_json_value::<Value>(entity).unwrap());
         }
-        let sexpr = serde_json::from_value(expr.clone()).unwrap();
+        let sexpr = orbital_core_base::json_value::from_json_value(expr).unwrap();
         Evaluator::new()
             .evaluate(&sexpr, &builder.build())
             .map(|value| serde_json::to_value(value).unwrap())
@@ -514,7 +533,7 @@ mod tests {
                 asked.fetch_add(1, Ordering::SeqCst);
                 Ok(seed)
             }));
-            let expr = serde_json::from_value(serde_json::json!([
+            let expr = orbital_core_base::json_value::from_json_value(&serde_json::json!([
                 "prob/sample",
                 3,
                 ["prob/uniform", 0, 1]
@@ -528,7 +547,7 @@ mod tests {
         assert_ne!(a, draw(8), "a different answer draws different values");
         let mut ctx = BindingContextBuilder::new().build();
         ctx.set_prob_entropy(EntropySource::new(|| Err("must not be asked".to_string())));
-        let seeded = serde_json::from_value(serde_json::json!([
+        let seeded = orbital_core_base::json_value::from_json_value(&serde_json::json!([
             "do",
             ["prob/seed", 42],
             ["prob/uniform", 0, 1]
