@@ -66,6 +66,7 @@ impl RuntimeKernel {
             return Vec::new();
         }
         self.flush_row_writes();
+        let user = self.session_user().ok();
         let stale = self.renders.write().stale(
             |trait_name| {
                 let entity_type = self
@@ -80,6 +81,16 @@ impl RuntimeKernel {
                     .is_none_or(|d| d.shared || d.is_client_resident())
             },
             |trait_name, entity_id| self.step_entity_view(trait_name, entity_id),
+            user.as_ref(),
+            |trait_name, flushed, user| {
+                let mut ctx = flushed.clone();
+                ctx.set_user(user.clone());
+                let defs = self.registry.trait_definitions.read();
+                if let Some(def) = defs.get(trait_name) {
+                    ctx.set_config(bind_user_forwards(config_defaults_value(def, &defs), user));
+                }
+                ctx
+            },
         );
         stale
             .into_iter()

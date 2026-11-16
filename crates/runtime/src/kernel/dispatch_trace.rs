@@ -2,7 +2,7 @@
 use std::prelude::v1::*;
 use crate::ProcessEventResult;
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceTransition {
@@ -28,54 +28,54 @@ pub struct TraceTransition {
     pub effects: Vec<TraceEffect>,
     pub emits: Vec<TraceEmit>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub collapsed: Option<Vec<TraceCollapsed>>,
     pub failure: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the dispatch: the trait and event it was for and its payload.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceCollapsed {
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub event: String,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub payload: serde_json::Value,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceGuard {
     pub arm: usize,
     pub passed: bool,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub expression: serde_json::Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub value: serde_json::Value,
     pub error: Option<String>,
 }
 
 /// An `emit` the transition ran, with the payload it carried.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceEmit {
     pub event: String,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub payload: serde_json::Value,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceEffect {
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub effect: serde_json::Value,
     /// The effect's operator (`set`, `persist`, `os/read-file`, …); empty for an effect with none.
     #[serde(default)]
@@ -83,7 +83,7 @@ pub struct TraceEffect {
     pub status: String,
     pub error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 

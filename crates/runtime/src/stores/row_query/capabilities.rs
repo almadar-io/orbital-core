@@ -4,7 +4,7 @@ use super::*;
 
 // ----- capabilities ---------------------------------------------------------------------------
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RowLeafKind {
@@ -15,7 +15,7 @@ pub enum RowLeafKind {
     IsNull,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RowCombinator {
@@ -25,35 +25,35 @@ pub enum RowCombinator {
 }
 
 /// Every operator a `RowPredicate` leaf can carry.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RowOperator {
     #[serde(rename = "==")]
-    #[cfg_attr(test, ts(rename = "=="))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "=="))]
     Eq,
     #[serde(rename = "!=")]
-    #[cfg_attr(test, ts(rename = "!="))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "!="))]
     Ne,
     #[serde(rename = "<")]
-    #[cfg_attr(test, ts(rename = "<"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "<"))]
     Lt,
     #[serde(rename = "<=")]
-    #[cfg_attr(test, ts(rename = "<="))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "<="))]
     Le,
     #[serde(rename = ">")]
-    #[cfg_attr(test, ts(rename = ">"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = ">"))]
     Gt,
     #[serde(rename = ">=")]
-    #[cfg_attr(test, ts(rename = ">="))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = ">="))]
     Ge,
     #[serde(rename = "member")]
-    #[cfg_attr(test, ts(rename = "member"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "member"))]
     Member,
     #[serde(rename = "hasElement")]
-    #[cfg_attr(test, ts(rename = "hasElement"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "hasElement"))]
     HasElement,
     #[serde(rename = "contains")]
-    #[cfg_attr(test, ts(rename = "contains"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "contains"))]
     Contains,
 }
 
@@ -70,7 +70,7 @@ impl From<RowCompareOp> for RowOperator {
     }
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RowValueKind {
@@ -81,7 +81,7 @@ pub enum RowValueKind {
     Null,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OperatorValueKinds {
@@ -89,7 +89,7 @@ pub struct OperatorValueKinds {
     pub value_kinds: Vec<RowValueKind>,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RowOrderableFields {
@@ -98,7 +98,7 @@ pub enum RowOrderableFields {
 }
 
 /// What a host's query push-down honours for one entity type.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryCapabilities {
@@ -120,7 +120,7 @@ pub struct QueryCapabilities {
     pub indexes: Option<IndexRealization>,
     /// The most values one `member` leaf may carry; the kernel asks a larger conjunct member in chunks. Absent is no limit.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "positive_whole_count")]
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
     pub member_limit: Option<usize>,
 }
 
@@ -137,7 +137,7 @@ fn positive_whole_count<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Re
 }
 
 /// When a store driver creates the access paths an entity declares (EXEC-STORE-6).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum IndexRealization {
@@ -188,7 +188,7 @@ impl QueryCapabilities {
 }
 
 /// The guard predicates a store can test: a subset of the query capabilities.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuardCapabilities {
@@ -198,7 +198,7 @@ pub struct GuardCapabilities {
 }
 
 /// What a host's `writeWhere` / `writeBatch` honours for one entity type.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteCapabilities {

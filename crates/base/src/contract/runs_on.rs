@@ -7,6 +7,7 @@
 use std::prelude::v1::*;
 
 use crate::ir::effects::OirEffect;
+use crate::value::{Value, ValueMap};
 
 /// Execution site of an effect operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,10 +378,10 @@ pub fn operator_sites<'a>(operators: impl IntoIterator<Item = &'a str>) -> std::
 
 /// Whether `orbital` is the server's (EXEC-ENDPOINT-5): every page it has is a protocol endpoint, so a client program
 /// leaves it out and a client session's view record never holds its traits' frames.
-pub fn serves_only_protocol_pages(orbital: &serde_json::Value) -> bool {
+pub fn serves_only_protocol_pages(orbital: &Value) -> bool {
     orbital
         .get("pages")
-        .and_then(serde_json::Value::as_array)
+        .and_then(Value::as_array)
         .is_some_and(|pages| !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some()))
 }
 
@@ -394,78 +395,86 @@ const CLIENT_UNREAD_TRAIT_KEYS: [&str; 2] = ["effectRow", "sourceEntityDefinitio
 /// page is a protocol endpoint is the server's and is left out (its listens ride `_metadata.serverListens`, so a client
 /// step whose emit one of them hears still posts its leg, EXEC-DIST-2), and protocol pages are dropped — without the
 /// keys no client reads, carrying the `_metadata` a kernel without an operator table needs. Every client host (the browser,
-/// the native desktop) runs this one projection.
-pub fn client_program(program: &serde_json::Value) -> serde_json::Value {
-    let mut projected = program.clone();
-    let Some(root) = projected.as_object_mut() else {
-        return projected;
+/// the native desktop) runs this one projection; what it leaves unchanged stays shared with `program`.
+pub fn client_program(mut program: Value) -> Value {
+    let Some(root) = program.as_object_mut() else {
+        return program;
     };
     for key in CLIENT_UNREAD_PROGRAM_KEYS {
-        root.remove(key);
+        root.shift_remove(key);
     }
     let mut server_listens = Vec::new();
-    if let Some(orbitals) = root.get_mut("orbitals").and_then(serde_json::Value::as_array_mut) {
+    if let Some(orbitals) = root.get_mut("orbitals").and_then(Value::as_array_mut) {
         for orbital in orbitals.iter().filter(|orbital| serves_only_protocol_pages(orbital)) {
-            let name = orbital.get("name").cloned().unwrap_or(serde_json::Value::Null);
-            let traits = orbital.get("traits").and_then(serde_json::Value::as_array).into_iter().flatten();
-            for listen in traits.filter_map(|t| t.get("listens").and_then(serde_json::Value::as_array)).flatten() {
-                server_listens.push(serde_json::json!({ "orbital": name, "listen": listen }));
+            let name = orbital.get("name").cloned().unwrap_or(Value::Null);
+            let traits = orbital.get("traits").and_then(Value::as_array).into_iter().flatten();
+            for listen in traits.filter_map(|t| t.get("listens").and_then(Value::as_array)).flatten() {
+                server_listens.push(Value::object(ValueMap::from_iter([
+                    ("orbital".into(), name.clone()),
+                    ("listen".into(), listen.clone()),
+                ])));
             }
         }
         orbitals.retain(|orbital| !serves_only_protocol_pages(orbital));
         for orbital in orbitals {
-            if let Some(pages) = orbital.get_mut("pages").and_then(serde_json::Value::as_array_mut) {
-                pages.retain(|page| page.get("protocol").is_none());
+            if orbital.get("pages").and_then(Value::as_array).is_some_and(|pages| pages.iter().any(|page| page.get("protocol").is_some())) {
+                if let Some(pages) = orbital.get_mut("pages").and_then(Value::as_array_mut) {
+                    pages.retain(|page| page.get("protocol").is_none());
+                }
             }
-            let traits = orbital.get_mut("traits").and_then(serde_json::Value::as_array_mut);
-            for trait_def in traits.into_iter().flatten() {
-                if let Some(trait_def) = trait_def.as_object_mut() {
-                    for key in CLIENT_UNREAD_TRAIT_KEYS {
-                        trait_def.remove(key);
+            let reads_unread = |t: &Value| CLIENT_UNREAD_TRAIT_KEYS.iter().any(|key| t.get(key).is_some());
+            if orbital.get("traits").and_then(Value::as_array).is_some_and(|traits| traits.iter().any(reads_unread)) {
+                let traits = orbital.get_mut("traits").and_then(Value::as_array_mut);
+                for trait_def in traits.into_iter().flatten().filter(|t| reads_unread(t)) {
+                    if let Some(trait_def) = trait_def.as_object_mut() {
+                        for key in CLIENT_UNREAD_TRAIT_KEYS {
+                            trait_def.shift_remove(key);
+                        }
                     }
                 }
             }
         }
     }
-    let mut metadata = client_program_metadata(root.get("orbitals").unwrap_or(&serde_json::Value::Null));
+    let mut metadata = client_program_metadata(root.get("orbitals").unwrap_or(&Value::Null));
     if !server_listens.is_empty() {
-        metadata.insert("serverListens".to_string(), serde_json::Value::Array(server_listens));
+        metadata.insert("serverListens".into(), Value::array(server_listens));
     }
     if !metadata.is_empty() {
-        root.insert("_metadata".to_string(), serde_json::Value::Object(metadata));
+        root.insert("_metadata".into(), Value::object(metadata));
     }
-    projected
+    program
 }
 
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
 /// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
-pub fn client_program_metadata(orbitals: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+pub fn client_program_metadata(orbitals: &Value) -> ValueMap {
+    use crate::value_serialize::to_value;
     let mut heads = std::collections::BTreeSet::new();
     collect_call_heads(orbitals, &mut heads);
-    let sites = operator_sites(heads.iter().map(String::as_str));
-    let mut metadata = serde_json::Map::new();
+    let sites = operator_sites(heads.iter().copied());
+    let mut metadata = ValueMap::default();
     if !sites.is_empty() {
-        metadata.insert("operatorSites".to_string(), serde_json::json!(sites));
+        metadata.insert("operatorSites".into(), to_value(&sites).unwrap_or(Value::Null));
     }
     if let Some(facts) = crate::language::registry::table_dispatch_facts() {
-        metadata.insert("dispatchFacts".to_string(), serde_json::json!(facts));
+        metadata.insert("dispatchFacts".into(), to_value(&facts).unwrap_or(Value::Null));
     }
     if let Ok(rows) = crate::protocols::table() {
-        metadata.insert("protocols".to_string(), serde_json::json!(rows));
+        metadata.insert("protocols".into(), to_value(&rows).unwrap_or(Value::Null));
     }
     metadata
 }
 
-/// Every string at the head of a JSON array under `value`: the operator of each call the program spells.
-fn collect_call_heads(value: &serde_json::Value, heads: &mut std::collections::BTreeSet<String>) {
+/// Every string at the head of an array under `value`: the operator of each call the program spells.
+fn collect_call_heads<'a>(value: &'a Value, heads: &mut std::collections::BTreeSet<&'a str>) {
     match value {
-        serde_json::Value::Array(items) => {
-            if let Some(serde_json::Value::String(head)) = items.first() {
-                heads.insert(head.clone());
+        Value::Array(items) => {
+            if let Some(Value::String(head)) = items.first() {
+                heads.insert(head.as_str());
             }
             items.iter().for_each(|item| collect_call_heads(item, heads));
         }
-        serde_json::Value::Object(map) => map.values().for_each(|item| collect_call_heads(item, heads)),
+        Value::Object(map) => map.values().for_each(|item| collect_call_heads(item, heads)),
         _ => {}
     }
 }
@@ -651,13 +660,17 @@ mod tests {
         assert_eq!(expr_leg_touches(&single, &residence).expect("table"), none);
     }
 
+    fn v(json: serde_json::Value) -> Value {
+        serde_json::from_value(json).expect("a core value")
+    }
+
     #[test]
     fn an_orbital_whose_every_page_is_a_protocol_endpoint_is_the_servers() {
         use serde_json::json;
-        assert!(serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Boot", "protocol": "boot" }] })));
-        assert!(!serves_only_protocol_pages(&json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] })), "control: one route page keeps it the client's");
-        assert!(!serves_only_protocol_pages(&json!({ "pages": [] })), "control: no pages is not an endpoint orbital");
-        assert!(!serves_only_protocol_pages(&json!({ "name": "Rows" })), "control: an orbital with no pages field is not one either");
+        assert!(serves_only_protocol_pages(&v(json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Boot", "protocol": "boot" }] }))));
+        assert!(!serves_only_protocol_pages(&v(json!({ "pages": [{ "name": "Api", "protocol": "http" }, { "name": "Home", "path": "/" }] }))), "control: one route page keeps it the client's");
+        assert!(!serves_only_protocol_pages(&v(json!({ "pages": [] }))), "control: no pages is not an endpoint orbital");
+        assert!(!serves_only_protocol_pages(&v(json!({ "name": "Rows" }))), "control: an orbital with no pages field is not one either");
     }
 
     #[test]
@@ -665,10 +678,10 @@ mod tests {
         let program = serde_json::json!([{ "traits": [{ "stateMachine": { "transitions": [
             { "effects": [["behavior/resolve", "@payload.value", {}], ["math/abs", 1]] }
         ] } }] }]);
-        let metadata = client_program_metadata(&program);
-        assert_eq!(metadata["operatorSites"], serde_json::json!({ "behavior/resolve": "server" }));
+        let metadata = client_program_metadata(&v(program));
+        assert_eq!(metadata.get("operatorSites"), Some(&v(serde_json::json!({ "behavior/resolve": "server" }))));
         assert!(metadata.contains_key("dispatchFacts"));
-        assert!(metadata["protocols"].as_array().is_some_and(|rows| !rows.is_empty()));
+        assert!(metadata.get("protocols").and_then(Value::as_array).is_some_and(|rows| !rows.is_empty()));
     }
 
     #[test]
@@ -679,9 +692,9 @@ mod tests {
             { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] },
             { "name": "Jobs", "pages": [{ "name": "Boot", "protocol": "boot" }], "traits": [{ "name": "Runner", "listens": [listen.clone()] }] }
         ] });
-        let client = client_program(&program);
-        assert_eq!(client["orbitals"].as_array().map(Vec::len), Some(1));
-        assert_eq!(client["_metadata"]["serverListens"], json!([{ "orbital": "Jobs", "listen": listen }]));
+        let client = client_program(v(program));
+        assert_eq!(client.get("orbitals").and_then(Value::as_array).map(Vec::len), Some(1));
+        assert_eq!(client.get("_metadata").and_then(|m| m.get("serverListens")), Some(&v(json!([{ "orbital": "Jobs", "listen": listen }]))));
     }
 
     #[test]
@@ -689,12 +702,31 @@ mod tests {
         let program = serde_json::json!({ "name": "App", "orbitals": [
             { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] }
         ] });
-        assert!(client_program(&program)["_metadata"].get("serverListens").is_none());
+        assert!(client_program(v(program)).get("_metadata").and_then(|m| m.get("serverListens")).is_none());
+    }
+
+    #[test]
+    fn a_client_program_shares_the_orbitals_it_leaves_unchanged() {
+        use serde_json::json;
+        let program = v(json!({ "name": "App", "orbitals": [
+            { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] },
+            { "name": "Mixed", "pages": [{ "name": "Home", "path": "/m" }, { "name": "Api", "protocol": "http" }], "traits": [{ "name": "T", "effectRow": [] }] }
+        ] }));
+        let orbital = |p: &Value, i: usize| match p.get("orbitals").and_then(Value::as_array).map(|o| &o[i]) {
+            Some(Value::Object(fields)) => fields.clone(),
+            other => panic!("an orbital record, got {other:?}"),
+        };
+        let (untouched, mixed) = (orbital(&program, 0), orbital(&program, 1));
+        let client = client_program(program);
+        assert!(crate::value::Shared::ptr_eq(&orbital(&client, 0), &untouched), "an orbital with nothing to drop is the program's own");
+        assert!(!crate::value::Shared::ptr_eq(&orbital(&client, 1), &mixed), "control: an orbital that loses a protocol page and a trait key is a new one");
+        assert_eq!(client.get("orbitals").and_then(Value::as_array).map(|o| o[1].get("pages").and_then(Value::as_array).map(Vec::len)), Some(Some(1)));
+        assert!(client.get("orbitals").and_then(Value::as_array).is_some_and(|o| o[1].get("traits").and_then(Value::as_array).is_some_and(|t| t[0].get("effectRow").is_none())));
     }
 
     #[test]
     fn control_a_program_calling_no_effect_carries_no_sites_but_still_the_tables() {
-        let metadata = client_program_metadata(&serde_json::json!([]));
+        let metadata = client_program_metadata(&v(serde_json::json!([])));
         assert!(!metadata.contains_key("operatorSites"));
         assert!(metadata.contains_key("dispatchFacts") && metadata.contains_key("protocols"));
     }

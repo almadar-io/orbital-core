@@ -58,4 +58,4 @@ ts-export = ["std", "dep:ts-rs"]
 async = ["std", "orbital-core-base/async"]
 
 [dev-dependencies]
-orbital-core = { path = "../.." }
+orbital-core = { path = "../..", features = ["native"] }

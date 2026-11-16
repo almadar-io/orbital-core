@@ -161,7 +161,7 @@ pub struct HeldGpuAsk {
 
 /// A held ask's deferred completion: the route event the kernel fires and the ticket its payload is held under. The
 /// host starts it as an ordinary request naming `heldPayload`.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HeldGpuCompletion {

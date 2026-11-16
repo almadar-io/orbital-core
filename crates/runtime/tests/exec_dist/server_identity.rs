@@ -666,3 +666,45 @@ fn exec_identity_3_a_sign_out_naming_a_session_signs_that_session_out() {
     assert_eq!(who(&kernel, Some("tab-1")), json!("anonymous"));
     assert_eq!(who(&kernel, Some("tab-3")), json!("ada"), "control: the session that asked stays signed in");
 }
+
+// EXEC-IDENTITY-4 on the wasm path: an embedded client paints before the server's first identity frame; folding the
+// response that carries it repaints the renders that read `@user` (owner ruling 2026-11-16, G-CROSS-639).
+fn header_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Chrome", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Header", "linkedEntity": "Chrome", "dispatch": "client",
+                "config": { "viewer": { "type": "string", "default": ["default", "@user.name", ""] } },
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "INIT",
+                      "effects": [["render-ui", "main", { "type": "typography", "content": "@config.viewer" }]] }] } }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Header" }] }]
+        }, {
+            "name": "People",
+            "entity": { "name": "Person", "identity": true, "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn exec_identity_4_folding_the_first_identity_frame_repaints_what_read_the_anonymous_viewer() {
+    let client = orbital_core_runtime::embed::EmbeddedKernel::new(header_schema(), "tab").unwrap();
+    client.dispatch("Header", None, "INIT", Value::Null).unwrap();
+    let identity: orbital_core_runtime::effects::frame_delta::FrameIdentity =
+        serde_json::from_value(json!({ "user": { "id": "u1", "name": "Ada" } })).unwrap();
+    let reply = EventResponse {
+        success: true,
+        frames: Some(orbital_core_runtime::effects::frame_delta::FrameDelta {
+            session: Some("tab".into()), from: 0, to: 1, ops: vec![], identity: Some(identity), theme: None,
+        }),
+        ..Default::default()
+    };
+    let applied = client.apply_server_response(&reply, &std::collections::HashSet::new()).unwrap();
+    let painted = serde_json::to_value(&applied.response.client_effects_by_trait).unwrap().to_string();
+    assert!(painted.contains("Ada") && painted.contains("Header"), "{painted}");
+}

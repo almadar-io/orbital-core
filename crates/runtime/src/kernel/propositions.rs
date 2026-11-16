@@ -6,19 +6,19 @@ use serde::{Deserialize, Serialize};
 
 /// One fired transition as a proposition judge reads it: whether it completed, and the trait's `@entity` at its start
 /// (`@fromEntity`) and after its effects (`@entity`), with the payload it was delivered with.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PropositionObservation {
     pub executed: bool,
     /// An effect failed: the transition stopped part way (EXEC-STEP-7), so its contract is not owed.
     pub failed: bool,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity_before: orbital_core_base::value::Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity_after: orbital_core_base::value::Value,
     #[serde(default)]
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub payload: orbital_core_base::value::Value,
     /// Set by a driver whose `entityAfter` is not the full layered read (it could not run some effect that writes
     /// the row): the judgement is inconclusive, with this reason.
@@ -51,13 +51,13 @@ impl PropositionObservation {
     }
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "kebab-case")]
 pub enum PropositionVerdict {
     Held,
     Broken {
-        #[cfg_attr(test, ts(type = "JsonValue"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
         proposition: orbital_core_base::schema::SExpression,
     },
     /// Never a pass: the transition did not complete, or a proposition could not be evaluated.

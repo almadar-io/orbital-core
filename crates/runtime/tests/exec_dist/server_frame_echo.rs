@@ -374,16 +374,18 @@ fn handoff_schema() -> OrbitalSchema {
             "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
             "traits": [
                 { "name": "Source", "linkedEntity": "Job",
-                  "emits": [{ "event": "OUTSIDE", "scope": "external" }],
+                  "emits": [{ "event": "OUTSIDE", "scope": "external" }, { "event": "ASK_PEER", "scope": "external" }],
                   "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "GO", "effects": [
                       ["emit", "HANDOFF", { "blob": "server-only-payload" }],
+                      ["emit", "ASK_PEER", { "blob": "a server peer consumes it" }],
                       ["emit", "PAINT", { "label": "for-the-client" }],
                       ["emit", "OUTSIDE", { "label": "for-hosts" }],
                       ["emit", "ASKED", { "q": "named-by-a-prop" }],
                       ["emit", "QUIET", { "q": "named-by-nothing" }],
                       ["render-ui", "main", { "type": "chat-bar", "sendEvent": "ASKED" }]] }])) },
                 { "name": "Sink", "linkedEntity": "Job",
-                  "listens": [{ "event": "HANDOFF", "triggers": "TAKE", "source": { "kind": "trait", "trait": "Source" } }],
+                  "listens": [{ "event": "HANDOFF", "triggers": "TAKE", "source": { "kind": "trait", "trait": "Source" } },
+                              { "event": "ASK_PEER", "triggers": "TAKE", "source": { "kind": "trait", "trait": "Source" } }],
                   "stateMachine": machine(json!([{ "from": "idle", "to": "idle", "event": "TAKE", "effects": [] }])) },
                 { "name": "Painter", "linkedEntity": "Job", "dispatch": "client",
                   "listens": [{ "event": "PAINT", "triggers": "SHOW", "source": { "kind": "trait", "trait": "Source" } }],
@@ -427,6 +429,14 @@ fn control_the_client_view_keeps_an_external_emit() {
     let server = EmbeddedServer::new(handoff_schema()).unwrap();
     let (_, view) = viewed(&server, "GO", "Source");
     assert!(emitted_names(&view).contains(&"OUTSIDE".to_string()), "{:?}", emitted_names(&view));
+}
+
+#[test]
+fn the_client_view_drops_an_external_emit_a_server_trait_consumes() {
+    let server = EmbeddedServer::new(handoff_schema()).unwrap();
+    let (full, view) = viewed(&server, "GO", "Source");
+    assert!(emitted_names(&full).contains(&"ASK_PEER".to_string()));
+    assert!(!emitted_names(&view).contains(&"ASK_PEER".to_string()), "{:?}", emitted_names(&view));
 }
 
 #[test]

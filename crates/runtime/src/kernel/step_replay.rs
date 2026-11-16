@@ -212,20 +212,20 @@ fn to_value(json: &serde_json::Value) -> Result<Value, String> {
 }
 
 /// One event a step's arm emitted.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepEmit {
     pub event: String,
-    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload | null"))]
     pub payload: serde_json::Value,
 }
 
 /// One guarded arm tried while choosing the arm that fires.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StepGuard {
     pub arm: usize,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub guard: serde_json::Value,
     pub passed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -234,7 +234,7 @@ pub struct StepGuard {
 
 /// One trait's outcome of a dispatched step: the transition, the emits, the arm that fired, every guard tried and how
 /// each authored effect of the fired arm ran.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepOutcome {
@@ -252,61 +252,61 @@ pub struct StepOutcome {
     pub event: String,
     pub ensures: Vec<PlayedEnsures>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub collapsed: Option<Vec<StepCollapsed>>,
     /// The step's cost when the ask named `cost: true` (EXEC-COST-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// A delivery EXEC-QUEUE-4 skipped as an exact repeat within the step's dispatch: the trait and event it was for and its payload.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepCollapsed {
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub event: String,
-    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload | null"))]
     pub payload: serde_json::Value,
 }
 
 /// A keyed ask the host deferred and no event has ended: the operator and arguments as the kernel dispatched them,
 /// its key and the trait whose step made it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingAsk {
     #[serde(rename = "trait")]
     pub trait_name: String,
     pub operator: String,
-    #[cfg_attr(test, ts(type = "Array<JsonValue>"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<JsonValue>"))]
     pub args: Vec<Value>,
     pub key: String,
 }
 
 /// One step of a replay: every outcome of the cascade its event started, and the states and rows after it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepResult {
     pub outcomes: Vec<StepOutcome>,
     pub states: BTreeMap<String, String>,
-    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: JsonValue }"))]
     pub entities: serde_json::Map<String, serde_json::Value>,
-    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload | null"))]
     pub entity_after: serde_json::Value,
     /// The keyed asks this step recorded that are still open after it; an earlier step's open ask is that step's.
     pub pending_asks: Vec<PendingAsk>,
 }
 
 /// What `orb execute --steps` prints for a replay that ran, and `program/step { report: "raw" }` answers.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepReport {
-    #[cfg_attr(test, ts(type = "true"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "true"))]
     pub success: bool,
     pub steps: Vec<StepResult>,
     pub dispatch_modes: BTreeMap<String, DispatchMode>,
@@ -314,11 +314,11 @@ pub struct StepReport {
 
 /// What `orb execute` prints for a replay that could not run: `{ success: false, error, trait, outcomes }`, where `trait`
 /// is the trait of the step that failed (none outside any step) and `outcomes` are those completed before the failure.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepRefusal {
-    #[cfg_attr(test, ts(type = "false"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "false"))]
     pub success: bool,
     pub error: String,
     #[serde(rename = "trait")]

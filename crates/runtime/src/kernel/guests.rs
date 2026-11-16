@@ -149,10 +149,8 @@ impl LazySource for GuestLazySource {
 }
 
 /// The part of `program` a split guest's viewer runs: its `[client]` traits and pages.
-fn client_program_of(program: &OrbitalSchema) -> serde_json::Value {
-    orbital_core_base::runs_on::client_program(&orbital_core_eval::util::canonical_json(
-        &serde_json::to_value(program).unwrap_or(serde_json::Value::Null),
-    ))
+fn client_program_of(program: &OrbitalSchema) -> Value {
+    orbital_core_base::runs_on::client_program(orbital_core_base::value_serialize::to_canonical_value(program).unwrap_or(Value::Null))
 }
 
 fn failure(message: impl Into<String>) -> AgentPortFailure {
@@ -788,7 +786,7 @@ impl RuntimeKernel {
             }
         };
         guest.set_runs_client_traits(!split);
-        let client = split.then(|| json_value(client_program_of(&schema)));
+        let client = split.then(|| client_program_of(&schema));
         if has_lazy {
             guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
         }
@@ -903,7 +901,10 @@ impl RuntimeKernel {
             error: format!("program/lazy: {}", refused.message),
             errors: refused.errors,
         })?;
-        Ok(json_value(serde_json::json!({ "file": file.as_str(), "program": client_program_of(&child) })))
+        Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([
+            ("file".into(), Value::String(file.as_str().into())),
+            ("program".into(), client_program_of(&child)),
+        ])))
     }
 
     /// `program/navigate { guest, route, rows?, remount? }`: load the lazy page `route` names, seed its `rows`, mount the

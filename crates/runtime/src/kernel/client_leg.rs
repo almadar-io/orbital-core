@@ -1131,13 +1131,10 @@ impl RuntimeKernel {
                         && matches!(c.scope, Some(orbital_core_base::schema::types::EventScope::External))
                 })
             });
+        let listeners = self.listener_manager.matching(&emitted.event, source);
         let heard = client_run(emitter)
-            || external
-            || self
-                .listener_manager
-                .matching(&emitted.event, source)
-                .iter()
-                .any(|l| browser_listener(&l.trait_name));
+            || (external && listeners.is_empty())
+            || listeners.iter().any(|l| browser_listener(&l.trait_name));
         heard.then_some(true)
     }
 

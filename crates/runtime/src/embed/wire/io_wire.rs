@@ -3,7 +3,7 @@
 use super::*;
 
 /// The I/O a dispatch needs the host to do (`IoRequest` on the wire).
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum IoRequestWire {
@@ -84,7 +84,7 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     SecretSet {
         name: String,
-        #[cfg_attr(test, ts(type = "string"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string"))]
         value: SecretText,
         ttl_ms: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -93,7 +93,7 @@ pub enum IoRequestWire {
     #[serde(rename_all = "camelCase")]
     SecretRotate {
         name: String,
-        #[cfg_attr(test, ts(type = "string"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string"))]
         value: SecretText,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         principal: Option<String>,
@@ -172,7 +172,7 @@ pub enum IoRequestWire {
     CredentialStoreWrite {
         service: String,
         name: String,
-        #[cfg_attr(test, ts(type = "string"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string"))]
         value: SecretText,
     },
     #[serde(rename_all = "camelCase")]
@@ -184,7 +184,7 @@ pub enum IoRequestWire {
 }
 
 /// A `credential-connect` ask on the wire: the code and verifier travel as plain text to the host that exchanges them.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialGrantWire {
@@ -193,11 +193,11 @@ pub struct CredentialGrantWire {
     pub principal: Option<String>,
     pub token_endpoint: String,
     pub grant: String,
-    #[cfg_attr(test, ts(type = "string"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string"))]
     pub code: SecretText,
     pub redirect_uri: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "string"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string"))]
     pub verifier: Option<SecretText>,
     pub client_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,7 +260,7 @@ impl From<CredentialGrantWire> for CredentialGrant {
 }
 
 /// Why the on-device model or embedder gave no answer.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelFailureWire {
@@ -268,7 +268,7 @@ pub struct ModelFailureWire {
     pub message: String,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ModelFailureKindWire {
@@ -302,7 +302,7 @@ impl From<ModelFailureWire> for ModelFailure {
 }
 
 /// A page fact `browser/page-facts` reads.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PageFactFieldWire {
@@ -335,7 +335,7 @@ impl From<PageFactFieldWire> for PageFactField {
 }
 
 /// The page facts a host read: `available` is false when there is no page.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageFactsWire {
@@ -347,16 +347,16 @@ pub struct PageFactsWire {
 }
 
 /// A host's answer to one request; `kind` must be the one the request calls for.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum IoAnswerWire {
     Row {
-        #[cfg_attr(test, ts(type = "Settled<EntityRow | null, string>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<EntityRow | null, string>"))]
         result: Settled<Value, String>,
     },
     Rows {
-        #[cfg_attr(test, ts(type = "Settled<Array<EntityRow>, string>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<Array<EntityRow>, string>"))]
         result: Settled<Vec<Value>, String>,
     },
     Page {
@@ -409,7 +409,7 @@ pub enum IoAnswerWire {
         result: Settled<Value, TabFailure>,
     },
     Secret {
-        #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<string | null, string>"))]
         result: Settled<Option<SecretText>, String>,
     },
     SecretSet {
@@ -420,7 +420,7 @@ pub enum IoAnswerWire {
     },
     /// The random bytes, standard base64.
     Random {
-        #[cfg_attr(test, ts(type = "Settled<string, string>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<string, string>"))]
         result: Settled<SecretText, String>,
     },
     /// The host clock, epoch milliseconds.
@@ -453,7 +453,7 @@ pub enum IoAnswerWire {
         result: Settled<EnvTails, String>,
     },
     CredentialStoreRead {
-        #[cfg_attr(test, ts(type = "Settled<string | null, string>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Settled<string | null, string>"))]
         result: Settled<Option<SecretText>, String>,
     },
     CredentialStoreWrite {
@@ -477,7 +477,7 @@ pub enum IoAnswerWire {
 }
 
 /// A request a dispatch is waiting on, named by `id`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PendingRequestWire {
     pub id: u64,
@@ -485,7 +485,7 @@ pub struct PendingRequestWire {
 }
 
 /// The host's answer to the request `id`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IoReplyWire {
     pub id: u64,
@@ -494,7 +494,7 @@ pub struct IoReplyWire {
 
 /// Where a server dispatch stands: finished with its response, or waiting on `requests` (answer them
 /// in any order, concurrently, and `resume` the `flight`).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 #[expect(clippy::large_enum_variant, reason = "public unboxed layout is the API; pinned by tests/public_layout_contract.rs")]
@@ -512,7 +512,7 @@ pub enum ServerProgressWire {
 }
 
 /// A queued request the kernel started once the lane freed, under the ticket `start` answered with.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 pub enum NextWire {
@@ -528,12 +528,12 @@ pub enum NextWire {
 
 /// Where a row-set resolve through a host-answered store stands: the resolved page, or `requests` to answer
 /// before `resumeResolve`-ing the `flight`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum ResolveProgressWire {
     Done {
-        #[cfg_attr(test, ts(type = "Array<EntityRow>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<EntityRow>"))]
         rows: Vec<Value>,
         total: usize,
     },

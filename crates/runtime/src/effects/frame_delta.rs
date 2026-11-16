@@ -28,7 +28,7 @@ pub enum FrameOp {
 
 /// The change a response makes to the frames its client holds. `session` names the record the versions belong to;
 /// `None` is an unversioned delta (a request served by a session that keeps no record), applied wherever it lands.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameDelta {
@@ -48,7 +48,7 @@ pub struct FrameDelta {
 }
 
 /// The theme key a session is bound to by `theme/set`: absent when none is bound and the declared themes apply.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameTheme {
@@ -57,12 +57,12 @@ pub struct FrameTheme {
 }
 
 /// The `[identity]` row a session is bound to: `user` is its `@user`, absent for the anonymous viewer.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub user: Option<Value>,
 }
 

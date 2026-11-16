@@ -37,6 +37,7 @@ libffi = { version = "5.2", optional = true }
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "wav", "flac", "pcm", "ogg", "vorbis", "aac", "isomp4"], optional = true }
 orbital-core-base = { path = "../base", default-features = false }
 orbital-core-eval = { path = "../eval", default-features = false }
+ts-rs = { version = "12.0.1", optional = true }
 
 [features]
 default = ["std", "wire-drivers"]
@@ -68,14 +69,14 @@ client-http = ["std", "dep:ureq", "ureq/tls"]
 ffi = ["std", "dep:libloading", "dep:libffi"]
 # The static WGSL check behind `gpu/shader-create` findings (naga).
 wgsl = ["std", "orbital-core-base/wgsl"]
+# The TypeScript mirror of the embed wire and its staleness test (`kernel_wire_ts`); off so test builds share the kernel orb uses.
+ts-export = ["std", "dep:ts-rs", "orbital-core-base/ts-export", "orbital-core-eval/ts-export"]
 
 [dev-dependencies]
 tempfile = "3.10"
-ts-rs = "12.0.1"
 syn = { version = "2", features = ["full"] }
 quote = "1"
-orbital-core-base = { path = "../base", features = ["ts-export"] }
-orbital-core-eval = { path = "../eval", features = ["ts-export"] }
+orbital-core = { path = "../..", features = ["native"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

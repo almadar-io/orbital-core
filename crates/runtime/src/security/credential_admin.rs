@@ -11,18 +11,18 @@ use crate::resumable::IoPort;
 
 /// One stored credential row as the store reports it: its service and credential name, and the last four characters of a
 /// secret of eight or more, never its value.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredName {
     pub service: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub last4: Option<String>,
 }
 
 /// The credential store's state: whether it can encrypt (a master key is present) and the rows it holds.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoreListing {
     pub enabled: bool,
@@ -31,12 +31,12 @@ pub struct StoreListing {
 
 /// One declared credential name the host's environment holds: the last four characters of a value of eight or more,
 /// never the value.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvTail {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub last4: Option<String>,
 }
 
@@ -51,7 +51,7 @@ impl EnvTail {
 
 /// A host's answer to the environment-tails ask: the tails of the names its environment holds, or that it has no
 /// environment to read (a browser, a host without one).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EnvTails {
@@ -61,7 +61,7 @@ pub enum EnvTails {
 
 /// What `credential-status` reports of one credential: whether the host holds a value, and the non-secret account label
 /// stored beside it (the email it was signed in as), never the value.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CredentialStanding {
     pub connected: bool,
@@ -103,7 +103,7 @@ pub struct CredentialGrant {
 }
 
 /// Why a `credential-connect` did not connect.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectFailureKind {
@@ -134,7 +134,7 @@ impl ConnectFailureKind {
 }
 
 /// A host's failure answer to a `credential-connect`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectFailure {
     pub kind: ConnectFailureKind,
@@ -339,15 +339,15 @@ impl CredentialGrant {
 }
 
 /// What a rotation did to the stored rows.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RotateCounts {
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
     pub rotated: u64,
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
     pub already_current: u64,
-    #[cfg_attr(test, ts(type = "number"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
     pub unreadable: u64,
 }
 

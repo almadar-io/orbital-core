@@ -389,7 +389,7 @@ struct InboundView {
 
 /// The records this client must fetch the frames of again: its version of `session` fell behind a delta.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[serde(rename_all = "camelCase")]
 pub struct FramesResync {
     pub session: String,

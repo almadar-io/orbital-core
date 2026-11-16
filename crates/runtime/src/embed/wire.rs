@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 /// A server leg and the orbital that owns the trait it is addressed to (the route it posts to).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct RoutedLeg {
     pub orbital: String,
@@ -31,7 +31,7 @@ pub struct RoutedLeg {
 }
 
 /// The `(trait, event)` that began a dispatch; a leg failure is reported against its event.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct SeedWire {
     #[serde(rename = "trait")]
@@ -42,7 +42,7 @@ pub struct SeedWire {
 /// One dispatch: the local response, the legs to post, the mode, the pre-dispatch snapshot
 /// (`RuntimeOptimistic` only), the `(trait, event)` pairs already realized locally and the
 /// traits awaiting the legs.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatchWire {
@@ -64,7 +64,7 @@ pub struct DispatchWire {
     pub fold_seeded: Vec<String>,
     /// The steps the dispatch ran, in order, for a mount batch to read as one cascade (EXEC-DIST-10).
     #[serde(skip)]
-    #[cfg_attr(test, ts(skip))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(skip))]
     pub steps: Vec<BatchStep>,
 }
 
@@ -83,7 +83,7 @@ pub struct BatchStep {
 }
 
 /// The leg of a server-backed dispatch that delegated nothing, and the traits awaiting its answer.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatefulLegWire {
@@ -93,7 +93,7 @@ pub struct StatefulLegWire {
 }
 
 /// One `mount` leg: the seeds of one owning orbital that need the host, posted together.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MountLegWire {
@@ -108,7 +108,7 @@ pub struct MountLegWire {
 }
 
 /// A mount batch: each seed's local dispatch and the legs to post, per host topology.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MountWire {
@@ -129,7 +129,7 @@ pub struct MountWire {
 }
 
 /// The seed a mount batch stopped at, and why.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct MountFailure {
     #[serde(rename = "trait")]
@@ -139,7 +139,7 @@ pub struct MountFailure {
 }
 
 /// The traits of one orbital the page entered that have left, and the one leg that releases them on its host.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Left {
@@ -149,7 +149,7 @@ pub struct Left {
 }
 
 /// What entering a page's traits answers: the seeds to mount, and the traits that left.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entered {
@@ -158,7 +158,7 @@ pub struct Entered {
 }
 
 /// A folded server response: each applied `(trait, newState)` and the merged response.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppliedWire {
@@ -173,7 +173,7 @@ pub struct AppliedWire {
 }
 
 /// Where an answer folded in flight order stands: folded, or queued behind an older flight.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 #[expect(clippy::large_enum_variant, reason = "mirrors ServerProgressWire's unboxed layout")]
@@ -183,7 +183,7 @@ pub enum FoldProgressWire {
 }
 
 /// A queued answer the kernel folded once its flight was the oldest open one, under the ticket `foldInOrder` answered with.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "outcome", rename_all = "camelCase")]
 #[expect(clippy::large_enum_variant, reason = "mirrors NextWire's unboxed layout")]
@@ -192,7 +192,7 @@ pub enum FoldedNextWire {
     Failed { ticket: u64, error: String },
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct FiredTick {
     #[serde(rename = "trait")]
@@ -201,7 +201,7 @@ pub struct FiredTick {
 }
 
 /// The listener cascade of one tick `emit`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct FrameDispatch {
     #[serde(rename = "trait")]
@@ -211,7 +211,7 @@ pub struct FrameDispatch {
 }
 
 /// One host frame of the tick clock.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameWire {
@@ -226,7 +226,7 @@ pub struct FrameWire {
 }
 
 /// A trait name more than one orbital declares; never listed under `states`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 pub struct AmbiguousTrait {
     #[serde(rename = "trait")]
@@ -235,11 +235,11 @@ pub struct AmbiguousTrait {
 }
 
 /// Every trait state plus the resolved theme and what it derives.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotWire {
-    #[cfg_attr(test, ts(type = "JsonObject"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonObject"))]
     pub states: serde_json::Map<String, serde_json::Value>,
     pub ambiguous_traits: Vec<AmbiguousTrait>,
     pub theme: ResolvedTheme,
@@ -248,7 +248,7 @@ pub struct SnapshotWire {
 }
 
 /// Who a `call-service` runs for.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CallerWire {
     pub principal: String,
@@ -257,7 +257,7 @@ pub struct CallerWire {
 }
 
 /// The events a `call-service` call site routes its outcome and live messages to.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallRoutesWire {
@@ -273,7 +273,7 @@ pub struct CallRoutesWire {
 
 /// Where a `call-service` is made from: the trait (and orbital) whose transition runs it, its routes,
 /// and whether the step is a follow-on of the dispatch.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CallSiteWire {
@@ -289,7 +289,7 @@ pub struct CallSiteWire {
 }
 
 /// A substrate operator's failure.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubstrateFailureWire {
     pub message: String,
@@ -297,7 +297,7 @@ pub struct SubstrateFailureWire {
 }
 
 /// A host's result for one request: the value, or the message it failed with.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Settled<T, E> {
@@ -325,9 +325,9 @@ impl<T, E> From<Settled<T, E>> for Result<T, E> {
 
 pub use orbital_core_base::secret::SecretText;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ts-export"))]
 pub mod ts_export;
-#[cfg(test)]
+#[cfg(all(test, feature = "ts-export"))]
 mod serde_index;
 
 mod io_wire;

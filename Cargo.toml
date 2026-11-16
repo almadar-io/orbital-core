@@ -11,6 +11,8 @@ default = ["wire-drivers"]
 wire-drivers = ["orbital-core-runtime/wire-drivers"]
 async = ["orbital-core-base/async"]
 client-http = ["orbital-core-runtime/client-http"]
+# The kernel the native orb embeds. Every workspace crate's tests request it too, so one compiled kernel serves them all.
+native = ["wire-drivers", "client-http", "orbital-core-runtime/default", "orbital-core-runtime/ffi", "orbital-core-runtime/wgsl"]
 
 [dependencies]
 orbital-core-base = { path = "crates/base" }

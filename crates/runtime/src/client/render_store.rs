@@ -236,33 +236,43 @@ impl RenderStore {
     /// Every instance with a slot whose marker leaves resolve differently now, as
     /// `(trait, entity id, repaints)`. `entity_now` reads an instance's current `@entity`;
     /// `reads_live` says whether the client owns that instance's entity bindings (the web's
-    /// `clientResolvesRenderBindings`). The store is updated to what it returns, so a second
+    /// `clientResolvesRenderBindings`). `user_now` is the session's `@user`: a slot resolved against another
+    /// `@user` (the identity a server frame mirrored after the first paint, EXEC-IDENTITY-4) resolves again with
+    /// only `@user` changed, on every instance. The store is updated to what it returns, so a second
     /// call with nothing new returns nothing.
     pub(crate) fn stale(
         &mut self,
         reads_live: impl Fn(&str) -> bool,
         entity_now: impl Fn(&str, &str) -> Value,
+        user_now: Option<&Value>,
+        rebind_user: impl Fn(&str, &BindingContext, &Value) -> BindingContext,
     ) -> Vec<Stale> {
         let mut out = Vec::new();
         for ((trait_name, entity_id), slots) in &mut self.instances {
-            if !reads_live(trait_name) {
-                continue;
-            }
-            let now = Arc::new(entity_now(trait_name, entity_id));
+            let live_entity = reads_live(trait_name);
+            let now = Arc::new(if live_entity { entity_now(trait_name, entity_id) } else { Value::Null });
             let mut repaints = Vec::new();
             let mut faults = Vec::new();
-            for slot in slots
-                .iter_mut()
-                .filter(|s| s.rows_dirty || s.entity.as_value() != &*now)
-            {
-                let rows_changed = std::mem::take(&mut slot.rows_dirty);
-                let resolved = if slot.entity.as_value() != &*now {
+            for slot in slots.iter_mut().filter(|s| {
+                user_now.is_some_and(|u| *s.flushed.user != *u) || (live_entity && (s.rows_dirty || s.entity.as_value() != &*now))
+            }) {
+                let user_changed = user_now.filter(|u| *slot.flushed.user != **u);
+                if let Some(user) = user_changed {
+                    slot.flushed = Arc::new(rebind_user(trait_name, &slot.flushed, user));
+                }
+                let entity_changed = live_entity && slot.entity.as_value() != &*now;
+                let rows_changed = live_entity && std::mem::take(&mut slot.rows_dirty);
+                let resolved = if entity_changed || user_changed.is_some() {
                     let mut live = (*slot.flushed).clone();
-                    live.entity = SharedEntity::from_arc(Arc::clone(&now));
+                    if entity_changed {
+                        live.entity = SharedEntity::from_arc(Arc::clone(&now));
+                    }
                     match resolve_deferred(&slot.source, &slot.flushed, &live, 0) {
                         Ok(resolved) => resolved,
                         Err(fault) => {
-                            slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                            if entity_changed {
+                                slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                            }
                             slot.rows_dirty = rows_changed;
                             faults.push(RepaintFault {
                                 slot: slot.slot.clone(),
@@ -274,7 +284,9 @@ impl RenderStore {
                 } else {
                     slot.resolved.clone()
                 };
-                slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                if entity_changed {
+                    slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                }
                 if rows_changed || resolved != slot.resolved {
                     slot.resolved = resolved.clone();
                     slot.row_sets = row_sets_in(&resolved);
@@ -522,7 +534,7 @@ mod tests {
             &flushed,
         );
         let now = val(json!({ "n": 2 }));
-        let first = store.stale(|_| true, |_, _| now.clone());
+        let first = store.stale(|_| true, |_, _| now.clone(), None, |_, c, _| c.clone());
         assert_eq!(first.len(), 1);
         assert_eq!(
             first[0].2,
@@ -532,7 +544,7 @@ mod tests {
                 rows_changed: false
             }]
         );
-        assert!(store.stale(|_| true, |_, _| now.clone()).is_empty());
+        assert!(store.stale(|_| true, |_, _| now.clone(), None, |_, c, _| c.clone()).is_empty());
     }
 
     #[test]
@@ -546,7 +558,7 @@ mod tests {
             &flushed,
         );
         assert!(store
-            .stale(|_| false, |_, _| val(json!({ "n": 2 })))
+            .stale(|_| false, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone())
             .is_empty());
     }
 
@@ -567,7 +579,7 @@ mod tests {
             &flushed,
         );
         assert!(store
-            .stale(|_| true, |_, _| val(json!({ "n": 2 })))
+            .stale(|_| true, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone())
             .is_empty());
     }
 
@@ -584,7 +596,7 @@ mod tests {
             );
         }
         store.forget_traits(["A"]);
-        let out = store.stale(|_| true, |_, _| val(json!({ "n": 2 })));
+        let out = store.stale(|_| true, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone());
         assert_eq!(
             out.iter()
                 .map(|(t, _, _, _)| t.as_str())

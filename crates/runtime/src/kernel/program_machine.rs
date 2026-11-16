@@ -13,7 +13,7 @@ use orbital_core_base::value::Value;
 use serde::{Deserialize, Serialize};
 
 /// One declared field of an event's payload.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PayloadSlot {
     pub name: String,
@@ -29,7 +29,7 @@ pub struct PayloadSlot {
 }
 
 /// One transition of a program: `from --event--> to` in `orbital`'s `trait`, and the payload the event declares.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineRow {
     pub orbital: String,
@@ -44,7 +44,7 @@ pub struct MachineRow {
 }
 
 /// What chose the transition: its guard passed, every guard failed, or no guard was tried.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GuardVerdict {
@@ -54,7 +54,7 @@ pub enum GuardVerdict {
     Unguarded,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayedEffectStatus {
@@ -64,7 +64,7 @@ pub enum PlayedEffectStatus {
 }
 
 /// The state a played trait was in before and after the step.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayedState {
     pub before: Option<String>,
@@ -72,12 +72,12 @@ pub struct PlayedState {
 }
 
 /// One authored effect of the fired arm.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedEffect {
     #[serde(rename = "type")]
     pub effect_type: String,
-    #[cfg_attr(test, ts(type = "Array<JsonValue>"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<JsonValue>"))]
     pub args: Vec<Value>,
     pub status: PlayedEffectStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -89,16 +89,16 @@ pub struct PlayedEffect {
     pub routed: bool,
     /// The body effects a compound (`let` / `do` / `if` / `when`) ran, in order; absent for a leaf effect.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "Array<PlayedEffect>", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<PlayedEffect>", optional))]
     pub nested: Option<Vec<PlayedEffect>>,
     /// The effect's cost when its step was measured (EXEC-COST-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// How a proposition fared on the run.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EnsuresVerdict {
@@ -109,23 +109,23 @@ pub enum EnsuresVerdict {
 }
 
 /// The bindings a broken proposition was evaluated under.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PropositionBindings {
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity: Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub from_entity: Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub payload: Value,
 }
 
 /// One `@ensures` proposition of the played arm, judged by the kernel on the step's rows.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayedEnsures {
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub proposition: SExpression,
     pub verdict: EnsuresVerdict,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,24 +135,24 @@ pub struct PlayedEnsures {
 }
 
 /// One event the step emitted.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedEmit {
     #[serde(rename = "type")]
     pub event_type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EventPayload", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload", optional))]
     pub payload: Option<Value>,
     pub timestamp: u64,
 }
 
 /// One guarded arm tried while choosing the arm that fires.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedGuard {
     /// The arm's position among the `from --event-->` arms, in declaration order.
     pub arm: u32,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub guard: Value,
     pub passed: bool,
     pub trace: Vec<EvalStepWire>,
@@ -161,7 +161,7 @@ pub struct PlayedGuard {
 }
 
 /// The circuit one played request ran: Event, Guard, Transition, Effects.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlayedResult {
@@ -186,7 +186,7 @@ pub struct PlayedResult {
     /// Why the requested trait's step failed, when it did.
     pub failure: Option<String>,
     /// The step's row after its effects.
-    #[cfg_attr(test, ts(type = "EventPayload | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload | null"))]
     pub entity_after: serde_json::Value,
     /// The keyed asks this step recorded that are still open after it; an earlier step's open ask is that step's.
     pub pending_asks: Vec<PendingAsk>,
@@ -197,12 +197,12 @@ pub struct PlayedResult {
     pub collapsed: Option<Vec<StepCollapsed>>,
     /// Its cost when the ask named `cost: true` (EXEC-COST-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// One trait the played request's cascade moved.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedOutcome {
     pub orbital: String,
@@ -217,12 +217,12 @@ pub struct PlayedOutcome {
     pub emitted: Vec<PlayedEmit>,
     /// Its cost when the ask named `cost: true` (EXEC-COST-1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(optional))]
     pub cost: Option<orbital_core_base::cost::StepCost>,
 }
 
 /// One non-`system` slot a played trait's `render-ui` filled, as the client circuit rendered it.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedSlot {
@@ -236,7 +236,7 @@ pub struct RenderedSlot {
     /// The slot's content exactly as the kernel resolved it for a host to paint (EXEC-STEP-4); present only when
     /// `options.renderProps` asked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub props: Option<serde_json::Value>,
     /// The slot's repaint failed to resolve and it keeps its last paint (G-ORBITAL-CORE-090); present only when
     /// `options.renderProps` asked and the failure happened.
@@ -245,7 +245,7 @@ pub struct RenderedSlot {
 }
 
 /// A slot's typed repaint failure, as the `repaint-failed` rejection carried it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SlotFault {
@@ -254,7 +254,7 @@ pub struct SlotFault {
 }
 
 /// One node of a rendered tree.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenderedNode {
@@ -271,7 +271,7 @@ pub struct RenderedNode {
     pub trait_refs: Vec<TraitRef>,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum EntityBindingKind {
@@ -292,7 +292,7 @@ pub enum EntityBindingKind {
 }
 
 /// What an entity-bound pattern's `entity` resolved to.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityBinding {
@@ -307,7 +307,7 @@ pub struct EntityBinding {
 }
 
 /// A `@trait.X` reference in a rendered tree.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraitRef {
@@ -319,15 +319,15 @@ pub struct TraitRef {
 }
 
 /// What a request seeds on the trait before its event runs, and `program/step` echoes back as asked.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StepSeeds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: JsonValue }"))]
     pub entity: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: JsonValue }"))]
     pub config: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub now: Option<f64>,
@@ -338,10 +338,10 @@ pub struct StepSeeds {
         deserialize_with = "present_or_null",
         skip_serializing_if = "Option::is_none"
     )]
-    #[cfg_attr(test, ts(type = "{ [key in string]: JsonValue } | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: JsonValue } | null"))]
     pub viewer: Option<Option<serde_json::Map<String, serde_json::Value>>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: string }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: string }"))]
     pub credentials: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -358,7 +358,7 @@ fn empty_payload() -> Value {
 }
 
 /// A request `program/step` plays: the event for `trait_name` in `orbital`, from the state `from`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlayRequest {
     pub orbital: String,
@@ -367,14 +367,14 @@ pub struct PlayRequest {
     pub from: String,
     pub event: String,
     #[serde(default = "empty_payload")]
-    #[cfg_attr(test, ts(type = "EventPayload"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload"))]
     pub payload: Value,
     #[serde(flatten)]
     pub seeds: StepSeeds,
 }
 
 /// A request `program/step` played: the request as asked, and the circuit it ran.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayedStep {
     pub orbital: String,
@@ -382,10 +382,10 @@ pub struct PlayedStep {
     pub trait_name: String,
     pub from: String,
     pub event: String,
-    #[cfg_attr(test, ts(type = "EventPayload"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload"))]
     pub payload: Value,
     #[serde(flatten)]
-    #[cfg_attr(test, ts(flatten))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(flatten))]
     pub seeds: StepSeeds,
     pub result: PlayedResult,
 }

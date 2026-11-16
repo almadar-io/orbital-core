@@ -2352,3 +2352,75 @@ fn a_program_session_step_keeps_its_asker_and_its_standing_across_a_host_answere
     let outcomes = drive_blocking(&kernel, progress, &|request| BlockingHost { source: &host_rows, service: None, substrate: None }.answer(request)).unwrap();
     assert!(host_rows.find("Invite", "m-t-own-u1").unwrap().is_some(), "{outcomes:?}");
 }
+
+// EXEC-IDENTITY-4: a client kernel renders before the server's first identity frame; when the mirrored identity
+// changes, the renders that read `@user` repaint (owner ruling 2026-11-16, G-CROSS-639).
+fn viewer_header_schema() -> OrbitalSchema {
+    serde_json::from_value(serde_json::json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Ui",
+            "entity": { "name": "Chrome", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Header", "linkedEntity": "Chrome", "dispatch": "client",
+                  "config": { "viewer": { "type": "string", "default": "@user.name" } },
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "INIT",
+                        "effects": [["render-ui", "main", { "type": "typography", "content": "@config.viewer" }]] }] } },
+                { "name": "Greeting", "linkedEntity": "Chrome", "dispatch": "client",
+                  "config": { "who": { "type": "string", "default": ["default", "@user.name", "friend"] } },
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "INIT",
+                        "effects": [["render-ui", "main", { "type": "typography", "content": "@config.who" }]] }] } },
+                { "name": "Plain", "linkedEntity": "Chrome", "dispatch": "client",
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "INIT",
+                        "effects": [["render-ui", "main", { "type": "typography", "content": "Welcome" }]] }] } }
+            ]
+        }, {
+            "name": "People",
+            "entity": { "name": "Person", "identity": true, "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "name", "type": "string" }] },
+            "traits": []
+        }]
+    }))
+    .unwrap()
+}
+
+fn mirrored(user: serde_json::Value) -> crate::effects::frame_delta::FrameIdentity {
+    crate::effects::frame_delta::FrameIdentity { user: Some(serde_json::from_value(user).unwrap()) }
+}
+
+#[test]
+fn a_render_that_reads_user_repaints_when_the_mirrored_identity_arrives() {
+    let (kernel, _collector) = client_kernel_with(viewer_header_schema());
+    kernel.dispatch("Header", None, "INIT", Value::Null).unwrap();
+    kernel.dispatch("Plain", None, "INIT", Value::Null).unwrap();
+    assert!(kernel.rerender_stale().is_empty(), "nothing changed yet");
+    kernel.mirror_identity(&mirrored(serde_json::json!({ "id": "u1", "name": "Ada" })));
+    let repainted = kernel.rerender_stale();
+    let names: Vec<&str> = repainted.iter().map(|r| r.trait_name.as_str()).collect();
+    assert_eq!(names, ["Header"], "only the render that reads @user: {repainted:?}");
+    let content = serde_json::to_value(&repainted[0].effects).unwrap();
+    assert!(content.to_string().contains("Ada"), "{content}");
+}
+
+#[test]
+fn control_the_same_identity_mirrored_again_repaints_nothing() {
+    let (kernel, _collector) = client_kernel_with(viewer_header_schema());
+    kernel.dispatch("Header", None, "INIT", Value::Null).unwrap();
+    kernel.mirror_identity(&mirrored(serde_json::json!({ "id": "u1", "name": "Ada" })));
+    assert_eq!(kernel.rerender_stale().len(), 1);
+    kernel.mirror_identity(&mirrored(serde_json::json!({ "id": "u1", "name": "Ada" })));
+    assert!(kernel.rerender_stale().is_empty());
+}
+
+#[test]
+fn a_render_whose_config_knob_is_an_expression_over_user_repaints_too() {
+    let (kernel, _collector) = client_kernel_with(viewer_header_schema());
+    kernel.dispatch("Greeting", None, "INIT", Value::Null).unwrap();
+    kernel.mirror_identity(&mirrored(serde_json::json!({ "id": "u1", "name": "Ada" })));
+    let repainted = kernel.rerender_stale();
+    assert_eq!(repainted.len(), 1, "{repainted:?}");
+    assert!(serde_json::to_value(&repainted[0].effects).unwrap().to_string().contains("Ada"), "{repainted:?}");
+}

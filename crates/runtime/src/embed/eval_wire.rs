@@ -17,23 +17,23 @@ use std::collections::HashMap;
 
 /// The binding context an expression is evaluated against. Every root a host does not hand over is
 /// unbound, as in a dispatch that never set it.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct EvalContextWire {
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub entity: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub payload: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub config: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub user: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub callsite_payload: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub current_theme: Option<Value>,
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub pages: Option<Value>,
     pub state: Option<String>,
     /// The dispatch's `now` stamp (ms epoch); absent = the wall clock.
@@ -42,10 +42,10 @@ pub struct EvalContextWire {
     /// The active locale's merged catalog (qualified key to message) for `i18n/t`.
     pub messages: Option<HashMap<String, String>>,
     /// Local bindings (`@name`), as a `let` would bind them.
-    #[cfg_attr(test, ts(type = "JsonObject", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonObject", optional))]
     pub locals: Option<serde_json::Map<String, serde_json::Value>>,
     /// Entity rows by type, for `count` queries over a store.
-    #[cfg_attr(test, ts(type = "{ [key in string]: Array<JsonValue> }", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: Array<JsonValue> }", optional))]
     pub entity_stores: Option<HashMap<String, Vec<Value>>>,
 }
 
@@ -99,12 +99,12 @@ impl EvalContextWire {
 }
 
 /// One expression's outcome: its value, or the evaluator's message.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EvalOutcomeWire {
     Value {
-        #[cfg_attr(test, ts(type = "JsonValue"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
         value: Value,
     },
     Error {
@@ -113,7 +113,7 @@ pub enum EvalOutcomeWire {
 }
 
 /// One guard's outcome: its truth, or the evaluator's message.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum GuardOutcomeWire {
@@ -122,21 +122,21 @@ pub enum GuardOutcomeWire {
 }
 
 /// One step of a traced evaluation (`EvalStep` in `@almadar/core`).
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalStepWire {
     pub kind: EvalStepKind,
-    #[cfg_attr(test, ts(type = "Array<number | string>"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<number | string>"))]
     pub path: Vec<PathSegWire>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub value: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EvalStepKind {
@@ -154,7 +154,7 @@ pub enum PathSegWire {
 }
 
 /// A traced evaluation: the outcome and every step up to it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalTracedWire {
@@ -163,16 +163,16 @@ pub struct EvalTracedWire {
 }
 
 /// What a binding term folds to for a row predicate (`RowBindingResult` in `@almadar/core`).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RowBindingWire {
     Value {
-        #[cfg_attr(test, ts(type = "string | number | boolean | null"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "string | number | boolean | null"))]
         value: Value,
     },
     List {
-        #[cfg_attr(test, ts(type = "Array<string | number | boolean | null>"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<string | number | boolean | null>"))]
         values: Vec<Value>,
     },
     Unspecialised {
@@ -184,7 +184,7 @@ pub enum RowBindingWire {
 }
 
 /// The mutation a row-access directive guards.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MutationOpWire {
@@ -194,7 +194,7 @@ pub enum MutationOpWire {
 }
 
 /// Whether a mutation passed its access directive, and the denial when it did not.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MutationVerdictWire {
@@ -480,7 +480,7 @@ pub fn resolve_row_binding_json(term: &str, bindings_json: &str) -> Result<Strin
 // ---------------------------------------------------------------------------------------------------------
 
 /// What happened to one effect: it ran, it failed, or this operation has no handler for its kind.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EffectStatusWire {
@@ -491,14 +491,14 @@ pub enum EffectStatusWire {
 
 /// One effect of the list, as `EffectTrace` in `@almadar/core` reports it: its operator head, its arguments, its
 /// outcome and the evaluation of the expressions it ran, node by node under the effect's own paths.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EffectTraceWire {
     #[serde(rename = "type")]
-    #[cfg_attr(test, ts(rename = "type"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(rename = "type"))]
     pub kind: String,
-    #[cfg_attr(test, ts(type = "Array<JsonValue>"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<JsonValue>"))]
     pub args: Vec<SExpression>,
     pub status: EffectStatusWire,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -508,36 +508,36 @@ pub struct EffectTraceWire {
 }
 
 /// An event an `emit` effect raised, with its evaluated payload.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmittedEffectWire {
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub payload: Option<Value>,
 }
 
 /// A field a `set` effect wrote, in write order (a field set twice appears twice).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EntityWriteWire {
     pub field: String,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub value: Value,
 }
 
 /// The effects of one list run in order against one row: a trace per effect, the events raised, the writes made and
 /// the row after them. A later effect reads the writes of the earlier ones.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraceEffectsWire {
     pub effects: Vec<EffectTraceWire>,
     pub emitted: Vec<EmittedEffectWire>,
     pub writes: Vec<EntityWriteWire>,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity: Value,
 }
 

@@ -52,7 +52,7 @@ pub fn delivery_record_value(event: &str, payload: &Value, source: &BusEventSour
 /// `Array<{ trait: string; from: string; event?: string }>` — stateless
 /// addressing (`bus.ts` `OrbitalEventRequest.traits`). `event` is the event the
 /// trait fired on in a cascade; residence routing judges the trait by it.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TraitFrom {
     #[serde(rename = "trait")]
@@ -65,7 +65,7 @@ pub struct TraitFrom {
 /// One `{ traitName, effect }` pairing — the per-trait attribution twin of the flat
 /// `clientEffects` array (same length/order, 1:1 by index). Mirror of
 /// `OrbitalEventResponse.clientEffectsByTrait`.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientEffectByTrait {
@@ -79,7 +79,7 @@ pub struct ClientEffectByTrait {
     pub from_state: Option<String>,
     /// The payload an embedded `@callsitePayload` child was composed with (sticky).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EventPayload"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload"))]
     pub callsite_payload: Option<Value>,
     /// Set when the paint is a repaint with no transition behind it that a renderer must act on beyond the
     /// content: the rows a row-set reference in it points at changed (EXEC-RENDER-3).
@@ -88,7 +88,7 @@ pub struct ClientEffectByTrait {
 }
 
 /// Why a paint was repainted without a transition, when the content alone does not say.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RepaintReason {
@@ -101,7 +101,7 @@ pub enum RepaintReason {
 /// `SERVER_REPORTED_EFFECTS` (`effect.ts`, derived from the effect union) plus the
 /// `substrate` grouping for namespaced operators (head rides `name`). Kept in sync by
 /// `tests/events_wire_fixtures.rs` (the `effect-results-every-kind` case).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ServerEffectKind {
@@ -121,7 +121,7 @@ fn is_not_denied(denied: &Option<bool>) -> bool {
 /// Mirror of `ServerEffectResult` (`effect-result.ts`) — the wire shape a server-side
 /// effect (persist/set/fetch/call-service/...) reports back on
 /// `OrbitalEventResponse.effectResults`.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerEffectResult {
@@ -132,16 +132,16 @@ pub struct ServerEffectResult {
     pub entity_type: Option<String>,
     /// The namespaced operator (`llm/generate`) — only on `ServerEffectKind::Substrate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "NamespacedEffectName"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "NamespacedEffectName"))]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EntityRow | ServerBatchSummary | EventPayloadValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow | ServerBatchSummary | EventPayloadValue"))]
     pub data: Option<Value>,
     pub success: bool,
     /// `true` when a persist failed because an access policy rejected it — never
     /// serialized as `false` (the wire type is the TS literal `true`, not `bool`).
     #[serde(default, skip_serializing_if = "is_not_denied")]
-    #[cfg_attr(test, ts(type = "true"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "true"))]
     pub denied: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -157,7 +157,7 @@ pub struct ServerEffectResult {
 }
 
 /// `EventRequest.run_tick`: which trait's tick the data authority runs once.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunTick {
     #[serde(rename = "trait")]
@@ -167,7 +167,7 @@ pub struct RunTick {
 
 /// Where a leg runs (EXEC-DIST-2): the browser store when every row it touches is browser-stored, else the server.
 /// The kernel decides it from the effects the leg carries; a host routes by it and decides nothing.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LegResidence {
@@ -176,16 +176,16 @@ pub enum LegResidence {
 }
 
 /// Client → server event dispatch request. Mirror of `OrbitalEventRequest` (`bus.ts`).
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRequest {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EventId"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventId"))]
     pub event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EventPayload"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload"))]
     pub payload: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entity_id: Option<String>,
@@ -208,7 +208,7 @@ pub struct EventRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub traits: Option<Vec<TraitFrom>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: EntityRow }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: EntityRow }"))]
     pub entity_by_trait: Option<ValueMap>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
@@ -289,7 +289,7 @@ impl EventRequest {
 }
 
 /// One trait of a mount batch and the lifecycle event (`INIT`/`LOAD`/`$MOUNT`) it runs.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MountSeed {
     #[serde(rename = "trait")]
@@ -298,7 +298,7 @@ pub struct MountSeed {
 }
 
 /// The lifecycle events a trait runs when it enters a page; twin of `LifecycleEvent` in `bus.ts`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LifecycleEvent {
     #[serde(rename = "INIT")]
@@ -329,13 +329,13 @@ impl LifecycleEvent {
 }
 
 /// Mirror of `DeliveryRecord` (`bus.ts`): the delivery a transition is processing.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliveryRecord {
     pub event: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "EventPayload"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EventPayload"))]
     pub payload: Option<Value>,
     #[serde(default)]
     pub source: BusEventSource,
@@ -364,7 +364,7 @@ impl DeliveryRecord {
 }
 
 /// Mirror of `DispatchLog` (`bus.ts`): a trait's log so far in a dispatch that began elsewhere.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispatchLog {
@@ -391,7 +391,7 @@ pub struct DispatchLog {
 ///   "clientEffects": [["render-ui", "main", {"type": "entity-cards"}]]
 /// }
 /// ```
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventResponse {
@@ -406,7 +406,7 @@ pub struct EventResponse {
     #[serde(default)]
     pub emitted_events: Vec<EmittedEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "{ [key in string]: Array<EntityRow> }"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "{ [key in string]: Array<EntityRow> }"))]
     pub data: Option<HashMap<String, Vec<Value>>>,
     /// Fetched pages delivered by reference (`deliver: ids`), keyed by entity name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -414,7 +414,7 @@ pub struct EventResponse {
     /// The traits whose fetches gave each entity's rows in `data`: the host's own record, never sent, from which the
     /// browser view keeps only the rows a browser can use (EXEC-DIST-8).
     #[serde(skip)]
-    #[cfg_attr(test, ts(skip))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(skip))]
     pub fetched_by: HashMap<String, Vec<String>>,
     /// What this response changes in the frames the client holds, against the kernel's view record (EXEC-DIST-7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,7 +454,7 @@ pub struct ExternalInputRequest {
 }
 
 /// Mirrors `@almadar/core` `TransitionRejectionCode`.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum TransitionRejectionCode {
@@ -479,7 +479,7 @@ pub enum TransitionRejectionCode {
 
 /// Mirrors `@almadar/core` `TransitionRejection`: why a trait (or the whole request)
 /// did not transition.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransitionRejection {
@@ -495,7 +495,7 @@ pub struct TransitionRejection {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub guard: Option<Value>,
     /// `effect-failed`: the failure's message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -506,7 +506,7 @@ pub struct TransitionRejection {
 }
 
 /// How one authored effect of a hop ran.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum HopEffectStatus {
@@ -516,7 +516,7 @@ pub enum HopEffectStatus {
 }
 
 /// One authored effect of a hop: its operator head, its arguments as authored, and how it ran.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HopEffect {
     #[serde(rename = "type")]
@@ -529,7 +529,7 @@ pub struct HopEffect {
 
 /// One executed hop of a dispatch (the seed's, a same-trait cascade step's, a listener delivery's), in
 /// dispatch order. Mirrors the JS runtime's `TransitionObserver.onTransition` trace.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransitionHop {
@@ -553,15 +553,15 @@ pub struct TransitionHop {
 
 /// A hop as a proposition judge reads it: the payload it was delivered with, and the trait's `@entity` at the
 /// step's start and after its effects.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HopObservation {
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub payload: Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity_before: Value,
-    #[cfg_attr(test, ts(type = "JsonValue"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue"))]
     pub entity_after: Value,
 }
 

@@ -8,7 +8,7 @@ use orbital_core_base::intern::KeyVocabulary;
 /// One write. `create` fails (`duplicate-id`) when its id is taken. `upsert` creates the row or replaces it whole
 /// by id, keeping the existing `createdAt`. `update` changes an existing row only (never an upsert); `guard` is
 /// tested against the pre-image.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -18,18 +18,18 @@ use orbital_core_base::intern::KeyVocabulary;
 pub enum RowWriteOp {
     Create {
         entity_type: String,
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         data: Value,
     },
     Upsert {
         entity_type: String,
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         data: Value,
     },
     Update {
         entity_type: String,
         id: String,
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         data: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         guard: Option<RowPredicate>,
@@ -72,24 +72,24 @@ impl RowWriteOp {
 
 /// What one write did. `before` is present exactly when the op carried a guard; `rolled-back` only
 /// inside an atomic batch that failed.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum RowWriteOutcome {
     Created {
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         row: Value,
     },
     Updated {
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         row: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         before: Option<Value>,
     },
     Deleted {
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         before: Option<Value>,
     },
     NotFound,
@@ -112,7 +112,7 @@ impl RowWriteOutcome {
 }
 
 /// `atomic`: all ops apply or none do. `stop`: ops apply in order and stop at the first failure.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RowWriteFailureMode {
@@ -120,7 +120,7 @@ pub enum RowWriteFailureMode {
     Stop,
 }
 
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowWriteBatch {
@@ -294,27 +294,27 @@ pub fn apply_write(
 }
 
 /// What a compare-and-commit does to one row the kernel read (EXEC-STORE-5).
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RowCommitWrite {
     /// Left as it is; it is still checked against the version read.
     Keep,
     Put {
-        #[cfg_attr(test, ts(type = "EntityRow"))]
+        #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow"))]
         row: Value,
     },
     Delete,
 }
 
 /// One row of a compare-and-commit: the version the kernel read (`null` when absent) and what it writes.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RowCommit {
     pub entity_type: String,
     pub id: String,
-    #[cfg_attr(test, ts(type = "EntityRow | null"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "EntityRow | null"))]
     pub expected: Option<Value>,
     pub write: RowCommitWrite,
 }

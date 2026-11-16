@@ -432,7 +432,20 @@ pub(super) fn compile_expr(
                 }
                 other => match compare_op_of(other) {
                     Some(op) if args.len() == 2 => {
-                        match (term(&args[0], ctx)?, term(&args[1], ctx)?) {
+                        let binding_value = |v: &Value| {
+                            matches!(v, Value::String(s) if s.starts_with('@') && !(s.as_str() == "@entity" || s.starts_with("@entity.")))
+                        };
+                        let (left, right) = (term(&args[0], ctx), term(&args[1], ctx));
+                        let terms = match (left, right) {
+                            (Err(Fail::Unresolved(_)), Ok(Term::Const(c))) if binding_value(&args[0]) => {
+                                (Term::Const(Value::Null), Term::Const(c))
+                            }
+                            (Ok(Term::Const(c)), Err(Fail::Unresolved(_))) if binding_value(&args[1]) => {
+                                (Term::Const(c), Term::Const(Value::Null))
+                            }
+                            (left, right) => (left?, right?),
+                        };
+                        match terms {
                             (Term::Field(field), Term::Const(value)) => {
                                 compare_leaf_of(field, op, value, required, scope)
                             }

@@ -115,7 +115,7 @@ pub enum ContractQuery {
 }
 
 /// The emitter a listen hears, its orbital resolved: the declared one, else the listening trait's own.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SurfaceListenSource {
     pub orbital: String,
@@ -124,7 +124,7 @@ pub struct SurfaceListenSource {
 }
 
 /// One `listens` entry; `source` is `None` for a listen that hears any emitter.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SurfaceListen {
     pub event: String,
@@ -133,22 +133,22 @@ pub struct SurfaceListen {
 }
 
 /// One transition per source state.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SurfaceTransition {
     pub from: String,
     pub to: String,
     pub event: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub guard: Option<serde_json::Value>,
     #[serde(rename = "awaitRender", skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(test, ts(type = "JsonValue", optional))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "JsonValue", optional))]
     pub await_render: Option<Vec<orbital_core_base::ir::types::AwaitRender>>,
 }
 
 /// One declared tick of a trait: its name and the run-mode flags the kernel holds.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceTick {
@@ -158,7 +158,7 @@ pub struct SurfaceTick {
 }
 
 /// One event a trait declares it emits, with the id the schema stamps on it.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SurfaceEmit {
@@ -169,7 +169,7 @@ pub struct SurfaceEmit {
 
 /// What a host reads of one registered trait. `events` are the transition event keys without the lifecycle events
 /// (`INIT`, `LOAD`, `$MOUNT`), deduplicated in declaration order.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TraitSurface {
@@ -210,7 +210,7 @@ fn holds_guest_view(value: &serde_json::Value) -> bool {
 }
 
 /// What a host reads of the whole program: every registered trait in name order, and the browser-stored entities.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgramSurface {

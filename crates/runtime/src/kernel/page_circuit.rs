@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The circuit a client mounts for one page: which page the kernel resolved, what mounts, and the owning
 /// orbital and linked entity of each trait the page binds (EXEC-ENDPOINT-3).
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageCircuit {
@@ -35,7 +35,7 @@ pub struct PageCircuit {
 }
 
 /// The kernel's answer to whether the asking session may open a page.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields, tag = "verdict", rename_all = "camelCase", rename_all_fields = "camelCase"))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields, tag = "verdict", rename_all = "camelCase", rename_all_fields = "camelCase"))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum PageAccessVerdict {
@@ -53,7 +53,7 @@ pub enum PageAccessVerdict {
 }
 
 /// One ancestor of a route: the concrete prefix and the page declared for it.
-#[cfg_attr(test, derive(ts_rs::TS), ts(optional_fields))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS), ts(optional_fields))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PageAncestor {

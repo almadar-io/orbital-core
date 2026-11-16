@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// What a host is asked for: whole rows, or only the ids of the window.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RowProjection {
@@ -30,10 +30,10 @@ pub enum RowProjection {
 }
 
 /// The answer to a `RowQuery`: the window, and `total` = every match before it.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RowPage {
-    #[cfg_attr(test, ts(type = "Array<EntityRow>"))]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "Array<EntityRow>"))]
     pub rows: Vec<Value>,
     pub total: usize,
 }
@@ -47,7 +47,7 @@ pub struct ResolveRowsRequest {
 }
 
 /// The answer to a ids-only query.
-#[cfg_attr(test, derive(ts_rs::TS))]
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RowIdPage {
     pub ids: Vec<String>,
