@@ -381,7 +381,7 @@ impl<'de> Deserialize<'de> for Value {
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(ValueVisitor)
+        crate::intern::scope(|| deserializer.deserialize_any(ValueVisitor))
     }
 }
 
@@ -425,11 +425,11 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
     }
 
     fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Value, E> {
-        Ok(Value::string(value.to_owned()))
+        Ok(Value::String(crate::intern::shared(value)))
     }
 
     fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Value, E> {
-        Ok(Value::string(value))
+        Ok(Value::String(crate::intern::shared_owned(value)))
     }
 
     fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
@@ -437,15 +437,15 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
         while let Some(item) = seq.next_element::<Value>()? {
             items.push(item);
         }
-        Ok(Value::array(items))
+        Ok(crate::intern::value_list(items))
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut object = ValueMap::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
-            object.insert(key.into(), value);
+            object.insert(crate::intern::shared_owned(key), value);
         }
-        Ok(Value::object(object))
+        Ok(crate::intern::value_record(object))
     }
 }
 
@@ -1078,6 +1078,71 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 
 #[cfg(test)]
 mod tests {
+    use super::{Shared, Value, ValueMap};
+
+    fn parsed(text: &str) -> Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    fn items(value: &Value) -> &[Value] {
+        match value {
+            Value::Array(items) => items,
+            other => panic!("a list, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn value_from_text_holds_equal_strings_once() {
+        let value = parsed(r#"["idle", "idle", {"state": "idle"}]"#);
+        let list = items(&value);
+        let (Value::String(a), Value::String(b)) = (&list[0], &list[1]) else { panic!("strings") };
+        assert!(Shared::ptr_eq(a, b), "equal text read twice is one allocation");
+        let Value::Object(map) = &list[2] else { panic!("object") };
+        let Some(Value::String(c)) = map.get("state") else { panic!("a string field") };
+        assert!(Shared::ptr_eq(a, c), "a field value shares it too");
+    }
+
+    #[test]
+    fn value_from_text_holds_equal_keys_once() {
+        let value = parsed(r#"[{"from": 1}, {"from": 2}]"#);
+        let list = items(&value);
+        let key = |v: &Value| match v {
+            Value::Object(map) => map.keys().next().unwrap().clone(),
+            other => panic!("object, not {other:?}"),
+        };
+        assert!(Shared::ptr_eq(&key(&list[0]), &key(&list[1])));
+    }
+
+    #[test]
+    fn value_from_text_holds_equal_subtrees_once() {
+        let value = parsed(r#"[{"effects": [["set", "@x", "a"]]}, {"effects": [["set", "@x", "a"]]}]"#);
+        let list = items(&value);
+        let (Value::Object(a), Value::Object(b)) = (&list[0], &list[1]) else { panic!("objects") };
+        assert!(Shared::ptr_eq(a, b), "an equal record read twice is one node");
+    }
+
+    #[test]
+    fn control_value_from_text_keeps_different_subtrees_apart_and_equal_to_a_built_value() {
+        let value = parsed(r#"[{"effects": [["set", "@x", "a"]]}, {"effects": [["set", "@x", "b"]]}]"#);
+        let list = items(&value);
+        let (Value::Object(a), Value::Object(b)) = (&list[0], &list[1]) else { panic!("objects") };
+        assert!(!Shared::ptr_eq(a, b));
+        let built = |last: &str| {
+            Value::object(ValueMap::from_iter([(
+                "effects".to_string().into(),
+                Value::array(vec![Value::array(vec![Value::string("set".to_string()), Value::string("@x".to_string()), Value::string(last.to_string())])]),
+            )]))
+        };
+        assert_eq!(value, Value::array(vec![built("a"), built("b")]));
+    }
+
+    #[test]
+    fn control_values_read_by_two_parses_share_nothing() {
+        let (first, second) = (parsed(r#"["idle"]"#), parsed(r#"["idle"]"#));
+        let (Value::String(a), Value::String(b)) = (&items(&first)[0], &items(&second)[0]) else { panic!("strings") };
+        assert!(!Shared::ptr_eq(a, b), "the table lives for one parse only");
+    }
+
     #[test]
     fn g_cross_076_a_path_reads_through_a_quote_value_only_when_asked() {
         use crate::schema::quote::quote_expr;

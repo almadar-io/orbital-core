@@ -856,7 +856,7 @@ fn test_entity_shared_false_omitted_from_serialization() {
         id: None,
         collection: None,
         persistence: None,
-        fields: vec![],
+        fields: (vec![]).into(),
         instances: None,
         shared: false,
         identity: false,
@@ -1427,4 +1427,63 @@ fn a_field_update_annotation_round_trips_and_skips_when_absent() {
     let plain: super::FieldDefinition = serde_json::from_value(json!({ "name": "email", "type": "string" })).unwrap();
     assert!(plain.update.is_none());
     assert!(serde_json::to_value(&plain).unwrap().get("update").is_none(), "control: absent stays absent");
+}
+
+fn nested_entity() -> super::EntityDefinition {
+    serde_json::from_value(serde_json::json!({
+        "name": "Doc", "fields": [
+            { "name": "id", "type": "string" },
+            { "name": "tags", "type": "array", "items": { "name": "tag", "type": "object", "properties": { "label": { "name": "label", "type": "string" } } } },
+            { "name": "meta", "type": "object", "properties": { "size": { "name": "size", "type": "number" } } }
+        ]
+    }))
+    .unwrap()
+}
+
+#[test]
+fn cloning_an_entity_shares_its_field_list() {
+    let entity = nested_entity();
+    let copy = entity.clone();
+    assert!(crate::value::Shared::ptr_eq(&entity.fields, &copy.fields));
+}
+
+#[test]
+fn cloning_a_field_shares_its_nested_schema() {
+    let entity = nested_entity();
+    let tags = entity.fields[1].clone();
+    let (Some(a), Some(b)) = (&entity.fields[1].items, &tags.items) else { panic!("array items") };
+    assert!(crate::value::Shared::ptr_eq(a, b));
+    let meta = entity.fields[2].clone();
+    let (Some(a), Some(b)) = (&entity.fields[2].properties, &meta.properties) else { panic!("object properties") };
+    assert!(crate::value::Shared::ptr_eq(a, b));
+}
+
+#[test]
+fn cloning_a_payload_field_shares_its_nested_schema() {
+    let field: super::PayloadField = serde_json::from_value(serde_json::json!({
+        "name": "rows", "type": "array", "items": { "name": "row", "type": "object", "properties": [{ "name": "x", "type": "number" }] }
+    }))
+    .unwrap();
+    let copy = field.clone();
+    let (Some(a), Some(b)) = (&field.items, &copy.items) else { panic!("items") };
+    assert!(crate::value::Shared::ptr_eq(a, b));
+    let (Some(a), Some(b)) = (&a.properties, &b.properties) else { panic!("properties") };
+    assert!(crate::value::Shared::ptr_eq(a, b));
+}
+
+#[test]
+fn edge_editing_a_shared_field_list_copies_only_the_edited_holder() {
+    let entity = nested_entity();
+    let mut edited = entity.clone();
+    edited.fields[0].name = Some("key".to_string());
+    assert_eq!(entity.fields[0].name.as_deref(), Some("id"), "the original keeps its field");
+    assert_eq!(edited.fields[0].name.as_deref(), Some("key"));
+    assert!(!crate::value::Shared::ptr_eq(&entity.fields, &edited.fields));
+}
+
+#[test]
+fn control_a_shared_definition_writes_the_same_json() {
+    let text = serde_json::to_string(&nested_entity()).unwrap();
+    let again: super::EntityDefinition = serde_json::from_str(&text).unwrap();
+    assert_eq!(serde_json::to_string(&again).unwrap(), text);
 }

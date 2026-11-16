@@ -118,6 +118,22 @@ pub struct QueryCapabilities {
     /// How the driver realizes the entity's declared `@index` paths; absent is `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub indexes: Option<IndexRealization>,
+    /// The most values one `member` leaf may carry; the kernel asks a larger conjunct member in chunks. Absent is no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "positive_whole_count")]
+    #[cfg_attr(test, ts(type = "number"))]
+    pub member_limit: Option<usize>,
+}
+
+/// A count declared in `.lolo` config: the evaluator's numbers are floats, so a whole float is the count it names.
+fn positive_whole_count<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<usize>, D::Error> {
+    let Some(n) = Option::<f64>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    if n.fract() == 0.0 && n >= 1.0 && n <= u32::MAX as f64 {
+        Ok(Some(n as usize))
+    } else {
+        Err(serde::de::Error::custom(format!("a count must be a whole number of at least 1, not {n}")))
+    }
 }
 
 /// When a store driver creates the access paths an entity declares (EXEC-STORE-6).
@@ -166,6 +182,7 @@ impl QueryCapabilities {
             ids_only: Some(true),
             nearest: Some(true),
             indexes: None,
+            member_limit: None,
         }
     }
 }
@@ -228,6 +245,7 @@ pub enum QueryUnsupportedReason {
     Window,
     ExactTotal,
     Nearest,
+    MemberLimit,
 }
 
 impl QueryUnsupportedReason {
@@ -240,6 +258,7 @@ impl QueryUnsupportedReason {
             Self::Window => "window",
             Self::ExactTotal => "exact-total",
             Self::Nearest => "nearest",
+            Self::MemberLimit => "member-limit",
         }
     }
 }
@@ -361,6 +380,60 @@ pub fn narrowed_query(query: &RowQuery) -> RowQuery {
     }
 }
 
+pub(super) fn widest_member(predicate: &RowPredicate) -> usize {
+    match predicate {
+        RowPredicate::Member { values, .. } => values.len(),
+        RowPredicate::All { of } | RowPredicate::Any { of } => of.iter().map(widest_member).max().unwrap_or(0),
+        RowPredicate::Not { of } => widest_member(of),
+        _ => 0,
+    }
+}
+
+/// The narrowing of `query` asked in parts when its one oversized member is the filter or a conjunct of a top-level
+/// `all`: each part carries at most `limit` distinct values, so a row matches one part only. `None` when the member
+/// sits anywhere else, more than one is oversized, or a part is still not runnable.
+pub fn member_chunks(capabilities: &QueryCapabilities, query: &RowQuery) -> Option<Vec<RowQuery>> {
+    let limit = capabilities.member_limit.filter(|l| *l > 0)?;
+    let narrowed = narrowed_query(query);
+    let filter = narrowed.filter.as_ref()?;
+    let (field, values, rest): (&str, &[Value], Vec<RowPredicate>) = match filter {
+        RowPredicate::Member { field, values } => (field, values, Vec::new()),
+        RowPredicate::All { of } => {
+            let mut wide = of.iter().enumerate().filter(|(_, p)| widest_member(p) > limit);
+            let (at, RowPredicate::Member { field, values }) = wide.next()? else {
+                return None;
+            };
+            if wide.next().is_some() {
+                return None;
+            }
+            let rest = of.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, p)| p.clone()).collect();
+            (field, values, rest)
+        }
+        _ => return None,
+    };
+    let mut distinct: Vec<Value> = Vec::with_capacity(values.len());
+    for value in values {
+        if !distinct.iter().any(|seen| same_value(seen, value)) {
+            distinct.push(value.clone());
+        }
+    }
+    let parts: Vec<RowQuery> = distinct
+        .chunks(limit)
+        .map(|chunk| {
+            let member = RowPredicate::Member { field: field.to_string(), values: chunk.to_vec() };
+            let filter = if rest.is_empty() {
+                member
+            } else {
+                let mut of = rest.clone();
+                of.push(member);
+                RowPredicate::All { of }
+            };
+            RowQuery { filter: Some(filter), ..narrowed.clone() }
+        })
+        .collect();
+    parts.iter().all(|p| query_unsupported_reason(capabilities, p).is_none()).then_some(parts)
+}
+
 /// Why a host with `capabilities` cannot run `query` as a push-down, or `None` when it can. The first
 /// failing check wins: leaves, combinators, value kinds, order field (`createdAt` when none is authored), window,
 /// exact total.
@@ -389,6 +462,11 @@ pub fn query_unsupported_reason(
     if let Some(restrictions) = &capabilities.operator_value_kinds {
         if used.iter().any(|p| value_kind_unsupported(restrictions, p)) {
             return Some(QueryUnsupportedReason::ValueKindUnsupported);
+        }
+    }
+    if let Some(limit) = capabilities.member_limit {
+        if used.iter().any(|p| widest_member(p) > limit) {
+            return Some(QueryUnsupportedReason::MemberLimit);
         }
     }
     if query.nearest.is_some() {

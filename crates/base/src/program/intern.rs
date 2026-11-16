@@ -11,7 +11,9 @@ use std::hash::{Hash, Hasher};
 struct Table {
     held: HashSet<Shared<String>>,
     nodes: HashMap<u64, Vec<SExpression>>,
-    values: HashMap<u64, Vec<Value>>,
+    values: HashMap<u64, Value>,
+    collided: HashMap<u64, Vec<Value>>,
+    defs: HashMap<u64, SExpression>,
     node_requests: usize,
     node_distinct: usize,
     requests: usize,
@@ -54,7 +56,9 @@ pub fn scope<R>(read: impl FnOnce() -> R) -> R {
             *table = Some(Table {
                 held: HashSet::new(),
                 nodes: HashMap::new(),
+                defs: HashMap::new(),
                 values: HashMap::new(),
+                collided: HashMap::new(),
                 node_requests: 0,
                 node_distinct: 0,
                 requests: 0,
@@ -258,6 +262,29 @@ fn mergeable(node: &Value) -> bool {
     !matches!(node, Value::Lambda(_) | Value::Sealed(_))
 }
 
+/// The node held for `hash` that `same` accepts, else `make()` held under it. The first node of a hash takes no list of
+/// its own; only a second distinct node with the same hash does.
+fn held_node<T>(table: &mut Table, hash: u64, data: T, same: impl Fn(&Value, &T) -> bool, make: impl FnOnce(T) -> Value) -> Value {
+    match table.values.get(&hash) {
+        Some(first) if same(first, &data) => return first.clone(),
+        Some(_) => {
+            if let Some(found) = table.collided.get(&hash).and_then(|held| held.iter().find(|node| same(node, &data))) {
+                return found.clone();
+            }
+            let fresh = make(data);
+            table.collided.entry(hash).or_default().push(fresh.clone());
+            table.node_distinct += 1;
+            fresh
+        }
+        None => {
+            let fresh = make(data);
+            table.values.insert(hash, fresh.clone());
+            table.node_distinct += 1;
+            fresh
+        }
+    }
+}
+
 /// The list `items` as the one shared value node the active scope holds for that content, else a new node (held by
 /// the scope, if any). Two nodes are one only when every child is the same shared node.
 pub fn value_list(items: Vec<Value>) -> Value {
@@ -267,20 +294,10 @@ pub fn value_list(items: Vec<Value>) -> Value {
             let mut state = std::collections::hash_map::DefaultHasher::new();
             4u8.hash(&mut state);
             items.iter().for_each(|item| hash_value(item, &mut state));
-            let bucket = table.values.entry(state.finish()).or_default();
-            let found = bucket.iter().find(|held| {
+            held_node(table, state.finish(), items, |held, items| {
                 matches!(held, Value::Array(known)
                     if known.len() == items.len() && known.iter().zip(items.iter()).all(|(a, b)| same_value(a, b)))
-            });
-            match found {
-                Some(held) => held.clone(),
-                None => {
-                    let fresh = Value::array(items);
-                    bucket.push(fresh.clone());
-                    table.node_distinct += 1;
-                    fresh
-                }
-            }
+            }, Value::array)
         }
         _ => Value::array(items),
     })
@@ -297,21 +314,11 @@ pub fn value_record(fields: ValueMap) -> Value {
                 key.hash(&mut state);
                 hash_value(value, &mut state);
             }
-            let bucket = table.values.entry(state.finish()).or_default();
-            let found = bucket.iter().find(|held| {
+            held_node(table, state.finish(), fields, |held, fields| {
                 matches!(held, Value::Object(known)
                     if known.len() == fields.len()
                         && known.iter().zip(fields.iter()).all(|((ka, va), (kb, vb))| ka == kb && same_value(va, vb)))
-            });
-            match found {
-                Some(held) => held.clone(),
-                None => {
-                    let fresh = Value::object(fields);
-                    bucket.push(fresh.clone());
-                    table.node_distinct += 1;
-                    fresh
-                }
-            }
+            }, Value::object)
         }
         _ => Value::object(fields),
     })
@@ -361,4 +368,26 @@ impl KeyVocabulary {
     pub fn is_empty(&self) -> bool {
         self.held.is_empty()
     }
+}
+
+/// Records the subtree a document wrote as `$def` `id` (`def_refs`), for the references after it in the same document.
+pub fn define(id: u64, node: SExpression) -> Result<(), String> {
+    TABLE.with(|table| match table.borrow_mut().as_mut() {
+        Some(table) => {
+            table.defs.insert(id, node);
+            Ok(())
+        }
+        None => Err(format!("`$def` {id} read outside a document's interning scope")),
+    })
+}
+
+/// The subtree a document defined as `$def` `id` earlier in it.
+pub fn defined(id: u64) -> Result<SExpression, String> {
+    TABLE.with(|table| {
+        table
+            .borrow()
+            .as_ref()
+            .and_then(|table| table.defs.get(&id).cloned())
+            .ok_or_else(|| format!("`$def` {id} was never written before this reference"))
+    })
 }

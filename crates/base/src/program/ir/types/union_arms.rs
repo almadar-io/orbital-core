@@ -39,7 +39,7 @@ pub fn union_arm_collision<'a>(arms: impl IntoIterator<Item = &'a str>) -> Optio
 
 /// The first colliding union anywhere in a payload field's shape.
 pub fn payload_union_arm_collision(field: &PayloadField) -> Option<UnionArmCollision> {
-    let props = field.properties.as_deref().unwrap_or_default();
+    let props = field.properties.as_deref().map(Vec::as_slice).unwrap_or_default();
     if field.field_type == "union" {
         if let Some(found) = union_arm_collision(props.iter().map(|p| p.name.as_str())) {
             return Some(found);

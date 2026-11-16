@@ -344,9 +344,14 @@ pub struct DeliveryRecord {
 impl DeliveryRecord {
     /// The inverse of [`Self::value`]; `None` for a value that is not a delivery record.
     pub fn from_value(value: &Value) -> Option<Self> {
-        serde_json::to_value(value)
-            .and_then(serde_json::from_value)
-            .ok()
+        let Value::Object(fields) = value else { return None };
+        let event = fields.get("event")?.as_str()?.to_string();
+        let payload = fields.get("payload").filter(|p| !p.is_null()).cloned();
+        let source = match fields.get("source") {
+            None => BusEventSource::default(),
+            Some(source) => serde_json::to_value(source).and_then(serde_json::from_value).ok()?,
+        };
+        Some(Self { event, payload, source })
     }
 
     pub fn value(&self) -> Value {

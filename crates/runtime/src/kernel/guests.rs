@@ -1430,6 +1430,11 @@ impl GuestSession {
             split: false,
             arenas: Vec::new(),
             route: Arc::default(),
+            lazy: Arc::new(GuestLazy {
+                from: LazyFrom::None,
+                prepare: GuestPrepare { mock: false, apply_grants: false, keep_declared: false, live: false, opener_held: None, granted: None },
+                read: orbital_core_base::sync::Mutex::new(Default::default()),
+            }),
         }
     }
 }

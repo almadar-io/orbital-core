@@ -1,5 +1,5 @@
 //! Held values (EXEC-DIST-16): a browser kernel's answer names a render value it already handed that host by
-//! reference. Inside a `render-ui` payload, a list or record the kernel also holds elsewhere is written once as
+//! reference. Inside a `render-ui` payload or a state frame's fields, a list or record the kernel also holds elsewhere is written once as
 //! `{ "$held": n, "value": … }` and as `{ "$held": n }` after that; the host keeps `n` until it is released.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
@@ -137,8 +137,9 @@ pub fn to_js_readable_json_held<T: serde::Serialize + ?Sized>(
     written
 }
 
-/// Runs `f` (a `render-ui` payload's serialization) with held values written by reference when a scope is open.
-pub(crate) fn in_render<R>(f: impl FnOnce() -> R) -> R {
+/// Runs `f` (a `render-ui` payload's or a state frame's fields' serialization) with held values written by reference
+/// when a scope is open.
+pub fn in_held_region<R>(f: impl FnOnce() -> R) -> R {
     let entered = SCOPE.with(|s| {
         s.borrow_mut()
             .as_mut()

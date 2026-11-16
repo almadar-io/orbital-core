@@ -624,6 +624,13 @@ fn schema() -> OrbitalSchema {
                         { "from": "idle", "to": "idle", "event": "LIST", "effects": [
                             ["fetch", "Ticket", { "filter": ["=", ["object/get", "@entity", "status"], "open"], "orderBy": "score:desc", "limit": 2,
                                 "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "LIST_MEMBER", "effects": [
+                            ["fetch", "Ticket", { "filter": ["array/includes", ["A", "B", "A", "C", "E", "X"], ["object/get", "@entity", "title"]],
+                                "orderBy": "score:desc", "limit": 2, "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "LIST_MEMBER_OR", "effects": [
+                            ["fetch", "Ticket", { "filter": ["or", ["array/includes", [1, 3, 5], ["object/get", "@entity", "score"]],
+                                ["array/includes", [8, 9], ["object/get", "@entity", "score"]]],
+                                "orderBy": "score:desc", "limit": 2, "emit": { "success": "LISTED" } }]] },
                         { "from": "idle", "to": "idle", "event": "LIST_UNORDERED", "effects": [
                             ["fetch", "Ticket", { "filter": ["=", ["object/get", "@entity", "status"], "open"], "limit": 2,
                                 "emit": { "success": "LISTED" } }]] },
@@ -930,6 +937,75 @@ fn a_query_outside_the_capabilities_is_never_sent_and_its_narrowing_is() {
     assert!(log.iter().all(|r| !matches!(r, IoRequest::QueryRows { query, .. } if query.limit.is_some())), "{log:?}");
     assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
     assert!(log.iter().any(|r| matches!(r, IoRequest::QueryRows { query, .. } if is_narrowed(query))), "{log:?}");
+    assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
+}
+
+fn member_values(predicate: &RowPredicate) -> Vec<Vec<Value>> {
+    match predicate {
+        RowPredicate::Member { values, .. } => vec![values.clone()],
+        RowPredicate::All { of } | RowPredicate::Any { of } => of.iter().flat_map(member_values).collect(),
+        RowPredicate::Not { of } => member_values(of),
+        _ => Vec::new(),
+    }
+}
+
+fn member_limited(limit: usize) -> QueryCapabilities {
+    let mut caps = QueryCapabilities::full();
+    caps.member_limit = Some(limit);
+    caps
+}
+
+#[test]
+fn a_member_over_the_store_limit_is_asked_in_chunks_and_the_kernel_orders_and_windows_them() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", member_limited(2));
+    let (log, out) = fly(&k, "LIST_MEMBER", &seeded(), &|_| None);
+    let log = data_requests(&log);
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    let asked: Vec<&RowQuery> = log
+        .iter()
+        .filter_map(|r| match r {
+            IoRequest::QueryRows { query, .. } => Some(query),
+            _ => None,
+        })
+        .collect();
+    assert!(asked.iter().all(|q| is_narrowed(q)), "only chunks cross: {asked:?}");
+    let chunks: Vec<Vec<Value>> = asked.iter().flat_map(|q| member_values(q.filter.as_ref().unwrap())).collect();
+    assert!(chunks.iter().all(|c| c.len() <= 2), "{chunks:?}");
+    let mut union: Vec<Value> = chunks.into_iter().flatten().collect();
+    let asked_values = union.len();
+    union.sort_by_key(|v| v.as_str().unwrap_or_default().to_string());
+    union.dedup();
+    assert_eq!(asked_values, union.len(), "a repeated value is asked once");
+    assert_eq!(union, ["A", "B", "C", "E", "X"].map(Value::string).to_vec());
+    assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"], "score:desc, limit 2, owner u1 only");
+}
+
+#[test]
+fn control_a_member_within_the_store_limit_is_one_pushed_query() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let (log, out) = fly(&k, "LIST_MEMBER", &seeded(), &|_| None);
+    let log = data_requests(&log);
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(matches!(log[0], IoRequest::QueryRows { query, .. } if query.limit == Some(2)), "{log:?}");
+    assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
+}
+
+#[test]
+fn a_member_over_the_limit_that_is_not_a_conjunct_is_listed() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", member_limited(2));
+    let (log, out) = fly(&k, "LIST_MEMBER_OR", &seeded(), &|_| None);
+    let log = data_requests(&log);
+    assert!(
+        log.iter().all(|r| match r {
+            IoRequest::QueryRows { query, .. } => member_values(query.filter.as_ref().unwrap()).iter().all(|c| c.len() <= 2),
+            _ => true,
+        }),
+        "a member over the limit is never sent: {log:?}"
+    );
+    assert!(log.iter().any(|r| matches!(r, IoRequest::ListRows { .. })), "{log:?}");
     assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
 }
 
@@ -1854,6 +1930,25 @@ fn a_drivers_declared_index_realization_parses_and_an_absent_one_is_none() {
     let mut unknown = full;
     unknown["indexes"] = json!("sometimes");
     assert!(serde_json::from_value::<QueryCapabilities>(unknown).is_err());
+}
+
+/// A `.lolo` config number reaches the kernel as a float: `memberLimit: 30` is `30.0` on the wire.
+#[test]
+fn a_drivers_member_limit_parses_from_a_whole_float_and_refuses_a_fraction() {
+    let full = serde_json::to_value(QueryCapabilities::full()).unwrap();
+    assert_eq!(serde_json::from_value::<QueryCapabilities>(full.clone()).unwrap().member_limit, None);
+    for given in [json!(30), json!(30.0)] {
+        let mut declared = full.clone();
+        declared["memberLimit"] = given.clone();
+        let parsed: QueryCapabilities = serde_json::from_value(declared).unwrap();
+        assert_eq!(parsed.member_limit, Some(30), "{given}");
+        assert_eq!(serde_json::to_value(&parsed).unwrap()["memberLimit"], json!(30));
+    }
+    for refused in [json!(2.5), json!(-1), json!(0), json!("30")] {
+        let mut declared = full.clone();
+        declared["memberLimit"] = refused.clone();
+        assert!(serde_json::from_value::<QueryCapabilities>(declared).is_err(), "{refused}");
+    }
 }
 
 #[test]

@@ -414,7 +414,7 @@ fn distinct_entities_leaves_unique_names_untouched() {
 fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
     let mut typed = bare_field(FieldType::Field);
     typed.record = Some("@entity".to_string());
-    typed.items = Some(Box::new(bare_field(FieldType::String)));
+    typed.items = Some(crate::value::Shared::new(bare_field(FieldType::String)));
     let entity = OirType::Reference { entity: "@entity".to_string() };
     assert_eq!(
         field_shape(&typed).unwrap(),
@@ -434,7 +434,7 @@ fn a_field_knob_shapes_as_a_field_ref_of_its_value_type() {
     );
     let mut alias = bare_field(FieldType::Field);
     alias.record = Some("Point".to_string());
-    alias.properties = Some(crate::collections::IndexMap::from([("x".to_string(), bare_field(FieldType::Number))]));
+    alias.properties = Some(crate::collections::IndexMap::from([("x".to_string(), bare_field(FieldType::Number))]).into());
     let OirType::FieldRef { record, .. } = field_shape(&alias).unwrap() else { panic!("a field reference") };
     assert!(matches!(*record, OirType::Struct { ref fields, .. } if fields.len() == 1 && fields[0].name == "x"));
     assert_eq!(serde_json::to_string(&FieldType::Field).unwrap(), "\"field\"");
@@ -471,11 +471,11 @@ fn field_shape_retains_closed_string_and_enum_values_through_nullable_containers
         let nullable = OirType::optional(expected.clone());
         assert_eq!(field_shape(&field).unwrap(), nullable);
         let mut map = bare_field(FieldType::Object);
-        map.items = Some(Box::new(field.clone()));
+        map.items = Some(crate::value::Shared::new(field.clone()));
         assert_eq!(field_shape(&map).unwrap(), OirType::map(OirType::String, nullable.clone()));
         let mut record = bare_field(FieldType::Object);
-        record.properties = Some(crate::collections::IndexMap::new());
-        record.additional_properties = Some(Box::new(field));
+        record.properties = Some(crate::collections::IndexMap::new().into());
+        record.additional_properties = Some(crate::value::Shared::new(field));
         assert_eq!(field_shape(&record).unwrap(), OirType::Struct { fields: Default::default(), additional: Some(Box::new(nullable)) });
     }
     assert_eq!(field_shape(&bare_field(FieldType::String)).unwrap(), OirType::String);
@@ -501,7 +501,7 @@ fn field_shape_int_is_integer_and_number_stays_number() {
 #[test]
 fn field_shape_array_recurses_into_items() {
     let mut f = bare_field(FieldType::Array);
-    f.items = Some(Box::new(bare_field(FieldType::String)));
+    f.items = Some(crate::value::Shared::new(bare_field(FieldType::String)));
     assert_eq!(
         field_shape(&f).unwrap(),
         OirType::Array {
@@ -524,7 +524,7 @@ fn field_shape_object_with_properties_is_the_struct_of_them() {
     let mut props = crate::collections::IndexMap::new();
     props.insert("label".to_string(), bare_field(FieldType::String));
     props.insert("count".to_string(), bare_field(FieldType::Number));
-    f.properties = Some(props);
+    f.properties = Some(props.into());
     let OirType::Struct { fields, .. } = field_shape(&f).unwrap() else {
         panic!("an object with properties is a struct");
     };
@@ -535,7 +535,7 @@ fn field_shape_object_with_properties_is_the_struct_of_them() {
 #[test]
 fn field_shape_object_with_items_is_a_map_of_the_item_type() {
     let mut f = bare_field(FieldType::Object);
-    f.items = Some(Box::new(bare_field(FieldType::Number)));
+    f.items = Some(crate::value::Shared::new(bare_field(FieldType::Number)));
     assert_eq!(field_shape(&f).unwrap(), OirType::map(OirType::String, OirType::Number));
 }
 
@@ -545,7 +545,7 @@ fn field_shape_keeps_a_recursive_back_reference_as_the_type_it_names() {
     let mut back = bare_field(FieldType::Union);
     back.values = Some(vec!["Node".to_string()]);
     let mut children = bare_field(FieldType::Array);
-    children.items = Some(Box::new(back.clone()));
+    children.items = Some(crate::value::Shared::new(back.clone()));
     assert_eq!(back.by_name_reference(), Some("Node"));
     assert_eq!(
         field_shape(&children).unwrap(),
@@ -559,7 +559,7 @@ fn field_shape_of_a_union_carries_its_variants_sorted() {
     let mut props = crate::collections::IndexMap::new();
     props.insert("string".to_string(), bare_field(FieldType::String));
     props.insert("number".to_string(), bare_field(FieldType::Number));
-    union.properties = Some(props);
+    union.properties = Some(props.into());
     let OirType::Union { variants } = field_shape(&union).unwrap() else {
         panic!("a union with variants is a union");
     };
@@ -578,7 +578,7 @@ fn a_union_with_variant_shapes_is_not_a_by_name_reference() {
     tagged.values = Some(vec!["A".to_string()]);
     let mut props = crate::collections::IndexMap::new();
     props.insert("A".to_string(), bare_field(FieldType::Object));
-    tagged.properties = Some(props);
+    tagged.properties = Some(props.into());
     assert_eq!(tagged.by_name_reference(), None);
     assert_eq!(bare_field(FieldType::Union).by_name_reference(), None);
     let mut two = bare_field(FieldType::Union);

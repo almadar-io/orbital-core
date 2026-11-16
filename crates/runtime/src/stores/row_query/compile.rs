@@ -1,6 +1,9 @@
 //! Compiling a filter or an `@read` policy into a row predicate.
 
 use super::*;
+use orbital_core_base::schema::sexpr::SExpression;
+use orbital_core_eval::evaluator::Evaluator;
+use orbital_core_eval::lower::recognized_call_head;
 
 // ----- compiling a filter or an `@read` policy -----------------------------------------------
 
@@ -146,7 +149,34 @@ pub(super) fn term(value: &Value, ctx: &BindingContext) -> Result<Term, Fail> {
     }
 }
 
+fn reads_row(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s == "@entity" || s.starts_with("@entity."),
+        Value::Array(items) => items.iter().any(reads_row),
+        Value::Object(fields) => fields.values().any(reads_row),
+        _ => false,
+    }
+}
+
+/// A list argument written as a call is evaluated once against the step (the evaluator's own call rule); it must not
+/// read the row, and its items are data.
+fn evaluated_list(value: &Value, ctx: &BindingContext) -> Option<Result<Vec<Value>, Fail>> {
+    let sexpr = SExpression::try_from(value.clone()).ok()?;
+    recognized_call_head(&sexpr)?;
+    if reads_row(value) {
+        return Some(Err(shape("the list expression reads the row")));
+    }
+    Some(match Evaluator::new().evaluate(&sexpr, ctx) {
+        Ok(Value::Array(items)) => items.into_iter().map(scalar_const).collect(),
+        Ok(_) => Err(shape("the list expression is not a list")),
+        Err(_) => Err(shape("the list expression does not evaluate")),
+    })
+}
+
 pub(super) fn list_of(value: &Value, ctx: &BindingContext) -> Result<Vec<Value>, Fail> {
+    if let Some(evaluated) = evaluated_list(value, ctx) {
+        return evaluated;
+    }
     let resolved = match value {
         Value::Array(items) => items.clone(),
         Value::String(s) if s.starts_with('@') => match ctx.resolve_binding(s) {
@@ -411,9 +441,13 @@ pub(super) fn compile_expr(
                             }
                             (Term::Const(left), Term::Const(right))
                                 if matches!(op, RowCompareOp::Eq | RowCompareOp::Ne)
-                                    && same_scalar_kind(&left, &right) =>
+                                    && (same_scalar_kind(&left, &right) || left.is_null() || right.is_null()) =>
                             {
-                                let equal = same_value(&left, &right);
+                                let equal = if left.is_null() || right.is_null() {
+                                    left.is_null() && right.is_null()
+                                } else {
+                                    same_value(&left, &right)
+                                };
                                 Ok(RowPredicate::Const {
                                     value: equal == (op == RowCompareOp::Eq),
                                 })

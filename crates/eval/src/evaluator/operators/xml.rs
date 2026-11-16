@@ -425,7 +425,7 @@ mod tests {
 
     fn field(name: &str, ty: &str, properties: Option<Vec<PayloadField>>) -> PayloadField {
         PayloadField {
-            properties,
+            properties: properties.map(Into::into),
             ..serde_json::from_value(serde_json::json!({ "name": name, "type": ty })).unwrap()
         }
     }

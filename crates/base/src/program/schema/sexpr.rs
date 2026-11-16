@@ -25,8 +25,7 @@ pub type SObject = crate::collections::IndexMap<crate::value::Shared<String>, SE
 /// - A primitive value (null, bool, number, string)
 /// - An array (function call or list)
 /// - An object (key-value map)
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq)]
 #[derive(Default)]
 pub enum SExpression {
     /// Null value
@@ -42,6 +41,47 @@ pub enum SExpression {
     Array(crate::value::Shared<Vec<SExpression>>),
     /// Object - key-value map, a shared handle so a node stays 16 bytes (the map is 72)
     Object(crate::value::Shared<SObject>),
+}
+
+/// Written as the JSON it reads from; inside `def_refs::to_vec_with_defs` a shared list or record after its first
+/// occurrence is written as a `$def` reference.
+impl Serialize for SExpression {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use crate::def_refs::{decide, DefWrite, DEF_MARKER};
+        use serde::ser::SerializeMap;
+        let (at, shared) = match self {
+            SExpression::Null => return serializer.serialize_unit(),
+            SExpression::Bool(b) => return serializer.serialize_bool(*b),
+            SExpression::Number(n) => return serializer.serialize_f64(*n),
+            SExpression::String(s) => return serializer.serialize_str(s),
+            SExpression::Array(items) => (crate::value::Shared::as_ptr(items) as usize, crate::value::Shared::is_shared(items)),
+            SExpression::Object(fields) => (crate::value::Shared::as_ptr(fields) as usize, crate::value::Shared::is_shared(fields)),
+        };
+        struct Body<'a>(&'a SExpression);
+        impl Serialize for Body<'_> {
+            fn serialize<S2: serde::Serializer>(&self, serializer: S2) -> Result<S2::Ok, S2::Error> {
+                match self.0 {
+                    SExpression::Array(items) => serializer.collect_seq(items.iter()),
+                    SExpression::Object(fields) => serializer.collect_map(fields.iter().map(|(k, v)| (k.as_str(), v))),
+                    other => other.serialize(serializer),
+                }
+            }
+        }
+        match decide(at, shared) {
+            DefWrite::Plain => Body(self).serialize(serializer),
+            DefWrite::Reference(id) => {
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(DEF_MARKER, &id)?;
+                map.end()
+            }
+            DefWrite::First(id) => {
+                let mut map = serializer.serialize_map(Some(2))?;
+                map.serialize_entry(DEF_MARKER, &id)?;
+                map.serialize_entry("value", &Body(self))?;
+                map.end()
+            }
+        }
+    }
 }
 
 /// Read by one visit per node: the derived `untagged` form buffers every node and retries each variant, which
@@ -128,7 +168,24 @@ impl<'de> serde::de::Visitor<'de> for SExpressionVisitor {
     }
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<SExpression, A::Error> {
+        use serde::de::Error;
         let mut object = SObject::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
+        let Some(first) = map.next_key::<InternedKey>()? else {
+            return Ok(crate::intern::record(object));
+        };
+        if first.0.as_str() == crate::def_refs::DEF_MARKER {
+            let id: u64 = map.next_value()?;
+            return match map.next_key::<InternedKey>()? {
+                None => crate::intern::defined(id).map_err(A::Error::custom),
+                Some(key) if key.0.as_str() == "value" => {
+                    let node: SExpression = map.next_value()?;
+                    crate::intern::define(id, node.clone()).map_err(A::Error::custom)?;
+                    Ok(node)
+                }
+                Some(key) => Err(A::Error::custom(format!("`$def` {id} carries `{}`, not `value`", key.0.as_str()))),
+            };
+        }
+        object.insert(first.0, map.next_value::<SExpression>()?);
         while let Some((key, value)) = map.next_entry::<InternedKey, SExpression>()? {
             object.insert(key.0, value);
         }

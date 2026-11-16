@@ -41,7 +41,7 @@ pub fn external_input_of(
         orbital: orbital.to_string(),
         trait_name: trait_name.to_string(),
         event: ev.key.clone(),
-        payload_schema: ev.payload_schema.clone().unwrap_or_default(),
+        payload_schema: ev.payload_schema.as_deref().cloned().unwrap_or_default(),
         description: ev.description.clone(),
         synonyms: ev.synonyms.clone(),
         tier: ev.tier.clone(),

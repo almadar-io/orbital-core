@@ -70,7 +70,7 @@ pub fn payload_json_schema(fields: &[PayloadField]) -> Value {
     let mut properties = Map::new();
     let mut required: Vec<Value> = Vec::new();
     for field in fields {
-        if field.properties.as_ref().is_some_and(Vec::is_empty) && field.field_type != "union" {
+        if field.properties.as_deref().is_some_and(Vec::is_empty) && field.field_type != "union" {
             continue;
         }
         properties.insert(field.name.clone(), field_json_schema(field));

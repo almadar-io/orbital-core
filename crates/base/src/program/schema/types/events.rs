@@ -242,7 +242,7 @@ pub struct EmitDefinition {
     /// JSON key: `payloadSchema`. Distinct from the runtime payload value
     /// (`@payload.X` bindings, `EventPayload`) which is unrelated.
     #[serde(rename = "payloadSchema", skip_serializing_if = "Option::is_none")]
-    pub payload_schema: Option<Vec<PayloadField>>,
+    pub payload_schema: Option<crate::value::Shared<Vec<PayloadField>>>,
 
     /// The config knob whose VALUE produced `event`, when this emit was
     /// declared as `emits { @config.<knob> -> … }`. Set by the inline phase,
@@ -467,7 +467,7 @@ pub struct PayloadField {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
     #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
-    pub additional_properties: Option<Box<PayloadField>>,
+    pub additional_properties: Option<crate::value::Shared<PayloadField>>,
     /// The field's name; empty for a list's or map's element (`items`), which has none.
     #[serde(default)]
     pub name: String,
@@ -486,7 +486,7 @@ pub struct PayloadField {
     /// type instead of the shapeless `EventPayload`. Entity-referencing fields
     /// keep the flat dotted-flatten convention and leave this `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<Vec<PayloadField>>,
+    pub properties: Option<crate::value::Shared<Vec<PayloadField>>>,
     /// Declared knob-conditional type list (`@typeWhen` in `.lolo`). Each
     /// condition is checked in order against the trait's DECLARED config
     /// (resolved literal); the first match's `ty` is this field's real type
@@ -516,7 +516,7 @@ pub struct PayloadField {
     /// The element type of an `array` field whose element is itself a typed field (a union of named types:
     /// `[(Adv | string)]`), the same nested form an entity field's `items` takes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<PayloadField>>,
+    pub items: Option<crate::value::Shared<PayloadField>>,
     /// The declared relation of a `relation` field carried as a payload member (an entity row on the bus), whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation: Option<RelationDefinition>,

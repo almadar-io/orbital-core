@@ -266,6 +266,7 @@ where
         let mut payload = crate::projected_payload(
             payload_of(&path.source_trait, &path.source_event)
                 .as_deref()
+                .map(Vec::as_slice)
                 .unwrap_or_default(),
             rows_for,
         );
@@ -273,6 +274,7 @@ where
             payload.extend(crate::projected_payload::projected_through_mapping(
                 payload_of(&path.modal_trait, &path.modal_event)
                     .as_deref()
+                    .map(Vec::as_slice)
                     .unwrap_or_default(),
                 mapping,
                 rows_for,

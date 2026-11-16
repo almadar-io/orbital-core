@@ -6,7 +6,7 @@
     "priority",
     "status"
   ],
-  "note": "Each case is one fetch's filter and/or @read policy compiled for the entity's required fields. `compiled` is the RowQuery slot(s) the TS compiler (core row-predicate.ts) and the Rust compiler (orbital-core row_query.rs compile_predicate) both produce; `interpreted` is the reason of kernel.fetch.pushdown-fallback when the fetch stays on the interpreter.",
+  "note": "Each case is one fetch's filter and/or @read policy compiled for the entity's required fields. `compiled` is the RowQuery slot(s) the kernel compiler (orbital-core row_query compile_predicate) produces; `interpreted` is the reason of kernel.fetch.pushdown-fallback when the fetch stays on the interpreter.",
   "cases": [
     {
       "name": "order-required",
@@ -1799,6 +1799,296 @@
           "filter": {
             "kind": "const",
             "value": false
+          }
+        }
+      }
+    },
+    {
+      "name": "member-list-expression",
+      "why": "a list argument that is an expression (the fetch effect has already folded the issuing trait’s @entity into it) is evaluated once and its values are the member set, not read as a literal list",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "array/map",
+            [
+              {
+                "id": "g1"
+              },
+              {
+                "id": "g2"
+              }
+            ],
+            [
+              "fn",
+              "p",
+              [
+                "object/get",
+                "@p",
+                "id",
+                ""
+              ]
+            ]
+          ],
+          [
+            "object/get",
+            "@entity",
+            "graphId"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "member",
+            "field": "graphId",
+            "values": [
+              "g1",
+              "g2"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "member-list-expression-not-literal",
+      "why": "an operator form is a call, never literal list data: (str/split \"a,b\" \",\") is [a, b], not the three strings of the form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "str/split",
+            "a,b",
+            ","
+          ],
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "member",
+            "field": "title",
+            "values": [
+              "a",
+              "b"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "member-list-expression-reads-the-row",
+      "why": "a list expression that reads the row is not a constant set",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "str/split",
+            [
+              "object/get",
+              "@entity",
+              "csv"
+            ],
+            ","
+          ],
+          [
+            "object/get",
+            "@entity",
+            "title"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "member-list-expression-not-scalars",
+      "why": "a list expression whose items are not scalars has no member form",
+      "bindings": {},
+      "sexpr": {
+        "filter": [
+          "array/includes",
+          [
+            "array/map",
+            [
+              {
+                "id": "g1"
+              }
+            ],
+            [
+              "fn",
+              "p",
+              "@p"
+            ]
+          ],
+          [
+            "object/get",
+            "@entity",
+            "graphId"
+          ]
+        ]
+      },
+      "expect": {
+        "interpreted": "not-expressible"
+      }
+    },
+    {
+      "name": "const-compare-null-role-folds",
+      "why": "the evaluator compares by value: a null role is not \"admin\", so the constant side folds to false and the owner comparison is the guard",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": null
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ],
+          [
+            "=",
+            "@user.role",
+            "admin"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-missing-role-folds",
+      "why": "an identity row with no role reads @user.role as null, the same value the evaluator compares",
+      "bindings": {
+        "user": {
+          "id": "u1"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ],
+          [
+            "=",
+            "@user.role",
+            "admin"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "owner",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      }
+    },
+    {
+      "name": "const-compare-null-equals-null",
+      "why": "null equals null in the evaluator",
+      "bindings": {
+        "payload": {
+          "value": null
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "and",
+          [
+            "=",
+            "@payload.value",
+            null
+          ],
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "status"
+            ],
+            "open"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "compare",
+            "field": "status",
+            "op": "==",
+            "value": "open"
+          }
+        }
+      }
+    },
+    {
+      "name": "control-const-compare-role-admin-holds",
+      "why": "an admin role folds the constant side to true",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "admin"
+        }
+      },
+      "sexpr": {
+        "filter": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "owner"
+            ],
+            "@user.id"
+          ],
+          [
+            "=",
+            "@user.role",
+            "admin"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "filter": {
+            "kind": "const",
+            "value": true
           }
         }
       }

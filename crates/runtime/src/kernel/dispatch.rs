@@ -497,7 +497,7 @@ impl RuntimeKernel {
         &self,
         trait_name: &str,
         event: &str,
-    ) -> Option<Vec<orbital_core_base::schema::types::PayloadField>> {
+    ) -> Option<orbital_core_base::value::Shared<Vec<orbital_core_base::schema::types::PayloadField>>> {
         self.registry.trait_definitions
             .read()
             .get(trait_name)?

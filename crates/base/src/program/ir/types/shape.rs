@@ -174,7 +174,7 @@ pub(super) fn field_shape_inner(field: &FieldDefinition) -> Result<OirType, Shap
             OirType::String
         }
         FieldType::Field => OirType::FieldRef {
-            record: Box::new(record_shape(field.record.as_deref(), field.properties.as_ref())?),
+            record: Box::new(record_shape(field.record.as_deref(), field.properties.as_deref())?),
             value: field.items.as_deref().map(|item| field_shape(item).map(Box::new).map_err(|e| e.within("[]"))).transpose()?,
         },
         FieldType::Node => OirType::Node,
@@ -444,7 +444,7 @@ fn payload_field_shape_inner(
             .map(|extra| payload_member(extra, names, "[]").map(Box::new))
             .transpose()
     };
-    if field.field_type == "object" && field.properties.as_ref().is_none_or(Vec::is_empty) && field.additional_properties.is_some() {
+    if field.field_type == "object" && field.properties.as_deref().is_none_or(Vec::is_empty) && field.additional_properties.is_some() {
         return Ok(OirType::Struct { fields: crate::ir::types::no_fields(), additional: additional()? });
     }
     let list = field.field_type.trim_start().starts_with('[');

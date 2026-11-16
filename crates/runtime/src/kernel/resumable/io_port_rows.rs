@@ -324,37 +324,51 @@ impl IoPort {
     ) -> Result<(), String> {
         let narrowed = narrowed_query(query);
         let runnable = capabilities.is_some_and(|c| query_unsupported_reason(c, &narrowed).is_none());
-        if runnable && narrowed != *query {
-            let page = match self.ask(|| IoRequest::QueryRows {
-                entity_type: entity_type.to_string(),
-                query: narrowed.clone(),
-                project: RowProjection::Rows,
-            }) {
-                Asked::Direct => match self.source_for(entity_type).query_page(entity_type, &narrowed) {
-                    QueryAnswer::Rows(page) => Some(page),
-                    QueryAnswer::Declined(_) => None,
-                    QueryAnswer::Failed(e) => return Err(e),
-                },
-                Asked::Answer(IoAnswer::Page(page)) => {
-                    let page = page?;
-                    echo_checked(entity_type, &narrowed, &page)?;
-                    Some(page)
-                }
-                Asked::Answer(IoAnswer::QueryUnsupported(detail)) => {
-                    self.notice("kernel.fetch.pushdown-fallback", entity_type, "host-declined-narrowed", &detail);
-                    None
-                }
-                Asked::Answer(_) | Asked::Withheld => return Err(self.withheld_error()),
-            };
-            if let Some(page) = page {
-                for row in page.rows {
-                    if matches!(visit(&Arc::new(row)), ScanControl::Stop) {
-                        break;
-                    }
-                }
-                return Ok(());
+        let parts = if runnable && narrowed != *query {
+            vec![narrowed]
+        } else {
+            capabilities.and_then(|c| member_chunks(c, query)).unwrap_or_default()
+        };
+        let mut pages = Vec::with_capacity(parts.len());
+        for part in &parts {
+            match self.ask_narrowed(entity_type, part)? {
+                Some(page) => pages.push(page),
+                None => return self.scan(entity_type, visit),
             }
         }
-        self.scan(entity_type, visit)
+        if parts.is_empty() {
+            return self.scan(entity_type, visit);
+        }
+        for row in pages.into_iter().flat_map(|page| page.rows) {
+            if matches!(visit(&Arc::new(row)), ScanControl::Stop) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The store's page for a narrowed query, or `None` when it declines it.
+    fn ask_narrowed(&self, entity_type: &str, narrowed: &RowQuery) -> Result<Option<RowPage>, String> {
+        match self.ask(|| IoRequest::QueryRows {
+            entity_type: entity_type.to_string(),
+            query: narrowed.clone(),
+            project: RowProjection::Rows,
+        }) {
+            Asked::Direct => match self.source_for(entity_type).query_page(entity_type, narrowed) {
+                QueryAnswer::Rows(page) => Ok(Some(page)),
+                QueryAnswer::Declined(_) => Ok(None),
+                QueryAnswer::Failed(e) => Err(e),
+            },
+            Asked::Answer(IoAnswer::Page(page)) => {
+                let page = page?;
+                echo_checked(entity_type, narrowed, &page)?;
+                Ok(Some(page))
+            }
+            Asked::Answer(IoAnswer::QueryUnsupported(detail)) => {
+                self.notice("kernel.fetch.pushdown-fallback", entity_type, "host-declined-narrowed", &detail);
+                Ok(None)
+            }
+            Asked::Answer(_) | Asked::Withheld => Err(self.withheld_error()),
+        }
     }
 }

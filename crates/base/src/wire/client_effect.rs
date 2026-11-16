@@ -215,7 +215,7 @@ impl Serialize for ClientEffect {
                 let mut seq = serializer.serialize_seq(Some(3))?;
                 seq.serialize_element("render-ui")?;
                 seq.serialize_element(slot)?;
-                crate::held_values::in_render(|| serialize_opt_value(&mut seq, config.as_ref()))?;
+                crate::held_values::in_held_region(|| serialize_opt_value(&mut seq, config.as_ref()))?;
                 seq.end()
             }
             ClientEffect::Navigate {

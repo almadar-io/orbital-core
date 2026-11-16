@@ -118,7 +118,7 @@ impl Serialize for SetFrames<'_> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
         for (frame, fields) in self.0 {
-            map.serialize_entry(frame, fields)?;
+            orbital_core_base::held_values::in_held_region(|| map.serialize_entry(frame, fields))?;
         }
         map.end()
     }
@@ -148,7 +148,7 @@ impl Serialize for FrameOp {
                 let mut seq = serializer.serialize_seq(Some(3))?;
                 seq.serialize_element("put")?;
                 seq.serialize_element(frame)?;
-                seq.serialize_element(fields)?;
+                orbital_core_base::held_values::in_held_region(|| seq.serialize_element(fields))?;
                 seq.end()
             }
             FrameOp::Set { frames } => {

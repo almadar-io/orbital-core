@@ -14,6 +14,8 @@ pub mod value;
 pub mod num_width;
 #[path = "program/intern.rs"]
 pub mod intern;
+#[path = "program/def_refs.rs"]
+pub mod def_refs;
 #[path = "program/value_serialize.rs"]
 pub mod value_serialize;
 #[path = "program/shared_entity.rs"]

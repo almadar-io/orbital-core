@@ -1095,3 +1095,120 @@ fn an_ended_session_retains_only_its_tombstone() {
     assert!(server.kernel().frame_sessions().is_empty(), "every ended session's frames were freed");
     assert!(per_session <= PINNED_RETAINED_PER_SESSION, "an ended session retains {per_session} bytes");
 }
+
+/// A program-shaped value of about `orbitals` × 160 KB of JSON, Arabic text included (non-ASCII, as the AR locale's).
+fn big_program(orbitals: usize) -> serde_json::Value {
+    let transition = |i: usize| json!({ "from": "idle", "to": "idle", "event": format!("E{i}"),
+        "guard": ["and", ["=", "@entity.state", format!("s{i}")], ["not", ["=", "@payload.text", ""]]],
+        "effects": (0..12).map(|j| json!(["set", format!("@entity.f{j}"), ["str/concat", "@entity.name", format!("نص عربي {i} {j}")]])).collect::<Vec<_>>() });
+    json!({ "name": "big", "orbitals": (0..orbitals).map(|o| json!({ "name": format!("O{o}"),
+        "traits": (0..4).map(|t| json!({ "name": format!("O{o}T{t}"), "stateMachine": { "transitions": (0..24).map(transition).collect::<Vec<_>>() } })).collect::<Vec<_>>() })).collect::<Vec<_>>() })
+}
+
+fn guest_stage() -> orbital_core_runtime::embed::EmbeddedKernel {
+    let schema: OrbitalSchema = serde_json::from_value(json!({
+        "name": "viewer", "typeContractVersion": 1, "orbitals": [{
+            "name": "Sessions",
+            "entity": { "name": "Session", "persistence": "persistent", "collection": "sessions", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "GuestSession", "linkedEntity": "Session",
+                "emits": [{ "event": "GUEST_CLIENT", "scope": "external" }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["persist", "create", "Session", {}, { "emit": { "success": "GUEST_CLIENT" } }]] }] } }]
+        }, {
+            "name": "Stages",
+            "entity": { "name": "Stage", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "GuestStage", "linkedEntity": "Stage", "dispatch": "client",
+                "listens": [{ "event": "GUEST_CLIENT", "triggers": "GUEST_CLIENT", "source": { "kind": "orbital", "orbital": "Sessions", "trait": "GuestSession" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "GUEST_CLIENT", "effects": stage_effects() }] } }]
+        }]
+    }))
+    .unwrap();
+    orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap()
+}
+
+/// What folding a server answer that emits a large program to a client trait (the viewer's GUEST_CLIENT) peaks at,
+/// as a multiple of the program's JSON size, from the answer's text to the fold's text (orbital-wasm `foldInOrder`).
+fn fold_peak(program: serde_json::Value) -> (usize, isize, isize, usize) {
+    use orbital_core_base::bus_event::{BusEventSource, EmittedEvent};
+    use orbital_core_runtime::effects::response::EventResponse;
+    let program_bytes = serde_json::to_string(&program).unwrap().len();
+    let answer = EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![EmittedEvent {
+            event: "GUEST_CLIENT".to_string(),
+            payload: Some(serde_json::from_value(json!({ "guest": "g", "program": program })).unwrap()),
+            source: Some(BusEventSource { orbital: Some("Sessions".to_string()), r#trait: Some("GuestSession".to_string()), ..Default::default() }),
+        }],
+        ..Default::default()
+    };
+    let text = serde_json::to_string(&answer).unwrap();
+    drop(answer);
+    let kernel = guest_stage();
+    let flight = kernel.dispatch("GuestSession", None, "LOAD", Value::Null).unwrap().flight.expect("LOAD owes a leg");
+    let base = alloc_meter::totals().live;
+    alloc_meter::reset_peak(base);
+    let mark = |stage: &str| {
+        let t = alloc_meter::totals();
+        println!("FOLD_STAGE {stage}: peak {:.1} MB live {:.1} MB", (t.peak - base) as f64 / 1048576.0, (t.live - base) as f64 / 1048576.0);
+    };
+    let out = {
+        let response: EventResponse = serde_json::from_str(&text).unwrap();
+        mark("parsed");
+        let progress = kernel.fold_in_order(flight, response, Default::default(), None).unwrap();
+        mark("folded");
+        let orbital_core_runtime::embed::FoldProgress::Applied(fold) = progress else { panic!("the only flight folds now") };
+        let wire = orbital_core_runtime::embed::wire::FoldProgressWire::Applied { fold: *fold };
+        let mut held = orbital_core_base::held_values::HeldValues::new();
+        let out = orbital_core_base::held_values::to_js_readable_json_held(&wire, &mut held).unwrap();
+        mark("written as the browser kernel writes it");
+        out
+    };
+    let peak = alloc_meter::totals().peak - base;
+    let out_len = out.len();
+    drop(out);
+    let held = alloc_meter::totals().live - base;
+    (program_bytes, peak, held, out_len)
+}
+
+#[test]
+fn a_folded_program_is_held_in_less_memory_than_its_text() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    fold_peak(big_program(1));
+    let (bytes, peak, held, out) = fold_peak(big_program(40));
+    println!(
+        "FOLD_PEAK program {:.1} MB peak {:.1} MB ({:.1}x) held {:.1} MB ({:.1}x) fold text {:.1} MB",
+        bytes as f64 / 1048576.0, peak as f64 / 1048576.0, peak as f64 / bytes as f64,
+        held as f64 / 1048576.0, held as f64 / bytes as f64, out as f64 / 1048576.0
+    );
+    assert!(held < bytes as isize, "a folded program is held in less memory than its JSON text: {held} >= {bytes}");
+    assert!(peak < bytes as isize, "folding a program never builds a copy as large as its JSON text: {peak} >= {bytes}");
+}
+
+#[test]
+#[ignore = "tool: ORB_MEASURE_ANSWER=<an events answer whose emitted event carries payload.program> cargo test -p orbital-core-runtime --test dispatch_alloc_count fold_peak_of_a_captured_program -- --ignored --nocapture"]
+fn fold_peak_of_a_captured_program() {
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let path = std::env::var("ORB_MEASURE_ANSWER").expect("ORB_MEASURE_ANSWER names a captured answer");
+    let answer: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let program = answer["emittedEvents"].as_array().unwrap().iter().find_map(|e| e["payload"].get("program")).unwrap().clone();
+    drop(answer);
+    let (bytes, peak, held, out) = fold_peak(program);
+    println!(
+        "CAPTURED_FOLD program {:.1} MB peak {:.1} MB ({:.1}x) held {:.1} MB ({:.1}x) fold text {:.1} MB",
+        bytes as f64 / 1048576.0, peak as f64 / 1048576.0, peak as f64 / bytes as f64,
+        held as f64 / 1048576.0, held as f64 / bytes as f64, out as f64 / 1048576.0
+    );
+}
+
+fn stage_effects() -> serde_json::Value {
+    let set = json!(["set", "@entity.client", "@payload.program"]);
+    let render = json!(["render-ui", "main", { "type": "guest-view", "guest": "g", "deliver": "GUEST_CONTROL", "program": "@entity.client", "children": [] }]);
+    match std::env::var("ORB_STAGE_EFFECTS").as_deref() {
+        Ok("none") => json!([]),
+        Ok("set") => json!([set]),
+        Ok("render") => json!([["render-ui", "main", { "type": "guest-view", "guest": "g", "deliver": "GUEST_CONTROL", "program": "@payload.program", "children": [] }]]),
+        _ => json!([set, render]),
+    }
+}

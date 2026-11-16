@@ -96,7 +96,7 @@ pub struct EventDefinition {
         skip_serializing_if = "Option::is_none",
         rename = "payloadSchema"
     )]
-    pub payload_schema: Option<Vec<PayloadField>>,
+    pub payload_schema: Option<crate::value::Shared<Vec<PayloadField>>>,
 
     /// Same marker as `EmitDefinition.payload_entity` — this transition's
     /// bare-event payload was declared `type X = Event <EntityName>` and is

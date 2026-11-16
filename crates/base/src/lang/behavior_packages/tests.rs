@@ -1070,3 +1070,51 @@ fn edge_the_package_itself_wins_over_an_installed_copy_in_its_own_node_modules()
     assert_eq!(pkg.version, "2.0.0");
     assert_eq!(pkg.root, fs::canonicalize(&stage).unwrap());
 }
+
+fn walks_of(root: &Path) -> usize {
+    REGISTRY_WALKS.with(|walks| walks.borrow().get(root).copied().unwrap_or(0))
+}
+
+#[test]
+fn a_registry_is_walked_once_while_its_folders_are_unchanged() {
+    let dir = TestTempDir::new("registry-memo");
+    let root = dir.0.join("lolo");
+    fs::create_dir_all(root.join("ui/atoms")).unwrap();
+    fs::write(root.join("ui/atoms/std-a.lolo"), "app std-a []").unwrap();
+    let source = RegistrySource::Live(root.clone());
+    let first = index_registry_source(&source).unwrap();
+    let second = index_registry_source(&source).unwrap();
+    assert_eq!(first, second);
+    assert_eq!(walks_of(&root), 1, "the second index is the first one, not a second walk");
+}
+
+#[test]
+fn a_behavior_added_or_removed_in_a_nested_folder_is_seen_by_the_next_index() {
+    let dir = TestTempDir::new("registry-memo-change");
+    let root = dir.0.join("lolo");
+    fs::create_dir_all(root.join("ui/atoms")).unwrap();
+    fs::write(root.join("ui/atoms/std-a.lolo"), "app std-a []").unwrap();
+    let source = RegistrySource::Live(root.clone());
+    index_registry_source(&source).unwrap();
+    fs::write(root.join("ui/atoms/std-b.lolo"), "app std-b []").unwrap();
+    assert!(index_registry_source(&source).unwrap().contains_key("std-b"), "an added behavior is indexed");
+    fs::remove_file(root.join("ui/atoms/std-a.lolo")).unwrap();
+    assert!(!index_registry_source(&source).unwrap().contains_key("std-a"), "a removed behavior is gone");
+    fs::create_dir_all(root.join("ui/organisms")).unwrap();
+    fs::write(root.join("ui/organisms/std-c.lolo"), "app std-c []").unwrap();
+    assert!(index_registry_source(&source).unwrap().contains_key("std-c"), "a behavior in a new folder is indexed");
+}
+
+#[test]
+fn a_memoized_index_still_counts_its_folders_as_read() {
+    let dir = TestTempDir::new("registry-memo-reads");
+    let root = dir.0.join("lolo");
+    fs::create_dir_all(root.join("ui")).unwrap();
+    fs::write(root.join("ui/std-a.lolo"), "app std-a []").unwrap();
+    let source = RegistrySource::Live(root.clone());
+    index_registry_source(&source).unwrap();
+    crate::read_set::begin();
+    index_registry_source(&source).unwrap();
+    let reads = crate::read_set::end();
+    assert!(reads.paths().any(|p| p.ends_with("ui")), "a cache keyed on these reads sees the folder change");
+}

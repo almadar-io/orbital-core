@@ -225,7 +225,49 @@ pub enum DiscoverError {
     },
 }
 
+/// One registry folder's index, with every folder its walk listed: reused while each is as it was listed.
+struct IndexedRegistry {
+    index: std::sync::Arc<HashMap<String, PathBuf>>,
+    reads: crate::read_set::ReadSet,
+}
+
+static REGISTRY_INDEXES: std::sync::LazyLock<crate::sync::Mutex<HashMap<(PathBuf, String), std::sync::Arc<IndexedRegistry>>>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static REGISTRY_WALKS: std::cell::RefCell<HashMap<PathBuf, usize>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Every behavior file under `source`, by name. The walk is kept for the process and reused while no folder it listed has
+/// changed (a file added, removed or renamed changes its folder), and a reuse still counts those folders as read.
 pub fn index_registry_source(
+    source: &RegistrySource,
+) -> Result<HashMap<String, PathBuf>, DiscoverError> {
+    indexed_registry(source).map(|index| (*index).clone())
+}
+
+/// [`index_registry_source`] as the one index the process holds for `source`, shared rather than copied per lookup.
+pub fn indexed_registry(
+    source: &RegistrySource,
+) -> Result<std::sync::Arc<HashMap<String, PathBuf>>, DiscoverError> {
+    let key = (source.root().to_path_buf(), source.extension().to_string());
+    let held = REGISTRY_INDEXES.lock().get(&key).cloned();
+    if let Some(held) = held.filter(|held| held.reads.is_current()) {
+        held.reads.replay();
+        return Ok(std::sync::Arc::clone(&held.index));
+    }
+    crate::read_set::begin();
+    let walked = walk_registry_source(source);
+    let reads = crate::read_set::end();
+    let index = std::sync::Arc::new(walked?);
+    #[cfg(test)]
+    REGISTRY_WALKS.with(|walks| *walks.borrow_mut().entry(source.root().to_path_buf()).or_default() += 1);
+    REGISTRY_INDEXES.lock().insert(key, std::sync::Arc::new(IndexedRegistry { index: std::sync::Arc::clone(&index), reads }));
+    Ok(index)
+}
+
+fn walk_registry_source(
     source: &RegistrySource,
 ) -> Result<HashMap<String, PathBuf>, DiscoverError> {
     let mut index = HashMap::new();

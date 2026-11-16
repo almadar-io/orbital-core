@@ -15,6 +15,10 @@ impl EffectExecutor {
         effect: Effect,
         view: &mut RunRows,
     ) -> PersistPrep {
+        let legacy = |reason: &str| {
+            tracing::warn!(target: orbital_core_base::logging::ns::RUNTIME_FETCH, entity = %entity_type, operation = ?operation, reason, "kernel.write.per-op");
+            PersistPrep::Legacy
+        };
         if self.persistence.is_none() {
             return PersistPrep::Legacy;
         }
@@ -35,19 +39,19 @@ impl EffectExecutor {
                 return refuse(effect, message, Some(ServerEffectCode::DerivedFailed))
             }
             Some(Err(DerivedFault::Store(message))) => return refuse(effect, message, None),
-            None => return PersistPrep::Legacy,
+            None => return legacy("derived-unavailable"),
         };
         let (op, row_id, guard) = match operation {
-            PersistOperation::Read => return PersistPrep::Legacy,
+            PersistOperation::Read => return legacy("read"),
             PersistOperation::Create | PersistOperation::Upsert => {
                 let Some(row_id) = Self::row_id_of(&data).map(str::to_string) else {
-                    return PersistPrep::Legacy;
+                    return legacy("create-without-id");
                 };
                 if operation == PersistOperation::Upsert && {
                     let update = self.persist_scope(entity_type, PersistOperation::Update);
                     update.policy.is_some() || !update.field_updates.is_empty()
                 } {
-                    return PersistPrep::Legacy;
+                    return legacy("upsert-with-update-rules");
                 }
                 let mut refused_code = None;
                 if let Err(denial) = Self::check_create(entity_type, &data, &scope, ctx, &mut refused_code) {
@@ -83,12 +87,12 @@ impl EffectExecutor {
                     Err(e) => return refuse(effect, e, Some(ServerEffectCode::NoRowKey)),
                 };
                 if operation == PersistOperation::Update && Self::names_ruled_field(&scope, &data) {
-                    return PersistPrep::Legacy;
+                    return legacy("ruled-field");
                 }
                 let Ok(guard) =
                     Self::write_guard(scope.policy.as_ref(), ctx, &scope.declared_required)
                 else {
-                    return PersistPrep::Legacy;
+                    return legacy("guard-not-expressible");
                 };
                 let op = if operation == PersistOperation::Update {
                     RowWriteOp::Update {

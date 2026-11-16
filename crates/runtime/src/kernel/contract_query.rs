@@ -102,7 +102,8 @@ pub enum ContractQuery {
         #[serde(rename = "trait")]
         trait_name: String,
     },
-    /// Every registered trait's surface and the entities whose rows live in the browser.
+    /// Every registered trait's surface (transitions without their guards: `TraitSurface` answers those) and the entities
+    /// whose rows live in the browser.
     ProgramSurface,
     /// `rows` of `entity` as `viewer` reads them: narrowed by the entity's declared `@read`, `@user` bound to the viewer
     /// (`null`: no viewer).
@@ -345,6 +346,12 @@ impl RuntimeKernel {
 
     /// The surface of the registered trait `trait_name`; an unknown or ambiguous trait is an error.
     pub fn trait_surface(&self, trait_name: &str) -> Result<TraitSurface, String> {
+        self.trait_surface_with(trait_name, true)
+    }
+
+    /// [`Self::trait_surface`], its transitions' guards included only when `guards`: the program surface every open
+    /// reads leaves them out (a debugger asks one trait's surface for them).
+    fn trait_surface_with(&self, trait_name: &str, guards: bool) -> Result<TraitSurface, String> {
         use crate::effects::response::LifecycleEvent;
         let owners = crate::trait_owners::TraitOwners::from_kernel(self);
         let orbital_name = owners.owning_orbital(trait_name)?;
@@ -400,6 +407,7 @@ impl RuntimeKernel {
             let guard = t
                 .guard
                 .as_ref()
+                .filter(|_| guards)
                 .map(serde_json::to_value)
                 .transpose()
                 .map_err(|e| format!("guard of {} on {}: {e}", t.event, trait_name))?;
@@ -483,7 +491,7 @@ impl RuntimeKernel {
         let owners = crate::trait_owners::TraitOwners::from_kernel(self);
         let traits = owners
             .iter()
-            .map(|(name, _)| self.trait_surface(name))
+            .map(|(name, _)| self.trait_surface_with(name, false))
             .collect::<Result<Vec<_>, _>>()?;
         let mut browser_entities: Vec<String> = self
             .registry
@@ -789,10 +797,13 @@ mod tests {
         let traits = program["traits"].as_array().expect("traits");
         let names: Vec<_> = traits.iter().map(|t| t["orbital"].clone()).collect();
         assert_eq!(names, vec![json!("Door"), json!("Shelf")]);
-        assert_eq!(
-            traits[0],
-            ask(&kernel, json!({ "kind": "traitSurface", "trait": "Gate" }))
-        );
+        let mut gate = ask(&kernel, json!({ "kind": "traitSurface", "trait": "Gate" }));
+        assert_eq!(gate["transitions"][0]["guard"], json!([">", "@entity.n", 1.0]), "one trait's surface carries its guards");
+        assert!(traits[0]["transitions"][0].get("guard").is_none(), "the program surface every open reads leaves them out");
+        for transition in gate["transitions"].as_array_mut().expect("transitions") {
+            transition.as_object_mut().expect("transition").remove("guard");
+        }
+        assert_eq!(traits[0], gate, "control: otherwise the same surface");
         assert_eq!(
             traits[1],
             ask(

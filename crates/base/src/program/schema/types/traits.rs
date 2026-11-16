@@ -738,7 +738,7 @@ pub struct ConfigField {
         rename = "additionalProperties",
         skip_serializing_if = "Option::is_none"
     )]
-    pub additional_properties: Option<Box<FieldDefinition>>,
+    pub additional_properties: Option<crate::value::Shared<FieldDefinition>>,
     #[serde(rename = "type")]
     pub field_type: String,
     #[serde(
@@ -791,12 +791,12 @@ pub struct ConfigField {
     /// (e.g. `metrics : [MetricSpec]`) so consumers see the full
     /// item shape, not just the `"[MetricSpec]"` type tag.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<FieldDefinition>>,
+    pub items: Option<crate::value::Shared<FieldDefinition>>,
     /// Object property schema for inline / named object config slots
     /// — mirrors `FieldDefinition.properties`. Populated when the config
     /// type resolves to a `TypeExpr::Object` (struct alias or literal).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<crate::collections::IndexMap<String, FieldDefinition>>,
+    pub properties: Option<crate::value::Shared<crate::collections::IndexMap<String, FieldDefinition>>>,
     /// `!` required marker — authored in `.lolo` as `fields : [FieldSpec]!`.
     /// Declares that call sites referencing this trait MUST supply this
     /// knob's key in their `config` block (any value form). Coexists with

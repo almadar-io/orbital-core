@@ -43,11 +43,11 @@ impl RuntimeKernel {
                             },
                             EntityRef::Reference(reference) => EntitySummary {
                                 name: reference.clone(),
-                                fields: Vec::new(),
+                                fields: Default::default(),
                             },
                             EntityRef::Extends(extends) => EntitySummary {
                                 name: extends.reference.clone(),
-                                fields: Vec::new(),
+                                fields: Default::default(),
                             },
                         },
                         traits: orbital

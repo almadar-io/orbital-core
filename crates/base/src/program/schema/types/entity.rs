@@ -41,7 +41,7 @@ pub struct EntityDefinition {
     pub store: Option<String>,
 
     /// Field definitions
-    pub fields: Vec<FieldDefinition>,
+    pub fields: crate::value::Shared<Vec<FieldDefinition>>,
 
     /// Pre-authored instances (seed data / static reference data)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -298,7 +298,7 @@ pub struct FieldDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable: Option<bool>,
     #[serde(default, rename = "additionalProperties", skip_serializing_if = "Option::is_none")]
-    pub additional_properties: Option<Box<FieldDefinition>>,
+    pub additional_properties: Option<crate::value::Shared<FieldDefinition>>,
     /// Field name (optional for nested items/properties)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -337,11 +337,11 @@ pub struct FieldDefinition {
 
     /// Array item type (for array type)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<FieldDefinition>>,
+    pub items: Option<crate::value::Shared<FieldDefinition>>,
 
     /// Object properties (for object type)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<crate::collections::IndexMap<String, FieldDefinition>>,
+    pub properties: Option<crate::value::Shared<crate::collections::IndexMap<String, FieldDefinition>>>,
 
     /// Field-level rebindability designation. `Some(true)` marks the field as
     /// INTRINSIC machinery/view-state the owning trait computes itself (e.g. a
@@ -443,7 +443,7 @@ impl FieldDefinition {
 
     /// A `tuple` field's slots, in slot order (`properties` keyed `"0"`, `"1"`, …).
     pub fn tuple_slots(&self) -> Vec<&FieldDefinition> {
-        tuple_slots_of(self.properties.as_ref())
+        tuple_slots_of(self.properties.as_deref())
     }
 
     /// The variant of this tagged union a value belongs to (the LOLO tagged-union rule). A variant is chosen by its

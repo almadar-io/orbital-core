@@ -622,3 +622,45 @@ fn a_dispatch_option_record_that_is_no_event_request_is_refused_with_the_reason(
     let bad_mount = serde_json::json!({ "event": "INIT", "mount": [{ "trait": "T", "event": "SAVE" }] });
     assert!(super::EventRequest::from_dispatch(serde_json::json!({}), dispatch_options(bad_mount)).is_err());
 }
+
+fn record_by_serde(value: &orbital_core_base::value::Value) -> Option<super::DeliveryRecord> {
+    serde_json::to_value(value).and_then(serde_json::from_value).ok()
+}
+
+fn value_of(json: serde_json::Value) -> orbital_core_base::value::Value {
+    serde_json::from_value(json).unwrap()
+}
+
+#[test]
+fn a_delivery_record_reads_back_what_its_value_wrote() {
+    let source = super::BusEventSource { orbital: Some("Sessions".into()), r#trait: Some("GuestSession".into()), dispatched: Some(true), ..Default::default() };
+    let record = super::DeliveryRecord { event: "GUEST_CLIENT".into(), payload: Some(value_of(serde_json::json!({ "guest": "g", "n": [1, 2] }))), source };
+    assert_eq!(super::DeliveryRecord::from_value(&record.value()), Some(record));
+}
+
+#[test]
+fn a_delivery_record_shares_its_payload_instead_of_copying_it() {
+    let payload = value_of(serde_json::json!({ "program": { "orbitals": [{ "name": "A" }] } }));
+    let record = super::super::delivery_record_value("E", &payload, &super::BusEventSource::default());
+    let read = super::DeliveryRecord::from_value(&record).expect("a delivery record");
+    let (orbital_core_base::value::Value::Object(a), Some(orbital_core_base::value::Value::Object(b))) = (&payload, &read.payload) else { panic!("records") };
+    assert!(orbital_core_base::value::Shared::ptr_eq(a, b));
+}
+
+#[test]
+fn edge_a_delivery_record_reads_as_its_serde_form_did() {
+    for json in [
+        serde_json::json!({ "event": "E", "payload": null, "source": { "trait": "T" } }),
+        serde_json::json!({ "event": "E" }),
+        serde_json::json!({ "event": "E", "payload": 3, "source": {}, "extra": true }),
+        serde_json::json!({ "event": "E", "source": { "trait": "T", "pendingKey": "k", "dispatched": false } }),
+        serde_json::json!({ "payload": {} }),
+        serde_json::json!({ "event": 7 }),
+        serde_json::json!({ "event": "E", "source": "T" }),
+        serde_json::json!(null),
+    ] {
+        let value = value_of(json.clone());
+        assert_eq!(super::DeliveryRecord::from_value(&value), record_by_serde(&value), "{json}");
+    }
+    assert_eq!(super::DeliveryRecord::from_value(&value_of(serde_json::json!(["E"]))), None, "a delivery record is an object; a list is not one");
+}

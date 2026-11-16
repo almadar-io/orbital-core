@@ -44,7 +44,7 @@ fn kernel() -> RuntimeKernel {
                             ["create", "Note", { "id": "d", "title": "first" }],
                             ["create", "Note", { "id": "d", "title": "again" }]
                         ], emit]])),
-                        arm("BAD_ACTION", json!([["persist", "batch", [["upsert", "Note", { "id": "z", "title": "z" }]], emit]])),
+                        arm("BAD_ACTION", json!([["persist", "batch", [["rekey", "Note", { "id": "z", "title": "z" }]], emit]])),
                         arm("NOT_ARRAY", json!([["persist", "batch", "@payload.nothing", emit]])),
                         arm("EMPTY", json!([["persist", "batch", [], emit]])),
                         arm("SILENT", json!([["persist", "batch", [["create", "Note", { "id": "q", "title": "q" }]]]])),
@@ -137,7 +137,7 @@ fn an_unknown_action_fails_the_batch() {
         out[0].1["error"]
             .as_str()
             .unwrap()
-            .contains("Unknown batch operation action: upsert"),
+            .contains("Unknown batch operation action: rekey"),
         "{out:?}"
     );
 }

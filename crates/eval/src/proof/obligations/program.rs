@@ -107,7 +107,7 @@ impl<'a> Program<'a> {
             .iter()
             .flatten()
             .find(|e| e.key == event)
-            .and_then(|e| e.payload_schema.as_deref())
+            .and_then(|e| e.payload_schema.as_deref().map(Vec::as_slice))
             .unwrap_or(&[])
     }
 

@@ -83,7 +83,7 @@ pub fn message_key_paths(field: &crate::schema::ConfigField) -> Vec<Vec<KeyStep>
     match field.field_type.as_str() {
         "MessageKey" => vec![Vec::new()],
         "[MessageKey]" => vec![vec![KeyStep::Item]],
-        _ => carried_key_paths(field.items.as_deref(), field.properties.as_ref()),
+        _ => carried_key_paths(field.items.as_deref(), field.properties.as_deref()),
     }
 }
 
@@ -105,7 +105,7 @@ fn definition_key_paths(def: &crate::schema::FieldDefinition) -> Vec<Vec<KeyStep
     if matches!(def.field_type, crate::schema::FieldType::MessageKey) {
         return vec![Vec::new()];
     }
-    carried_key_paths(def.items.as_deref(), def.properties.as_ref())
+    carried_key_paths(def.items.as_deref(), def.properties.as_deref())
 }
 
 fn prepend(step: KeyStep, mut rest: Vec<KeyStep>) -> Vec<KeyStep> {

@@ -203,7 +203,7 @@ pub struct OrbitalInfo {
 #[derive(Debug, Clone)]
 pub struct EntitySummary {
     pub name: String,
-    pub fields: Vec<FieldDefinition>,
+    pub fields: orbital_core_base::value::Shared<Vec<FieldDefinition>>,
 }
 
 /// Detailed orbital information.
