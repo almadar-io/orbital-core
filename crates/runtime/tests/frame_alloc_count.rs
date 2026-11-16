@@ -130,8 +130,10 @@ fn measure(ticking: usize, frames: u64) -> (usize, f64) {
 // ticking trait; 14979 / 149119 (was 16179 / 161119).
 // 2026-10-30: `static_key!` literal keys and one shared key per `set` write (PendingSets), -2 per ticking trait; 14776 / 147113.
 // 2026-10-30: `Effect::Set.path` is the parsed expression's shared string, no per-tick copy (K1/R3); 14376 / 143113.
-const PINNED_100: usize = 14376;
-const PINNED_1000: usize = 143113;
+// 2026-11-16: two more allocations per ticking trait, re-pinned on the owner ruling to clear every red pin
+// (G-ORBITAL-CORE-159). Not attributed: first seen 2026-11-10 at +1 per trait, +2 since 2026-11-15; 14576 / 145113.
+const PINNED_100: usize = 14576;
+const PINNED_1000: usize = 145113;
 
 #[test]
 fn frame_allocation_count_is_pinned() {

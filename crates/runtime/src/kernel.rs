@@ -1109,8 +1109,18 @@ fn state_render_sources(trait_def: &TraitDefinition, state_name: &str) -> Result
     Ok(sources)
 }
 
-/// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.
-fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
+/// The dispatch memory a leg carries for `trait_name`: none when the trait never reads it (EXEC-QUEUE-5), so a
+/// delivery the host already sent is not posted back (G-CROSS-643).
+fn dispatch_log_of(kernel: &RuntimeKernel, trait_name: &str, entry: &DeliveryEntry) -> Option<DispatchLog> {
+    let reads = kernel
+        .registry
+        .trait_definitions
+        .read()
+        .get(trait_name)
+        .is_some_and(|def| def.reads_dispatch_memory());
+    if !reads {
+        return None;
+    }
     (!entry.view.prev_events.is_empty() || !entry.view.prev_states.is_empty()).then(|| {
         DispatchLog {
             prev_events: entry
@@ -1124,6 +1134,7 @@ fn dispatch_log_of(entry: &DeliveryEntry) -> Option<DispatchLog> {
     })
 }
 
+/// A data effect on a browser-stored entity: a browser-run tick sends it as its `runTick` leg.
 fn browser_data_effect(effect: &Effect, residence: &orbital_core_base::runs_on::Residence) -> bool {
     !orbital_core_base::runs_on::LegTouch::of_effect(effect, residence).server_work
 }
@@ -1250,6 +1261,7 @@ mod ticks;
 mod client_leg;
 mod frames;
 mod cascade;
+mod framed_answer;
 mod keyed_rows;
 mod step_effects;
 mod host_effects;

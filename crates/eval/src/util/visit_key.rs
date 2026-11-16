@@ -345,7 +345,7 @@ fn object_digest(map: &Shared<orbital_core_base::value::ValueMap>) -> u128 {
 /// length and its own ([`array_digest`], [`object_digest`]).
 fn digest_value(h: &mut Xxh3, value: &EvalValue) {
     match value {
-        EvalValue::Lambda(_) | EvalValue::Sealed(_) => {
+        EvalValue::Lambda(_) | EvalValue::Sealed(_) | EvalValue::Blob(_) => {
             digest_json(h, &serde_json::to_value(value).unwrap_or(Value::Null))
         }
         EvalValue::Null => h.update(b"n"),

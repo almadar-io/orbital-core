@@ -32,7 +32,7 @@ impl HeldBytes {
 
     pub fn value(&mut self, value: &Value) {
         match value {
-            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) => {}
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::Blob(_) => {}
             Value::Bytes(bytes) => {
                 if self.first(Shared::as_ptr(bytes)) {
                     self.bytes += ARC_HEADER + core::mem::size_of::<Vec<u8>>() as u64 + bytes.capacity() as u64;

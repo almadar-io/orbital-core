@@ -114,6 +114,7 @@ pub(super) fn non_data_kind(value: &Value) -> Option<&'static str> {
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) | Value::Bytes(_) => None,
         Value::Lambda(_) => Some("function"),
         Value::Sealed(_) => Some("sealed"),
+        Value::Blob(_) => Some("blob"),
     }
 }
 

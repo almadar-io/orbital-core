@@ -58,6 +58,8 @@ pub mod http_wire;
 pub mod js_readable;
 #[path = "wire/held_values.rs"]
 pub mod held_values;
+#[path = "wire/blobs.rs"]
+pub mod blobs;
 #[path = "wire/row_set.rs"]
 pub mod row_set;
 #[path = "wire/tab.rs"]

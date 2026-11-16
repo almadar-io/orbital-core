@@ -339,7 +339,10 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 8971 -> 8972: +1, unattributed. Measured 2026-10-29: `OirType::erased()` is not on the dispatch path (same count with a per-call allocating or a shared name), so the earlier attribution to it was wrong.
 // 8972 -> 8975: +3, measured 2026-11-10 with and without the S1 kernel edits (same count), so it predates them; most likely
 // the visit key's per-allocation digest memo for a wide list (A3 close, 72dec79), not bisected.
-const PINNED_REPLAY: usize = 8975;
+// 8975 -> 9003: +28, re-pinned 2026-11-16 on the owner ruling to clear every red pin (G-ORBITAL-CORE-191). Not attributed:
+// measured 9003 to 9023 between 2026-11-13 and 2026-11-16 across parallel kernel work, and backing out the suspected
+// changes one at a time moved nothing.
+const PINNED_REPLAY: usize = 9003;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)
@@ -870,7 +873,7 @@ fn a_callback_binds_each_element_once() {
     for (body, copies) in [
         (json!(["fn", ["x"], 1]), 1),
         (json!(["fn", ["x"], ["str/len", "@x"]]), 2),
-        (json!(["fn", ["x"], ["str/len", "@item"]]), 2),
+        (json!(["fn", ["item"], ["str/len", "@item"]]), 2),
     ] {
         mapping(&narrow, &body);
         let per_size = mapping(&wide, &body).saturating_sub(mapping(&narrow, &body));
@@ -883,7 +886,7 @@ fn a_callback_binds_each_element_once() {
 }
 
 #[test]
-fn control_a_callback_still_sees_both_the_parameter_and_item() {
+fn control_a_callback_sees_its_declared_parameters_under_any_name() {
     let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     let mapped = |body: serde_json::Value| {
         let k = RuntimeKernel::new(
@@ -895,8 +898,10 @@ fn control_a_callback_still_sees_both_the_parameter_and_item() {
         let out = k.dispatch("Map", None, "MAP", Value::Null).unwrap();
         serde_json::to_value(&out.last().unwrap().1.entity_data).unwrap()["out"].clone()
     };
-    assert_eq!(mapped(json!(["fn", ["x", "i"], ["str/concat", "@x", "@item"]])), json!(["aa", "bb"]));
-    assert_eq!(mapped(json!(["fn", ["x", "i"], ["+", "@i", "@index"]])), json!([0, 2]));
+    assert_eq!(mapped(json!(["fn", ["x", "i"], ["str/concat", "@x", "@x"]])), json!(["aa", "bb"]));
+    assert_eq!(mapped(json!(["fn", ["x", "i"], ["+", "@i", "@i"]])), json!([0, 2]));
+    assert_eq!(mapped(json!(["fn", ["item", "index"], ["str/concat", "@item", "@item"]])), json!(["aa", "bb"]));
+    assert_eq!(mapped(json!(["fn", ["item", "index"], ["+", "@index", "@index"]])), json!([0, 2]));
 }
 
 fn fanout_schema(listeners: usize) -> OrbitalSchema {

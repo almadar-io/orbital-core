@@ -255,11 +255,12 @@ fn hash_value(node: &Value, state: &mut impl Hasher) {
         Value::Sealed(sealed) => (7u8, std::sync::Arc::as_ptr(sealed) as usize).hash(state),
         Value::Int(i) => (8u8, *i).hash(state),
         Value::Bytes(b) => (9u8, &**b as *const Vec<u8> as usize).hash(state),
+        Value::Blob(blob) => (10u8, blob.id()).hash(state),
     }
 }
 
 fn mergeable(node: &Value) -> bool {
-    !matches!(node, Value::Lambda(_) | Value::Sealed(_))
+    !matches!(node, Value::Lambda(_) | Value::Sealed(_) | Value::Blob(_))
 }
 
 /// The node held for `hash` that `same` accepts, else `make()` held under it. The first node of a hash takes no list of

@@ -187,7 +187,7 @@ fn edge_a_substrate_op_on_a_server_with_no_host_fails_loudly() {
     assert_eq!(state, "failed");
     assert_eq!(
         got,
-        json!({ "error": "no substrate host configured for program/eval" })
+        json!({ "error": "no substrate host configured for program/eval", "errors": [{ "kind": "unavailable", "message": "no substrate host configured for program/eval" }], "kind": "unavailable" })
     );
 }
 
@@ -337,7 +337,7 @@ mod agent_ports {
         assert_eq!(state, "failed");
         assert_eq!(
             got,
-            json!({ "error": "no substrate host configured for program/dispatch" })
+            json!({ "error": "no substrate host configured for program/dispatch", "errors": [{ "kind": "unavailable", "message": "no substrate host configured for program/dispatch" }], "kind": "unavailable" })
         );
     }
 
@@ -445,7 +445,7 @@ mod agent_ports {
         assert_eq!(state, "failed");
         assert_eq!(
             got,
-            json!({ "error": "no substrate host configured for program/dispatch", "key": "k1" })
+            json!({ "error": "no substrate host configured for program/dispatch", "errors": [{ "kind": "unavailable", "message": "no substrate host configured for program/dispatch" }], "kind": "unavailable", "key": "k1" })
         );
     }
 

@@ -1006,6 +1006,7 @@ pub fn format_value(value: &Value) -> String {
         Value::Object(obj) => format!("{{{} fields}}", obj.len()),
         Value::Lambda(l) => format!("[lambda({} params)]", l.params.len()),
         Value::Sealed(sealed) => format!("{{{} fields}}", sealed.fields().len()),
+        Value::Blob(blob) => format!("[blob {}]", blob.id()),
     }
 }
 
@@ -1081,7 +1082,7 @@ pub fn to_json(value: &Value) -> serde_json::Value {
         }
         Value::Number(n) => serde_json::json!(*n),
         Value::Int(i) => serde_json::json!(*i),
-        Value::Bytes(_) => orbital_core_base::json_value::value_to_json(value),
+        Value::Bytes(_) | Value::Blob(_) => orbital_core_base::json_value::value_to_json(value),
         Value::String(s) => serde_json::Value::String(s.clone().into_inner()),
         Value::Array(arr) => serde_json::Value::Array(arr.iter().map(to_json).collect()),
         Value::Object(obj) => serde_json::Value::Object(

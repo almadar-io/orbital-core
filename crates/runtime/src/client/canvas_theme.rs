@@ -57,6 +57,44 @@ const TEXT_SIZES: [(&str, f64); 6] = [
     ("2xl", 32.0),
 ];
 
+/// `@almadar/core` `THEME_PALETTE_KEYS`: the theme colour keys `palette` carries, each resolved from its token.
+pub const THEME_PALETTE_KEYS: [&str; 34] = [
+    "accent",
+    "accent-foreground",
+    "background",
+    "border",
+    "border-hover",
+    "card",
+    "card-foreground",
+    "error",
+    "error-foreground",
+    "foreground",
+    "info",
+    "info-foreground",
+    "input",
+    "muted",
+    "muted-foreground",
+    "placeholder",
+    "primary",
+    "primary-foreground",
+    "primary-hover",
+    "ring",
+    "scrim",
+    "secondary",
+    "secondary-foreground",
+    "secondary-hover",
+    "success",
+    "success-foreground",
+    "surface",
+    "surface-hover",
+    "tertiary",
+    "tertiary-foreground",
+    "tertiary-hover",
+    "tertiary-muted",
+    "warning",
+    "warning-foreground",
+];
+
 const UNRESOLVED_COLOR: &str = "currentColor";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -118,6 +156,19 @@ pub struct CanvasTheme {
     pub text: BTreeMap<String, f64>,
     pub corner: f64,
     pub scene: CanvasScene,
+    /// Every theme colour key whose token parses, as CSS.
+    pub palette: BTreeMap<String, String>,
+    /// The theme's `display`, `body` and `mono` families that it names.
+    pub fonts: BTreeMap<String, CanvasFont>,
+}
+
+/// One theme family: its first named face, the font file a canvas draws it from (empty when the theme names
+/// none) and the generic family that stands in until the file loads.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanvasFont {
+    pub family: String,
+    pub file: String,
+    pub generic: String,
 }
 
 /// Resolve the canvas theme from `@currentTheme`'s merged tokens.
@@ -240,6 +291,59 @@ pub fn canvas_theme(tokens: &ThemeTokens) -> CanvasTheme {
             .map_or_else(|| "rgb(255, 255, 255)".to_string(), |c| c.css()),
         fog: number(&scene_tokens.fog, 0.0),
     };
+    let palette = THEME_PALETTE_KEYS
+        .iter()
+        .filter_map(|key| color_of(key).map(|c| (key.to_string(), c.css())))
+        .collect();
+    let type_scale = tokens.type_scale.clone().unwrap_or_default();
+    let fonts = [
+        (
+            "display",
+            &type_scale.display_family,
+            &type_scale.display_file,
+            "sans-serif",
+        ),
+        (
+            "body",
+            &type_scale.body_family,
+            &type_scale.body_file,
+            "sans-serif",
+        ),
+        (
+            "mono",
+            &type_scale.mono_family,
+            &type_scale.mono_file,
+            "monospace",
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(role, family, file, default_generic)| {
+        let stack = family.as_deref()?.replace(
+            "var(--font-family)",
+            typography.get("font-family").map_or("", String::as_str),
+        );
+        let names: Vec<String> = stack
+            .split(',')
+            .map(|n| n.trim().trim_matches(|c| c == '"' || c == '\'').to_string())
+            .filter(|n| !n.is_empty())
+            .collect();
+        let generic = names
+            .iter()
+            .rev()
+            .find(|n| matches!(n.as_str(), "serif" | "sans-serif" | "monospace"))
+            .map_or(default_generic, String::as_str)
+            .to_string();
+        let first = names.first()?.clone();
+        Some((
+            role.to_string(),
+            CanvasFont {
+                family: first,
+                file: file.clone().unwrap_or_default(),
+                generic,
+            },
+        ))
+    })
+    .collect();
     CanvasTheme {
         ground,
         surfaces,
@@ -294,6 +398,8 @@ pub fn canvas_theme(tokens: &ThemeTokens) -> CanvasTheme {
             .or_else(|| radii.get("sm").and_then(|v| parse_px(v)))
             .unwrap_or(4.0),
         scene,
+        palette,
+        fonts,
     }
 }
 
@@ -605,8 +711,7 @@ mod tests {
     #[test]
     fn a_theme_with_only_primary_derives_the_series_by_rotating_hue() {
         let tokens: ThemeTokens =
-            from_json_value(&(serde_json::json!({ "colors": { "primary": "#c2410c" } })))
-                .unwrap();
+            from_json_value(&(serde_json::json!({ "colors": { "primary": "#c2410c" } }))).unwrap();
         let theme = canvas_theme(&tokens);
         assert!(same_color("rgb(194, 65, 12)", &theme.series[0]));
         assert!(!same_color(&theme.series[0], &theme.series[1]));
@@ -621,6 +726,61 @@ mod tests {
         assert_eq!(theme.surfaces.muted, "transparent");
         assert_eq!(theme.surfaces.card, "transparent");
         assert_eq!(theme.surfaces.on_primary, "transparent");
+    }
+
+    #[test]
+    fn the_palette_holds_every_parsed_colour_and_fonts_name_the_family_file_and_generic() {
+        let tokens: ThemeTokens = from_json_value(&serde_json::json!({
+            "colors": { "background": "#f6efdb", "card-foreground": "rgb(11, 16, 38)", "ring": "var(--x)" },
+            "typeScale": {
+                "displayFamily": "\"Limelight\", \"Poiret One\", serif",
+                "displayFile": "https://fonts.test/Limelight-Regular.ttf",
+                "bodyFamily": "\"Josefin Sans\", \"Futura\", sans-serif",
+                "monoFamily": "var(--font-family)"
+            },
+            "typography": { "font-family": "\"Space Mono\", monospace" }
+        }))
+        .unwrap();
+        let theme = canvas_theme(&tokens);
+        assert_eq!(theme.palette["background"], "rgb(246, 239, 219)");
+        assert_eq!(theme.palette["card-foreground"], "rgb(11, 16, 38)");
+        assert!(
+            !theme.palette.contains_key("ring"),
+            "an unparsable colour is left out"
+        );
+        let display = &theme.fonts["display"];
+        assert_eq!(
+            (
+                display.family.as_str(),
+                display.file.as_str(),
+                display.generic.as_str()
+            ),
+            (
+                "Limelight",
+                "https://fonts.test/Limelight-Regular.ttf",
+                "serif"
+            )
+        );
+        let body = &theme.fonts["body"];
+        assert_eq!(
+            (
+                body.family.as_str(),
+                body.file.as_str(),
+                body.generic.as_str()
+            ),
+            ("Josefin Sans", "", "sans-serif")
+        );
+        let mono = &theme.fonts["mono"];
+        assert_eq!(
+            (mono.family.as_str(), mono.generic.as_str()),
+            ("Space Mono", "monospace"),
+            "var(--font-family) reads the typography stack"
+        );
+        let bare: ThemeTokens = from_json_value(&serde_json::json!({ "colors": {} })).unwrap();
+        assert!(
+            canvas_theme(&bare).fonts.is_empty(),
+            "control: no families, no entries"
+        );
     }
 
     #[test]

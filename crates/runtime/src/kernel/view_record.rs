@@ -429,15 +429,15 @@ impl RuntimeKernel {
         }
     }
 
-    /// Whether the client alone holds every trait bound to `frame`: a host's report of it is ignored.
-    fn frame_is_client_only(&self, frame: &str, client_only: &HashSet<String>) -> bool {
+    /// Whether the client keeps its own copy of every trait bound to `frame`: a host's report of it is ignored.
+    fn frame_is_kept_here(&self, frame: &str, kept_here: &dyn Fn(&str) -> bool) -> bool {
         let defs = self.registry.trait_definitions.read();
         match frame.strip_prefix("$shared::") {
             Some(entity) => defs
                 .values()
                 .filter(|def| def.linked_entity.as_deref() == Some(entity))
-                .all(|def| client_only.contains(&def.name)),
-            None => client_only.contains(frame),
+                .all(|def| kept_here(&def.name)),
+            None => kept_here(frame),
         }
     }
 
@@ -453,11 +453,11 @@ impl RuntimeKernel {
     /// Fold a server's frame delta into this kernel's frames, at the version it starts from: a delta already applied
     /// (`to` at or behind the version held) changes nothing, a gap applies nothing and asks for a resync, a snapshot
     /// replaces. `base` is the rows the leg carried, by frame: a field equal to the client's own is the host echoing
-    /// it, not a write. A frame only client-run traits read keeps the client's value.
+    /// it, not a write. A frame only traits the client keeps its own copy of read keeps the client's value (EXEC-DIST-4).
     pub fn apply_server_frames(
         &self,
         delta: &FrameDelta,
-        client_only: &HashSet<String>,
+        kept_here: &dyn Fn(&str) -> bool,
         base: Option<&HashMap<String, ValueMap>>,
     ) -> Result<FramesApplied, KernelError> {
         let key = delta.session.clone().unwrap_or_default();
@@ -518,7 +518,7 @@ impl RuntimeKernel {
         }
         let mut applied = Vec::new();
         for (frame, write) in writes {
-            if self.frame_is_client_only(&frame, client_only) {
+            if self.frame_is_kept_here(&frame, kept_here) {
                 continue;
             }
             match write {

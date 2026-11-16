@@ -455,12 +455,19 @@ fn on_a_capable_host_only_the_ids_cross_and_the_ref_is_the_same() {
 }
 
 #[test]
-fn control_a_host_that_cannot_answer_ids_is_listed_and_the_ref_is_still_the_same() {
+fn control_a_host_that_cannot_answer_ids_is_asked_the_narrowed_rows_and_the_ref_is_still_the_same() {
     let mut capabilities = QueryCapabilities::full();
     capabilities.ids_only = None;
     let (log, response) = host_requests(Some(capabilities));
-    assert!(log.iter().all(|r| !matches!(r, IoRequest::QueryRows { .. })), "{log:?}");
-    assert!(log.iter().any(|r| matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    let narrowed: Vec<_> = log
+        .iter()
+        .filter_map(|r| match r {
+            IoRequest::QueryRows { project, query, .. } => Some((*project, query.limit, query.total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(narrowed, vec![(RowProjection::Rows, None, Some(RowTotalMode::None))], "{log:?}");
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
     let reference = response.data_refs.unwrap().remove("Ticket").unwrap();
     assert_eq!((reference.ids, reference.total), (vec!["t2".to_string(), "t5".to_string()], 4));
 }
@@ -493,7 +500,8 @@ fn total_none_on_a_host_without_an_exact_count_is_still_pushed() {
     assert_eq!(totals_asked(&log), vec![Some(RowTotalMode::None)], "{log:?}");
     assert!(payload.get("totalCount").is_none());
     let ((log, _), _) = host_requests_with(json!({}), Some(capabilities));
-    assert!(log.iter().all(|r| !matches!(r, IoRequest::QueryRows { .. })), "{log:?}");
+    assert_eq!(totals_asked(&log), vec![Some(RowTotalMode::None)], "the exact count stays in the kernel: {log:?}");
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::QueryRows { query, .. } if query.limit.is_some())), "{log:?}");
 }
 
 #[test]

@@ -261,6 +261,7 @@ fn json_fits(value: &Value, list_null: bool, map_null: bool) -> bool {
             }
         }),
         Value::Lambda(_) | Value::Sealed(_) => false,
+        Value::Blob(_) => true,
     }
 }
 

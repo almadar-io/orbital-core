@@ -30,6 +30,7 @@ pub fn value_to_json(value: &Value) -> serde_json::Value {
                 .collect(),
         ),
         Value::Sealed(sealed) => value_to_json(&Value::object(sealed.fields().clone())),
+        Value::Blob(blob) => serde_json::json!({ (crate::blobs::BLOB_MARKER): blob.id() }),
         Value::Lambda(_) => serde_json::Value::Null,
     }
 }
@@ -69,6 +70,13 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
     match value {
         Value::Sealed(sealed) => write_value_json(&Value::object(sealed.fields().clone()), indent, depth, out),
         Value::Null | Value::Lambda(_) => out.push_str("null"),
+        Value::Blob(blob) => {
+            out.push_str("{\"");
+            out.push_str(crate::blobs::BLOB_MARKER);
+            out.push_str("\":");
+            out.push_str(&blob.id().to_string());
+            out.push('}');
+        }
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => {
             if n.fract() == 0.0 && n.abs() < i64::MAX as f64 {

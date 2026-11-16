@@ -2,72 +2,68 @@
 use std::prelude::v1::*;
 
 use super::defaults::{get_default_colors_dark, get_default_colors_light, get_default_radii};
-use super::emitters::{
-    emit_density, emit_diagram, emit_elevation, emit_geometry, emit_iconography, emit_motion,
-    emit_scene, emit_surface, emit_type_scale,
-};
+use super::emitters::{emit_axes, SkinAxes};
 use crate::schema::{ThemeTokens, ThemeVariant};
 use std::collections::BTreeMap;
 
-/// Pick the right Option for each axis: prefer dark_variant.<axis> if Some, else base_tokens.<axis>.
-/// Matches the same category-level cascade used for colors / shadows in this file.
+/// The base tokens' skin axes as stylesheet lines.
 pub(crate) fn emit_skin_axes(tokens: &ThemeTokens, indent: &str) -> String {
-    let mut out = String::new();
-    out.push_str(&emit_density(tokens.density.as_ref(), indent));
-    out.push_str(&emit_type_scale(tokens.type_scale.as_ref(), indent));
-    out.push_str(&emit_motion(tokens.motion.as_ref(), indent));
-    out.push_str(&emit_iconography(tokens.iconography.as_ref(), indent));
-    out.push_str(&emit_elevation(tokens.elevation.as_ref(), indent));
-    out.push_str(&emit_geometry(tokens.geometry.as_ref(), indent));
-    out.push_str(&emit_surface(tokens.surface.as_ref(), indent));
-    out.push_str(&emit_diagram(tokens.diagram.as_ref(), indent));
-    out.push_str(&emit_scene(tokens.scene.as_ref(), indent));
-    out
+    emit_axes(
+        SkinAxes {
+            density: tokens.density.as_ref(),
+            type_scale: tokens.type_scale.as_ref(),
+            motion: tokens.motion.as_ref(),
+            iconography: tokens.iconography.as_ref(),
+            elevation: tokens.elevation.as_ref(),
+            geometry: tokens.geometry.as_ref(),
+            surface: tokens.surface.as_ref(),
+            diagram: tokens.diagram.as_ref(),
+            scene: tokens.scene.as_ref(),
+        },
+        indent,
+    )
 }
 
+/// Each axis from the dark variant when it declares one, else from the base: pick the right Option for each axis: prefer dark_variant.<axis> if Some, else base_tokens.<axis>.
+/// Matches the same category-level cascade used for colors / shadows in this file.
 pub(crate) fn emit_skin_axes_dark(
     base_tokens: &ThemeTokens,
     dark_variant: Option<&ThemeVariant>,
     indent: &str,
 ) -> String {
-    let mut out = String::new();
-    let density = dark_variant
-        .and_then(|v| v.density.as_ref())
-        .or(base_tokens.density.as_ref());
-    let type_scale = dark_variant
-        .and_then(|v| v.type_scale.as_ref())
-        .or(base_tokens.type_scale.as_ref());
-    let motion = dark_variant
-        .and_then(|v| v.motion.as_ref())
-        .or(base_tokens.motion.as_ref());
-    let iconography = dark_variant
-        .and_then(|v| v.iconography.as_ref())
-        .or(base_tokens.iconography.as_ref());
-    let elevation = dark_variant
-        .and_then(|v| v.elevation.as_ref())
-        .or(base_tokens.elevation.as_ref());
-    let geometry = dark_variant
-        .and_then(|v| v.geometry.as_ref())
-        .or(base_tokens.geometry.as_ref());
-    out.push_str(&emit_density(density, indent));
-    out.push_str(&emit_type_scale(type_scale, indent));
-    out.push_str(&emit_motion(motion, indent));
-    out.push_str(&emit_iconography(iconography, indent));
-    out.push_str(&emit_elevation(elevation, indent));
-    out.push_str(&emit_geometry(geometry, indent));
-    let surface = dark_variant
-        .and_then(|v| v.surface.as_ref())
-        .or(base_tokens.surface.as_ref());
-    out.push_str(&emit_surface(surface, indent));
-    let diagram = dark_variant
-        .and_then(|v| v.diagram.as_ref())
-        .or(base_tokens.diagram.as_ref());
-    out.push_str(&emit_diagram(diagram, indent));
-    let scene = dark_variant
-        .and_then(|v| v.scene.as_ref())
-        .or(base_tokens.scene.as_ref());
-    out.push_str(&emit_scene(scene, indent));
-    out
+    let dark = dark_variant;
+    emit_axes(
+        SkinAxes {
+            density: dark
+                .and_then(|v| v.density.as_ref())
+                .or(base_tokens.density.as_ref()),
+            type_scale: dark
+                .and_then(|v| v.type_scale.as_ref())
+                .or(base_tokens.type_scale.as_ref()),
+            motion: dark
+                .and_then(|v| v.motion.as_ref())
+                .or(base_tokens.motion.as_ref()),
+            iconography: dark
+                .and_then(|v| v.iconography.as_ref())
+                .or(base_tokens.iconography.as_ref()),
+            elevation: dark
+                .and_then(|v| v.elevation.as_ref())
+                .or(base_tokens.elevation.as_ref()),
+            geometry: dark
+                .and_then(|v| v.geometry.as_ref())
+                .or(base_tokens.geometry.as_ref()),
+            surface: dark
+                .and_then(|v| v.surface.as_ref())
+                .or(base_tokens.surface.as_ref()),
+            diagram: dark
+                .and_then(|v| v.diagram.as_ref())
+                .or(base_tokens.diagram.as_ref()),
+            scene: dark
+                .and_then(|v| v.scene.as_ref())
+                .or(base_tokens.scene.as_ref()),
+        },
+        indent,
+    )
 }
 
 /// Generate CSS custom properties from theme tokens with defaults for missing values

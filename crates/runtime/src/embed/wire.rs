@@ -164,6 +164,9 @@ pub struct Entered {
 pub struct AppliedWire {
     pub applied: Vec<(String, String)>,
     pub response: EventResponse,
+    /// The host's own renders in the folded answer that still apply: none of a trait this client stepped past the
+    /// host's report of (EXEC-DIST-4). The host paints them, never the answer's raw `clientEffectsByTrait`.
+    pub host_paints: Vec<crate::effects::response::ClientEffectByTrait>,
     /// The legs the fold's own arms owe the host (a refetch after a browser-stored write), to post and fold in turn.
     pub server_legs: Vec<RoutedLeg>,
     /// Set when the response's frame delta started past the version this client holds: ask the host for

@@ -229,6 +229,9 @@ fn structural_key(value: &Value, out: &mut String) -> Result<(), OrbitalError> {
                 "value/key: a lambda has no structural key".to_string(),
             )))
         }
+        Value::Blob(blob) => {
+            let _ = write!(out, "B{};", blob.id());
+        }
     }
     Ok(())
 }

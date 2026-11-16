@@ -265,6 +265,9 @@ pub enum Value {
     /// A record only the kernel can make: readable like an object, never built from a literal, a parse, a cast or a
     /// wire payload (EXEC-IDENTITY-2).
     Sealed(Arc<Sealed>),
+    /// A value whose bytes only the host holds (EXEC-DIST-16b): held, stored, compared and written by its id; no read
+    /// reaches inside it in this kernel.
+    Blob(Arc<crate::blobs::Blob>),
 }
 
 /// The largest magnitude below which every integer is exactly a float.
@@ -315,6 +318,7 @@ impl PartialEq for Value {
             (Value::Object(a), Value::Object(b)) => a == b,
             (Value::Lambda(a), Value::Lambda(b)) => a == b,
             (Value::Sealed(a), Value::Sealed(b)) => a == b,
+            (Value::Blob(a), Value::Blob(b)) => a.id() == b.id(),
             _ => false,
         }
     }
@@ -366,6 +370,12 @@ impl Serialize for Value {
                 crate::held_values::Held::Inline(serializer) => obj.serialize(serializer),
             },
             Value::Sealed(sealed) => sealed.fields.serialize(serializer),
+            Value::Blob(blob) => {
+                use serde::ser::SerializeMap;
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry(crate::blobs::BLOB_MARKER, &blob.id())?;
+                map.end()
+            }
             Value::Lambda(_) => {
                 // Serialize lambda as ["fn", params, body]
                 let sexpr = SExpression::try_from(self.clone()).map_err(serde::ser::Error::custom)?;
@@ -442,6 +452,17 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
 
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
         let mut object = ValueMap::with_capacity_and_hasher(map.size_hint().unwrap_or(0).min(4096), Default::default());
+        let Some(first) = map.next_key::<String>()? else {
+            return Ok(crate::intern::value_record(object));
+        };
+        if first == crate::blobs::BLOB_MARKER && crate::blobs::reading() {
+            let id: u64 = map.next_value()?;
+            if map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::custom("a $blob marker has no other keys"));
+            }
+            return crate::blobs::handle(id).map(Value::Blob).map_err(serde::de::Error::custom);
+        }
+        object.insert(crate::intern::shared_owned(first), map.next_value::<Value>()?);
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
             object.insert(crate::intern::shared_owned(key), value);
         }
@@ -585,7 +606,7 @@ impl Value {
             Value::Int(i) => i.to_string(),
             Value::Bytes(b) => crate::codec::base64_encode(b),
             Value::String(s) => s.clone().into_inner(),
-            Value::Array(_) | Value::Object(_) | Value::Sealed(_) => crate::json_value::js_json_string(self),
+            Value::Array(_) | Value::Object(_) | Value::Sealed(_) | Value::Blob(_) => crate::json_value::js_json_string(self),
             Value::Lambda(l) => format!("<fn({})>", l.params.join(", ")),
         }
     }
@@ -801,6 +822,7 @@ impl Value {
             Value::Object(_) => "object",
             Value::Lambda(_) => "function",
             Value::Sealed(sealed) => sealed.kind,
+            Value::Blob(_) => "blob",
         }
     }
 
@@ -921,6 +943,7 @@ impl fmt::Display for Value {
                 write!(f, "<fn({})>", l.params.join(", "))
             }
             Value::Sealed(sealed) => write!(f, "<{}>", sealed.kind),
+            Value::Blob(blob) => write!(f, "<blob {}>", blob.id()),
         }
     }
 }
@@ -965,6 +988,9 @@ impl TryFrom<Value> for SExpression {
                     .collect::<Result<_, Self::Error>>()?,
             ),
             Value::Sealed(sealed) => SExpression::try_from(Value::object(Arc::unwrap_or_clone(sealed).fields))?,
+            Value::Blob(blob) => {
+                return Err(crate::error::EvalError::InvalidArgument(format!("blob {} is held by the host and has no literal here", blob.id())))
+            }
             // Lambda cannot be directly converted to SExpression (would need ["fn", params, body])
             Value::Lambda(l) => {
                 let Lambda { params, body } = Arc::unwrap_or_clone(l);

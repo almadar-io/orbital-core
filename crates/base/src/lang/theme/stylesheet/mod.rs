@@ -302,6 +302,8 @@ mod tests {
             "typeScale": {
                 "displayFamily": "\"Limelight\", serif",
                 "fontImport": "https://fonts.googleapis.com/css2?family=Limelight&display=swap",
+                "displayFile": "https://fonts.test/Limelight-Regular.ttf",
+                "bodyFile": "https://fonts.test/JosefinSans.ttf",
                 "headingWeight": "400",
                 "headingTransform": "uppercase",
                 "headingTracking": "0.2em",
@@ -329,12 +331,63 @@ mod tests {
         from_json_value(&json).expect("range fixture deserializes")
     }
 
+    /// The served stylesheet and the runtime var map (`css_axes` through `css_vars`) say the same thing: every skin
+    /// var the stylesheet writes for an installed preset is in the runtime map with the same value, and the reverse.
+    #[test]
+    fn every_installed_preset_writes_the_same_skin_vars_as_the_runtime_map() {
+        let mut drift = Vec::new();
+        for def in crate::theme::ThemePresets::installed().definitions() {
+            let css = emit_skin_axes(&def.tokens, "");
+            let written: std::collections::BTreeMap<String, String> = css
+                .lines()
+                .filter_map(|l| l.trim().strip_suffix(';'))
+                .filter_map(|l| l.split_once(": "))
+                .filter(|(k, _)| k.starts_with("--"))
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            let mut vars = crate::theme::CssVars::default();
+            let tk = &def.tokens;
+            crate::theme::css_axes::density(tk.density.as_ref(), &mut vars);
+            crate::theme::css_axes::type_scale(tk.type_scale.as_ref(), &mut vars);
+            crate::theme::css_axes::motion(tk.motion.as_ref(), &mut vars);
+            crate::theme::css_axes::iconography(tk.iconography.as_ref(), &mut vars);
+            crate::theme::css_axes::elevation(tk.elevation.as_ref(), &mut vars);
+            crate::theme::css_axes::geometry(tk.geometry.as_ref(), &mut vars);
+            crate::theme::css_axes::surface(tk.surface.as_ref(), &mut vars);
+            crate::theme::css_axes::diagram(tk.diagram.as_ref(), &mut vars);
+            crate::theme::css_axes::scene(tk.scene.as_ref(), &mut vars);
+            let runtime: std::collections::BTreeMap<String, String> = vars.into_iter().collect();
+            for (k, v) in &written {
+                if runtime.get(k) != Some(v) {
+                    drift.push(format!(
+                        "{}: stylesheet {k}={v} runtime {:?}",
+                        def.name,
+                        runtime.get(k)
+                    ));
+                }
+            }
+            for (k, v) in &runtime {
+                if !written.contains_key(k) {
+                    drift.push(format!("{}: runtime only {k}={v}", def.name));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "{} drifts (never truncated):\n{}",
+            drift.len(),
+            drift.join("\n")
+        );
+    }
+
     /// Twin of `packages/almadar-ui/test/themeTokens.range-axes.test.ts`.
     #[test]
     fn range_axes_emit_the_same_vars_as_the_runtime_mirror() {
         let css = emit_skin_axes(&range_fixture(), "");
         for line in [
             "--font-family-display: \"Limelight\", serif;",
+            "--font-file-display: https://fonts.test/Limelight-Regular.ttf;",
+            "--font-file-body: https://fonts.test/JosefinSans.ttf;",
             "--heading-weight: 400;",
             "--heading-transform: uppercase;",
             "--heading-tracking: 0.2em;",
@@ -355,6 +408,10 @@ mod tests {
             assert!(css.contains(line), "missing `{line}` in:\n{css}");
         }
         assert!(!css.contains("fontImport") && !css.contains("--font-import"));
+        assert!(
+            !css.contains("--font-file-mono"),
+            "control: no mono file, no var"
+        );
     }
 
     #[test]
@@ -394,8 +451,7 @@ mod tests {
             .unwrap()
             .remove("dark")
             .unwrap();
-        dark.surface =
-            from_json_value(&(serde_json::json!({ "backdrop": "blur(4px)" }))).unwrap();
+        dark.surface = from_json_value(&(serde_json::json!({ "backdrop": "blur(4px)" }))).unwrap();
         let css = tokens::emit_skin_axes_dark(&base, Some(&dark), "");
         assert!(css.contains("--surface-backdrop: blur(4px);"));
         assert!(!css.contains("--surface-page-image"));
@@ -459,7 +515,13 @@ mod tests {
     #[test]
     fn diagram_axes_control_theme_without_them_emits_none() {
         let css = emit_skin_axes(&create_test_theme().tokens, "");
-        for needle in ["--diagram-", "--material-", "--light-", "--scene-fog", "--surface-diagram"] {
+        for needle in [
+            "--diagram-",
+            "--material-",
+            "--light-",
+            "--scene-fog",
+            "--surface-diagram",
+        ] {
             assert!(!css.contains(needle), "unexpected `{needle}`");
         }
     }
@@ -476,7 +538,11 @@ mod tests {
     #[test]
     fn diagram_axes_dark_variant_replaces_the_whole_axis() {
         let base = diagram_fixture();
-        let mut dark = create_test_theme().variants.unwrap().remove("dark").unwrap();
+        let mut dark = create_test_theme()
+            .variants
+            .unwrap()
+            .remove("dark")
+            .unwrap();
         dark.diagram = from_json_value(&(serde_json::json!({ "glow": "10" }))).unwrap();
         dark.scene = from_json_value(&(serde_json::json!({ "lightAmbient": "0.3" }))).unwrap();
         let css = tokens::emit_skin_axes_dark(&base, Some(&dark), "");
@@ -498,7 +564,8 @@ mod tests {
     fn a_default_theme_key_sets_the_default_and_its_mode() {
         let mut theme = create_test_theme();
         theme.display_name = Some("Ocean's \"Deep\"".to_string());
-        let (themes, default, mode) = client_themes(std::slice::from_ref(&theme), Some("ocean-dark"));
+        let (themes, default, mode) =
+            client_themes(std::slice::from_ref(&theme), Some("ocean-dark"));
         assert_eq!(default.as_deref(), Some("ocean"));
         assert_eq!(mode, "dark");
         assert_eq!(themes[0].display_name, "Ocean's \"Deep\"");

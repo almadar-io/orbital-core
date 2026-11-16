@@ -268,6 +268,7 @@ fn json_kind(value: &Value) -> &'static str {
         Value::Object(_) => "object",
         Value::Lambda(_) => "function",
         Value::Sealed(_) => "object",
+        Value::Blob(_) => "blob",
     }
 }
 
@@ -432,8 +433,8 @@ fn arguments_of(raw: Option<&Value>) -> Result<Arguments, String> {
 }
 
 /// The event-request options of a `program/dispatch` (owner, 2026-10-21): what the HTTP dispatch routes carry.
-pub const DISPATCH_REQUEST_OPTIONS: [&str; 15] = [
-    "wire", "stream", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "route", "clientId",
+pub const DISPATCH_REQUEST_OPTIONS: [&str; 16] = [
+    "wire", "stream", "framed", "input", "orbital", "targetTrait", "entityId", "event", "traits", "mount", "route", "clientId",
     "locale", "delivery", "dispatchLog", "viewer",
 ];
 
@@ -472,7 +473,7 @@ fn list_of_records(value: &Value, required: &[&str], optional: &[&str]) -> bool 
 
 fn request_option_error(key: &str, value: &Value) -> Option<String> {
     let ok = match key {
-        "wire" | "stream" | "input" => matches!(value, Value::Bool(_)),
+        "wire" | "stream" | "framed" | "input" => matches!(value, Value::Bool(_)),
         "orbital" | "event" => value.as_str().is_some_and(|s| !s.is_empty()),
         "targetTrait" | "entityId" | "clientId" | "locale" | "route" => value.as_str().is_some(),
         "traits" => value.is_null() || list_of_records(value, &["trait", "from"], &["event"]),
@@ -504,6 +505,9 @@ fn schema_option(raw: Option<&Value>) -> Result<DispatchOptions, String> {
     }
     if request.get("stream") == Some(&Value::Bool(true)) && request.get("wire") != Some(&Value::Bool(true)) {
         return Err("program/dispatch: stream items are part of the wire answer: stream needs wire".to_string());
+    }
+    if request.get("framed") == Some(&Value::Bool(true)) && request.get("wire") != Some(&Value::Bool(true)) {
+        return Err("program/dispatch: a framed body is the wire answer's (EXEC-DIST-16b): framed needs wire".to_string());
     }
     let Some(schema) = options.get("schema") else {
         return Ok((None, request));
@@ -993,6 +997,7 @@ mod tests {
         for (key, given) in [
             ("wire", serde_json::json!(true)),
             ("stream", serde_json::json!(false)),
+            ("framed", serde_json::json!(false)),
             ("input", serde_json::json!(false)),
             ("entityId", serde_json::json!("n1")),
             ("traits", serde_json::json!([{ "trait": "Chat", "from": "idle", "event": "ADD_NOTE" }])),
@@ -1025,6 +1030,8 @@ mod tests {
         for (bad, why) in [
             (request(serde_json::json!({ "verb": "POST" })), "unsupported option \"verb\""),
             (request(serde_json::json!({ "stream": true })), "stream needs wire"),
+            (request(serde_json::json!({ "framed": true })), "framed needs wire"),
+            (request(serde_json::json!({ "wire": true, "framed": "yes" })), "option \"framed\" has the wrong shape"),
             (request(serde_json::json!({ "wire": "yes" })), "option \"wire\" has the wrong shape"),
             (request(serde_json::json!({ "input": 1 })), "option \"input\" has the wrong shape"),
             (request(serde_json::json!({ "entityId": 3 })), "option \"entityId\" has the wrong shape"),

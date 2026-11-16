@@ -199,6 +199,13 @@ pub struct TypeScaleTokens {
     /// Stylesheet URL loading the theme's web fonts; emitted as `@import`, never a var.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_import: Option<String>,
+    /// The font files a canvas draws the display, body and mono families from (a canvas cannot read `fontImport`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mono_file: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading_weight: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

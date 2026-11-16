@@ -519,6 +519,7 @@ impl StrictOperator for ObjectDeepCloneOp {
                 }
                 Value::Lambda(l) => Value::Lambda(l.clone()),
                 Value::Sealed(s) => Value::Sealed(s.clone()),
+                Value::Blob(b) => Value::Blob(b.clone()),
             }
         }
 

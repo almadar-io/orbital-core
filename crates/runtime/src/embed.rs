@@ -851,6 +851,14 @@ impl EmbeddedKernel {
                 })
                 .collect()
         });
+        let stale = self.kernel.stale_host_paints(response);
+        let host_paints = response
+            .client_effects_by_trait
+            .iter()
+            .flatten()
+            .filter(|p| !stale.contains(&p.trait_name))
+            .cloned()
+            .collect();
         let (outcomes, frames) = self
             .kernel
             .apply_server_response_with(response, already_delivered, by_frame.as_ref())
@@ -866,7 +874,7 @@ impl EmbeddedKernel {
             }
             merged.frames = Some(painted);
         }
-        self.applied_wire(outcomes, merged, frames.resync)
+        self.applied_wire(outcomes, merged, host_paints, frames.resync)
     }
 
     /// The wire a fold answers with: its outcomes merged into `merged` (already sealed), the legs its arms owe the host.
@@ -874,6 +882,7 @@ impl EmbeddedKernel {
         &self,
         outcomes: Vec<(String, ProcessEventResult)>,
         mut merged: EventResponse,
+        host_paints: Vec<crate::effects::response::ClientEffectByTrait>,
         resync: Option<crate::kernel::FramesResync>,
     ) -> Result<AppliedWire, String> {
         merged.fold_rerenders(&self.kernel.rerender_stale());
@@ -896,6 +905,7 @@ impl EmbeddedKernel {
         Ok(AppliedWire {
             applied,
             response: merged,
+            host_paints,
             server_legs,
             resync,
         })
@@ -935,7 +945,7 @@ impl EmbeddedKernel {
                 .map_err(|e| e.to_string())?;
                 let mut merged = EventResponse::from_process_results(&outcomes, "", "");
                 self.kernel.seal_outcomes(&mut merged, &outcomes, None, false);
-                self.applied_wire(outcomes, merged, None)
+                self.applied_wire(outcomes, merged, Vec::new(), None)
             }
         }
     }

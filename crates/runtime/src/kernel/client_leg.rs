@@ -226,7 +226,7 @@ impl RuntimeKernel {
                                 entry.entity_before.to_value(),
                             )])
                         }),
-                        dispatch_log: dispatch_log_of(entry),
+                        dispatch_log: dispatch_log_of(self, t, entry),
                         delivery,
                         ..Default::default()
                     })
@@ -531,7 +531,7 @@ impl RuntimeKernel {
                     )])
                 }),
                 delivery: delivery.clone(),
-                dispatch_log: dispatch_log_of(entry),
+                dispatch_log: dispatch_log_of(self, trait_name, entry),
                 ..Default::default()
             });
         }
@@ -675,10 +675,11 @@ impl RuntimeKernel {
             }
         }
 
-        // The host's paint of a slot is newer than the kernel's own render of it.
+        // The host's paint of a slot is newer than the kernel's own render of it, unless the client stepped that trait past it.
+        let stale = self.stale_host_paints(response);
         {
             let mut renders = self.renders.write();
-            for painted in response.client_effects_by_trait.iter().flatten() {
+            for painted in response.client_effects_by_trait.iter().flatten().filter(|p| !stale.contains(&p.trait_name)) {
                 if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, config } =
                     &painted.effect
                 {
@@ -697,37 +698,26 @@ impl RuntimeKernel {
         };
 
         let frames_applied = match &response.frames {
-            Some(delta) => self.apply_server_frames(delta, &client_only, base)?,
+            Some(delta) => {
+                let key = self.state_key(Some(RUNTIME_SINGLETON));
+                let kept_here = |t: &str| {
+                    let states = self.state_manager.read();
+                    let now = states.get_state(t, key.as_deref()).map(|s| s.current_state.as_str());
+                    client_only.contains(t) || !self.host_report_continues(t, now, response)
+                };
+                self.apply_server_frames(delta, &kept_here, base)?
+            }
             None => FramesApplied::default(),
         };
 
         {
             let mut state_manager = self.state_manager.write();
-            // A client-only trait's state is the client's, unless the host ran it (a browser leg's cascade): then the
-            // host's state continues from the state the leg carried.
-            let host_ran: HashSet<&str> = response
-                .transitions
-                .iter()
-                .flatten()
-                .map(|hop| hop.trait_name.as_str())
-                .collect();
-            // The host ran from the state the leg carried; a browser that has stepped the trait since keeps its own state.
-            let host_from = |trait_name: &str| {
-                response.transitions.iter().flatten().find(|hop| hop.trait_name == trait_name).map(|hop| hop.from.clone())
-            };
             for (trait_name, state_name) in &response.states {
-                if client_only.contains(trait_name) && !host_ran.contains(trait_name.as_str()) {
-                    continue;
-                }
                 let frame_id = frames_applied.ids.get(&self.trait_frame_key(trait_name));
                 let entity_id = self.state_key(Some(frame_id.map_or(RUNTIME_SINGLETON, String::as_str)));
-                if client_only.contains(trait_name) {
-                    let now = state_manager.get_state(trait_name, entity_id.as_deref()).map(|s| s.current_state.clone());
-                    if let (Some(now), Some(from)) = (now, host_from(trait_name)) {
-                        if now != from {
-                            continue;
-                        }
-                    }
+                let now = state_manager.get_state(trait_name, entity_id.as_deref()).map(|s| s.current_state.as_str());
+                if !self.host_report_continues(trait_name, now, response) {
+                    continue;
                 }
                 if state_manager
                     .get_or_create_state(trait_name, entity_id.as_deref())
@@ -784,14 +774,18 @@ impl RuntimeKernel {
                 &mut fanned,
             );
             // The host's own fan-out already ran this emit's listeners (their rows and renders are in
-            // this response); a client-only listener is the exception, its host run being dropped.
+            // this response); a client-only listener is the exception, its host run being dropped, and so is a listener
+            // the client keeps its own copy of that the host did not run (its copy had no arm for it).
             if host_ran
                 && self
                     .host_fans_out
                     .load(std::sync::atomic::Ordering::Relaxed)
             {
                 let mut reached = fanned.split_off(before);
-                reached.retain(|item| client_only.contains(&item.trait_name));
+                reached.retain(|item| {
+                    client_only.contains(&item.trait_name)
+                        || (self.committed_here(&item.trait_name) && Self::host_ran_from(&item.trait_name, response).is_none())
+                });
                 fanned.extend(reached);
             }
         }
@@ -1194,6 +1188,45 @@ impl RuntimeKernel {
 
     /// Whether a browser runs `trait_name`: no browser runs a store driver orbital's trait (EXEC-STORE-4) or a boot-only
     /// program-wide one (EXEC-DIST-9), so a host never pushes their dispatches.
+    /// A client-only trait steps only here and an optimistic one commits here first (EXEC-DIST-3): the host's report
+    /// of either is the continuation of this client's state only when the host ran it from `now` (EXEC-DIST-4).
+    fn committed_here(&self, trait_name: &str) -> bool {
+        self.registry.trait_definitions.read().get(trait_name).is_some_and(|d| {
+            matches!(self.dispatch_mode_of(d), DispatchMode::HybridClientOnly | DispatchMode::RuntimeOptimistic)
+        })
+    }
+
+    fn host_ran_from<'r>(trait_name: &str, response: &'r EventResponse) -> Option<&'r str> {
+        response.transitions.iter().flatten().find(|hop| hop.trait_name == trait_name).map(|hop| hop.from.as_str())
+    }
+
+    /// Whether the host's report of `trait_name` (its state, its paint) continues from `now`: a host answering from its
+    /// own copy of every trait (the in-process browser store) reports traits it never ran, and repaints the render it
+    /// holds for them against a carried row (EXEC-RENDER-1), which this kernel repaints itself from the folded frames.
+    pub(crate) fn host_report_continues(&self, trait_name: &str, now: Option<&str>, response: &EventResponse) -> bool {
+        if !self.committed_here(trait_name) {
+            return true;
+        }
+        Self::host_ran_from(trait_name, response).is_some_and(|from| now.is_none_or(|now| now == from))
+    }
+
+    /// The traits whose host paints in `response` do not continue from this client's state, read before the response folds.
+    pub fn stale_host_paints(&self, response: &EventResponse) -> HashSet<String> {
+        let key = self.state_key(Some(RUNTIME_SINGLETON));
+        let states = self.state_manager.read();
+        response
+            .client_effects_by_trait
+            .iter()
+            .flatten()
+            .map(|p| p.trait_name.as_str())
+            .filter(|t| {
+                let now = states.get_state(t, key.as_deref()).map(|s| s.current_state.as_str());
+                !self.host_report_continues(t, now, response)
+            })
+            .map(str::to_string)
+            .collect()
+    }
+
     pub fn browser_runs(&self, trait_name: &str) -> bool {
         !self.program_wide(trait_name)
             && !self.orbital_of_trait(trait_name).is_some_and(|orbital| self.io.is_store_driver(&orbital))

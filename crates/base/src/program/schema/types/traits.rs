@@ -606,6 +606,24 @@ impl TraitDefinition {
 }
 
 impl TraitDefinition {
+    /// Whether a transition of this trait reads the dispatch memory (`@prevEvents`, `@prevStates`, EXEC-QUEUE-5).
+    pub fn reads_dispatch_memory(&self) -> bool {
+        use crate::ir::expr::{OirBinding, OirBindingRoot};
+        let reads = |text: &str| {
+            matches!(
+                OirBinding::parse(text).map(|binding| binding.root),
+                Some(OirBindingRoot::PrevEvents | OirBindingRoot::PrevStates)
+            )
+        };
+        self.state_machine.transitions.iter().any(|t| {
+            t.guard
+                .iter()
+                .chain(t.effects.iter().flatten())
+                .chain(t.ensures.iter().flatten())
+                .any(|expr| expr.any_string(reads))
+        })
+    }
+
     /// Client dispatch strategy for this trait — the schema-side entry point
     /// to the same [`crate::dispatch_mode::compute`] rule
     /// `ir::types::OirTrait::dispatch_mode` calls, so the compiled path and

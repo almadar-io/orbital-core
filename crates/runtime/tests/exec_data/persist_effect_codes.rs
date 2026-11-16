@@ -712,7 +712,7 @@ fn file_reading_driver_program() -> OrbitalSchema {
         "effects": [["emit", "ROW_FOUND", { "key": "@entity.id", "row": { "id": "t1", "used": false } }]] }));
     transitions.push(serde_json::json!({ "from": "loading", "to": "ready", "event": "RD_FILE",
         "effects": [["emit", "ROW_FOUND", { "key": "@entity.id", "row": { "id": "t1", "used": true } }]] }));
-    program["osGrants"] = serde_json::json!({ "fs": [{ "anchor": "cwd", "path": "rows/**", "ops": ["read"] }] });
+    program["osGrants"] = serde_json::json!({ "anchored": { "fs": [{ "anchor": "cwd", "glob": "rows/**", "modes": ["read"] }] } });
     from_json_value(&program).unwrap()
 }
 

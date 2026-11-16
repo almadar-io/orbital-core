@@ -119,7 +119,7 @@ fn check_json(op: OsOp, value: &Value, path: &str) -> Result<(), OsError> {
         Value::Object(fields) => fields
             .iter()
             .try_for_each(|(k, v)| check_json(op, v, &format!("{path}.{k}"))),
-        Value::Lambda(_) | Value::Sealed(_) => Err(fail(
+        Value::Lambda(_) | Value::Sealed(_) | Value::Blob(_) => Err(fail(
             op,
             OsErrorKind::Invalid,
             format!("kv value at {path} is not JSON"),
@@ -140,7 +140,7 @@ fn write_string(s: &str, out: &mut String) {
 
 fn write_json(value: &Value, out: &mut String) {
     match value {
-        Value::Null | Value::Lambda(_) | Value::Sealed(_) => out.push_str("null"),
+        Value::Null | Value::Lambda(_) | Value::Sealed(_) | Value::Blob(_) => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&js_number_string(*n)),
         Value::Int(i) => out.push_str(&i.to_string()),

@@ -20,6 +20,8 @@ pub enum FieldStampError {
     LambdaInTree,
     #[error("a render-ui tree held a sealed value where the IR carries plain values")]
     SealedInTree,
+    #[error("a render-ui tree held a blob, which only a browser kernel's state holds, where the IR carries plain values")]
+    BlobInTree,
     #[error("a render-ui tree held the int {0}, beyond 2^53, which the IR's number cannot carry exactly")]
     IntBeyondExact(i64),
 }
@@ -322,6 +324,7 @@ fn oir_of(value: &Value) -> Result<OirValue, FieldStampError> {
         }
         Value::Lambda(_) => return Err(FieldStampError::LambdaInTree),
         Value::Sealed(_) => return Err(FieldStampError::SealedInTree),
+        Value::Blob(_) => return Err(FieldStampError::BlobInTree),
     })
 }
 

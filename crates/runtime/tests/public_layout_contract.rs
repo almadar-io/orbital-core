@@ -544,8 +544,9 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 408: `EventResponse.frames` (a delta, K5) replaces `entityByTrait`; the response is eight bytes smaller.
     // 424: plus `FrameDelta.identity` (`Option<FrameIdentity>`, 16 bytes, the client identity mirror, EXEC-IDENTITY-4).
     // 448: a route mount names its route (`EventRequest.route`, EXEC-SEED-7).
-    assert_eq!(size_of::<ServerProgress>(), 448, "ServerProgress");
-    assert_eq!(size_of::<ServerProgressWire>(), 448, "ServerProgressWire");
+    // 496: a request names the orbitals it releases and its crumb (`EventRequest.unmount`, `EventRequest.crumb`).
+    assert_eq!(size_of::<ServerProgress>(), 496, "ServerProgress");
+    assert_eq!(size_of::<ServerProgressWire>(), 496, "ServerProgressWire");
     // 704: a dispatch continuation keeps the rows the host has answered for it (`ReadCache`, one `Arc`: a row is asked
     // once) (its viewer, one `Arc`, is gone: `@user` is the session's bound identity, EXEC-IDENTITY-1). 712: plus the
     // transition its suspended step committed (one `Box`, G-CROSS-259). 720: plus the store ask it is parked on and its
@@ -557,7 +558,8 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // each drop runs as its own unit, so a drop parked on the host replays alone under its own journal.
     // 840: the run no longer carries the viewer it was started as (`@user` is the session's bound identity, EXEC-IDENTITY-1).
     // 872: a route mount names its route (24 bytes) and queues its `$MOUNT` deliveries behind one `Box` (8 bytes, EXEC-SEED-7).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 872, "Progress");
+    // 920: the request the run carries names the orbitals it releases and its crumb (48 bytes, as `ServerProgress` above).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 920, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
     assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");
@@ -566,7 +568,9 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 72 bytes because its object variant holds an `IndexMap` inline (entries 24 + index table 32 + hasher 16); every
     // policy/invariant expression here pays it. Recorded in P-017 K1 (box the object variant).
     // 544: `SExpression` is 16 bytes (lists and objects are shared handles, P-017 step 4 phase C).
-    assert_eq!(size_of::<EntityRef>(), 544, "EntityRef");
+    // 576: +32, re-pinned 2026-11-16 (G-ORBITAL-CORE-159): the entity definition grew by fields added since the pin
+    // (`locale_instances`, `browser`, `indexes` among them); which of them make the 32 bytes was not bisected.
+    assert_eq!(size_of::<EntityRef>(), 576, "EntityRef");
     assert_eq!(size_of::<SidecarError>(), 144, "SidecarError");
     // 240: plus the installed protocol definitions (`protocols: String`, 24 bytes, P-010 37b0ccc).
     // 264: plus the language-data version it carries (`language: String`, 24 bytes, P-022 cd85fa1).

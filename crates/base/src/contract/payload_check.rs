@@ -205,7 +205,7 @@ impl PayloadValue for crate::value::Value {
             K::String(_) => PayloadKind::String,
             K::Array(_) => PayloadKind::Array,
             K::Object(_) | K::Sealed(_) => PayloadKind::Object,
-            K::Lambda(_) => PayloadKind::Other,
+            K::Lambda(_) | K::Blob(_) => PayloadKind::Other,
         }
     }
     fn member(&self, key: &str) -> Option<&Self> {

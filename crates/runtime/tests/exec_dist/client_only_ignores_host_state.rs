@@ -21,7 +21,7 @@ fn kernel() -> RuntimeKernel {
                       "transitions": [{ "from": "idle", "to": "searching", "event": "GO", "effects": [["emit", "REQUESTED", {}]] }] } }] },
             { "name": "TaskOrbital",
               "entity": { "name": "Task", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-              "traits": [{ "name": "Responder", "linkedEntity": "Task", "dispatch": "optimistic",
+              "traits": [{ "name": "Responder", "linkedEntity": "Task", "dispatch": "server",
                   "stateMachine": {
                       "states": [{ "name": "idle", "isInitial": true }, { "name": "answering" }],
                       "transitions": [{ "from": "idle", "to": "answering", "event": "ASK", "effects": [["fetch", "Task", {}]] }] } }] }
