@@ -573,3 +573,107 @@ fn control_rows_of_an_entity_a_browser_run_trait_is_bound_to_reach_the_browser()
     let view = read_view("server", "Event");
     assert_eq!(view.data.as_ref().and_then(|d| d.get("Event")).map(Vec::len), Some(2), "{view:?}");
 }
+
+// A page remount on a host that keeps the session (EXEC-DIST-9): a browser-run trait's host copy goes stale once a leg ran
+// it there and the browser took the rest of its steps itself, so its lifecycle event runs from the state the mount
+// carries, the browser's. KFlow /home → path detail → /home: the paths front came back `busy` with no request in flight
+// and its asks waited forever (2026-11-16).
+fn front_schema() -> OrbitalSchema {
+    serde_json::from_value(json!({
+        "name": "fronted", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Main",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Front", "linkedEntity": "Run", "dispatch": "client",
+                  "emits": [{ "event": "FWD", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "INIT" },
+                      { "from": "busy", "to": "busy", "event": "INIT" },
+                      { "from": "idle", "to": "busy", "event": "ASK", "effects": [["emit", "FWD", {}]] },
+                      { "from": "busy", "to": "idle", "event": "DONE" }] } },
+                { "name": "Worker", "linkedEntity": "Run",
+                  "listens": [{ "event": "FWD", "triggers": "WORK", "source": { "kind": "trait", "trait": "Front" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "WORK" }] } }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Front" }] },
+                      { "name": "Work", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }] }] }]
+    }))
+    .unwrap()
+}
+
+fn front_server() -> orbital_core_runtime::embed::EmbeddedServer {
+    orbital_core_runtime::embed::EmbeddedServer::new(front_schema()).unwrap()
+}
+
+fn front_send(server: &orbital_core_runtime::embed::EmbeddedServer, request: serde_json::Value) -> EventResponse {
+    let request: orbital_core_runtime::effects::response::EventRequest = serde_json::from_value(request).unwrap();
+    match server.start("Main", request).unwrap() {
+        orbital_core_runtime::embed::ServerProgress::Done(response) => response,
+        _ => panic!("the request ran to its end"),
+    }
+}
+
+#[test]
+fn a_remount_runs_a_browser_run_traits_lifecycle_from_the_state_the_browser_carries() {
+    let server = front_server();
+    let asked = front_send(&server, json!({ "event": "ASK", "targetTrait": "Front", "clientId": "tab",
+        "traits": [{ "trait": "Front", "from": "idle", "event": "ASK" }] }));
+    assert_eq!(asked.states.get("Front").map(String::as_str), Some("busy"), "the leg ran Front on the host: {asked:?}");
+    let remounted = front_send(&server, json!({ "event": "INIT", "clientId": "tab", "route": "/",
+        "mount": [{ "trait": "Front", "event": "INIT" }], "traits": [{ "trait": "Front", "from": "idle" }] }));
+    assert_eq!(remounted.states.get("Front").map(String::as_str), Some("idle"), "{remounted:?}");
+}
+
+#[test]
+fn control_a_remount_runs_a_server_traits_lifecycle_from_the_host_state() {
+    let server = front_server();
+    front_send(&server, json!({ "event": "ASK", "targetTrait": "Front", "clientId": "tab",
+        "traits": [{ "trait": "Front", "from": "idle", "event": "ASK" }] }));
+    let remounted = front_send(&server, json!({ "event": "INIT", "clientId": "tab", "route": "",
+        "mount": [{ "trait": "Worker", "event": "INIT" }], "traits": [{ "trait": "Worker", "from": "elsewhere" }] }));
+    assert_ne!(remounted.states.get("Worker").map(String::as_str), Some("elsewhere"), "a server trait's carried copy is ignored: {remounted:?}");
+}
+
+fn front_client() -> RuntimeKernel {
+    let collector = Arc::new(ServerLegCollector::new());
+    let k = RuntimeKernel::new(
+        RuntimeEnvironment::Client,
+        Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>,
+        KernelConfig { environment: RuntimeEnvironment::Client, delegate: Some(collector as Arc<dyn EffectDelegate>), ..KernelConfig::default() },
+    );
+    k.register_schema(front_schema()).unwrap();
+    k
+}
+
+fn front_hop(from: &str, to: &str, event: &str) -> orbital_core_runtime::effects::response::TransitionHop {
+    orbital_core_runtime::effects::response::TransitionHop {
+        trait_name: "Front".to_string(), from: from.to_string(), to: to.to_string(), event: event.to_string(),
+        fired_arm: None, guard_result: None, effects: Vec::new(), observed: None,
+    }
+}
+
+fn front_reply(state: &str, hop: orbital_core_runtime::effects::response::TransitionHop) -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        states: HashMap::from([("Front".to_string(), state.to_string())]),
+        transitions: Some(vec![hop]),
+        ..EventResponse::default()
+    }
+}
+
+#[test]
+fn a_host_hop_the_browser_has_moved_past_does_not_roll_a_browser_run_trait_back() {
+    let k = front_client();
+    k.dispatch_with_server_leg("fronted", "Front", None, "ASK", Value::Null, None).unwrap();
+    assert_eq!(k.get_state("Front", None).map(|s| s.current_state).as_deref(), Some("busy"));
+    k.apply_server_response(&front_reply("idle", front_hop("idle", "idle", "INIT")), &Default::default()).unwrap();
+    assert_eq!(k.get_state("Front", None).map(|s| s.current_state).as_deref(), Some("busy"), "the INIT echo is older than the browser's ASK");
+}
+
+#[test]
+fn control_a_host_hop_from_the_browsers_state_is_folded() {
+    let k = front_client();
+    k.apply_server_response(&front_reply("busy", front_hop("idle", "busy", "ASK")), &Default::default()).unwrap();
+    assert_eq!(k.get_state("Front", None).map(|s| s.current_state).as_deref(), Some("busy"));
+}

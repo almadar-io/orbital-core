@@ -343,3 +343,51 @@ mod deep_json_tests {
         assert_eq!(text, "parse values: nesting exceeds 8192 levels");
     }
 }
+
+#[cfg(test)]
+mod float_parse_tests {
+    use super::*;
+
+    fn kernel_parse(text: &str) -> f64 {
+        from_deep_json::<f64>(text.as_bytes()).expect("a finite float parses")
+    }
+
+    fn sample(count: usize) -> Vec<f64> {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut out = Vec::with_capacity(count);
+        while out.len() < count {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let x = f64::from_bits(state);
+            if x.is_finite() {
+                out.push(x);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_shortest_float_text_parses_back_to_the_same_bits() {
+        let wrong: Vec<String> = sample(200_000)
+            .into_iter()
+            .map(|x| format!("{x:e}"))
+            .filter(|text| kernel_parse(text).to_bits() != text.parse::<f64>().unwrap().to_bits())
+            .collect();
+        assert!(wrong.is_empty(), "{} of 200000 floats parse to other bits, e.g. {:?}", wrong.len(), wrong.first());
+    }
+
+    #[test]
+    fn float_parse_edges_keep_their_bits() {
+        for x in [f64::MIN_POSITIVE, f64::MAX, f64::MIN, 5e-324, 2.2250738585072009e-308, 0.1, 1.0 / 3.0, -0.0] {
+            assert_eq!(kernel_parse(&format!("{x:e}")).to_bits(), x.to_bits(), "{x:e}");
+        }
+    }
+
+    #[test]
+    fn float_parse_control_short_decimals_were_always_exact() {
+        for (text, x) in [("0.5", 0.5), ("1.25", 1.25), ("-3", -3.0), ("1e3", 1000.0)] {
+            assert_eq!(kernel_parse(text).to_bits(), f64::to_bits(x), "{text}");
+        }
+    }
+}

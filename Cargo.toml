@@ -12,12 +12,62 @@ wire-drivers = ["orbital-core-runtime/wire-drivers"]
 async = ["orbital-core-base/async"]
 client-http = ["orbital-core-runtime/client-http"]
 # The kernel the native orb embeds. Every workspace crate's tests request it too, so one compiled kernel serves them all.
-native = ["wire-drivers", "client-http", "orbital-core-runtime/default", "orbital-core-runtime/ffi", "orbital-core-runtime/wgsl"]
+native = ["wire-drivers", "client-http", "orbital-core-runtime/default", "orbital-core-runtime/ffi", "orbital-core-runtime/wgsl", "pins"]
+
+# One feature set for the third-party crates under the kernel, so every native build and test command shares one compiled kernel (scripts/kernel-feature-pins.sh regenerates the block below).
+pins = ["dep:pin-arrayvec-0-7", "dep:pin-bitflags-2", "dep:pin-bytemuck-1", "dep:pin-chrono-0-4", "dep:pin-cipher-0-4", "dep:pin-crc32fast-1", "dep:pin-either-1", "dep:pin-half-2", "dep:pin-hashbrown-0-15", "dep:pin-icu_locale_core-2", "dep:pin-icu_normalizer-2", "dep:pin-icu_provider-2", "dep:pin-indexmap-2", "dep:pin-lazy_static-1", "dep:pin-litemap-0-8", "dep:pin-memchr-2", "dep:pin-miniz_oxide-0-8", "dep:pin-naga-26", "dep:pin-num-integer-0-1", "dep:pin-num-traits-0-2", "dep:pin-percent-encoding-2", "dep:pin-potential_utf-0-1", "dep:pin-ppv-lite86-0-2", "dep:pin-proc-macro2-1", "dep:pin-rand-0-8", "dep:pin-regex-automata-0-4", "dep:pin-regex-syntax-0-8", "dep:pin-serde_json-1", "dep:pin-sha1-0-10", "dep:pin-sha2-0-10", "dep:pin-simd-adler32-0-3", "dep:pin-smallvec-1", "dep:pin-stable_deref_trait-1", "dep:pin-syn-2", "dep:pin-syn-3", "dep:pin-thiserror-2", "dep:pin-tinystr-0-8", "dep:pin-tracing-0-1", "dep:pin-url-2", "dep:pin-writeable-0-6", "dep:pin-yoke-0-8", "dep:pin-zerofrom-0-1", "dep:pin-zerotrie-0-2", "dep:pin-zerovec-0-11"]
 
 [dependencies]
 orbital-core-base = { path = "crates/base" }
 orbital-core-eval = { path = "crates/eval" }
 orbital-core-runtime = { path = "crates/runtime", default-features = false, features = ["std"] }
+
+# BEGIN kernel feature pins
+pin-arrayvec-0-7 = { package = "arrayvec", version = "0.7.6", optional = true, default-features = true, features = ["std"] }
+pin-bitflags-2 = { package = "bitflags", version = "2.10.0", optional = true, default-features = false, features = ["serde", "serde_core", "std"] }
+pin-bytemuck-1 = { package = "bytemuck", version = "1.24.0", optional = true, default-features = false, features = ["aarch64_simd", "bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
+pin-chrono-0-4 = { package = "chrono", version = "0.4.43", optional = true, default-features = true, features = ["alloc", "clock", "iana-time-zone", "js-sys", "now", "oldtime", "serde", "std", "wasm-bindgen", "wasmbind", "winapi", "windows-link"] }
+pin-cipher-0-4 = { package = "cipher", version = "0.4.4", optional = true, default-features = false, features = ["zeroize"] }
+pin-crc32fast-1 = { package = "crc32fast", version = "1.5.0", optional = true, default-features = true, features = ["std"] }
+pin-either-1 = { package = "either", version = "1.16.0", optional = true, default-features = false, features = ["std", "use_std"] }
+pin-half-2 = { package = "half", version = "2.7.1", optional = true, default-features = true, features = ["alloc", "num-traits", "std"] }
+pin-hashbrown-0-15 = { package = "hashbrown", version = "0.15.5", optional = true, default-features = true, features = ["allocator-api2", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"] }
+pin-icu_locale_core-2 = { package = "icu_locale_core", version = "2.3.0", optional = true, default-features = false, features = ["alloc", "zerovec"] }
+pin-icu_normalizer-2 = { package = "icu_normalizer", version = "2.3.0", optional = true, default-features = false, features = ["compiled_data", "utf16_iter", "utf8_iter"] }
+pin-icu_provider-2 = { package = "icu_provider", version = "2.3.1", optional = true, default-features = false, features = ["alloc", "baked"] }
+pin-indexmap-2 = { package = "indexmap", version = "2.13.0", optional = true, default-features = true, features = ["serde", "std"] }
+pin-lazy_static-1 = { package = "lazy_static", version = "1.5.0", optional = true, default-features = false, features = ["spin", "spin_no_std"] }
+pin-litemap-0-8 = { package = "litemap", version = "0.8.1", optional = true, default-features = false, features = ["alloc"] }
+pin-memchr-2 = { package = "memchr", version = "2.7.6", optional = true, default-features = true, features = ["alloc", "std"] }
+pin-miniz_oxide-0-8 = { package = "miniz_oxide", version = "0.8.9", optional = true, default-features = true, features = ["simd", "simd-adler32", "with-alloc"] }
+pin-naga-26 = { package = "naga", version = "26.0.0", optional = true, default-features = true, features = ["msl-out", "wgsl-in"] }
+pin-num-integer-0-1 = { package = "num-integer", version = "0.1.46", optional = true, default-features = true, features = ["i128", "std"] }
+pin-num-traits-0-2 = { package = "num-traits", version = "0.2.19", optional = true, default-features = true, features = ["i128", "libm", "std"] }
+pin-percent-encoding-2 = { package = "percent-encoding", version = "2.3.2", optional = true, default-features = true, features = ["alloc", "std"] }
+pin-potential_utf-0-1 = { package = "potential_utf", version = "0.1.4", optional = true, default-features = false, features = ["alloc", "writeable", "zerovec"] }
+pin-ppv-lite86-0-2 = { package = "ppv-lite86", version = "0.2.21", optional = true, default-features = false, features = ["simd", "std"] }
+pin-proc-macro2-1 = { package = "proc-macro2", version = "1.0.106", optional = true, default-features = true, features = ["proc-macro", "span-locations"] }
+pin-rand-0-8 = { package = "rand", version = "0.8.8", optional = true, default-features = false, features = ["rand_chacha", "small_rng", "std_rng"] }
+pin-regex-automata-0-4 = { package = "regex-automata", version = "0.4.13", optional = true, default-features = false, features = ["alloc", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
+pin-regex-syntax-0-8 = { package = "regex-syntax", version = "0.8.8", optional = true, default-features = true, features = ["std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
+pin-serde_json-1 = { package = "serde_json", version = "1.0.154", optional = true, default-features = true, features = ["alloc", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std", "unbounded_depth"] }
+pin-sha1-0-10 = { package = "sha1", version = "0.10.7", optional = true, default-features = true, features = ["std"] }
+pin-sha2-0-10 = { package = "sha2", version = "0.10.9", optional = true, default-features = true, features = ["oid", "std"] }
+pin-simd-adler32-0-3 = { package = "simd-adler32", version = "0.3.8", optional = true, default-features = true, features = ["const-generics", "std"] }
+pin-smallvec-1 = { package = "smallvec", version = "1.15.1", optional = true, default-features = false, features = ["const_generics", "const_new", "union"] }
+pin-stable_deref_trait-1 = { package = "stable_deref_trait", version = "1.2.1", optional = true, default-features = true, features = ["alloc", "std"] }
+pin-syn-2 = { package = "syn", version = "2.0.114", optional = true, default-features = true, features = ["clone-impls", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"] }
+pin-syn-3 = { package = "syn", version = "3.0.9", optional = true, default-features = true, features = ["clone-impls", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit"] }
+pin-thiserror-2 = { package = "thiserror", version = "2.0.18", optional = true, default-features = true, features = ["std"] }
+pin-tinystr-0-8 = { package = "tinystr", version = "0.8.4", optional = true, default-features = false, features = ["alloc", "zerovec"] }
+pin-tracing-0-1 = { package = "tracing", version = "0.1.44", optional = true, default-features = true, features = ["attributes", "std", "tracing-attributes"] }
+pin-url-2 = { package = "url", version = "2.5.8", optional = true, default-features = true, features = ["serde", "std"] }
+pin-writeable-0-6 = { package = "writeable", version = "0.6.4", optional = true, default-features = false, features = ["alloc"] }
+pin-yoke-0-8 = { package = "yoke", version = "0.8.3", optional = true, default-features = false, features = ["alloc", "derive", "zerofrom"] }
+pin-zerofrom-0-1 = { package = "zerofrom", version = "0.1.6", optional = true, default-features = false, features = ["alloc", "derive"] }
+pin-zerotrie-0-2 = { package = "zerotrie", version = "0.2.5", optional = true, default-features = false, features = ["alloc", "yoke", "zerofrom"] }
+pin-zerovec-0-11 = { package = "zerovec", version = "0.11.8", optional = true, default-features = false, features = ["alloc", "derive", "yoke"] }
+# END kernel feature pins
 
 [dev-dependencies]
 tempfile = "3.10"

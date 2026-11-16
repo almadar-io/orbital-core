@@ -711,12 +711,24 @@ impl RuntimeKernel {
                 .flatten()
                 .map(|hop| hop.trait_name.as_str())
                 .collect();
+            // The host ran from the state the leg carried; a browser that has stepped the trait since keeps its own state.
+            let host_from = |trait_name: &str| {
+                response.transitions.iter().flatten().find(|hop| hop.trait_name == trait_name).map(|hop| hop.from.clone())
+            };
             for (trait_name, state_name) in &response.states {
                 if client_only.contains(trait_name) && !host_ran.contains(trait_name.as_str()) {
                     continue;
                 }
                 let frame_id = frames_applied.ids.get(&self.trait_frame_key(trait_name));
                 let entity_id = self.state_key(Some(frame_id.map_or(RUNTIME_SINGLETON, String::as_str)));
+                if client_only.contains(trait_name) {
+                    let now = state_manager.get_state(trait_name, entity_id.as_deref()).map(|s| s.current_state.clone());
+                    if let (Some(now), Some(from)) = (now, host_from(trait_name)) {
+                        if now != from {
+                            continue;
+                        }
+                    }
+                }
                 if state_manager
                     .get_or_create_state(trait_name, entity_id.as_deref())
                     .is_ok()
@@ -868,6 +880,27 @@ impl RuntimeKernel {
         if !carried.is_empty() {
             let restored_traits: Vec<TraitFrom> = traits.into_iter().flatten().filter(|t| carried.contains(&t.r#trait)).cloned().collect();
             self.seed_leg(&restored_traits, Some(&restored_rows), entity_id);
+        }
+        // A browser-run seed's host copy is stale once the browser took its own steps, so its lifecycle event runs from
+        // the state and row the mount carries, the browser's (EXEC-DIST-9).
+        let browser_seeds: Vec<TraitFrom> = {
+            let defs = self.registry.trait_definitions.read();
+            traits
+                .into_iter()
+                .flatten()
+                .filter(|t| !carried.contains(&t.r#trait) && seeds.iter().any(|seed| seed.r#trait == t.r#trait))
+                .filter(|t| defs.get(&t.r#trait).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited))
+                .cloned()
+                .collect()
+        };
+        if !browser_seeds.is_empty() {
+            let rows: ValueMap = entity_by_trait
+                .iter()
+                .flat_map(|rows| rows.iter())
+                .filter(|(name, _)| browser_seeds.iter().any(|t| t.r#trait == name.as_str()))
+                .map(|(name, row)| (name.clone(), row.clone()))
+                .collect();
+            self.seed_leg(&browser_seeds, Some(&rows), entity_id);
         }
         // A restored trait still waiting on an ask the ended session deferred will never hear its answer: its stale
         // asks are dropped and it hears its lifecycle event from the restored state (owner 2026-11-12, G-CROSS-388).
