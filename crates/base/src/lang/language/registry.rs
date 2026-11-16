@@ -365,13 +365,13 @@ pub struct EmbeddedOperator {
     /// owned by `@almadar/core` `SEMANTIC_STRING_PATTERNS` and carried by the operator table.
     #[serde(default)]
     pub pattern: Option<String>,
-    /// Execution site of an effect operator (`client`/`server`/`any`); absent on pure ones. Pinned to `crate::effects::runs_on` by `tests/runs_on_drift.rs`.
+    /// Execution site of an effect operator (`client`/`server`/`any`); absent on pure ones. Pinned to `crate::effects::runs_on` by `tests/it/runs_on_drift.rs`.
     #[serde(rename = "runsOn", default)]
     pub runs_on: Option<String>,
-    /// A `client` effect a server kernel ships to the client to carry out (`forwardedToClient` in the operator table). Pinned to `crate::runs_on::FORWARDED_TO_CLIENT` by `tests/runs_on_drift.rs`.
+    /// A `client` effect a server kernel ships to the client to carry out (`forwardedToClient` in the operator table). Pinned to `crate::runs_on::FORWARDED_TO_CLIENT` by `tests/it/runs_on_drift.rs`.
     #[serde(rename = "forwardedToClient", default)]
     pub forwarded_to_client: bool,
-    /// Argument naming a data effect's target entity; the effect runs where that entity's rows live. Pinned to `crate::effects::ENTITY_ARGS` by `tests/runs_on_drift.rs`.
+    /// Argument naming a data effect's target entity; the effect runs where that entity's rows live. Pinned to `crate::effects::ENTITY_ARGS` by `tests/it/runs_on_drift.rs`.
     #[serde(rename = "entityArgPosition", default)]
     pub entity_arg_position: Option<usize>,
     /// The host that executes the effect (`program`: the shared program host, `runProgramEffect`; `os`: the `os/` family under a declared grant); absent when the runtime executes it.
@@ -386,11 +386,11 @@ pub struct EmbeddedOperator {
     #[serde(rename = "closedCall", default)]
     pub closed_call: Option<EmbeddedClosedCall>,
     /// The argument slots the declared `returnSemantics` draws a call's result from (`valueSourceSlots` in the operator
-    /// table). Pinned to `ValueSourceSlots::of_semantics` by `tests/runs_on_drift.rs`.
+    /// table). Pinned to `ValueSourceSlots::of_semantics` by `tests/it/runs_on_drift.rs`.
     #[serde(rename = "valueSourceSlots", default)]
     pub value_source_slots: Option<crate::schema::ValueSourceSlots>,
     /// The source, key and default arguments of a field-projecting operator (`fieldProjection` in the operator table).
-    /// Pinned to `Signature::field_projection` by `tests/runs_on_drift.rs`.
+    /// Pinned to `Signature::field_projection` by `tests/it/runs_on_drift.rs`.
     #[serde(rename = "fieldProjection", default)]
     pub field_projection: Option<crate::signature::FieldProjection>,
 }

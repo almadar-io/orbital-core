@@ -155,6 +155,12 @@ fn each_trait_config_mut(
                 visit(format!("{}.{name}.config.{knob}", orbital.name), field);
             }
         }
+        let overrides = orbital.reference.as_mut().and_then(|import| import.traits.as_mut());
+        for (name, over) in overrides.into_iter().flatten() {
+            for (knob, field) in over.config.iter_mut().flatten() {
+                visit(format!("{}.{name}.config.{knob}", orbital.name), field);
+            }
+        }
     }
 }
 
@@ -186,10 +192,21 @@ pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, na
 /// knob rather than an `i18n/t` literal.
 pub fn config_message_keys(schema: &crate::schema::OrbitalSchema) -> Vec<String> {
     use crate::schema::TraitReference;
-    let fields = schema.orbitals.iter().flat_map(|o| &o.traits).flat_map(|t| match t {
-        TraitReference::Inline(def) => def.config.iter().flatten(),
-        TraitReference::Reference { config, .. } => config.iter().flatten(),
-    });
+    let overrides = schema
+        .orbitals
+        .iter()
+        .filter_map(|o| o.reference.as_ref().and_then(|import| import.traits.as_ref()))
+        .flatten()
+        .flat_map(|(_, over)| over.config.iter().flatten());
+    let fields = schema
+        .orbitals
+        .iter()
+        .flat_map(|o| &o.traits)
+        .flat_map(|t| match t {
+            TraitReference::Inline(def) => def.config.iter().flatten(),
+            TraitReference::Reference { config, .. } => config.iter().flatten(),
+        })
+        .chain(overrides);
     let mut keys = Vec::new();
     for (_, field) in fields {
         let paths = message_key_paths(field);

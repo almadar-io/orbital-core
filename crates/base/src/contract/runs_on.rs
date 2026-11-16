@@ -1,7 +1,7 @@
 //! Where an effect executes — the Rust statement of the registry's `runsOn`
 //! (`@almadar/std` `OperatorMeta.runsOn`). It lives here because the executor,
 //! the validator and the shells all need it and `orbital-core` is the crate they
-//! share; `orbital-compiler/tests/runs_on_drift.rs` fails the build when this
+//! share; `orbital-compiler/tests/it/runs_on_drift.rs` fails the build when this
 //! table and `canonical-operators.json` disagree.
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
