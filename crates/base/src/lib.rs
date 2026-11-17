@@ -182,6 +182,8 @@ pub mod secret;
 pub mod secrets;
 
 // util — shared plumbing, no domain vocabulary
+#[path = "util/color.rs"]
+pub mod color;
 #[path = "util/error.rs"]
 pub mod error;
 #[path = "util/sync.rs"]

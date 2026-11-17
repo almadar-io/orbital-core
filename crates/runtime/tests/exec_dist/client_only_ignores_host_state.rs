@@ -678,3 +678,65 @@ fn control_a_host_hop_from_the_browsers_state_is_folded() {
     k.apply_server_response(&front_reply("busy", front_hop("idle", "busy", "ASK")), &Default::default()).unwrap();
     assert_eq!(k.get_state("Front", None).map(|s| s.current_state).as_deref(), Some("busy"));
 }
+
+// A boot-mounted worker steps in the program session (EXEC-FIELD-3), so the row it writes is never the viewer's: a leg's
+// answer carries no frame for it, keyed or not. KFlow path detail: the presence ask's keyed social row came back as a
+// frame the browser does not declare, and the page refused the answer (2026-11-16).
+fn worker_schema(keyed: bool) -> OrbitalSchema {
+    let listen = if keyed {
+        json!({ "event": "FWD", "triggers": "WORK", "source": { "kind": "trait", "trait": "Front" }, "key": "@payload.key" })
+    } else {
+        json!({ "event": "FWD", "triggers": "WORK", "source": { "kind": "trait", "trait": "Front" } })
+    };
+    from_json_value(&json!({
+        "name": "worked", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Main",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "note", "type": "string", "default": "" }] },
+            "traits": [
+                { "name": "Front", "linkedEntity": "Run", "dispatch": "client",
+                  "emits": [{ "event": "FWD", "scope": "external", "payloadSchema": [{ "name": "key", "type": "string" }] }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "INIT" },
+                      { "from": "idle", "to": "busy", "event": "ASK", "effects": [["emit", "FWD", { "key": "k1" }]] }] } },
+                { "name": "Worker", "linkedEntity": "Run",
+                  "listens": [listen],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                      { "from": "idle", "to": "idle", "event": "WORK", "effects": [["set", "@entity.note", "worked"]] }] } }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Front" }] },
+                      { "name": "Work", "path": "", "protocol": "boot", "traits": [{ "ref": "Worker" }] }] }]
+    }))
+    .unwrap()
+}
+
+fn leg_frames(keyed: bool) -> Vec<String> {
+    let server = orbital_core_runtime::embed::EmbeddedServer::new(worker_schema(keyed)).unwrap();
+    let request: orbital_core_runtime::effects::response::EventRequest = from_json_value(&json!({ "event": "ASK", "targetTrait": "Front", "clientId": "tab",
+        "traits": [{ "trait": "Front", "from": "idle", "event": "ASK" }] })).unwrap();
+    let response = match server.start("Main", request).unwrap() {
+        orbital_core_runtime::embed::ServerProgress::Done(response) => response,
+        _ => panic!("the request ran to its end"),
+    };
+    response.frames.iter().flat_map(|delta| delta.ops.iter()).flat_map(|op| match op {
+        orbital_core_runtime::effects::frame_delta::FrameOp::Put { frame, .. } | orbital_core_runtime::effects::frame_delta::FrameOp::Del { frame } => vec![frame.clone()],
+        orbital_core_runtime::effects::frame_delta::FrameOp::Set { frames } => frames.iter().map(|(f, _)| f.clone()).collect(),
+        orbital_core_runtime::effects::frame_delta::FrameOp::Clear => Vec::new(),
+    }).collect()
+}
+
+#[test]
+fn a_leg_answer_carries_no_frame_of_a_keyed_boot_worker_row() {
+    let frames = leg_frames(true);
+    assert!(frames.iter().all(|f| !f.starts_with("Worker")), "{frames:?}");
+}
+
+#[test]
+fn a_leg_answer_carries_no_frame_of_an_unkeyed_boot_worker() {
+    let frames = leg_frames(false);
+    assert!(frames.iter().all(|f| !f.starts_with("Worker")), "{frames:?}");
+}
+
+#[test]
+fn control_a_leg_answer_still_carries_the_asking_traits_own_frame() {
+    let frames = leg_frames(true);
+    assert!(frames.iter().any(|f| f.starts_with("Front") || f.starts_with("$shared::Run")), "{frames:?}");
+}

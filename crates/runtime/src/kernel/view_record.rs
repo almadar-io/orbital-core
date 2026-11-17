@@ -311,8 +311,10 @@ impl RuntimeKernel {
                 .collect();
         }
         let mut written: IndexMap<String, ValueMap> = IndexMap::default();
+        let boot = self.registry.boot_traits.read();
         for (trait_name, outcome) in outcomes {
-            if !outcome.executed {
+            // A boot trait's row lives in the program session (EXEC-FIELD-3), never in the viewer's record.
+            if !outcome.executed || boot.contains(trait_name) {
                 continue;
             }
             let intrinsic = self.trait_shared_intrinsic(trait_name);

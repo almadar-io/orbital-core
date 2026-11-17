@@ -459,6 +459,9 @@ operator_kind! {
     AnimFrameAtOp => AnimFrameAtOp,
     AnimSheetRectOp => AnimSheetRectOp,
     AnimDirectionFromDeltaOp => AnimDirectionFromDeltaOp,
+    ColorLuminanceOp => ColorLuminanceOp,
+    ColorContrastOp => ColorContrastOp,
+    ColorCompositeOp => ColorCompositeOp,
     EaseApplyOp => EaseApplyOp,
     EaseSmoothstepOp => EaseSmoothstepOp,
 

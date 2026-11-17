@@ -319,3 +319,64 @@ fn a_leg_replays_its_target_from_the_entry_of_the_replayed_event() {
 fn control_a_leg_whose_only_entry_is_another_state_replays_from_it() {
     assert_eq!(replay(vec![carried_step("first", "NEXT")]).as_deref(), Some("first"));
 }
+
+/// The kflow lesson fold: a `[client]` listener of a host answer whose own step emits an ask only the host hears
+/// (`GRAPH_LOADED` → `KNOWLEDGE_CONCEPT_DETAIL`). The host leaves that listener to the browser (EXEC-ENDPOINT-3a), so
+/// the ask is the browser's to post; `direct` makes the listener's step emit it, else nothing it emits reaches the host.
+fn direct_fold_legs(direct: bool) -> Vec<(String, Option<String>)> {
+    let done_effects = if direct { json!([["emit", "FWD_LIST", {}]]) } else { json!([["emit", "NEXT", {}]]) };
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "App",
+        "typeContractVersion": 1,
+        "_metadata": { "serverListens": [{ "orbital": "Paths", "listen": {
+            "event": "FWD_LIST", "triggers": "LIST", "source": { "kind": "any" }
+        } }] },
+        "orbitals": [{
+            "name": "DeskFront",
+            "entity": { "name": "DeskRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Desk", "linkedEntity": "DeskRun", "dispatch": "client",
+                "listens": [{ "event": "MAP_RESULT", "triggers": "DONE", "source": { "kind": "any" } }],
+                "stateMachine": {
+                    "states": [{ "name": "busy", "isInitial": true }, { "name": "idle" }],
+                    "transitions": [
+                        { "from": "busy", "to": "idle", "event": "DONE", "effects": done_effects },
+                        { "from": "idle", "to": "idle", "event": "NEXT" }
+                    ]
+                },
+                "emits": [{ "event": "NEXT" }, { "event": "FWD_LIST", "scope": "external" }]
+            }],
+            "pages": [{ "name": "Desk", "path": "/desk", "traits": [{ "ref": "Desk" }] }]
+        }]
+    }))
+    .unwrap();
+    let k = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
+    k.mount(vec!["Desk".to_string()]);
+    let answer = orbital_core_runtime::effects::response::EventResponse {
+        success: true,
+        transitioned: true,
+        emitted_events: vec![orbital_core_base::bus_event::EmittedEvent {
+            event: "MAP_RESULT".to_string(),
+            payload: None,
+            source: Some(orbital_core_base::bus_event::BusEventSource {
+                r#trait: Some("Viewer".to_string()),
+                orbital: Some("Paths".to_string()),
+                ..Default::default()
+            }),
+        }],
+        ..Default::default()
+    };
+    let applied = k.apply_server_response(&answer, &std::collections::HashSet::new()).unwrap();
+    applied.server_legs.iter().map(|r| (r.leg.event.clone(), r.leg.target_trait.clone())).collect()
+}
+
+#[test]
+fn a_fold_hands_back_the_ask_a_client_listener_of_a_host_answer_emits_itself() {
+    let legs = direct_fold_legs(true);
+    assert!(legs.contains(&("DONE".to_string(), Some("Desk".to_string()))), "{legs:?}");
+}
+
+#[test]
+fn control_a_client_listener_of_a_host_answer_that_emits_nothing_off_client_hands_back_nothing() {
+    assert!(direct_fold_legs(false).is_empty(), "{:?}", direct_fold_legs(false));
+}

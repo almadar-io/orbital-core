@@ -506,6 +506,9 @@ impl RuntimeKernel {
                 owes_host(trait_name, result)
                     || (!client_only(trait_name)
                         && chain_needs_server(&chain, i, |j| owes_host(steps[j].0, steps[j].1)))
+            } else if client_only(trait_name) {
+                // The host leaves a browser-run listener to the browser (EXEC-ENDPOINT-3a): its server work is the browser's to post.
+                owes_host(trait_name, result)
             } else {
                 false
             };

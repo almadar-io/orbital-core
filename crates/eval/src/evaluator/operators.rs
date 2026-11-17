@@ -170,6 +170,7 @@ pub mod cast;
 pub mod csv;
 pub mod digest;
 pub mod jws;
+pub mod color;
 pub mod ease;
 pub mod format;
 pub mod geo;
@@ -203,6 +204,7 @@ pub use cast::*;
 pub use csv::*;
 pub use digest::*;
 pub use jws::*;
+pub use color::*;
 pub use ease::*;
 pub use format::*;
 pub use geo::*;
@@ -700,6 +702,11 @@ operator_dispatch! {
         "anim/frame-at" => K::AnimFrameAtOp,
         "anim/sheet-rect" => K::AnimSheetRectOp,
         "anim/direction-from-delta" => K::AnimDirectionFromDeltaOp,
+
+        // color/*
+        "color/luminance" => K::ColorLuminanceOp,
+        "color/contrast" => K::ColorContrastOp,
+        "color/composite" => K::ColorCompositeOp,
 
         // ease/*
         "ease/apply" => K::EaseApplyOp,

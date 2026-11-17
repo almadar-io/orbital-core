@@ -44,14 +44,17 @@ impl RuntimeKernel {
             .unwrap_or_else(|| trait_name.to_string())
     }
 
-    /// The row a `per` clause names: its expression over the raw source payload, a non-empty string.
+    /// The row a `per` clause names: its expression over the raw source payload, read as a `when` guard is (EXEC-STEP-1a),
+    /// so `@user` is the dispatching session's viewer (EXEC-IDENTITY-1); a non-empty string.
     pub(super) fn resolve_listen_key(
         &self,
         key: &ListenKey,
         source_payload: &Value,
+        user: Value,
     ) -> Result<String, String> {
         let ctx = BindingContextBuilder::new()
             .payload(source_payload.clone())
+            .user(user)
             .build();
         match Evaluator::new().evaluate(&key.expr, &ctx) {
             Ok(value) => match value.as_str() {

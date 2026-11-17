@@ -585,7 +585,21 @@ impl RuntimeKernel {
             }
         }
         if let Some(listen_key) = item.listen_key.clone() {
-            match self.resolve_listen_key(&listen_key, &item.source_payload) {
+            // Only a key that names `@user` reads the session identity; reading it may wait on the store, and then the
+            // delivery goes back on the queue like a row that is still being created.
+            let reads_user = listen_key.expr.any_string(|s| s == "@user" || s.starts_with("@user."));
+            let user = if reads_user {
+                match self.session_user() {
+                    Ok(user) => user,
+                    Err(fault) => {
+                        cascade.queue.push_front(item);
+                        return Err(fault);
+                    }
+                }
+            } else {
+                orbital_core_base::value::Value::Null
+            };
+            match self.resolve_listen_key(&listen_key, &item.source_payload, user) {
                 Err(reason) => {
                     let mut refused = Vec::new();
                     self.refuse_key(&item, &listen_key, &reason, &mut refused)?;

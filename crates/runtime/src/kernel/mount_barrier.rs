@@ -66,6 +66,10 @@ impl MountLineage {
         }
     }
 
+    pub fn has_reply(&self) -> bool {
+        self.reply.lock().is_some()
+    }
+
     pub fn take_reply(&self) -> Option<crate::resumable::DispatchOutcomes> {
         self.reply.lock().take()
     }

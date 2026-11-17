@@ -449,6 +449,8 @@ impl RuntimeKernel {
             seeds: None,
             lane: None,
             keyed: None,
+            children: Default::default(),
+            child_waited: false,
         }
     }
 

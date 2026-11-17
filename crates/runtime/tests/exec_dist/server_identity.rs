@@ -40,7 +40,8 @@ fn schema(persistence: &str) -> OrbitalSchema {
                         { "event": "VERIFIED", "payloadSchema": [
                             { "name": "verified", "type": "Verified", "required": true },
                             { "name": "note", "type": "string", "required": false }] },
-                        { "event": "PLAIN_DONE", "payloadSchema": [{ "name": "note", "type": "string", "required": false }] }],
+                        { "event": "PLAIN_DONE", "payloadSchema": [{ "name": "note", "type": "string", "required": false }] },
+                        { "event": "ASK", "payloadSchema": [{ "name": "key", "type": "string", "required": true }] }],
                     "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
                         "transitions": [
                             { "from": "idle", "to": "idle", "event": "SIGN_IN", "effects": sign_in(json!([])) },
@@ -51,11 +52,18 @@ fn schema(persistence: &str) -> OrbitalSchema {
                                 ["let", [["v", ["jws/verify", "@payload.token", "@payload.keys", { "issuer": "https://issuer.test", "audience": "app-1" }]]],
                                     ["emit", "VERIFIED", { "verified": "@v", "note": "kept" }]]] },
                             { "from": "idle", "to": "idle", "event": "PLAIN", "effects": [["emit", "PLAIN_DONE", { "note": "plain" }]] },
+                            { "from": "idle", "to": "idle", "event": "ASK_IT", "effects": [["emit", "ASK", { "key": "k" }]] },
                             { "from": "idle", "to": "idle", "event": "SIGN_OUT", "effects": [
                                 ["identity/sign-out", { "emit": { "success": "OUT_OK" } }]] },
                             { "from": "idle", "to": "idle", "event": "READ", "effects": [
                                 ["set", "@entity.who", "@user.id"], ["set", "@entity.role", "@user.role"], ["set", "@entity.email", "@user.email"]] }
                         ] } },
+                { "name": "Worker", "linkedEntity": "Person",
+                    "emits": [{ "event": "ASKED", "payloadSchema": [{ "name": "row", "type": "string", "required": true }] }],
+                    "listens": [{ "event": "ASK", "triggers": "ASK", "source": { "kind": "trait", "trait": "Gate" },
+                        "key": ["str/concat", "@user.id", "|", "@payload.key"] }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "ASK", "effects": [["emit", "ASKED", { "row": "@entity.id" }]] }] } },
                 { "name": "Sink", "linkedEntity": "Person",
                     "listens": [
                         { "event": "IN_OK", "triggers": "GOT_OK", "source": { "kind": "trait", "trait": "Gate" } },
@@ -708,4 +716,27 @@ fn exec_identity_4_folding_the_first_identity_frame_repaints_what_read_the_anony
     let applied = client.apply_server_response(&reply, &std::collections::HashSet::new()).unwrap();
     let painted = serde_json::to_value(&applied.response.client_effects_by_trait).unwrap().to_string();
     assert!(painted.contains("Ada") && painted.contains("Header"), "{painted}");
+}
+
+fn asked_row(rig: &Rig, client: &str) -> serde_json::Value {
+    let response = finish(&rig.server, request("ASK_IT", client, json!({})), &rig.store);
+    let asked = response.emitted_events.iter().find(|e| e.event == "ASKED").expect("the worker answered");
+    serde_json::to_value(&asked.payload).unwrap()["row"].clone()
+}
+
+// EXEC-STEP-1a + EXEC-IDENTITY-1: a `per` key is evaluated as a `when` guard is, so it reads the dispatching session's
+// `@user`; two viewers asking with one call key step their own rows.
+#[test]
+fn a_per_key_reads_the_dispatching_viewer_so_two_viewers_with_one_call_key_step_their_own_rows() {
+    let rig = Rig::new("runtime", vec![]);
+    assert_eq!(rig.outcome("SIGN_IN", "tab-a", credential("rs256_valid")), json!("user-1"));
+    assert_eq!(asked_row(&rig, "tab-a"), json!("user-1|k"));
+    assert_eq!(asked_row(&rig, "tab-b"), json!("anonymous|k"));
+}
+
+#[test]
+fn control_one_viewer_asking_twice_with_one_call_key_steps_one_row() {
+    let rig = Rig::new("runtime", vec![]);
+    assert_eq!(rig.outcome("SIGN_IN", "tab-a", credential("rs256_valid")), json!("user-1"));
+    assert_eq!(asked_row(&rig, "tab-a"), asked_row(&rig, "tab-a"));
 }

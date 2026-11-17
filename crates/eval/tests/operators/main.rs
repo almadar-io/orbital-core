@@ -6,6 +6,7 @@ mod behavior_ref_value;
 mod binding_token_contract;
 mod codec_arity;
 mod codec_operators;
+mod color_operators;
 mod evaluation_mode;
 mod json_valid_operator;
 mod lambda_operators;

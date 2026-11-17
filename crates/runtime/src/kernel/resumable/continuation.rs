@@ -85,6 +85,10 @@ pub struct DispatchContinuation {
     pub(crate) lane: Option<crate::kernel::lane::LaneHold>,
     /// The keyed calls this dispatch is parked on without the lane: their completions wait for it to end.
     pub(crate) keyed: Option<Box<crate::kernel::lane::KeyedHold>>,
+    /// Program deliveries to distinct keyed rows, each its own run, driven whenever one is ready (EXEC-CONC-1a).
+    pub(crate) children: std::collections::VecDeque<DispatchContinuation>,
+    /// Every child was parked on a store reply and the front one has been waited for: drive it now.
+    pub(crate) child_waited: bool,
 }
 
 impl DispatchContinuation {
@@ -92,6 +96,9 @@ impl DispatchContinuation {
 
     /// The store ask this dispatch is parked on with no host ask open: its driver has ended and owes a reply.
     pub(crate) fn parked_on_reply(&self) -> Option<&crate::kernel::store_park::LegWait> {
+        if self.store.is_none() {
+            return self.children.front().and_then(Self::parked_on_reply);
+        }
         let leg = self.store.as_ref()?;
         match &leg.driver {
             None => Some(&leg.wait),
@@ -99,8 +106,17 @@ impl DispatchContinuation {
         }
     }
 
+    /// Whether driving this dispatch now goes on: it is not parked on a store reply, or the reply (or the end of the
+    /// driver's work) has come.
+    pub(crate) fn reply_ready(&self) -> bool {
+        self.parked_on_reply().is_none_or(crate::kernel::store_park::LegWait::ready)
+    }
+
     /// The innermost store leg whose host asks are being answered: what they defer is that ask's work.
     pub(crate) fn answering_leg(&self) -> Option<&crate::kernel::store_park::LegWait> {
+        if self.store.is_none() {
+            return self.children.front().and_then(Self::answering_leg);
+        }
         let leg = self.store.as_ref()?;
         leg.driver.as_ref().and_then(Self::answering_leg).or(Some(&leg.wait))
     }
@@ -137,6 +153,8 @@ pub(crate) fn accept_into(
         if let Some(driver) = leg.driver.as_mut() {
             accept_into(driver, replies, check)?;
         }
+    } else if let Some(child) = c.children.front_mut() {
+        accept_into(child, replies, check)?;
     } else {
         let answered = accept_replies(&c.pending, replies, check)?;
         c.journal.extend(answered);

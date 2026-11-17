@@ -35,6 +35,11 @@ mod native {
             self.0.open_tickets() > 0
         }
 
+        /// The reply has come, or the driver's work has settled without one: waiting would not block.
+        pub(crate) fn ready(&self) -> bool {
+            self.0.has_reply() || self.0.open_tickets() == 0
+        }
+
         pub(crate) fn wait(&self) {
             self.0.wait_reply();
         }
@@ -70,6 +75,10 @@ mod native {
 
         pub(crate) fn has_open_work(&self) -> bool {
             false
+        }
+
+        pub(crate) fn ready(&self) -> bool {
+            true
         }
 
         pub(crate) fn wait(&self) {}

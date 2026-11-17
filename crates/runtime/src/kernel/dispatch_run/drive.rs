@@ -44,6 +44,40 @@ impl RuntimeKernel {
                     c.store = self.seed_leg_for(origin, ask);
                     continue;
                 }
+                if c.children.is_empty() {
+                    if let Err(error) = self.start_keyed_children(&mut c) {
+                        self.observe_dispatch(&c.run, Some(error.to_string()));
+                        return Err(error);
+                    }
+                }
+                if !c.children.is_empty() {
+                    let ready = match c.children.iter().position(DispatchContinuation::reply_ready) {
+                        Some(ready) => ready,
+                        None if !c.child_waited => {
+                            c.child_waited = true;
+                            return Ok(Progress::Await { continuation: c, requests: Vec::new() });
+                        }
+                        None => 0,
+                    };
+                    c.child_waited = false;
+                    let child = c.children.remove(ready).expect("a child at the ready index");
+                    match self.drive_resumable(child) {
+                        Err(error) => {
+                            self.observe_dispatch(&c.run, Some(error.to_string()));
+                            return Err(error);
+                        }
+                        Ok(Progress::Done(outcomes)) => c.run.outcomes.extend(outcomes),
+                        Ok(Progress::Await { continuation, requests }) if requests.is_empty() && continuation.parked_on_reply().is_some() => {
+                            c.children.push_back(continuation)
+                        }
+                        Ok(Progress::Await { continuation, requests }) => {
+                            c.pending = requests.clone();
+                            c.children.push_front(continuation);
+                            return Ok(Progress::Await { continuation: c, requests });
+                        }
+                    }
+                    continue;
+                }
             }
             if let Some(leg) = c.store.take() {
                 let StoreLeg { ask, driver, seed, wait } = *leg;
@@ -174,6 +208,112 @@ impl RuntimeKernel {
                 }
             }
         }
+    }
+
+    /// EXEC-CONC-1a: a route mount's `$MOUNT` deliveries to two or more traits become one run per trait, in delivery
+    /// order, settled before the mount's own seeds begin (EXEC-SEED-7).
+    fn start_mount_children(&self, c: &mut DispatchContinuation) {
+        let run = &mut c.run;
+        if run.seed.is_some() || run.provisional.is_some() {
+            return;
+        }
+        let Some(preamble) = run.preamble.as_ref() else { return };
+        let mut traits: Vec<&str> = preamble.deliveries.iter().map(|item| item.trait_name.as_str()).collect();
+        traits.sort_unstable();
+        traits.dedup();
+        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, traits = traits.len(), deliveries = preamble.deliveries.len(), "mount children");
+        if traits.len() < 2 {
+            return;
+        }
+        let Preamble { row, deliveries } = *run.preamble.take().expect("a preamble");
+        let mut groups: Vec<(String, VecDeque<CascadeItem>)> = Vec::new();
+        for item in deliveries {
+            match groups.iter_mut().find(|(t, _)| *t == item.trait_name) {
+                Some((_, items)) => items.push_back(item),
+                None => groups.push((item.trait_name.clone(), VecDeque::from([item]))),
+            }
+        }
+        let locale = run.locale.clone();
+        for (_, deliveries) in groups {
+            let mut child_run = self.run_of(Vec::new());
+            child_run.locale = locale.clone();
+            child_run.preamble = Some(Box::new(Preamble { row: row.clone(), deliveries }));
+            c.children.push_back(Self::continuation_of(child_run));
+        }
+    }
+
+    /// EXEC-CONC-1a: once a viewer run has only its program deliveries left, the deliveries to two or more distinct keyed
+    /// rows each become a run of their own, grouped by row in delivery order. Each is driven until its first wait, so
+    /// their store reads are in flight together, and they finish in that order before the rest steps. A row key that
+    /// cannot be resolved here leaves the deliveries in the one run.
+    fn start_keyed_children(&self, c: &mut DispatchContinuation) -> Result<(), DispatchError> {
+        self.start_mount_children(c);
+        if !c.children.is_empty() {
+            return Ok(());
+        }
+        let run = &mut c.run;
+        if run.seed.is_some() || !run.plans.is_empty() || run.preamble.is_some() || run.provisional.is_some() {
+            return Ok(());
+        }
+        if run.program_deliveries.iter().filter(|item| item.listen_key.is_some()).take(2).count() < 2 {
+            return Ok(());
+        }
+        let boot = self.registry.boot_traits.read().clone();
+        let mut rows: Vec<Option<(String, String)>> = Vec::with_capacity(run.program_deliveries.len());
+        for item in run.program_deliveries.iter() {
+            let row = match item.listen_key.as_ref().filter(|_| boot.contains(&item.trait_name)) {
+                None => None,
+                Some(key) => {
+                    let reads_user = key.expr.any_string(|s| s == "@user" || s.starts_with("@user."));
+                    let user = if reads_user {
+                        match self.session_user() {
+                            Ok(user) => user,
+                            Err(_) => {
+                                tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, trait_name = %item.trait_name, "keyed children: the session user is not held, one run");
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        Value::Null
+                    };
+                    match self.resolve_listen_key(key, &item.source_payload, user) {
+                        Ok(row) => Some(row),
+                        Err(reason) => {
+                            tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, trait_name = %item.trait_name, %reason, "keyed children: a row key did not resolve, one run");
+                            return Ok(());
+                        }
+                    }
+                }
+            };
+            rows.push(row.map(|row| (item.trait_name.clone(), row)));
+        }
+        let mut distinct: Vec<&(String, String)> = rows.iter().flatten().collect();
+        distinct.sort();
+        distinct.dedup();
+        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, rows = distinct.len(), deliveries = rows.len(), "keyed children");
+        if distinct.len() < 2 {
+            return Ok(());
+        }
+        let mut groups: Vec<((String, String), VecDeque<CascadeItem>)> = Vec::new();
+        let mut rest = VecDeque::new();
+        for (item, row) in std::mem::take(&mut run.program_deliveries).into_iter().zip(rows) {
+            match row {
+                None => rest.push_back(item),
+                Some(id) => match groups.iter_mut().find(|(g, _)| *g == id) {
+                    Some((_, items)) => items.push_back(item),
+                    None => groups.push((id, VecDeque::from([item]))),
+                },
+            }
+        }
+        run.program_deliveries = rest;
+        let locale = run.locale.clone();
+        for (_, items) in groups {
+            let mut child_run = self.run_of(Vec::new());
+            child_run.locale = locale.clone();
+            child_run.program_deliveries = items;
+            c.children.push_back(Self::continuation_of(child_run));
+        }
+        Ok(())
     }
 
     /// Every registered seed not yet landed, each under a fresh ask key: a run writes them before its first step,

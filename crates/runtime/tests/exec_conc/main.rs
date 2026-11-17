@@ -3,3 +3,4 @@
 
 mod conformance;
 mod resumable_dispatch;
+mod keyed_store_overlap;
