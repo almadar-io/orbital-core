@@ -245,13 +245,11 @@ impl RuntimeKernel {
                             matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
                         })
                 };
-                if delegating_traits.contains(trait_name) {
-                    // The seed's own arm needs the server: it replays from its
-                    // pre-dispatch row and the server cascades the rest itself.
-                    // A never-written shared frame replays from the view the step read (its defaults), as the
-                    // stateful leg carries it, so the host's echo of those defaults is not taken for a write.
-                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name)
-                    {
+                // The seed replays from its pre-dispatch row and the host cascades the rest itself.
+                // A never-written shared frame replays from the view the step read (its defaults), as the
+                // stateful leg carries it, so the host's echo of those defaults is not taken for a write.
+                let seed_replay = || {
+                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name) {
                         outcomes
                             .iter()
                             .find(|(t, r)| t == trait_name && r.executed)
@@ -263,7 +261,7 @@ impl RuntimeKernel {
                     };
                     let entity_by_trait = (!replayed_from.is_null())
                         .then(|| ValueMap::from_iter([(trait_name.into(), replayed_from)]));
-                    let mut legs = vec![EventRequest {
+                    EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),
                         payload: with_awaiting(payload.clone()),
@@ -274,7 +272,10 @@ impl RuntimeKernel {
                         traits: traits.clone(),
                         entity_by_trait,
                         ..Default::default()
-                    }];
+                    }
+                };
+                if delegating_traits.contains(trait_name) {
+                    let mut legs = vec![seed_replay()];
                     // A delivery held for the seed's INIT (EXEC-SEED-2) from a client-only trait is no part of the
                     // host's cascade from this replay: the host never runs that emitter (EXEC-DIST-10).
                     legs.extend(
@@ -298,11 +299,10 @@ impl RuntimeKernel {
                     );
                     legs
                 } else {
-                    // The seed has nothing to do on the server (the generated handler
-                    // would refuse an event it has no arm for): address each
-                    // listener whose delivery does.
-                    // A server trait the client ran is posted when it, or a trait its own emits reach later in the
-                    // cascade, needs the server: the host then runs the cascade from it (EXEC-DIST-10).
+                    // The seed's own effects need no server. A server trait the client ran, the seed included, is
+                    // posted when it, or a trait its own emits reach later in the cascade, needs the server: the host
+                    // then runs the cascade from it (EXEC-DIST-10). A stateful host is carried no states (EXEC-DIST-2),
+                    // so a seed posted only through its listener's leg would never move on the host.
                     let steps: Vec<(&String, &ProcessEventResult, Option<String>)> = outcomes
                         .iter()
                         .filter(|(_, r)| r.executed && r.entry.is_some())
@@ -333,7 +333,12 @@ impl RuntimeKernel {
                         // A client-only step is posted only for its own server work (an emit only a server-only
                         // orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
                         let own_server_work = !emitter_covered && self.step_emits_off_client(t, r);
-                        if emitter.is_none() || (client_only(t) && !own_server_work) || !reaches_server(i) {
+                        if emitter.is_none() && *t == trait_name && !client_only(t) && reaches_server(i) {
+                            covered.insert(t.as_str());
+                            legs.push(seed_replay());
+                            continue;
+                        }
+                        if emitter.is_none() ||(client_only(t) && !own_server_work) || !reaches_server(i) {
                             continue;
                         }
                         covered.insert(t.as_str());

@@ -2484,3 +2484,95 @@ fn control_a_host_write_of_an_entity_the_browser_holds_none_of_adds_nothing() {
     kernel.apply_server_response(&host_wrote_note(true, note_row("New")), &HashSet::new()).unwrap();
     assert_eq!(title_of(&kernel), None);
 }
+
+/// The live timer of std-time-tracking: `Timer` (server, pure) stops and hands its row to `Form` (server), whose open
+/// reads the store. `form_reads` false: nothing downstream needs the server.
+fn server_seed_chain_schema(form_reads: bool) -> OrbitalSchema {
+    let form_effects = if form_reads {
+        serde_json::json!([["persist", "create", "Note", {}]])
+    } else {
+        serde_json::json!([])
+    };
+    from_json_value(&(serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                {
+                    "name": "Timer",
+                    "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "running", "isInitial": true }, { "name": "idle" }],
+                        "transitions": [
+                            { "from": "running", "to": "running", "event": "INIT" },
+                            { "from": "running", "to": "idle", "event": "STOP", "effects": [["emit", "STOPPED", {}]] }
+                        ]
+                    }
+                },
+                {
+                    "name": "Form",
+                    "linkedEntity": "Note",
+                    "listens": [{ "event": "STOPPED", "triggers": "OPEN", "source": { "kind": "trait", "trait": "Timer" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "open" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            { "from": "idle", "to": "open", "event": "OPEN", "effects": form_effects }
+                        ]
+                    }
+                }
+            ]
+        }]
+    })))
+    .unwrap()
+}
+
+/// EXEC-DIST-10 / EXEC-DIST-2: a server seed whose own step needs no server work still moves the host's copy of it. When a
+/// listener it reaches needs the server, the leg replays the seed and the host cascades from it. A stateful host is
+/// carried no states, so a leg addressed only to the listener left the host's `Timer` running, and every later answer
+/// folded `running` back into the browser (std-time-tracking's live timer, G-CROSS-655).
+#[test]
+fn a_server_seed_whose_listener_needs_the_server_replays_the_seed_on_the_host() {
+    let (kernel, _collector) = client_kernel_with(server_seed_chain_schema(true));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Timer", None, "STOP", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert_eq!(
+        leg_shapes(&dispatch.server_legs),
+        vec![("STOP".to_string(), Some("Timer".to_string()), Some("Timer".to_string()))]
+    );
+}
+
+#[test]
+fn a_stateful_host_that_runs_the_leg_moves_its_copy_of_the_server_seed() {
+    let schema = server_seed_chain_schema(true);
+    let (client, _collector) = client_kernel_with(schema.clone());
+    let dispatch = client
+        .dispatch_with_server_leg("App", "Timer", None, "STOP", Value::Null, Some("tab-1"))
+        .unwrap();
+    let mut leg = dispatch.server_legs.first().expect("the server work leaves as a leg").clone();
+    leg.traits = None;
+    leg.entity_by_trait = None;
+    let host = server_kernel_with(schema);
+    let entity_id = host.seed_carried_request(&leg);
+    host.dispatch(leg.target_trait.as_deref().unwrap(), entity_id.as_deref(), &leg.event, Value::Null).unwrap();
+    assert_eq!(
+        host.get_state("Timer", entity_id.as_deref()).map(|s| s.current_state).as_deref(),
+        Some("idle")
+    );
+}
+
+#[test]
+fn control_a_server_seed_with_no_server_work_downstream_replays_through_the_stateful_leg() {
+    let (kernel, _collector) = client_kernel_with(server_seed_chain_schema(false));
+    let dispatch = kernel
+        .dispatch_with_server_leg("App", "Timer", None, "STOP", Value::Null, Some("tab-1"))
+        .unwrap();
+    assert!(dispatch.server_legs.is_empty());
+    let replay = dispatch.stateful_leg.expect("the host replays the seed");
+    assert_eq!(
+        (replay.leg.event.as_str(), replay.leg.target_trait.as_deref()),
+        ("STOP", Some("Timer"))
+    );
+}

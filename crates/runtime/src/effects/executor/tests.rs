@@ -2031,6 +2031,30 @@ mod field_updates {
         assert!(store.find("Invite", "i1").unwrap().is_some());
     }
 
+    /// A sign-in writes the identity row from a program-session step, before anyone is signed in; an owner still adds
+    /// people from a viewer session, and anyone else is refused (project-friday's Person, G-CROSS-663).
+    #[test]
+    fn a_server_create_beside_a_predicate_lets_the_program_step_and_an_owner_create_and_refuses_a_member() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let mut table = EntityAccessTable::new();
+        table.insert(
+            "Invite".to_string(),
+            EntityAccessPolicies {
+                create_server: Some("the sign-in binder writes a first row".to_string()),
+                create: Some(v(json!(["=", "@user.role", "owner"]))),
+                ..Default::default()
+            },
+        );
+        let executor = EffectExecutor::server().with_persistence(store.clone()).with_entity_policies(Arc::new(RwLock::new(table)));
+        let refused = executor.execute(&create_invite("member-made"), &viewer("u1", "member"));
+        assert!(refused.is_failed() && refused.code == Some(ServerEffectCode::Denied), "{refused:?}");
+        assert!(store.find("Invite", "member-made").unwrap().is_none());
+        assert!(executor.execute(&create_invite("owner-made"), &viewer("u2", "owner")).is_executed());
+        let _step = crate::effects::executor::ProgramStepScope::enter();
+        assert!(executor.execute(&create_invite("sign-in-made"), &BindingContext::new()).is_executed());
+        assert!(store.find("Invite", "sign-in-made").unwrap().is_some());
+    }
+
     #[test]
     fn control_an_entity_without_create_server_is_created_by_a_viewer() {
         let (executor, store) = invite_executor(false);

@@ -455,13 +455,24 @@ pub fn changes_only_server_fields(changed: &[String], rules: &[(String, FieldUpd
         })
 }
 
-/// A create of an entity declared `@create server`: refused unless `program_step`.
-pub fn check_server_create(create_server: Option<&str>, program_step: bool, entity_type: &str) -> Result<(), AccessDenied> {
+/// What a create must still pass once `@create server` has been read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CreateRule {
+    /// A program-session step of an entity declared `@create server`: no viewer predicate applies to it.
+    Allowed,
+    /// The `@create` predicate decides (a viewer step, or an entity with no `@create server`).
+    CheckPredicate,
+}
+
+/// The create rule of an entity: `@create server` lets a program-session step create; a viewer step is refused unless
+/// the entity also declares a `@create` predicate, which then decides it.
+pub fn create_rule(create_server: Option<&str>, has_predicate: bool, program_step: bool, entity_type: &str) -> Result<CreateRule, AccessDenied> {
     match create_server {
-        Some(reason) if !program_step => Err(AccessDenied(format!(
+        Some(_) if program_step => Ok(CreateRule::Allowed),
+        Some(reason) if !has_predicate => Err(AccessDenied(format!(
             "@Create denied: `{entity_type}` rows are created only by a program-session step ({reason})"
         ))),
-        _ => Ok(()),
+        _ => Ok(CreateRule::CheckPredicate),
     }
 }
 
@@ -754,6 +765,25 @@ mod tests {
             "Ticket"
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_server_create_beside_a_predicate_lets_a_program_step_create_and_checks_every_viewer_step() {
+        assert_eq!(create_rule(Some("sign-in"), true, true, "Person"), Ok(CreateRule::Allowed));
+        assert_eq!(create_rule(Some("sign-in"), true, false, "Person"), Ok(CreateRule::CheckPredicate));
+    }
+
+    #[test]
+    fn control_a_server_create_alone_still_refuses_a_viewer_step() {
+        assert_eq!(create_rule(Some("sign-in"), false, true, "Person"), Ok(CreateRule::Allowed));
+        assert!(create_rule(Some("sign-in"), false, false, "Person").is_err());
+    }
+
+    #[test]
+    fn control_a_predicate_alone_is_checked_for_every_step() {
+        assert_eq!(create_rule(None, true, true, "Person"), Ok(CreateRule::CheckPredicate));
+        assert_eq!(create_rule(None, true, false, "Person"), Ok(CreateRule::CheckPredicate));
+        assert_eq!(create_rule(None, false, false, "Person"), Ok(CreateRule::CheckPredicate));
     }
 
     #[test]

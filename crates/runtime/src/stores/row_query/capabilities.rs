@@ -122,6 +122,12 @@ pub struct QueryCapabilities {
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "positive_whole_count")]
     #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
     pub member_limit: Option<usize>,
+    /// The most disjuncts a query's filter may normalize to (its policy and filter in disjunctive normal form: a
+    /// `member` counts its values, an `all` multiplies, an `any` adds); the kernel asks a larger one in parts.
+    /// Absent is no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "positive_whole_count")]
+    #[cfg_attr(all(test, feature = "ts-export"), ts(type = "number"))]
+    pub disjunction_limit: Option<usize>,
 }
 
 /// A count declared in `.lolo` config: the evaluator's numbers are floats, so a whole float is the count it names.
@@ -183,6 +189,7 @@ impl QueryCapabilities {
             nearest: Some(true),
             indexes: None,
             member_limit: None,
+            disjunction_limit: None,
         }
     }
 }
@@ -246,6 +253,7 @@ pub enum QueryUnsupportedReason {
     ExactTotal,
     Nearest,
     MemberLimit,
+    DisjunctionLimit,
 }
 
 impl QueryUnsupportedReason {
@@ -259,6 +267,7 @@ impl QueryUnsupportedReason {
             Self::ExactTotal => "exact-total",
             Self::Nearest => "nearest",
             Self::MemberLimit => "member-limit",
+            Self::DisjunctionLimit => "disjunction-limit",
         }
     }
 }
@@ -380,6 +389,21 @@ pub fn narrowed_query(query: &RowQuery) -> RowQuery {
     }
 }
 
+/// The disjuncts `predicate` normalizes to: a `member` counts its values, an `all` multiplies, an `any` adds.
+pub(super) fn disjunctions(predicate: &RowPredicate) -> usize {
+    match predicate {
+        RowPredicate::Member { values, .. } => values.len().max(1),
+        RowPredicate::All { of } => of.iter().map(disjunctions).fold(1usize, usize::saturating_mul),
+        RowPredicate::Any { of } => of.iter().map(disjunctions).fold(0usize, usize::saturating_add).max(1),
+        RowPredicate::Not { of } => disjunctions(of),
+        _ => 1,
+    }
+}
+
+fn query_disjunctions(query: &RowQuery) -> usize {
+    query.policy.iter().chain(query.filter.iter()).map(disjunctions).fold(1usize, usize::saturating_mul)
+}
+
 pub(super) fn widest_member(predicate: &RowPredicate) -> usize {
     match predicate {
         RowPredicate::Member { values, .. } => values.len(),
@@ -389,28 +413,51 @@ pub(super) fn widest_member(predicate: &RowPredicate) -> usize {
     }
 }
 
-/// The narrowing of `query` asked in parts when its one oversized member is the filter or a conjunct of a top-level
-/// `all`: each part carries at most `limit` distinct values, so a row matches one part only. `None` when the member
-/// sits anywhere else, more than one is oversized, or a part is still not runnable.
+/// The query asked in parts when its widest member is the filter or a conjunct of a top-level `all` and the query
+/// is over the store's member or disjunction limit: each part carries a run of that member's distinct values small
+/// enough that the part fits both limits, so a row matches one part only. A part keeps the query's `nearest` when the
+/// store ranks, so each part answers its own nearest rows and the kernel ranks their union; otherwise a part is the
+/// query's narrowing. `None` when the member sits anywhere else, another member is over the member limit, the rest
+/// of the query alone is over the disjunction limit, or a part is still not runnable.
 pub fn member_chunks(capabilities: &QueryCapabilities, query: &RowQuery) -> Option<Vec<RowQuery>> {
-    let limit = capabilities.member_limit.filter(|l| *l > 0)?;
+    let member_limit = capabilities.member_limit.filter(|l| *l > 0);
+    let disjunction_limit = capabilities.disjunction_limit.filter(|l| *l > 0);
+    if member_limit.is_none() && disjunction_limit.is_none() {
+        return None;
+    }
     let narrowed = narrowed_query(query);
+    let base = if query.nearest.is_some() && capabilities.nearest == Some(true) {
+        RowQuery { nearest: query.nearest.clone(), ..narrowed.clone() }
+    } else {
+        narrowed.clone()
+    };
     let filter = narrowed.filter.as_ref()?;
     let (field, values, rest): (&str, &[Value], Vec<RowPredicate>) = match filter {
         RowPredicate::Member { field, values } => (field, values, Vec::new()),
         RowPredicate::All { of } => {
-            let mut wide = of.iter().enumerate().filter(|(_, p)| widest_member(p) > limit);
-            let (at, RowPredicate::Member { field, values }) = wide.next()? else {
+            let (at, widest) = of.iter().enumerate().max_by_key(|(_, p)| widest_member(p))?;
+            let RowPredicate::Member { field, values } = widest else {
                 return None;
             };
-            if wide.next().is_some() {
+            let rest: Vec<RowPredicate> = of.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, p)| p.clone()).collect();
+            if member_limit.is_some_and(|limit| rest.iter().any(|p| widest_member(p) > limit)) {
                 return None;
             }
-            let rest = of.iter().enumerate().filter(|(i, _)| *i != at).map(|(_, p)| p.clone()).collect();
             (field, values, rest)
         }
         _ => return None,
     };
+    let other = narrowed.policy.iter().chain(rest.iter()).map(disjunctions).fold(1usize, usize::saturating_mul);
+    let by_disjunctions = disjunction_limit.map(|limit| limit / other.max(1));
+    let size = match (member_limit, by_disjunctions) {
+        (Some(m), Some(d)) => m.min(d),
+        (Some(m), None) => m,
+        (None, Some(d)) => d,
+        (None, None) => return None,
+    };
+    if size == 0 {
+        return None;
+    }
     let mut distinct: Vec<Value> = Vec::with_capacity(values.len());
     for value in values {
         if !distinct.iter().any(|seen| same_value(seen, value)) {
@@ -418,7 +465,7 @@ pub fn member_chunks(capabilities: &QueryCapabilities, query: &RowQuery) -> Opti
         }
     }
     let parts: Vec<RowQuery> = distinct
-        .chunks(limit)
+        .chunks(size)
         .map(|chunk| {
             let member = RowPredicate::Member { field: field.to_string(), values: chunk.to_vec() };
             let filter = if rest.is_empty() {
@@ -428,7 +475,7 @@ pub fn member_chunks(capabilities: &QueryCapabilities, query: &RowQuery) -> Opti
                 of.push(member);
                 RowPredicate::All { of }
             };
-            RowQuery { filter: Some(filter), ..narrowed.clone() }
+            RowQuery { filter: Some(filter), ..base.clone() }
         })
         .collect();
     parts.iter().all(|p| query_unsupported_reason(capabilities, p).is_none()).then_some(parts)
@@ -468,6 +515,9 @@ pub fn query_unsupported_reason(
         if used.iter().any(|p| widest_member(p) > limit) {
             return Some(QueryUnsupportedReason::MemberLimit);
         }
+    }
+    if capabilities.disjunction_limit.is_some_and(|limit| query_disjunctions(query) > limit) {
+        return Some(QueryUnsupportedReason::DisjunctionLimit);
     }
     if query.nearest.is_some() {
         return (capabilities.nearest != Some(true)).then_some(QueryUnsupportedReason::Nearest);

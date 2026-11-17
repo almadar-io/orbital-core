@@ -628,6 +628,14 @@ fn schema() -> OrbitalSchema {
                         { "from": "idle", "to": "idle", "event": "LIST_MEMBER", "effects": [
                             ["fetch", "Ticket", { "filter": ["array/includes", ["A", "B", "A", "C", "E", "X"], ["object/get", "@entity", "title"]],
                                 "orderBy": "score:desc", "limit": 2, "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "LIST_TWO_MEMBERS", "effects": [
+                            ["fetch", "Ticket", { "filter": ["and", ["array/includes", ["A", "B", "C", "E", "X"], ["object/get", "@entity", "title"]],
+                                ["array/includes", ["open", "closed"], ["object/get", "@entity", "status"]]],
+                                "orderBy": "score:desc", "limit": 2, "emit": { "success": "LISTED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "NEAREST_TWO_MEMBERS", "effects": [
+                            ["fetch", "Ticket", { "filter": ["and", ["array/includes", ["A", "B", "C", "E", "X"], ["object/get", "@entity", "title"]],
+                                ["array/includes", ["open", "closed"], ["object/get", "@entity", "status"]]],
+                                "nearest": { "field": "embedding", "vector": [1, 0], "k": 2 }, "emit": { "success": "LISTED" } }]] },
                         { "from": "idle", "to": "idle", "event": "LIST_MEMBER_OR", "effects": [
                             ["fetch", "Ticket", { "filter": ["or", ["array/includes", [1, 3, 5], ["object/get", "@entity", "score"]],
                                 ["array/includes", [8, 9], ["object/get", "@entity", "score"]]],
@@ -991,6 +999,75 @@ fn control_a_member_within_the_store_limit_is_one_pushed_query() {
     assert_eq!(log.len(), 1, "{log:?}");
     assert!(matches!(log[0], IoRequest::QueryRows { query, .. } if query.limit == Some(2)), "{log:?}");
     assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
+}
+
+fn disjunctions(predicate: &RowPredicate) -> usize {
+    match predicate {
+        RowPredicate::Member { values, .. } => values.len(),
+        RowPredicate::All { of } => of.iter().map(disjunctions).product(),
+        RowPredicate::Any { of } => of.iter().map(disjunctions).sum(),
+        RowPredicate::Not { of } => disjunctions(of),
+        _ => 1,
+    }
+}
+
+fn disjunction_limited(limit: usize) -> QueryCapabilities {
+    let mut caps = QueryCapabilities::full();
+    caps.disjunction_limit = Some(limit);
+    caps
+}
+
+fn asked_queries(log: &[&IoRequest]) -> Vec<RowQuery> {
+    log.iter()
+        .filter_map(|r| match r {
+            IoRequest::QueryRows { query, .. } => Some(query.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_conjunction_over_the_disjunction_limit_is_asked_in_parts_that_each_fit() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let (_, whole) = fly(&k, "LIST_TWO_MEMBERS", &seeded(), &|_| None);
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", disjunction_limited(4));
+    let (log, out) = fly(&k, "LIST_TWO_MEMBERS", &seeded(), &|_| None);
+    let log = data_requests(&log);
+    assert!(log.iter().all(|r| !matches!(r, IoRequest::ListRows { .. })), "{log:?}");
+    let asked = asked_queries(&log);
+    assert!(asked.len() > 1, "{asked:?}");
+    for q in &asked {
+        let n: usize = q.policy.iter().chain(q.filter.iter()).map(disjunctions).product();
+        assert!(n <= 4, "a part over the limit was sent ({n}): {q:?}");
+    }
+    assert_eq!(listed(&out.unwrap()), listed(&whole.unwrap()));
+}
+
+#[test]
+fn control_a_conjunction_within_the_disjunction_limit_is_one_pushed_query() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", disjunction_limited(10));
+    let (log, _) = fly(&k, "LIST_TWO_MEMBERS", &seeded(), &|_| None);
+    let log = data_requests(&log);
+    assert_eq!(log.len(), 1, "{log:?}");
+    assert!(matches!(log[0], IoRequest::QueryRows { query, .. } if query.limit == Some(2)), "{log:?}");
+}
+
+#[test]
+fn a_nearest_query_asked_in_parts_keeps_its_ranking_in_each_part_and_the_kernel_merges_them() {
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", QueryCapabilities::full());
+    let (_, whole) = fly(&k, "NEAREST_TWO_MEMBERS", &seeded_vectors(), &|_| None);
+    let k = host_kernel();
+    k.set_query_capabilities("Ticket", disjunction_limited(4));
+    let (log, out) = fly(&k, "NEAREST_TWO_MEMBERS", &seeded_vectors(), &|_| None);
+    let log = data_requests(&log);
+    let asked = asked_queries(&log);
+    assert!(asked.len() > 1, "{asked:?}");
+    assert!(asked.iter().all(|q| q.nearest.is_some()), "each part ranks itself: {asked:?}");
+    assert_eq!(listed(&out.unwrap()), listed(&whole.unwrap()));
 }
 
 #[test]

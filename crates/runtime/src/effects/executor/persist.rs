@@ -225,8 +225,16 @@ impl EffectExecutor {
                 missing.join(", ")
             ));
         }
-        crate::entity_access::check_server_create(scope.create_server.as_deref(), ProgramStepScope::active(), entity_type)
-            .map_err(|denied| Self::refused(denied, code))?;
+        let rule = crate::entity_access::create_rule(
+            scope.create_server.as_deref(),
+            scope.policy.is_some(),
+            ProgramStepScope::active(),
+            entity_type,
+        )
+        .map_err(|denied| Self::refused(denied, code))?;
+        if rule == crate::entity_access::CreateRule::Allowed {
+            return Ok(());
+        }
         check_mutation_access(
             PersistOperation::Create,
             data,

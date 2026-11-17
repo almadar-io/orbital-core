@@ -21,6 +21,13 @@ fn browse(extra_transitions: Json) -> Json {
     })
 }
 
+/// `Browse` as a `[client]` trait: the host runs no copy of it, so its server listeners are the legs.
+fn client_browse() -> Json {
+    let mut trait_json = browse(json!([]));
+    trait_json["dispatch"] = json!("client");
+    trait_json
+}
+
 fn listener(name: &str, heard: &str, trigger: &str, effects: Json) -> Json {
     json!({
         "name": name, "linkedEntity": "Note",
@@ -88,7 +95,7 @@ fn persist_delete() -> Json {
 fn an_emit_only_seed_whose_listener_persists_yields_a_leg_to_the_listener() {
     let d = dispatch(
         schema(vec![
-            browse(json!([])),
+            client_browse(),
             listener("NoteEdit", "EDIT", "NOTE_EDIT", persist_update()),
         ]),
         "Browse",
@@ -150,7 +157,7 @@ fn two_server_bound_listeners_of_one_emit_yield_two_legs() {
     let both = |name: &str, trigger: &str, effects: Json| listener(name, "EDIT", trigger, effects);
     let d = dispatch(
         schema(vec![
-            browse(json!([])),
+            client_browse(),
             both("NoteEdit", "NOTE_EDIT", persist_update()),
             both(
                 "NoteAudit",
@@ -195,7 +202,7 @@ fn control_a_listener_that_stays_on_the_client_owes_no_leg() {
 fn control_only_the_listener_that_heard_the_event_gets_a_leg() {
     let d = dispatch(
         schema(vec![
-            browse(json!([])),
+            client_browse(),
             listener("NoteEdit", "EDIT", "NOTE_EDIT", persist_update()),
             listener("NoteDelete", "DELETE", "NOTE_DELETE", persist_delete()),
         ]),
@@ -228,7 +235,7 @@ fn a_listener_reached_through_another_legs_server_cascade_rides_that_leg() {
         }
     });
     let d = dispatch(
-        schema(vec![browse(json!([])), relay, downstream]),
+        schema(vec![client_browse(), relay, downstream]),
         "Browse",
         "EDIT_ROW",
     );
@@ -266,7 +273,7 @@ fn a_server_hop_that_needs_no_server_itself_is_the_leg_and_its_downstream_rides_
         }
     });
     let d = dispatch(
-        schema(vec![browse(json!([])), hop, sink]),
+        schema(vec![client_browse(), hop, sink]),
         "Browse",
         "EDIT_ROW",
     );
@@ -279,7 +286,7 @@ fn a_server_hop_that_needs_no_server_itself_is_the_leg_and_its_downstream_rides_
 fn already_delivered_names_the_seed_and_each_leg_target() {
     let d = dispatch(
         schema(vec![
-            browse(json!([])),
+            client_browse(),
             listener("NoteEdit", "EDIT", "NOTE_EDIT", persist_update()),
         ]),
         "Browse",
@@ -359,4 +366,20 @@ fn control_a_listener_of_an_event_nobody_emitted_has_no_outcome() {
     );
     assert!(d.outcomes.iter().all(|(t, _)| t != "NoteDelete"));
     assert_eq!(d.seed, ("Browse".to_string(), "EDIT_ROW".to_string()));
+}
+
+/// EXEC-DIST-10 / EXEC-DIST-2: a server seed is the first server trait of its own cascade, so it is the leg and its
+/// listeners ride the host's cascade from it; a stateful host is carried no states and must run the seed's step.
+#[test]
+fn a_server_seed_whose_listener_persists_is_the_leg() {
+    let d = dispatch(
+        schema(vec![
+            browse(json!([])),
+            listener("NoteEdit", "EDIT", "NOTE_EDIT", persist_update()),
+        ]),
+        "Browse",
+        "EDIT_ROW",
+    );
+    let shapes: Vec<(&str, Option<&str>)> = d.server_legs.iter().map(|l| (l.event.as_str(), l.target_trait.as_deref())).collect();
+    assert_eq!(shapes, vec![("EDIT_ROW", Some("Browse"))]);
 }

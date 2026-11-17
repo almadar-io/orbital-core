@@ -182,40 +182,54 @@ fn confirmed(k: &RuntimeKernel) -> orbital_core_runtime::kernel::ClientDispatch 
     let payload: Value = from_json_value(&json!({ "id": "c1" })).unwrap();
     k.dispatch_with_server_leg("crm", "Delete", None, "REQUEST", payload.clone(), None).unwrap();
     let d = k.dispatch_with_server_leg("crm", "Delete", None, "CONFIRM", payload, None).unwrap();
-    assert!(!d.server_legs.is_empty(), "the listener's persist must leave as a server leg");
+    assert!(!d.server_legs.is_empty(), "the persist must leave as a server leg");
     d
 }
 
 fn carried(d: &orbital_core_runtime::kernel::ClientDispatch, target: &str) -> HashMap<String, String> {
-    let leg = d.server_legs.iter().find(|l| l.target_trait.as_deref() == Some(target)).expect("a leg for the listener");
+    let leg = d.server_legs.iter().find(|l| l.target_trait.as_deref() == Some(target)).expect("a leg for that trait");
     leg.traits.iter().flatten().map(|c| (c.r#trait.clone(), c.from.clone())).collect()
 }
 
+/// EXEC-DIST-10 / EXEC-DIST-2: the server emitter that moved is the leg, so a stateful host, which is carried no states,
+/// runs its step too; its listener rides the host's cascade from it.
 #[test]
-fn a_listener_leg_carries_the_finished_emitter_where_the_client_left_it() {
+fn a_server_emitter_that_moved_is_the_leg_and_replays_from_where_it_was() {
     let k = confirm_kernel();
     let d = confirmed(&k);
-    assert_eq!(carried(&d, "Persistor").get("Delete").map(String::as_str), Some("idle"));
+    let shapes: Vec<(&str, Option<&str>)> = d.server_legs.iter().map(|l| (l.event.as_str(), l.target_trait.as_deref())).collect();
+    assert_eq!(shapes, vec![("CONFIRM", Some("Delete"))]);
+    assert_eq!(carried(&d, "Delete").get("Delete").map(String::as_str), Some("confirming"));
 }
 
 #[test]
-fn control_a_listener_leg_carries_its_target_at_the_state_it_replays_from() {
+fn control_the_emitter_leg_carries_its_listener_at_the_state_the_host_cascades_it_from() {
     let k = confirm_kernel();
     let d = confirmed(&k);
-    let leg = d.server_legs.iter().find(|l| l.target_trait.as_deref() == Some("Persistor")).unwrap();
-    let target = leg.traits.iter().flatten().find(|c| c.r#trait == "Persistor").expect("the target is carried");
-    assert_eq!((target.from.as_str(), target.event.as_deref()), ("idle", Some("DO_DELETE")));
+    let leg = d.server_legs.iter().find(|l| l.target_trait.as_deref() == Some("Delete")).unwrap();
+    let listener = leg.traits.iter().flatten().find(|c| c.r#trait == "Persistor").expect("the listener is carried");
+    assert_eq!((listener.from.as_str(), listener.event.as_deref()), ("idle", Some("DO_DELETE")));
 }
 
 #[test]
-fn the_hosts_echo_of_a_listener_leg_does_not_revert_the_emitter() {
+fn the_hosts_echo_of_the_emitter_leg_does_not_revert_the_emitter() {
     let k = confirm_kernel();
     let d = confirmed(&k);
+    let host_ran_delete = orbital_core_runtime::effects::response::TransitionHop {
+        trait_name: "Delete".to_string(),
+        from: "confirming".to_string(),
+        to: "idle".to_string(),
+        event: "CONFIRM".to_string(),
+        fired_arm: None,
+        guard_result: None,
+        effects: Vec::new(),
+        observed: None,
+    };
     let echo = EventResponse {
         success: true,
         transitioned: true,
-        states: carried(&d, "Persistor"),
-        transitions: Some(vec![persistor_hop()]),
+        states: HashMap::from([("Delete".to_string(), "idle".to_string()), ("Persistor".to_string(), "idle".to_string())]),
+        transitions: Some(vec![host_ran_delete, persistor_hop()]),
         ..EventResponse::default()
     };
     k.apply_server_response(&echo, &already_delivered_from(&d)).unwrap();
