@@ -305,3 +305,38 @@ fn control_a_node_without_relation_fields_and_the_wrapper_stay_untouched() {
     assert!(render[2].get("relationsData").is_none());
     let _: Value = from_json_value(&render).unwrap();
 }
+
+/// The record form of a std modal names its fields through a knob (`fields: @config.fields`), so the compiler's
+/// resolve-time stamp never sees them; the kernel stamps the rendered form from the trait's entity instead.
+fn knob_form_schema() -> OrbitalSchema {
+    let mut schema = serde_json::to_value(editor_schema(Some("name"))).unwrap();
+    let editor = &mut schema["orbitals"][1]["traits"][0];
+    editor["config"] = json!({ "formFields": { "type": "array", "items": { "type": "string" }, "default": ["title", "assignee"] } });
+    editor["stateMachine"]["transitions"][0]["effects"] =
+        json!([["render-ui", "modal", { "type": "form-section", "mode": "edit", "fields": "@config.formFields" }]]);
+    from_json_value(&schema).unwrap()
+}
+
+#[test]
+fn a_form_whose_fields_come_from_a_knob_renders_each_field_with_its_declared_type() {
+    let server = EmbeddedServer::new(knob_form_schema()).unwrap();
+    let request = EventRequest { event: "OPEN".to_string(), target_trait: Some("editor".to_string()), ..Default::default() };
+    let response = drive(&server, "TaskOrbital", request, &staff());
+    let render = serde_json::to_value(response.client_effects()[0].clone()).unwrap();
+    let fields = render[2]["fields"].as_array().unwrap_or_else(|| panic!("{render}"));
+    assert_eq!(fields[0]["name"], "title", "{render}");
+    assert_eq!(fields[0]["type"], "string", "{render}");
+    assert_eq!(fields[1]["type"], "relation", "{render}");
+    assert_eq!(fields[1]["relation"]["entity"], "Staff", "{render}");
+}
+
+#[test]
+fn control_a_form_field_the_entity_does_not_declare_stays_as_written() {
+    let mut schema = serde_json::to_value(knob_form_schema()).unwrap();
+    schema["orbitals"][1]["traits"][0]["config"]["formFields"]["default"] = json!(["title", "notAField"]);
+    let server = EmbeddedServer::new(from_json_value(&schema).unwrap()).unwrap();
+    let request = EventRequest { event: "OPEN".to_string(), target_trait: Some("editor".to_string()), ..Default::default() };
+    let response = drive(&server, "TaskOrbital", request, &staff());
+    let render = serde_json::to_value(response.client_effects()[0].clone()).unwrap();
+    assert_eq!(render[2]["fields"][1], "notAField", "{render}");
+}

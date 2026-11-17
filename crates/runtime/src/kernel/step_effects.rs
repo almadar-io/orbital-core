@@ -406,11 +406,26 @@ impl RuntimeKernel {
             Effect::CallService { emit, .. } => {
                 self.exec_call_service(&effect, emit, ctx, effect_results)
             }
-            // A browser kernel's `kv/` store is its host's (IndexedDB), asked as a host-ask; a server kernel's is the native kv answerer.
-            Effect::Os { op: orbital_core_base::os::OsOp::KvGet | orbital_core_base::os::OsOp::KvPut | orbital_core_base::os::OsOp::KvDelete | orbital_core_base::os::OsOp::KvScan | orbital_core_base::os::OsOp::KvBatch, .. }
+            // A browser kernel's `kv/` store is its host's (IndexedDB), asked as a host-ask once the asking orbital's
+            // grant covers it; a server kernel's is the native kv answerer, which checks the same grant.
+            Effect::Os { op: kv_op @ (orbital_core_base::os::OsOp::KvGet | orbital_core_base::os::OsOp::KvPut | orbital_core_base::os::OsOp::KvDelete | orbital_core_base::os::OsOp::KvScan | orbital_core_base::os::OsOp::KvBatch), emit, .. }
                 if self.effect_executor.environment().is_client() =>
             {
-                effect_results.push(EffectResult::host_asked(effect.clone()));
+                use orbital_core_base::os_grants::{KvMode, OsRequirement};
+                if let Some(resolved) = resolved_or_failed(&effect, ctx, effect_results, || self.effect_site()) {
+                    let (orbital, _) = self.caller_position();
+                    let store = match &resolved {
+                        Effect::Os { args, .. } => args.first().and_then(Value::as_str).unwrap_or_default().to_string(),
+                        _ => String::new(),
+                    };
+                    let mode = if matches!(kv_op, orbital_core_base::os::OsOp::KvGet | orbital_core_base::os::OsOp::KvScan) { KvMode::Read } else { KvMode::Write };
+                    if self.os_grants_of(orbital.as_deref()).allows(&OsRequirement::Kv { store: store.clone(), mode }) {
+                        effect_results.push(EffectResult::host_asked(resolved));
+                    } else {
+                        let denied = format!("no kv grant covers {} on store {store:?}", mode.name());
+                        self.exec_call(&effect, emit.as_ref(), ctx, effect_results, CallShape::OS, |e, _| EffectResult::failed(e.clone(), &denied));
+                    }
+                }
             }
             Effect::Os { emit, .. } => self.exec_call(
                 &effect,
@@ -675,9 +690,6 @@ impl RuntimeKernel {
     /// Give each form/detail/column-bearing node of a server-role `render-ui` the options of its relation
     /// fields (`relationsData`); the browser role reads its own store.
     pub(super) fn inject_relation_options(&self, trait_name: &str, results: &mut [EffectResult]) {
-        if !self.config.environment.is_server() {
-            return;
-        }
         let linked = self
             .registry.trait_definitions
             .read()
@@ -685,8 +697,19 @@ impl RuntimeKernel {
             .and_then(|def| def.linked_entity.clone())
             .unwrap_or_else(|| trait_name.to_string());
         let defs = self.registry.entity_definitions.read();
+        // A form whose fields a knob names reaches here as bare names the compiler's resolve-time stamp never saw.
+        let stamps = defs
+            .get(&linked)
+            .and_then(|entity| orbital_core_base::language::field_stamp::EntityFieldStamps::of(entity).ok());
+        let server = self.config.environment.is_server();
         for result in results {
             if let Effect::RenderUi { content, .. } = &mut result.effect {
+                if let Some(stamps) = &stamps {
+                    stamps.stamp_tree(content);
+                }
+                if !server {
+                    continue;
+                }
                 super::relations::inject_relation_options(
                     &*self.entity_source,
                     &defs,

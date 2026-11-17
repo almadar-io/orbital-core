@@ -815,3 +815,30 @@ fn control_g_cross_517_a_client_traits_init_emit_nobody_off_the_client_hears_pos
     let dispatch = kernel.dispatch_with_server_leg("Main", "Win", None, "INIT", Value::Null, Some("tab")).unwrap();
     assert!(dispatch.server_legs.is_empty());
 }
+
+/// The `id` a `Doc` page's INIT ran with.
+fn doc_init_id(payload: Value) -> serde_json::Value {
+    let k = entity_kernel(serde_json::json!([{
+        "name": "Main", "entity": entity_json("Note", &[]),
+        "traits": [linked_trait("Reader", "Note", serde_json::json!([]))],
+        "pages": [{ "name": "Doc", "path": "/docs/:id", "traits": [{ "ref": "Reader" }] }]
+    }]));
+    let outcomes = k.dispatch_route_mount(Some("/docs/7"), &k.route_mounts("/docs/7"), None, payload).unwrap();
+    let init = outcomes.iter().find(|(t, r)| t == "Reader" && r.event.as_deref() == Some("INIT")).expect("Reader ran INIT");
+    serde_json::to_value(init.1.payload.as_ref()).unwrap()["id"].clone()
+}
+
+// A browser's mount leg can carry a payload of its own (the `_awaitingInit` sidecar, a carried leg's) without the route
+// params its client put on INIT; the host's route mount still hands each seed the params of the route it opens.
+#[test]
+fn a_route_mount_gives_its_seeds_the_route_params_its_leg_payload_lacks() {
+    let leg_payload: Value = from_json_value(&serde_json::json!({ "_awaitingInit": [] })).unwrap();
+    assert_eq!(doc_init_id(leg_payload), serde_json::json!("7"));
+    assert_eq!(doc_init_id(Value::Null), serde_json::json!("7"), "no payload at all");
+}
+
+#[test]
+fn control_a_param_the_leg_payload_carries_itself_wins() {
+    let leg_payload: Value = from_json_value(&serde_json::json!({ "id": "from-leg" })).unwrap();
+    assert_eq!(doc_init_id(leg_payload), serde_json::json!("from-leg"));
+}

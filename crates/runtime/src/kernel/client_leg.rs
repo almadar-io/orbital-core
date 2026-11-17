@@ -672,7 +672,20 @@ impl RuntimeKernel {
                 && written.success
             {
                 match &written.entity_type {
-                    Some(entity_type) => self.rows.note_write(entity_type),
+                    Some(entity_type) => {
+                        // The host's write replaces the browser's copy of rows it already holds, so a later local fetch is not stale.
+                        let written_row = written.data.as_ref().and_then(|row| {
+                            row.as_object().and_then(|o| o.get("id")).and_then(Value::as_str).map(|id| (id.to_string(), row))
+                        });
+                        if let Some((id, row)) = written_row {
+                            let held = self.entity_source.find(entity_type, &id).map_err(KernelError::Internal)?.is_some()
+                                || !self.entity_source.list(entity_type).map_err(KernelError::Internal)?.is_empty();
+                            if held {
+                                self.entity_source.write(entity_type, &id, row).map_err(KernelError::Internal)?;
+                            }
+                        }
+                        self.rows.note_write(entity_type)
+                    }
                     None => {
                         for entity_type in written
                             .data

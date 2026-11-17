@@ -2425,3 +2425,62 @@ fn a_render_whose_config_knob_is_an_expression_over_user_repaints_too() {
     assert_eq!(repainted.len(), 1, "{repainted:?}");
     assert!(serde_json::to_value(&repainted[0].effects).unwrap().to_string().contains("Ada"), "{repainted:?}");
 }
+
+fn note_row(title: &str) -> Value {
+    let mut row = ValueMap::default();
+    row.insert("id".into(), Value::string("n-1"));
+    row.insert("title".into(), Value::string(title));
+    Value::object(row)
+}
+
+fn host_wrote_note(success: bool, row: Value) -> EventResponse {
+    EventResponse {
+        success: true,
+        transitioned: true,
+        effect_results: Some(vec![crate::effects::response::ServerEffectResult {
+            effect: crate::effects::response::ServerEffectKind::Persist,
+            action: Some("update".into()),
+            entity_type: Some("Note".into()),
+            name: None,
+            data: Some(row),
+            success,
+            denied: None,
+            error: None,
+            code: None,
+            target: None,
+            routed: None,
+        }]),
+        ..Default::default()
+    }
+}
+
+fn title_of(kernel: &RuntimeKernel) -> Option<Value> {
+    kernel
+        .entity_source()
+        .find("Note", "n-1")
+        .unwrap()
+        .and_then(|row| row.as_object().and_then(|o| o.get("title").cloned()))
+}
+
+#[test]
+fn a_host_write_of_a_row_the_browser_holds_replaces_the_browsers_copy() {
+    let (kernel, _) = client_kernel_with(server_response_schema());
+    kernel.entity_source().write("Note", "n-1", &note_row("Old")).unwrap();
+    kernel.apply_server_response(&host_wrote_note(true, note_row("New")), &HashSet::new()).unwrap();
+    assert_eq!(title_of(&kernel), Some(Value::string("New")));
+}
+
+#[test]
+fn control_a_failed_host_write_leaves_the_browsers_copy() {
+    let (kernel, _) = client_kernel_with(server_response_schema());
+    kernel.entity_source().write("Note", "n-1", &note_row("Old")).unwrap();
+    kernel.apply_server_response(&host_wrote_note(false, note_row("New")), &HashSet::new()).unwrap();
+    assert_eq!(title_of(&kernel), Some(Value::string("Old")));
+}
+
+#[test]
+fn control_a_host_write_of_an_entity_the_browser_holds_none_of_adds_nothing() {
+    let (kernel, _) = client_kernel_with(server_response_schema());
+    kernel.apply_server_response(&host_wrote_note(true, note_row("New")), &HashSet::new()).unwrap();
+    assert_eq!(title_of(&kernel), None);
+}

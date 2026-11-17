@@ -174,6 +174,24 @@ impl RuntimeKernel {
 
     /// [`Self::dispatch_mount`] for a batch that opens `route`: the traits that listen for `$MOUNT` are delivered it, with the
     /// page's `{ page, route, traits, entities }`, and settle before the first seed runs (EXEC-SEED-7).
+    /// A route mount's payload with the params of the route it opens: a leg's payload may lack them (a browser posts
+    /// the mount with a carried leg's), and every seed of a route mount runs with them (EXEC-ENDPOINT-3); a key the
+    /// payload carries wins.
+    fn with_route_params(&self, route: Option<&str>, payload: Value) -> Value {
+        match (route.map(|route| self.route_mount_payload(route)), payload) {
+            (Some(Value::Object(params)), Value::Object(mut own)) => {
+                for (key, value) in params.iter() {
+                    if !own.contains_key(key) {
+                        own.insert(key.clone(), value.clone());
+                    }
+                }
+                Value::Object(own)
+            }
+            (Some(params @ Value::Object(_)), Value::Null) => params,
+            (_, payload) => payload,
+        }
+    }
+
     pub fn dispatch_route_mount(
         &self,
         route: Option<&str>,
@@ -193,6 +211,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let payload = self.with_route_params(route, payload);
         let _lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
@@ -283,6 +302,7 @@ impl RuntimeKernel {
         entity_id: Option<&str>,
         payload: Value,
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let payload = self.with_route_params(route, payload);
         let lane = self.lane.enter(None)?;
         self.require_payload(
             seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
@@ -304,6 +324,7 @@ impl RuntimeKernel {
         payload: Value,
         mut drive: impl FnMut(Result<Progress<DispatchOutcomes>, DispatchError>) -> Result<DispatchOutcomes, E>,
     ) -> Result<DispatchOutcomes, E> {
+        let payload = self.with_route_params(route, payload);
         let announced = match self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload) {
             Err(error) => return drive(Err(error.into())),
             Ok(()) => match route.map(|route| self.route_mount_deliveries(route, None)).transpose() {

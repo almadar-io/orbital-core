@@ -9,8 +9,8 @@ use serde_json::json;
 fn kv_program() -> OrbitalSchema {
     from_json_value(&json!({
         "name": "App", "typeContractVersion": 1,
-        "osGrants": { "kv": { "answers": ["read", "write"] } },
         "orbitals": [{ "name": "Shelf",
+            "osGrants": { "kv": { "answers": ["read", "write"] } },
             "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
             "traits": [{ "name": "Kept", "linkedEntity": "Run", "dispatch": "client",
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
@@ -42,8 +42,24 @@ fn a_browser_kernel_hands_a_kv_call_to_its_host_as_a_host_ask() {
 }
 
 #[test]
-fn the_browser_kernel_answers_whether_the_kv_grant_covers_a_store() {
-    let k = orbital_core_runtime::embed::EmbeddedKernel::new(kv_program(), "c1").unwrap();
-    assert!(k.os_allows_json(r#"{"need":"kv","store":"answers","mode":"write"}"#, None).unwrap());
-    assert!(!k.os_allows_json(r#"{"need":"kv","store":"other","mode":"read"}"#, None).unwrap(), "control: an ungranted store");
+fn control_a_kv_call_on_a_store_the_orbital_is_not_granted_is_refused_by_the_kernel_never_asked() {
+    let mut program = serde_json::to_value(kv_program()).unwrap();
+    program["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][0]["effects"][0][1] = json!("other");
+    let k = orbital_core_runtime::embed::EmbeddedKernel::new(from_json_value(&program).unwrap(), "c1").unwrap();
+    let wire = k.dispatch("Kept", None, "INIT", Value::Null).unwrap();
+    assert!(host_asks(&wire).is_empty());
+    let response = serde_json::to_value(&wire.response).unwrap();
+    let missed = response["emittedEvents"].as_array().into_iter().flatten().find(|e| e["event"] == "MISSED").expect("the failure route");
+    assert!(missed["payload"]["error"].as_str().unwrap_or_default().contains("no kv grant"), "{missed}");
+}
+
+#[test]
+fn a_kv_call_whose_store_is_a_config_knob_is_checked_against_the_store_it_names() {
+    let mut program = serde_json::to_value(kv_program()).unwrap();
+    let t = &mut program["orbitals"][0]["traits"][0];
+    t["config"] = json!({ "store": { "type": "string", "default": "answers" } });
+    t["stateMachine"]["transitions"][0]["effects"][0][1] = json!(["let", [["knob_store", "answers", "{\"version\":1,\"type\":{\"kind\":\"string\"}}"]], "@knob_store"]);
+    let k = orbital_core_runtime::embed::EmbeddedKernel::new(from_json_value(&program).unwrap(), "c1").unwrap();
+    let wire = k.dispatch("Kept", None, "INIT", Value::Null).unwrap();
+    assert_eq!(host_asks(&wire), vec!["kv/get".to_string()], "{}", serde_json::to_value(&wire.response).unwrap());
 }

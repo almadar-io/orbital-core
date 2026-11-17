@@ -355,14 +355,6 @@ impl EmbeddedKernel {
         })
     }
 
-    /// Whether the program's grants for `orbital` (the app level alone when none is named) cover `requirement_json`
-    /// (an `OsRequirement`): the check a browser host makes before it answers a `kv/` host ask, as the native host does.
-    pub fn os_allows_json(&self, requirement_json: &str, orbital: Option<&str>) -> Result<bool, String> {
-        let need: orbital_core_base::os_grants::OsRequirement =
-            orbital_core_base::json_value::parse_deep_json(requirement_json, "requirement_json")?;
-        Ok(self.kernel.os_grant_table().for_orbital(orbital).allows(&need))
-    }
-
     /// Dispatch one event through the cross-trait cascade.
     pub fn dispatch(
         &self,
