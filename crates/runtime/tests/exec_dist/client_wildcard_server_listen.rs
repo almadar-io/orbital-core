@@ -380,3 +380,39 @@ fn a_fold_hands_back_the_ask_a_client_listener_of_a_host_answer_emits_itself() {
 fn control_a_client_listener_of_a_host_answer_that_emits_nothing_off_client_hands_back_nothing() {
     assert!(direct_fold_legs(false).is_empty(), "{:?}", direct_fold_legs(false));
 }
+
+/// EXEC-DIST-2b: only the host knows the viewer. A step of a trait the browser does not own outright (not `[client]`)
+/// whose guard reads `@user` is the host's to decide, so the browser posts it even when its effects are browser work
+/// (a signed-in redirect: `INIT` when signed in → `navigate`). `guarded` adds the `@user` guard.
+fn viewer_guard_legs(guarded: bool) -> Vec<(String, Option<String>)> {
+    let init = if guarded {
+        json!([{ "from": "idle", "to": "idle", "event": "INIT", "guard": ["!=", "@user.role", "anonymous"], "effects": [["navigate", "/home"]] },
+               { "from": "idle", "to": "idle", "event": "INIT", "guard": ["=", "@user.role", "anonymous"] }])
+    } else {
+        json!([{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["navigate", "/home"]] }])
+    };
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Landing",
+            "entity": { "name": "View", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "SignedIn", "linkedEntity": "View",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": init } }],
+            "pages": [{ "name": "Landing", "path": "/", "traits": [{ "ref": "SignedIn" }] },
+                      { "name": "Home", "path": "/home", "traits": [] }] }]
+    }))
+    .unwrap();
+    let k = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
+    let wire = k.dispatch("SignedIn", None, "INIT", Value::Null).unwrap();
+    wire.server_legs.iter().map(|r| (r.leg.event.clone(), r.leg.target_trait.clone())).collect()
+}
+
+#[test]
+fn a_browser_posts_a_step_whose_guard_reads_the_viewer() {
+    let legs = viewer_guard_legs(true);
+    assert!(legs.contains(&("INIT".to_string(), Some("SignedIn".to_string()))), "{legs:?}");
+}
+
+#[test]
+fn control_a_step_that_reads_no_viewer_and_does_only_browser_work_posts_nothing() {
+    assert!(viewer_guard_legs(false).is_empty(), "{:?}", viewer_guard_legs(false));
+}

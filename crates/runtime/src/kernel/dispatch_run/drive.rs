@@ -242,12 +242,47 @@ impl RuntimeKernel {
         }
     }
 
+    /// EXEC-CONC-1a: a mount's seeds on two or more traits (and no `$MOUNT` deliveries before them) become one run per
+    /// trait, in seed order; a tick plan keeps the run whole.
+    fn start_seed_children(&self, c: &mut DispatchContinuation) {
+        let run = &mut c.run;
+        if run.seed.is_some() || run.provisional.is_some() || run.preamble.is_some() || run.plans.len() < 2 {
+            return;
+        }
+        if run.plans.iter().any(|plan| plan.tick.is_some()) {
+            return;
+        }
+        let mut traits: Vec<&str> = run.plans.iter().map(|plan| plan.trait_name.as_str()).collect();
+        traits.sort_unstable();
+        traits.dedup();
+        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, traits = traits.len(), seeds = run.plans.len(), "seed children");
+        if traits.len() < 2 {
+            return;
+        }
+        let mut groups: Vec<(String, Vec<SeedPlan>)> = Vec::new();
+        for plan in std::mem::take(&mut run.plans) {
+            match groups.iter_mut().find(|(t, _)| *t == plan.trait_name) {
+                Some((_, plans)) => plans.push(plan),
+                None => groups.push((plan.trait_name.clone(), vec![plan])),
+            }
+        }
+        let locale = run.locale.clone();
+        for (_, plans) in groups {
+            let mut child_run = self.run_of(plans);
+            child_run.locale = locale.clone();
+            c.children.push_back(Self::continuation_of(child_run));
+        }
+    }
+
     /// EXEC-CONC-1a: once a viewer run has only its program deliveries left, the deliveries to two or more distinct keyed
     /// rows each become a run of their own, grouped by row in delivery order. Each is driven until its first wait, so
     /// their store reads are in flight together, and they finish in that order before the rest steps. A row key that
     /// cannot be resolved here leaves the deliveries in the one run.
     fn start_keyed_children(&self, c: &mut DispatchContinuation) -> Result<(), DispatchError> {
         self.start_mount_children(c);
+        if c.children.is_empty() {
+            self.start_seed_children(c);
+        }
         if !c.children.is_empty() {
             return Ok(());
         }

@@ -136,7 +136,7 @@ impl RuntimeKernel {
             outcomes,
             response,
         } = seed;
-        let (drained, delegating_traits) = self.drain_server_leg_collector();
+        let (drained, mut delegating_traits) = self.drain_server_leg_collector();
         let (residence, mixed) = self.leg_residence(&drained);
         let mut response = response;
         if mixed {
@@ -146,6 +146,11 @@ impl RuntimeKernel {
             ));
         }
         let hybrid = matches!(mode, DispatchMode::HybridClientOnly);
+        // EXEC-DIST-2b: only the host knows the viewer, so a step it does not leave to the browser that guards on `@user` is its to decide.
+        let viewer_decided = !hybrid && self.effect_executor.environment().is_client() && self.guards_read_viewer(trait_name, event);
+        if viewer_decided {
+            delegating_traits.insert(trait_name.to_string());
+        }
         // A local seed never needs the server for its OWN effects, but the
         // traits its cascade reached (a persistor, a refetching list) may.
         let downstream_needs_server = delegating_traits.iter().any(|t| t != trait_name);
@@ -166,7 +171,7 @@ impl RuntimeKernel {
         };
         let mut server_legs = if mixed {
             Vec::new()
-        } else if self.effect_executor.environment().is_client() && !drained.is_empty() {
+        } else if self.effect_executor.environment().is_client() && (!drained.is_empty() || viewer_decided) {
             let only_emits = drained.iter().all(|e| matches!(e, Effect::Emit { .. }));
             if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) && !only_emits {
                 // A `local` trait's OWN effects should be client-only by construction;
@@ -593,6 +598,15 @@ impl RuntimeKernel {
     /// (`KernelConfig.delegate`) and take everything it collected since the
     /// last drain. Empty when no delegate is configured (e.g. a Server-env
     /// kernel, or a Client-env kernel under test with no delegate wired).
+    /// Whether an arm of `trait_name` for `event` guards on the viewer (`@user`).
+    fn guards_read_viewer(&self, trait_name: &str, event: &str) -> bool {
+        self.registry.trait_definitions.read().get(trait_name).is_some_and(|def| {
+            def.state_machine.transitions.iter().any(|t| {
+                t.event == event && t.guard.as_ref().is_some_and(|g| g.any_string(|s| s == "@user" || s.starts_with("@user.")))
+            })
+        })
+    }
+
     pub(super) fn drain_server_leg_collector(&self) -> (Vec<Effect>, BTreeSet<String>) {
         self.server_leg_collector()
             .map(ServerLegCollector::drain_attributed)

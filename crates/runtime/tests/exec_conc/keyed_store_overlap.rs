@@ -122,6 +122,15 @@ fn go(keyed: bool) -> Run {
 }
 
 fn go_reading(keyed: bool, twice: bool) -> Run {
+    go_with(program_reading(keyed, twice), |kernel| {
+        kernel.start_dispatch("Desk", None, "GO", Value::Null, None, None).unwrap()
+    })
+}
+
+fn go_with(
+    schema: OrbitalSchema,
+    start: impl FnOnce(&RuntimeKernel) -> orbital_core_runtime::resumable::Progress<DispatchOutcomes> + Send + 'static,
+) -> Run {
     let gate = Arc::new(Gate::default());
     let config = orbital_core_runtime::config::KernelConfig {
         substrate_handler: Some(Arc::new(orbital_core_runtime::resumable::HostAnswered)
@@ -134,9 +143,7 @@ fn go_reading(keyed: bool, twice: bool) -> Run {
         store.clone(),
         config,
     ));
-    kernel
-        .register_schema(program_reading(keyed, twice))
-        .unwrap();
+    kernel.register_schema(schema).unwrap();
     let handles = Arc::new(orbital_core_runtime::os_host::OsHandles::default());
     let native = Arc::new(
         orbital_core_runtime::native_host::NativeHost::new(
@@ -184,9 +191,7 @@ fn go_reading(keyed: bool, twice: bool) -> Run {
     let (tx, done) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _viewer = kernel.enter_session("tab-a");
-        let progress = kernel
-            .start_dispatch("Desk", None, "GO", Value::Null, None, None)
-            .unwrap();
+        let progress = start(&kernel);
         if let Ok(outcomes) = sink.drive(progress) {
             let _ = tx.send(outcomes);
         }
@@ -292,4 +297,62 @@ fn two_keyed_rows_second_reads_are_in_flight_together_too() {
         .filter(|(t, r)| t == "Worker" && r.executed && r.event.as_deref() == Some("GOT2"))
         .count();
     assert_eq!(twice, 2, "each row answered its second read");
+}
+
+/// A route mount of two traits whose INITs each read a store-bound row: `Reader` and `Other` on one page.
+fn mount_program() -> OrbitalSchema {
+    let route = json!({ "success": "DRV_GOT", "failure": "DRV_FAILED" });
+    let reader = |name: &str, id: &str| json!({ "name": name, "linkedEntity": "Job",
+        "stateMachine": { "states": [{ "name": "reading", "isInitial": true }, { "name": "idle" }], "transitions": [
+            { "from": "reading", "to": "reading", "event": "INIT", "effects": [["fetch", "Ticket", { "id": id, "emit": { "success": "GOT", "failure": "MISSED" } }]] },
+            { "from": "reading", "to": "idle", "event": "GOT" },
+            { "from": "reading", "to": "idle", "event": "MISSED" }] } });
+    from_json_value(&json!({ "name": "mounted", "typeContractVersion": 1, "orbitals": [
+        { "name": "Tickets",
+          "entity": { "name": "Ticket", "persistence": "persistent", "store": "Rows",
+              "fields": [{ "name": "id", "type": "string" }, { "name": "used", "type": "boolean" }] },
+          "traits": [], "pages": [] },
+        { "name": "Work",
+          "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+          "traits": [reader("Reader", "t1"), reader("Other", "t2")],
+          "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Reader" }, { "ref": "Other" }] }] },
+        { "name": "Rows",
+          "entity": { "name": "Mirror", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+          "traits": [{ "name": "RowsDriver", "linkedEntity": "Mirror",
+              "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                  "events": [{ "key": "ROW_READ", "name": "ROW_READ" }, { "key": "HOLD", "name": "HOLD", "input": true }],
+                  "transitions": [
+                      { "from": "ready", "to": "ready", "event": "ROW_READ",
+                        "effects": [["program/dispatch", "Rows.RowsDriver.HOLD", {}, { "key": "@payload.key", "emit": route }]] },
+                      { "from": "ready", "to": "ready", "event": "DRV_GOT",
+                        "effects": [["emit", "ROW_FOUND", { "key": "@payload.key", "row": { "id": "t1", "used": false } }]] },
+                      { "from": "ready", "to": "ready", "event": "DRV_FAILED",
+                        "effects": [["emit", "ROW_FOUND", { "key": "@payload.key" }]] }] } }],
+          "pages": [{ "name": "Rows", "path": "", "protocol": "boot", "traits": [{ "ref": "RowsDriver" }] }] }
+    ] }))
+    .unwrap()
+}
+
+fn mount_seeds(traits: &[&str]) -> Vec<orbital_core_runtime::effects::response::MountSeed> {
+    traits.iter().map(|t| from_json_value(&json!({ "trait": t, "event": "INIT" })).unwrap()).collect()
+}
+
+#[test]
+fn a_mounts_seeds_on_two_traits_read_the_store_together() {
+    let run = go_with(mount_program(), |kernel| kernel.start_dispatch_mount(&mount_seeds(&["Reader", "Other"]), None, Value::Null).unwrap());
+    let together = run.gate.entered_within(2, SETTLE);
+    run.gate.release();
+    assert_eq!(together, 2, "the second seed's read waited for the first seed's");
+    let outcomes = run.done.recv_timeout(SETTLE).expect("the mount ran to its end");
+    let got: Vec<&str> = outcomes.iter().filter(|(_, r)| r.executed && r.event.as_deref() == Some("GOT")).map(|(t, _)| t.as_str()).collect();
+    assert_eq!(got.len(), 2, "each seed's fetch answered on its own route: {got:?}");
+}
+
+#[test]
+fn control_a_mount_of_one_trait_reads_once() {
+    let run = go_with(mount_program(), |kernel| kernel.start_dispatch_mount(&mount_seeds(&["Reader"]), None, Value::Null).unwrap());
+    let entered = run.gate.entered_within(2, Duration::from_millis(500));
+    run.gate.release();
+    assert_eq!(entered, 1);
+    run.done.recv_timeout(SETTLE).expect("the mount ran to its end");
 }
