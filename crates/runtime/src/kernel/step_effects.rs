@@ -406,6 +406,12 @@ impl RuntimeKernel {
             Effect::CallService { emit, .. } => {
                 self.exec_call_service(&effect, emit, ctx, effect_results)
             }
+            // A browser kernel's `kv/` store is its host's (IndexedDB), asked as a host-ask; a server kernel's is the native kv answerer.
+            Effect::Os { op: orbital_core_base::os::OsOp::KvGet | orbital_core_base::os::OsOp::KvPut | orbital_core_base::os::OsOp::KvDelete | orbital_core_base::os::OsOp::KvScan | orbital_core_base::os::OsOp::KvBatch, .. }
+                if self.effect_executor.environment().is_client() =>
+            {
+                effect_results.push(EffectResult::host_asked(effect.clone()));
+            }
             Effect::Os { emit, .. } => self.exec_call(
                 &effect,
                 emit.as_ref(),

@@ -256,7 +256,7 @@ fn program_host_effects_are_the_installed_tables_host_program_operators() {
 #[test]
 fn os_host_effects_are_the_installed_tables_host_os_operators() {
     let from_os: std::collections::BTreeSet<&str> = os_host_effects().collect();
-    for op in ["os/read-file", "os/spawn", "os/wait", "os/kill", "mem/alloc"] {
+    for op in ["os/read-file", "os/spawn", "os/wait", "os/kill", "mem/alloc", "kv/get", "kv/put", "kv/scan", "kv/batch"] {
         assert!(from_os.contains(op), "{op} in {from_os:?}");
     }
     for op in ["os/path-join", "persist", "no/such"] {

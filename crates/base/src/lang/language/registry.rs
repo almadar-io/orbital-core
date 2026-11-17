@@ -723,12 +723,13 @@ pub fn substrate_host_effects() -> impl Iterator<Item = &'static str> {
         .map(|(name, _)| name.as_str())
 }
 
-/// Every effect of the `os/*` floor the installed operator table declares: those the OS host answers (`host: "os"`)
-/// and those the kernel answers itself (`host: "kernel"`, EXEC-METAL-1); both take the same call envelope.
+/// Every effect of the `os/*` floor the installed operator table declares: those the OS host answers (`host: "os"`),
+/// the `kv/*` family it routes to its kv answerer (`host: "kv"`), and those the kernel answers itself (`host: "kernel"`,
+/// EXEC-METAL-1); all take the same call envelope.
 pub fn os_host_effects() -> impl Iterator<Item = &'static str> {
     operators()
         .iter()
-        .filter(|(_, op)| matches!(op.host.as_deref(), Some("os" | "kernel")))
+        .filter(|(_, op)| matches!(op.host.as_deref(), Some("os" | "kv" | "kernel")))
         .map(|(name, _)| name.as_str())
 }
 

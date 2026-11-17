@@ -80,8 +80,9 @@ impl HostAskCompletion {
     /// The completion a host-asked `effect` declares on `trait_name`'s `entity_id` row frame: its resolved `key` and its
     /// `emit` routes. `None` when it declares neither.
     pub fn of(effect: &Effect, trait_name: &str, entity_id: Option<&str>) -> Option<Self> {
-        let Effect::Custom { key, emit, .. } = effect else {
-            return None;
+        let (key, emit) = match effect {
+            Effect::Custom { key, emit, .. } | Effect::Os { key, emit, .. } => (key, emit),
+            _ => return None,
         };
         let key = key.as_ref().and_then(Value::as_str).map(str::to_string);
         let success = emit.as_ref().and_then(|e| e.success.clone());
@@ -152,6 +153,11 @@ impl ClientEffect {
         match (&result.outcome, &result.effect) {
             (EffectOutcome::HostAsked, Effect::Custom { name, args, .. }) => Some(ClientEffect::HostAsk {
                 op: name.clone(),
+                args: args.clone(),
+                completion: site.and_then(|(trait_name, entity)| HostAskCompletion::of(&result.effect, trait_name, entity)),
+            }),
+            (EffectOutcome::HostAsked, Effect::Os { op, args, .. }) => Some(ClientEffect::HostAsk {
+                op: op.name().to_string(),
                 args: args.clone(),
                 completion: site.and_then(|(trait_name, entity)| HostAskCompletion::of(&result.effect, trait_name, entity)),
             }),
