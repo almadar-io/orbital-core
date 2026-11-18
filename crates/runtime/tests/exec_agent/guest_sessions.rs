@@ -1643,3 +1643,29 @@ fn edge_a_local_guests_env_needs_the_openers_env_grant_for_each_name() {
     let after = entity(&kernel);
     assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("ORB_T_EMULATOR")), "{after}");
 }
+
+#[test]
+fn a_browser_opener_whose_orbital_has_its_own_grants_still_holds_the_app_level_guest_grant() {
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "Opener", "typeContractVersion": 1,
+        "osGrants": { "kernel": [{ "target": "guest", "kinds": ["spawn"] }], "env": ["ORB_T_EMULATOR"] },
+        "orbitals": [{
+            "name": "Main", "osGrants": { "env": ["ORB_T_OWN"] },
+            "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Opener", "linkedEntity": "Run", "dispatch": "client",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "GO", "effects": [["program/open", "@payload.program", { "local": true, "env": { "ORB_T_EMULATOR": "127.0.0.1:9099" } }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]] },
+                    { "from": "idle", "to": "idle", "event": "OPENED", "effects": [["set", "@entity.guest", "@payload.result.guest"]] },
+                    { "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.refused", "@payload"]] }
+                ] }
+            }]
+        }]
+    }))
+    .unwrap();
+    let kernel = crate::support::TestKernel::client().register(schema);
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": env_reading_guest() })).unwrap()).unwrap();
+    let after = entity(&kernel);
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+    assert!(after["guest"].as_str().is_some_and(|g| !g.is_empty()), "{after}");
+}

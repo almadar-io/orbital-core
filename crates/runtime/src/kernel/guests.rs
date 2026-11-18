@@ -555,7 +555,7 @@ impl RuntimeKernel {
         if !held.kernel_allows(KernelKind::Spawn, None) {
             return Err(guest_refusal(
                 orbital_core_base::os::OsErrorKind::Denied,
-                format!("{op}: no kernel guest grant covers it"),
+                format!("{op}: no kernel guest grant covers it (asked from orbital {}, trait {})", asker.as_deref().unwrap_or("none"), self.caller_position().1),
             ));
         }
         Ok(held)
