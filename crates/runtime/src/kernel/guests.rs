@@ -203,7 +203,7 @@ pub(crate) fn run_session(
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
     let orbitals = painter_orbitals(&session.kernel, &outcomes);
-    Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
+    Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -324,6 +324,7 @@ fn painter_orbitals(kernel: &RuntimeKernel, outcomes: &[(String, ProcessEventRes
 /// What a guest's run answers: each trait's state, what it painted (with its trait's orbital), what it emitted and every
 /// trait it moved.
 fn guest_answer(
+    kernel: &RuntimeKernel,
     orbitals: &std::collections::HashMap<String, String>,
     guest: Option<&str>,
     page: Option<(&[String], Option<&str>)>,
@@ -335,6 +336,7 @@ fn guest_answer(
     rerenders: &[super::Rerender],
 ) -> Value {
     let mut response = EventResponse::from_process_results(outcomes, seed_trait, event);
+    kernel.stamp_emitted_sources(&mut response);
     response.fold_rerenders(rerenders);
     let record = |pairs: Vec<(&str, Value)>| {
         let mut fields = ValueMap::default();
@@ -908,6 +910,7 @@ impl RuntimeKernel {
             self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
         );
         let mounted = seeds.iter().map(|s| s.r#trait.clone()).collect();
+        let opened_kernel = guest.clone();
         let session = GuestSession {
             kernel: guest,
             source,
@@ -925,6 +928,7 @@ impl RuntimeKernel {
         self.guests.write().insert(handle.clone(), session);
         let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
         let mut answer = guest_answer(
+            &opened_kernel,
             &orbitals,
             Some(&handle),
             Some((&page, resolved.as_deref())),
@@ -1022,7 +1026,7 @@ impl RuntimeKernel {
                 Value::String(name) => Some(name.as_str()),
                 _ => None,
             };
-            return Ok(guest_answer(&std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access), &[]));
+            return Ok(guest_answer(guest, &std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access), &[]));
         }
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         let fresh: Vec<MountSeed> = {
@@ -1046,6 +1050,7 @@ impl RuntimeKernel {
             _ => None,
         };
         Ok(guest_answer(
+            guest,
             &orbitals,
             name,
             Some((&page, resolved.as_deref())),
@@ -1084,7 +1089,7 @@ impl RuntimeKernel {
         // A tick that changed a field an earlier paint reads repaints it: the guest stands in for the browser
         // (EXEC-ENDPOINT-3a), so its kernel resolves those paints (owner 2026-11-12, G-ORBITAL-CORE-148).
         let rerenders = session.kernel.rerender_stale();
-        let mut answer = guest_answer(&orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
+        let mut answer = guest_answer(&session.kernel, &orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
         if let Value::Object(fields) = &mut answer {
             fields.insert("dispatches".into(), Value::Array(dispatches.into()));
         }
@@ -1195,7 +1200,7 @@ impl RuntimeKernel {
             return Err(failure("program/dispatch: the ask was made on a row frame, which a guest's viewer cannot return to yet"));
         }
         let Some((event, payload)) = route(&ask, &outcome) else {
-            return Ok(guest_answer(&std::collections::HashMap::new(), None, None, &session.route.read().embedded.clone(), &[], "", "", None, &[]));
+            return Ok(guest_answer(&session.kernel, &std::collections::HashMap::new(), None, None, &session.route.read().embedded.clone(), &[], "", "", None, &[]));
         };
         let target = ask.completion.map(|c| c.trait_name).unwrap_or_default();
         let payload = self.copy_into(session, &payload)?;
@@ -1267,7 +1272,7 @@ impl RuntimeKernel {
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(guest, &outcomes);
-        Ok(guest_answer(&orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
+        Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
     }
 
     /// The registered traits whose current state handles `event`, in name order.

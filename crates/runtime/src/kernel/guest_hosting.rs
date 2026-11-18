@@ -80,9 +80,24 @@ pub trait GuestHost: Send + Sync {
     fn take_host_dispatches(&self) -> Vec<Value> {
         Vec::new()
     }
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    /// This guest host's live stream for the viewer `options.clientId`, as its served program's `/api/events` carries
+    /// it: what `program/live { clientId, guest }` follows (EXEC-CONC-7). A host with no stream of its own answers none.
+    fn live_source(&self, options: &orbital_core_base::value::ValueMap) -> Option<crate::native_host::SubstrateSource> {
+        let _ = options;
+        None
+    }
 }
 
 impl RuntimeKernel {
+    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+    /// The live stream of the hosted guest `handle` for the viewer `options.clientId` (`program/live { clientId, guest }`):
+    /// `None` when no guest has that handle or its host keeps no stream.
+    pub fn guest_live_source(&self, handle: &str, options: &orbital_core_base::value::ValueMap) -> Option<crate::native_host::SubstrateSource> {
+        let host = self.guests.read().get(handle).and_then(|session| session.host.clone())?;
+        host.live_source(options)
+    }
+
     /// Host the guests this kernel opens with `hosting` from now on.
     pub fn set_guest_hosting(&self, hosting: Arc<dyn GuestHosting>) {
         *self.guest_hosting.write() = Some(hosting);

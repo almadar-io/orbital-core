@@ -1669,3 +1669,83 @@ fn a_browser_opener_whose_orbital_has_its_own_grants_still_holds_the_app_level_g
     assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
     assert!(after["guest"].as_str().is_some_and(|g| !g.is_empty()), "{after}");
 }
+
+const JWS_FIXTURE: &str = include_str!("../../../../tests/fixtures/security/jws-verify.json");
+
+fn sealing_guest() -> serde_json::Value {
+    json!({
+        "name": "Gatehouse",
+        "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Gatehouse",
+            "entity": { "name": "Gate", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Bearer",
+                "linkedEntity": "Gate",
+                "emits": [
+                    { "event": "VERIFIED", "payloadSchema": [
+                        { "name": "verified", "type": "Verified", "required": true },
+                        { "name": "note", "type": "string", "required": false }] },
+                    { "event": "PLAIN_DONE", "payloadSchema": [{ "name": "note", "type": "string", "required": false }] }
+                ],
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "RELAY", "effects": [
+                            ["let", [["v", ["jws/verify", "@payload.token", "@payload.keys", { "issuer": "https://issuer.test", "audience": "app-1" }]]],
+                                ["emit", "VERIFIED", { "verified": "@v", "note": "kept" }]]
+                        ] },
+                        { "from": "idle", "to": "idle", "event": "PLAIN", "effects": [["emit", "PLAIN_DONE", { "note": "plain" }]] }
+                    ]
+                }
+            }],
+            "pages": [{ "name": "GatePage", "path": "/gate", "traits": [{ "ref": "Bearer" }] }]
+        }]
+    })
+}
+
+fn sealing_opener() -> RuntimeKernel {
+    opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", {}, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "RELAY", "effects": [
+            ["program/dispatch", "Gatehouse.Bearer.RELAY", { "token": "@payload.token", "keys": "@payload.keys" }, { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "PLAIN", "effects": [
+            ["program/dispatch", "Gatehouse.Bearer.PLAIN", {}, { "guest": "@entity.guest", "emit": emit() }]
+        ] }
+    ]))
+}
+
+fn guest_emit(answer: &serde_json::Value, event: &str) -> serde_json::Value {
+    answer["got"]["emitted"]
+        .as_array()
+        .and_then(|all| all.iter().find(|e| e["event"] == event))
+        .map(|e| e["payload"].clone())
+        .unwrap_or_else(|| panic!("{event} is in the guest's answer: {answer}"))
+}
+
+#[test]
+fn a_guest_answer_carries_a_sealed_verified_as_its_stub_and_reaches_the_success_route() {
+    let kernel = sealing_opener();
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": sealing_guest() })).unwrap()).unwrap();
+    let fixture: serde_json::Value = from_json_str(JWS_FIXTURE).unwrap();
+    let credential = json!({ "token": fixture["tokens"]["rs256_valid"].clone(), "keys": fixture["keys"].clone() });
+    kernel.dispatch("Opener", None, "RELAY", from_json_value(&credential).unwrap()).unwrap();
+    let after = entity(&kernel);
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "the answer reached the success route: {after}");
+    let payload = guest_emit(&after, "VERIFIED");
+    assert_eq!(payload["verified"], json!({ "sealed": "Verified" }), "no claims leave the guest: {payload}");
+    assert_eq!(payload["note"], json!("kept"), "control: the other field stays");
+}
+
+#[test]
+fn control_a_guest_answer_with_no_sealed_field_is_unchanged() {
+    let kernel = sealing_opener();
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": sealing_guest() })).unwrap()).unwrap();
+    kernel.dispatch("Opener", None, "PLAIN", Value::Null).unwrap();
+    let after = entity(&kernel);
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+    assert_eq!(guest_emit(&after, "PLAIN_DONE"), json!({ "note": "plain" }), "{after}");
+}
