@@ -55,6 +55,18 @@ impl EnvSnapshot {
     pub fn get(&self, name: &str) -> Option<&str> {
         self.0.get(name).map(String::as_str)
     }
+
+    /// This snapshot with each `(name, value)` set, `None` unsetting it: the environment a guest opened with `env` reads.
+    pub fn overlaid(&self, changes: &[(String, Option<String>)]) -> Self {
+        let mut vars = self.0.clone();
+        for (name, value) in changes {
+            match value {
+                Some(value) => vars.insert(name.clone(), value.clone()),
+                None => vars.remove(name),
+            };
+        }
+        Self(vars)
+    }
 }
 
 #[cfg(feature = "std")]

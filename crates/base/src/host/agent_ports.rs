@@ -398,6 +398,23 @@ fn inbound_plan(options: &ValueMap) -> Result<DispatchPlan, String> {
     Ok(DispatchPlan::Inbound { name: name.clone().into_inner(), body, headers })
 }
 
+/// The `{ inbound, body, headers }` ask a host delivers (EXEC-INBOUND-1), from a delivery `options` record: the same check
+/// `program/dispatch { inbound }` makes, with an absent body or headers given as empty.
+pub fn inbound_ask(options: &ValueMap) -> Result<ValueMap, String> {
+    match inbound_plan(options)? {
+        DispatchPlan::Inbound { name, body, headers } => Ok(inbound_ask_of(name, body, headers)),
+        _ => Err(INBOUND_SHAPE.to_string()),
+    }
+}
+
+pub fn inbound_ask_of(name: String, body: String, headers: ValueMap) -> ValueMap {
+    let mut ask = ValueMap::default();
+    ask.insert("inbound".into(), Value::string(name));
+    ask.insert("body".into(), Value::string(body));
+    ask.insert("headers".into(), Value::object(headers));
+    ask
+}
+
 enum Arguments {
     Payload(Value),
     Refused,

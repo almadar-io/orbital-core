@@ -1571,3 +1571,75 @@ fn control_a_local_guest_that_asks_for_grants_is_refused_naming_them() {
     let after = run(&kernel, "GO");
     assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("local") && e.contains("grants")), "{after}");
 }
+
+/// A guest whose READ answers what `os/getenv` returned for ORB_T_EMULATOR and ORB_T_OTHER.
+fn env_reading_guest() -> serde_json::Value {
+    json!({
+        "name": "Envy", "typeContractVersion": 1, "osGrants": { "env": ["ORB_T_EMULATOR", "ORB_T_OTHER"] },
+        "orbitals": [{ "name": "Envy",
+            "entity": { "name": "Seen", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Reader", "linkedEntity": "Seen",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "READ", "effects": [["os/getenv", "@payload.name", { "emit": { "success": "GOT", "failure": "MISSED" } }]] },
+                        { "from": "idle", "to": "idle", "event": "GOT", "effects": [["render-ui", "main", { "type": "typography", "content": ["str/concat", "value:", ["default", "@payload.value", "unset"]] }]] },
+                        { "from": "idle", "to": "idle", "event": "MISSED", "effects": [["render-ui", "main", { "type": "typography", "content": ["str/concat", "refused:", "@payload.error"] }]] }
+                    ] } }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Reader" }] }] }]
+    })
+}
+
+/// An opener holding `kernel: { guest: [spawn] }` and the env grant `held`, opening the env guest locally with `env`.
+fn local_env_opener(held: serde_json::Value, env: serde_json::Value) -> RuntimeKernel {
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "Opener", "typeContractVersion": 1,
+        "osGrants": { "kernel": [{ "target": "guest", "kinds": ["spawn"] }], "env": held },
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Run", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Opener", "linkedEntity": "Run",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "GO", "effects": [["program/open", "@payload.program", { "local": true, "env": env }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]] },
+                    { "from": "idle", "to": "idle", "event": "OPENED", "effects": [["set", "@entity.guest", "@payload.result.guest"]] },
+                    { "from": "idle", "to": "idle", "event": "READ", "effects": [["program/dispatch", "Envy.Reader.READ", { "name": "@payload.name" }, { "guest": "@entity.guest", "local": true, "emit": emit() }]] },
+                    { "from": "idle", "to": "idle", "event": "ANSWERED", "effects": [["set", "@entity.got", "@payload.result"]] },
+                    { "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.refused", "@payload"]] }
+                ] }
+            }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default());
+    kernel.register_schema(schema).unwrap();
+    kernel.dispatch("Opener", None, "GO", from_json_value(&json!({ "program": env_reading_guest() })).unwrap()).unwrap();
+    kernel
+}
+
+fn local_env_read(kernel: &RuntimeKernel, name: &str) -> serde_json::Value {
+    kernel.dispatch("Opener", None, "READ", from_json_value(&json!({ "name": name })).unwrap()).unwrap();
+    entity(kernel)
+}
+
+#[test]
+fn a_local_guest_opened_with_env_reads_it_through_os_getenv() {
+    let kernel = local_env_opener(json!(["ORB_T_EMULATOR"]), json!({ "ORB_T_EMULATOR": "127.0.0.1:9099" }));
+    let after = local_env_read(&kernel, "ORB_T_EMULATOR");
+    assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
+    assert!(painted(&after["got"]).contains(&"value:127.0.0.1:9099".to_string()), "{after}");
+}
+
+#[test]
+fn control_a_name_a_local_guest_was_not_given_reads_unset() {
+    let kernel = local_env_opener(json!(["ORB_T_EMULATOR"]), json!({ "ORB_T_EMULATOR": "127.0.0.1:9099" }));
+    let after = local_env_read(&kernel, "ORB_T_OTHER");
+    assert!(painted(&after["got"]).contains(&"value:unset".to_string()), "{after}");
+}
+
+#[test]
+fn edge_a_local_guests_env_needs_the_openers_env_grant_for_each_name() {
+    let kernel = local_env_opener(json!([]), json!({ "ORB_T_EMULATOR": "127.0.0.1:9099" }));
+    let after = entity(&kernel);
+    assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("ORB_T_EMULATOR")), "{after}");
+}

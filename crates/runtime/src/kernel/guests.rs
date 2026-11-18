@@ -254,9 +254,46 @@ fn seed_guest_rows(guest: &RuntimeKernel, rows: &Value, op: &str) -> Result<(), 
     Ok(())
 }
 
+/// A local guest's environment (EXEC-CONC-7): it runs with no host and no OS, so `os/getenv` reads the `env` it was opened
+/// with (a name it was not given is unset) and `os/environ` lists those names; every other `os/` ask stays unanswered.
+struct LocalGuestEnv(std::collections::BTreeMap<String, String>);
+
+impl LocalGuestEnv {
+    fn of(env: &[(String, Option<String>)]) -> Self {
+        Self(env.iter().filter_map(|(name, value)| Some((name.clone(), value.clone()?))).collect())
+    }
+}
+
+impl crate::resumable::DirectOs for LocalGuestEnv {
+    fn ask(&self, request: crate::resumable::IoRequest, _site: Option<crate::resumable::CallSite>) -> Option<crate::resumable::IoAnswer> {
+        use orbital_core_base::os::OsOp;
+        let crate::resumable::IoRequest::Os { op, args, .. } = request else { return None };
+        let mut fields = ValueMap::default();
+        match op {
+            OsOp::Getenv => {
+                let name = args.first().and_then(Value::as_str)?;
+                if let Some(value) = self.0.get(name) {
+                    fields.insert("value".into(), Value::string(value.clone()));
+                }
+            }
+            OsOp::Environ => {
+                fields.insert("names".into(), Value::array(self.0.keys().cloned().map(Value::string).collect::<Vec<_>>()));
+            }
+            _ => return None,
+        }
+        Some(crate::resumable::IoAnswer::Os(Ok(Value::object(fields).into())))
+    }
+}
+
 /// A split guest's server leg, answered by its host as a served events request (EXEC-CONC-7). Only a split guest takes
 /// one: its viewer's kernel runs its `[client]` traits, so the host answers it as a served program's server.
+/// A leg carrying `inbound` is a hook delivery, which any hosted guest takes (EXEC-INBOUND-1).
 fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Value, AgentPortFailure> {
+    if let (Value::Object(ask), Some(host)) = (leg, &session.host) {
+        if ask.contains_key("inbound") {
+            return host.inbound(ask).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
+        }
+    }
     let (Some(host), true) = (&session.host, session.split) else {
         return Err(guest_refusal(
             orbital_core_base::os::OsErrorKind::Invalid,
@@ -605,7 +642,7 @@ impl RuntimeKernel {
             }
         };
         if local {
-            let held = ["grants", "arenas", "declared", "split", "program", "cwd", "env"]
+            let held = ["grants", "arenas", "declared", "split", "program", "cwd"]
                 .into_iter()
                 .filter(|name| options.as_ref().is_some_and(|o| o.get(*name).is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)))))
                 .collect::<Vec<_>>();
@@ -698,6 +735,9 @@ impl RuntimeKernel {
             }
             granted = Some(guest);
             opener_held = Some(held);
+        }
+        if local && !env.is_empty() {
+            opener_held = Some(self.may_spawn_guest("program/open")?);
         }
         let mut handed = Vec::new();
         match &asked_arenas {
@@ -802,6 +842,9 @@ impl RuntimeKernel {
                     },
                 );
                 guest.set_cost_meter(self.cost_meter());
+                if local && !env.is_empty() {
+                    guest.set_direct_os(Some(Arc::new(LocalGuestEnv::of(&env))));
+                }
                 (Arc::new(guest), Some(source))
             }
         };
@@ -1091,6 +1134,10 @@ impl RuntimeKernel {
         if let Some(Value::Object(form)) = args.first() {
             if form.contains_key("ask") {
                 return self.answer_guest_ask(&session, handle, form, args);
+            }
+            if form.contains_key("inbound") {
+                let ask = orbital_core_base::agent_ports::inbound_ask(form).map_err(failure)?;
+                return self.run_in_guest(&session, handle, Vec::new(), "", Value::Null, Some(Value::object(ask)), args);
             }
         }
         let Some(Value::String(address)) = args.first() else {

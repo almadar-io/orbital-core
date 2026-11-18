@@ -62,6 +62,15 @@ pub trait GuestHost: Send + Sync {
     /// A split guest's server leg: `payload` with the request `options` a viewer kernel posts, answered as this host
     /// answers a served program's events request (the `EventResponse` wire for `wire: true`).
     fn request(&self, payload: &Value, options: &orbital_core_base::value::ValueMap) -> Result<Value, crate::effects::executor::SubstrateFailure>;
+    /// One inbound delivery `{ inbound, body, headers }` to this guest, answered as this host answers its own
+    /// `/api/hooks/<name>`: the handler's `{ status, body }` (EXEC-INBOUND-1).
+    fn inbound(&self, ask: &orbital_core_base::value::ValueMap) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+        let _ = ask;
+        Err(crate::agent_ports::guest_failure(
+            orbital_core_base::os::OsErrorKind::Unsupported,
+            "program/dispatch: this guest's host delivers no inbound hook",
+        ))
+    }
     /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
     /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
     fn tick_pass(&self) -> Result<DispatchOutcomes, String>;

@@ -386,11 +386,7 @@ impl RuntimeKernel {
                 ]
             }
             DispatchPlan::Inbound { name, body, headers } => {
-                let mut ask = ValueMap::default();
-                ask.insert("inbound".into(), Value::string(name));
-                ask.insert("body".into(), Value::string(body));
-                ask.insert("headers".into(), Value::object(headers));
-                vec![Value::object(ask)]
+                vec![Value::object(orbital_core_base::agent_ports::inbound_ask_of(name, body, headers))]
             }
         };
         match self
