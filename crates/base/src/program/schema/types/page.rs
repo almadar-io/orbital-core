@@ -28,6 +28,11 @@ pub struct PageDefinition {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub address: Option<SExpression>,
 
+    /// Each `@config.<knob>` the address read before resolution folded it to a value: the address publishes those knobs,
+    /// as a trait config field's `forwardedFrom` does (ORB_O_CONFIG_DEAD_KNOB).
+    #[serde(rename = "addressForwardedFrom", default, skip_serializing_if = "Vec::is_empty")]
+    pub address_forwarded_from: Vec<String>,
+
     /// View type
     #[serde(rename = "viewType", skip_serializing_if = "Option::is_none")]
     pub view_type: Option<String>,

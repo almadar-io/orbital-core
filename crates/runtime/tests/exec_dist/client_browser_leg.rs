@@ -215,3 +215,34 @@ fn a_browser_batch_beside_a_server_write_is_refused_as_mixed() {
     assert!(d.server_legs.is_empty());
     assert!(d.response.error.as_deref().is_some_and(|e| e.starts_with("residence:")));
 }
+
+fn mock_guest_program() -> serde_json::Value {
+    json!({
+        "name": "Diary", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Diary",
+            "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "NoteView", "linkedEntity": "Note",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "typography", "content": "hi" }]] }] } }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NoteView" }] }] }]
+    })
+}
+
+fn open_result(d: &orbital_core_runtime::kernel::ClientDispatch) -> String {
+    format!("{:?}", d.outcomes.iter().flat_map(|(_, r)| r.effect_results.iter()).find(|r| matches!(&r.effect, orbital_core_base::effect_types::Effect::Custom { name, .. } if name == "program/open")).map(|r| (&r.outcome, &r.return_value, &r.error)))
+}
+
+#[test]
+fn a_browser_opens_a_local_mock_guest_itself_and_posts_no_leg() {
+    let d = init(&kernel(json!([["program/open", ["quote", mock_guest_program().to_string()], { "local": true }]]), true));
+    let opened = open_result(&d);
+    assert!(!opened.contains("Delegated") && opened.contains("guest-"), "the guest opened in the browser kernel: {opened}");
+    assert!(d.server_legs.is_empty());
+}
+
+#[test]
+fn control_a_browser_leaves_a_guest_without_local_to_the_host() {
+    let d = init(&kernel(json!([["program/open", ["quote", mock_guest_program().to_string()], {}]]), true));
+    let opened = open_result(&d);
+    assert!(opened.contains("Delegated(Server)"), "a server-site open is the host's: {opened}");
+}

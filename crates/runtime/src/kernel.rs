@@ -519,6 +519,8 @@ pub struct RuntimeKernel {
     guest_seq: std::sync::atomic::AtomicU64,
     /// The host each guest this kernel opens runs under, when the kernel's own host offers one (EXEC-CONC-7).
     guest_hosting: RwLock<Option<Arc<dyn guest_hosting::GuestHosting>>>,
+    /// What the host runs once a guest's open or close has freed memory, to give the freed pages back (EXEC-CONC-7).
+    memory_settler: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Each mounted trait's last `render-ui`, kept to repaint it when the entity it reads changes.
     renders: Arc<RwLock<RenderStore>>,
     /// The fetch/persist handler over the entity source: where a row-set reference is resolved and the
@@ -881,6 +883,7 @@ impl RuntimeKernel {
             guests,
             guest_seq: std::sync::atomic::AtomicU64::new(0),
             guest_hosting: RwLock::new(None),
+            memory_settler: RwLock::new(None),
             renders: Arc::new(RwLock::new(RenderStore::default())),
         }
     }

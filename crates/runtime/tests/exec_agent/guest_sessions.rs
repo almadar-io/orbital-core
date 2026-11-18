@@ -1514,3 +1514,60 @@ fn the_stats_read_answers_the_bytes_each_table_holds() {
         assert!(held[table].as_f64().is_some(), "{table}: {after}");
     }
 }
+
+fn settled_opener() -> (RuntimeKernel, Arc<std::sync::atomic::AtomicUsize>) {
+    let kernel = opener(json!([
+        open_transition(),
+        { "from": "idle", "to": "idle", "event": "CLOSE", "effects": [
+            ["program/close", "@entity.guest", { "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "CLOSE_STRAY", "effects": [
+            ["program/close", "no-such-guest", { "emit": emit() }]
+        ] }
+    ]));
+    let settled = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = Arc::clone(&settled);
+    kernel.set_memory_settler(Arc::new(move || {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    (kernel, settled)
+}
+
+#[test]
+fn a_guests_open_and_its_close_each_hand_the_host_its_freed_memory() {
+    let (kernel, settled) = settled_opener();
+    run(&kernel, "GO");
+    assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 1, "the open settles once its transient forms are dropped");
+    run(&kernel, "CLOSE");
+    assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 2, "the close settles once the guest's kernel is dropped");
+}
+
+#[test]
+fn control_closing_an_unknown_guest_is_refused_and_settles_nothing() {
+    let (kernel, settled) = settled_opener();
+    let refused = run(&kernel, "CLOSE_STRAY");
+    assert!(refused["refused"]["error"].as_str().is_some_and(|e| e.contains("guest")), "{refused}");
+    assert_eq!(settled.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+fn local_opener(options: serde_json::Value) -> RuntimeKernel {
+    opener(json!([
+        { "from": "idle", "to": "idle", "event": "GO", "effects": [
+            ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+        ] }
+    ]))
+}
+
+#[test]
+fn a_local_guest_opens_in_this_kernel_and_answers_its_page() {
+    let kernel = local_opener(json!({ "local": true }));
+    let after = run(&kernel, "GO");
+    assert!(after["guest"].as_str().is_some_and(|g| g.starts_with("guest-")), "{after}");
+}
+
+#[test]
+fn control_a_local_guest_that_asks_for_grants_is_refused_naming_them() {
+    let kernel = local_opener(json!({ "local": true, "grants": { "env": ["PATH"] } }));
+    let after = run(&kernel, "GO");
+    assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("local") && e.contains("grants")), "{after}");
+}

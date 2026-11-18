@@ -82,4 +82,17 @@ impl RuntimeKernel {
     pub(super) fn guest_hosting(&self) -> Option<Arc<dyn GuestHosting>> {
         self.guest_hosting.read().clone()
     }
+
+    /// Run `settle` after each guest open and close: the open builds the program in transient forms and the close drops a
+    /// whole kernel, and a host whose allocator keeps freed pages gives them back here.
+    pub fn set_memory_settler(&self, settle: Arc<dyn Fn() + Send + Sync>) {
+        *self.memory_settler.write() = Some(settle);
+    }
+
+    pub(super) fn settle_memory(&self) {
+        let settle = self.memory_settler.read().clone();
+        if let Some(settle) = settle {
+            settle();
+        }
+    }
 }

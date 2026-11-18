@@ -584,7 +584,7 @@ impl KernelCompletionSink {
         self.requesters
             .lock()
             .iter()
-            .any(|(key, (requester, _, _))| requester.session.as_deref() == Some(session) && live.contains(key))
+            .any(|(key, (requester, _, _))| holds_session(requester, session) && live.contains(key))
     }
 
     /// The requester of `key`: taken for a finite ask, with its lineage ticket, kept for a stream's later items.
@@ -663,6 +663,12 @@ impl OsCompletionSink for KernelCompletionSink {
     }
 }
 
+/// Whether an open ask of `requester` keeps `session` alive: one made in that session, or one a program-session step made
+/// for that session's viewer (EXEC-FIELD-3), whose completion reads that session's identity as `@user`.
+fn holds_session(requester: &Requester, session: &str) -> bool {
+    requester.session.as_deref() == Some(session) || requester.asker.as_deref() == Some(session)
+}
+
 /// A completion routed to a trait mounted only on a `boot` endpoint runs in the program session, its one instance's
 /// session, whatever session asked; the asking client still receives its result (EXEC-DIST-9).
 fn program_wide_requester(kernel: &RuntimeKernel, site: &CallSite, requester: Arc<Requester>) -> Arc<Requester> {
@@ -711,6 +717,7 @@ impl KernelCompletionSink {
         self.wait_for_owner(&kernel, key);
         let (requester, _ticket) = self.requester_of(key);
         let requester = program_wide_requester(&kernel, site, requester);
+        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, trait_name = %site.trait_name, key, session = ?requester.session, asker = ?requester.asker, "completion requester");
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         // A completion stepping in the program session for a viewer's ask reads that viewer as who asked (EXEC-FIELD-3).
@@ -746,6 +753,64 @@ mod tests {
 
     fn exited(code: f64) -> Value {
         Value::object(ValueMap::from_iter([("code".into(), Value::Number(code))]))
+    }
+
+    fn scope_of(session: Option<&str>, asker: Option<&str>) -> DispatchScope {
+        DispatchScope {
+            ended: Arc::default(),
+            owners: Arc::default(),
+            requester: Arc::new(Requester { client_id: Some("c".to_string()), session: session.map(Arc::from), lineage: None, asker: asker.map(Arc::from) }),
+            requesters: Default::default(),
+        }
+    }
+
+    // EXEC-FIELD-3: a completion stepping in the program session for a viewer's ask reads that viewer; an ask it makes
+    // in turn (the next read of a stream) keeps that viewer as who asked, so @user never falls to the anonymous viewer.
+    #[test]
+    fn an_ask_a_program_session_completion_makes_for_a_viewer_keeps_that_viewer_as_who_asked() {
+        let key = crate::resumable::host_call_key(None, "T", "row", "k");
+        let next = scope_of(None, Some("viewer-1")).requester_of_ask(&key, None);
+        assert_eq!(next.session, None);
+        assert_eq!(next.asker.as_deref(), Some("viewer-1"));
+    }
+
+    #[test]
+    fn control_a_program_session_ask_no_viewer_asked_for_has_no_asker() {
+        let key = crate::resumable::host_call_key(None, "T", "row", "k");
+        assert_eq!(scope_of(None, None).requester_of_ask(&key, None).asker, None);
+    }
+
+    #[test]
+    fn control_a_program_session_ask_made_in_a_viewer_dispatch_reads_that_viewer() {
+        let key = crate::resumable::host_call_key(None, "T", "row", "k");
+        assert_eq!(scope_of(Some("viewer-2"), None).requester_of_ask(&key, None).asker.as_deref(), Some("viewer-2"));
+    }
+
+    #[test]
+    fn control_a_viewer_session_ask_runs_in_that_session_with_no_asker() {
+        let key = crate::resumable::host_call_key(Some("viewer-3"), "T", "row", "k");
+        let next = scope_of(Some("viewer-3"), None).requester_of_ask(&key, None);
+        assert_eq!(next.session.as_deref(), Some("viewer-3"));
+        assert_eq!(next.asker, None);
+    }
+
+    fn requester(session: Option<&str>, asker: Option<&str>) -> Requester {
+        Requester { client_id: None, session: session.map(Arc::from), lineage: None, asker: asker.map(Arc::from) }
+    }
+
+    // A session whose viewer a program-session ask is still running for is not quiet: freeing it would drop the identity
+    // the ask's completion reads as @user, and the lesson or path it writes would belong to the anonymous viewer.
+    #[test]
+    fn an_ask_made_for_a_viewer_in_the_program_session_holds_that_viewers_session() {
+        assert!(holds_session(&requester(None, Some("viewer-1")), "viewer-1"));
+    }
+
+    #[test]
+    fn control_an_ask_made_in_a_session_holds_it_and_an_unrelated_one_does_not() {
+        assert!(holds_session(&requester(Some("viewer-1"), None), "viewer-1"));
+        assert!(!holds_session(&requester(Some("viewer-2"), None), "viewer-1"));
+        assert!(!holds_session(&requester(None, Some("viewer-2")), "viewer-1"));
+        assert!(!holds_session(&requester(None, None), "viewer-1"));
     }
 
     #[test]

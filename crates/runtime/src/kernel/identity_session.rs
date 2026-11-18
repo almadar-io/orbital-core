@@ -137,6 +137,7 @@ impl RuntimeKernel {
             }
             bound.get(&*self.user_key()).cloned()
         };
+        tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, asked, key = %self.user_key(), bound = binding.is_some(), sessions = self.sessions.identities.read().len(), "session user");
         match binding {
             None | Some(IdentityBinding::Anonymous) => Ok(self.sessions.anonymous.clone()),
             Some(IdentityBinding::Subject { user: Some(user), .. }) => Ok(user),

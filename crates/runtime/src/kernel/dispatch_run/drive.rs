@@ -35,6 +35,8 @@ impl RuntimeKernel {
             let asker = if seed_program { self.seed_asker() } else { None };
             let _program = (c.run.program || seed_program).then(|| self.enter_program_session());
             let _asker = (c.run.program || seed_program).then(|| self.enter_asker(asker));
+            let _held = (!(c.run.program || seed_program) && c.run.asker.is_some()).then(|| self.enter_asker(c.run.asker.clone()));
+            tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, run_asker = ?c.run.asker, program = c.run.program, seed_program, thread_asker = ?self.thread_asker(), "drive run");
             let _seam = c.run.program.then(|| self.enter_store_seam());
             let _program_step = (c.run.program || c.run.seed.as_ref().is_some_and(|seed| seed.program))
                 .then(crate::effects::executor::ProgramStepScope::enter);

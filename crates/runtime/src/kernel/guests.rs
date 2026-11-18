@@ -597,6 +597,25 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let local = match options.as_ref().and_then(|o| o.get("local")) {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(local)) => *local,
+            Some(_) => {
+                return Err(guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, "program/open: `local` is true or false"))
+            }
+        };
+        if local {
+            let held = ["grants", "arenas", "declared", "split", "program", "cwd", "env"]
+                .into_iter()
+                .filter(|name| options.as_ref().is_some_and(|o| o.get(*name).is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)))))
+                .collect::<Vec<_>>();
+            if !held.is_empty() {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    format!("program/open: a `local` guest runs in this kernel with no host, so it takes no {}", held.join(", ")),
+                ));
+            }
+        }
         let asked_grants = options.as_ref().and_then(|o| o.get("grants").cloned());
         let asked_arenas = options.as_ref().and_then(|o| o.get("arenas").cloned());
         let keep_declared = match options.as_ref().and_then(|o| o.get("declared").cloned()) {
@@ -740,7 +759,7 @@ impl RuntimeKernel {
                 return Err(failure(format!("program/open: `env` names {name}, which the opener holds no grant for")));
             }
         }
-        let hosting = self.guest_hosting();
+        let hosting = if local { None } else { self.guest_hosting() };
         let host = hosting.as_ref().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
         if split && host.is_none() {
             return Err(guest_refusal(
@@ -876,6 +895,7 @@ impl RuntimeKernel {
         if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
             fields.insert("client".into(), client);
         }
+        self.settle_memory();
         Ok(answer)
     }
 
@@ -1040,8 +1060,10 @@ impl RuntimeKernel {
             .ok_or_else(|| failure("program/close: name the guest to close"))?;
         self.guest(handle, "program/close")?;
         if let Value::String(name) = handle {
-            self.guests.write().remove(name.as_str());
+            let closed = self.guests.write().remove(name.as_str());
+            drop(closed);
         }
+        self.settle_memory();
         let mut answer = ValueMap::default();
         answer.insert("closed".into(), Value::Bool(true));
         Ok(Value::object(answer))

@@ -197,7 +197,11 @@ pub fn effect_site(
     if site != RunsOn::Server {
         return site;
     }
-    if is_trace_subscription_sexpr(operator, args) || is_mounted_reflection_sexpr(operator, args) || operator == "cancel-call" {
+    if is_trace_subscription_sexpr(operator, args)
+        || is_mounted_reflection_sexpr(operator, args)
+        || is_local_guest_sexpr(operator, args)
+        || operator == "cancel-call"
+    {
         return RunsOn::Any;
     }
     if operator == "call-service" {
@@ -255,6 +259,33 @@ pub fn is_mounted_reflection_sexpr(operator: &str, args: &[crate::schema::sexpr:
 pub fn is_mounted_reflection(operator: &str, args: &[crate::value::Value]) -> bool {
     operator == "program/self"
         && args.first().and_then(|o| o.get_path("mounted")).and_then(crate::value::Value::as_bool) == Some(true)
+}
+
+/// Where a guest operator carries its options record.
+fn guest_options_index(operator: &str) -> Option<usize> {
+    match operator {
+        "program/open" | "program/close" => Some(1),
+        "program/dispatch" => Some(2),
+        "program/navigate" | "program/lazy" => Some(0),
+        _ => None,
+    }
+}
+
+/// A guest operator whose options name `local: true`: the guest lives in the kernel the step runs on, with no grants
+/// and no host (EXEC-CONC-7, a mock guest in the viewer's browser), so its site is either.
+pub fn is_local_guest_sexpr(operator: &str, args: &[crate::schema::sexpr::SExpression]) -> bool {
+    use crate::schema::sexpr::SExpression;
+    guest_options_index(operator).is_some_and(|at| {
+        matches!(args.get(at), Some(SExpression::Object(options))
+            if options.iter().any(|(k, v)| k.as_str() == "local" && matches!(v, SExpression::Bool(true))))
+    })
+}
+
+/// [`is_local_guest_sexpr`] for an effect whose arguments are evaluated.
+pub fn is_local_guest(operator: &str, args: &[crate::value::Value]) -> bool {
+    guest_options_index(operator).is_some_and(|at| {
+        args.get(at).and_then(|o| o.get_path("local")).and_then(crate::value::Value::as_bool) == Some(true)
+    })
 }
 
 /// [`is_mounted_reflection_sexpr`] for an effect whose arguments are evaluated: answered by the kernel the step runs on.
@@ -404,6 +435,7 @@ pub fn client_program(mut program: Value) -> Value {
         root.shift_remove(key);
     }
     let mut server_listens = Vec::new();
+    let server_origin = root.get("orbitals").and_then(declared_server_origin);
     if let Some(orbitals) = root.get_mut("orbitals").and_then(Value::as_array_mut) {
         for orbital in orbitals.iter().filter(|orbital| serves_only_protocol_pages(orbital)) {
             let name = orbital.get("name").cloned().unwrap_or(Value::Null);
@@ -439,10 +471,27 @@ pub fn client_program(mut program: Value) -> Value {
     if !server_listens.is_empty() {
         metadata.insert("serverListens".into(), Value::array(server_listens));
     }
+    if let Some(origin) = server_origin {
+        metadata.insert("serverOrigin".into(), Value::String(origin.into()));
+    }
     if !metadata.is_empty() {
         root.insert("_metadata".into(), Value::object(metadata));
     }
     program
+}
+
+/// The address a browser reaches the program's server at (EXEC-ENDPOINT-5): the `origin` its `page http { …, origin }`
+/// declares, when the program declares exactly one. A server that names none is reached on the page's own origin.
+pub fn declared_server_origin(orbitals: &Value) -> Option<String> {
+    let mut origins = std::collections::BTreeSet::new();
+    for page in orbitals.as_array().into_iter().flatten().filter_map(|o| o.get("pages").and_then(Value::as_array)).flatten() {
+        if page.get("protocol").and_then(Value::as_str) == Some("http") {
+            if let Some(origin) = page.get("address").and_then(|a| a.get("origin")).and_then(Value::as_str).filter(|o| !o.is_empty()) {
+                origins.insert(origin.trim_end_matches('/').to_string());
+            }
+        }
+    }
+    (origins.len() == 1).then(|| origins.into_iter().next()).flatten()
 }
 
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
@@ -699,6 +748,33 @@ mod tests {
     }
 
     #[test]
+    fn a_client_program_carries_the_server_origin_its_http_endpoint_declares() {
+        use serde_json::json;
+        let program = json!({ "name": "App", "orbitals": [
+            { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [] },
+            { "name": "Api", "pages": [{ "name": "Api", "path": "", "protocol": "http",
+                "address": { "host": "0.0.0.0", "port": 8080, "path": "/", "origin": "https://api.example.com/apps/notes/" } }], "traits": [] }
+        ] });
+        let client = client_program(v(program));
+        assert_eq!(client.get("_metadata").and_then(|m| m.get("serverOrigin")).and_then(Value::as_str), Some("https://api.example.com/apps/notes"));
+    }
+
+    #[test]
+    fn control_an_http_endpoint_that_declares_no_origin_leaves_the_page_origin() {
+        use serde_json::json;
+        let program = json!({ "name": "App", "orbitals": [
+            { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [] },
+            { "name": "Api", "pages": [{ "name": "Api", "path": "", "protocol": "http", "address": { "host": "0.0.0.0", "port": 8080 } }], "traits": [] }
+        ] });
+        assert!(client_program(v(program)).get("_metadata").and_then(|m| m.get("serverOrigin")).is_none());
+        let two = json!([
+            { "name": "A", "pages": [{ "name": "A", "path": "", "protocol": "http", "address": { "origin": "https://a.example.com" } }] },
+            { "name": "B", "pages": [{ "name": "B", "path": "", "protocol": "http", "address": { "origin": "https://b.example.com" } }] }
+        ]);
+        assert_eq!(declared_server_origin(&v(two)), None, "two different origins name no one server");
+    }
+
+    #[test]
     fn control_a_client_program_that_leaves_no_orbital_out_carries_no_server_listens() {
         let program = serde_json::json!({ "name": "App", "orbitals": [
             { "name": "Ui", "pages": [{ "name": "Home", "path": "/" }], "traits": [{ "name": "Page", "listens": [{ "event": "DONE" }] }] }
@@ -859,6 +935,31 @@ mod tests {
         let evaluated: crate::value::Value = from_json_value(&(serde_json::json!({ "kind": "trace" }))).expect("value");
         assert!(is_trace_subscription("program/live", &[evaluated.clone()]));
         assert!(!is_trace_subscription("program/dispatch", &[evaluated]));
+    }
+
+    #[test]
+    fn a_local_guest_runs_where_its_step_runs() {
+        use crate::schema::sexpr::SExpression;
+        let sx = |v: serde_json::Value| -> SExpression { from_json_value(&v).expect("sexpr") };
+        let local = sx(serde_json::json!({ "local": true }));
+        let guest_local = sx(serde_json::json!({ "guest": "@entity.guest", "local": true }));
+        assert_eq!(effect_site("program/open", &[sx(serde_json::json!("@payload.program")), local.clone()], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/dispatch", &[sx(serde_json::json!("A.B.GO")), sx(serde_json::json!({})), guest_local.clone()], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/navigate", &[guest_local.clone()], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/close", &[sx(serde_json::json!("@entity.guest")), local.clone()], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/lazy", &[guest_local], &Residence::none()), RunsOn::Any);
+        let evaluated: crate::value::Value = from_json_value(&(serde_json::json!({ "local": true }))).expect("value");
+        assert!(is_local_guest("program/close", &[crate::value::Value::String("guest-1".into()), evaluated]));
+    }
+
+    #[test]
+    fn control_a_guest_without_local_stays_on_the_server() {
+        use crate::schema::sexpr::SExpression;
+        let sx = |v: serde_json::Value| -> SExpression { from_json_value(&v).expect("sexpr") };
+        assert_eq!(effect_site("program/open", &[sx(serde_json::json!("@payload.program")), sx(serde_json::json!({}))], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("program/open", &[sx(serde_json::json!("@payload.program")), sx(serde_json::json!({ "local": false }))], &Residence::none()), RunsOn::Server);
+        assert_eq!(effect_site("program/dispatch", &[sx(serde_json::json!("A.B.GO")), sx(serde_json::json!({ "local": true }))], &Residence::none()), RunsOn::Server, "a payload naming local is not the options");
+        assert_eq!(effect_site("program/eval", &[sx(serde_json::json!({ "local": true }))], &Residence::none()), RunsOn::Server, "only guest operators");
     }
 
     #[test]

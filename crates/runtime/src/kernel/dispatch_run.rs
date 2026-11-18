@@ -144,6 +144,9 @@ pub(crate) struct DispatchRun {
     /// session asked. The driver is the store seam, with no viewer of its own: in the asking session its steps would read
     /// that session's `@user`, a store ask of its own when the identity is store-bound.
     program: bool,
+    /// Who asked for the program-session step this run began in (EXEC-FIELD-3): a run parked on an ask is driven again
+    /// from whatever completion answers it, so it re-enters this viewer and its `@user` stays the viewer who asked.
+    asker: Option<Arc<str>>,
     /// Open from the run's start to its end, across every ask it parks on.
     span: tracing::Span,
 }
