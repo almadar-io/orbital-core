@@ -8,7 +8,7 @@ use std::path::Path;
 fn core(root: &Path) {
     let dir = root.join("node_modules/@almadar/core");
     fs::create_dir_all(&dir).unwrap();
-    let manifest = serde_json::json!({ "name": "@almadar/core", "version": "10.1.0", "orbLanguage": { "version": "1.0.0" } });
+    let manifest = serde_json::json!({ "name": "@almadar/core", "version": "10.1.0", "orbLanguage": { "version": "1.7.0" } });
     fs::write(dir.join("package.json"), manifest.to_string()).unwrap();
 }
 

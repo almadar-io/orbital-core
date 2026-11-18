@@ -1922,6 +1922,25 @@ mod field_updates {
         assert_eq!(row(&store)["teamId"], json!("t9"));
     }
 
+    // A program-session step that writes a server field with the value the row already holds changes nothing, so there is no
+    // viewer-guarded field for the entity's @update to protect: the no-op is admitted, not refused as the anonymous viewer.
+    #[test]
+    fn a_program_step_write_that_changes_nothing_is_not_refused_by_the_entity_update() {
+        let (executor, store) = executor(true);
+        let _step = crate::effects::executor::ProgramStepScope::enter();
+        let anonymous = BindingContext::new();
+        let same = executor.execute(&update(json!({ "id": "u1", "teamId": "" })), &anonymous);
+        assert!(same.is_executed(), "{same:?}");
+        assert_eq!(row(&store)["teamId"], json!(""));
+    }
+
+    #[test]
+    fn control_a_viewer_write_that_changes_nothing_still_meets_the_entity_update() {
+        let (executor, _store) = executor(true);
+        let stranger = executor.execute(&update(json!({ "id": "u1", "teamId": "" })), &viewer("u2", "member"));
+        assert!(stranger.is_failed(), "a stranger outside a program step is refused even for a no-op: {stranger:?}");
+    }
+
     #[test]
     fn control_a_viewer_session_after_a_program_step_is_denied_again_and_an_entity_without_rules_is_unchanged() {
         let (executor, _store) = executor(true);

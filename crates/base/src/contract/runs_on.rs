@@ -494,6 +494,20 @@ pub fn declared_server_origin(orbitals: &Value) -> Option<String> {
     (origins.len() == 1).then(|| origins.into_iter().next()).flatten()
 }
 
+/// The environment variable whose value, when the web client is compiled, is that address: the `originFromEnv` a
+/// `page http { … }` declares, when the program declares exactly one (a URL that differs per deployment target).
+pub fn declared_server_origin_env(orbitals: &Value) -> Option<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for page in orbitals.as_array().into_iter().flatten().filter_map(|o| o.get("pages").and_then(Value::as_array)).flatten() {
+        if page.get("protocol").and_then(Value::as_str) == Some("http") {
+            if let Some(name) = page.get("address").and_then(|a| a.get("originFromEnv")).and_then(Value::as_str).filter(|n| !n.is_empty()) {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    (names.len() == 1).then(|| names.into_iter().next()).flatten()
+}
+
 /// The `_metadata` a compiled client program carries for a browser kernel, which has no installed core: the sites of
 /// the effects its `orbitals` call, the dispatch facts and the endpoint protocol table.
 pub fn client_program_metadata(orbitals: &Value) -> ValueMap {

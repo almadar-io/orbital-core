@@ -235,7 +235,7 @@ fn install_core(root: &Path, version: &str) {
             "name": "@almadar/core",
             "version": version,
             "orbLanguage": {
-                "version": "1.0.0",
+                "version": "1.7.0",
                 "patterns": "dist/patterns/patterns-registry.json",
                 "componentMapping": "dist/patterns/component-mapping.json",
                 "eventContracts": "dist/patterns/event-contracts.json",
@@ -559,10 +559,7 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 840: the run no longer carries the viewer it was started as (`@user` is the session's bound identity, EXEC-IDENTITY-1).
     // 872: a route mount names its route (24 bytes) and queues its `$MOUNT` deliveries behind one `Box` (8 bytes, EXEC-SEED-7).
     // 920: the request the run carries names the orbitals it releases and its crumb (48 bytes, as `ServerProgress` above).
-    // 976: a run keeps the session that asked for the program-session step it began in (`asker`, one `Option<Arc<str>>`,
-    // EXEC-FIELD-3): a run parked on a store ask is driven again from the driver's reply, where no viewer is entered, so it
-    // re-enters who asked; `@user` is still read from that session's bound identity (G-CROSS-666, 2026-11-18).
-    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 976, "Progress");
+assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 920, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
     assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");

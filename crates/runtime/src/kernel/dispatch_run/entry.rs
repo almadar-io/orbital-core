@@ -725,7 +725,6 @@ impl RuntimeKernel {
             provisional: None,
             program_deliveries: VecDeque::new(),
             program: false,
-            asker: self.thread_asker(),
             span,
         }
     }

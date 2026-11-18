@@ -44,7 +44,7 @@ fn fake_core(node_modules: &Path, language: &str) {
 
 fn fake_package(node_modules: &Path, name: &str, prefix: &str, version: &str) -> PathBuf {
     if !node_modules.join("@almadar/core").exists() {
-        fake_core(node_modules, "1.2.0");
+        fake_core(node_modules, "1.9.0");
     }
     let pkg_dir = node_modules.join(name);
     fs::create_dir_all(&pkg_dir).unwrap();
@@ -61,7 +61,7 @@ fn fake_package(node_modules: &Path, name: &str, prefix: &str, version: &str) ->
             "prefix": prefix,
             "registry": "behaviors/registry",
             "vectors": "dist/vectors.vec",
-            "language": "^1.2"
+            "language": "^1.9"
         },
         "peerDependencies": { "@almadar/std": ">=1.0.0" }
     });
@@ -333,7 +333,7 @@ fn single_package_all_fields_populated() {
     assert_eq!(pkg.name, "@almadar-io/behaviors");
     assert_eq!(pkg.version, "0.16.171");
     assert_eq!(pkg.prefix, "almadar-behaviors");
-    assert_eq!(pkg.language_range, "^1.2");
+    assert_eq!(pkg.language_range, "^1.9");
     assert_eq!(pkg.std_peer_range.as_deref(), Some(">=1.0.0"));
     assert_eq!(pkg.core_range, None);
     assert!(!pkg.is_link);
@@ -651,7 +651,7 @@ fn symlinked_entry_reports_is_link_and_realpath() {
 
     let node_modules = tmp.path().join("node_modules");
     fs::create_dir_all(&node_modules).unwrap();
-    fake_core(&node_modules, "1.2.0");
+    fake_core(&node_modules, "1.9.0");
     symlink(&real_pkg_dir, node_modules.join("pkg-a")).unwrap();
 
     let packages = discover(tmp.path(), &tmp.path().join("unused-user-store")).unwrap();
@@ -895,13 +895,13 @@ fn discovery_refuses_a_package_whose_language_range_the_installed_core_misses() 
         DiscoverError::IncompatibleLanguage { package, range, language } => {
             assert_eq!(package, "pkg-a");
             assert_eq!(range, "^2");
-            assert_eq!(language, "1.2.0");
+            assert_eq!(language, "1.9.0");
         }
         other => panic!("expected IncompatibleLanguage, got {other:?}"),
     }
     assert_eq!(err.code(), crate::language_data::CODE_INCOMPATIBLE);
     let text = err.to_string();
-    assert!(text.contains("pkg-a") && text.contains("^2") && text.contains("1.2.0"), "{text}");
+    assert!(text.contains("pkg-a") && text.contains("^2") && text.contains("1.9.0"), "{text}");
 }
 
 #[test]
@@ -976,7 +976,7 @@ fn package_at(dir: &Path, name: &str, prefix: &str, version: &str) {
     let pkg_json = serde_json::json!({
         "name": name,
         "version": version,
-        "orb": { "prefix": prefix, "source": "behaviors/lolo", "language": "^1.2" }
+        "orb": { "prefix": prefix, "source": "behaviors/lolo", "language": "^1.9" }
     });
     fs::write(
         dir.join("package.json"),

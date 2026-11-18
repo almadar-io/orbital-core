@@ -38,7 +38,7 @@ pub const STD_PACKAGE: &str = "@almadar/std";
 
 /// The language-data versions this kernel reads (`@almadar/core`'s `orbLanguage.version`). Every host embedding this
 /// crate reads the same range, and every package range names a language version, never a host release (P-022).
-pub const LANGUAGE_READS: &str = "^1";
+pub const LANGUAGE_READS: &str = "^1.7";
 
 /// The `language` key every language-ranged block declares (`orb`, `orbLanguage` on std, `orbVocabulary`).
 pub const LANGUAGE_RANGE_FIELD: &str = "language";

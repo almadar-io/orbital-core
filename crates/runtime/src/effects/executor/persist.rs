@@ -265,7 +265,8 @@ impl EffectExecutor {
     ) -> Result<(), String> {
         let program_step = ProgramStepScope::active();
         let changed = changed_fields(existing, patch);
-        let server_only = program_step && changes_only_server_fields(&changed, &scope.field_updates);
+        // A program step that changes nothing, or only `server` fields, leaves no viewer-guarded field for `@update` to protect.
+        let server_only = program_step && (changed.is_empty() || changes_only_server_fields(&changed, &scope.field_updates));
         tracing::debug!(entity_type, program_step, server_only, ?changed, user = ?ctx.resolve("user.id"), "persist update access");
         if scope.policy.is_some() && !server_only {
             check_mutation_access(PersistOperation::Update, existing, scope.policy.as_ref(), ctx, entity_type)
