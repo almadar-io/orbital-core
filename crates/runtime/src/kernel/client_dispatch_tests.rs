@@ -2576,3 +2576,44 @@ fn control_a_server_seed_with_no_server_work_downstream_replays_through_the_stat
         ("STOP", Some("Timer"))
     );
 }
+
+/// EXEC-FIELD-1: a dispatch made from the program session itself (no viewer session) to a `boot` trait is the program
+/// acting on its own program-wide trait, so it is a program-session step: a host program handing its guest's identity
+/// binder a credential creates the first identity row there (project-friday's Real sign-in, G-CROSS-663).
+#[test]
+fn a_program_session_dispatch_to_a_boot_trait_is_a_program_step() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_create_schema()).unwrap();
+    kernel.dispatch("Claimer", None, "CLAIMED", Value::Null).unwrap();
+    assert!(cache.find("Invite", "i-program").unwrap().is_some(), "the program's own dispatch to its boot trait created it");
+}
+
+#[test]
+fn control_a_viewer_sessions_own_dispatch_to_a_boot_trait_is_not_a_program_step() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_create_schema()).unwrap();
+    let _session = kernel.enter_session("s1");
+    kernel.dispatch("Claimer", None, "CLAIMED", Value::Null).unwrap();
+    assert!(cache.find("Invite", "i-program").unwrap().is_none(), "a session's own dispatch of a boot trait stays a viewer step (EXEC-FIELD-3)");
+}
+
+#[test]
+fn control_a_signed_in_program_session_dispatch_to_a_boot_trait_keeps_its_viewer() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_create_schema()).unwrap();
+    kernel.bind_test_identity(Value::object(ValueMap::from_iter([("id".into(), Value::string("u1")), ("role".into(), Value::string("member"))])));
+    kernel.dispatch("Claimer", None, "CLAIMED", Value::Null).unwrap();
+    assert!(cache.find("Invite", "i-program").unwrap().is_none(), "a signed-in program session acts as its viewer, so its create needs a program step");
+}
+
+#[test]
+fn control_a_program_session_dispatch_to_a_page_trait_is_not_a_program_step() {
+    let cache = Arc::new(InMemoryEntityCache::new());
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, cache.clone() as Arc<dyn EntitySource>, KernelConfig::default());
+    kernel.register_schema(server_create_schema()).unwrap();
+    kernel.dispatch("Viewer", None, "TRY", Value::Null).unwrap();
+    assert!(cache.find("Invite", "i-viewer").unwrap().is_none(), "a route trait's create still needs a program-session step");
+}

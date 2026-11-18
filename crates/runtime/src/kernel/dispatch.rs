@@ -81,6 +81,7 @@ impl RuntimeKernel {
             event = %event_name,
             "Processing event"
         );
+        tracing::trace!(trait_name = %trait_name, event = %event_name, payload = ?payload, "event payload");
 
         self.ensure_trait_loaded(trait_name)?;
         let _seed_writes = crate::effects::executor::SeedWriteScope::enter(self.is_seed_writer(trait_name));

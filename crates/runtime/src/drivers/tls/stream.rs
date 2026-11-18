@@ -559,6 +559,7 @@ pub(crate) mod tests {
         reply: Option<Vec<u8>>,
         answer: Vec<u8>,
         error: Option<rustls::Error>,
+        close_after_reply: bool,
     }
 
     impl FakeServer {
@@ -588,12 +589,19 @@ pub(crate) mod tests {
                 reply: None,
                 answer: b"pong".to_vec(),
                 error: None,
+                close_after_reply: false,
             }
         }
 
         /// A server that answers `ping` with `answer` instead of `pong`.
         pub(crate) fn answering(mut self, answer: Vec<u8>) -> Self {
             self.answer = answer;
+            self
+        }
+
+        /// A server that sends its close_notify right after its answer, in the same flight.
+        pub(crate) fn closing(mut self) -> Self {
+            self.close_after_reply = true;
             self
         }
 
@@ -608,6 +616,7 @@ pub(crate) mod tests {
                 reply,
                 answer,
                 error,
+                close_after_reply,
             } = self;
             let _scope = random::Scope::enter(rng);
             loop {
@@ -643,6 +652,12 @@ pub(crate) mod tests {
                             let mut buffer = vec![0u8; data.len() + 64 * (data.len() / 16384 + 2)];
                             let n = state.encrypt(&data, &mut buffer).expect("encrypt");
                             outbound.extend_from_slice(&buffer[..n]);
+                            if *close_after_reply {
+                                let mut alert = vec![0u8; 64];
+                                let n = state.queue_close_notify(&mut alert).expect("close_notify");
+                                outbound.extend_from_slice(&alert[..n]);
+                                stop = true;
+                            }
                         }
                         None => stop = true,
                     },
@@ -935,6 +950,70 @@ pub(crate) mod tests {
         let (_, replayed) =
             TlsClient::replay("localhost", [7u8; 32], NOW, roots(), &transcript).expect("replay");
         assert_eq!(replayed, sent);
+    }
+
+    /// Exchange ping/pong with `server` and stop at the first plaintext, as a receive does.
+    fn exchange_until_answer(server: &mut FakeServer) -> TlsClient {
+        let mut client = TlsClient::new("localhost", [7u8; 32], NOW, roots())
+            .expect("client")
+            .recording();
+        client.write(b"ping");
+        for _ in 0..16 {
+            match client.poll().expect("poll") {
+                Poll::Transmit(bytes) => server.receive(&bytes),
+                Poll::Plaintext(bytes) => {
+                    assert_eq!(bytes, b"pong");
+                    return client;
+                }
+                Poll::NeedInbound | Poll::Idle => client.feed(&server.take(usize::MAX)),
+                Poll::Closed => panic!("closed before the answer"),
+            }
+        }
+        panic!("no answer");
+    }
+
+    fn first_close_step(client: &mut TlsClient) -> &'static str {
+        client.close();
+        match client.poll().expect("poll") {
+            Poll::Transmit(_) => "transmit",
+            Poll::Closed => "closed",
+            Poll::Idle => "idle",
+            Poll::NeedInbound => "need-inbound",
+            Poll::Plaintext(_) => "plaintext",
+        }
+    }
+
+    #[test]
+    fn a_session_whose_peer_closed_closes_the_same_way_live_and_rebuilt() {
+        let mut server = FakeServer::new(9).closing();
+        let mut live = exchange_until_answer(&mut server);
+        let transcript: Vec<Recorded> = live.transcript().expect("recorded").to_vec();
+        let (mut rebuilt, _) =
+            TlsClient::replay("localhost", [7u8; 32], NOW, roots(), &transcript).expect("replay");
+        assert_eq!(first_close_step(&mut live), first_close_step(&mut rebuilt));
+        assert_eq!(first_close_step(&mut live), "closed");
+    }
+
+    #[test]
+    fn a_session_whose_peer_closed_reads_its_end_the_same_way_live_and_rebuilt() {
+        let mut server = FakeServer::new(9).closing();
+        let mut live = exchange_until_answer(&mut server);
+        let transcript: Vec<Recorded> = live.transcript().expect("recorded").to_vec();
+        let (mut rebuilt, _) =
+            TlsClient::replay("localhost", [7u8; 32], NOW, roots(), &transcript).expect("replay");
+        assert_eq!(live.poll().expect("live"), Poll::Closed);
+        assert_eq!(rebuilt.poll().expect("rebuilt"), Poll::Closed);
+    }
+
+    #[test]
+    fn control_a_session_whose_peer_did_not_close_sends_its_close_notify_live_and_rebuilt() {
+        let mut server = FakeServer::new(9);
+        let mut live = exchange_until_answer(&mut server);
+        let transcript: Vec<Recorded> = live.transcript().expect("recorded").to_vec();
+        let (mut rebuilt, _) =
+            TlsClient::replay("localhost", [7u8; 32], NOW, roots(), &transcript).expect("replay");
+        assert_eq!(first_close_step(&mut live), "transmit");
+        assert_eq!(first_close_step(&mut rebuilt), "transmit");
     }
 
     fn client_hello(alpn: Vec<Vec<u8>>) -> Vec<u8> {

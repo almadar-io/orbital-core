@@ -81,7 +81,12 @@ impl RuntimeKernel {
 
     /// A dispatch the program answers for and no viewer asked: an inbound hook's delivery. Its steps are program-session
     /// steps (EXEC-FIELD-3): they read the anonymous viewer, read rows unscoped and may make `server` writes.
-    pub(crate) fn dispatch_program(&self, trait_name: &str, event_name: &str, payload: Value) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+    pub(crate) fn dispatch_program(
+        &self,
+        trait_name: &str,
+        event_name: &str,
+        payload: Value,
+    ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
         let _lane = self.lane.enter(None)?;
         self.require_payload([(trait_name, event_name)], &payload)?;
         let mut run = self.run_of_dispatch(trait_name, None, event_name, payload, None, None);
@@ -90,7 +95,12 @@ impl RuntimeKernel {
     }
 
     /// [`Self::dispatch_program`] as a resumable dispatch.
-    pub(crate) fn start_dispatch_program(&self, trait_name: &str, event_name: &str, payload: Value) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+    pub(crate) fn start_dispatch_program(
+        &self,
+        trait_name: &str,
+        event_name: &str,
+        payload: Value,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
         self.require_payload([(trait_name, event_name)], &payload)?;
         let mut run = self.run_of_dispatch(trait_name, None, event_name, payload, None, None);
@@ -225,7 +235,10 @@ impl RuntimeKernel {
         if !announced.is_empty() {
             let _announcing = Announcing::enter(&self.mount);
             let mut run = self.run_of_mount(&[], entity_id, Value::Null);
-            run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries: announced }));
+            run.preamble = Some(Box::new(Preamble {
+                row: entity_id.map(str::to_string),
+                deliveries: announced,
+            }));
             outcomes.extend(self.run_straight_through(run)?);
         }
         self.declare_boot_mount(route, seeds, &payload);
@@ -243,15 +256,21 @@ impl RuntimeKernel {
         crumb: Option<&str>,
     ) -> Result<Option<(String, Vec<(String, ProcessEventResult)>)>, KernelError> {
         let browser_run = self.browser_run_traits();
-        let deliveries: VecDeque<CascadeItem> =
-            self.route_mount_deliveries(route, crumb)?.into_iter().filter(|d| browser_run.contains(&d.trait_name)).collect();
+        let deliveries: VecDeque<CascadeItem> = self
+            .route_mount_deliveries(route, crumb)?
+            .into_iter()
+            .filter(|d| browser_run.contains(&d.trait_name))
+            .collect();
         let Some(first) = deliveries.front().map(|d| d.trait_name.clone()) else {
             return Ok(None);
         };
         let _lane = self.lane.enter(None)?;
         let _announcing = Announcing::enter(&self.mount);
         let mut run = self.run_of_mount(&[], None, Value::Null);
-        run.preamble = Some(Box::new(Preamble { row: None, deliveries }));
+        run.preamble = Some(Box::new(Preamble {
+            row: None,
+            deliveries,
+        }));
         Ok(Some((first, self.run_straight_through(run)?)))
     }
 
@@ -322,12 +341,20 @@ impl RuntimeKernel {
         seeds: &[MountSeed],
         entity_id: Option<&str>,
         payload: Value,
-        mut drive: impl FnMut(Result<Progress<DispatchOutcomes>, DispatchError>) -> Result<DispatchOutcomes, E>,
+        mut drive: impl FnMut(
+            Result<Progress<DispatchOutcomes>, DispatchError>,
+        ) -> Result<DispatchOutcomes, E>,
     ) -> Result<DispatchOutcomes, E> {
         let payload = self.with_route_params(route, payload);
-        let announced = match self.require_payload(seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())), &payload) {
+        let announced = match self.require_payload(
+            seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())),
+            &payload,
+        ) {
             Err(error) => return drive(Err(error.into())),
-            Ok(()) => match route.map(|route| self.route_mount_deliveries(route, None)).transpose() {
+            Ok(()) => match route
+                .map(|route| self.route_mount_deliveries(route, None))
+                .transpose()
+            {
                 Err(error) => return drive(Err(error.into())),
                 Ok(deliveries) => deliveries.unwrap_or_default(),
             },
@@ -355,7 +382,10 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let lane = self.lane.enter(None)?;
         let mut run = self.run_of_mount(&[], entity_id, Value::Null);
-        run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries }));
+        run.preamble = Some(Box::new(Preamble {
+            row: entity_id.map(str::to_string),
+            deliveries,
+        }));
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
@@ -372,7 +402,10 @@ impl RuntimeKernel {
         if let Some(route) = route {
             let deliveries = self.route_mount_deliveries(route, crumb)?;
             if !deliveries.is_empty() {
-                run.preamble = Some(Box::new(Preamble { row: entity_id.map(str::to_string), deliveries }));
+                run.preamble = Some(Box::new(Preamble {
+                    row: entity_id.map(str::to_string),
+                    deliveries,
+                }));
             }
         }
         Ok(run)
@@ -388,7 +421,9 @@ impl RuntimeKernel {
             Some(hold) => hold.resume(),
             None => self.lane.enter(None)?,
         };
-        accept_into(&mut continuation, replies, &|request, answer| self.checked_answer(request, answer))?;
+        accept_into(&mut continuation, replies, &|request, answer| {
+            self.checked_answer(request, answer)
+        })?;
         self.drive_entry(lane, continuation)
     }
 
@@ -400,7 +435,10 @@ impl RuntimeKernel {
     ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
         let driven = loop {
             match self.drive_resumable(continuation)? {
-                Progress::Await { continuation: parked, requests } if requests.is_empty() && parked.parked_on_reply().is_some() => {
+                Progress::Await {
+                    continuation: parked,
+                    requests,
+                } if requests.is_empty() && parked.parked_on_reply().is_some() => {
                     // An in-place nested dispatch cannot give up its holder's lane: its ask ends with no reply.
                     if lane.is_outermost() {
                         let wait = parked.parked_on_reply().cloned();
@@ -447,13 +485,23 @@ impl RuntimeKernel {
     /// A dispatch parked only on keyed, routed `call-service` asks has reached the declared async boundary: it
     /// commits and frees the lane, and its answer is handled as a dispatch queued behind the lane (EXEC-CONC-0). Any
     /// unkeyed ask, or a store leg in flight, keeps the lane until the dispatch commits (EXEC-CONC-1).
-    pub(super) fn parked_on_keyed_calls_only(continuation: &DispatchContinuation, requests: &[PendingRequest]) -> bool {
+    pub(super) fn parked_on_keyed_calls_only(
+        continuation: &DispatchContinuation,
+        requests: &[PendingRequest],
+    ) -> bool {
         continuation.store.is_none()
             && !requests.is_empty()
             && requests.iter().all(|pending| match &pending.request {
-                IoRequest::CallService { key: Some(_), site: Some(site), .. } => {
+                IoRequest::CallService {
+                    key: Some(_),
+                    site: Some(site),
+                    ..
+                } => {
                     let routes = &site.emit;
-                    routes.success.is_some() || routes.failure.is_some() || routes.cancelled.is_some() || routes.on_message.is_some()
+                    routes.success.is_some()
+                        || routes.failure.is_some()
+                        || routes.cancelled.is_some()
+                        || routes.on_message.is_some()
                 }
                 _ => false,
             })
@@ -484,15 +532,22 @@ impl RuntimeKernel {
         delivery: Option<&DeliveryRecord>,
         log: Option<&DispatchLog>,
     ) -> DispatchRun {
-        let (event_name, payload) = match self.guest_control_delivery(trait_name, entity_id, event_name, &payload) {
-            Some(delivered) => delivered,
-            None => (event_name.to_string(), payload),
-        };
+        let (event_name, payload) =
+            match self.guest_control_delivery(trait_name, entity_id, event_name, &payload) {
+                Some(delivered) => delivered,
+                None => (event_name.to_string(), payload),
+            };
         let lifecycle_targets = orbital_core_base::events::is_bus_excluded_event(&event_name)
             .then(|| trait_name.to_string())
             .into_iter()
             .collect();
-        self.run_of(vec![SeedPlan {
+        // EXEC-FIELD-1: the signed-out program session's own dispatch to one of its `boot` traits is the program acting; a
+        // viewer session's dispatch, or a signed-in program session's, stays a viewer step (EXEC-FIELD-3).
+        let program_acting = !self.effect_executor.environment().is_client()
+            && self.thread_session().is_none()
+            && self.session_identity().is_none()
+            && self.program_wide(trait_name);
+        let mut run = self.run_of(vec![SeedPlan {
             trait_name: trait_name.to_string(),
             entity_id: entity_id.map(str::to_string),
             event_name,
@@ -501,7 +556,9 @@ impl RuntimeKernel {
             log: log.cloned(),
             lifecycle_targets,
             tick: None,
-        }])
+        }]);
+        run.program |= program_acting;
+        run
     }
 
     /// One firing of `tick_name` on `trait_name` as a resumable dispatch. With no `entity_id` it runs over
@@ -540,7 +597,9 @@ impl RuntimeKernel {
             lifecycle_targets: Vec::new(),
             tick: Some(TickSeed {
                 name: tick_name.to_string(),
-                state_entity: entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON).to_string(),
+                state_entity: entity_id
+                    .unwrap_or(crate::process_result::RUNTIME_SINGLETON)
+                    .to_string(),
                 all_rows: entity_id.is_none(),
             }),
         };
@@ -588,7 +647,10 @@ impl RuntimeKernel {
     /// emit waits for a later seed's lifecycle step (EXEC-SEED-2); a client's mount declares itself through its
     /// `_awaitingInit` sidecar.
     fn declare_boot_mount(&self, route: Option<&str>, seeds: &[MountSeed], payload: &Value) {
-        if route.is_none() && payload.get_path("_awaitingInit").is_none() && !self.effect_executor.environment().is_client() {
+        if route.is_none()
+            && payload.get_path("_awaitingInit").is_none()
+            && !self.effect_executor.environment().is_client()
+        {
             self.mount_traits(seeds.iter().map(|s| s.r#trait.clone()));
         }
     }
@@ -604,7 +666,12 @@ impl RuntimeKernel {
         let mut first = true;
         let mut plans = Vec::new();
         for seed in seeds {
-            if !self.registry.trait_definitions.read().contains_key(&seed.r#trait) {
+            if !self
+                .registry
+                .trait_definitions
+                .read()
+                .contains_key(&seed.r#trait)
+            {
                 continue;
             }
             // Only the first seed carries the client's mount, synced against all seeds.
@@ -636,7 +703,9 @@ impl RuntimeKernel {
                 target_trait = %first.trait_name,
                 targets = plans.len(),
             ),
-            None => tracing::debug_span!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, "dispatch", targets = 0),
+            None => {
+                tracing::debug_span!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, "dispatch", targets = 0)
+            }
         };
         DispatchRun {
             trace_seeds: plans

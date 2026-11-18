@@ -192,6 +192,9 @@ pub struct TlsClient {
     close_requested: bool,
     close_sent: bool,
     eof: bool,
+    /// rustls reports the peer's close_notify once; kept so a live session and one rebuilt from its transcript
+    /// answer every later poll alike.
+    peer_closed: bool,
     record: Option<Vec<Recorded>>,
 }
 
@@ -243,6 +246,7 @@ impl TlsClient {
             close_requested: false,
             close_sent: false,
             eof: false,
+            peer_closed: false,
             record: None,
         })
     }
@@ -308,6 +312,7 @@ impl TlsClient {
             close_requested,
             close_sent,
             eof,
+            peer_closed,
             ..
         } = self;
         let _scope = random::Scope::enter(rng);
@@ -366,6 +371,8 @@ impl TlsClient {
                         }
                     }
                     Step::Return(Poll::Transmit(buffer))
+                } else if *peer_closed {
+                    Step::Return(Poll::Closed)
                 } else if *close_requested && !*close_sent {
                     let mut buffer = vec![0u8; 64];
                     loop {
@@ -399,7 +406,10 @@ impl TlsClient {
                     Step::Return(Poll::Plaintext(plaintext))
                 }
             }
-            ConnectionState::PeerClosed | ConnectionState::Closed => Step::Return(Poll::Closed),
+            ConnectionState::PeerClosed | ConnectionState::Closed => {
+                *peer_closed = true;
+                Step::Return(Poll::Closed)
+            }
             other => return Err(TlsError::Unsupported(format!("{other:?}"))),
         };
         inbound.drain(..discard);

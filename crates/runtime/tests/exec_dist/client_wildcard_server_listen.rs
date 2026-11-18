@@ -416,3 +416,43 @@ fn a_browser_posts_a_step_whose_guard_reads_the_viewer() {
 fn control_a_step_that_reads_no_viewer_and_does_only_browser_work_posts_nothing() {
     assert!(viewer_guard_legs(false).is_empty(), "{:?}", viewer_guard_legs(false));
 }
+
+/// EXEC-DIST-2b on a listener: a `[client]` dock emits an ask that a host trait hears and decides on `@user` (a chat
+/// keeper refusing an anonymous send). The browser has no viewer, so that listener's step is the host's to decide.
+fn viewer_guard_listener_legs(guarded: bool) -> Vec<(String, Option<String>)> {
+    let send = if guarded {
+        json!([{ "from": "ready", "to": "ready", "event": "SEND", "guard": ["=", "@user.role", "anonymous"], "effects": [["emit", "SEND_REFUSED", {}]] },
+               { "from": "ready", "to": "ready", "event": "SEND", "guard": ["!=", "@user.role", "anonymous"], "effects": [["emit", "SEND_TAKEN", {}]] }])
+    } else {
+        json!([{ "from": "ready", "to": "ready", "event": "SEND", "effects": [["emit", "SEND_TAKEN", {}]] }])
+    };
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "App", "typeContractVersion": 1,
+        "orbitals": [{ "name": "Chat",
+            "entity": { "name": "Talk", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Dock", "linkedEntity": "Talk", "dispatch": "client",
+                "stateMachine": { "states": [{ "name": "open", "isInitial": true }],
+                    "transitions": [{ "from": "open", "to": "open", "event": "TYPE", "effects": [["emit", "ASK_SEND", {}]] }] },
+                "emits": [{ "event": "ASK_SEND", "scope": "external" }] },
+              { "name": "Keeper", "linkedEntity": "Talk",
+                "listens": [{ "event": "ASK_SEND", "triggers": "SEND", "source": { "kind": "any" } }],
+                "stateMachine": { "states": [{ "name": "ready", "isInitial": true }], "transitions": send },
+                "emits": [{ "event": "SEND_REFUSED", "scope": "internal" }, { "event": "SEND_TAKEN", "scope": "internal" }] }],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Dock" }, { "ref": "Keeper" }] }] }]
+    }))
+    .unwrap();
+    let k = orbital_core_runtime::embed::EmbeddedKernel::new(schema, "c1").unwrap();
+    let wire = k.dispatch("Dock", None, "TYPE", Value::Null).unwrap();
+    wire.server_legs.iter().map(|r| (r.leg.event.clone(), r.leg.target_trait.clone())).collect()
+}
+
+#[test]
+fn a_browser_posts_a_listener_step_whose_guard_reads_the_viewer() {
+    let legs = viewer_guard_listener_legs(true);
+    assert!(legs.contains(&("SEND".to_string(), Some("Keeper".to_string()))), "{legs:?}");
+}
+
+#[test]
+fn control_a_listener_step_that_reads_no_viewer_and_only_emits_posts_nothing() {
+    assert!(viewer_guard_listener_legs(false).is_empty(), "{:?}", viewer_guard_listener_legs(false));
+}

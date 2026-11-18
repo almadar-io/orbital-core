@@ -45,7 +45,8 @@ impl RuntimeKernel {
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
 
         let trait_def = self
-            .registry.trait_definitions
+            .registry
+            .trait_definitions
             .read()
             .get(trait_name)
             .cloned()
@@ -147,10 +148,37 @@ impl RuntimeKernel {
         }
         let hybrid = matches!(mode, DispatchMode::HybridClientOnly);
         // EXEC-DIST-2b: only the host knows the viewer, so a step it does not leave to the browser that guards on `@user` is its to decide.
-        let viewer_decided = !hybrid && self.effect_executor.environment().is_client() && self.guards_read_viewer(trait_name, event);
+        let viewer_decided = !hybrid
+            && self.effect_executor.environment().is_client()
+            && self.guards_read_viewer(trait_name, event);
         if viewer_decided {
             delegating_traits.insert(trait_name.to_string());
         }
+        let viewer_listeners: Vec<String> = if self.effect_executor.environment().is_client() {
+            outcomes
+                .iter()
+                .filter(|(t, r)| {
+                    t != trait_name
+                        && r.executed
+                        && r.event
+                            .as_deref()
+                            .is_some_and(|e| self.guards_read_viewer(t, e))
+                        && !self
+                            .registry
+                            .trait_definitions
+                            .read()
+                            .get(t.as_str())
+                            .is_some_and(|def| {
+                                matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
+                            })
+                })
+                .map(|(t, _)| t.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let viewer_decided = viewer_decided || !viewer_listeners.is_empty();
+        delegating_traits.extend(viewer_listeners);
         // A local seed never needs the server for its OWN effects, but the
         // traits its cascade reached (a persistor, a refetching list) may.
         let downstream_needs_server = delegating_traits.iter().any(|t| t != trait_name);
@@ -171,9 +199,12 @@ impl RuntimeKernel {
         };
         let mut server_legs = if mixed {
             Vec::new()
-        } else if self.effect_executor.environment().is_client() && (!drained.is_empty() || viewer_decided) {
+        } else if self.effect_executor.environment().is_client()
+            && (!drained.is_empty() || viewer_decided)
+        {
             let only_emits = drained.iter().all(|e| matches!(e, Effect::Emit { .. }));
-            if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) && !only_emits {
+            if hybrid && !downstream_needs_server && !self.all_browser_data(&drained) && !only_emits
+            {
                 // A `local` trait's OWN effects should be client-only by construction;
                 // a server-only effect the seed itself delegated is a validator bug
                 // (§7 declares `local` legal only where nothing needs the server), not
@@ -249,7 +280,8 @@ impl RuntimeKernel {
                 // A never-written shared frame replays from the view the step read (its defaults), as the
                 // stateful leg carries it, so the host's echo of those defaults is not taken for a write.
                 let seed_replay = || {
-                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name) {
+                    let replayed_from = if seed_row.is_null() && self.reads_shared_frame(trait_name)
+                    {
                         outcomes
                             .iter()
                             .find(|(t, r)| t == trait_name && r.executed)
@@ -325,7 +357,8 @@ impl RuntimeKernel {
                     let mut covered: HashSet<&str> = HashSet::new();
                     let mut legs = Vec::new();
                     for (i, (t, r, emitter)) in steps.iter().enumerate() {
-                        let emitter_covered = emitter.as_deref().is_some_and(|e| covered.contains(e));
+                        let emitter_covered =
+                            emitter.as_deref().is_some_and(|e| covered.contains(e));
                         if emitter_covered && !client_only(t) {
                             covered.insert(t.as_str());
                             continue;
@@ -333,12 +366,19 @@ impl RuntimeKernel {
                         // A client-only step is posted only for its own server work (an emit only a server-only
                         // orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
                         let own_server_work = !emitter_covered && self.step_emits_off_client(t, r);
-                        if emitter.is_none() && *t == trait_name && !client_only(t) && reaches_server(i) {
+                        if emitter.is_none()
+                            && *t == trait_name
+                            && !client_only(t)
+                            && reaches_server(i)
+                        {
                             covered.insert(t.as_str());
                             legs.push(seed_replay());
                             continue;
                         }
-                        if emitter.is_none() ||(client_only(t) && !own_server_work) || !reaches_server(i) {
+                        if emitter.is_none()
+                            || (client_only(t) && !own_server_work)
+                            || !reaches_server(i)
+                        {
                             continue;
                         }
                         covered.insert(t.as_str());
@@ -554,13 +594,21 @@ impl RuntimeKernel {
     /// Whether every effect is a data effect on a browser-stored entity (the host's store holds the data).
     /// Where a leg carrying `effects` runs, and whether it mixes browser-stored rows with server work (refused).
     pub(super) fn leg_residence(&self, effects: &[Effect]) -> (LegResidence, bool) {
-        let residence = orbital_core_base::runs_on::Residence::of_entities(self.registry.entity_definitions.read().values());
+        let residence = orbital_core_base::runs_on::Residence::of_entities(
+            self.registry.entity_definitions.read().values(),
+        );
         let touch = effects
             .iter()
             .fold(orbital_core_base::runs_on::LegTouch::NONE, |acc, e| {
-                acc.then(orbital_core_base::runs_on::LegTouch::of_effect(e, &residence))
+                acc.then(orbital_core_base::runs_on::LegTouch::of_effect(
+                    e, &residence,
+                ))
             });
-        let at = if touch.server_work { LegResidence::Server } else { LegResidence::Browser };
+        let at = if touch.server_work {
+            LegResidence::Server
+        } else {
+            LegResidence::Browser
+        };
         (at, touch.is_mixed())
     }
 
@@ -573,7 +621,10 @@ impl RuntimeKernel {
 
     /// Each non-local trait a dispatch's local run executed, by its first firing (the web
     /// client kernel's `awaitingEntries`).
-    pub(super) fn awaiting_of(&self, outcomes: &[(String, ProcessEventResult)]) -> Vec<AwaitingTrait> {
+    pub(super) fn awaiting_of(
+        &self,
+        outcomes: &[(String, ProcessEventResult)],
+    ) -> Vec<AwaitingTrait> {
         let defs = self.registry.trait_definitions.read();
         let mut out: Vec<AwaitingTrait> = Vec::new();
         for (name, result) in outcomes {
@@ -605,11 +656,18 @@ impl RuntimeKernel {
     /// kernel, or a Client-env kernel under test with no delegate wired).
     /// Whether an arm of `trait_name` for `event` guards on the viewer (`@user`).
     fn guards_read_viewer(&self, trait_name: &str, event: &str) -> bool {
-        self.registry.trait_definitions.read().get(trait_name).is_some_and(|def| {
-            def.state_machine.transitions.iter().any(|t| {
-                t.event == event && t.guard.as_ref().is_some_and(|g| g.any_string(|s| s == "@user" || s.starts_with("@user.")))
+        self.registry
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .is_some_and(|def| {
+                def.state_machine.transitions.iter().any(|t| {
+                    t.event == event
+                        && t.guard.as_ref().is_some_and(|g| {
+                            g.any_string(|s| s == "@user" || s.starts_with("@user."))
+                        })
+                })
             })
-        })
     }
 
     pub(super) fn drain_server_leg_collector(&self) -> (Vec<Effect>, BTreeSet<String>) {
@@ -645,7 +703,8 @@ impl RuntimeKernel {
         response: &EventResponse,
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
-        self.apply_server_response_with(response, already_delivered, None).map(|(outcomes, _)| outcomes)
+        self.apply_server_response_with(response, already_delivered, None)
+            .map(|(outcomes, _)| outcomes)
     }
 
     /// [`Self::apply_server_response`], also reporting what the response's frame delta did to this kernel's frames
@@ -656,18 +715,26 @@ impl RuntimeKernel {
         already_delivered: &HashSet<(String, String)>,
         base: Option<&HashMap<String, ValueMap>>,
     ) -> Result<(Vec<(String, ProcessEventResult)>, FramesApplied), KernelError> {
-        let misfit = response.data.iter().flatten().find_map(|(entity_type, rows)| {
-            let keyed: Vec<std::borrow::Cow<'_, Value>> = rows.iter().map(keyed_row).collect();
-            self.rows_misfit(entity_type, keyed.iter().map(|row| row.as_ref()))
-        });
+        let misfit = response
+            .data
+            .iter()
+            .flatten()
+            .find_map(|(entity_type, rows)| {
+                let keyed: Vec<std::borrow::Cow<'_, Value>> = rows.iter().map(keyed_row).collect();
+                self.rows_misfit(entity_type, keyed.iter().map(|row| row.as_ref()))
+            });
         if let Some(misfit) = misfit {
-            return Err(KernelError::Internal(format!("server response refused: {misfit}")));
+            return Err(KernelError::Internal(format!(
+                "server response refused: {misfit}"
+            )));
         }
         if let Some(data) = &response.data {
             for (entity_type, rows) in data {
                 for row in rows {
                     let id = wire_row_id(row);
-                    self.entity_source.write(entity_type, &id, row).map_err(KernelError::Internal)?;
+                    self.entity_source
+                        .write(entity_type, &id, row)
+                        .map_err(KernelError::Internal)?;
                 }
                 self.rows.note_write(entity_type);
             }
@@ -680,13 +747,26 @@ impl RuntimeKernel {
                     Some(entity_type) => {
                         // The host's write replaces the browser's copy of rows it already holds, so a later local fetch is not stale.
                         let written_row = written.data.as_ref().and_then(|row| {
-                            row.as_object().and_then(|o| o.get("id")).and_then(Value::as_str).map(|id| (id.to_string(), row))
+                            row.as_object()
+                                .and_then(|o| o.get("id"))
+                                .and_then(Value::as_str)
+                                .map(|id| (id.to_string(), row))
                         });
                         if let Some((id, row)) = written_row {
-                            let held = self.entity_source.find(entity_type, &id).map_err(KernelError::Internal)?.is_some()
-                                || !self.entity_source.list(entity_type).map_err(KernelError::Internal)?.is_empty();
+                            let held = self
+                                .entity_source
+                                .find(entity_type, &id)
+                                .map_err(KernelError::Internal)?
+                                .is_some()
+                                || !self
+                                    .entity_source
+                                    .list(entity_type)
+                                    .map_err(KernelError::Internal)?
+                                    .is_empty();
                             if held {
-                                self.entity_source.write(entity_type, &id, row).map_err(KernelError::Internal)?;
+                                self.entity_source
+                                    .write(entity_type, &id, row)
+                                    .map_err(KernelError::Internal)?;
                             }
                         }
                         self.rows.note_write(entity_type)
@@ -714,7 +794,12 @@ impl RuntimeKernel {
         let stale = self.stale_host_paints(response);
         {
             let mut renders = self.renders.write();
-            for painted in response.client_effects_by_trait.iter().flatten().filter(|p| !stale.contains(&p.trait_name)) {
+            for painted in response
+                .client_effects_by_trait
+                .iter()
+                .flatten()
+                .filter(|p| !stale.contains(&p.trait_name))
+            {
                 if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, config } =
                     &painted.effect
                 {
@@ -724,8 +809,13 @@ impl RuntimeKernel {
         }
 
         let client_only: HashSet<String> = {
-            let defs: Vec<Arc<TraitDefinition>> =
-                self.registry.trait_definitions.read().values().cloned().collect();
+            let defs: Vec<Arc<TraitDefinition>> = self
+                .registry
+                .trait_definitions
+                .read()
+                .values()
+                .cloned()
+                .collect();
             defs.iter()
                 .filter(|d| self.dispatch_mode_of(d) == DispatchMode::HybridClientOnly)
                 .map(|d| d.name.clone())
@@ -737,7 +827,9 @@ impl RuntimeKernel {
                 let key = self.state_key(Some(RUNTIME_SINGLETON));
                 let kept_here = |t: &str| {
                     let states = self.state_manager.read();
-                    let now = states.get_state(t, key.as_deref()).map(|s| s.current_state.as_str());
+                    let now = states
+                        .get_state(t, key.as_deref())
+                        .map(|s| s.current_state.as_str());
                     client_only.contains(t) || !self.host_report_continues(t, now, response)
                 };
                 self.apply_server_frames(delta, &kept_here, base)?
@@ -749,8 +841,11 @@ impl RuntimeKernel {
             let mut state_manager = self.state_manager.write();
             for (trait_name, state_name) in &response.states {
                 let frame_id = frames_applied.ids.get(&self.trait_frame_key(trait_name));
-                let entity_id = self.state_key(Some(frame_id.map_or(RUNTIME_SINGLETON, String::as_str)));
-                let now = state_manager.get_state(trait_name, entity_id.as_deref()).map(|s| s.current_state.as_str());
+                let entity_id =
+                    self.state_key(Some(frame_id.map_or(RUNTIME_SINGLETON, String::as_str)));
+                let now = state_manager
+                    .get_state(trait_name, entity_id.as_deref())
+                    .map(|s| s.current_state.as_str());
                 if !self.host_report_continues(trait_name, now, response) {
                     continue;
                 }
@@ -758,7 +853,9 @@ impl RuntimeKernel {
                     .get_or_create_state(trait_name, entity_id.as_deref())
                     .is_ok()
                 {
-                    if let Some(state) = state_manager.get_state_mut(trait_name, entity_id.as_deref()) {
+                    if let Some(state) =
+                        state_manager.get_state_mut(trait_name, entity_id.as_deref())
+                    {
                         state.transition_to(state_name);
                     }
                 }
@@ -819,7 +916,8 @@ impl RuntimeKernel {
                 let mut reached = fanned.split_off(before);
                 reached.retain(|item| {
                     client_only.contains(&item.trait_name)
-                        || (self.committed_here(&item.trait_name) && Self::host_ran_from(&item.trait_name, response).is_none())
+                        || (self.committed_here(&item.trait_name)
+                            && Self::host_ran_from(&item.trait_name, response).is_none())
                 });
                 fanned.extend(reached);
             }
@@ -866,9 +964,20 @@ impl RuntimeKernel {
         let source = emitted.source.clone().unwrap_or_default();
         let source_trait = source.r#trait.clone().unwrap_or_default();
         let payload = emitted.payload.clone().unwrap_or(Value::Null);
-        let ran: &[String] = if emitter_ran { std::slice::from_ref(&source_trait) } else { &[] };
+        let ran: &[String] = if emitter_ran {
+            std::slice::from_ref(&source_trait)
+        } else {
+            &[]
+        };
         let mut fanned: Vec<CascadeItem> = Vec::new();
-        self.collect_listener_targets(&source, &source_trait, &emitted.event, &payload, ran, &mut fanned);
+        self.collect_listener_targets(
+            &source,
+            &source_trait,
+            &emitted.event,
+            &payload,
+            ran,
+            &mut fanned,
+        );
         let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
         self.run_cascade(
             RUNTIME_SINGLETON,
@@ -897,8 +1006,14 @@ impl RuntimeKernel {
             .into_iter()
             .flatten()
             .map(|t| t.r#trait.clone())
-            .chain(entity_by_trait.into_iter().flat_map(|rows| rows.keys().map(|k| k.to_string())))
-            .filter(|name| restored.contains(name) && seeds.iter().any(|seed| &seed.r#trait == name))
+            .chain(
+                entity_by_trait
+                    .into_iter()
+                    .flat_map(|rows| rows.keys().map(|k| k.to_string())),
+            )
+            .filter(|name| {
+                restored.contains(name) && seeds.iter().any(|seed| &seed.r#trait == name)
+            })
             .collect();
         let restored_rows: ValueMap = entity_by_trait
             .iter()
@@ -907,7 +1022,12 @@ impl RuntimeKernel {
             .map(|(name, row)| (name.clone(), row.clone()))
             .collect();
         if !carried.is_empty() {
-            let restored_traits: Vec<TraitFrom> = traits.into_iter().flatten().filter(|t| carried.contains(&t.r#trait)).cloned().collect();
+            let restored_traits: Vec<TraitFrom> = traits
+                .into_iter()
+                .flatten()
+                .filter(|t| carried.contains(&t.r#trait))
+                .cloned()
+                .collect();
             self.seed_leg(&restored_traits, Some(&restored_rows), entity_id);
         }
         // A browser-run seed's host copy is stale once the browser took its own steps, so its lifecycle event runs from
@@ -917,8 +1037,14 @@ impl RuntimeKernel {
             traits
                 .into_iter()
                 .flatten()
-                .filter(|t| !carried.contains(&t.r#trait) && seeds.iter().any(|seed| seed.r#trait == t.r#trait))
-                .filter(|t| defs.get(&t.r#trait).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited))
+                .filter(|t| {
+                    !carried.contains(&t.r#trait)
+                        && seeds.iter().any(|seed| seed.r#trait == t.r#trait)
+                })
+                .filter(|t| {
+                    defs.get(&t.r#trait)
+                        .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+                })
                 .cloned()
                 .collect()
         };
@@ -938,7 +1064,10 @@ impl RuntimeKernel {
             let mut asks = self.deferred_asks.write();
             carried
                 .iter()
-                .filter(|name| asks.remove(&((*name).clone(), row.clone())).is_some_and(|list| !list.is_empty()))
+                .filter(|name| {
+                    asks.remove(&((*name).clone(), row.clone()))
+                        .is_some_and(|list| !list.is_empty())
+                })
                 .cloned()
                 .collect()
         };
@@ -967,12 +1096,17 @@ impl RuntimeKernel {
                 .map(str::to_string)
         });
         let entity_id = request.entity_id.clone().or(carried_id);
-        let mounting = request.mount.as_ref().is_some_and(|seeds| !seeds.is_empty());
+        let mounting = request
+            .mount
+            .as_ref()
+            .is_some_and(|seeds| !seeds.is_empty());
         if (request.traits.is_some() || request.entity_by_trait.is_some()) && !mounting {
             let carried = request.traits.as_deref().unwrap_or_default();
             // A leg carries one entry per step a trait took; its target replays from the entry of the replayed event.
             let replayed = request.target_trait.as_deref().and_then(|target| {
-                carried.iter().find(|c| c.r#trait == target && c.event.as_deref() == Some(request.event.as_str()))
+                carried.iter().find(|c| {
+                    c.r#trait == target && c.event.as_deref() == Some(request.event.as_str())
+                })
             });
             let traits: Vec<TraitFrom> = match replayed {
                 Some(entry) => carried
@@ -983,7 +1117,11 @@ impl RuntimeKernel {
                     .collect(),
                 None => carried.to_vec(),
             };
-            self.seed_leg(&traits, request.entity_by_trait.as_ref(), entity_id.as_deref());
+            self.seed_leg(
+                &traits,
+                request.entity_by_trait.as_ref(),
+                entity_id.as_deref(),
+            );
         }
         entity_id
     }
@@ -999,7 +1137,12 @@ impl RuntimeKernel {
     ) {
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON);
         for carried in traits {
-            if !self.registry.trait_definitions.read().contains_key(&carried.r#trait) {
+            if !self
+                .registry
+                .trait_definitions
+                .read()
+                .contains_key(&carried.r#trait)
+            {
                 continue;
             }
             let mut state_manager = self.state_manager.write();
@@ -1008,13 +1151,20 @@ impl RuntimeKernel {
                 .get_or_create_state(&carried.r#trait, state_key.as_deref())
                 .is_ok()
             {
-                if let Some(state) = state_manager.get_state_mut(&carried.r#trait, state_key.as_deref()) {
+                if let Some(state) =
+                    state_manager.get_state_mut(&carried.r#trait, state_key.as_deref())
+                {
                     state.transition_to(&carried.from);
                 }
             }
         }
         for (trait_name, row) in entity_by_trait.into_iter().flatten() {
-            let entity_type = match self.registry.trait_definitions.read().get(trait_name.as_str()) {
+            let entity_type = match self
+                .registry
+                .trait_definitions
+                .read()
+                .get(trait_name.as_str())
+            {
                 Some(def) => def
                     .linked_entity
                     .clone()
@@ -1032,7 +1182,8 @@ impl RuntimeKernel {
             // A persisted `[shared]` entity's frame is its one working instance: a detail row's id never addresses it.
             // A `[runtime]` row has no store behind it, so the client's copy is the row and always folds.
             let persisted_shared = self
-                .registry.entity_definitions
+                .registry
+                .entity_definitions
                 .read()
                 .get(&entity_type)
                 .is_some_and(|d| d.shared && d.persistence != Some(Persistence::Runtime));
@@ -1064,7 +1215,13 @@ impl RuntimeKernel {
         let table = self.browser_reads();
         let read = table.get(trait_name)?;
         let fields = row.as_object()?;
-        Some(Value::Object(fields.iter().filter(|(field, _)| read.keeps(field.as_str())).map(|(field, value)| (field.clone(), value.clone())).collect()))
+        Some(Value::Object(
+            fields
+                .iter()
+                .filter(|(field, _)| read.keeps(field.as_str()))
+                .map(|(field, value)| (field.clone(), value.clone()))
+                .collect(),
+        ))
     }
 
     /// Get the current state for an entity.
@@ -1136,7 +1293,10 @@ impl RuntimeKernel {
             return;
         }
         let defs = self.registry.trait_definitions.read();
-        let client_run = |name: &str| defs.get(name).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited);
+        let client_run = |name: &str| {
+            defs.get(name)
+                .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+        };
         let bound: HashSet<&str> = defs
             .values()
             .filter(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
@@ -1145,7 +1305,9 @@ impl RuntimeKernel {
         let held: HashSet<String> = response
             .fetched_by
             .iter()
-            .filter(|(entity, fetchers)| !bound.contains(entity.as_str()) && !fetchers.iter().any(|t| client_run(t)))
+            .filter(|(entity, fetchers)| {
+                !bound.contains(entity.as_str()) && !fetchers.iter().any(|t| client_run(t))
+            })
             .map(|(entity, _)| entity.clone())
             .collect();
         if held.is_empty() {
@@ -1159,7 +1321,10 @@ impl RuntimeKernel {
         }
         for result in response.effect_results.iter_mut().flatten() {
             if result.effect == crate::effects::response::ServerEffectKind::Fetch
-                && result.entity_type.as_ref().is_some_and(|entity| held.contains(entity))
+                && result
+                    .entity_type
+                    .as_ref()
+                    .is_some_and(|entity| held.contains(entity))
             {
                 result.data = None;
             }
@@ -1168,7 +1333,10 @@ impl RuntimeKernel {
 
     /// `Some(true)` when the browser hears `emitted` by a rule that needs no program scan, `None` when only a pattern
     /// prop could name it.
-    pub(super) fn browser_hears(&self, emitted: &orbital_core_base::bus_event::EmittedEvent) -> Option<bool> {
+    pub(super) fn browser_hears(
+        &self,
+        emitted: &orbital_core_base::bus_event::EmittedEvent,
+    ) -> Option<bool> {
         let Some(source) = emitted.source.as_ref() else {
             return Some(true);
         };
@@ -1190,7 +1358,10 @@ impl RuntimeKernel {
             .is_some_and(|contracts| {
                 contracts.iter().any(|c| {
                     c.event == emitted.event
-                        && matches!(c.scope, Some(orbital_core_base::schema::types::EventScope::External))
+                        && matches!(
+                            c.scope,
+                            Some(orbital_core_base::schema::types::EventScope::External)
+                        )
                 })
             });
         let listeners = self.listener_manager.matching(&emitted.event, source);
@@ -1204,18 +1375,33 @@ impl RuntimeKernel {
     /// trait listens to: such work belongs to no client, so the host sends them to every browser, which delivers each
     /// to its own listeners. A boot-only trait never runs in a browser, so its listen is not one a browser hears
     /// (EXEC-DIST-8).
-    pub fn program_wide_emits(&self, response: &EventResponse) -> Vec<orbital_core_base::bus_event::EmittedEvent> {
+    pub fn program_wide_emits(
+        &self,
+        response: &EventResponse,
+    ) -> Vec<orbital_core_base::bus_event::EmittedEvent> {
         let defs = self.registry.trait_definitions.read();
         let browser_run = |name: &str| {
-            !self.program_wide(name) && defs.get(name).is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
+            !self.program_wide(name)
+                && defs
+                    .get(name)
+                    .is_some_and(|d| self.dispatch_mode_of(d) != DispatchMode::PersistedAwaited)
         };
         response
             .emitted_events
             .iter()
             .filter(|emitted| {
-                let Some(source) = emitted.source.as_ref() else { return false };
-                source.r#trait.as_deref().is_some_and(|emitter| self.program_wide(emitter))
-                    && self.listener_manager.matching(&emitted.event, source).iter().any(|l| browser_run(&l.trait_name))
+                let Some(source) = emitted.source.as_ref() else {
+                    return false;
+                };
+                source
+                    .r#trait
+                    .as_deref()
+                    .is_some_and(|emitter| self.program_wide(emitter))
+                    && self
+                        .listener_manager
+                        .matching(&emitted.event, source)
+                        .iter()
+                        .any(|l| browser_run(&l.trait_name))
             })
             .cloned()
             .collect()
@@ -1226,23 +1412,41 @@ impl RuntimeKernel {
     /// A client-only trait steps only here and an optimistic one commits here first (EXEC-DIST-3): the host's report
     /// of either is the continuation of this client's state only when the host ran it from `now` (EXEC-DIST-4).
     fn committed_here(&self, trait_name: &str) -> bool {
-        self.registry.trait_definitions.read().get(trait_name).is_some_and(|d| {
-            matches!(self.dispatch_mode_of(d), DispatchMode::HybridClientOnly | DispatchMode::RuntimeOptimistic)
-        })
+        self.registry
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .is_some_and(|d| {
+                matches!(
+                    self.dispatch_mode_of(d),
+                    DispatchMode::HybridClientOnly | DispatchMode::RuntimeOptimistic
+                )
+            })
     }
 
     fn host_ran_from<'r>(trait_name: &str, response: &'r EventResponse) -> Option<&'r str> {
-        response.transitions.iter().flatten().find(|hop| hop.trait_name == trait_name).map(|hop| hop.from.as_str())
+        response
+            .transitions
+            .iter()
+            .flatten()
+            .find(|hop| hop.trait_name == trait_name)
+            .map(|hop| hop.from.as_str())
     }
 
     /// Whether the host's report of `trait_name` (its state, its paint) continues from `now`: a host answering from its
     /// own copy of every trait (the in-process browser store) reports traits it never ran, and repaints the render it
     /// holds for them against a carried row (EXEC-RENDER-1), which this kernel repaints itself from the folded frames.
-    pub(crate) fn host_report_continues(&self, trait_name: &str, now: Option<&str>, response: &EventResponse) -> bool {
+    pub(crate) fn host_report_continues(
+        &self,
+        trait_name: &str,
+        now: Option<&str>,
+        response: &EventResponse,
+    ) -> bool {
         if !self.committed_here(trait_name) {
             return true;
         }
-        Self::host_ran_from(trait_name, response).is_some_and(|from| now.is_none_or(|now| now == from))
+        Self::host_ran_from(trait_name, response)
+            .is_some_and(|from| now.is_none_or(|now| now == from))
     }
 
     /// The traits whose host paints in `response` do not continue from this client's state, read before the response folds.
@@ -1255,7 +1459,9 @@ impl RuntimeKernel {
             .flatten()
             .map(|p| p.trait_name.as_str())
             .filter(|t| {
-                let now = states.get_state(t, key.as_deref()).map(|s| s.current_state.as_str());
+                let now = states
+                    .get_state(t, key.as_deref())
+                    .map(|s| s.current_state.as_str());
                 !self.host_report_continues(t, now, response)
             })
             .map(str::to_string)
@@ -1264,14 +1470,17 @@ impl RuntimeKernel {
 
     pub fn browser_runs(&self, trait_name: &str) -> bool {
         !self.program_wide(trait_name)
-            && !self.orbital_of_trait(trait_name).is_some_and(|orbital| self.io.is_store_driver(&orbital))
+            && !self
+                .orbital_of_trait(trait_name)
+                .is_some_and(|orbital| self.io.is_store_driver(&orbital))
     }
 
     /// The payload a deferred completion's push carries to the browser (EXEC-QUEUE-10): the payload when the completing
     /// trait runs on the client, `Null` (no payload) when it runs on the server.
     pub fn browser_completion_payload(&self, trait_name: &str, payload: &Value) -> Value {
         let server_run = self
-            .registry.trait_definitions
+            .registry
+            .trait_definitions
             .read()
             .get(trait_name)
             .is_some_and(|d| self.dispatch_mode_of(d) == DispatchMode::PersistedAwaited);
@@ -1307,7 +1516,10 @@ fn keyed_row(row: &Value) -> std::borrow::Cow<'_, Value> {
     match row {
         Value::Object(fields) if !fields.contains_key("id") => {
             let mut fields = fields.clone();
-            fields.insert(orbital_core_base::static_key!("id"), Value::string(wire_row_id(row)));
+            fields.insert(
+                orbital_core_base::static_key!("id"),
+                Value::string(wire_row_id(row)),
+            );
             std::borrow::Cow::Owned(Value::Object(fields))
         }
         _ => std::borrow::Cow::Borrowed(row),
@@ -1316,7 +1528,11 @@ fn keyed_row(row: &Value) -> std::borrow::Cow<'_, Value> {
 
 /// The kernel id of a row the server sent: the wire spells the runtime singleton `singleton`, and a row with no id is it.
 fn wire_row_id(row: &Value) -> String {
-    match row.as_object().and_then(|o| o.get("id")).and_then(Value::as_str) {
+    match row
+        .as_object()
+        .and_then(|o| o.get("id"))
+        .and_then(Value::as_str)
+    {
         Some("singleton") | None => RUNTIME_SINGLETON.to_string(),
         Some(id) => id.to_string(),
     }
