@@ -193,16 +193,7 @@ pub struct BatchWrite<'a> {
 /// Every statically-readable write of the batch's `<ops>` argument, so analyses
 /// that look at what `persist` writes read a batch the way they read a single op.
 pub fn batch_writes(ops: &SExpression) -> Vec<BatchWrite<'_>> {
-    let tuples: Vec<&[SExpression]> = match classify_ops(ops) {
-        BatchOps::Literal(elements) => elements
-            .iter()
-            .filter(|e| is_op_tuple(e))
-            .filter_map(as_items)
-            .collect(),
-        BatchOps::Mapped(t) => vec![t],
-        BatchOps::Expression => Vec::new(),
-    };
-    tuples
+    op_tuples(ops)
         .into_iter()
         .filter_map(|t| {
             let action = t.first()?.as_str()?;
@@ -219,6 +210,19 @@ pub fn batch_writes(ops: &SExpression) -> Vec<BatchWrite<'_>> {
             })
         })
         .collect()
+}
+
+/// The statically-readable op tuples of a batch's `<ops>`: a literal list, one mapped list, or an `(array/concat …)`
+/// of those, read part by part.
+fn op_tuples(ops: &SExpression) -> Vec<&[SExpression]> {
+    match classify_ops(ops) {
+        BatchOps::Literal(elements) => elements.iter().filter(|e| is_op_tuple(e)).filter_map(as_items).collect(),
+        BatchOps::Mapped(t) => vec![t],
+        BatchOps::Expression => match as_items(ops) {
+            Some([SExpression::String(head), parts @ ..]) if head == "array/concat" => parts.iter().flat_map(op_tuples).collect(),
+            _ => Vec::new(),
+        },
+    }
 }
 
 /// `args` of a `persist` call (head stripped): the `<ops>` argument when the
@@ -409,6 +413,22 @@ mod tests {
         let mapped = sx(json!(["array/map", "@x", ["fn", "r", ["update", "Row", "@r", {"s": 1}]]]));
         assert_eq!(batch_writes(&mapped).len(), 1);
         assert!(batch_writes(&sx(json!("@payload.ops"))).is_empty());
+    }
+
+    #[test]
+    fn batch_writes_read_through_a_concat_of_a_literal_list_and_a_mapped_list() {
+        let ops = sx(json!(["array/concat", [["create", "Run", {"id": "r", "stepCount": 2}]], ["array/map", "@steps", ["fn", "s", ["create", "Step", {"runId": "r", "step": "@s"}]]]]));
+        let seen: Vec<_> = batch_writes(&ops).iter().map(|w| (w.action, w.entity)).collect();
+        assert_eq!(seen, vec![("create", "Run"), ("create", "Step")]);
+        let nested = sx(json!(["array/concat", ["array/concat", [["delete", "A", "x"]]], [["create", "B", {}]]]));
+        assert_eq!(batch_writes(&nested).len(), 2, "a concat inside a concat is read through too");
+    }
+
+    #[test]
+    fn control_a_concat_with_an_unreadable_part_yields_only_the_readable_writes() {
+        let ops = sx(json!(["array/concat", "@payload.ops", [["create", "B", {}]]]));
+        let seen: Vec<_> = batch_writes(&ops).iter().map(|w| w.entity).collect();
+        assert_eq!(seen, vec!["B"]);
     }
 
     #[test]
