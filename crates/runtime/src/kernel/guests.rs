@@ -181,11 +181,14 @@ pub(crate) fn run_session(
     event: &str,
     payload: &Value,
     leg: Option<&Value>,
+    reply: Option<&crate::resumable::GuestReply>,
     answer: &(dyn Fn(&crate::resumable::IoRequest) -> crate::resumable::IoAnswer + Sync),
 ) -> Result<Value, String> {
     if let Some(leg) = leg {
         return serve_leg(session, payload, leg).map_err(|failure| failure.error);
     }
+    // Registered before the dispatch runs, so a reply its own cascade emits is not missed.
+    let waiting = reply.map(|wanted| session.kernel.await_reply(wanted));
     let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
     for trait_name in targets {
         if let Some(host) = &session.host {
@@ -200,10 +203,56 @@ pub(crate) fn run_session(
             .map_err(|e| format!("program/dispatch: {e}"))?;
         outcomes.extend(ran);
     }
+    let replied = match (reply, &waiting) {
+        (Some(wanted), Some(waiting)) => Some(waiting.wait(std::time::Duration::from_millis(wanted.timeout_ms)).ok_or_else(|| {
+            let value = orbital_core_base::json_value::value_to_json(&wanted.value);
+            format!("program/dispatch: no {} for {} {} within {} ms", wanted.events.join(" or "), wanted.field, value, wanted.timeout_ms)
+        })?),
+        _ => None,
+    };
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
     let orbitals = painter_orbitals(&session.kernel, &outcomes);
-    Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
+    let mut answer = guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]);
+    if let (Some((event, payload)), Value::Object(fields)) = (replied, &mut answer) {
+        let mut reply = ValueMap::default();
+        reply.insert("event".into(), Value::string(event));
+        reply.insert("payload".into(), payload);
+        fields.insert("reply".into(), Value::object(reply));
+    }
+    Ok(answer)
+}
+
+/// `options.reply` of a `program/dispatch` into a guest: `{ events, match, timeoutMs }`, every part required, the match
+/// field read from the dispatched payload. Only a keyed call may wait: an unkeyed one would hold its caller's dispatch.
+fn guest_reply(args: &[Value], payload: &Value, keyed: bool) -> Result<Option<crate::resumable::GuestReply>, AgentPortFailure> {
+    let Some(Value::Object(options)) = args.get(2) else { return Ok(None) };
+    let reply = match options.get("reply") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Object(reply)) => reply,
+        Some(_) => return Err(failure("program/dispatch: options.reply is a record { events, match, timeoutMs }")),
+    };
+    if !keyed {
+        return Err(failure("program/dispatch: a reply is waited for only on a keyed call (give the call a key and routes)"));
+    }
+    let events: Vec<String> = match reply.get("events") {
+        Some(Value::Array(events)) if !events.is_empty() => events.iter().filter_map(|e| e.as_str().map(str::to_string)).collect(),
+        _ => return Err(failure("program/dispatch: reply.events names the events that answer the call")),
+    };
+    let field = match reply.get("match") {
+        Some(Value::String(field)) if !field.is_empty() => field.to_string(),
+        _ => return Err(failure("program/dispatch: reply.match names the payload field the reply carries back")),
+    };
+    let timeout_ms = match reply.get("timeoutMs") {
+        Some(Value::Int(ms)) if *ms > 0 => *ms as u64,
+        Some(Value::Number(ms)) if *ms > 0.0 => *ms as u64,
+        _ => return Err(failure("program/dispatch: reply.timeoutMs is how long to wait, in milliseconds")),
+    };
+    let value = match payload.get(field.as_str()) {
+        Some(value) if !matches!(value, Value::Null) => value.clone(),
+        _ => return Err(failure(format!("program/dispatch: the payload carries no {field} for the reply to match"))),
+    };
+    Ok(Some(crate::resumable::GuestReply { events, field, value, timeout_ms }))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -1220,6 +1269,7 @@ impl RuntimeKernel {
     ) -> Result<Value, AgentPortFailure> {
         let guest = &session.kernel;
         let keyed = self.io.keyed_call();
+        let reply = guest_reply(args, &payload, keyed)?;
         if keyed || session.grants.is_some() {
             if keyed {
                 self.may_spawn_guest("program/dispatch")?;
@@ -1240,6 +1290,7 @@ impl RuntimeKernel {
                     payload,
                     grants,
                     leg,
+                    reply,
                     args.to_vec(),
                 )
                 .map(|answer| answer.unwrap_or(Value::Null))

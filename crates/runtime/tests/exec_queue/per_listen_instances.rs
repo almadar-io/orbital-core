@@ -1033,3 +1033,67 @@ mod keyed_completion {
         assert_eq!(frame(&ops).as_deref(), Some("PerKey\u{1e}A"), "{ops:?}");
     }
 }
+
+// G-ORBITAL-CORE-217: a delivery from a keyed row to a listener with no `per` clause steps the listener's singleton
+// frame, never a row named after the keyed row (EXEC-STEP-1a: "An edge with no `per` clause behaves as before").
+mod unkeyed_listener_of_a_keyed_row {
+    use super::*;
+
+    fn program(tally_key: Option<Json>) -> Json {
+        let mut p = schema(per_payload_key(), false);
+        let caller = &mut p["orbitals"][0]["traits"][0];
+        caller["stateMachine"]["states"] = json!([{ "name": "idle", "isInitial": true }, { "name": "tallied" }]);
+        caller["stateMachine"]["transitions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "from": "idle", "to": "tallied", "event": "TALLY", "effects": [] }));
+        let mut edge = json!({ "event": "REPLIED", "triggers": "TALLY", "source": { "kind": "orbital", "orbital": "SlotOrbital", "trait": "PerKey" } });
+        if let Some(key) = tally_key {
+            edge["key"] = key;
+        }
+        caller["listens"].as_array_mut().unwrap().push(edge);
+        p
+    }
+
+    fn kernel_of(p: Json) -> RuntimeKernel {
+        crate::support::TestKernel::server()
+            .source(Arc::new(InMemoryEntityCache::new()) as Arc<dyn EntitySource>)
+            .build(p)
+    }
+
+    fn reply_on_row(k: &RuntimeKernel, row: &str) {
+        k.dispatch("PerKey", Some(row), "REPLY", val(json!({ "key": row })))
+            .unwrap();
+    }
+
+    fn caller_state(k: &RuntimeKernel, row: Option<&str>) -> Option<String> {
+        k.get_state("Caller", row).map(|s| s.current_state)
+    }
+
+    #[test]
+    fn a_keyed_rows_emit_reaches_an_unkeyed_listener_on_its_singleton_frame() {
+        let k = kernel_of(program(None));
+        go(&k, json!("A"), 1);
+        assert_eq!(state(&k, Some("A")).as_deref(), Some("busy"));
+        reply_on_row(&k, "A");
+        assert_eq!(
+            caller_state(&k, None).as_deref(),
+            Some("tallied"),
+            "the singleton Caller heard REPLIED"
+        );
+        assert_ne!(
+            caller_state(&k, Some("A")).as_deref(),
+            Some("tallied"),
+            "no Caller row named after the keyed row stepped"
+        );
+    }
+
+    #[test]
+    fn control_a_keyed_listener_of_a_keyed_rows_emit_steps_its_own_row() {
+        let k = kernel_of(program(Some(json!("@payload.key"))));
+        go(&k, json!("A"), 1);
+        reply_on_row(&k, "A");
+        assert_eq!(caller_state(&k, Some("A")).as_deref(), Some("tallied"));
+        assert_ne!(caller_state(&k, None).as_deref(), Some("tallied"));
+    }
+}

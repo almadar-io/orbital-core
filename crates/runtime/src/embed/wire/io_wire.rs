@@ -120,6 +120,8 @@ pub enum IoRequestWire {
         key: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         site: Option<CallSiteWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply: Option<crate::resumable::GuestReply>,
     },
     #[serde(rename_all = "camelCase")]
     Random { bytes: u32 },

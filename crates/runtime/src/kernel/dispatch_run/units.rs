@@ -640,7 +640,11 @@ impl RuntimeKernel {
         }
         let outer_eid = eid;
         let queued_row = item.row.clone();
-        let keyed = item.row.is_some() || self.is_keyed_row(&item.trait_name, eid);
+        // A queued singleton row is an unkeyed edge from a keyed row's emit (EXEC-STEP-1a), never a keyed row.
+        let keyed = match item.row.as_deref() {
+            Some(row) => row != crate::process_result::RUNTIME_SINGLETON,
+            None => self.is_keyed_row(&item.trait_name, eid),
+        };
         let eid = queued_row.as_deref().unwrap_or(eid);
         let from = self.current_state_name(&item.trait_name, Some(eid));
         let frame = self.step_frame(&item.trait_name, eid);

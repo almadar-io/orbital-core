@@ -35,6 +35,18 @@ impl RequestId {
     }
 }
 
+/// `program/dispatch { reply: { events, match, timeoutMs } }` into a guest (EXEC-CONC-7): the dispatch answers once the guest
+/// emits one of `events` whose payload's `field` equals `value`, the same field of the dispatched payload, or fails after
+/// `timeout_ms`. An outcome the guest reaches in a later completion (a sign-in after a key fetch) is waited for this way.
+#[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuestReply {
+    pub events: Vec<String>,
+    pub field: String,
+    pub value: Value,
+    pub timeout_ms: u64,
+}
+
 /// The I/O the kernel needs the host to do. The kernel applies row policy, filters and paging itself
 /// around these, so a host answers plain storage reads and writes. A credential value is a [`Secret`], which never
 /// prints (an `HttpRequest` redacts its own credentials).
@@ -112,6 +124,8 @@ pub enum IoRequest {
         leg: Option<Value>,
         key: Option<String>,
         site: Option<CallSite>,
+        /// `options.reply`: the dispatch answers once the guest emits one of these events for the same request.
+        reply: Option<GuestReply>,
     },
     /// The page facts a `browser/page-facts` asks for, in read order.
     PageFacts {

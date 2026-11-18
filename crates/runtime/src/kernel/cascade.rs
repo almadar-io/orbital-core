@@ -272,8 +272,8 @@ impl RuntimeKernel {
                 fans_out: false,
                 repaint: None,
                 completion: false,
+                row: (l.key.is_none() && source.instance_key.is_some()).then(|| RUNTIME_SINGLETON.to_string()),
                 listen_key: l.key.map(|expr| ListenKey { expr, emitter: source_trait.to_string() }),
-                row: None,
             });
         }
     }

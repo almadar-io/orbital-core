@@ -116,6 +116,7 @@ pub enum KernelError {
 
 pub mod agent_ports;
 mod guests;
+mod reply_wait;
 pub mod guest_hosting;
 pub use guests::{GuestSession, GuestTicks};
 pub(crate) use guests::run_session as run_guest_session;
@@ -455,6 +456,8 @@ pub struct RuntimeKernel {
     event_bus: SharedEventBus,
     listener_manager: ListenerManager,
     dispatch_observer: RwLock<Option<Arc<crate::dispatch_trace::DispatchObserver>>>,
+    /// The `program/dispatch { reply }` calls into this kernel waiting for a reply emit.
+    reply_waiters: Arc<orbital_core_base::sync::Mutex<Vec<Arc<reply_wait::ReplyWaiter>>>>,
     entity_source: Arc<dyn EntitySource>,
     /// The door every read, write, service call and substrate operator goes through; `entity_source` is it.
     io: Arc<IoPort>,
@@ -809,6 +812,7 @@ impl RuntimeKernel {
                 server_listens: Arc::default(),
             },
             dispatch_observer: RwLock::new(None),
+            reply_waiters: Arc::default(),
             entity_source,
             io,
             rows: entity_handler,
