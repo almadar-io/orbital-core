@@ -1480,3 +1480,28 @@ fn control_a_shared_definition_writes_the_same_json() {
     let again: super::EntityDefinition = from_json_str(&text).unwrap();
     assert_eq!(serde_json::to_string(&again).unwrap(), text);
 }
+
+#[test]
+fn a_background_tick_counts_at_rest_only_when_it_can_run_in_the_initial_state() {
+    let with_tick = |tick: serde_json::Value| -> TraitDefinition {
+        crate::json_value::from_json_value(&serde_json::json!({
+            "name": "Timer",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "waiting" }], "transitions": [] },
+            "ticks": [tick]
+        }))
+        .expect("a trait")
+    };
+    let tick = |extra: serde_json::Value| {
+        let mut t = serde_json::json!({ "name": "check", "interval": 100, "effects": [] });
+        for (k, v) in extra.as_object().unwrap() {
+            t[k] = v.clone();
+        }
+        t
+    };
+    assert!(with_tick(tick(serde_json::json!({ "runsInBackground": true }))).ticks_in_background_at_rest(), "no state named: every state");
+    assert!(with_tick(tick(serde_json::json!({ "runsInBackground": true, "appliesTo": ["idle", "waiting"] }))).ticks_in_background_at_rest(), "names the initial state");
+    assert!(!with_tick(tick(serde_json::json!({ "runsInBackground": true, "appliesTo": ["waiting"] }))).ticks_in_background_at_rest(), "names only a later state");
+    assert!(!with_tick(tick(serde_json::json!({ "appliesTo": ["idle"] }))).ticks_in_background_at_rest(), "control: not a background tick");
+    assert!(!with_tick(tick(serde_json::json!({}))).ticks_in_background_at_rest(), "control: a plain tick");
+}
+

@@ -708,6 +708,59 @@ fn a_page_mount_inits_only_its_traits_with_the_route_params() {
     assert_eq!(main_prop(&core, "subtitle"), ["history"]);
 }
 
+fn localized_schema() -> OrbitalSchema {
+    from_json_value(&(serde_json::json!({
+        "name": "App",
+        "locales": ["en", "ar", "sl"],
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "HomeTrait", "dispatch": "client", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": ["default", "@payload.locale", "plain"] }]] }
+                ] } }
+            ],
+            "pages": [
+                { "name": "HomePage", "path": "/home", "traits": [{ "ref": "HomeTrait" }] },
+                { "name": "HomeLocalePage", "path": "/:locale/home", "traits": [{ "ref": "HomeTrait" }] }
+            ]
+        }]
+    })))
+    .unwrap()
+}
+
+/// One trait named by a plain page and by the same page under a locale segment: moving between the two pages starts
+/// the trait again with the route params of the page opened, and the viewer's locale follows the route.
+#[test]
+fn a_trait_two_pages_name_starts_again_with_the_params_of_the_page_opened() {
+    let schema = localized_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, Arc::clone(&kernel));
+    core.mount_page_blocking();
+    assert_eq!(main_prop(&core, "title"), ["plain"], "the plain page carries no locale param");
+    assert_eq!(core.locale().as_deref(), Some("en"));
+
+    core.navigate_to("/ar/home", None);
+    core.mount_page_blocking();
+    assert_eq!(main_prop(&core, "title"), ["ar"]);
+    assert_eq!(core.locale().as_deref(), Some("ar"));
+
+    core.navigate_to("/sl/home", None);
+    core.mount_page_blocking();
+    assert_eq!(main_prop(&core, "title"), ["sl"]);
+    assert_eq!(core.locale().as_deref(), Some("sl"));
+
+    core.navigate_to("/home", None);
+    core.mount_page_blocking();
+    assert_eq!(main_prop(&core, "title"), ["plain"], "back on the plain page the param is gone");
+    assert_eq!(core.locale().as_deref(), Some("en"));
+
+    core.navigate_to("/zz/home", None);
+    core.mount_page_blocking();
+    assert_eq!(main_prop(&core, "title"), ["zz"], "edge: a segment that is no declared locale still reaches the trait as the param");
+    assert_eq!(core.locale().as_deref(), Some("en"), "edge: and the viewer's locale is the first declared one");
+}
+
 /// `navigate-back` returns to the previous page and its params; with no history it stays.
 #[test]
 fn navigate_back_returns_to_the_previous_page() {

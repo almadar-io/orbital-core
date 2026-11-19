@@ -699,13 +699,16 @@ impl RuntimeKernel {
             .unwrap_or_else(|| trait_name.to_string());
         let defs = self.registry.entity_definitions.read();
         // A form whose fields a knob names reaches here as bare names the compiler's resolve-time stamp never saw.
-        let stamps = defs
-            .get(&linked)
-            .and_then(|entity| orbital_core_base::language::field_stamp::EntityFieldStamps::of(entity).ok());
+        // Built on the first render of the step: a step that renders nothing reads no field meta.
+        let mut stamps: Option<Option<orbital_core_base::language::field_stamp::EntityFieldStamps>> = None;
         let server = self.config.environment.is_server();
         for result in results {
             if let Effect::RenderUi { content, .. } = &mut result.effect {
-                if let Some(stamps) = &stamps {
+                let stamps = stamps.get_or_insert_with(|| {
+                    defs.get(&linked)
+                        .and_then(|entity| orbital_core_base::language::field_stamp::EntityFieldStamps::of(entity).ok())
+                });
+                if let Some(stamps) = stamps {
                     stamps.stamp_tree(content);
                 }
                 if !server {

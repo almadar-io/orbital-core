@@ -606,6 +606,20 @@ impl TraitDefinition {
 }
 
 impl TraitDefinition {
+    /// Whether a `[background]` tick of this trait can run before any event reaches it: one that names no state (it
+    /// runs in every state) or names the initial state. A background tick that names only later states cannot fire
+    /// until a step moves the trait there, so an orbital no event has reached owes it nothing (EXEC-LOAD-2).
+    pub fn ticks_in_background_at_rest(&self) -> bool {
+        let initial = self.state_machine.states.iter().find(|s| s.is_initial == Some(true)).map(|s| s.name.as_str());
+        self.ticks.iter().flatten().any(|tick| {
+            tick.background
+                && match tick.applies_to.as_deref() {
+                    None | Some([]) => true,
+                    Some(states) => states.iter().any(|state| Some(state.as_str()) == initial),
+                }
+        })
+    }
+
     /// Whether a transition of this trait reads the dispatch memory (`@prevEvents`, `@prevStates`, EXEC-QUEUE-5).
     pub fn reads_dispatch_memory(&self) -> bool {
         use crate::ir::expr::{OirBinding, OirBindingRoot};

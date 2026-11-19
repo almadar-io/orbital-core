@@ -162,6 +162,30 @@ fn dispatch_bubbles_embedded_emit_to_host_listener() {
     assert_eq!(persistor.1.new_state, "created");
 }
 
+/// EXEC-SEED-3, G-CROSS-716: a lifecycle seed is a mount, not a UI event, so it runs on the trait it names and is
+/// not offered to the traits that embed it. Before the fix the host ran its own `INIT` once per embedded child mounted.
+#[test]
+fn a_lifecycle_seed_runs_on_the_trait_it_names_and_not_on_the_traits_that_embed_it() {
+    for event in ["INIT", "LOAD", "$MOUNT"] {
+        let kernel = kernel_with(notes_like_schema());
+        let outcomes = kernel
+            .dispatch("InlineButtonRender3", None, event, Value::Object(Default::default()))
+            .unwrap();
+        assert!(
+            !outcomes.iter().any(|(t, _)| t == "NoteCatalog"),
+            "{event} to the embedded child reached its host: {:?}",
+            outcomes.iter().map(|(t, r)| (t.clone(), r.executed)).collect::<Vec<_>>()
+        );
+    }
+    let kernel = kernel_with(notes_like_schema());
+    let own = kernel.dispatch("NoteCatalog", None, "INIT", Value::Object(Default::default())).unwrap();
+    assert!(own.iter().any(|(t, r)| t == "NoteCatalog" && r.executed), "control: the host's own INIT still runs");
+    let bubbled = kernel
+        .dispatch("InlineButtonRender3", None, "CREATE_DRAFT", Value::Object(Default::default()))
+        .unwrap();
+    assert!(bubbled.iter().any(|(t, _)| t == "NotePersistor"), "control: a UI event still bubbles to the host's listeners");
+}
+
 /// A trait with no ancestors must dispatch byte-identically to the
 /// pre-bubble single-scope path: one outcome, the target trait only.
 #[test]

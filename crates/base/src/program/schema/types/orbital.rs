@@ -75,7 +75,7 @@ pub struct LazyTrait {
     pub dispatch_mode: crate::dispatch_mode::DispatchMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub listens: Vec<ListenDefinition>,
-    /// Whether the trait declares a `[background]` tick: the host runs it with no client mounted, so the orbital loads at boot.
+    /// Whether the trait declares a `[background]` tick that can run in its initial state (`TraitDefinition::ticks_in_background_at_rest`): the host runs it with no client mounted, so the orbital loads at boot.
     #[serde(default, rename = "backgroundTicks", skip_serializing_if = "std::ops::Not::not")]
     pub background_ticks: bool,
 }

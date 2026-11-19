@@ -247,8 +247,9 @@ impl RuntimeKernel {
         // single-scope semantics `useEventBus.ts` reserves for machine-
         // originated emits. A trait with no ancestors runs this loop exactly
         // once, byte-identical to the pre-bubble single-scope dispatch.
+        // EXEC-SEED-3: a lifecycle seed is a mount, not a UI event; it runs on the trait it names only (G-CROSS-716).
         let mut seed_scopes = vec![trait_name.clone()];
-        if tick.is_none() {
+        if tick.is_none() && crate::effects::response::LifecycleEvent::parse(&event_name).is_none() {
             seed_scopes.extend(
                 self.registry.embed_index
                     .read()
