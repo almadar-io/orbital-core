@@ -775,10 +775,10 @@ impl RuntimeKernel {
         let mem_change: Arc<RwLock<Option<mem_table::MemTable>>> = Arc::default();
         let mem_view = Arc::new(mem_table::StepMem::new(Arc::clone(&mem), Arc::clone(&mem_change)));
         let os_grants: Arc<RwLock<OsGrantTable>> = Arc::new(RwLock::new(OsGrantTable::default()));
-        let introspect = Arc::new(kernel_introspect::StepKernel::new(Arc::clone(&io), Arc::clone(&os_grants)));
         let view_records: Arc<view_record::ViewRecords> = Arc::default();
         let mount_ledger: Arc<RwLock<mount_ledger::MountLedger>> = Arc::default();
         let guests: Arc<RwLock<HashMap<String, guests::GuestSession>>> = Arc::default();
+        let introspect = Arc::new(kernel_introspect::StepKernel::new(Arc::clone(&io), Arc::clone(&os_grants), Arc::downgrade(&guests)));
         let session_lives = Arc::new(session_life::SessionLives::new(
             Arc::clone(&guests),
             Arc::clone(&mount_ledger),

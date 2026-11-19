@@ -34,6 +34,8 @@ pub(super) struct StepKernel {
     position: RwLock<Position>,
     io: Arc<IoPort>,
     grants: Arc<RwLock<OsGrantTable>>,
+    /// The kernel's open guests, which `kernel/step` steps (EXEC-METAL-7).
+    guests: std::sync::Weak<RwLock<HashMap<String, super::guests::GuestSession>>>,
 }
 
 impl std::fmt::Debug for StepKernel {
@@ -43,8 +45,12 @@ impl std::fmt::Debug for StepKernel {
 }
 
 impl StepKernel {
-    pub(super) fn new(io: Arc<IoPort>, grants: Arc<RwLock<OsGrantTable>>) -> Self {
-        Self { enabled: AtomicBool::new(false), position: RwLock::new(Position::default()), io, grants }
+    pub(super) fn new(
+        io: Arc<IoPort>,
+        grants: Arc<RwLock<OsGrantTable>>,
+        guests: std::sync::Weak<RwLock<HashMap<String, super::guests::GuestSession>>>,
+    ) -> Self {
+        Self { enabled: AtomicBool::new(false), position: RwLock::new(Position::default()), io, grants, guests }
     }
 
     pub(super) fn enable(&self) {
@@ -116,6 +122,192 @@ impl KernelIntrospect for StepKernel {
         let need = OsRequirement::Kernel { kind: KernelKind::Call, operator: Some(operator.to_string()) };
         self.grants.read().allows(self.position.read().orbital.as_deref(), &need)
     }
+
+    fn step(&self, guest: &Value, request: &Value) -> Result<Value, String> {
+        const OP: &str = "kernel/step";
+        let need = OsRequirement::Kernel { kind: KernelKind::Step, operator: None };
+        if !(self.enabled() && self.grants.read().allows(self.position.read().orbital.as_deref(), &need)) {
+            return Err(format!("{OP}: denied: no `kernel: {{ \"guest\": [step] }}` grant covers it"));
+        }
+        let Value::String(handle) = guest else {
+            return Err(format!("{OP}: guest must be the handle program/open answered"));
+        };
+        let session = self
+            .guests
+            .upgrade()
+            .and_then(|open| open.read().get(handle.as_str()).cloned())
+            .ok_or_else(|| format!("{OP}: no open guest '{}' (it was never opened or is closed)", handle.as_str()))?;
+        let text = |field: &str| {
+            request
+                .get(field)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or_else(|| format!("{OP}: the request's `{field}` must be a string"))
+        };
+        let (trait_name, from, event) = (text("trait")?, text("from")?, text("event")?);
+        let entity_id = match request.get("entityId") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(id)) => Some(id.to_string()),
+            Some(_) => return Err(format!("{OP}: the request's `entityId` must be a string")),
+        };
+        let now = match request.get("now") {
+            None | Some(Value::Null) => self.position.read().now,
+            Some(value) => value.as_number().ok_or_else(|| format!("{OP}: the request's `now` must be a number of ms"))?,
+        };
+        let input = IsolatedStep {
+            trait_name: &trait_name,
+            entity_id: entity_id.as_deref(),
+            from: &from,
+            event: &event,
+            payload: request.get("payload").cloned().unwrap_or(Value::Null),
+            entity: request.get("entity").cloned().unwrap_or(Value::Null),
+            now,
+        };
+        session.kernel.step_isolated(input).map_err(|error| format!("{OP}: {error}"))
+    }
+}
+
+/// One `kernel/step` request, read from its record.
+pub(super) struct IsolatedStep<'a> {
+    trait_name: &'a str,
+    entity_id: Option<&'a str>,
+    from: &'a str,
+    event: &'a str,
+    payload: Value,
+    entity: Value,
+    now: f64,
+}
+
+/// The effects a step may run as data; every other effect with a host or a side effect is an ask.
+const STEP_EFFECTS: [&str; 7] = ["emit", "set", "render-ui", "navigate", "navigate-back", "log", "notify"];
+
+/// The asks in `expr`, in walk order: each call whose head the operator table gives a host or a side effect and that
+/// is not a step effect.
+fn asks_in(expr: &SExpression, out: &mut Vec<String>) {
+    match expr {
+        SExpression::Array(items) => {
+            if let Some(head) = items.first().and_then(SExpression::as_str) {
+                let asks = !STEP_EFFECTS.contains(&head)
+                    && matches!(
+                        orbital_core_base::language::registry::lookup_operator(head),
+                        Ok(Some(declared)) if declared.has_side_effects || declared.host.is_some()
+                    );
+                if asks && !out.iter().any(|seen| seen == head) {
+                    out.push(head.to_string());
+                }
+            }
+            for item in items.iter() {
+                asks_in(item, out);
+            }
+        }
+        SExpression::Object(fields) => {
+            for value in fields.values() {
+                asks_in(value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+impl RuntimeKernel {
+    /// `kernel/step` on this (guest) kernel: the trait set to `from` and `entity`, one `event` processed with no cascade,
+    /// then the trait restored and its renders dropped, so the guest holds nothing a step left. A transition whose
+    /// `from --event-->` arms hold an ask is refused before anything runs.
+    pub(super) fn step_isolated(&self, input: IsolatedStep<'_>) -> Result<Value, String> {
+        let trait_def = self
+            .registry
+            .trait_definitions
+            .read()
+            .get(input.trait_name)
+            .cloned()
+            .ok_or_else(|| format!("the guest has no trait \"{}\"", input.trait_name))?;
+        let mut asks = Vec::new();
+        for arm in trait_def
+            .state_machine
+            .transitions
+            .iter()
+            .filter(|t| t.event == input.event && t.from.states().contains(&input.from))
+        {
+            for effect in arm.effects.iter().flatten() {
+                asks_in(effect, &mut asks);
+            }
+        }
+        if !asks.is_empty() {
+            return Ok(record([
+                ("fired", Value::Bool(false)),
+                ("from", Value::string(input.from)),
+                ("to", Value::string(input.from)),
+                ("arm", Value::Null),
+                ("entity", input.entity),
+                ("emits", Value::array(Vec::<Value>::new())),
+                ("effects", Value::array(Vec::<Value>::new())),
+                ("guards", Value::array(Vec::<Value>::new())),
+                ("failure", Value::Null),
+                ("refused", Value::string("io")),
+                ("asks", Value::array(asks.into_iter().map(Value::string).collect::<Vec<Value>>())),
+            ]));
+        }
+        let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
+        let held = self.snapshot_trait(input.trait_name, input.entity_id);
+        let held = if held.state.is_empty() {
+            TraitSnapshot { state: self.get_initial_state(input.trait_name).unwrap_or_default(), entity: held.entity }
+        } else {
+            held
+        };
+        self.restore_trait(input.trait_name, input.entity_id, TraitSnapshot { state: input.from.to_string(), entity: input.entity });
+        self.renders.write().forget_traits([input.trait_name]);
+        *self.step.dispatch_now.write() = Some(input.now);
+        let ran = self.process_event_in_dispatch(input.trait_name, input.entity_id, input.event, Arc::new(input.payload), None, false);
+        *self.step.dispatch_now.write() = None;
+        self.restore_trait(input.trait_name, input.entity_id, held);
+        self.renders.write().forget_traits([input.trait_name]);
+        let result = ran.map_err(|fault| fault.into_kernel().to_string())?;
+        Ok(step_answer(&result))
+    }
+}
+
+fn step_answer(result: &ProcessEventResult) -> Value {
+    let emits = result
+        .effect_results
+        .iter()
+        .filter_map(|ran| match &ran.effect {
+            Effect::Emit { event, payload } => Some(record([("event", Value::string(event.as_str())), ("payload", payload.clone())])),
+            _ => None,
+        })
+        .collect::<Vec<Value>>();
+    let effects = result
+        .effect_results
+        .iter()
+        .filter_map(|ran| match &ran.effect {
+            Effect::Emit { .. } | Effect::Set { .. } => None,
+            Effect::RenderUi { slot, content } => Some(record([
+                ("type", Value::string("render-ui")),
+                ("slot", Value::string(slot.as_str())),
+                ("content", content.clone()),
+            ])),
+            other => serde_json::to_value(other)
+                .ok()
+                .and_then(|json| orbital_core_base::json_value::from_json_value::<Value>(&json).ok()),
+        })
+        .collect::<Vec<Value>>();
+    let guards = result
+        .guards
+        .iter()
+        .map(|tried| record([("arm", count(tried.arm as u64)), ("passed", Value::Bool(tried.guard.passed))]))
+        .collect::<Vec<Value>>();
+    record([
+        ("fired", Value::Bool(result.executed)),
+        ("from", Value::string(result.previous_state.as_str())),
+        ("to", Value::string(result.new_state.as_str())),
+        ("arm", result.fired_arm.map_or(Value::Null, |arm| count(arm as u64))),
+        ("entity", result.entity_data.to_value()),
+        ("emits", Value::array(emits)),
+        ("effects", Value::array(effects)),
+        ("guards", Value::array(guards)),
+        ("failure", result.failure.as_deref().map_or(Value::Null, Value::string)),
+        ("refused", Value::Null),
+        ("asks", Value::array(Vec::<Value>::new())),
+    ])
 }
 
 /// `queue` with every item whose event is `event` moved to the front (or back), keeping their relative order.

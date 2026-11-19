@@ -794,11 +794,12 @@ impl RuntimeKernel {
         let stale = self.stale_host_paints(response);
         {
             let mut renders = self.renders.write();
-            for painted in response
+            for (_, painted) in response
                 .client_effects_by_trait
                 .iter()
                 .flatten()
-                .filter(|p| !stale.contains(&p.trait_name))
+                .enumerate()
+                .filter(|(index, _)| !stale.contains(index))
             {
                 if let orbital_core_base::client_effect::ClientEffect::RenderUi { slot, config } =
                     &painted.effect
@@ -1433,6 +1434,21 @@ impl RuntimeKernel {
             .map(|hop| hop.from.as_str())
     }
 
+    /// The first of the host's steps of `trait_name`, counted among that trait's own, that it ran from `now`: its
+    /// report continues from there. A leg carries the state before the client's own step, so a lifecycle step that
+    /// moves the trait puts the host's first step before `now` and a later one at it (EXEC-DIST-4).
+    fn host_reached(trait_name: &str, now: Option<&str>, response: &EventResponse) -> Option<usize> {
+        let mut hops = response
+            .transitions
+            .iter()
+            .flatten()
+            .filter(|hop| hop.trait_name == trait_name);
+        match now {
+            None => hops.next().map(|_| 0),
+            Some(now) => hops.position(|hop| hop.from == now),
+        }
+    }
+
     /// Whether the host's report of `trait_name` (its state, its paint) continues from `now`: a host answering from its
     /// own copy of every trait (the in-process browser store) reports traits it never ran, and repaints the render it
     /// holds for them against a carried row (EXEC-RENDER-1), which this kernel repaints itself from the folded frames.
@@ -1445,27 +1461,50 @@ impl RuntimeKernel {
         if !self.committed_here(trait_name) {
             return true;
         }
-        Self::host_ran_from(trait_name, response)
-            .is_some_and(|from| now.is_none_or(|now| now == from))
+        Self::host_reached(trait_name, now, response).is_some()
     }
 
-    /// The traits whose host paints in `response` do not continue from this client's state, read before the response folds.
-    pub fn stale_host_paints(&self, response: &EventResponse) -> HashSet<String> {
+    /// The positions in `response.clientEffectsByTrait` of the host paints that do not continue from this client's
+    /// state, read before the response folds: every paint of a trait whose report does not continue, and the paints of
+    /// the steps the host ran before it reached the client's state. A paint names its step by `event` and `fromState`;
+    /// one that names none belongs to the trait's first step.
+    pub fn stale_host_paints(&self, response: &EventResponse) -> HashSet<usize> {
         let key = self.state_key(Some(RUNTIME_SINGLETON));
         let states = self.state_manager.read();
-        response
-            .client_effects_by_trait
-            .iter()
-            .flatten()
-            .map(|p| p.trait_name.as_str())
-            .filter(|t| {
-                let now = states
-                    .get_state(t, key.as_deref())
-                    .map(|s| s.current_state.as_str());
-                !self.host_report_continues(t, now, response)
-            })
-            .map(str::to_string)
-            .collect()
+        let mut cursors: HashMap<&str, usize> = HashMap::new();
+        let mut stale = HashSet::new();
+        for (index, paint) in response.client_effects_by_trait.iter().flatten().enumerate() {
+            let trait_name = paint.trait_name.as_str();
+            if !self.committed_here(trait_name) {
+                continue;
+            }
+            let now = states
+                .get_state(trait_name, key.as_deref())
+                .map(|s| s.current_state.as_str());
+            let Some(reached) = Self::host_reached(trait_name, now, response) else {
+                stale.insert(index);
+                continue;
+            };
+            let cursor = cursors.entry(trait_name).or_insert(0);
+            if let (Some(event), Some(from)) = (paint.event.as_deref(), paint.from_state.as_deref()) {
+                let step = response
+                    .transitions
+                    .iter()
+                    .flatten()
+                    .filter(|hop| hop.trait_name == trait_name)
+                    .enumerate()
+                    .skip(*cursor)
+                    .find(|(_, hop)| hop.event == event && hop.from == from)
+                    .map(|(at, _)| at);
+                if let Some(at) = step {
+                    *cursor = at;
+                }
+            }
+            if *cursor < reached {
+                stale.insert(index);
+            }
+        }
+        stale
     }
 
     pub fn browser_runs(&self, trait_name: &str) -> bool {

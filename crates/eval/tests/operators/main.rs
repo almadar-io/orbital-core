@@ -1,5 +1,9 @@
 //! Operator behavior: shared vectors, arity, types and the evaluator's edges.
 
+#[global_allocator]
+static ALLOC: orbital_core_base::alloc_meter::CountingAlloc<std::alloc::System> =
+    orbital_core_base::alloc_meter::CountingAlloc::thread_only(std::alloc::System);
+
 mod array_sum_avg_key;
 mod behavior_apply;
 mod behavior_ref_value;
@@ -10,6 +14,7 @@ mod color_operators;
 mod evaluation_mode;
 mod json_valid_operator;
 mod lambda_operators;
+mod linear_fold;
 mod let_scope_contract;
 mod lower_call_head_contract;
 mod lowering_corpus;

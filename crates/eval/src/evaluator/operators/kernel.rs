@@ -89,6 +89,17 @@ impl StrictOperator for KernelApplyOp {
     }
 }
 
+/// kernel/step (guest, request) - one transition of an open guest as data (EXEC-METAL-7); the kernel checks the
+/// `kernel: { "guest": [step] }` grant and the guest handle.
+pub struct KernelStepOp;
+impl StrictOperator for KernelStepOp {
+    fn apply(&self, args: &[&Value], ctx: &BindingContext) -> EvalResult {
+        const OP: &str = "kernel/step";
+        require_arity!(args, OP, == 2);
+        ctx.kernel_introspect(OP)?.step(args[0], args[1]).map_err(refuse)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +208,16 @@ mod tests {
         assert_eq!(got, Value::string("@xa".to_string()));
         let once = eval_with(serde_json::json!(["kernel/apply", "str/concat", ["list", "@x", "a"]]), &ctx).unwrap();
         assert_eq!(once, Value::string("9a".to_string()), "control: the list argument itself is evaluated once");
+    }
+
+    #[test]
+    fn step_takes_a_guest_and_a_request_and_is_refused_where_no_kernel_answers_it() {
+        let ctx = ctx_with(true);
+        let message = refusal(serde_json::json!(["kernel/step", "g1", { "trait": "T", "from": "idle", "event": "GO" }]), &ctx);
+        assert!(message.contains("kernel/step: no kernel here answers it"), "{message}");
+        let message = refusal(serde_json::json!(["kernel/step", "g1"]), &ctx);
+        assert!(message.contains("kernel/step"), "control: the arity is checked first: {message}");
+        let message = refusal(serde_json::json!(["kernel/step", "g1", {}]), &BindingContext::default());
+        assert!(message.contains("kernel/step"), "edge: no kernel at all is refused by name: {message}");
     }
 }

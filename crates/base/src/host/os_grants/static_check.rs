@@ -387,6 +387,7 @@ fn grant_entry(need: &OsRequirement) -> (String, bool) {
                 (KernelKind::Spawn, _) => "kernel: { \"guest\": [spawn] }".to_string(),
                 (KernelKind::Declared, _) => "kernel: { \"guest\": [spawn, declared] }".to_string(),
                 (KernelKind::Program, _) => "kernel: { \"guest\": [spawn, program] }".to_string(),
+                (KernelKind::Step, _) => "kernel: { \"guest\": [step] }".to_string(),
             },
             true,
         ),

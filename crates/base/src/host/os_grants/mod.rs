@@ -138,10 +138,12 @@ pub enum KernelKind {
     Declared,
     /// `guest` only: a guest opened with `program: true` is answered by the opener's program port (EXEC-CONC-7).
     Program,
+    /// `guest` only: `kernel/step` fires one transition of an open guest (EXEC-METAL-7).
+    Step,
 }
 
 named_kinds!(MemKind { Create => "create", Free => "free", Atomic => "atomic" });
-named_kinds!(KernelKind { Call => "call", Reorder => "reorder", Read => "read", Spawn => "spawn", Declared => "declared", Program => "program" });
+named_kinds!(KernelKind { Call => "call", Reorder => "reorder", Read => "read", Spawn => "spawn", Declared => "declared", Program => "program", Step => "step" });
 named_kinds!(FsMode { Read => "read", Write => "write", Create => "create", Remove => "remove", Meta => "meta" });
 named_kinds!(KvMode { Read => "read", Write => "write" });
 named_kinds!(NetKind { Tcp => "tcp", Udp => "udp", Listen => "listen" });
@@ -349,9 +351,9 @@ pub enum KernelTarget {
 }
 
 impl KernelTarget {
-    /// Whether a grant of this target may name `kind`: its own, and for `guest` also `declared` and `program`.
+    /// Whether a grant of this target may name `kind`: its own, and for `guest` also `declared`, `program` and `step`.
     pub fn grants_kind(&self, kind: KernelKind) -> bool {
-        kind == self.kind() || (*self == KernelTarget::Guest && matches!(kind, KernelKind::Declared | KernelKind::Program))
+        kind == self.kind() || (*self == KernelTarget::Guest && matches!(kind, KernelKind::Declared | KernelKind::Program | KernelKind::Step))
     }
 
     /// The one kind a target grants.

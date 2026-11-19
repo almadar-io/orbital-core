@@ -313,6 +313,7 @@ operator_kind! {
     KernelFrameOp => KernelFrameOp,
     KernelStampOp => KernelStampOp,
     KernelApplyOp => KernelApplyOp,
+    KernelStepOp => KernelStepOp,
     ArrayPmapOp => ArrayPmapOp,
     ArrayPreduceOp => ArrayPreduceOp,
     Base64EncodeOp => Base64EncodeOp,

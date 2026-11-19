@@ -851,6 +851,7 @@
     "kernel/queue-back": "kernel/queue-back",
     "kernel/queue-front": "kernel/queue-front",
     "kernel/stamp": "kernel/stamp",
+    "kernel/step": "kernel/step",
     "kernel/worklist": "kernel/worklist",
     "kv/batch": "kv/batch",
     "kv/delete": "kv/delete",

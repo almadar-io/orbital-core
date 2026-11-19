@@ -530,6 +530,7 @@ operator_dispatch! {
         "kernel/frame" => K::KernelFrameOp,
         "kernel/stamp" => K::KernelStampOp,
         "kernel/apply" => K::KernelApplyOp,
+        "kernel/step" => K::KernelStepOp,
         "base64/encode" => K::Base64EncodeOp,
         "base64/decode" => K::Base64DecodeOp,
         "base64/valid" => K::Base64ValidOp,

@@ -91,6 +91,12 @@ pub trait KernelIntrospect: Send + Sync + std::fmt::Debug {
     fn may_apply(&self, operator: &str) -> bool;
     /// Whether the grant covers the `kernel/worklist`, `kernel/frame` and `kernel/stamp` reads.
     fn may_read(&self) -> bool;
+    /// `kernel/step` (EXEC-METAL-7): one transition of the open guest `guest`, fired from the state and row `request`
+    /// names, answered as data with nothing cascaded and the guest left as it was. A refusal is the error text.
+    fn step(&self, guest: &Value, request: &Value) -> Result<Value, String> {
+        let _ = (guest, request);
+        Err("kernel/step: no kernel here answers it".to_string())
+    }
 }
 
 /// The `prob/*` stream of one evaluation: Mulberry32, the generator `@almadar/evaluator` ran, and the rejection flag
@@ -221,6 +227,41 @@ pub struct BindingContext {
 pub(crate) struct LinearLocal {
     name: String,
     slot: std::sync::Mutex<Option<Value>>,
+    /// A record local read field by field: each field whose last read moves it out, with the reads of it left.
+    moves: Option<std::sync::Mutex<Vec<(String, usize)>>>,
+}
+
+impl LinearLocal {
+    /// A read of the local at `rest` (`None`: the whole value). An unplanned local is read once and moved; a planned one
+    /// moves a field out on its last counted read, when no other handle shares the record, and copies every other read.
+    fn read(&self, rest: Option<&str>) -> Option<Value> {
+        let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(moves) = &self.moves else {
+            let taken = slot.take()?;
+            return match rest {
+                Some(path) => taken.get_path_owned(path),
+                None => Some(taken),
+            };
+        };
+        let Some(path) = rest else {
+            return slot.clone();
+        };
+        let field = path.split(['.', '[']).next().unwrap_or(path);
+        let mut moves = moves.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, left)) = moves.iter_mut().find(|(name, _)| name == field) {
+            *left = left.saturating_sub(1);
+            if *left == 0 && path == field {
+                if let Some(Value::Object(record)) = slot.as_mut() {
+                    if !Shared::is_shared(record) {
+                        if let Some(held) = record.get_mut(field) {
+                            return Some(std::mem::take(held));
+                        }
+                    }
+                }
+            }
+        }
+        slot.as_ref()?.get_path_owned(path)
+    }
 }
 
 /// A local's name: written in the language (`let`, `fn` params, std names like `item`), so held without copying.
@@ -555,7 +596,21 @@ impl BindingContext {
         if self.locals.get(name).is_some() {
             self.own_frame().put(name.into(), None);
         }
-        self.linear = Some(Arc::new(LinearLocal { name: name.to_string(), slot: std::sync::Mutex::new(Some(value)) }));
+        self.linear = Some(Arc::new(LinearLocal { name: name.to_string(), slot: std::sync::Mutex::new(Some(value)), moves: None }));
+        self
+    }
+
+    /// Bind `name` to a record the scope reads field by field: the last read of each field in `moves` (with its count of
+    /// reads) moves it out. The caller has checked that no read of `name` follows those, whole or nested.
+    pub fn set_moving_local(&mut self, name: &str, value: Value, moves: Vec<(String, usize)>) -> &mut Self {
+        if self.locals.get(name).is_some() {
+            self.own_frame().put(name.into(), None);
+        }
+        self.linear = Some(Arc::new(LinearLocal {
+            name: name.to_string(),
+            slot: std::sync::Mutex::new(Some(value)),
+            moves: Some(std::sync::Mutex::new(moves)),
+        }));
         self
     }
 
@@ -565,10 +620,9 @@ impl BindingContext {
         }
     }
 
-    /// The linear local `name`, moved out, once.
-    pub(super) fn take_linear(&self, name: &str) -> Option<Value> {
-        let linear = self.linear.as_ref().filter(|l| l.name == name)?;
-        linear.slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+    /// A read of the linear local `name` at `rest` ([`LinearLocal::read`]).
+    pub(super) fn read_linear(&self, name: &str, rest: Option<&str>) -> Option<Value> {
+        self.linear.as_ref().filter(|l| l.name == name)?.read(rest)
     }
 
 }

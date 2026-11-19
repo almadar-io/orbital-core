@@ -59,13 +59,18 @@ fn emit() -> serde_json::Value {
 
 /// An opener whose `GO` runs `effect`; `ANSWERED` keeps the answer, `REFUSED` the failure, `OPENED` the guest handle.
 fn opener(transitions: serde_json::Value) -> RuntimeKernel {
+    opener_granted(transitions, serde_json::Value::Null)
+}
+
+/// [`opener`] whose program declares `os_grants` (null: none).
+fn opener_granted(transitions: serde_json::Value, os_grants: serde_json::Value) -> RuntimeKernel {
     let mut all = vec![
         json!({ "from": "idle", "to": "idle", "event": "OPENED", "effects": [["set", "@entity.guest", "@payload.result.guest"], ["set", "@entity.got", "@payload.result"]] }),
         json!({ "from": "idle", "to": "idle", "event": "ANSWERED", "effects": [["set", "@entity.got", "@payload.result"]] }),
         json!({ "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.refused", "@payload"]] }),
     ];
     all.extend(transitions.as_array().unwrap().iter().cloned());
-    let schema: OrbitalSchema = from_json_value(&json!({
+    let mut program = json!({
         "name": "Playground",
         "typeContractVersion": 1,
         "orbitals": [{
@@ -77,8 +82,11 @@ fn opener(transitions: serde_json::Value) -> RuntimeKernel {
                 "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": all }
             }]
         }]
-    }))
-    .unwrap();
+    });
+    if !os_grants.is_null() {
+        program["osGrants"] = os_grants;
+    }
+    let schema: OrbitalSchema = from_json_value(&program).unwrap();
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()),
@@ -1875,5 +1883,160 @@ mod host_ticks_unwatched_guests {
         let closed = ticks.load(Ordering::SeqCst);
         std::thread::sleep(std::time::Duration::from_millis(400));
         assert_eq!(ticks.load(Ordering::SeqCst), closed, "a closed guest's ticker stopped");
+    }
+}
+
+/// EXEC-METAL-7 `kernel/step`: one transition of an open guest, fired from the state and row the call names, answered as
+/// data. Nothing cascades, no I/O runs, and the guest is left as it was.
+mod kernel_step {
+    use super::*;
+
+    fn stepped_guest() -> serde_json::Value {
+        json!({
+            "name": "Stepped",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+                "traits": [
+                    { "name": "Src", "linkedEntity": "Cell",
+                      "emits": [{ "event": "X", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                        "transitions": [
+                            { "from": "idle", "to": "busy", "event": "GO", "guard": [">", "@payload.v", 0], "effects": [
+                                ["set", "@entity.n", ["+", "@payload.v", 1]],
+                                ["emit", "X", { "n": "@entity.n" }]
+                            ] },
+                            { "from": "idle", "to": "idle", "event": "SAVE", "effects": [["persist", "create", "Cell", { "n": 1 }]] },
+                            { "from": ["idle", "busy"], "to": "idle", "event": "PING" }
+                        ] } },
+                    { "name": "Sink", "linkedEntity": "Cell",
+                      "listens": [{ "event": "X", "triggers": "GOT", "source": { "kind": "trait", "trait": "Src" } }],
+                      "stateMachine": {
+                        "states": [{ "name": "waiting", "isInitial": true }, { "name": "got" }],
+                        "transitions": [
+                            { "from": "waiting", "to": "got", "event": "GOT" },
+                            { "from": ["waiting", "got"], "to": "waiting", "event": "PING" }
+                        ] } }
+                ]
+            }]
+        })
+    }
+
+    fn step_grant() -> serde_json::Value {
+        json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] })
+    }
+
+    fn request(event: &str, payload: serde_json::Value) -> serde_json::Value {
+        json!({ "trait": "Src", "from": "idle", "event": event, "payload": payload, "entity": {} })
+    }
+
+    /// A kernel with the guest open, whose `STEP_<n>` runs `kernel/step` with `requests[n]` and keeps the answer in `got`.
+    fn stepping(grants: serde_json::Value, requests: &[serde_json::Value]) -> RuntimeKernel {
+        let mut transitions = vec![
+            open_transition(),
+            json!({ "from": "idle", "to": "idle", "event": "NATIVE_GO", "effects": [
+                ["program/dispatch", "G.Src.GO", { "v": 4 }, { "guest": "@entity.guest", "emit": emit() }]
+            ] }),
+            json!({ "from": "idle", "to": "idle", "event": "PING", "effects": [
+                ["program/dispatch", "PING", {}, { "guest": "@entity.guest", "emit": emit() }]
+            ] }),
+            json!({ "from": "idle", "to": "idle", "event": "STRAY", "effects": [
+                ["set", "@entity.got", ["kernel/step", "no-such-guest", request("GO", json!({ "v": 4 }))]]
+            ] }),
+        ];
+        for (n, req) in requests.iter().enumerate() {
+            transitions.push(json!({ "from": "idle", "to": "idle", "event": format!("STEP_{n}"), "effects": [
+                ["set", "@entity.got", ["kernel/step", "@entity.guest", req]]
+            ] }));
+        }
+        let kernel = opener_granted(serde_json::Value::Array(transitions), grants);
+        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
+        kernel
+    }
+
+    fn step(kernel: &RuntimeKernel, n: usize) -> serde_json::Value {
+        run(kernel, &format!("STEP_{n}"))["got"].clone()
+    }
+
+    /// The failure the opener's step reports for `event`, when `kernel/step` refused.
+    fn refusal(kernel: &RuntimeKernel, event: &str) -> String {
+        let outcomes = kernel.dispatch("Opener", None, event, Value::Null).unwrap();
+        outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default()
+    }
+
+    fn guest_states(kernel: &RuntimeKernel) -> serde_json::Value {
+        run(kernel, "PING")["got"]["states"].clone()
+    }
+
+    #[test]
+    fn a_step_answers_the_fired_arm_its_entity_and_its_emits_as_data() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["fired"], true, "{got}");
+        assert_eq!((got["from"].as_str(), got["to"].as_str()), (Some("idle"), Some("busy")), "{got}");
+        assert_eq!(got["entity"]["n"], 5.0, "{got}");
+        assert_eq!(got["emits"], json!([{ "event": "X", "payload": { "n": 5.0 } }]), "{got}");
+        assert_eq!((got["refused"].is_null(), &got["asks"]), (true, &json!([])), "control: a step with no ask is not refused: {got}");
+    }
+
+    #[test]
+    fn a_step_runs_no_cascade_and_leaves_the_guest_as_it_was() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let before = guest_states(&kernel);
+        step(&kernel, 0);
+        let after = guest_states(&kernel);
+        assert_eq!(after, before, "the stepped guest is unchanged and its listener never heard X");
+        assert_eq!(after["Sink"], "waiting", "{after}");
+    }
+
+    #[test]
+    fn control_a_native_guest_dispatch_of_the_same_event_cascades_to_the_listener() {
+        let kernel = stepping(step_grant(), &[]);
+        let answered = run(&kernel, "NATIVE_GO");
+        assert_eq!(answered["got"]["states"]["Sink"], "got", "{answered}");
+    }
+
+    #[test]
+    fn the_same_request_twice_answers_the_same() {
+        let req = request("GO", json!({ "v": 4 }));
+        let kernel = stepping(step_grant(), &[req.clone(), req]);
+        assert_eq!(step(&kernel, 0), step(&kernel, 1));
+    }
+
+    #[test]
+    fn a_failed_guard_answers_not_fired_with_the_arm_it_tried() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 0 }))]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["fired"], false, "{got}");
+        assert_eq!(got["to"], "idle", "{got}");
+        assert_eq!(got["guards"], json!([{ "arm": 0, "passed": false }]), "{got}");
+        assert_eq!(got["emits"], json!([]), "{got}");
+    }
+
+    #[test]
+    fn a_transition_whose_arms_ask_for_io_is_refused_before_it_runs() {
+        let kernel = stepping(step_grant(), &[request("SAVE", json!({}))]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["refused"].as_str(), &got["asks"]), (Some("io"), &json!(["persist"])), "{got}");
+        assert_eq!((got["fired"].as_bool(), got["to"].as_str()), (Some(false), Some("idle")), "nothing ran: {got}");
+    }
+
+    #[test]
+    fn without_the_kernel_guest_step_grant_a_step_is_refused() {
+        let kernel = stepping(json!({ "kernel": [{ "target": "guest", "kinds": ["spawn"] }] }), &[request("GO", json!({ "v": 4 }))]);
+        let failure = refusal(&kernel, "STEP_0");
+        assert!(failure.contains("kernel/step") && failure.contains("step"), "{failure}");
+        assert!(entity(&kernel)["got"]["fired"].is_null(), "{}", entity(&kernel));
+    }
+
+    #[test]
+    fn edge_a_step_on_an_unknown_guest_is_refused_by_name() {
+        let kernel = stepping(step_grant(), &[]);
+        let failure = refusal(&kernel, "STRAY");
+        assert!(failure.contains("no-such-guest"), "{failure}");
     }
 }

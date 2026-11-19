@@ -217,3 +217,84 @@ fn control_a_client_trait_that_stepped_locally_keeps_its_state() {
     assert!(state.contains("idle"), "{state}");
     assert!(!host_paints.iter().any(|p| p.contains("loading")), "{host_paints:?}");
 }
+
+// A page visited again: the optimistic trait sits where its last visit left it, and its lifecycle step moves it (a
+// chart that goes back to loading to refetch). The leg carries the state before that step, so the host's cascade
+// starts there and passes through the state the client holds now (Friday's Timeline, blank on every second visit).
+fn revisit_schema() -> OrbitalSchema {
+    from_json_value(&json!({
+        "name": "plan",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Page",
+            "entity": { "name": "Bar", "persistence": "persistent", "collection": "bars",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "title", "type": "string" }] },
+            "traits": [
+                { "name": "Chart", "linkedEntity": "Bar", "dispatch": "optimistic",
+                  "stateMachine": {
+                    "states": [{ "name": "loading", "isInitial": true }, { "name": "chart" }],
+                    "transitions": [
+                        { "from": "loading", "to": "loading", "event": "INIT", "effects": [["fetch", "Bar", { "emit": { "success": "LOADED" } }], ["render-ui", "main", { "type": "typography", "content": "skeleton" }]] },
+                        { "from": "loading", "to": "chart", "event": "LOADED", "effects": [["render-ui", "main", { "type": "typography", "content": "bars" }]] },
+                        { "from": "chart", "to": "loading", "event": "INIT", "effects": [["fetch", "Bar", { "emit": { "success": "LOADED" } }], ["render-ui", "main", { "type": "typography", "content": "skeleton" }]] }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn chart_answer(init_from: &str, loaded: bool) -> orbital_core_runtime::effects::response::EventResponse {
+    let mut hops = vec![json!({ "trait": "Chart", "from": init_from, "to": "loading", "event": "INIT", "effects": [] })];
+    let mut paints = vec![json!({ "traitName": "Chart", "event": "INIT", "fromState": init_from, "effect": ["render-ui", "main", { "type": "typography", "content": "skeleton" }] })];
+    if loaded {
+        hops.push(json!({ "trait": "Chart", "from": "loading", "to": "chart", "event": "LOADED", "effects": [] }));
+        paints.push(json!({ "traitName": "Chart", "event": "LOADED", "fromState": "loading", "effect": ["render-ui", "main", { "type": "typography", "content": "bars" }] }));
+    }
+    serde_json::from_value(json!({
+        "success": true, "emittedEvents": [],
+        "states": { "Chart": if loaded { "chart" } else { "loading" } },
+        "transitions": hops, "clientEffectsByTrait": paints
+    })).unwrap()
+}
+
+/// The client mounts the page, folds the host's answer, mounts it again, then folds `second`. Answers the Chart's
+/// state after the second mount, its state after the fold, and the Chart paints the fold handed the painter.
+fn chart_revisited(second: orbital_core_runtime::effects::response::EventResponse) -> (String, String, Vec<String>) {
+    let client = EmbeddedKernel::new(revisit_schema(), "tab").unwrap();
+    client.dispatch_mount(&[seed("Chart")], None, Value::Null).unwrap();
+    client.apply_server_response(&chart_answer("loading", true), &HashSet::new()).unwrap();
+    assert!(client.get_state("Chart", None).contains("chart"), "the first visit ends on the chart: {}", client.get_state("Chart", None));
+    client.dispatch_mount(&[seed("Chart")], None, Value::Null).unwrap();
+    let mounted = client.get_state("Chart", None);
+    let applied = client.apply_server_response(&second, &HashSet::new()).unwrap();
+    let paints = applied.host_paints.iter().filter(|p| p.trait_name == "Chart").map(|p| serde_json::to_string(&p.effect).unwrap()).collect();
+    (mounted, client.get_state("Chart", None), paints)
+}
+
+#[test]
+fn a_second_visit_whose_lifecycle_step_moves_the_trait_still_takes_the_hosts_paint() {
+    let (mounted, state, paints) = chart_revisited(chart_answer("chart", true));
+    assert!(mounted.contains("loading"), "the second mount commits the lifecycle step here first: {mounted}");
+    assert!(paints.last().is_some_and(|p| p.contains("bars")), "the host passed through the state the client holds, so its chart is the continuation: {paints:?}");
+    assert!(state.contains("chart"), "{state}");
+}
+
+#[test]
+fn control_a_first_visit_takes_the_hosts_paint() {
+    let client = EmbeddedKernel::new(revisit_schema(), "tab").unwrap();
+    client.dispatch_mount(&[seed("Chart")], None, Value::Null).unwrap();
+    let applied = client.apply_server_response(&chart_answer("loading", true), &HashSet::new()).unwrap();
+    assert!(applied.host_paints.iter().any(|p| p.trait_name == "Chart" && serde_json::to_string(&p.effect).unwrap().contains("bars")));
+}
+
+#[test]
+fn control_a_second_visit_answer_that_never_reaches_the_clients_state_is_stale() {
+    let (_, state, paints) = chart_revisited(chart_answer("chart", false));
+    assert!(paints.is_empty(), "the host only replayed the step the client took itself: {paints:?}");
+    assert!(state.contains("loading"), "{state}");
+}
+
+#[test]
+fn edge_the_paint_of_a_step_before_the_clients_state_is_not_handed_to_the_painter() {
+    let (_, _, paints) = chart_revisited(chart_answer("chart", true));
+    assert!(!paints.iter().any(|p| p.contains("skeleton")), "the replayed lifecycle step would paint the skeleton over the client's own: {paints:?}");
+}

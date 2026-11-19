@@ -409,11 +409,14 @@ pub struct ArrayConcatOp;
 owning_operator!(ArrayConcatOp);
 impl OwningOperator for ArrayConcatOp {
     fn apply_owned(&self, args: &mut [Value], _ctx: &BindingContext) -> EvalResult {
-        let mut result = Vec::new();
-        for arg in args.iter_mut() {
+        let Some((first, rest)) = args.split_first_mut() else {
+            return Ok(Value::array(Vec::new()));
+        };
+        let mut result = require_array!(std::mem::take(first));
+        for arg in rest.iter_mut() {
             result.extend(require_array!(std::mem::take(arg)));
         }
-        Ok(Value::array(result))
+        Ok(Value::Array(result))
     }
 }
 
@@ -1231,8 +1234,8 @@ impl Operator for ReduceOp {
         let array = require_array!(arr);
 
         let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
-        let linear = params.first().is_some_and(|acc| read_once(&body, acc));
-        folded(array, initial, |acc, item| fold_step(&params, &body, linear, acc, item, ctx))
+        let binding = params.first().map_or(AccBinding::Copied, |acc| acc_binding(&body, acc));
+        folded(array, initial, |acc, item| fold_step(&params, &body, &binding, acc, item, ctx))
     }
 
     fn evaluation(&self) -> OperatorEvaluation {
@@ -1301,13 +1304,98 @@ fn each_in_parallel(items: Vec<Value>, callback: &Callback, ctx: &BindingContext
     indexed(items.len(), |i| callback.apply(vec![items[i].clone(), super::util::int_of(i)], ctx)).map(Value::array)
 }
 
-fn fold_step(params: &[String], body: &SExpression, linear: bool, acc: Value, item: Value, ctx: &BindingContext) -> EvalResult {
+/// How a fold binds its accumulator: moved on its one read, its fields moved on their last reads, or copied.
+#[derive(Clone)]
+enum AccBinding {
+    Once,
+    Moves(Vec<(String, usize)>),
+    Copied,
+}
+
+fn acc_binding(body: &SExpression, acc: &str) -> AccBinding {
+    if read_once(body, acc) {
+        AccBinding::Once
+    } else {
+        field_moves(body, acc).map_or(AccBinding::Copied, AccBinding::Moves)
+    }
+}
+
+/// The fields of `name` a body may move out on their last read, each with its count of reads: a field whose last read
+/// in evaluation (pre-order) order is exactly `@name.<field>` and follows every whole read of `name`. `None` when the
+/// body binds `name` itself or reads it inside a nested lambda or a lazy operand (either may run again, or later).
+fn field_moves(body: &SExpression, name: &str) -> Option<Vec<(String, usize)>> {
+    fn walk(node: &SExpression, name: &str, token: &str, deferred: bool, reads: &mut Vec<(Option<String>, bool)>) -> bool {
+        match node {
+            SExpression::String(text) => {
+                if text == name {
+                    return false;
+                }
+                for (at, _) in text.match_indices(token) {
+                    let after = &text[at + token.len()..];
+                    if after.starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                        continue;
+                    }
+                    if deferred {
+                        return false;
+                    }
+                    let field = after.strip_prefix('.').map(|tail| {
+                        tail.split(|c: char| !(c.is_alphanumeric() || c == '_')).next().unwrap_or("").to_string()
+                    });
+                    let exact = field.as_ref().is_some_and(|f| text.len() == token.len() + 1 + f.len() && at == 0);
+                    reads.push((field.filter(|f| !f.is_empty()), exact));
+                }
+                true
+            }
+            SExpression::Array(items) => {
+                let head = items.first().and_then(SExpression::as_str);
+                let lambda = head == Some("fn");
+                let lazy: Vec<u32> = head
+                    .and_then(|h| orbital_core_base::language::registry::lookup_operator(h).ok().flatten())
+                    .map(|declared| declared.lazy_operands.clone())
+                    .unwrap_or_default();
+                items.iter().enumerate().all(|(at, item)| {
+                    let lazy_operand = at > 0 && lazy.iter().any(|l| *l as usize == at - 1);
+                    walk(item, name, token, deferred || lambda || lazy_operand, reads)
+                })
+            }
+            SExpression::Object(fields) => fields.values().all(|value| walk(value, name, token, deferred, reads)),
+            _ => true,
+        }
+    }
+    let token = format!("@{name}");
+    let mut reads = Vec::new();
+    if !walk(body, name, &token, false, &mut reads) {
+        return None;
+    }
+    let last_whole = reads.iter().rposition(|(field, _)| field.is_none());
+    let mut moves: Vec<(String, usize)> = Vec::new();
+    for (at, (field, _)) in reads.iter().enumerate() {
+        let Some(field) = field else { continue };
+        if moves.iter().any(|(seen, _)| seen == field) {
+            continue;
+        }
+        let last = reads.iter().rposition(|(f, _)| f.as_ref() == Some(field)).unwrap_or(at);
+        if reads[last].1 && last_whole.is_none_or(|whole| whole < last) {
+            let count = reads.iter().filter(|(f, _)| f.as_ref() == Some(field)).count();
+            moves.push((field.clone(), count));
+        }
+    }
+    (!moves.is_empty()).then_some(moves)
+}
+
+fn fold_step(params: &[String], body: &SExpression, binding: &AccBinding, acc: Value, item: Value, ctx: &BindingContext) -> EvalResult {
     let mut child = ctx.child();
     if let Some(name) = params.first() {
-        if linear {
-            child.set_linear_local(name, acc);
-        } else {
-            child.set_local(name, acc);
+        match binding {
+            AccBinding::Once => {
+                child.set_linear_local(name, acc);
+            }
+            AccBinding::Moves(moves) => {
+                child.set_moving_local(name, acc, moves.clone());
+            }
+            AccBinding::Copied => {
+                child.set_local(name, acc);
+            }
         }
     }
     if let Some(name) = params.get(1) {
@@ -1327,8 +1415,8 @@ impl Operator for ArrayPreduceOp {
         let initial = eval_expr(&args[1], ctx)?;
         let items: Vec<Value> = require_array!(arr).into_iter().collect();
         let (params, body) = require_lambda!(eval_expr(&args[2], ctx)?);
-        let linear = params.first().is_some_and(|acc| read_once(&body, acc));
-        folded_in_chunks(&items, initial, |acc, item| fold_step(&params, &body, linear, acc, item, ctx))
+        let binding = params.first().map_or(AccBinding::Copied, |acc| acc_binding(&body, acc));
+        folded_in_chunks(&items, initial, |acc, item| fold_step(&params, &body, &binding, acc, item, ctx))
     }
 
     fn evaluation(&self) -> OperatorEvaluation {

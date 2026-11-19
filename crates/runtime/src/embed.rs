@@ -866,8 +866,9 @@ impl EmbeddedKernel {
             .client_effects_by_trait
             .iter()
             .flatten()
-            .filter(|p| !stale.contains(&p.trait_name))
-            .cloned()
+            .enumerate()
+            .filter(|(index, _)| !stale.contains(index))
+            .map(|(_, paint)| paint.clone())
             .collect();
         let (outcomes, frames) = self
             .kernel

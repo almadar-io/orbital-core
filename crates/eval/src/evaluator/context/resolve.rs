@@ -57,13 +57,7 @@ impl BindingContext {
             // Check locals, then the scope's read-once local
             _ => match self.locals.get(root) {
                 Some(local) => local,
-                None => {
-                    let taken = self.take_linear(root)?;
-                    return match rest {
-                        Some(rest_path) => taken.get_path_owned(rest_path),
-                        None => Some(taken),
-                    };
-                }
+                None => return self.read_linear(root, rest),
             },
         };
 
