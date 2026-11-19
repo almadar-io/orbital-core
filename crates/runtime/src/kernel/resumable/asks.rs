@@ -21,6 +21,43 @@ impl PartialEq for GuestKernel {
     }
 }
 
+/// The work of a `program/open { path }` (EXEC-CONC-7): read the program, then build, register and mount the guest,
+/// run once by the host off the asking lane. Like [`GuestKernel`] it is live state that rides beside the ask and is
+/// never serialized; two asks are equal whatever work they carry.
+pub type GuestOpenFn = Box<dyn FnOnce() -> Result<Value, crate::effects::executor::SubstrateFailure> + Send>;
+
+#[derive(Clone, Default)]
+pub struct GuestOpenWork(pub Arc<orbital_core_base::sync::Mutex<Option<GuestOpenFn>>>);
+
+impl GuestOpenWork {
+    pub fn of(work: GuestOpenFn) -> Self {
+        Self(Arc::new(orbital_core_base::sync::Mutex::new(Some(work))))
+    }
+
+    /// Run the work; a second run (a replayed ask) is refused, never repeated.
+    pub fn run(&self) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+        match self.0.lock().take() {
+            Some(work) => work(),
+            None => Err(crate::agent_ports::guest_failure(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                "program/open: this open already ran",
+            )),
+        }
+    }
+}
+
+impl std::fmt::Debug for GuestOpenWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("GuestOpenWork")
+    }
+}
+
+impl PartialEq for GuestOpenWork {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 /// Names one request of one dispatch; an answer carries the id of the request it answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct RequestId(pub(super) u64);
@@ -126,6 +163,13 @@ pub enum IoRequest {
         site: Option<CallSite>,
         /// `options.reply`: the dispatch answers once the guest emits one of these events for the same request.
         reply: Option<GuestReply>,
+    },
+    /// A `program/open { path }`: the host runs `work` (read, build, register, mount) and answers the open's answer;
+    /// keyed with a declared route it runs off the lane and settles through the call site's routes.
+    GuestOpen {
+        work: GuestOpenWork,
+        key: Option<String>,
+        site: Option<CallSite>,
     },
     /// The page facts a `browser/page-facts` asks for, in read order.
     PageFacts {
@@ -469,6 +513,12 @@ impl IoAnswer {
             return key.is_some() && site.is_some();
         }
         if let (IoRequest::Guest { .. }, IoAnswer::Substrate(_)) = (request, self) {
+            return true;
+        }
+        if let (IoRequest::GuestOpen { key, site, .. }, IoAnswer::ServiceDeferred) = (request, self) {
+            return key.is_some() && site.is_some();
+        }
+        if let (IoRequest::GuestOpen { .. }, IoAnswer::Substrate(_)) = (request, self) {
             return true;
         }
         matches!(

@@ -63,6 +63,55 @@ pub struct GuestSession {
     route: Arc<RwLock<GuestRoute>>,
 }
 
+type OpenedProgram = (
+    OrbitalSchema,
+    Option<std::collections::HashMap<String, OrbitalSchema>>,
+    Option<String>,
+);
+
+/// A `program/open` program value: the resolved program, the lazy programs it carries (`lazyPrograms`) or the installed
+/// behavior it names for them (`lazySource`).
+fn parse_open_program(program: &Value) -> Result<OpenedProgram, AgentPortFailure> {
+    let mut program_json = value_to_json(program);
+    let carried = match program_json
+        .as_object_mut()
+        .and_then(|object| object.remove("lazyPrograms"))
+    {
+        None | Some(serde_json::Value::Null) => None,
+        Some(carried) => Some(
+            from_json_value::<std::collections::HashMap<String, OrbitalSchema>>(&carried).map_err(
+                |e| {
+                    failure(format!(
+                        "program/open: `lazyPrograms` is a map of file to resolved program: {e}"
+                    ))
+                },
+            )?,
+        ),
+    };
+    let lazy_behavior = match program_json.as_object_mut().and_then(|object| object.remove("lazySource")) {
+            None | Some(serde_json::Value::Null) => None,
+            Some(source) => match source.get("behavior").and_then(serde_json::Value::as_str) {
+                Some(behavior) => Some(behavior.to_string()),
+                None => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
+            },
+        };
+    if carried.is_some() && lazy_behavior.is_some() {
+        return Err(guest_refusal(
+                orbital_core_base::os::OsErrorKind::Invalid,
+                "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
+            ));
+    }
+    let schema: OrbitalSchema = from_json_value(&program_json).map_err(|e| {
+        failure(format!(
+            "program/open: the program is not a resolved program: {e}"
+        ))
+    })?;
+    if schema.orbitals.is_empty() {
+        return Err(failure("program/open: the program has no orbitals"));
+    }
+    Ok((schema, carried, lazy_behavior))
+}
+
 /// What a guest has mounted and which of those traits the routed page embeds, so a later route mounts only what is new.
 #[derive(Default)]
 struct GuestRoute {
@@ -79,6 +128,31 @@ struct GuestPrepare {
     live: bool,
     opener_held: Option<OsGrants>,
     granted: Option<OsGrants>,
+    withhold: Vec<GuestWithhold>,
+}
+
+/// A grant kind an opener withholds from its guest whatever the guest declares (`program/open { withhold }`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GuestWithhold {
+    /// `net … [listen]`: a hosted guest is served through its opener's endpoint and binds no port of its own.
+    Listen,
+    /// `sys: [self-signal]`: a guest shares its host's process and may not end it.
+    SelfSignal,
+}
+
+fn withhold_grants(grants: &mut OsGrants, withhold: &[GuestWithhold]) {
+    if withhold.contains(&GuestWithhold::Listen) {
+        for net in grants.net.iter_mut() {
+            net.kinds
+                .retain(|kind| *kind != orbital_core_base::os_grants::NetKind::Listen);
+        }
+        grants.net.retain(|net| !net.kinds.is_empty());
+    }
+    if withhold.contains(&GuestWithhold::SelfSignal) {
+        grants
+            .sys
+            .retain(|kind| *kind != orbital_core_base::os_grants::SysKind::SelfSignal);
+    }
 }
 
 impl GuestPrepare {
@@ -86,20 +160,43 @@ impl GuestPrepare {
         if self.mock {
             unbind_stores(schema);
         }
-        if !self.apply_grants {
-            return;
+        if self.apply_grants {
+            self.apply_grants(schema);
         }
+        if !self.withhold.is_empty() {
+            if let Some(grants) = schema.os_grants.as_mut() {
+                withhold_grants(grants, &self.withhold);
+            }
+            for orbital in schema.orbitals.iter_mut() {
+                if let Some(grants) = orbital.os_grants.as_mut() {
+                    withhold_grants(grants, &self.withhold);
+                }
+            }
+        }
+    }
+
+    fn apply_grants(&self, schema: &mut OrbitalSchema) {
         // A guest holds exactly the grants it was passed, plus with `declared` its own declared grants narrowed to the
         // opener's: none when neither was asked, even under a host.
         match (self.keep_declared, &self.opener_held) {
             (true, Some(held)) if self.live && held.kernel_allows(KernelKind::Declared, None) => {
                 let passed = self.granted.clone().unwrap_or_default();
-                schema.os_grants = Some(union(&passed, &schema.os_grants.clone().unwrap_or_default()));
+                schema.os_grants = Some(union(
+                    &passed,
+                    &schema.os_grants.clone().unwrap_or_default(),
+                ));
             }
-            (true, Some(held)) => narrow_program_grants(schema, held, self.granted.as_ref().unwrap_or(&OsGrants::default())),
+            (true, Some(held)) => narrow_program_grants(
+                schema,
+                held,
+                self.granted.as_ref().unwrap_or(&OsGrants::default()),
+            ),
             _ => {
                 schema.os_grants = self.granted.clone();
-                schema.orbitals.iter_mut().for_each(|orbital| orbital.os_grants = None);
+                schema
+                    .orbitals
+                    .iter_mut()
+                    .for_each(|orbital| orbital.os_grants = None);
             }
         }
     }
@@ -121,14 +218,19 @@ struct GuestLazy {
 }
 
 impl GuestLazy {
-    fn program(&self, file: &str) -> Result<OrbitalSchema, crate::effects::executor::SubstrateFailure> {
+    fn program(
+        &self,
+        file: &str,
+    ) -> Result<OrbitalSchema, crate::effects::executor::SubstrateFailure> {
         if let Some(program) = self.read.lock().get(file) {
             return Ok(program.clone());
         }
-        let carried_none = || crate::agent_ports::guest_failure(
-            orbital_core_base::os::OsErrorKind::NotFound,
-            format!("the guest carries no lazy program `{file}`"),
-        );
+        let carried_none = || {
+            crate::agent_ports::guest_failure(
+                orbital_core_base::os::OsErrorKind::NotFound,
+                format!("the guest carries no lazy program `{file}`"),
+            )
+        };
         let mut program = match &self.from {
             LazyFrom::None => return Err(carried_none()),
             LazyFrom::Carried(programs) => programs.get(file).cloned().ok_or_else(carried_none)?,
@@ -145,13 +247,18 @@ struct GuestLazySource(Arc<GuestLazy>);
 
 impl LazySource for GuestLazySource {
     fn read(&self, file: &str) -> Result<LazyProgram, String> {
-        self.0.program(file).map(|schema| LazyProgram { schema }).map_err(|failure| failure.message)
+        self.0
+            .program(file)
+            .map(|schema| LazyProgram { schema })
+            .map_err(|failure| failure.message)
     }
 }
 
 /// The part of `program` a split guest's viewer runs: its `[client]` traits and pages.
 fn client_program_of(program: &OrbitalSchema) -> Value {
-    orbital_core_base::runs_on::client_program(orbital_core_base::value_serialize::to_canonical_value(program).unwrap_or(Value::Null))
+    orbital_core_base::runs_on::client_program(
+        orbital_core_base::value_serialize::to_canonical_value(program).unwrap_or(Value::Null),
+    )
 }
 
 fn failure(message: impl Into<String>) -> AgentPortFailure {
@@ -192,7 +299,10 @@ pub(crate) fn run_session(
     let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
     for trait_name in targets {
         if let Some(host) = &session.host {
-            outcomes.extend(host.dispatch(trait_name, event, payload.clone()).map_err(|e| format!("program/dispatch: {e}"))?);
+            outcomes.extend(
+                host.dispatch(trait_name, event, payload.clone())
+                    .map_err(|e| format!("program/dispatch: {e}"))?,
+            );
             continue;
         }
         let progress = session
@@ -204,16 +314,37 @@ pub(crate) fn run_session(
         outcomes.extend(ran);
     }
     let replied = match (reply, &waiting) {
-        (Some(wanted), Some(waiting)) => Some(waiting.wait(std::time::Duration::from_millis(wanted.timeout_ms)).ok_or_else(|| {
-            let value = orbital_core_base::json_value::value_to_json(&wanted.value);
-            format!("program/dispatch: no {} for {} {} within {} ms", wanted.events.join(" or "), wanted.field, value, wanted.timeout_ms)
-        })?),
+        (Some(wanted), Some(waiting)) => Some(
+            waiting
+                .wait(std::time::Duration::from_millis(wanted.timeout_ms))
+                .ok_or_else(|| {
+                    let value = orbital_core_base::json_value::value_to_json(&wanted.value);
+                    format!(
+                        "program/dispatch: no {} for {} {} within {} ms",
+                        wanted.events.join(" or "),
+                        wanted.field,
+                        value,
+                        wanted.timeout_ms
+                    )
+                })?,
+        ),
         _ => None,
     };
     let seed_trait = targets.first().cloned().unwrap_or_default();
     let embedded = session.route.read().embedded.clone();
     let orbitals = painter_orbitals(&session.kernel, &outcomes);
-    let mut answer = guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]);
+    let mut answer = guest_answer(
+        &session.kernel,
+        &orbitals,
+        None,
+        None,
+        &embedded,
+        &outcomes,
+        &seed_trait,
+        event,
+        None,
+        &[],
+    );
     if let (Some((event, payload)), Value::Object(fields)) = (replied, &mut answer) {
         let mut reply = ValueMap::default();
         reply.insert("event".into(), Value::string(event));
@@ -225,34 +356,68 @@ pub(crate) fn run_session(
 
 /// `options.reply` of a `program/dispatch` into a guest: `{ events, match, timeoutMs }`, every part required, the match
 /// field read from the dispatched payload. Only a keyed call may wait: an unkeyed one would hold its caller's dispatch.
-fn guest_reply(args: &[Value], payload: &Value, keyed: bool) -> Result<Option<crate::resumable::GuestReply>, AgentPortFailure> {
-    let Some(Value::Object(options)) = args.get(2) else { return Ok(None) };
+fn guest_reply(
+    args: &[Value],
+    payload: &Value,
+    keyed: bool,
+) -> Result<Option<crate::resumable::GuestReply>, AgentPortFailure> {
+    let Some(Value::Object(options)) = args.get(2) else {
+        return Ok(None);
+    };
     let reply = match options.get("reply") {
         None | Some(Value::Null) => return Ok(None),
         Some(Value::Object(reply)) => reply,
-        Some(_) => return Err(failure("program/dispatch: options.reply is a record { events, match, timeoutMs }")),
+        Some(_) => {
+            return Err(failure(
+                "program/dispatch: options.reply is a record { events, match, timeoutMs }",
+            ))
+        }
     };
     if !keyed {
         return Err(failure("program/dispatch: a reply is waited for only on a keyed call (give the call a key and routes)"));
     }
     let events: Vec<String> = match reply.get("events") {
-        Some(Value::Array(events)) if !events.is_empty() => events.iter().filter_map(|e| e.as_str().map(str::to_string)).collect(),
-        _ => return Err(failure("program/dispatch: reply.events names the events that answer the call")),
+        Some(Value::Array(events)) if !events.is_empty() => events
+            .iter()
+            .filter_map(|e| e.as_str().map(str::to_string))
+            .collect(),
+        _ => {
+            return Err(failure(
+                "program/dispatch: reply.events names the events that answer the call",
+            ))
+        }
     };
     let field = match reply.get("match") {
         Some(Value::String(field)) if !field.is_empty() => field.to_string(),
-        _ => return Err(failure("program/dispatch: reply.match names the payload field the reply carries back")),
+        _ => {
+            return Err(failure(
+                "program/dispatch: reply.match names the payload field the reply carries back",
+            ))
+        }
     };
     let timeout_ms = match reply.get("timeoutMs") {
         Some(Value::Int(ms)) if *ms > 0 => *ms as u64,
         Some(Value::Number(ms)) if *ms > 0.0 => *ms as u64,
-        _ => return Err(failure("program/dispatch: reply.timeoutMs is how long to wait, in milliseconds")),
+        _ => {
+            return Err(failure(
+                "program/dispatch: reply.timeoutMs is how long to wait, in milliseconds",
+            ))
+        }
     };
     let value = match payload.get(field.as_str()) {
         Some(value) if !matches!(value, Value::Null) => value.clone(),
-        _ => return Err(failure(format!("program/dispatch: the payload carries no {field} for the reply to match"))),
+        _ => {
+            return Err(failure(format!(
+                "program/dispatch: the payload carries no {field} for the reply to match"
+            )))
+        }
     };
-    Ok(Some(crate::resumable::GuestReply { events, field, value, timeout_ms }))
+    Ok(Some(crate::resumable::GuestReply {
+        events,
+        field,
+        value,
+        timeout_ms,
+    }))
 }
 
 /// `program/open`'s and `program/navigate`'s `rows`, `[{ entity, rows }]`: each row checked against its entity's declaration (EXEC-EVAL-10) and
@@ -309,14 +474,24 @@ struct LocalGuestEnv(std::collections::BTreeMap<String, String>);
 
 impl LocalGuestEnv {
     fn of(env: &[(String, Option<String>)]) -> Self {
-        Self(env.iter().filter_map(|(name, value)| Some((name.clone(), value.clone()?))).collect())
+        Self(
+            env.iter()
+                .filter_map(|(name, value)| Some((name.clone(), value.clone()?)))
+                .collect(),
+        )
     }
 }
 
 impl crate::resumable::DirectOs for LocalGuestEnv {
-    fn ask(&self, request: crate::resumable::IoRequest, _site: Option<crate::resumable::CallSite>) -> Option<crate::resumable::IoAnswer> {
+    fn ask(
+        &self,
+        request: crate::resumable::IoRequest,
+        _site: Option<crate::resumable::CallSite>,
+    ) -> Option<crate::resumable::IoAnswer> {
         use orbital_core_base::os::OsOp;
-        let crate::resumable::IoRequest::Os { op, args, .. } = request else { return None };
+        let crate::resumable::IoRequest::Os { op, args, .. } = request else {
+            return None;
+        };
         let mut fields = ValueMap::default();
         match op {
             OsOp::Getenv => {
@@ -326,21 +501,39 @@ impl crate::resumable::DirectOs for LocalGuestEnv {
                 }
             }
             OsOp::Environ => {
-                fields.insert("names".into(), Value::array(self.0.keys().cloned().map(Value::string).collect::<Vec<_>>()));
+                fields.insert(
+                    "names".into(),
+                    Value::array(
+                        self.0
+                            .keys()
+                            .cloned()
+                            .map(Value::string)
+                            .collect::<Vec<_>>(),
+                    ),
+                );
             }
             _ => return None,
         }
-        Some(crate::resumable::IoAnswer::Os(Ok(Value::object(fields).into())))
+        Some(crate::resumable::IoAnswer::Os(Ok(
+            Value::object(fields).into()
+        )))
     }
 }
 
 /// A split guest's server leg, answered by its host as a served events request (EXEC-CONC-7). Only a split guest takes
 /// one: its viewer's kernel runs its `[client]` traits, so the host answers it as a served program's server.
 /// A leg carrying `inbound` is a hook delivery, which any hosted guest takes (EXEC-INBOUND-1).
-fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Value, AgentPortFailure> {
+fn serve_leg(
+    session: &GuestSession,
+    payload: &Value,
+    leg: &Value,
+) -> Result<Value, AgentPortFailure> {
     if let (Value::Object(ask), Some(host)) = (leg, &session.host) {
         if ask.contains_key("inbound") {
-            return host.inbound(ask).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
+            return host.inbound(ask).map_err(|refused| AgentPortFailure {
+                error: refused.message,
+                errors: refused.errors,
+            });
         }
     }
     let (Some(host), true) = (&session.host, session.split) else {
@@ -350,9 +543,15 @@ fn serve_leg(session: &GuestSession, payload: &Value, leg: &Value) -> Result<Val
         ));
     };
     let Value::Object(options) = leg else {
-        return Err(failure("program/dispatch: a wire leg's options are a record"));
+        return Err(failure(
+            "program/dispatch: a wire leg's options are a record",
+        ));
     };
-    host.request(payload, options).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors })
+    host.request(payload, options)
+        .map_err(|refused| AgentPortFailure {
+            error: refused.message,
+            errors: refused.errors,
+        })
 }
 
 fn json_value(json: serde_json::Value) -> Value {
@@ -361,12 +560,19 @@ fn json_value(json: serde_json::Value) -> Value {
 
 /// The orbital declaring each trait that painted in `outcomes`: a paint names its orbital, so a host scopes the paint's
 /// controls to the trait that drew them, as it scopes its own.
-fn painter_orbitals(kernel: &RuntimeKernel, outcomes: &[(String, ProcessEventResult)]) -> std::collections::HashMap<String, String> {
+fn painter_orbitals(
+    kernel: &RuntimeKernel,
+    outcomes: &[(String, ProcessEventResult)],
+) -> std::collections::HashMap<String, String> {
     EventResponse::from_process_results(outcomes, "", "")
         .client_effects_by_trait
         .iter()
         .flatten()
-        .filter_map(|paint| kernel.orbital_of_trait(&paint.trait_name).map(|orbital| (paint.trait_name.clone(), orbital)))
+        .filter_map(|paint| {
+            kernel
+                .orbital_of_trait(&paint.trait_name)
+                .map(|orbital| (paint.trait_name.clone(), orbital))
+        })
         .collect()
 }
 
@@ -402,8 +608,16 @@ fn guest_answer(
             ClientEffect::RenderUi { slot, config } => Some(record(vec![
                 ("slot", Value::string(slot.to_string())),
                 ("trait", Value::string(paint.trait_name.clone())),
-                ("orbital", orbitals.get(&paint.trait_name).map_or(Value::Null, |o| Value::string(o.clone()))),
-                ("embedded", Value::Bool(embedded.contains(&paint.trait_name))),
+                (
+                    "orbital",
+                    orbitals
+                        .get(&paint.trait_name)
+                        .map_or(Value::Null, |o| Value::string(o.clone())),
+                ),
+                (
+                    "embedded",
+                    Value::Bool(embedded.contains(&paint.trait_name)),
+                ),
                 ("content", config.clone().unwrap_or(Value::Null)),
             ])),
             _ => None,
@@ -414,9 +628,10 @@ fn guest_answer(
         .iter()
         .flatten()
         .filter_map(|step| match &step.effect {
-            ClientEffect::Navigate { path, .. } => {
-                Some(record(vec![("trait", Value::string(step.trait_name.clone())), ("path", Value::string(path.clone()))]))
-            }
+            ClientEffect::Navigate { path, .. } => Some(record(vec![
+                ("trait", Value::string(step.trait_name.clone())),
+                ("path", Value::string(path.clone())),
+            ])),
             _ => None,
         })
         .collect();
@@ -425,10 +640,21 @@ fn guest_answer(
         .iter()
         .flatten()
         .filter_map(|step| match &step.effect {
-            ClientEffect::HostAsk { op, args, completion } => Some(record(vec![
+            ClientEffect::HostAsk {
+                op,
+                args,
+                completion,
+            } => Some(record(vec![
                 ("trait", Value::string(step.trait_name.clone())),
                 ("op", Value::string(op.clone())),
-                ("ask", Value::string(orbital_core_base::host_ask::write(op, args, completion.as_ref()))),
+                (
+                    "ask",
+                    Value::string(orbital_core_base::host_ask::write(
+                        op,
+                        args,
+                        completion.as_ref(),
+                    )),
+                ),
             ])),
             _ => None,
         })
@@ -436,14 +662,26 @@ fn guest_answer(
     let emitted: Vec<Value> = response
         .emitted_events
         .iter()
-        .map(|e| record(vec![("event", Value::string(e.event.clone())), ("payload", e.payload.clone().unwrap_or(Value::Null))]))
+        .map(|e| {
+            record(vec![
+                ("event", Value::string(e.event.clone())),
+                ("payload", e.payload.clone().unwrap_or(Value::Null)),
+            ])
+        })
         .collect();
     let moved: Vec<Value> = outcomes
         .iter()
         .map(|(trait_name, result)| {
             let mut fields = vec![
                 ("trait", Value::string(trait_name.clone())),
-                ("event", result.event.clone().map(Value::string).unwrap_or(Value::Null)),
+                (
+                    "event",
+                    result
+                        .event
+                        .clone()
+                        .map(Value::string)
+                        .unwrap_or(Value::Null),
+                ),
                 ("from", Value::string(result.previous_state.clone())),
                 ("to", Value::string(result.new_state.clone())),
                 ("fired", Value::Bool(result.executed)),
@@ -474,16 +712,34 @@ fn guest_answer(
         answer.push(("guest", Value::string(guest.to_string())));
     }
     if let Some((page, route)) = page {
-        answer.push(("page", Value::array(page.iter().cloned().map(Value::string).collect::<Vec<Value>>())));
+        answer.push((
+            "page",
+            Value::array(
+                page.iter()
+                    .cloned()
+                    .map(Value::string)
+                    .collect::<Vec<Value>>(),
+            ),
+        ));
         if let Some(route) = route {
             answer.push(("route", Value::string(route.to_string())));
         }
     }
     if let Some(rejections) = response.rejections.as_ref().filter(|r| !r.is_empty()) {
-        answer.push(("rejections", serde_json::to_value(rejections).map(json_value).unwrap_or(Value::Null)));
+        answer.push((
+            "rejections",
+            serde_json::to_value(rejections)
+                .map(json_value)
+                .unwrap_or(Value::Null),
+        ));
     }
     if let Some(access) = access {
-        answer.push(("access", serde_json::to_value(access).map(json_value).unwrap_or(Value::Null)));
+        answer.push((
+            "access",
+            serde_json::to_value(access)
+                .map(json_value)
+                .unwrap_or(Value::Null),
+        ));
     }
     record(answer)
 }
@@ -497,7 +753,9 @@ const GUEST_VIEWER: &str = "guest-viewer";
 fn unbind_stores(schema: &mut OrbitalSchema) {
     schema.store = None;
     for orbital in schema.orbitals.iter_mut() {
-        for entity in std::iter::once(&mut orbital.entity).chain(orbital.auxiliary_entities.iter_mut().flatten()) {
+        for entity in std::iter::once(&mut orbital.entity)
+            .chain(orbital.auxiliary_entities.iter_mut().flatten())
+        {
             if let orbital_core_base::schema::types::EntityRef::Inline(def) = entity {
                 def.store = None;
             }
@@ -507,7 +765,8 @@ fn unbind_stores(schema: &mut OrbitalSchema) {
 
 fn view_page(guest: &RuntimeKernel, page: &[String], embedded: &std::collections::HashSet<String>) {
     guest.release_client(GUEST_VIEWER);
-    let mut by_orbital: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    let mut by_orbital: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     for name in page.iter().chain(embedded.iter()) {
         if let Some(orbital) = guest.orbital_of_trait(name) {
             by_orbital.entry(orbital).or_default().push(name.clone());
@@ -546,9 +805,16 @@ fn routed_mounts(
     let circuit = guest
         .page_circuit(None, route)
         .map_err(|e| failure(format!("{op}: {e}")))?;
-    let denied = matches!(circuit.access, super::page_circuit::PageAccessVerdict::Denied { .. });
+    let denied = matches!(
+        circuit.access,
+        super::page_circuit::PageAccessVerdict::Denied { .. }
+    );
     Ok(RoutedPage {
-        route: if denied { None } else { circuit.page.as_ref().and(circuit.route) },
+        route: if denied {
+            None
+        } else {
+            circuit.page.as_ref().and(circuit.route)
+        },
         access: circuit.access,
         mounts: circuit.mounts,
         embedded: circuit.embedded_by.into_iter().collect(),
@@ -569,7 +835,9 @@ fn mount_seeds(
     guest.mount_traits(seeds.iter().map(|seed| seed.r#trait.clone()));
     let mounted = match host {
         Some(host) => host.mount(route, seeds, payload),
-        None => guest.dispatch_route_mount(route, seeds, None, payload).map_err(|e| e.to_string()),
+        None => guest
+            .dispatch_route_mount(route, seeds, None, payload)
+            .map_err(|e| e.to_string()),
     };
     mounted.map_err(|e| failure(format!("{op}: mounting {}: {e}", route.unwrap_or_default())))
 }
@@ -606,7 +874,11 @@ impl RuntimeKernel {
         if !held.kernel_allows(KernelKind::Spawn, None) {
             return Err(guest_refusal(
                 orbital_core_base::os::OsErrorKind::Denied,
-                format!("{op}: no kernel guest grant covers it (asked from orbital {}, trait {})", asker.as_deref().unwrap_or("none"), self.caller_position().1),
+                format!(
+                    "{op}: no kernel guest grant covers it (asked from orbital {}, trait {})",
+                    asker.as_deref().unwrap_or("none"),
+                    self.caller_position().1
+                ),
             ));
         }
         Ok(held)
@@ -655,13 +927,21 @@ impl RuntimeKernel {
             Some(Value::Object(options)) => Some(options.clone()),
             _ => None,
         };
-        let give_program = match options.as_ref().and_then(|o| o.get("program").cloned()) {
-            None => false,
-            Some(Value::Bool(give)) => give,
+        let path = match options.as_ref().and_then(|o| o.get("path")) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(path)) if matches!(program, Value::Null) => Some(path.to_string()),
+            Some(Value::String(_)) => return Err(failure("program/open: name the program or its `path`, not both: the program is null when `path` is given")),
+            Some(_) => return Err(failure("program/open: `path` is a file path")),
+        };
+        // `program: "declared"` gives the program port only to a guest whose own program grants declare `kernel: guest [program]`.
+        let (give_program, program_if_declared) = match options.as_ref().and_then(|o| o.get("program").cloned()) {
+            None => (false, false),
+            Some(Value::Bool(give)) => (give, false),
+            Some(Value::String(word)) if word.as_str() == "declared" => (false, true),
             Some(_) => {
                 return Err(guest_refusal(
                     orbital_core_base::os::OsErrorKind::Invalid,
-                    "program/open: `program` is true or false",
+                    "program/open: `program` is true, false or \"declared\"",
                 ))
             }
         };
@@ -689,13 +969,21 @@ impl RuntimeKernel {
             None | Some(Value::Null) => false,
             Some(Value::Bool(local)) => *local,
             Some(_) => {
-                return Err(guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, "program/open: `local` is true or false"))
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `local` is true or false",
+                ))
             }
         };
         if local {
             let held = ["grants", "arenas", "declared", "split", "program", "cwd"]
                 .into_iter()
-                .filter(|name| options.as_ref().is_some_and(|o| o.get(*name).is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)))))
+                .filter(|name| {
+                    options.as_ref().is_some_and(|o| {
+                        o.get(*name)
+                            .is_some_and(|v| !matches!(v, Value::Null | Value::Bool(false)))
+                    })
+                })
                 .collect::<Vec<_>>();
             if !held.is_empty() {
                 return Err(guest_refusal(
@@ -716,6 +1004,31 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let withhold = match options.as_ref().and_then(|o| o.get("withhold")) {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(kinds)) => kinds
+                .iter()
+                .map(|kind| match kind {
+                    Value::String(word) if word.as_str() == "listen" => Ok(GuestWithhold::Listen),
+                    Value::String(word) if word.as_str() == "self-signal" => {
+                        Ok(GuestWithhold::SelfSignal)
+                    }
+                    _ => Err(()),
+                })
+                .collect::<Result<Vec<_>, ()>>()
+                .map_err(|()| {
+                    guest_refusal(
+                        orbital_core_base::os::OsErrorKind::Invalid,
+                        "program/open: `withhold` is a list of \"listen\" and \"self-signal\"",
+                    )
+                })?,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `withhold` is a list of \"listen\" and \"self-signal\"",
+                ))
+            }
+        };
         let integrations = match options.as_ref().and_then(|o| o.get("integrations")) {
             None | Some(Value::Null) => GuestIntegrations::Live,
             Some(Value::String(word)) if word.as_str() == "live" => GuestIntegrations::Live,
@@ -729,8 +1042,12 @@ impl RuntimeKernel {
         };
         let cwd = match options.as_ref().and_then(|o| o.get("cwd")) {
             None | Some(Value::Null) => None,
-            Some(Value::String(path)) if integrations == GuestIntegrations::Live => Some(path.to_string()),
-            Some(Value::String(_)) => return Err(failure("program/open: `cwd` is for a live guest; a mocked guest has no files of its own")),
+            Some(Value::String(path)) if integrations == GuestIntegrations::Live => {
+                Some(path.to_string())
+            }
+            Some(Value::String(_)) => return Err(failure(
+                "program/open: `cwd` is for a live guest; a mocked guest has no files of its own",
+            )),
             Some(_) => return Err(failure("program/open: `cwd` is a directory path")),
         };
         let env: Vec<(String, Option<String>)> = match options.as_ref().and_then(|o| o.get("env")) {
@@ -740,7 +1057,9 @@ impl RuntimeKernel {
                 .map(|(name, value)| match value {
                     Value::Null => Ok((name.to_string(), None)),
                     Value::String(text) => Ok((name.to_string(), Some(text.to_string()))),
-                    _ => Err(failure("program/open: an `env` value is text, or null for unset")),
+                    _ => Err(failure(
+                        "program/open: an `env` value is text, or null for unset",
+                    )),
                 })
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err(failure("program/open: `env` is a record of variable names")),
@@ -755,11 +1074,13 @@ impl RuntimeKernel {
                     "program/open: `program` needs the grant kernel: { \"guest\": [spawn, program] }",
                 ));
             }
-            let guest: OsGrants = from_json_value(&(value_to_json(
-                asked_grants
-                    .as_ref()
-                    .unwrap_or(&Value::object(ValueMap::default())),
-            )))
+            let guest: OsGrants = from_json_value(
+                &(value_to_json(
+                    asked_grants
+                        .as_ref()
+                        .unwrap_or(&Value::object(ValueMap::default())),
+                )),
+            )
             .map_err(|e| {
                 guest_refusal(
                     orbital_core_base::os::OsErrorKind::Invalid,
@@ -814,60 +1135,54 @@ impl RuntimeKernel {
                 ))
             }
         }
-        let mut program_json = value_to_json(program);
-        let carried = match program_json.as_object_mut().and_then(|object| object.remove("lazyPrograms")) {
-            None | Some(serde_json::Value::Null) => None,
-            Some(carried) => Some(
-                from_json_value::<std::collections::HashMap<String, OrbitalSchema>>(&carried).map_err(|e| {
-                    failure(format!("program/open: `lazyPrograms` is a map of file to resolved program: {e}"))
-                })?,
-            ),
-        };
-        let lazy_behavior = match program_json.as_object_mut().and_then(|object| object.remove("lazySource")) {
-            None | Some(serde_json::Value::Null) => None,
-            Some(source) => match source.get("behavior").and_then(serde_json::Value::as_str) {
-                Some(behavior) => Some(behavior.to_string()),
-                None => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
-            },
-        };
-        if carried.is_some() && lazy_behavior.is_some() {
-            return Err(guest_refusal(
-                orbital_core_base::os::OsErrorKind::Invalid,
-                "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
-            ));
-        }
-        let mut schema: OrbitalSchema = from_json_value(&program_json).map_err(|e| {
-            failure(format!(
-                "program/open: the program is not a resolved program: {e}"
-            ))
-        })?;
-        if schema.orbitals.is_empty() {
-            return Err(failure("program/open: the program has no orbitals"));
-        }
         if !env.is_empty() {
-            let held = opener_held.as_ref().ok_or_else(|| failure("program/open: `env` needs the guest grant `declared` or `grants`"))?;
+            let held = opener_held.as_ref().ok_or_else(|| {
+                failure("program/open: `env` needs the guest grant `declared` or `grants`")
+            })?;
             if let Some((name, _)) = env.iter().find(|(name, _)| !held.env_allows(name)) {
-                return Err(failure(format!("program/open: `env` names {name}, which the opener holds no grant for")));
+                return Err(failure(format!(
+                    "program/open: `env` names {name}, which the opener holds no grant for"
+                )));
             }
         }
         let hosting = if local { None } else { self.guest_hosting() };
-        let host = hosting.as_ref().map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
-        if split && host.is_none() {
+        if split && hosting.is_none() {
             return Err(guest_refusal(
                 orbital_core_base::os::OsErrorKind::Unsupported,
                 "program/open: a split guest needs a host that offers guest hosting; this one runs guests in its own kernel",
             ));
         }
-        let prepare = GuestPrepare {
-            mock: integrations == GuestIntegrations::Mock,
-            apply_grants: granted.is_some() || host.is_some(),
-            keep_declared,
-            live: integrations == GuestIntegrations::Live,
-            opener_held: opener_held.clone(),
-            granted: granted.clone(),
-        };
-        prepare.apply(&mut schema);
-        let from = match (carried, lazy_behavior, &hosting) {
+        let cost_meter = self.cost_meter();
+        let guest_seq = Arc::clone(&self.guest_seq);
+        let opener_session = self.thread_session().map(|session| session.to_string());
+        let guests = Arc::clone(&self.guests);
+        let settler = self.memory_settler.read().clone();
+        let finish = move |mut schema: OrbitalSchema,
+                           carried: Option<std::collections::HashMap<String, OrbitalSchema>>,
+                           lazy_behavior: Option<String>|
+              -> Result<Value, AgentPortFailure> {
+            let declares_program = schema.os_grants.as_ref().is_some_and(|grants| grants.kernel_allows(KernelKind::Program, None));
+            let give_program = give_program || (program_if_declared && declares_program);
+            if program_if_declared && declares_program && !opener_held.as_ref().is_some_and(|held| held.kernel_allows(KernelKind::Program, None)) {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Denied,
+                    "program/open: the guest declares `kernel: guest [program]`, which needs the opener's grant kernel: { \"guest\": [spawn, program] }",
+                ));
+            }
+            let host = hosting
+                .as_ref()
+                .map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
+            let prepare = GuestPrepare {
+                mock: integrations == GuestIntegrations::Mock,
+                apply_grants: granted.is_some() || host.is_some(),
+                keep_declared,
+                live: integrations == GuestIntegrations::Live,
+                opener_held: opener_held.clone(),
+                granted: granted.clone(),
+                withhold,
+            };
+            prepare.apply(&mut schema);
+            let from = match (carried, lazy_behavior, &hosting) {
             (Some(programs), _, _) => LazyFrom::Carried(programs),
             (None, Some(behavior), Some(hosting)) => LazyFrom::Behavior(Arc::clone(hosting), behavior),
             (None, Some(behavior), None) => {
@@ -878,121 +1193,162 @@ impl RuntimeKernel {
             }
             (None, None, _) => LazyFrom::None,
         };
-        let has_lazy = !matches!(from, LazyFrom::None);
-        let lazy = Arc::new(GuestLazy { from, prepare, read: orbital_core_base::sync::Mutex::new(Default::default()) });
-        let (guest, source) = match &host {
-            Some(host) => (host.kernel(), None),
-            None => {
-                let source = Arc::new(InMemoryEntityCache::new());
-                let guest = RuntimeKernel::new(
-                    RuntimeEnvironment::Server,
-                    source.clone(),
-                    KernelConfig {
-                        runtime_rows_in_kernel: true,
-                        ..KernelConfig::default()
-                    },
-                );
-                guest.set_cost_meter(self.cost_meter());
-                if local && !env.is_empty() {
-                    guest.set_direct_os(Some(Arc::new(LocalGuestEnv::of(&env))));
+            let has_lazy = !matches!(from, LazyFrom::None);
+            let lazy = Arc::new(GuestLazy {
+                from,
+                prepare,
+                read: orbital_core_base::sync::Mutex::new(Default::default()),
+            });
+            let (guest, source) = match &host {
+                Some(host) => (host.kernel(), None),
+                None => {
+                    let source = Arc::new(InMemoryEntityCache::new());
+                    let guest = RuntimeKernel::new(
+                        RuntimeEnvironment::Server,
+                        source.clone(),
+                        KernelConfig {
+                            runtime_rows_in_kernel: true,
+                            ..KernelConfig::default()
+                        },
+                    );
+                    guest.set_cost_meter(cost_meter);
+                    if local && !env.is_empty() {
+                        guest.set_direct_os(Some(Arc::new(LocalGuestEnv::of(&env))));
+                    }
+                    (Arc::new(guest), Some(source))
                 }
-                (Arc::new(guest), Some(source))
+            };
+            guest.set_runs_client_traits(!split);
+            let client = split.then(|| client_program_of(&schema));
+            if has_lazy {
+                guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
             }
-        };
-        guest.set_runs_client_traits(!split);
-        let client = split.then(|| client_program_of(&schema));
-        if has_lazy {
-            guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
-        }
-        match &host {
-            Some(host) => host.register(schema).map_err(|e| failure(format!("program/open: {e}")))?,
-            None => guest
-                .register_schema(schema)
-                .map_err(|e| failure(format!("program/open: {e}")))?,
-        }
-        if let Some(name) = seed_writer {
-            if !guest.registry.trait_definitions.read().contains_key(&name) {
-                return Err(guest_refusal(
+            match &host {
+                Some(host) => host
+                    .register(schema)
+                    .map_err(|e| failure(format!("program/open: {e}")))?,
+                None => guest
+                    .register_schema(schema)
+                    .map_err(|e| failure(format!("program/open: {e}")))?,
+            }
+            if let Some(name) = seed_writer {
+                if !guest.registry.trait_definitions.read().contains_key(&name) {
+                    return Err(guest_refusal(
                     orbital_core_base::os::OsErrorKind::Invalid,
                     format!("program/open: `seed` names `{name}`, which is not a trait of the program"),
                 ));
+                }
+                guest.set_seed_writer(Some(name));
             }
-            guest.set_seed_writer(Some(name));
-        }
-        if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
-            seed_guest_rows(&guest, rows, "program/open")?;
-        }
-        let mut arenas = Vec::with_capacity(handed.len());
-        for (id, shared) in handed {
-            let handle = guest
-                .adopt_shared_arena(shared)
-                .map_err(|e| guest_refusal(e.kind, e.message))?;
-            arenas.push((id, handle));
-        }
-        let route = match options.as_ref().and_then(|o| o.get("route")) {
-            None | Some(Value::Null) => None,
-            Some(Value::String(route)) => Some(route.to_string()),
-            Some(_) => return Err(failure("program/open: `route` is a path string")),
-        };
-        let mut seeds = guest.boot_mounts(ProtocolSide::Server);
-        let RoutedPage {
-            route: resolved,
-            mounts: routed,
-            embedded,
-            access,
-        } = routed_mounts(&guest, route.as_deref(), "program/open")?;
-        let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
-        if !split {
-            for seed in routed {
-                if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
-                    seeds.push(seed);
+            if let Some(rows) = options.as_ref().and_then(|o| o.get("rows")) {
+                seed_guest_rows(&guest, rows, "program/open")?;
+            }
+            let mut arenas = Vec::with_capacity(handed.len());
+            for (id, shared) in handed {
+                let handle = guest
+                    .adopt_shared_arena(shared)
+                    .map_err(|e| guest_refusal(e.kind, e.message))?;
+                arenas.push((id, handle));
+            }
+            let route = match options.as_ref().and_then(|o| o.get("route")) {
+                None | Some(Value::Null) => None,
+                Some(Value::String(route)) => Some(route.to_string()),
+                Some(_) => return Err(failure("program/open: `route` is a path string")),
+            };
+            let mut seeds = guest.boot_mounts(ProtocolSide::Server);
+            let RoutedPage {
+                route: resolved,
+                mounts: routed,
+                embedded,
+                access,
+            } = routed_mounts(&guest, route.as_deref(), "program/open")?;
+            let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
+            if !split {
+                for seed in routed {
+                    if !seeds.iter().any(|held| held.r#trait == seed.r#trait) {
+                        seeds.push(seed);
+                    }
                 }
             }
-        }
-        let outcomes = mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?;
-        if !split {
-            view_page(&guest, &page, &embedded);
-        }
-        let orbitals = painter_orbitals(&guest, &outcomes);
-        let handle = format!(
-            "guest-{}",
-            self.guest_seq.fetch_add(1, Ordering::SeqCst) + 1
-        );
-        let mounted = seeds.iter().map(|s| s.r#trait.clone()).collect();
-        let opened_kernel = guest.clone();
-        let session = GuestSession {
-            kernel: guest,
-            source,
-            host,
-            grants: granted,
-            opener_session: self.thread_session().map(|session| session.to_string()),
-            split,
-            lazy,
-            arenas,
-            route: Arc::new(RwLock::new(GuestRoute {
-                embedded: embedded.clone(),
-                mounted,
-            })),
+            let outcomes = mount_seeds(
+                &guest,
+                host.as_deref(),
+                resolved.as_deref(),
+                &seeds,
+                "program/open",
+            )?;
+            if !split {
+                view_page(&guest, &page, &embedded);
+            }
+            let orbitals = painter_orbitals(&guest, &outcomes);
+            let handle = format!("guest-{}", guest_seq.fetch_add(1, Ordering::SeqCst) + 1);
+            let mounted = seeds.iter().map(|s| s.r#trait.clone()).collect();
+            let opened_kernel = guest.clone();
+            let session = GuestSession {
+                kernel: guest,
+                source,
+                host,
+                grants: granted,
+                opener_session,
+                split,
+                lazy,
+                arenas,
+                route: Arc::new(RwLock::new(GuestRoute {
+                    embedded: embedded.clone(),
+                    mounted,
+                })),
+            };
+            guests.write().insert(handle.clone(), session);
+            let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
+            let mut answer = guest_answer(
+                &opened_kernel,
+                &orbitals,
+                Some(&handle),
+                Some((&page, resolved.as_deref())),
+                &embedded,
+                &outcomes,
+                &seed_trait,
+                "INIT",
+                Some(&access),
+                &[],
+            );
+            if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
+                fields.insert("client".into(), client);
+            }
+            if let Some(settle) = settler {
+                settle();
+            }
+            Ok(answer)
         };
-        self.guests.write().insert(handle.clone(), session);
-        let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
-        let mut answer = guest_answer(
-            &opened_kernel,
-            &orbitals,
-            Some(&handle),
-            Some((&page, resolved.as_deref())),
-            &embedded,
-            &outcomes,
-            &seed_trait,
-            "INIT",
-            Some(&access),
-            &[],
-        );
-        if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
-            fields.insert("client".into(), client);
+        match path {
+            None => {
+                let (schema, carried, lazy_behavior) = parse_open_program(program)?;
+                finish(schema, carried, lazy_behavior)
+            }
+            Some(path) => {
+                let hosting = self.guest_hosting().ok_or_else(|| guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Unsupported,
+                    "program/open: `path` needs a host that offers guest hosting to read the program",
+                ))?;
+                let work = crate::resumable::GuestOpenWork::of(Box::new(move || {
+                    let (schema, lazy) = hosting.read_program(&path)?;
+                    let carried = (!lazy.is_empty()).then_some(lazy);
+                    finish(schema, carried, None).map_err(|refused| {
+                        crate::effects::executor::SubstrateFailure {
+                            message: refused.error,
+                            errors: refused.errors,
+                        }
+                    })
+                }));
+                self.io
+                    .guest_open(work, args.to_vec())
+                    .map(|answer| answer.unwrap_or(Value::Null))
+                    .map_err(|refused| AgentPortFailure {
+                        error: refused.message,
+                        errors: refused.errors,
+                    })
+            }
         }
-        self.settle_memory();
-        Ok(answer)
     }
 
     /// `program/lazy { guest, file }`: the client program of the lazy program the split guest carries under `file`, for
@@ -1014,14 +1370,19 @@ impl RuntimeKernel {
                 "program/lazy: the guest is not split, so its viewer loads no page",
             ));
         }
-        let child = session.lazy.program(file.as_str()).map_err(|refused| AgentPortFailure {
-            error: format!("program/lazy: {}", refused.message),
-            errors: refused.errors,
-        })?;
-        Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([
-            ("file".into(), Value::String(file.as_str().into())),
-            ("program".into(), client_program_of(&child)),
-        ])))
+        let child = session
+            .lazy
+            .program(file.as_str())
+            .map_err(|refused| AgentPortFailure {
+                error: format!("program/lazy: {}", refused.message),
+                errors: refused.errors,
+            })?;
+        Ok(Value::object(
+            orbital_core_base::value::ValueMap::from_iter([
+                ("file".into(), Value::String(file.as_str().into())),
+                ("program".into(), client_program_of(&child)),
+            ]),
+        ))
     }
 
     /// `program/navigate { guest, route, rows?, remount? }`: load the lazy page `route` names, seed its `rows`, mount the
@@ -1052,15 +1413,34 @@ impl RuntimeKernel {
         if remount {
             // A remount enters the page afresh: each of its mounted traits starts again from its initial state with no
             // frame, so its lifecycle event is the one it handles there.
-            let traits = guest.page_circuit(None, Some(route.as_str())).map_err(|e| failure(format!("program/navigate: {e}")))?.traits;
+            let traits = guest
+                .page_circuit(None, Some(route.as_str()))
+                .map_err(|e| failure(format!("program/navigate: {e}")))?
+                .traits;
             let held = session.route.read();
             for name in traits.iter().filter(|name| held.mounted.contains(*name)) {
-                let initial = guest.registry.trait_definitions.read().get(name).and_then(|def| {
-                    let states = &def.state_machine.states;
-                    states.iter().find(|s| s.is_initial == Some(true)).or_else(|| states.first()).map(|s| s.name.clone())
-                });
+                let initial = guest
+                    .registry
+                    .trait_definitions
+                    .read()
+                    .get(name)
+                    .and_then(|def| {
+                        let states = &def.state_machine.states;
+                        states
+                            .iter()
+                            .find(|s| s.is_initial == Some(true))
+                            .or_else(|| states.first())
+                            .map(|s| s.name.clone())
+                    });
                 if let Some(state) = initial {
-                    guest.restore_trait(name, None, super::TraitSnapshot { state, entity: Value::Null });
+                    guest.restore_trait(
+                        name,
+                        None,
+                        super::TraitSnapshot {
+                            state,
+                            entity: Value::Null,
+                        },
+                    );
                 }
             }
         }
@@ -1070,12 +1450,26 @@ impl RuntimeKernel {
             embedded,
             access,
         } = routed_mounts(guest, Some(route.as_str()), "program/navigate")?;
-        if matches!(access, super::page_circuit::PageAccessVerdict::Denied { .. }) {
+        if matches!(
+            access,
+            super::page_circuit::PageAccessVerdict::Denied { .. }
+        ) {
             let name = match handle {
                 Value::String(name) => Some(name.as_str()),
                 _ => None,
             };
-            return Ok(guest_answer(guest, &std::collections::HashMap::new(), name, Some((&[], None)), &embedded, &[], "", "INIT", Some(&access), &[]));
+            return Ok(guest_answer(
+                guest,
+                &std::collections::HashMap::new(),
+                name,
+                Some((&[], None)),
+                &embedded,
+                &[],
+                "",
+                "INIT",
+                Some(&access),
+                &[],
+            ));
         }
         let page: Vec<String> = routed.iter().map(|seed| seed.r#trait.clone()).collect();
         let fresh: Vec<MountSeed> = {
@@ -1085,7 +1479,13 @@ impl RuntimeKernel {
                 .filter(|seed| remount || !held.mounted.contains(&seed.r#trait))
                 .collect()
         };
-        let outcomes = mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?;
+        let outcomes = mount_seeds(
+            guest,
+            session.host.as_deref(),
+            resolved.as_deref(),
+            &fresh,
+            "program/navigate",
+        )?;
         view_page(guest, &page, &embedded);
         let orbitals = painter_orbitals(guest, &outcomes);
         {
@@ -1119,7 +1519,11 @@ impl RuntimeKernel {
             return Ok(GuestTicks::Closed);
         };
         // A stream keeps its session alive, so the guest's own must end for a closed tab's session to be freed.
-        if session.opener_session.as_deref().is_some_and(|opener| self.session_lives.streams_dropped(opener)) {
+        if session
+            .opener_session
+            .as_deref()
+            .is_some_and(|opener| self.session_lives.streams_dropped(opener))
+        {
             return Ok(GuestTicks::Closed);
         }
         let Some(host) = &session.host else {
@@ -1138,12 +1542,28 @@ impl RuntimeKernel {
         // A tick that changed a field an earlier paint reads repaints it: the guest stands in for the browser
         // (EXEC-ENDPOINT-3a), so its kernel resolves those paints (owner 2026-11-12, G-ORBITAL-CORE-148).
         let rerenders = session.kernel.rerender_stale();
-        let mut answer = guest_answer(&session.kernel, &orbitals, Some(handle), None, &embedded, &outcomes, &seed_trait, "", None, &rerenders);
+        let mut answer = guest_answer(
+            &session.kernel,
+            &orbitals,
+            Some(handle),
+            None,
+            &embedded,
+            &outcomes,
+            &seed_trait,
+            "",
+            None,
+            &rerenders,
+        );
         if let Value::Object(fields) = &mut answer {
             fields.insert("dispatches".into(), Value::Array(dispatches.into()));
         }
         // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
-        let empty = |field: &str| answer.get(field).and_then(Value::as_array).is_none_or(|items| items.is_empty());
+        let empty = |field: &str| {
+            answer
+                .get(field)
+                .and_then(Value::as_array)
+                .is_none_or(|items| items.is_empty())
+        };
         if empty("rendered") && empty("emitted") && empty("hostAsks") && empty("dispatches") {
             return Ok(GuestTicks::Idle);
         }
@@ -1191,7 +1611,15 @@ impl RuntimeKernel {
             }
             if form.contains_key("inbound") {
                 let ask = orbital_core_base::agent_ports::inbound_ask(form).map_err(failure)?;
-                return self.run_in_guest(&session, handle, Vec::new(), "", Value::Null, Some(Value::object(ask)), args);
+                return self.run_in_guest(
+                    &session,
+                    handle,
+                    Vec::new(),
+                    "",
+                    Value::Null,
+                    Some(Value::object(ask)),
+                    args,
+                );
             }
         }
         let Some(Value::String(address)) = args.first() else {
@@ -1211,7 +1639,8 @@ impl RuntimeKernel {
                 )))
             }
         };
-        let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
+        let given =
+            orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
         let payload = self.copy_into(&session, &given)?;
         let leg = match args.get(2) {
             // An events request names its orbital, as a served program/dispatch request does; `wire` picks its shape.
@@ -1239,17 +1668,45 @@ impl RuntimeKernel {
         let text = |name: &str| form.get(name).and_then(Value::as_str);
         let ask: RelayedAsk = text("ask")
             .ok_or_else(|| failure("program/dispatch: ask is the text a guest answer carried"))
-            .and_then(|t| from_json_str(t).map_err(|e| failure(format!("program/dispatch: the ask is not one a guest wrote: {e}"))))?;
+            .and_then(|t| {
+                from_json_str(t).map_err(|e| {
+                    failure(format!(
+                        "program/dispatch: the ask is not one a guest wrote: {e}"
+                    ))
+                })
+            })?;
         let outcome = match (text("answer"), text("refuse")) {
             (Some(given), None) => answer(given).map_err(failure)?,
-            (None, Some(reason)) => RelayedAnswer::Refused { error: reason.to_string(), kind: "unavailable".to_string() },
-            _ => return Err(failure("program/dispatch: an ask is returned with exactly one of answer or refuse")),
+            (None, Some(reason)) => RelayedAnswer::Refused {
+                error: reason.to_string(),
+                kind: "unavailable".to_string(),
+            },
+            _ => {
+                return Err(failure(
+                    "program/dispatch: an ask is returned with exactly one of answer or refuse",
+                ))
+            }
         };
-        if ask.completion.as_ref().is_some_and(|c| c.entity_id.is_some()) {
+        if ask
+            .completion
+            .as_ref()
+            .is_some_and(|c| c.entity_id.is_some())
+        {
             return Err(failure("program/dispatch: the ask was made on a row frame, which a guest's viewer cannot return to yet"));
         }
         let Some((event, payload)) = route(&ask, &outcome) else {
-            return Ok(guest_answer(&session.kernel, &std::collections::HashMap::new(), None, None, &session.route.read().embedded.clone(), &[], "", "", None, &[]));
+            return Ok(guest_answer(
+                &session.kernel,
+                &std::collections::HashMap::new(),
+                None,
+                None,
+                &session.route.read().embedded.clone(),
+                &[],
+                "",
+                "",
+                None,
+                &[],
+            ));
         };
         let target = ask.completion.map(|c| c.trait_name).unwrap_or_default();
         let payload = self.copy_into(session, &payload)?;
@@ -1315,7 +1772,9 @@ impl RuntimeKernel {
         for trait_name in &targets {
             let ran = match &session.host {
                 Some(host) => host.dispatch(trait_name, event, payload.clone()),
-                None => guest.dispatch(trait_name, None, event, payload.clone()).map_err(|e| e.to_string()),
+                None => guest
+                    .dispatch(trait_name, None, event, payload.clone())
+                    .map_err(|e| e.to_string()),
             }
             .map_err(|e| failure(format!("program/dispatch: {e}")))?;
             outcomes.extend(ran);
@@ -1323,7 +1782,18 @@ impl RuntimeKernel {
         let seed_trait = targets.first().cloned().unwrap_or_default();
         let embedded = session.route.read().embedded.clone();
         let orbitals = painter_orbitals(guest, &outcomes);
-        Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, event, None, &[]))
+        Ok(guest_answer(
+            &session.kernel,
+            &orbitals,
+            None,
+            None,
+            &embedded,
+            &outcomes,
+            &seed_trait,
+            event,
+            None,
+            &[],
+        ))
     }
 
     /// The registered traits whose current state handles `event`, in name order.
@@ -1369,10 +1839,14 @@ impl RuntimeKernel {
         let session = self.guest(handle, "program/inputs")?;
         let guest = session.kernel.clone();
         let asked = |key: &str| match args.first() {
-            Some(Value::Object(map)) => map.get(key).filter(|value| !matches!(value, Value::Null)).cloned(),
+            Some(Value::Object(map)) => map
+                .get(key)
+                .filter(|value| !matches!(value, Value::Null))
+                .cloned(),
             _ => None,
         };
-        let (environment, credentials, denials) = (asked("environment"), asked("credentials"), asked("denials"));
+        let (environment, credentials, denials) =
+            (asked("environment"), asked("credentials"), asked("denials"));
         let own: Vec<Value> = args
             .iter()
             .enumerate()
@@ -1411,7 +1885,10 @@ impl RuntimeKernel {
     }
 
     /// The opener may read this guest's declared values, and the guest has a host to read them from.
-    fn declared_reader<'a>(&self, session: &'a GuestSession) -> Result<&'a Arc<dyn super::guest_hosting::GuestHost>, AgentPortFailure> {
+    fn declared_reader<'a>(
+        &self,
+        session: &'a GuestSession,
+    ) -> Result<&'a Arc<dyn super::guest_hosting::GuestHost>, AgentPortFailure> {
         let held = self.may_spawn_guest("program/inputs")?;
         if !held.kernel_allows(KernelKind::Declared, None) {
             return Err(guest_refusal(
@@ -1419,50 +1896,97 @@ impl RuntimeKernel {
                 "program/inputs: reading a guest's environment, credentials or denials needs the grant kernel: { guest: [declared] }".to_string(),
             ));
         }
-        session.host.as_ref().ok_or_else(|| failure("program/inputs: this guest has no host to hold them"))
+        session
+            .host
+            .as_ref()
+            .ok_or_else(|| failure("program/inputs: this guest has no host to hold them"))
     }
 
     /// `answer` with the credentials the guest's program names: each masked, or the value of the one named.
-    fn with_guest_credentials(&self, answer: Value, session: &GuestSession, asked: &Value) -> Result<Value, AgentPortFailure> {
+    fn with_guest_credentials(
+        &self,
+        answer: Value,
+        session: &GuestSession,
+        asked: &Value,
+    ) -> Result<Value, AgentPortFailure> {
         let host = self.declared_reader(session)?;
         let mut declared = std::collections::BTreeSet::new();
         let mut computed = std::collections::BTreeSet::new();
         for schema in session.kernel.registry.schemas.read().values() {
             for orbital in &schema.orbitals {
                 for reference in &orbital.traits {
-                    let orbital_core_base::schema::types::TraitReference::Inline(definition) = reference else {
-                        computed.insert(format!("{}.{}", orbital.name, reference.trait_name().unwrap_or_default()));
+                    let orbital_core_base::schema::types::TraitReference::Inline(definition) =
+                        reference
+                    else {
+                        computed.insert(format!(
+                            "{}.{}",
+                            orbital.name,
+                            reference.trait_name().unwrap_or_default()
+                        ));
                         continue;
                     };
-                    let value = serde_json::to_value(definition).map_err(|error| failure(format!("program/inputs: {error}")))?;
-                    let (named, slots) = orbital_core_base::secrets::declared_credentials_in(&value);
+                    let value = serde_json::to_value(definition)
+                        .map_err(|error| failure(format!("program/inputs: {error}")))?;
+                    let (named, slots) =
+                        orbital_core_base::secrets::declared_credentials_in(&value);
                     declared.extend(named);
-                    computed.extend(slots.into_iter().map(|slot| format!("{}.{}", orbital.name, slot)));
+                    computed.extend(
+                        slots
+                            .into_iter()
+                            .map(|slot| format!("{}.{}", orbital.name, slot)),
+                    );
                 }
             }
         }
         let credentials = match asked {
-            Value::Bool(true) => Value::array(declared.iter().map(|name| masked_entry(name, host.credential_of(name))).collect::<Vec<Value>>()),
+            Value::Bool(true) => Value::array(
+                declared
+                    .iter()
+                    .map(|name| masked_entry(name, host.credential_of(name)))
+                    .collect::<Vec<Value>>(),
+            ),
             Value::String(name) if declared.contains(name.as_str()) => record(vec![
                 ("name", Value::string(name.to_string())),
-                ("value", host.credential_of(name).map_or(Value::Null, Value::string)),
+                (
+                    "value",
+                    host.credential_of(name).map_or(Value::Null, Value::string),
+                ),
             ]),
             Value::String(name) => {
                 return Err(guest_refusal(
                     orbital_core_base::os::OsErrorKind::Denied,
-                    format!("program/inputs: the guest's program does not name the credential {}", name.as_str()),
+                    format!(
+                        "program/inputs: the guest's program does not name the credential {}",
+                        name.as_str()
+                    ),
                 ))
             }
-            _ => return Err(failure("program/inputs: `credentials` is true or a credential's name")),
+            _ => {
+                return Err(failure(
+                    "program/inputs: `credentials` is true or a credential's name",
+                ))
+            }
         };
         let mut fields = fields_of(answer);
         fields.insert("credentials".into(), credentials);
-        fields.insert("computedCredentials".into(), Value::array(computed.into_iter().map(Value::string).collect::<Vec<Value>>()));
+        fields.insert(
+            "computedCredentials".into(),
+            Value::array(
+                computed
+                    .into_iter()
+                    .map(Value::string)
+                    .collect::<Vec<Value>>(),
+            ),
+        );
         Ok(Value::object(fields))
     }
 
     /// `answer` with every `denied` answer the guest was given, the ones its program handled included.
-    fn with_guest_denials(&self, answer: Value, session: &GuestSession) -> Result<Value, AgentPortFailure> {
+    fn with_guest_denials(
+        &self,
+        answer: Value,
+        session: &GuestSession,
+    ) -> Result<Value, AgentPortFailure> {
         let host = self.declared_reader(session)?;
         let mut merged = session.kernel.grants.denials.entries();
         for (message, count) in host.deferred_denials() {
@@ -1473,7 +1997,12 @@ impl RuntimeKernel {
         }
         let denials = merged
             .into_iter()
-            .map(|(message, count)| record(vec![("message", Value::string(message)), ("count", Value::Number(count as f64))]))
+            .map(|(message, count)| {
+                record(vec![
+                    ("message", Value::string(message)),
+                    ("count", Value::Number(count as f64)),
+                ])
+            })
             .collect::<Vec<Value>>();
         let mut fields = fields_of(answer);
         fields.insert("denials".into(), Value::array(denials));
@@ -1482,29 +2011,45 @@ impl RuntimeKernel {
 
     /// `answer` with what the guest really holds (`grants`) and its environment: every declared variable masked, or the
     /// value of the one named. Only an opener holding `kernel: { guest: [declared] }` may read it.
-    fn with_guest_environment(&self, answer: Value, session: &GuestSession, asked: &Value) -> Result<Value, AgentPortFailure> {
+    fn with_guest_environment(
+        &self,
+        answer: Value,
+        session: &GuestSession,
+        asked: &Value,
+    ) -> Result<Value, AgentPortFailure> {
         let host = self.declared_reader(session)?;
         let declared = session.kernel.grants.os_grants.read().declared();
-        let environment = match asked {
-            Value::Bool(true) => Value::array(
-                declared
-                    .env
-                    .iter()
-                    .map(|name| masked_entry(name, host.environment_of(name)))
-                    .collect::<Vec<Value>>(),
-            ),
-            Value::String(name) if declared.env.iter().any(|n| n.as_str() == name.as_str()) => record(vec![
-                ("name", Value::string(name.to_string())),
-                ("value", host.environment_of(name).map_or(Value::Null, Value::string)),
-            ]),
-            Value::String(name) => {
-                return Err(guest_refusal(
+        let environment =
+            match asked {
+                Value::Bool(true) => Value::array(
+                    declared
+                        .env
+                        .iter()
+                        .map(|name| masked_entry(name, host.environment_of(name)))
+                        .collect::<Vec<Value>>(),
+                ),
+                Value::String(name) if declared.env.iter().any(|n| n.as_str() == name.as_str()) => {
+                    record(vec![
+                        ("name", Value::string(name.to_string())),
+                        (
+                            "value",
+                            host.environment_of(name).map_or(Value::Null, Value::string),
+                        ),
+                    ])
+                }
+                Value::String(name) => return Err(guest_refusal(
                     orbital_core_base::os::OsErrorKind::Denied,
-                    format!("program/inputs: the guest does not declare the environment variable {}", name.as_str()),
-                ))
-            }
-            _ => return Err(failure("program/inputs: `environment` is true or a variable's name")),
-        };
+                    format!(
+                        "program/inputs: the guest does not declare the environment variable {}",
+                        name.as_str()
+                    ),
+                )),
+                _ => {
+                    return Err(failure(
+                        "program/inputs: `environment` is true or a variable's name",
+                    ))
+                }
+            };
         let grants: Value = serde_json::to_value(&declared)
             .ok()
             .and_then(|json| from_json_value(&json).ok())
@@ -1534,10 +2079,16 @@ fn record(pairs: Vec<(&str, Value)>) -> Value {
 /// `{ name, set, tail }`: whether `value` is held and, past 8 characters, its last 4.
 fn masked_entry(name: &str, value: Option<String>) -> Value {
     let tail: String = match &value {
-        Some(text) if text.chars().count() > 8 => text.chars().skip(text.chars().count() - 4).collect(),
+        Some(text) if text.chars().count() > 8 => {
+            text.chars().skip(text.chars().count() - 4).collect()
+        }
         _ => String::new(),
     };
-    record(vec![("name", Value::string(name.to_string())), ("set", Value::Bool(value.is_some())), ("tail", Value::string(tail))])
+    record(vec![
+        ("name", Value::string(name.to_string())),
+        ("set", Value::Bool(value.is_some())),
+        ("tail", Value::string(tail)),
+    ])
 }
 
 #[cfg(test)]
@@ -1559,7 +2110,15 @@ impl GuestSession {
             route: Arc::default(),
             lazy: Arc::new(GuestLazy {
                 from: LazyFrom::None,
-                prepare: GuestPrepare { mock: false, apply_grants: false, keep_declared: false, live: false, opener_held: None, granted: None },
+                prepare: GuestPrepare {
+                    mock: false,
+                    apply_grants: false,
+                    keep_declared: false,
+                    live: false,
+                    opener_held: None,
+                    granted: None,
+                    withhold: Vec::new(),
+                },
                 read: orbital_core_base::sync::Mutex::new(Default::default()),
             }),
         }
@@ -1574,4 +2133,54 @@ fn cost_record(cost: &orbital_core_base::cost::StepCost) -> Value {
     fields.insert("allocs".into(), Value::Number(cost.allocs as f64));
     fields.insert("allocBytes".into(), Value::Number(cost.alloc_bytes as f64));
     Value::object(fields)
+}
+
+#[cfg(test)]
+mod withhold_tests {
+    use super::{withhold_grants, GuestWithhold};
+    use orbital_core_base::json_value::from_json_value;
+    use orbital_core_base::os_grants::OsGrants;
+    use serde_json::json;
+
+    fn grants(j: serde_json::Value) -> OsGrants {
+        from_json_value(&j).expect("os grants")
+    }
+
+    #[test]
+    fn withholding_listen_drops_only_the_listen_kind_and_keeps_other_net_targets() {
+        let mut held = grants(
+            json!({ "net": [{ "target": "0.0.0.0:*", "kinds": ["listen"] }, { "target": "api.example:443", "kinds": ["tcp"] }, { "target": "127.0.0.1:8080", "kinds": ["tcp", "listen"] }], "sys": ["self-signal"] }),
+        );
+        withhold_grants(&mut held, &[GuestWithhold::Listen]);
+        assert_eq!(
+            held,
+            grants(
+                json!({ "net": [{ "target": "api.example:443", "kinds": ["tcp"] }, { "target": "127.0.0.1:8080", "kinds": ["tcp"] }], "sys": ["self-signal"] })
+            )
+        );
+    }
+
+    #[test]
+    fn withholding_self_signal_drops_only_that_sys_kind() {
+        let mut held = grants(
+            json!({ "sys": ["self-signal", "cpu"], "net": [{ "target": "0.0.0.0:*", "kinds": ["listen"] }] }),
+        );
+        withhold_grants(&mut held, &[GuestWithhold::SelfSignal]);
+        assert_eq!(
+            held,
+            grants(
+                json!({ "sys": ["cpu"], "net": [{ "target": "0.0.0.0:*", "kinds": ["listen"] }] })
+            )
+        );
+    }
+
+    #[test]
+    fn control_withholding_nothing_keeps_every_grant() {
+        let before = grants(
+            json!({ "sys": ["self-signal"], "net": [{ "target": "0.0.0.0:*", "kinds": ["listen"] }] }),
+        );
+        let mut held = before.clone();
+        withhold_grants(&mut held, &[]);
+        assert_eq!(held, before);
+    }
 }

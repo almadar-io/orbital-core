@@ -1130,3 +1130,39 @@ mod unkeyed_listener_of_a_keyed_row {
         assert_ne!(caller_state(&k, None).as_deref(), Some("counted"));
     }
 }
+
+// G-ORBITAL-CORE-216: when a `per` key does not evaluate to a row, the listen's `when` guard is judged on the source
+// payload first (the trait's initial state); a delivery the guard rules out is dropped, never refused.
+mod guard_before_key {
+    use super::*;
+
+    fn guarded_kernel() -> RuntimeKernel {
+        let mut program = schema(per_payload_key(), false);
+        program["orbitals"][1]["traits"][0]["listens"][0]["guard"] = json!(["=", "@payload.n", 1]);
+        crate::support::TestKernel::server().build(program)
+    }
+
+    #[test]
+    fn a_guard_that_rules_the_delivery_out_drops_it_even_with_an_empty_key() {
+        let k = guarded_kernel();
+        let emitted = go(&k, json!(""), 2);
+        assert!(named(&emitted, "WAS_REJECTED").is_empty(), "{emitted:?}");
+        assert_eq!(state(&k, None), None);
+    }
+
+    #[test]
+    fn control_a_guard_that_passes_still_refuses_an_empty_key() {
+        let k = guarded_kernel();
+        let emitted = go(&k, json!(""), 1);
+        assert_eq!(named(&emitted, "WAS_REJECTED"), [json!({ "reason": "key-invalid" })], "{emitted:?}");
+    }
+
+    #[test]
+    fn control_a_guard_that_rules_out_with_no_rejection_listener_does_not_fail_the_dispatch() {
+        let mut program = schema(per_payload_key(), false);
+        program["orbitals"][0]["traits"][0]["listens"] = json!([]);
+        program["orbitals"][1]["traits"][0]["listens"][0]["guard"] = json!(["=", "@payload.n", 1]);
+        let k = crate::support::TestKernel::server().build(program);
+        assert!(k.dispatch("Caller", None, "GO", val(json!({ "key": "", "n": 2 }))).is_ok());
+    }
+}

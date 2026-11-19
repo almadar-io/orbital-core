@@ -130,6 +130,7 @@ impl BlockingHost<'_> {
                 Some(handler) => handler.run(op, args),
                 None => Err(crate::agent_ports::no_host_failure(format!("no substrate host configured for {op}"))),
             }),
+            IoRequest::GuestOpen { work, .. } => IoAnswer::Substrate(work.run()),
             IoRequest::Guest { .. } => IoAnswer::Substrate(Err(crate::agent_ports::guest_failure(
                 OsErrorKind::Unsupported,
                 "program/dispatch: this host starts no guest kernels",

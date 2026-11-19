@@ -30,6 +30,15 @@ pub trait GuestHosting: Send + Sync {
     /// `program/*` and `behavior/*` operators are answered by the opener's program port (`program/open { program }`).
     fn open(&self, integrations: GuestIntegrations, cwd: Option<&str>, env: &[(String, Option<String>)], program: bool) -> Arc<dyn GuestHost>;
 
+    /// The resolved program at `path` and the lazy programs it carries, by the file each lazy page names: how
+    /// `program/open { path }` reads its program on the host's worker instead of taking it as a value (EXEC-CONC-7).
+    fn read_program(&self, path: &str) -> Result<(OrbitalSchema, std::collections::HashMap<String, OrbitalSchema>), crate::effects::executor::SubstrateFailure> {
+        Err(crate::agent_ports::guest_failure(
+            orbital_core_base::os::OsErrorKind::Unsupported,
+            format!("program/open: this host cannot read the program at {path}"),
+        ))
+    }
+
     /// One `uses lazy` program of the installed `behavior`, resolved, by the file its lazy page names: how a guest opened
     /// from a program value naming `lazySource: { behavior }` loads a lazy page when it first needs it (EXEC-LOAD-2).
     fn lazy_program(&self, behavior: &str, file: &str) -> Result<OrbitalSchema, crate::effects::executor::SubstrateFailure> {

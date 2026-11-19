@@ -601,6 +601,20 @@ impl RuntimeKernel {
             };
             match self.resolve_listen_key(&listen_key, &item.source_payload, user) {
                 Err(reason) => {
+                    if let Some(guard) = &item.listen_guard {
+                        let config = match self.listener_config(&item.trait_name) {
+                            Ok(config) => config,
+                            Err(fault) => {
+                                cascade.queue.push_front(item);
+                                return Err(fault);
+                            }
+                        };
+                        let initial = self.get_initial_state(&item.trait_name).unwrap_or_default();
+                        if !listen_guard_passes(guard, &item.source_payload, &initial, config, &crate::kernel::DispatchView::default()) {
+                            debug!(trait_name = %item.trait_name, event = %item.event, "fanout:listen-guard-blocked-before-key");
+                            return Ok(true);
+                        }
+                    }
                     let mut refused = Vec::new();
                     self.refuse_key(&item, &listen_key, &reason, &mut refused)?;
                     cascade.queue.extend(refused);

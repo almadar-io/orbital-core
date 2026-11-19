@@ -525,6 +525,31 @@ impl IoPort {
         matches!(self.substrate_site(), (Some(_), Some(_)))
     }
 
+    /// A `program/open { path }` the host runs, journaled: keyed with a declared route the host runs `work` off the lane
+    /// and the open's answer arrives as a keyed event of the call site's routes, `Ok(None)`; unkeyed the host answers it
+    /// in place, `Ok(Some(answer))`.
+    pub(crate) fn guest_open(&self, work: GuestOpenWork, call: Vec<Value>) -> Result<Option<Value>, SubstrateFailure> {
+        let (key, site) = match self.substrate_site() {
+            (Some(key), Some(site)) => (Some(key), Some(site)),
+            _ => (None, None),
+        };
+        let keyed = key.is_some();
+        match self.ask(|| IoRequest::GuestOpen { work, key, site }) {
+            Asked::Answer(IoAnswer::ServiceDeferred) if keyed => {
+                *self.verdict.lock() = Some(CallVerdict::Deferred);
+                *self.deferred_call.lock() = Some(DeferredCall { operator: "program/open".to_string(), args: call });
+                Ok(None)
+            }
+            Asked::Answer(IoAnswer::Substrate(Ok(answer))) if !keyed => Ok(Some(answer)),
+            Asked::Answer(IoAnswer::Substrate(Err(failure))) => Err(failure),
+            Asked::Direct => Err(crate::agent_ports::guest_failure(OsErrorKind::Unsupported, NO_PORT_HOST)),
+            Asked::Answer(_) | Asked::Withheld => Err(SubstrateFailure {
+                message: self.withheld_error(),
+                errors: Vec::new(),
+            }),
+        }
+    }
+
     /// One guest session dispatch the host runs, journaled. Keyed (the call carries a key and a declared route), the
     /// host answers deferred and the outcome arrives as a keyed event of the call site's routes, `Ok(None)`; unkeyed, the
     /// host answers the outcome in place, `Ok(Some(answer))`. A host that runs no guest answers a failure.

@@ -163,6 +163,14 @@ impl NativeHost {
     /// settles through the sink; without a sink there is nothing to answer later, and the blocking answer refuses it.
     /// Unkeyed, it runs here and answers in place.
     fn answer_guest(&self, request: &IoRequest) -> Option<IoAnswer> {
+        if let IoRequest::GuestOpen { work, key, site } = request {
+            let (Some(key), Some(site)) = (key, site) else {
+                return Some(IoAnswer::Substrate(work.run()));
+            };
+            self.handles.completions.sink()?;
+            let work = work.clone();
+            return Some(crate::os_host::completion::Completions::defer_guest(&self.handles.completions, key, site, move || work.run()));
+        }
         let IoRequest::Guest { kernel, targets, event, payload, grants, leg, key, site, reply, .. } = request else {
             return None;
         };

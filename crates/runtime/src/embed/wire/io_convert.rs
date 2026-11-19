@@ -309,6 +309,12 @@ impl From<&IoRequest> for IoRequestWire {
                 key: key.clone(),
                 site: CallSiteWire::from(site),
             },
+            IoRequest::GuestOpen { key, site, .. } => Self::Substrate {
+                op: "program/open".to_string(),
+                args: Vec::new(),
+                key: key.clone(),
+                site: site.as_ref().map(CallSiteWire::from),
+            },
             IoRequest::Guest { guest, targets, event, payload, grants, leg, key, site, reply, .. } => Self::Guest {
                 guest: guest.clone(),
                 targets: targets.clone(),

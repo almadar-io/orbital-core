@@ -590,6 +590,7 @@ pub fn step_answer(
     match request {
         IoRequest::Os { key: Some(_), .. }
         | IoRequest::Guest { .. }
+        | IoRequest::GuestOpen { .. }
         | IoRequest::Substrate {
             key: Some(_),
             site: Some(_),

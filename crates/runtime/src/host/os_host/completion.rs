@@ -463,6 +463,7 @@ impl DispatchScope {
             // A keyed substrate ask routed `onMessage` is a stream (EXEC-QUEUE-13): every item runs in the asking session.
             IoRequest::Substrate { key: Some(key), site: Some(site), .. } => (key, site.emit.on_message.is_some()),
             IoRequest::Guest { key: Some(key), site: Some(_), .. } => (key, false),
+            IoRequest::GuestOpen { key: Some(key), site: Some(_), .. } => (key, false),
             _ => return inner(request),
         };
         // A store leg's work is awaited by the very dispatch that asked it: its completions wait for this ask to be

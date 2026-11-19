@@ -398,6 +398,20 @@ fn edge_declared_is_a_boolean() {
 }
 
 #[test]
+fn edge_withhold_names_only_listen_or_self_signal() {
+    for bad in [json!("listen"), json!(["exec"]), json!([7])] {
+        let after = opened_with(json!({ "withhold": bad }));
+        assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("`withhold` is a list of \"listen\" and \"self-signal\"")), "{after}");
+    }
+}
+
+#[test]
+fn control_withhold_opens_like_no_options() {
+    let after = opened_with(json!({ "withhold": ["listen", "self-signal"] }));
+    assert!(after["guest"].as_str().is_some_and(|g| g.starts_with("guest-")), "{after}");
+}
+
+#[test]
 fn control_declared_false_opens_like_no_options() {
     let after = opened_with(json!({ "declared": false }));
     assert!(after["guest"].as_str().is_some_and(|g| g.starts_with("guest-")), "{after}");

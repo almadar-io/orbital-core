@@ -519,7 +519,7 @@ pub struct RuntimeKernel {
     /// The guest programs this kernel opened (`program/open`, EXEC-CONC-7), by handle.
     guests: Arc<RwLock<HashMap<String, guests::GuestSession>>>,
     /// The last guest handle number this kernel issued.
-    guest_seq: std::sync::atomic::AtomicU64,
+    guest_seq: Arc<std::sync::atomic::AtomicU64>,
     /// The host each guest this kernel opens runs under, when the kernel's own host offers one (EXEC-CONC-7).
     guest_hosting: RwLock<Option<Arc<dyn guest_hosting::GuestHosting>>>,
     /// What the host runs once a guest's open or close has freed memory, to give the freed pages back (EXEC-CONC-7).
@@ -885,7 +885,7 @@ impl RuntimeKernel {
             settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
             guests,
-            guest_seq: std::sync::atomic::AtomicU64::new(0),
+            guest_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             guest_hosting: RwLock::new(None),
             memory_settler: RwLock::new(None),
             renders: Arc::new(RwLock::new(RenderStore::default())),
