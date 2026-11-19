@@ -361,6 +361,21 @@ fn a_closed_guest_takes_no_more_dispatches() {
 }
 
 #[test]
+fn g_cross_729_a_dispatch_to_a_closed_guest_is_refused_with_kind_closed_so_its_host_can_reopen_it() {
+    let (kernel, _, _) = opened();
+    run(&kernel, "CLOSE");
+    let after = run(&kernel, "ADD");
+    assert_eq!(after["refused"]["kind"], json!("closed"), "{after}");
+}
+
+#[test]
+fn control_a_dispatch_to_a_guest_never_opened_is_refused_as_closed_too() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "STRAY");
+    assert_eq!(after["refused"]["kind"], json!("closed"), "{after}");
+}
+
+#[test]
 fn edge_a_guest_given_grants_needs_the_openers_kernel_spawn_grant() {
     let kernel = opener(json!([
         { "from": "idle", "to": "idle", "event": "GO", "effects": [

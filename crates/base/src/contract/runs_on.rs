@@ -416,6 +416,20 @@ pub fn serves_only_protocol_pages(orbital: &Value) -> bool {
         .is_some_and(|pages| !pages.is_empty() && pages.iter().all(|page| page.get("protocol").is_some()))
 }
 
+/// [`serves_only_protocol_pages`] read from the typed orbital, for a kernel that holds the schema and builds no value
+/// of it.
+pub fn orbital_serves_only_protocol_pages(orbital: &crate::schema::Orbital) -> bool {
+    use crate::schema::PageRef;
+    orbital.pages.as_ref().is_some_and(|pages| {
+        !pages.is_empty()
+            && pages.iter().all(|page| match page {
+                PageRef::Inline(page) => page.protocol.is_some(),
+                PageRef::Object(page) => page.protocol.is_some(),
+                PageRef::Reference(_) => false,
+            })
+    })
+}
+
 /// Program keys no client reads.
 const CLIENT_UNREAD_PROGRAM_KEYS: [&str; 2] = ["_metadata", "ledger"];
 
@@ -726,6 +740,33 @@ mod tests {
 
     fn v(json: serde_json::Value) -> Value {
         from_json_value(&json).expect("a core value")
+    }
+
+    #[test]
+    fn the_typed_orbital_answers_what_its_value_answers() {
+        use serde_json::json;
+        let orbital = |pages: Option<serde_json::Value>| {
+            let mut o = json!({ "name": "O", "entity": { "name": "E", "fields": [] }, "traits": [] });
+            if let Some(pages) = pages {
+                o["pages"] = pages;
+            }
+            o
+        };
+        let cases = [
+            (orbital(Some(json!([{ "name": "Api", "protocol": "http", "path": "/api" }, { "name": "Boot", "protocol": "boot", "path": "boot" }]))), true),
+            (orbital(Some(json!([{ "name": "Api", "protocol": "http", "path": "/api" }, { "name": "Home", "path": "/" }]))), false),
+            (orbital(Some(json!([{ "ref": "Up.pages.Api", "protocol": "http" }]))), true),
+            (orbital(Some(json!([{ "ref": "Up.pages.Home" }]))), false),
+            (orbital(Some(json!(["Up.pages.Api"]))), false),
+            (orbital(Some(json!([]))), false),
+            (orbital(None), false),
+        ];
+        for (json, expected) in cases {
+            let typed: crate::schema::Orbital = from_json_value(&json).expect("an orbital");
+            assert_eq!(orbital_serves_only_protocol_pages(&typed), expected, "{json}");
+            let value = crate::value_serialize::to_value(&typed).expect("a value");
+            assert_eq!(serves_only_protocol_pages(&value), expected, "the value of the same orbital agrees: {json}");
+        }
     }
 
     #[test]

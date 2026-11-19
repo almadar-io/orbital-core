@@ -392,8 +392,7 @@ impl RuntimeKernel {
             let mut endpoint_traits = HashSet::new();
             for (name, schema) in schemas.iter() {
                 for (index, orbital) in schema.orbitals.iter().enumerate() {
-                    let endpoint_only = orbital_core_base::value_serialize::to_value(orbital)
-                        .is_ok_and(|value| orbital_core_base::runs_on::serves_only_protocol_pages(&value));
+                    let endpoint_only = orbital_core_base::runs_on::orbital_serves_only_protocol_pages(orbital);
                     for trait_ref in &orbital.traits {
                         if let Some(trait_name) = trait_ref.trait_name() {
                             homes

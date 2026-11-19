@@ -231,6 +231,13 @@ pub struct SubstrateFailure {
 pub trait SubstrateHandler: Send + Sync {
     /// Run one op with its positional arguments (the trailing `{ emit }` already split off).
     fn run(&self, op: &str, args: &[Value]) -> Result<Value, SubstrateFailure>;
+
+    /// The resolved program at the absolute `path`, and each lazy program it resolved under the file (`orbRef`) its
+    /// lazy page names: what `program/open { path }` opens, typed, so a host builds no value of the program between
+    /// the file and the kernel. A handler that reads no programs refuses.
+    fn resolved_program(&self, path: &str) -> Result<(orbital_core_base::schema::OrbitalSchema, HashMap<String, orbital_core_base::schema::OrbitalSchema>), SubstrateFailure> {
+        Err(SubstrateFailure { message: format!("program/open: this host's program port reads no program, so not {path}"), errors: Vec::new() })
+    }
 }
 
 /// Handler for UI rendering (client-only)

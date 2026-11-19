@@ -333,10 +333,14 @@ pub(crate) fn run_session(
     leg: Option<&Value>,
     reply: Option<&crate::resumable::GuestReply>,
     answer: &(dyn Fn(&crate::resumable::IoRequest) -> crate::resumable::IoAnswer + Sync),
-) -> Result<Value, String> {
+) -> Result<Value, crate::effects::executor::SubstrateFailure> {
     if let Some(leg) = leg {
-        return serve_leg(session, payload, leg).map_err(|failure| failure.error);
+        return serve_leg(session, payload, leg).map_err(|refused| crate::effects::executor::SubstrateFailure {
+            message: refused.error,
+            errors: refused.errors,
+        });
     }
+    let io = |message: String| crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Io, message);
     // Registered before the dispatch runs, so a reply its own cascade emits is not missed.
     let waiting = reply.map(|wanted| session.kernel.await_reply(wanted));
     let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
@@ -344,16 +348,16 @@ pub(crate) fn run_session(
         if let Some(host) = &session.host {
             outcomes.extend(
                 host.dispatch(trait_name, event, payload.clone())
-                    .map_err(|e| format!("program/dispatch: {e}"))?,
+                    .map_err(|e| io(format!("program/dispatch: {e}")))?,
             );
             continue;
         }
         let progress = session
             .kernel
             .start_dispatch(trait_name, None, event, payload.clone(), None, None)
-            .map_err(|e| format!("program/dispatch: {e}"))?;
+            .map_err(|e| io(format!("program/dispatch: {e}")))?;
         let ran = crate::resumable::drive_concurrent(&session.kernel, progress, answer)
-            .map_err(|e| format!("program/dispatch: {e}"))?;
+            .map_err(|e| io(format!("program/dispatch: {e}")))?;
         outcomes.extend(ran);
     }
     let replied = match (reply, &waiting) {
@@ -362,13 +366,13 @@ pub(crate) fn run_session(
                 .wait(std::time::Duration::from_millis(wanted.timeout_ms))
                 .ok_or_else(|| {
                     let value = orbital_core_base::json_value::value_to_json(&wanted.value);
-                    format!(
+                    io(format!(
                         "program/dispatch: no {} for {} {} within {} ms",
                         wanted.events.join(" or "),
                         wanted.field,
                         value,
                         wanted.timeout_ms
-                    )
+                    ))
                 })?,
         ),
         _ => None,
@@ -898,10 +902,10 @@ impl RuntimeKernel {
             .get(name.as_str())
             .cloned()
             .ok_or_else(|| {
-                failure(format!(
-                    "{op}: no open guest '{}' (it was never opened or is closed)",
-                    name.as_str()
-                ))
+                guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Closed,
+                    format!("{op}: no open guest '{}' (it was never opened or is closed)", name.as_str()),
+                )
             })
     }
 

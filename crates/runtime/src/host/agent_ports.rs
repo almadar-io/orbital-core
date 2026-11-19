@@ -145,12 +145,15 @@ pub fn guest_failure_kind(errors: &[Value]) -> Option<Value> {
     errors.first().and_then(|issue| issue.get("kind")).filter(|kind| kind.as_str().is_some()).cloned()
 }
 
-/// The failure payload of a guest dispatch's completion: `{ error, kind }`.
+/// The failure payload of a guest dispatch's completion: `{ error, kind?, errors? }`, the issues kept so a coded refusal (`SESSION_ENDED`) reaches the asker.
 pub fn guest_failure_payload(failure: &crate::effects::executor::SubstrateFailure) -> Value {
     let mut payload = ValueMap::default();
     payload.insert("error".into(), Value::string(failure.message.clone()));
     if let Some(kind) = guest_failure_kind(&failure.errors) {
         payload.insert("kind".into(), kind);
+    }
+    if !failure.errors.is_empty() {
+        payload.insert("errors".into(), Value::array(failure.errors.clone()));
     }
     Value::object(payload)
 }

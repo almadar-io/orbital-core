@@ -73,7 +73,7 @@ fn run_guest(kernel: &GuestKernel, targets: &[String], event: &str, payload: &Va
             IoAnswer::Service(Err("a hosted guest's asks are answered by its own host".to_string()))
         }),
     };
-    ran.map_err(|message| guest_failure(OsErrorKind::Io, message))
+    ran
 }
 
 #[derive(Clone)]
@@ -493,6 +493,81 @@ pub(crate) mod tests {
         match host.answer(&guest_ask(guest_session(guest_program()), "Missing", None)) {
             IoAnswer::Substrate(Ok(answer)) => assert_eq!(moved_to(&answer), None, "as an in-kernel guest dispatch answers it"),
             other => panic!("expected an empty answer, got {other:?}"),
+        }
+    }
+
+    /// A split guest's host that answers every request leg as an ended session, as a served host does (EXEC-DIST-9).
+    struct EndedSessionHost(Arc<RuntimeKernel>);
+
+    impl crate::kernel::guest_hosting::GuestHost for EndedSessionHost {
+        fn kernel(&self) -> Arc<RuntimeKernel> {
+            self.0.clone()
+        }
+        fn environment_of(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn credential_of(&self, _name: &str) -> Option<String> {
+            None
+        }
+        fn deferred_denials(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+        fn register(&self, _schema: OrbitalSchema) -> Result<(), String> {
+            Ok(())
+        }
+        fn mount(&self, _route: Option<&str>, _seeds: &[crate::effects::response::MountSeed], _payload: Value) -> Result<crate::resumable::DispatchOutcomes, String> {
+            Ok(Vec::new())
+        }
+        fn dispatch(&self, _trait_name: &str, _event: &str, _payload: Value) -> Result<crate::resumable::DispatchOutcomes, String> {
+            Ok(Vec::new())
+        }
+        fn request(&self, _payload: &Value, _options: &orbital_core_base::value::ValueMap) -> Result<Value, SubstrateFailure> {
+            Err(SubstrateFailure {
+                message: "session tab-a ended: mount again with the frames the client holds".to_string(),
+                errors: vec![object(&[("code", Value::string("SESSION_ENDED")), ("status", Value::Int(409))])],
+            })
+        }
+        fn tick_pass(&self) -> Result<crate::resumable::DispatchOutcomes, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn ended_split_guest() -> GuestKernel {
+        let GuestKernel(Some(mut session)) = guest_session(guest_program()) else { unreachable!() };
+        session.host = Some(Arc::new(EndedSessionHost(session.kernel.clone())));
+        session.split = true;
+        GuestKernel(Some(session))
+    }
+
+    fn leg_ask(kernel: GuestKernel, key: Option<&str>) -> IoRequest {
+        let mut ask = guest_ask(kernel, "Work", key);
+        if let IoRequest::Guest { leg, .. } = &mut ask {
+            *leg = Some(object(&[("orbital", Value::string("G")), ("event", Value::string("GO")), ("clientId", Value::string("tab-a"))]));
+        }
+        ask
+    }
+
+    fn first_code(errors: &[Value]) -> Option<Value> {
+        errors.first().and_then(|e| e.get("code")).cloned()
+    }
+
+    #[test]
+    fn g_cross_729_a_keyed_leg_to_an_ended_session_settles_with_its_session_ended_code() {
+        let (host, settled) = sinking_host(true);
+        assert!(matches!(host.answer(&leg_ask(ended_split_guest(), Some("g1"))), IoAnswer::ServiceDeferred));
+        let (_, outcome) = settled.recv_timeout(std::time::Duration::from_secs(10)).expect("the guest settles");
+        let failure = outcome.expect_err("an ended session refuses the leg");
+        let Some(Value::Array(errors)) = failure.get("errors") else { panic!("the settled failure carries no errors: {failure:?}") };
+        assert_eq!(first_code(errors), Some(Value::string("SESSION_ENDED")), "{failure:?}");
+        assert_eq!(errors.first().and_then(|e| e.get("status")).cloned(), Some(Value::Int(409)), "{failure:?}");
+    }
+
+    #[test]
+    fn control_an_unkeyed_leg_to_an_ended_session_keeps_its_code_too() {
+        let (host, _settled) = sinking_host(true);
+        match host.answer(&leg_ask(ended_split_guest(), None)) {
+            IoAnswer::Substrate(Err(failure)) => assert_eq!(first_code(&failure.errors), Some(Value::string("SESSION_ENDED")), "{failure:?}"),
+            other => panic!("expected the refusal, got {other:?}"),
         }
     }
 
