@@ -276,6 +276,21 @@ fn a_server_frame_replaces_a_theme_the_client_bound_itself() {
 }
 
 #[test]
+fn a_server_session_that_never_bound_a_theme_leaves_the_theme_the_client_bound_itself() {
+    let rig = Rig::new();
+    let client = EmbeddedKernel::new(schema(), "tab-a").unwrap();
+    let payload: Value = from_json_value(&json!({ "key": "ink-wash-dark" })).unwrap();
+    client.kernel().dispatch_with_server_leg("Main", "Picker", None, "SET", payload, Some("tab-a")).unwrap();
+    let first = rig.respond("READ", "tab-a", json!({}));
+    assert!(first.frames.as_ref().is_some_and(|d| d.theme.is_none()), "an unbound session's first delta carries no theme: {:?}", first.frames);
+    client.apply_server_response(&first, &HashSet::new()).unwrap();
+    assert_eq!(client.kernel().session_theme().as_deref(), Some("ink-wash-dark"), "the client's own binding stands");
+    rig.respond("SET", "tab-a", json!({ "key": "scandi-light" }));
+    let cleared = rig.respond("CLEAR", "tab-a", json!({}));
+    assert_eq!(cleared.frames.as_ref().and_then(|d| d.theme.clone()).map(|t| t.key), Some(None), "control: a clear after a binding is still carried");
+}
+
+#[test]
 fn a_theme_bound_while_a_page_mounts_reaches_the_client_in_the_mount_response() {
     let rig = Rig::new();
     let mount = EventRequest {

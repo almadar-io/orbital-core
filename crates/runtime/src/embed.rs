@@ -261,6 +261,16 @@ impl EmbeddedKernel {
         })
     }
 
+    /// [`RuntimeKernel::seed_cached_identity`]: the identity the browser kept, taken only while no server frame set one.
+    pub fn seed_cached_identity(&self, identity: &crate::effects::frame_delta::FrameIdentity) -> bool {
+        self.kernel().seed_cached_identity(identity)
+    }
+
+    /// [`RuntimeKernel::session_identity_frame`]: the identity this client holds, for the browser to keep.
+    pub fn session_identity_frame(&self) -> Option<crate::effects::frame_delta::FrameIdentity> {
+        self.kernel().session_identity_frame()
+    }
+
     pub fn kernel(&self) -> &RuntimeKernel {
         &self.kernel
     }

@@ -83,6 +83,28 @@ impl RuntimeKernel {
         }
     }
 
+    /// A client kernel still waiting for its first identity frame takes the identity the browser kept from an earlier
+    /// visit, so a page's first render reads it; the first server frame replaces it (EXEC-IDENTITY-4). `false` when the
+    /// kernel is not a pending client, which leaves the held identity as it is.
+    pub fn seed_cached_identity(&self, identity: &FrameIdentity) -> bool {
+        if !self.identity_pending() {
+            return false;
+        }
+        self.mirror_identity(identity);
+        !self.identity_pending()
+    }
+
+    /// The identity a client kernel holds, as a frame the browser can keep; `None` while pending or on a server kernel.
+    pub fn session_identity_frame(&self) -> Option<FrameIdentity> {
+        if !self.effect_executor.environment().is_client() {
+            return None;
+        }
+        match self.sessions.identities.read().get(&*self.identity_key()).cloned()? {
+            IdentityBinding::Anonymous => Some(FrameIdentity::default()),
+            IdentityBinding::Subject { user, .. } => Some(FrameIdentity { user }),
+        }
+    }
+
     /// A client kernel takes the server's bound identity as its own `@user` (EXEC-IDENTITY-4).
     pub(super) fn mirror_identity(&self, identity: &FrameIdentity) {
         let binding = match &identity.user {

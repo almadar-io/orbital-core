@@ -718,6 +718,44 @@ fn exec_identity_4_folding_the_first_identity_frame_repaints_what_read_the_anony
     assert!(painted.contains("Ada") && painted.contains("Header"), "{painted}");
 }
 
+fn identity_frame(user: serde_json::Value) -> orbital_core_runtime::effects::frame_delta::FrameIdentity {
+    from_json_value(&json!({ "user": user })).unwrap()
+}
+
+fn reply_with_identity(identity: orbital_core_runtime::effects::frame_delta::FrameIdentity, to: u64) -> EventResponse {
+    EventResponse {
+        success: true,
+        frames: Some(orbital_core_runtime::effects::frame_delta::FrameDelta {
+            session: Some("tab".into()), from: to - 1, to, ops: vec![], identity: Some(identity), theme: None,
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn exec_identity_4_a_cached_identity_paints_the_first_render_and_the_first_server_frame_replaces_it() {
+    let client = orbital_core_runtime::embed::EmbeddedKernel::new(header_schema(), "tab").unwrap();
+    assert!(client.seed_cached_identity(&identity_frame(json!({ "id": "u1", "name": "Ada" }))), "a pending client takes the cached identity");
+    let first = client.dispatch("Header", None, "INIT", Value::Null).unwrap();
+    let painted = serde_json::to_value(&first.response.client_effects_by_trait).unwrap().to_string();
+    assert!(painted.contains("Ada"), "the first render reads the cached viewer: {painted}");
+    let anonymous: orbital_core_runtime::effects::frame_delta::FrameIdentity = from_json_value(&json!({})).unwrap();
+    let applied = client.apply_server_response(&reply_with_identity(anonymous, 1), &std::collections::HashSet::new()).unwrap();
+    let repainted = serde_json::to_value(&applied.response.client_effects_by_trait).unwrap().to_string();
+    assert!(repainted.contains("Header") && !repainted.contains("Ada"), "the server's identity replaces the cached one: {repainted}");
+    assert_eq!(client.session_identity_frame().map(|f| f.user.is_none()), Some(true));
+}
+
+#[test]
+fn control_a_cached_identity_never_replaces_one_a_server_frame_already_set() {
+    let client = orbital_core_runtime::embed::EmbeddedKernel::new(header_schema(), "tab").unwrap();
+    assert_eq!(client.session_identity_frame(), None, "pending before any frame");
+    client.apply_server_response(&reply_with_identity(identity_frame(json!({ "id": "u2", "name": "Grace" })), 1), &std::collections::HashSet::new()).unwrap();
+    assert!(!client.seed_cached_identity(&identity_frame(json!({ "id": "u1", "name": "Ada" }))), "a held server identity stands");
+    let user = client.session_identity_frame().and_then(|f| f.user).expect("the server's identity");
+    assert_eq!(serde_json::to_value(&user).unwrap()["name"], json!("Grace"));
+}
+
 fn asked_row(rig: &Rig, client: &str) -> serde_json::Value {
     let response = finish(&rig.server, request("ASK_IT", client, json!({})), &rig.store);
     let asked = response.emitted_events.iter().find(|e| e.event == "ASKED").expect("the worker answered");

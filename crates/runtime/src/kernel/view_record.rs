@@ -213,8 +213,9 @@ impl RuntimeKernel {
                 let mut ops = record.diff(writes);
                 let sent = record.identity.clone().or_else(|| ops.is_empty().then(FrameIdentity::default));
                 let changed = identity.filter(|current| sent.as_ref() != Some(current));
-                let sent_theme = record.theme.clone().or_else(|| ops.is_empty().then(FrameTheme::default));
-                let theme_changed = theme.filter(|current| sent_theme.as_ref() != Some(current));
+                // A session that never bound a theme sends none, so it never replaces a theme the client bound itself.
+                let sent_theme = record.theme.clone().unwrap_or_default();
+                let theme_changed = theme.filter(|current| sent_theme != *current);
                 if ops.is_empty() && changed.is_none() && theme_changed.is_none() {
                     return None;
                 }
