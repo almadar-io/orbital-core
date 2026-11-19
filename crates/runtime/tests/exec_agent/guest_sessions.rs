@@ -1763,3 +1763,102 @@ fn control_a_guest_answer_with_no_sealed_field_is_unchanged() {
     assert!(after.get("refused").is_none_or(serde_json::Value::is_null), "{after}");
     assert_eq!(guest_emit(&after, "PLAIN_DONE"), json!({ "note": "plain" }), "{after}");
 }
+
+// G-CROSS-708 (owner 2026-11-19): a hosted split guest is ticked by its host while no viewer streams it, so a guest a hook
+// drives finishes its timers; a viewer's stream ticks it as before, and a closed guest is ticked no more.
+mod host_ticks_unwatched_guests {
+    use super::*;
+    use orbital_core_runtime::kernel::guest_hosting::{GuestHost, GuestHosting, GuestIntegrations};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingHost {
+        kernel: Arc<RuntimeKernel>,
+        ticks: Arc<AtomicUsize>,
+    }
+
+    impl GuestHost for CountingHost {
+        fn kernel(&self) -> Arc<RuntimeKernel> {
+            Arc::clone(&self.kernel)
+        }
+        fn environment_of(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn credential_of(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn deferred_denials(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+        fn register(&self, schema: OrbitalSchema) -> Result<(), String> {
+            self.kernel.register_schema(schema).map_err(|e| e.to_string())
+        }
+        fn mount(&self, _: Option<&str>, _: &[orbital_core_runtime::effects::response::MountSeed], _: Value) -> Result<orbital_core_runtime::resumable::DispatchOutcomes, String> {
+            Ok(Default::default())
+        }
+        fn dispatch(&self, _: &str, _: &str, _: Value) -> Result<orbital_core_runtime::resumable::DispatchOutcomes, String> {
+            Ok(Default::default())
+        }
+        fn request(&self, _: &Value, _: &orbital_core_base::value::ValueMap) -> Result<Value, orbital_core_runtime::effects::executor::SubstrateFailure> {
+            Ok(Value::Null)
+        }
+        fn tick_pass(&self) -> Result<orbital_core_runtime::resumable::DispatchOutcomes, String> {
+            self.ticks.fetch_add(1, Ordering::SeqCst);
+            Ok(Default::default())
+        }
+    }
+
+    struct CountingHosting(Arc<CountingHost>);
+
+    impl GuestHosting for CountingHosting {
+        fn open(&self, _: GuestIntegrations, _: Option<&str>, _: &[(String, Option<String>)], _: bool) -> Arc<dyn GuestHost> {
+            Arc::clone(&self.0) as Arc<dyn GuestHost>
+        }
+    }
+
+    fn hosted_opener(ticks: &Arc<AtomicUsize>) -> RuntimeKernel {
+        let kernel = opener(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", { "split": true }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] },
+            { "from": "idle", "to": "idle", "event": "SHUT", "effects": [["program/close", "@entity.guest", { "emit": { "success": "ANSWERED", "failure": "REFUSED" } }]] }
+        ]));
+        let guest_kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default()));
+        kernel.set_guest_hosting(Arc::new(CountingHosting(Arc::new(CountingHost { kernel: guest_kernel, ticks: Arc::clone(ticks) }))));
+        kernel
+    }
+
+    #[test]
+    fn an_unwatched_split_guest_is_ticked_by_its_host() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let kernel = hosted_opener(&ticks);
+        let after = run(&kernel, "GO");
+        assert!(after["guest"].as_str().is_some_and(|g| g.starts_with("guest-")), "{after}");
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        assert!(ticks.load(Ordering::SeqCst) >= 3, "no viewer streams the guest, so its host ticks it: {}", ticks.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn control_a_watched_guest_is_ticked_only_by_its_viewer() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let kernel = hosted_opener(&ticks);
+        let handle = run(&kernel, "GO")["guest"].as_str().unwrap().to_string();
+        let before = ticks.load(Ordering::SeqCst);
+        for _ in 0..30 {
+            kernel.guest_tick_pass(&handle).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(ticks.load(Ordering::SeqCst) - before, 30, "while a viewer polls, the host leaves the ticking to it");
+    }
+
+    #[test]
+    fn edge_a_closed_guest_is_ticked_no_more() {
+        let ticks = Arc::new(AtomicUsize::new(0));
+        let kernel = hosted_opener(&ticks);
+        run(&kernel, "GO");
+        run(&kernel, "SHUT");
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        let closed = ticks.load(Ordering::SeqCst);
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(ticks.load(Ordering::SeqCst), closed, "a closed guest's ticker stopped");
+    }
+}

@@ -61,6 +61,49 @@ pub struct GuestSession {
     lazy: Arc<GuestLazy>,
     arenas: Vec<(i64, Value)>,
     route: Arc<RwLock<GuestRoute>>,
+    /// When a viewer's stream last ticked the guest ([`guest_ticks_now_ms`]); its host ticks it while none has lately.
+    viewer_ticked_ms: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// How often a hosted split guest's host ticks it while no viewer streams it (G-CROSS-708, EXEC-CONC-7).
+const UNWATCHED_TICK_EVERY: std::time::Duration = std::time::Duration::from_millis(50);
+/// How long after a viewer's last tick the host still leaves the ticking to the viewer.
+const VIEWER_TICKS_FOR_MS: u64 = 250;
+
+/// Milliseconds on one monotonic clock, for comparing a viewer's last tick with now.
+fn guest_ticks_now_ms() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64 + 1
+}
+
+/// A served program's server ticks with no viewer, so a hosted split guest does too: its host ticks it every
+/// [`UNWATCHED_TICK_EVERY`] while no viewer's stream has ticked it for [`VIEWER_TICKS_FOR_MS`], dropping the paints and pushes
+/// no viewer is there to take; the thread ends once the guest is closed.
+fn tick_while_unwatched(
+    guests: std::sync::Weak<RwLock<std::collections::HashMap<String, GuestSession>>>,
+    handle: String,
+    host: Arc<dyn super::guest_hosting::GuestHost>,
+    viewer_ticked_ms: Arc<std::sync::atomic::AtomicU64>,
+) {
+    let spawned = std::thread::Builder::new().name(format!("guest-ticks-{handle}")).spawn(move || loop {
+        std::thread::sleep(UNWATCHED_TICK_EVERY);
+        let Some(open) = guests.upgrade() else { return };
+        if !open.read().contains_key(&handle) {
+            return;
+        }
+        drop(open);
+        let last = viewer_ticked_ms.load(std::sync::atomic::Ordering::Relaxed);
+        if last != 0 && guest_ticks_now_ms().saturating_sub(last) < VIEWER_TICKS_FOR_MS {
+            continue;
+        }
+        if let Err(error) = host.tick_pass() {
+            tracing::error!(guest = %handle, %error, "an unwatched guest's tick pass failed");
+        }
+        drop(host.take_host_dispatches());
+    });
+    if let Err(error) = spawned {
+        tracing::error!(%error, "the unwatched-guest ticker could not start");
+    }
 }
 
 type OpenedProgram = (
@@ -1297,8 +1340,16 @@ impl RuntimeKernel {
                     embedded: embedded.clone(),
                     mounted,
                 })),
+                viewer_ticked_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            };
+            let ticker = match (&session.host, split) {
+                (Some(host), true) => Some((Arc::clone(host), Arc::clone(&session.viewer_ticked_ms))),
+                _ => None,
             };
             guests.write().insert(handle.clone(), session);
+            if let Some((host, viewer_ticked_ms)) = ticker {
+                tick_while_unwatched(Arc::downgrade(&guests), handle.clone(), host, viewer_ticked_ms);
+            }
             let seed_trait = seeds.first().map(|s| s.r#trait.clone()).unwrap_or_default();
             let mut answer = guest_answer(
                 &opened_kernel,
@@ -1518,6 +1569,7 @@ impl RuntimeKernel {
         let Some(session) = self.guests.read().get(handle).cloned() else {
             return Ok(GuestTicks::Closed);
         };
+        session.viewer_ticked_ms.store(guest_ticks_now_ms(), std::sync::atomic::Ordering::Relaxed);
         // A stream keeps its session alive, so the guest's own must end for a closed tab's session to be freed.
         if session
             .opener_session
@@ -2121,6 +2173,7 @@ impl GuestSession {
                 },
                 read: orbital_core_base::sync::Mutex::new(Default::default()),
             }),
+            viewer_ticked_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
