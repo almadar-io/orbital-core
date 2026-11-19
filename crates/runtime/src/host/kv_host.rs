@@ -29,7 +29,7 @@ enum KvMedium {
 
 /// Where one program instance keeps its kv stores, and the app and locale its namespaces are under.
 pub struct KvStores {
-    namespace: Option<(String, String)>,
+    namespace: orbital_core_base::sync::RwLock<Option<(String, String)>>,
     medium: Mutex<KvMedium>,
 }
 
@@ -37,7 +37,7 @@ impl Default for KvStores {
     /// No namespace: every `kv/` ask is `unsupported` until the host names the app and locale.
     fn default() -> Self {
         Self {
-            namespace: None,
+            namespace: orbital_core_base::sync::RwLock::new(None),
             medium: Mutex::new(KvMedium::Memory(HashMap::new())),
         }
     }
@@ -46,14 +46,28 @@ impl Default for KvStores {
 impl KvStores {
     pub fn memory(app: &str, locale: &str) -> Self {
         Self {
-            namespace: Some((app.to_string(), locale.to_string())),
+            namespace: orbital_core_base::sync::RwLock::new(Some((app.to_string(), locale.to_string()))),
             medium: Mutex::new(KvMedium::Memory(HashMap::new())),
         }
     }
 
+    /// Name the app and locale of a host created without one; `false` when it is already named (the first name stands).
+    pub fn name(&self, app: &str, locale: &str) -> bool {
+        let mut namespace = self.namespace.write();
+        if namespace.is_some() {
+            return false;
+        }
+        *namespace = Some((app.to_string(), locale.to_string()));
+        true
+    }
+
+    pub fn namespace(&self) -> Option<(String, String)> {
+        self.namespace.read().clone()
+    }
+
     pub fn directory(state_dir: impl Into<PathBuf>, app: &str, locale: &str) -> Self {
         Self {
-            namespace: Some((app.to_string(), locale.to_string())),
+            namespace: orbital_core_base::sync::RwLock::new(Some((app.to_string(), locale.to_string()))),
             medium: Mutex::new(KvMedium::Directory(state_dir.into())),
         }
     }
@@ -245,13 +259,14 @@ impl KvStores {
         store: &str,
         f: impl FnOnce(&mut KvTable) -> Result<(R, bool), OsError>,
     ) -> Result<R, OsError> {
-        let Some((app, locale)) = &self.namespace else {
+        let Some((app, locale)) = self.namespace() else {
             return Err(fail(
                 op,
                 OsErrorKind::Unsupported,
                 "no kv namespace is configured on this host",
             ));
         };
+        let (app, locale) = (app.as_str(), locale.as_str());
         check_segment(op, "app", app)?;
         check_segment(op, "locale", locale)?;
         let mut medium = self.medium.lock();

@@ -2391,6 +2391,19 @@ mod kv_asks {
     }
 
     #[test]
+    fn a_host_that_names_its_kv_namespace_once_answers_kv_and_a_second_name_is_ignored() {
+        let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
+        let handles = OsHandles::default();
+        let unnamed = ask(&handles, &grants, "kv/get", vec![v(json!("rows")), v(json!("a"))]);
+        assert_eq!(unnamed.expect_err("no namespace yet").kind, OsErrorKind::Unsupported, "control: an unnamed host answers no kv");
+        assert!(handles.kv.name("shop", "en"), "the first name is taken");
+        assert_eq!(json_text(&ask(&handles, &grants, "kv/put", vec![v(json!("rows")), v(json!("a")), v(json!(1))]).unwrap()), r#"{"storedKey":"a"}"#);
+        assert!(!handles.kv.name("other", "ar"), "a second name is refused");
+        assert_eq!(json_text(&ask(&handles, &grants, "kv/get", vec![v(json!("rows")), v(json!("a"))]).unwrap()), r#"{"found":true,"value":1}"#, "the store stays under the first name");
+        assert_eq!(handles.kv.namespace(), Some(("shop".to_string(), "en".to_string())));
+    }
+
+    #[test]
     fn the_store_file_is_one_sorted_json_object_portable_to_a_fresh_host() {
         let dir = tempfile::tempdir().expect("tempdir");
         let grants = grants("rows", &[KvMode::Read, KvMode::Write]);
