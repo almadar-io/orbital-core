@@ -81,6 +81,20 @@ impl RuntimeKernel {
             }
             if let Some(leg) = c.store.take() {
                 let StoreLeg { ask, driver, seed, wait } = *leg;
+                if let Some(key) = wait.shared_key() {
+                    if !wait.ready() {
+                        if wait.park_follower() {
+                            c.store = Some(Box::new(StoreLeg { ask, driver, seed, wait }));
+                            return Ok(Progress::Await { continuation: c, requests: Vec::new() });
+                        }
+                        c.store = self.own_store_leg(ask, &mut c.journal);
+                        continue;
+                    }
+                    let shared = StoreAsk { key: key.to_string(), ..ask.clone() };
+                    let answer = self.store_reply(&shared, &wait.take_reply().unwrap_or_default());
+                    c.journal.push(Exchange::new(ask.request, answer));
+                    continue;
+                }
                 let outcomes = match driver {
                     None => wait.take_reply().unwrap_or_default(),
                     Some(driver) => {
@@ -108,6 +122,7 @@ impl RuntimeKernel {
                         }
                     }
                 };
+                wait.landed(&outcomes);
                 let answer = self.store_reply(&ask, &outcomes);
                 if let Some(origin) = seed {
                     self.seed_landed(&ask, &answer, &origin);
@@ -169,9 +184,13 @@ impl RuntimeKernel {
                 }
                 c.journal = end.journal;
                 if let Some(ask) = end.store_asks.into_iter().next() {
+                    let wait = self.shared_reads.wait_for(&ask);
+                    if wait.shared_key().is_some() {
+                        c.store = Some(Box::new(StoreLeg { ask, driver: None, seed: None, wait }));
+                        continue;
+                    }
                     match self.store_driver_run(&ask) {
                         Ok(driver) => {
-                            let wait = super::store_park::LegWait::new(&ask.key);
                             c.store = Some(Box::new(StoreLeg {
                                 ask,
                                 driver: Some(driver),
@@ -411,6 +430,21 @@ impl RuntimeKernel {
         self.store_seeds
             .lock()
             .retain(|registered| registered.key != origin);
+    }
+
+    /// A follower whose shared read has not replied runs its own driver (an in-place dispatch cannot wait for it).
+    fn own_store_leg(&self, ask: StoreAsk, journal: &mut Vec<Exchange>) -> Option<Box<StoreLeg>> {
+        match self.store_driver_run(&ask) {
+            Ok(driver) => {
+                let wait = super::store_park::LegWait::new(&ask.key);
+                Some(Box::new(StoreLeg { ask, driver: Some(driver), seed: None, wait }))
+            }
+            Err(message) => {
+                let answer = Self::store_failed(&ask, message);
+                journal.push(Exchange::new(ask.request, answer));
+                None
+            }
+        }
     }
 
     /// The driver orbital's dispatch of the verb `ask` maps to, in a frame of its own keyed by the ask.

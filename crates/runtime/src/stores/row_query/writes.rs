@@ -166,7 +166,12 @@ pub fn apply_write(
                         message: "create needs a string id".to_string(),
                     }
                 }
-                (None, CreateIds::Mint(mint)) => mint(),
+                (None, CreateIds::Mint(mint)) => loop {
+                    let id = mint();
+                    if !table.contains_key(&id) {
+                        break id;
+                    }
+                },
             };
             let mut fields = match data {
                 Value::Object(o) => o.clone(),

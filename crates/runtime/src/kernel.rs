@@ -503,6 +503,8 @@ pub struct RuntimeKernel {
     /// before its first step (EXEC-STORE-4): one create batch per entity.
     pub(crate) store_seeds:
         Arc<orbital_core_base::sync::Mutex<std::collections::VecDeque<crate::resumable::StoreAsk>>>,
+    /// The row reads in flight an identical read shares (EXEC-STORE-7).
+    pub(crate) shared_reads: crate::kernel::store_park::SharedReads,
     /// Frame slot -> the id of the row a carried row named: that trait reads that row under its frame,
     /// not the dispatch's address (G-CROSS-256).
     carried_rows: Arc<RwLock<HashMap<(String, String), String>>>,
@@ -874,6 +876,7 @@ impl RuntimeKernel {
             carried_rows,
             suspended_commit: Arc::new(RwLock::new(None)),
             store_seeds: Arc::new(orbital_core_base::sync::Mutex::new(std::collections::VecDeque::new())),
+            shared_reads: Default::default(),
             presentation: Presentation {
                 theme_presets: Arc::new(RwLock::new(ThemePresets::new())),
                 theme_mode: Arc::new(RwLock::new(None)),

@@ -20,6 +20,7 @@ fn program(keyed: bool) -> OrbitalSchema {
     program_reading(keyed, false)
 }
 
+/// Each keyed row reads the ticket named by its key, so no two rows' reads are identical (EXEC-STORE-7).
 /// `twice`: each row reads again once its first read is answered.
 fn program_reading(keyed: bool, twice: bool) -> OrbitalSchema {
     let mut listen = json!({ "event": "ASK", "triggers": "WORK", "source": { "kind": "trait", "trait": "Desk" } });
@@ -28,7 +29,7 @@ fn program_reading(keyed: bool, twice: bool) -> OrbitalSchema {
     }
     let route = json!({ "success": "DRV_GOT", "failure": "DRV_FAILED" });
     let got = if twice {
-        json!({ "from": "reading", "to": "again", "event": "GOT", "effects": [["fetch", "Ticket", { "id": "t2", "emit": { "success": "GOT2", "failure": "MISSED" } }]] })
+        json!({ "from": "reading", "to": "again", "event": "GOT", "effects": [["fetch", "Ticket", { "id": ["str/concat", "@entity.note", "-again"], "emit": { "success": "GOT2", "failure": "MISSED" } }]] })
     } else {
         json!({ "from": "reading", "to": "idle", "event": "GOT", "effects": [["set", "@entity.note", "got"]] })
     };
@@ -45,7 +46,7 @@ fn program_reading(keyed: bool, twice: bool) -> OrbitalSchema {
                   { "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "ASK", { "key": "k1" }], ["emit", "ASK", { "key": "k2" }]] }] } },
             { "name": "Worker", "linkedEntity": "Job", "listens": [listen],
               "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "reading" }, { "name": "again" }], "transitions": [
-                  { "from": "idle", "to": "reading", "event": "WORK", "effects": [["fetch", "Ticket", { "id": "t1", "emit": { "success": "GOT", "failure": "MISSED" } }]] },
+                  { "from": "idle", "to": "reading", "event": "WORK", "effects": [["set", "@entity.note", "@payload.key"], ["fetch", "Ticket", { "id": "@payload.key", "emit": { "success": "GOT", "failure": "MISSED" } }]] },
                   got,
                   { "from": "again", "to": "idle", "event": "GOT2", "effects": [["set", "@entity.note", "got twice"]] },
                   { "from": "reading", "to": "idle", "event": "MISSED", "effects": [["set", "@entity.note", "missed"]] }] } }],
@@ -301,6 +302,11 @@ fn two_keyed_rows_second_reads_are_in_flight_together_too() {
 
 /// A route mount of two traits whose INITs each read a store-bound row: `Reader` and `Other` on one page.
 fn mount_program() -> OrbitalSchema {
+    mount_program_reading("t2")
+}
+
+/// The mount program with `Other` reading row `other` (`Reader` reads `t1`).
+fn mount_program_reading(other: &str) -> OrbitalSchema {
     let route = json!({ "success": "DRV_GOT", "failure": "DRV_FAILED" });
     let reader = |name: &str, id: &str| json!({ "name": name, "linkedEntity": "Job",
         "stateMachine": { "states": [{ "name": "reading", "isInitial": true }, { "name": "idle" }], "transitions": [
@@ -314,7 +320,7 @@ fn mount_program() -> OrbitalSchema {
           "traits": [], "pages": [] },
         { "name": "Work",
           "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
-          "traits": [reader("Reader", "t1"), reader("Other", "t2")],
+          "traits": [reader("Reader", "t1"), reader("Other", other)],
           "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Reader" }, { "ref": "Other" }] }] },
         { "name": "Rows",
           "entity": { "name": "Mirror", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
@@ -356,3 +362,15 @@ fn control_a_mount_of_one_trait_reads_once() {
     assert_eq!(entered, 1);
     run.done.recv_timeout(SETTLE).expect("the mount ran to its end");
 }
+
+#[test]
+fn a_mounts_seeds_reading_the_same_row_share_one_driver_read() {
+    let run = go_with(mount_program_reading("t1"), |kernel| kernel.start_dispatch_mount(&mount_seeds(&["Reader", "Other"]), None, Value::Null).unwrap());
+    let entered = run.gate.entered_within(2, Duration::from_millis(500));
+    run.gate.release();
+    assert_eq!(entered, 1, "two identical reads in flight together each ran the driver");
+    let outcomes = run.done.recv_timeout(SETTLE).expect("the mount ran to its end");
+    let got: Vec<&str> = outcomes.iter().filter(|(_, r)| r.executed && r.event.as_deref() == Some("GOT")).map(|(t, _)| t.as_str()).collect();
+    assert_eq!(got.len(), 2, "each seed's fetch answered on its own route from the one read: {got:?}");
+}
+

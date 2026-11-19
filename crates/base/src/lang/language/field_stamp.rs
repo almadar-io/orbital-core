@@ -7,6 +7,7 @@ use std::prelude::v1::*;
 
 use super::pattern_registry::get_fields_contract;
 use crate::ir::{OirObject, OirPattern, OirValue};
+use crate::schema::sexpr::SExpression;
 use crate::schema::types::{EntityDefinition, FieldDefinition};
 use crate::value::{Value, ValueMap};
 use serde::Serialize;
@@ -57,6 +58,7 @@ struct FieldMeta {
     description: Option<String>,
     values: Option<Vec<String>>,
     relation: Option<(String, Option<String>)>,
+    default: Option<Value>,
 }
 
 fn wire_name<T: Serialize>(
@@ -92,6 +94,7 @@ impl FieldMeta {
             description: field.description.clone().filter(|d| !d.is_empty()),
             values: field.values.clone().filter(|v| !v.is_empty()),
             relation,
+            default: literal_default(field),
         })
     }
 
@@ -115,6 +118,16 @@ impl FieldMeta {
             }
             Value::object(map)
         })
+    }
+}
+
+/// A declared default a form can start on: a literal, never a binding or an expression the create evaluates.
+fn literal_default(field: &FieldDefinition) -> Option<Value> {
+    match field.default.as_ref()? {
+        SExpression::Bool(b) => Some(Value::Bool(*b)),
+        SExpression::Number(n) => Some(Value::Number(*n)),
+        SExpression::String(text) if !text.starts_with('@') => Some(Value::string(text.as_str())),
+        _ => None,
     }
 }
 
@@ -203,6 +216,9 @@ impl EntityFieldStamps {
                 if let Some(relation) = meta.relation_value() {
                     map.insert("relation".into(), relation);
                 }
+                if let Some(default) = &meta.default {
+                    map.insert("defaultValue".into(), default.clone());
+                }
                 Value::object(map)
             }),
             Value::Object(map) => {
@@ -229,6 +245,11 @@ impl EntityFieldStamps {
                 if !map.contains_key("relation") {
                     if let Some(relation) = meta.relation_value() {
                         map.insert("relation".into(), relation);
+                    }
+                }
+                if !map.contains_key("defaultValue") {
+                    if let Some(default) = &meta.default {
+                        map.insert("defaultValue".into(), default.clone());
                     }
                 }
                 None
@@ -371,6 +392,28 @@ mod tests {
                   "relation": { "entity": "User", "cardinality": "many-to-one" } }
             ])
         );
+    }
+
+    #[test]
+    fn form_fields_carry_the_declared_literal_default_so_a_create_form_starts_on_it() {
+        let entity: EntityDefinition = from_json_value(&serde_json::json!({
+            "name": "Task",
+            "fields": [
+                { "name": "status", "type": "string", "values": ["todo", "done"], "default": "todo" },
+                { "name": "points", "type": "number", "default": 3 },
+                { "name": "owner", "type": "string", "default": "@user.id" },
+                { "name": "note", "type": "string" }
+            ]
+        }))
+        .expect("entity parses");
+        let mut node = tree(serde_json::json!({ "type": "form", "fields": ["status", "points", { "name": "owner" }, "note", { "name": "status", "defaultValue": "done" }] }));
+        EntityFieldStamps::of(&entity).expect("stamps").stamp_tree(&mut node);
+        let out = serde_json::to_value(&node).expect("serializes");
+        assert_eq!(out["fields"][0]["defaultValue"], serde_json::json!("todo"));
+        assert_eq!(out["fields"][1]["defaultValue"], serde_json::json!(3.0));
+        assert!(out["fields"][2].get("defaultValue").is_none(), "a binding is not a literal default");
+        assert!(out["fields"][3].get("defaultValue").is_none(), "control: no declared default, none stamped");
+        assert_eq!(out["fields"][4]["defaultValue"], serde_json::json!("done"), "an authored default wins");
     }
 
     #[test]

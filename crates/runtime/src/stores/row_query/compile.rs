@@ -81,7 +81,10 @@ pub(super) fn as_field(value: &Value) -> Result<Option<String>, Fail> {
 
 /// The row field `value` names. With a context, `(object/get @entity <binding>)` names the flat field the binding
 /// holds: the evaluator reads that one field on every row, so it is the same predicate as the literal.
-pub(super) fn as_field_in(value: &Value, ctx: Option<&BindingContext>) -> Result<Option<String>, Fail> {
+pub(super) fn as_field_in(
+    value: &Value,
+    ctx: Option<&BindingContext>,
+) -> Result<Option<String>, Fail> {
     match value {
         Value::String(s) if s == "@entity" => Err(shape("the whole row is not a field")),
         Value::String(s) => match s.strip_prefix("@entity.") {
@@ -112,15 +115,19 @@ pub(super) fn as_field_in(value: &Value, ctx: Option<&BindingContext>) -> Result
 pub(super) fn same_scalar_kind(a: &Value, b: &Value) -> bool {
     matches!(
         (a, b),
-        (Value::Number(_) | Value::Int(_), Value::Number(_) | Value::Int(_))
-            | (Value::String(_), Value::String(_))
+        (
+            Value::Number(_) | Value::Int(_),
+            Value::Number(_) | Value::Int(_)
+        ) | (Value::String(_), Value::String(_))
             | (Value::Bool(_), Value::Bool(_))
     )
 }
 
 pub(super) fn scalar_const(value: Value) -> Result<Value, Fail> {
     match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) => Ok(value),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Int(_) | Value::String(_) => {
+            Ok(value)
+        }
         _ => Err(shape("the value is not a scalar")),
     }
 }
@@ -202,7 +209,11 @@ pub(super) fn list_of(value: &Value, ctx: &BindingContext) -> Result<Vec<Value>,
 /// The evaluator fails on a missing or null operand of `array/includes` and `str/includes`, which drops the row:
 /// that equals a failing leaf only where a failure makes the whole predicate false (a top-level `and` chain).
 /// Under `or`/`not`, or anywhere the field may be missing, the interpreter keeps the result.
-pub(super) fn erroring_leaf(field: &str, required: &dyn Fn(&str) -> bool, exact: bool) -> Result<(), Fail> {
+pub(super) fn erroring_leaf(
+    field: &str,
+    required: &dyn Fn(&str) -> bool,
+    exact: bool,
+) -> Result<(), Fail> {
     if exact || required(field) {
         Ok(())
     } else {
@@ -219,7 +230,10 @@ pub(super) struct Scope {
 }
 
 /// The fields among the direct conjuncts that an ordering compares with a number constant.
-pub(super) fn numeric_ordered(args: &[Value], ctx: &BindingContext) -> std::collections::HashSet<String> {
+pub(super) fn numeric_ordered(
+    args: &[Value],
+    ctx: &BindingContext,
+) -> std::collections::HashSet<String> {
     let mut fields = std::collections::HashSet::new();
     for arg in args {
         let Value::Array(items) = arg else { continue };
@@ -432,15 +446,17 @@ pub(super) fn compile_expr(
                 }
                 other => match compare_op_of(other) {
                     Some(op) if args.len() == 2 => {
-                        let binding_value = |v: &Value| {
-                            matches!(v, Value::String(s) if s.starts_with('@') && !(s.as_str() == "@entity" || s.starts_with("@entity.")))
-                        };
+                        let binding_value = |v: &Value| matches!(v, Value::String(s) if s.starts_with('@') && !(s.as_str() == "@entity" || s.starts_with("@entity.")));
                         let (left, right) = (term(&args[0], ctx), term(&args[1], ctx));
                         let terms = match (left, right) {
-                            (Err(Fail::Unresolved(_)), Ok(Term::Const(c))) if binding_value(&args[0]) => {
+                            (Err(Fail::Unresolved(_)), Ok(Term::Const(c)))
+                                if binding_value(&args[0]) =>
+                            {
                                 (Term::Const(Value::Null), Term::Const(c))
                             }
-                            (Ok(Term::Const(c)), Err(Fail::Unresolved(_))) if binding_value(&args[1]) => {
+                            (Ok(Term::Const(c)), Err(Fail::Unresolved(_)))
+                                if binding_value(&args[1]) =>
+                            {
                                 (Term::Const(c), Term::Const(Value::Null))
                             }
                             (left, right) => (left?, right?),
@@ -454,7 +470,9 @@ pub(super) fn compile_expr(
                             }
                             (Term::Const(left), Term::Const(right))
                                 if matches!(op, RowCompareOp::Eq | RowCompareOp::Ne)
-                                    && (same_scalar_kind(&left, &right) || left.is_null() || right.is_null()) =>
+                                    && (same_scalar_kind(&left, &right)
+                                        || left.is_null()
+                                        || right.is_null()) =>
                             {
                                 let equal = if left.is_null() || right.is_null() {
                                     left.is_null() && right.is_null()
@@ -517,11 +535,14 @@ pub fn lower_object_filter(filter: &Value) -> std::borrow::Cow<'_, Value> {
     for (field, value) in map {
         conjunction.push(Value::array(vec![
             Value::String(("=".to_string()).into()),
-            Value::Array(vec![
-                Value::String(("object/get".to_string()).into()),
-                Value::String(("@entity".to_string()).into()),
-                Value::String(field.clone().into()),
-            ].into()),
+            Value::Array(
+                vec![
+                    Value::String(("object/get".to_string()).into()),
+                    Value::String(("@entity".to_string()).into()),
+                    Value::String(field.clone().into()),
+                ]
+                .into(),
+            ),
             value.clone(),
         ]));
     }

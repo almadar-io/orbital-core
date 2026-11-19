@@ -360,6 +360,18 @@ impl InMemoryEntityCache {
         format!("{entity_type}-{n}")
     }
 
+    /// A minted id no row of the entity's store holds: a mock seed names its rows in the same `<Entity>-<n>` form.
+    fn free_id(&self, entity_type: &str) -> String {
+        let key = self.store_key(entity_type);
+        let cache = self.data.read();
+        loop {
+            let id = self.next_id(entity_type);
+            if !cache.get(&key).is_some_and(|table| table.contains_key(&id)) {
+                return id;
+            }
+        }
+    }
+
     /// Move a row between the index entries of `key`: out of `before`'s, into `after`'s.
     fn reindex(&self, key: &str, id: &str, before: Option<&Arc<Value>>, after: Option<&Arc<Value>>) {
         if matches!((before, after), (Some(b), Some(a)) if Arc::ptr_eq(b, a)) {
@@ -559,7 +571,7 @@ impl EntitySource for InMemoryEntityCache {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
-            .unwrap_or_else(|| self.next_id(entity_type));
+            .unwrap_or_else(|| self.free_id(entity_type));
         let data = match data {
             Value::Object(obj) if !obj.contains_key("id") => {
                 let mut obj = obj.clone();

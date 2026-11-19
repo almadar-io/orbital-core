@@ -326,3 +326,59 @@ fn apply_write_batch_across_shares_names_through_the_vocabulary_it_is_given() {
     let (a2, _) = run(&mut KeyVocabulary::default());
     assert!(!orbital_core_base::value::Shared::ptr_eq(&key_ptr(&a, "title"), &key_ptr(&a2, "title")), "control: separate vocabularies do not share");
 }
+
+fn seeded_task(cache: &InMemoryEntityCache) {
+    cache
+        .create("Task", &obj(&[("id", Value::string("Task-1")), ("title", Value::string("seeded"))]))
+        .expect("seed");
+}
+
+fn title_of(cache: &InMemoryEntityCache, id: &str) -> Value {
+    cache.read("Task", id).unwrap().as_object().unwrap()["title"].clone()
+}
+
+/// A mock seed names its rows `<Entity>-<n>`, the form the cache mints: a create with no id must never take a held id.
+#[test]
+fn a_minted_create_skips_an_id_a_seeded_row_holds() {
+    let cache = InMemoryEntityCache::new();
+    seeded_task(&cache);
+    let made = cache.create("Task", &obj(&[("title", Value::string("mine"))])).unwrap();
+    let id = made.as_object().unwrap()["id"].as_str().unwrap().to_string();
+    assert_ne!(id, "Task-1");
+    assert_eq!(title_of(&cache, "Task-1"), Value::string("seeded"));
+    assert_eq!(title_of(&cache, &id), Value::string("mine"));
+}
+
+#[test]
+fn a_refusing_store_mints_past_a_seeded_id_instead_of_failing() {
+    let cache = InMemoryEntityCache::refusing_duplicate_ids();
+    seeded_task(&cache);
+    let made = cache.create("Task", &obj(&[("title", Value::string("mine"))])).expect("minted create");
+    assert_ne!(made.as_object().unwrap()["id"].as_str(), Some("Task-1"));
+    assert_eq!(title_of(&cache, "Task-1"), Value::string("seeded"));
+}
+
+#[test]
+fn a_minted_create_in_a_batch_never_overwrites_a_held_row() {
+    let cache = InMemoryEntityCache::new();
+    seeded_task(&cache);
+    let batch: RowWriteBatch = from_json_value(&serde_json::json!({
+        "ops": [{"kind": "create", "entityType": "Task", "data": {"title": "mine"}}],
+        "onFailure": "stop"
+    }))
+    .unwrap();
+    let outcomes = cache.write_batch(&batch).expect("the cache answers batches").unwrap();
+    let RowWriteOutcome::Created { row } = &outcomes[0] else { panic!("{outcomes:?}") };
+    assert_ne!(row.as_object().unwrap()["id"].as_str(), Some("Task-1"));
+    assert_eq!(title_of(&cache, "Task-1"), Value::string("seeded"));
+    assert_eq!(cache.list("Task").unwrap().len(), 2);
+}
+
+#[test]
+fn control_a_create_naming_a_held_id_still_merges_in_the_client_cache() {
+    let cache = InMemoryEntityCache::new();
+    seeded_task(&cache);
+    cache.create("Task", &obj(&[("id", Value::string("Task-1")), ("title", Value::string("named"))])).unwrap();
+    assert_eq!(title_of(&cache, "Task-1"), Value::string("named"));
+    assert_eq!(cache.list("Task").unwrap().len(), 1);
+}

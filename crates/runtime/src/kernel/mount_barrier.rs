@@ -45,7 +45,10 @@ impl MountLineage {
 
     /// The lineage of one store ask's driver work.
     pub fn for_store_ask(key: &str) -> Arc<Self> {
-        Arc::new(Self { store_ask: Some(key.to_string()), ..Self::default() })
+        Arc::new(Self {
+            store_ask: Some(key.to_string()),
+            ..Self::default()
+        })
     }
 
     pub fn store_ask(&self) -> Option<&str> {
@@ -70,8 +73,17 @@ impl MountLineage {
         self.reply.lock().is_some()
     }
 
+    /// The reply, kept for every ask that shares this read (EXEC-STORE-7).
     pub fn take_reply(&self) -> Option<crate::resumable::DispatchOutcomes> {
-        self.reply.lock().take()
+        self.reply.lock().clone()
+    }
+
+    /// Block until a reply has been offered, whatever the lineage's open work.
+    pub fn wait_offered(&self) {
+        let mut open = self.open.lock();
+        while self.reply.lock().is_none() {
+            self.settled.wait(&mut open);
+        }
     }
 }
 
