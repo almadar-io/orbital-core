@@ -783,7 +783,8 @@ impl RuntimeKernel {
             outcomes.push((t.clone(), result.released()));
         }
         for mut item in own.into_iter().rev() {
-            if keyed {
+            // A same-trait cascade stays on the row that made it (EXEC-STEP-1a), a queued singleton row included.
+            if keyed || queued_row.is_some() {
                 item.row = Some(eid.to_string());
             }
             cascade.queue.push_front(item);

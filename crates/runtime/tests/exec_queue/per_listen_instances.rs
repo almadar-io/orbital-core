@@ -1046,12 +1046,30 @@ mod unkeyed_listener_of_a_keyed_row {
         caller["stateMachine"]["transitions"]
             .as_array_mut()
             .unwrap()
-            .push(json!({ "from": "idle", "to": "tallied", "event": "TALLY", "effects": [] }));
+            .push(json!({ "from": "idle", "to": "tallied", "event": "TALLY", "effects": [["emit", "TALLIED", {}], ["emit", "RECOUNT", {}]] }));
+        caller["stateMachine"]["states"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "name": "counted" }));
+        caller["stateMachine"]["transitions"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "from": "tallied", "to": "counted", "event": "RECOUNT", "effects": [] }));
         let mut edge = json!({ "event": "REPLIED", "triggers": "TALLY", "source": { "kind": "orbital", "orbital": "SlotOrbital", "trait": "PerKey" } });
         if let Some(key) = tally_key {
             edge["key"] = key;
         }
         caller["listens"].as_array_mut().unwrap().push(edge);
+        p["orbitals"].as_array_mut().unwrap().push(json!({
+            "name": "WatchOrbital",
+            "entity": { "name": "Watch", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{
+                "name": "Watcher", "linkedEntity": "Watch",
+                "listens": [{ "event": "TALLIED", "triggers": "SEEN", "source": { "kind": "orbital", "orbital": "CallerOrbital", "trait": "Caller" } }],
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }, { "name": "seen" }],
+                    "transitions": [{ "from": "idle", "to": "seen", "event": "SEEN", "effects": [] }] }
+            }]
+        }));
         p
     }
 
@@ -1078,13 +1096,28 @@ mod unkeyed_listener_of_a_keyed_row {
         reply_on_row(&k, "A");
         assert_eq!(
             caller_state(&k, None).as_deref(),
-            Some("tallied"),
-            "the singleton Caller heard REPLIED"
+            Some("counted"),
+            "the singleton Caller heard REPLIED, and its own RECOUNT stayed on the singleton"
+        );
+        assert!(
+            caller_state(&k, Some("A")).is_none_or(|s| s == "idle"),
+            "no Caller row named after the keyed row stepped"
+        );
+    }
+
+    #[test]
+    fn a_second_hop_from_the_singleton_also_steps_the_next_singleton() {
+        let k = kernel_of(program(None));
+        go(&k, json!("A"), 1);
+        reply_on_row(&k, "A");
+        assert_eq!(
+            k.get_state("Watcher", None).map(|s| s.current_state).as_deref(),
+            Some("seen"),
+            "Caller's emit, made on its singleton in a dispatch a keyed row started, reaches Watcher's singleton"
         );
         assert_ne!(
-            caller_state(&k, Some("A")).as_deref(),
-            Some("tallied"),
-            "no Caller row named after the keyed row stepped"
+            k.get_state("Watcher", Some("A")).map(|s| s.current_state).as_deref(),
+            Some("seen")
         );
     }
 
@@ -1093,7 +1126,7 @@ mod unkeyed_listener_of_a_keyed_row {
         let k = kernel_of(program(Some(json!("@payload.key"))));
         go(&k, json!("A"), 1);
         reply_on_row(&k, "A");
-        assert_eq!(caller_state(&k, Some("A")).as_deref(), Some("tallied"));
-        assert_ne!(caller_state(&k, None).as_deref(), Some("tallied"));
+        assert_eq!(caller_state(&k, Some("A")).as_deref(), Some("counted"), "the keyed row's own RECOUNT stays on that row");
+        assert_ne!(caller_state(&k, None).as_deref(), Some("counted"));
     }
 }

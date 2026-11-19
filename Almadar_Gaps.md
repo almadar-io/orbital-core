@@ -45,15 +45,6 @@ Every open gap this repo owns lives here. This file is the source of truth; the 
 
 Next code: `G-ORBITAL-CORE-218`
 
-- **G-ORBITAL-CORE-217** [mechanical] — Host drift from EXEC-STEP-1a: in a dispatch started by a keyed row's `os/*` completion, listeners with no `per` clause run on a row named after the dispatch's seed row, not on the singleton frame. The spec says such an edge "behaves as before: the singleton frame" and a listener with no clause "ignores" the `instanceKey`.
-  - **Seen** (2026-11-18, `orb-dev fleet deploy --target local`, almadar-central over std-deploy-host). The log is in session scratchpad `fleet-run2.log`.
-  - **First hop:** HostRsync row `project-friday-m1-1|rsync` completed, which drove AppRelease (`per`, correct). AppRelease's `AR_FAILED` then reached DeployHost (no `per`), and DeployHost was processed with `entity_id=project-friday-m1-1|rsync`.
-  - **Second hop:** LocalPublish's keyed `CLI_DONE` reached FleetPlan (no `per`) on a fresh `project-friday-m1-1` row in `idle`. `CLIENT_PUBLISHED` found no transition there and was dropped, so the command never answered (`inbound-unanswered`).
-  - **Effect:** any keyed std atom (std-cli-keyed, std-http-keyed) whose answers reach a singleton coordinator through an async completion loses or misplaces them.
-  - **Owner:** orbital-core kernel (cascade delivery; the listener's row for an edge with no `per`). Needs owner permission.
-  - **Prevention rung:** (1) kernel, with a twin test on both hosts: a keyed row's completion emits X, and a singleton listener of X steps the singleton frame; the control is that a `per` listener steps the keyed row. The replay goldens play each step alone and cannot see it, so the verifiers want a completion-driven case too.
-  Severity: high. Root cause: one-off.
-
 - **G-ORBITAL-CORE-216** [mechanical] — A keyed listen's `per` key is checked before its `when` guard, and an empty key refuses the emitting step itself, so a delivery the guard rules out still aborts its emitter.
   - **Seen** (2026-11-18): std-deploy-host's FleetApp listened `DeployHost.DEPLOY_FAILED -> FL_SERVER_FAILED per @payload.app when (!= @payload.app "")`. Every DeployHost transition that emits DEPLOY_FAILED with `app: ""` (a busy runtime deploy, a binary deploy refused for its config) stopped firing in the goldens (`transitionFired: false, guard: none`). The same listen keyed `per (if (= @payload.app "") "-" @payload.app)` passes.
   - **Spec:** EXEC-STEP-1a says the key is evaluated "as a `when` guard is" but gives no order. A refused key should at most be the emitter's `DELIVERY_REJECTED`, never a rollback of the emitter's transition.

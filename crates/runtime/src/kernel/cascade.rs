@@ -69,6 +69,14 @@ impl RuntimeKernel {
         if let Some(result) = result {
             self.refusal_followups(trait_name, &source, result, &mut fanned);
         }
+        // EXEC-STEP-1a: a step on a keyed row or on the singleton hands its edges with no `per` the singleton frame;
+        // only a step on a persistent row passes that row on.
+        let step_row = result.map_or(RUNTIME_SINGLETON, |r| r.entity_id.as_str());
+        if source.instance_key.is_some() || step_row == RUNTIME_SINGLETON {
+            for item in fanned.iter_mut().filter(|i| i.listen_key.is_none() && i.row.is_none()) {
+                item.row = Some(RUNTIME_SINGLETON.to_string());
+            }
+        }
         if let Some(result) = result.filter(|r| r.executed) {
             let mut repaints = self.first_repaints(trait_name, result);
             repaints.append(&mut own);
