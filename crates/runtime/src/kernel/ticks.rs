@@ -450,7 +450,7 @@ impl RuntimeKernel {
         );
         let mut emit_context: Option<(DispatchMode, BusEventSource)> = None;
         let mut emits = Vec::new();
-        for er in &outcome.effect_results {
+        for er in outcome.effect_results.iter().filter(|er| !er.is_failed()) {
             let Effect::Emit {
                 event: emitted,
                 payload: ep,

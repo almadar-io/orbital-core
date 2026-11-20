@@ -144,7 +144,62 @@ impl KernelIntrospect for StepKernel {
                 .map(str::to_string)
                 .ok_or_else(|| format!("{OP}: the request's `{field}` must be a string"))
         };
-        let (trait_name, from, event) = (text("trait")?, text("from")?, text("event")?);
+        let delivery = match request.get("delivery") {
+            None | Some(Value::Null) => None,
+            Some(named) => Some(
+                named
+                    .get("at")
+                    .and_then(Value::as_number)
+                    .filter(|at| *at >= 0.0 && at.fract() == 0.0)
+                    .map(|at| at as usize)
+                    .ok_or_else(|| format!("{OP}: the request's `delivery.at` must be the listen's position, a whole number"))?,
+            ),
+        };
+        let leg = match request.get("leg") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(leg)) if session.host.is_some() => Some(leg.to_string()),
+            Some(Value::String(_)) => return Err(format!("{OP}: a leg is a hosted split guest's; this guest has no host")),
+            Some(_) => return Err(format!("{OP}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
+        };
+        let trait_name = text("trait")?;
+        let from = match (&leg, request.get("from")) {
+            (Some(_), None | Some(Value::Null)) => None,
+            _ => Some(text("from")?),
+        };
+        let tick = match request.get("tick") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) if delivery.is_none() => Some(name.to_string()),
+            Some(Value::String(_)) => return Err(format!("{OP}: a tick is not a delivery; name `tick` or `delivery`, not both")),
+            Some(_) => return Err(format!("{OP}: the request's `tick` must be the tick's name")),
+        };
+        let event = match (delivery, &tick) {
+            (Some(_), _) | (None, Some(_)) => request.get("event").and_then(Value::as_str).unwrap_or_default().to_string(),
+            (None, None) => text("event")?,
+        };
+        let entry = match request.get("entry") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(flag)) if !*flag || delivery.is_none() => *flag,
+            Some(Value::Bool(_)) => return Err(format!("{OP}: a delivery is not an entry; `entry` names a dispatch's own event")),
+            Some(_) => return Err(format!("{OP}: the request's `entry` must be a boolean")),
+        };
+        let mount = match request.get("mount") {
+            None | Some(Value::Null) => None,
+            Some(_) if delivery.is_none() => return Err(format!("{OP}: `mount` names the route a `$MOUNT` delivery announces; it needs `delivery`")),
+            Some(named) => Some((
+                named.get("route").and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("{OP}: the request's `mount.route` must be a string"))?,
+                match named.get("crumb") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::String(crumb)) => Some(crumb.to_string()),
+                    Some(_) => return Err(format!("{OP}: the request's `mount.crumb` must be a string")),
+                },
+            )),
+        };
+        let emitter = match request.get("emitter") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(name)) if delivery.is_some() => Some(name.to_string()),
+            Some(Value::String(_)) => return Err(format!("{OP}: `emitter` names the trait a delivery's emit came from; it needs `delivery`")),
+            Some(_) => return Err(format!("{OP}: the request's `emitter` must be a string")),
+        };
         let entity_id = match request.get("entityId") {
             None | Some(Value::Null) => None,
             Some(Value::String(id)) => Some(id.to_string()),
@@ -154,32 +209,85 @@ impl KernelIntrospect for StepKernel {
             None | Some(Value::Null) => self.position.read().now,
             Some(value) => value.as_number().ok_or_else(|| format!("{OP}: the request's `now` must be a number of ms"))?,
         };
-        let input = IsolatedStep {
-            trait_name: &trait_name,
-            entity_id: entity_id.as_deref(),
-            from: &from,
-            event: &event,
-            payload: request.get("payload").cloned().unwrap_or(Value::Null),
-            entity: request.get("entity").cloned().unwrap_or(Value::Null),
-            now,
+        let payload = request.get("payload").cloned().unwrap_or(Value::Null);
+        let entity = request.get("entity").cloned();
+        let embedded = session.embedded_traits();
+        let kernel = Arc::clone(&session.kernel);
+        let host = session.host.clone();
+        let run = move || {
+            let from = match from {
+                Some(from) => from,
+                None => kernel.current_state_name(&trait_name, entity_id.as_deref()),
+            };
+            let input = IsolatedStep {
+                contained: host.is_none(),
+                host: host.clone(),
+                embedded,
+                delivery,
+                entry,
+                mount,
+                tick: tick.as_deref(),
+                emitter: emitter.as_deref(),
+                leg: leg.as_deref(),
+                trait_name: &trait_name,
+                entity_id: entity_id.as_deref(),
+                from: &from,
+                event: &event,
+                payload,
+                entity,
+                now,
+            };
+            kernel.step_isolated(input)
         };
-        session.kernel.step_isolated(input).map_err(|error| format!("{OP}: {error}"))
+        match (&session.host, request.get("leg").and_then(Value::as_str)) {
+            (Some(host), Some(leg)) => host.in_leg(leg, Box::new(run)),
+            _ => run(),
+        }
+        .map_err(|error| format!("{OP}: {error}"))
     }
 }
 
 /// One `kernel/step` request, read from its record.
 pub(super) struct IsolatedStep<'a> {
+    /// The guest has no host: its own rows answer its fetches and persists and every other ask fails in place, as a
+    /// native dispatch into it does, so a step may run anything. A hosted guest's asks reach its host and are refused.
+    contained: bool,
+    /// The host of a hosted guest: it runs the step, I/O included (`GuestHost::step`).
+    host: Option<Arc<dyn super::guest_hosting::GuestHost>>,
+    /// The traits the guest's page embeds: each paint says whether its trait is one.
+    embedded: std::collections::HashSet<String>,
+    /// The position of the listen of `trait_name` this step is a delivery through: its `when`, `per` and `with` run on
+    /// the raw `payload` first, and its trigger is the event fired.
+    delivery: Option<usize>,
+    /// The step is a dispatch's own event entering the kernel: its payload is checked against the event the trait
+    /// declares first, as a dispatch's entry does (EXEC-EVAL-10), and a misfit runs nothing.
+    entry: bool,
+    /// The delivery is a route mount's `$MOUNT` (EXEC-SEED-7): its payload is the announcement of this route (and crumb),
+    /// built by the guest as a native route mount builds it, in place of `payload`.
+    mount: Option<(String, Option<String>)>,
+    /// The tick of `trait_name` this step runs (its `appliesTo`, `afterEntryMs` and guard judged as a tick pass judges
+    /// them, no payload), in place of an event.
+    tick: Option<&'a str>,
+    /// The open server leg this step commits into (`program/dispatch { lolo: "begin" }`): the step runs in the leg's
+    /// session, its writes stay and its outcome joins the leg's.
+    leg: Option<&'a str>,
+    /// The trait whose emit this delivery carries: a refused `per` key is answered to it as `DELIVERY_REJECTED`, as a
+    /// native delivery's is, or refuses the dispatch when it declares no listener for it.
+    emitter: Option<&'a str>,
     trait_name: &'a str,
     entity_id: Option<&'a str>,
     from: &'a str,
     event: &'a str,
     payload: Value,
-    entity: Value,
+    /// The row the step reads; absent, the trait's (or keyed row's) row before any frame: declared defaults, then its
+    /// stored row, as a native step reads a trait nothing has touched.
+    entity: Option<Value>,
     now: f64,
 }
 
 /// The effects a step may run as data; every other effect with a host or a side effect is an ask.
 const STEP_EFFECTS: [&str; 7] = ["emit", "set", "render-ui", "navigate", "navigate-back", "log", "notify"];
+
 
 /// The asks in `expr`, in walk order: each call whose head the operator table gives a host or a side effect and that
 /// is not a step effect.
@@ -213,7 +321,7 @@ impl RuntimeKernel {
     /// `kernel/step` on this (guest) kernel: the trait set to `from` and `entity`, one `event` processed with no cascade,
     /// then the trait restored and its renders dropped, so the guest holds nothing a step left. A transition whose
     /// `from --event-->` arms hold an ask is refused before anything runs.
-    pub(super) fn step_isolated(&self, input: IsolatedStep<'_>) -> Result<Value, String> {
+    pub(super) fn step_isolated(&self, mut input: IsolatedStep<'_>) -> Result<Value, String> {
         let trait_def = self
             .registry
             .trait_definitions
@@ -221,57 +329,244 @@ impl RuntimeKernel {
             .get(input.trait_name)
             .cloned()
             .ok_or_else(|| format!("the guest has no trait \"{}\"", input.trait_name))?;
+        if let Some((route, crumb)) = input.mount.take() {
+            match self.route_mount_announcement(&route, crumb.as_deref()).map_err(|error| error.to_string())? {
+                Some((_, announced)) => input.payload = announced,
+                None => return Ok(not_delivered(&input, None)),
+            }
+        }
+        let mut keyed: Option<String> = None;
+        let trigger: String;
+        if let Some(at) = input.delivery {
+            let listen = trait_def
+                .listens
+                .as_ref()
+                .and_then(|all| all.get(at).cloned())
+                .ok_or_else(|| format!("trait \"{}\" has no listen at position {at}", input.trait_name))?;
+            trigger = listen.triggers.clone().unwrap_or_else(|| listen.event.clone());
+            let passes = |guard: &SExpression| -> Result<bool, String> {
+                let config = self.listener_config(input.trait_name).map_err(|fault| fault.into_kernel().to_string())?;
+                Ok(listen_guard_passes(guard, &input.payload, input.from, config, &DispatchView::default()))
+            };
+            if let Some(expr) = &listen.key {
+                let user = self.session_user().map_err(|fault| fault.into_kernel().to_string())?;
+                let key = ListenKey { expr: Arc::new(expr.clone()), emitter: String::new() };
+                match self.resolve_listen_key(&key, &input.payload, user) {
+                    Ok(row) => match input.entity_id {
+                        None => return Ok(key_required(&input, &row)),
+                        Some(named) if named != row => {
+                            return Err(format!("the delivery's per key names row \"{row}\", not the row \"{named}\" the request names"))
+                        }
+                        Some(_) => keyed = Some(row),
+                    },
+                    Err(reason) => {
+                        let blocked = match &listen.guard {
+                            Some(guard) => {
+                                let config = self.listener_config(input.trait_name).map_err(|fault| fault.into_kernel().to_string())?;
+                                let initial = self.get_initial_state(input.trait_name).unwrap_or_default();
+                                !listen_guard_passes(guard, &input.payload, &initial, config, &DispatchView::default())
+                            }
+                            None => false,
+                        };
+                        if blocked {
+                            return Ok(not_delivered(&input, None));
+                        }
+                        let Some(emitter) = input.emitter else {
+                            return Ok(not_delivered(&input, Some(reason)));
+                        };
+                        return Ok(match self.refuse_key_of(input.trait_name, &trigger, emitter, &reason, &mut Vec::new()) {
+                            Err(refusal) => rejected(&input, refusal.to_string()),
+                            Ok(payload) => {
+                                let mut answer = not_delivered(&input, Some(reason));
+                                if let Value::Object(fields) = &mut answer {
+                                    fields.insert("deliveryRejected".into(), payload);
+                                }
+                                answer
+                            }
+                        });
+                    }
+                }
+            }
+            if let Some(guard) = &listen.guard {
+                if !passes(guard)? {
+                    return Ok(not_delivered(&input, None));
+                }
+            }
+            if let Some(mapping) = listen.payload_mapping.as_ref() {
+                let ctx = BindingContextBuilder::new().payload(input.payload.clone()).build();
+                input.payload = super::envelope::mapped_listen_payload(&Evaluator::new(), &ctx, Some(mapping), &input.payload);
+            }
+        } else {
+            trigger = input.event.to_string();
+        }
+        let event = trigger.as_str();
+        if input.entry {
+            if let Some(message) = self.payload_rejection([(input.trait_name, event)], &input.payload) {
+                return Ok(rejected(&input, message));
+            }
+        }
+        let entity_id = keyed.as_deref().or(input.entity_id);
         let mut asks = Vec::new();
         for arm in trait_def
             .state_machine
             .transitions
             .iter()
-            .filter(|t| t.event == input.event && t.from.states().contains(&input.from))
+            .filter(|t| input.tick.is_none() && t.event == event && t.from.states().contains(&input.from))
         {
+            if input.contained {
+                continue;
+            }
             for effect in arm.effects.iter().flatten() {
                 asks_in(effect, &mut asks);
             }
         }
-        if !asks.is_empty() {
+        for declared in trait_def.ticks.iter().flatten().filter(|t| Some(t.name.as_str()) == input.tick) {
+            if input.contained {
+                continue;
+            }
+            for effect in &declared.effects {
+                asks_in(effect, &mut asks);
+            }
+        }
+        if !asks.is_empty() && input.host.is_none() {
             return Ok(record([
                 ("fired", Value::Bool(false)),
                 ("from", Value::string(input.from)),
                 ("to", Value::string(input.from)),
                 ("arm", Value::Null),
-                ("entity", input.entity),
+                ("entity", input.entity.unwrap_or(Value::Null)),
                 ("emits", Value::array(Vec::<Value>::new())),
                 ("effects", Value::array(Vec::<Value>::new())),
                 ("guards", Value::array(Vec::<Value>::new())),
                 ("failure", Value::Null),
                 ("refused", Value::string("io")),
                 ("asks", Value::array(asks.into_iter().map(Value::string).collect::<Vec<Value>>())),
+                ("delivered", Value::Bool(true)),
+                ("key", keyed.as_deref().map_or(Value::Null, Value::string)),
+                ("keyRefused", Value::Null),
+                ("keyRequired", Value::Bool(false)),
+                ("rejected", Value::Null),
             ]));
         }
         let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
-        let held = self.snapshot_trait(input.trait_name, input.entity_id);
+        let commit = input.leg.is_some();
+        let held = self.snapshot_trait(input.trait_name, entity_id);
         let held = if held.state.is_empty() {
             TraitSnapshot { state: self.get_initial_state(input.trait_name).unwrap_or_default(), entity: held.entity }
         } else {
             held
         };
-        self.restore_trait(input.trait_name, input.entity_id, TraitSnapshot { state: input.from.to_string(), entity: input.entity });
-        self.renders.write().forget_traits([input.trait_name]);
+        let before = match input.entity {
+            Some(entity) => entity,
+            None if commit => self.step_frame(input.trait_name, entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON)).to_value(),
+            None => {
+                let row = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
+                if row != crate::process_result::RUNTIME_SINGLETON {
+                    self.create_keyed_row(input.trait_name, row).map_err(|fault| fault.into_kernel().to_string())?;
+                }
+                let entity_type = trait_def.linked_entity.as_deref().unwrap_or(input.trait_name);
+                self.unframed_trait_entity(input.trait_name, entity_type, row).to_value()
+            }
+        };
+        if !commit {
+            self.restore_trait(input.trait_name, entity_id, TraitSnapshot { state: input.from.to_string(), entity: before.clone() });
+            self.renders.write().forget_traits([input.trait_name]);
+        }
         *self.step.dispatch_now.write() = Some(input.now);
-        let ran = self.process_event_in_dispatch(input.trait_name, input.entity_id, input.event, Arc::new(input.payload), None, false);
+        let row = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
+        let ran = match (&input.host, input.tick) {
+            (Some(host), tick) => host
+                .step(input.trait_name, if tick.is_some() { Some(row) } else { entity_id }, event, input.payload, tick, input.leg)
+                .and_then(|outcomes| {
+                    outcomes
+                        .into_iter()
+                        .find(|(name, _)| name == input.trait_name)
+                        .map(|(_, result)| result)
+                        .ok_or_else(|| format!("the host ran no step of {}", input.trait_name))
+                })
+                .map_err(|error| Fault::Kernel(KernelError::Internal(error))),
+            (None, Some(tick)) => self.process_tick_in_dispatch(input.trait_name, row, row, tick),
+            (None, None) => self.process_event_in_dispatch(input.trait_name, entity_id, event, Arc::new(input.payload), None, false),
+        };
         *self.step.dispatch_now.write() = None;
-        self.restore_trait(input.trait_name, input.entity_id, held);
-        self.renders.write().forget_traits([input.trait_name]);
+        if !commit {
+            self.restore_trait(input.trait_name, entity_id, held);
+            self.renders.write().forget_traits([input.trait_name]);
+        }
         let result = ran.map_err(|fault| fault.into_kernel().to_string())?;
-        Ok(step_answer(&result))
+        let mut answer = step_answer(&result, keyed.as_deref(), before);
+        let ran = [(input.trait_name.to_string(), result.clone())];
+        let response = crate::effects::response::EventResponse::from_process_results(&ran, input.trait_name, event);
+        let (rendered, navigations) = super::guests::paints_of(&response, &super::guests::painter_orbitals(self, &ran), &input.embedded);
+        if let Value::Object(fields) = &mut answer {
+            fields.insert("rendered".into(), Value::array(rendered));
+            fields.insert("navigations".into(), Value::array(navigations));
+        }
+        if let (Some(row), Value::Object(fields)) = (entity_id.filter(|row| self.is_keyed_row(input.trait_name, row)), &mut answer) {
+            let entity_type = trait_def.linked_entity.as_deref().unwrap_or(input.trait_name);
+            fields.insert("quiet".into(), Value::Bool(self.row_quiet(&trait_def, entity_type, row, &result.new_state, &result.entity_data)));
+        }
+        if let (Some(message), Value::Object(fields)) = (self.emit_rejection(input.trait_name, Some(&result)), &mut answer) {
+            fields.insert("rejected".into(), Value::string(message));
+        }
+        Ok(answer)
     }
 }
 
-fn step_answer(result: &ProcessEventResult) -> Value {
+/// The answer of a keyed delivery that named no row: its `per` key, for the caller to step that row (EXEC-STEP-1a).
+/// The answer of an entry whose payload does not fit its declared event: nothing ran, and `rejected` carries the
+/// refusal a native dispatch answers.
+fn rejected(input: &IsolatedStep<'_>, message: String) -> Value {
+    let mut answer = not_delivered(input, None);
+    if let Value::Object(fields) = &mut answer {
+        fields.insert("rejected".into(), Value::string(message));
+    }
+    answer
+}
+
+fn key_required(input: &IsolatedStep<'_>, row: &str) -> Value {
+    let mut answer = not_delivered(input, None);
+    if let Value::Object(fields) = &mut answer {
+        fields.insert("key".into(), Value::string(row));
+        fields.insert("keyRequired".into(), Value::Bool(true));
+    }
+    answer
+}
+
+/// The answer of a delivery its listen held back: by its `when` guard (`refused` none) or by a `per` key that did not name
+/// a row (`refused` the reason). Nothing ran.
+fn not_delivered(input: &IsolatedStep<'_>, key_refused: Option<String>) -> Value {
+    record([
+        ("fired", Value::Bool(false)),
+        ("delivered", Value::Bool(false)),
+        ("from", Value::string(input.from)),
+        ("to", Value::string(input.from)),
+        ("arm", Value::Null),
+        ("entity", input.entity.clone().unwrap_or(Value::Null)),
+        ("emits", Value::array(Vec::<Value>::new())),
+        ("effects", Value::array(Vec::<Value>::new())),
+        ("guards", Value::array(Vec::<Value>::new())),
+        ("failure", Value::Null),
+        ("refused", Value::Null),
+        ("asks", Value::array(Vec::<Value>::new())),
+        ("key", Value::Null),
+        ("keyRefused", key_refused.map_or(Value::Null, Value::string)),
+        ("keyRequired", Value::Bool(false)),
+        ("rejected", Value::Null),
+    ])
+}
+
+fn step_answer(result: &ProcessEventResult, key: Option<&str>, before: Value) -> Value {
     let emits = result
         .effect_results
         .iter()
+        .filter(|ran| !ran.is_failed())
         .filter_map(|ran| match &ran.effect {
-            Effect::Emit { event, payload } => Some(record([("event", Value::string(event.as_str())), ("payload", payload.clone())])),
+            Effect::Emit { event, payload } => Some(record([
+                ("event", Value::string(event.as_str())),
+                ("payload", payload.clone()),
+                ("completion", Value::Bool(ran.completion)),
+            ])),
             _ => None,
         })
         .collect::<Vec<Value>>();
@@ -300,6 +595,7 @@ fn step_answer(result: &ProcessEventResult) -> Value {
         ("from", Value::string(result.previous_state.as_str())),
         ("to", Value::string(result.new_state.as_str())),
         ("arm", result.fired_arm.map_or(Value::Null, |arm| count(arm as u64))),
+        ("before", before),
         ("entity", result.entity_data.to_value()),
         ("emits", Value::array(emits)),
         ("effects", Value::array(effects)),
@@ -307,6 +603,11 @@ fn step_answer(result: &ProcessEventResult) -> Value {
         ("failure", result.failure.as_deref().map_or(Value::Null, Value::string)),
         ("refused", Value::Null),
         ("asks", Value::array(Vec::<Value>::new())),
+        ("delivered", Value::Bool(true)),
+        ("key", key.map_or(Value::Null, Value::string)),
+        ("keyRefused", Value::Null),
+        ("keyRequired", Value::Bool(false)),
+        ("rejected", Value::Null),
     ])
 }
 

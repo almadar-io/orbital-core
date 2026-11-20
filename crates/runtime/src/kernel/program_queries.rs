@@ -271,9 +271,26 @@ impl RuntimeKernel {
 
     /// The `$MOUNT` deliveries `route` would make, and the page it resolves to, without recording that page.
     fn route_mount_targets(&self, route: &str, crumb: Option<&str>) -> Result<(Option<String>, VecDeque<CascadeItem>), KernelError> {
+        let Some((page, payload)) = self.route_mount_announcement(route, crumb)? else {
+            return Ok((None, VecDeque::new()));
+        };
+        let mut out = Vec::new();
+        self.collect_listener_targets(
+            &BusEventSource::default(),
+            "",
+            crate::effects::response::LifecycleEvent::Mount.as_str(),
+            &payload,
+            &[],
+            &mut out,
+        );
+        Ok((Some(page), out.into()))
+    }
+
+    /// The page `route` resolves to and the `$MOUNT` payload announcing it (EXEC-SEED-7); `None` when it resolves to no page.
+    pub(super) fn route_mount_announcement(&self, route: &str, crumb: Option<&str>) -> Result<Option<(String, Value)>, KernelError> {
         let circuit = self.page_circuit(None, Some(route)).map_err(KernelError::Internal)?;
         let Some(page) = circuit.page else {
-            return Ok((None, VecDeque::new()));
+            return Ok(None);
         };
         let names = |list: Vec<String>| Value::array(list.into_iter().map(Value::string).collect::<Vec<_>>());
         let mut payload = ValueMap::default();
@@ -303,17 +320,7 @@ impl RuntimeKernel {
         if let Some(crumb) = crumb.filter(|c| !c.is_empty()) {
             payload.insert("crumb".into(), Value::string(crumb));
         }
-        let payload = Value::object(payload);
-        let mut out = Vec::new();
-        self.collect_listener_targets(
-            &BusEventSource::default(),
-            "",
-            crate::effects::response::LifecycleEvent::Mount.as_str(),
-            &payload,
-            &[],
-            &mut out,
-        );
-        Ok((Some(page), out.into()))
+        Ok(Some((page, Value::object(payload))))
     }
 
     /// The first trait a host runs that listens for `route`'s `$MOUNT` (EXEC-SEED-7): a listener a browser does not run, so

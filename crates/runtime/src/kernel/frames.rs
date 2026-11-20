@@ -104,6 +104,35 @@ impl RuntimeKernel {
         entity_type: &str,
         entity_id: &str,
     ) -> SharedEntity {
+        let slot = self.frame_slot(trait_name, entity_type, entity_id);
+        let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
+        let entity = self.unframed_trait_entity(trait_name, entity_type, entity_id).merged(&frame);
+        if self.shared_intrinsic_fields(entity_type).is_some() {
+            let own = self
+                .frames
+                .read()
+                .get(&self.own_frame_slot(trait_name, entity_id))
+                .cloned()
+                .unwrap_or_default();
+            return entity.merged(&own);
+        }
+        entity
+    }
+
+    /// `entity` as a step in the frame of store ask `entity_id` reads it: with the ask key as its `id` when it has none,
+    /// in the step's view only (EXEC-STORE-4).
+    pub(super) fn with_store_ask_id(&self, entity: SharedEntity, entity_id: &str) -> SharedEntity {
+        let has_id = entity.fields().is_some_and(|fields| fields.get("id").is_some_and(|id| !id.is_null()));
+        if has_id || !self.store_ask_frames.read().contains(entity_id) {
+            return entity;
+        }
+        let mut id = SharedEntity::empty_object();
+        id.set_field("id".to_string(), Value::string(entity_id));
+        entity.merged(&id)
+    }
+
+    /// A trait's `@entity` before any frame: declared field defaults, then its row.
+    pub(super) fn unframed_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> SharedEntity {
         let defaults = self
             .registry.entity_defaults
             .read()
@@ -118,18 +147,7 @@ impl RuntimeKernel {
             .ok()
             .map(|row| SharedEntity::from_value_ref(&row))
             .unwrap_or_default();
-        let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
-        let entity = defaults.merged(&row).merged(&frame);
-        if self.shared_intrinsic_fields(entity_type).is_some() {
-            let own = self
-                .frames
-                .read()
-                .get(&self.own_frame_slot(trait_name, entity_id))
-                .cloned()
-                .unwrap_or_default();
-            return entity.merged(&own);
-        }
-        entity
+        defaults.merged(&row)
     }
 
     /// The `@entity` a step of `trait_name` would read now, for the cascade's visit key.

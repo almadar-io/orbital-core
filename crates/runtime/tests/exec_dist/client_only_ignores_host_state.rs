@@ -94,6 +94,7 @@ fn a_host_row_for_a_client_only_trait_is_ignored() {
     let k = kernel();
     k.apply_server_response(&host_row(), &Default::default())
         .unwrap();
+    assert_eq!(k.snapshot_trait("Searcher", None).entity, Value::Null);
     assert_eq!(k.snapshot_trait("Searcher", Some("q1")).entity, Value::Null);
 }
 
@@ -109,7 +110,7 @@ fn a_host_row_for_a_trait_that_awaits_the_host_is_still_folded() {
     };
     k.apply_server_response(&response, &Default::default())
         .unwrap();
-    assert_eq!(k.snapshot_trait("Responder", Some("t1")).entity, row);
+    assert_eq!(k.snapshot_trait("Responder", None).entity, row);
 }
 
 // std-confirmation-shaped: Delete runs CONFIRM in the browser, a listener persists through the host. The leg carries

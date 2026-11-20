@@ -144,6 +144,9 @@ pub(crate) struct DispatchRun {
     /// session asked. The driver is the store seam, with no viewer of its own: in the asking session its steps would read
     /// that session's `@user`, a store ask of its own when the identity is store-bound.
     program: bool,
+    /// One step and no cascade (`kernel/step` on a hosted guest, EXEC-METAL-7): the seed steps on its trait alone, its asks
+    /// parking and resuming as any run's, and nothing it emits, releases or drops is queued.
+    isolated: bool,
     /// Open from the run's start to its end, across every ask it parks on.
     span: tracing::Span,
 }

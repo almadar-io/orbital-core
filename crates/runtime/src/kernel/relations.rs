@@ -305,3 +305,34 @@ fn visit(source: &dyn EntitySource, targets: &HashMap<String, RelationTarget>, n
         }
     });
 }
+
+/// Whether a `render-ui` tree lists a relation field of `linked_entity` whose options nobody authored and whose
+/// target `host_stored` names: the options only the host can give ([`inject_relation_options`]).
+pub fn owes_relation_options(
+    defs: &EntityDefinitions,
+    linked_entity: &str,
+    pattern: &Value,
+    host_stored: &dyn Fn(&str) -> bool,
+) -> bool {
+    let targets = relation_targets(defs, linked_entity);
+    if targets.is_empty() {
+        return false;
+    }
+    let mut owed = false;
+    let mut tree = pattern.clone();
+    walk_fields_nodes(&mut tree, &mut |_, map| {
+        if owed || map.contains_key("relationsData") {
+            return;
+        }
+        let entries = match map.get("fields").or_else(|| map.get("columns")) {
+            Some(Value::Array(entries)) => entries.clone(),
+            _ => Vec::new().into(),
+        };
+        owed = entries
+            .iter()
+            .filter_map(field_name)
+            .filter_map(|name| targets.get(&name))
+            .any(|target| host_stored(&target.entity));
+    });
+    owed
+}

@@ -14,6 +14,7 @@ impl RuntimeKernel {
             origin,
             program_deliveries,
             program,
+            isolated,
             ..
         } = run;
         let Some(in_flight) = seed.as_mut() else {
@@ -27,6 +28,9 @@ impl RuntimeKernel {
             return match plans.pop_front() {
                 Some(plan) => {
                     let mut begun = self.begin_seed(plan);
+                    if *isolated {
+                        begun.seed_scopes.truncate(1);
+                    }
                     if let Some(deliveries) = preamble.take().map(|preamble| preamble.deliveries) {
                         begun.stage = match begun.stage {
                             Stage::Released(mut released) => {
@@ -66,7 +70,7 @@ impl RuntimeKernel {
         let _asker = (in_flight.program || *program || viewerless_tick).then(|| self.enter_asker(asker));
         let _seam = (*program || viewerless_tick).then(|| self.enter_store_seam());
         let _program_step = (in_flight.program || *program || viewerless_tick).then(crate::effects::executor::ProgramStepScope::enter);
-        let stepped = self.step_seed(in_flight, outcomes);
+        let stepped = self.step_seed(in_flight, outcomes, *isolated);
         program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
         self.settle_identity(stepped.is_ok());
         self.settle_theme(stepped.is_ok());
@@ -304,7 +308,9 @@ impl RuntimeKernel {
         &self,
         seed: &mut SeedRun,
         outcomes: &mut DispatchOutcomes,
+        isolated: bool,
     ) -> Result<Flow, Fault> {
+        let isolated = &isolated;
         let SeedRun {
             eid,
             event_name,
@@ -382,7 +388,7 @@ impl RuntimeKernel {
                     return Err(Fault::Kernel(KernelError::PayloadInvalid(refusal)));
                 }
                 visited.record(visit);
-                if result.is_some() {
+                if result.is_some() && !*isolated {
                     fanned.extend(self.mount.write().release_after(scope, event_name));
                 }
                 let followups = self.step_followups(
@@ -393,9 +399,12 @@ impl RuntimeKernel {
                     seed_scopes,
                     tick.is_none(),
                 );
-                own.extend(followups.own);
-                fanned.extend(followups.fanned);
-                directives.extend(self.take_queue_directives());
+                let directed = self.take_queue_directives();
+                if !*isolated {
+                    own.extend(followups.own);
+                    fanned.extend(followups.fanned);
+                    directives.extend(directed);
+                }
                 let mut result = result;
                 if let Some(result) = result.as_mut() {
                     result.consumed_emits = followups.consumed_emits;
@@ -409,8 +418,8 @@ impl RuntimeKernel {
                 if let Some(result) = result {
                     outcomes.push((scope.clone(), result.released()));
                 }
-                let quiet = (tick.is_none() && self.is_keyed_row(scope, eid)).then_some((scope.as_str(), eid.as_str()));
-                *drops = self.row_drops_after(quiet, eid);
+                let quiet = (tick.is_none() && !*isolated && self.is_keyed_row(scope, eid)).then_some((scope.as_str(), eid.as_str()));
+                *drops = if *isolated { VecDeque::new() } else { self.row_drops_after(quiet, eid) };
                 *idx += 1;
                 Ok(Flow::More)
             }

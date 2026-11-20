@@ -534,9 +534,7 @@ impl RuntimeKernel {
                             })
                             .collect();
                     }
-                    if let Some(id) = fields.get("id") {
-                        ids.insert(frame.clone(), wire_row_id_of(id));
-                    }
+                    // A trait's frame is the one its own steps read; the `id` its row names is a field of it.
                     applied.push((frame, FrameWrite::Fields(fields)));
                 }
                 other => applied.push((frame, other)),
@@ -612,12 +610,5 @@ impl RuntimeKernel {
             resync: None,
             ids,
         })
-    }
-}
-
-fn wire_row_id_of(id: &Value) -> String {
-    match id.as_str() {
-        Some("singleton") | None => RUNTIME_SINGLETON.to_string(),
-        Some(id) => id.to_string(),
     }
 }

@@ -143,6 +143,7 @@ impl RuntimeKernel {
         if self.io.suspended() {
             return Err(Fault::Suspended);
         }
+        let entity_data = self.with_store_ask_id(entity_data, entity_id);
         if !entity_data.is_null() {
             ctx.set_entity_shared(entity_data.clone());
         }

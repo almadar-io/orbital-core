@@ -179,6 +179,33 @@ impl RuntimeKernel {
         };
         let viewer_decided = viewer_decided || !viewer_listeners.is_empty();
         delegating_traits.extend(viewer_listeners);
+        // The browser holds no rows of a host-stored entity, so the options of a relation field are the host's to give:
+        // a step of a trait the host reports that paints one is the host's to paint.
+        let relation_painters: Vec<String> = if self.effect_executor.environment().is_client() {
+            let defs = self.registry.entity_definitions.read();
+            let residence = orbital_core_base::runs_on::Residence::of_entities(defs.values());
+            outcomes
+                .iter()
+                .filter(|(t, r)| {
+                    r.executed
+                        && !self.committed_here(t)
+                        && r.effect_results.iter().any(|result| match &result.effect {
+                            Effect::RenderUi { content, .. } => super::relations::owes_relation_options(
+                                &defs,
+                                &r.linked_entity,
+                                content,
+                                &|entity| !residence.is_client(entity),
+                            ),
+                            _ => false,
+                        })
+                })
+                .map(|(t, _)| t.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let viewer_decided = viewer_decided || !relation_painters.is_empty();
+        delegating_traits.extend(relation_painters);
         // A local seed never needs the server for its OWN effects, but the
         // traits its cascade reached (a persistor, a refetching list) may.
         let downstream_needs_server = delegating_traits.iter().any(|t| t != trait_name);
@@ -227,46 +254,6 @@ impl RuntimeKernel {
                     })
                     .collect();
                 let traits = (!traits.is_empty()).then_some(traits);
-                let delivery_leg = |t: &String, r: &ProcessEventResult| -> Option<EventRequest> {
-                    let entry = r.entry.as_ref().filter(|_| r.executed)?;
-                    let delivered = r.event.clone()?;
-                    let delivery = DeliveryRecord::from_value(&entry.view.event);
-                    let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.clone());
-                    Some(EventRequest {
-                        event: delivered,
-                        tick: tick.map(str::to_string),
-                        payload: with_awaiting(Value::clone(&r.payload)),
-                        entity_id: raw_entity_id.map(str::to_string),
-                        target_trait: Some(t.clone()),
-                        client_id: client_id.map(|s| s.to_string()),
-                        source_trait: emitter,
-                        // Only the target replays on the host; every other carried trait is held where the
-                        // client left it, or the host's state echo would revert it.
-                        traits: traits.as_ref().map(|carried| {
-                            carried
-                                .iter()
-                                .map(|c| {
-                                    match outcomes.iter().find(|(name, _)| name == &c.r#trait) {
-                                        Some((_, ran)) if c.r#trait != *t => TraitFrom {
-                                            from: ran.new_state.clone(),
-                                            ..c.clone()
-                                        },
-                                        _ => c.clone(),
-                                    }
-                                })
-                                .collect()
-                        }),
-                        entity_by_trait: (!entry.entity_before.is_null()).then(|| {
-                            ValueMap::from_iter([(
-                                t.clone().into(),
-                                entry.entity_before.to_value(),
-                            )])
-                        }),
-                        dispatch_log: dispatch_log_of(self, t, entry),
-                        delivery,
-                        ..Default::default()
-                    })
-                };
                 let client_only = |name: &str| {
                     self.registry
                         .trait_definitions
@@ -275,6 +262,81 @@ impl RuntimeKernel {
                         .is_some_and(|def| {
                             matches!(self.dispatch_mode_of(def), DispatchMode::HybridClientOnly)
                         })
+                };
+                // The steps the host runs in its cascade from `target` (EXEC-DIST-10).
+                let rides_leg_of = |target: &str| -> HashSet<String> {
+                    let mut rides: HashSet<String> = HashSet::from_iter([target.to_string()]);
+                    for (name, ran) in outcomes.iter() {
+                        if !ran.executed || client_only(name) {
+                            continue;
+                        }
+                        let emitter = ran
+                            .entry
+                            .as_ref()
+                            .and_then(|entry| DeliveryRecord::from_value(&entry.view.event))
+                            .and_then(|d| d.source.r#trait);
+                        if emitter.is_some_and(|e| rides.contains(&e)) {
+                            rides.insert(name.clone());
+                        }
+                    }
+                    rides
+                };
+                // The rows the steps riding `target`'s leg start from: the host runs them over what the browser holds.
+                let rider_rows = |target: &str| -> ValueMap {
+                    let rides = rides_leg_of(target);
+                    outcomes
+                        .iter()
+                        .filter(|(name, ran)| name != target && ran.executed && rides.contains(name))
+                        .filter_map(|(name, ran)| {
+                            ran.entry
+                                .as_ref()
+                                .filter(|entry| !entry.entity_before.is_null())
+                                .map(|entry| (name.clone().into(), entry.entity_before.to_value()))
+                        })
+                        .collect()
+                };
+                let delivery_leg = |t: &String, r: &ProcessEventResult| -> Option<EventRequest> {
+                    let entry = r.entry.as_ref().filter(|_| r.executed)?;
+                    let delivered = r.event.clone()?;
+                    let delivery = DeliveryRecord::from_value(&entry.view.event);
+                    let emitter = delivery.as_ref().and_then(|d| d.source.r#trait.clone());
+                    let rides = rides_leg_of(t);
+                    Some(EventRequest {
+                        event: delivered,
+                        tick: tick.map(str::to_string),
+                        payload: with_awaiting(Value::clone(&r.payload)),
+                        entity_id: raw_entity_id.map(str::to_string),
+                        target_trait: Some(t.clone()),
+                        client_id: client_id.map(|s| s.to_string()),
+                        source_trait: emitter,
+                        // The target and the steps the host cascades from it replay there, from the state each
+                        // starts in; every other carried trait is held where the client left it, or the host's
+                        // state echo would revert it.
+                        traits: traits.as_ref().map(|carried| {
+                            carried
+                                .iter()
+                                .map(|c| {
+                                    match outcomes.iter().find(|(name, _)| name == &c.r#trait) {
+                                        Some((_, ran)) if !rides.contains(&c.r#trait) => TraitFrom {
+                                            from: ran.new_state.clone(),
+                                            ..c.clone()
+                                        },
+                                        _ => c.clone(),
+                                    }
+                                })
+                                .collect()
+                        }),
+                        entity_by_trait: {
+                            let mut rows = rider_rows(t);
+                            if !entry.entity_before.is_null() {
+                                rows.insert(t.clone().into(), entry.entity_before.to_value());
+                            }
+                            (!rows.is_empty()).then_some(rows)
+                        },
+                        dispatch_log: dispatch_log_of(self, t, entry),
+                        delivery,
+                        ..Default::default()
+                    })
                 };
                 // The seed replays from its pre-dispatch row and the host cascades the rest itself.
                 // A never-written shared frame replays from the view the step read (its defaults), as the
@@ -291,8 +353,11 @@ impl RuntimeKernel {
                     } else {
                         seed_row.clone()
                     };
-                    let entity_by_trait = (!replayed_from.is_null())
-                        .then(|| ValueMap::from_iter([(trait_name.into(), replayed_from)]));
+                    let mut rows = rider_rows(trait_name);
+                    if !replayed_from.is_null() {
+                        rows.insert(trait_name.into(), replayed_from);
+                    }
+                    let entity_by_trait = (!rows.is_empty()).then_some(rows);
                     EventRequest {
                         event: event.to_string(),
                         tick: tick.map(str::to_string),

@@ -1898,18 +1898,49 @@ mod kernel_step {
             "orbitals": [{
                 "name": "G",
                 "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number" }] },
+                "auxiliaryEntities": [{ "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [{ "name": "id", "type": "string" }, { "name": "text", "type": "string" }] }],
                 "traits": [
                     { "name": "Src", "linkedEntity": "Cell",
-                      "emits": [{ "event": "X", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                      "emits": [{ "event": "X", "payloadSchema": [{ "name": "n", "type": "number" }, { "name": "tag", "type": "string" }] }],
+                      "ticks": [{ "name": "bump", "interval": 1000, "appliesTo": ["idle"], "effects": [["set", "@entity.n", 7]] }],
                       "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }, { "name": "busy" }],
+                        "events": [{ "key": "GO", "name": "GO", "payloadSchema": [{ "name": "v", "type": "number" }, { "name": "who", "type": "string", "required": true }] }],
                         "transitions": [
+                            { "from": "idle", "to": "idle", "event": "BAD", "effects": [["emit", "X", { "n": "not a number", "tag": "t" }]] },
+                            { "from": "idle", "to": "idle", "event": "SHOW", "effects": [["render-ui", "main", { "type": "typography", "content": "hi" }]] },
                             { "from": "idle", "to": "busy", "event": "GO", "guard": [">", "@payload.v", 0], "effects": [
                                 ["set", "@entity.n", ["+", "@payload.v", 1]],
-                                ["emit", "X", { "n": "@entity.n" }]
+                                ["emit", "X", { "n": "@entity.n", "tag": "t" }]
                             ] },
-                            { "from": "idle", "to": "idle", "event": "SAVE", "effects": [["persist", "create", "Cell", { "n": 1 }]] },
+                            { "from": "idle", "to": "idle", "event": "SAVE", "effects": [["persist", "create", "Note", { "text": "hi" }, { "emit": { "success": "SAVED", "failure": "UNSAVED" } }]] },
+                            { "from": "idle", "to": "idle", "event": "LOAD", "effects": [["fetch", "Note", { "emit": { "success": "LOADED", "failure": "UNLOADED" } }]] },
+                            { "from": "idle", "to": "idle", "event": "CALL", "effects": [["os/read-file", "/etc/hosts", { "emit": { "success": "READ", "failure": "UNREAD" } }]] },
+                            { "from": "idle", "to": "idle", "event": "SAVED" },
+                            { "from": "idle", "to": "idle", "event": "UNSAVED" },
+                            { "from": "idle", "to": "idle", "event": "LOADED" },
+                            { "from": "idle", "to": "idle", "event": "UNLOADED" },
+                            { "from": "idle", "to": "idle", "event": "READ" },
+                            { "from": "idle", "to": "idle", "event": "UNREAD" },
                             { "from": ["idle", "busy"], "to": "idle", "event": "PING" }
+                        ] } },
+                    { "name": "Keyed", "linkedEntity": "Cell",
+                      "listens": [{ "event": "X", "triggers": "GOT", "source": { "kind": "trait", "trait": "Src" },
+                                    "guard": [">", "@payload.n", 3],
+                                    "payloadMapping": { "m": ["*", "@payload.n", 10] },
+                                    "key": ["str/concat", "r", "@payload.tag"] }],
+                      "stateMachine": {
+                        "states": [{ "name": "waiting", "isInitial": true }, { "name": "got" }],
+                        "transitions": [
+                            { "from": "waiting", "to": "got", "event": "GOT", "effects": [["set", "@entity.n", "@payload.m"]] }
+                        ] } },
+                    { "name": "Seer", "linkedEntity": "Cell",
+                      "emits": [{ "event": "SAW", "payloadSchema": [{ "name": "page", "type": "string" }, { "name": "route", "type": "string" }] }],
+                      "listens": [{ "event": "$MOUNT", "triggers": "SEEN" }],
+                      "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "SEEN", "effects": [["emit", "SAW", { "page": "@payload.page", "route": "@payload.route" }]] }
                         ] } },
                     { "name": "Sink", "linkedEntity": "Cell",
                       "listens": [{ "event": "X", "triggers": "GOT", "source": { "kind": "trait", "trait": "Src" } }],
@@ -1919,7 +1950,8 @@ mod kernel_step {
                             { "from": "waiting", "to": "got", "event": "GOT" },
                             { "from": ["waiting", "got"], "to": "waiting", "event": "PING" }
                         ] } }
-                ]
+                ],
+                "pages": [{ "name": "HomePage", "path": "/home", "traits": [{ "ref": "Src" }] }]
             }]
         })
     }
@@ -1937,7 +1969,7 @@ mod kernel_step {
         let mut transitions = vec![
             open_transition(),
             json!({ "from": "idle", "to": "idle", "event": "NATIVE_GO", "effects": [
-                ["program/dispatch", "G.Src.GO", { "v": 4 }, { "guest": "@entity.guest", "emit": emit() }]
+                ["program/dispatch", "G.Src.GO", { "v": 4, "who": "a" }, { "guest": "@entity.guest", "emit": emit() }]
             ] }),
             json!({ "from": "idle", "to": "idle", "event": "PING", "effects": [
                 ["program/dispatch", "PING", {}, { "guest": "@entity.guest", "emit": emit() }]
@@ -1979,8 +2011,187 @@ mod kernel_step {
         assert_eq!(got["fired"], true, "{got}");
         assert_eq!((got["from"].as_str(), got["to"].as_str()), (Some("idle"), Some("busy")), "{got}");
         assert_eq!(got["entity"]["n"], 5.0, "{got}");
-        assert_eq!(got["emits"], json!([{ "event": "X", "payload": { "n": 5.0 } }]), "{got}");
+        assert_eq!(got["emits"], json!([{ "event": "X", "payload": { "n": 5.0, "tag": "t" }, "completion": false }]), "{got}");
         assert_eq!((got["refused"].is_null(), &got["asks"]), (true, &json!([])), "control: a step with no ask is not refused: {got}");
+    }
+
+    #[test]
+    fn a_step_answers_the_row_it_started_from_as_before() {
+        let given = json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4 }, "entity": { "n": 9 } });
+        let kernel = stepping(step_grant(), &[given]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["before"]["n"], 9.0, "{got}");
+        assert_eq!(got["entity"]["n"], 5.0, "{got}");
+    }
+
+    #[test]
+    fn a_step_naming_no_entity_reads_the_traits_defaults_not_a_frame_the_guest_holds() {
+        let bare = json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4 } });
+        let kernel = stepping(step_grant(), &[bare.clone(), bare]);
+        run(&kernel, "NATIVE_GO");
+        let first = step(&kernel, 0);
+        let second = step(&kernel, 1);
+        assert!(first["before"]["n"].is_null(), "a native dispatch's write to the guest's frame is not read: {first}");
+        assert_eq!(first["before"], second["before"], "{first} {second}");
+        assert_eq!(first["entity"]["n"], 5.0, "{first}");
+    }
+
+    fn entry(event: &str, payload: serde_json::Value) -> serde_json::Value {
+        json!({ "trait": "Src", "from": "idle", "event": event, "payload": payload, "entry": true })
+    }
+
+    #[test]
+    fn an_entry_whose_payload_breaks_its_declared_event_is_rejected_and_runs_nothing() {
+        let kernel = stepping(step_grant(), &[entry("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["rejected"], "Payload validation failed for event 'GO': who (missing, expected string)", "{got}");
+        assert_eq!((got["fired"].as_bool(), got["delivered"].as_bool(), &got["emits"]), (Some(false), Some(false), &json!([])), "{got}");
+    }
+
+    #[test]
+    fn control_an_entry_whose_payload_fits_runs_and_rejects_nothing() {
+        let kernel = stepping(step_grant(), &[entry("GO", json!({ "v": 4, "who": "a" }))]);
+        let got = step(&kernel, 0);
+        assert!(got["rejected"].is_null(), "{got}");
+        assert_eq!(got["fired"], true, "{got}");
+    }
+
+    #[test]
+    fn control_a_step_that_is_not_an_entry_does_not_check_its_payload() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert!(got["rejected"].is_null(), "a delivery's payload is a view its listener reads through: {got}");
+        assert_eq!(got["fired"], true, "{got}");
+    }
+
+    #[test]
+    fn a_step_whose_emit_breaks_its_emitters_declaration_answers_rejected() {
+        let kernel = stepping(step_grant(), &[request("BAD", json!({}))]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["rejected"], "Src emitted Payload validation failed for event 'X': n (wrong-type, expected number)", "{got}");
+    }
+
+    #[test]
+    fn edge_a_delivery_named_as_an_entry_is_refused() {
+        let as_entry = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": { "n": 5.0, "tag": "a" }, "entry": true });
+        let kernel = stepping(step_grant(), &[as_entry]);
+        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
+        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        assert!(failure.contains("a delivery is not an entry"), "{failure}");
+    }
+
+    fn mount_delivery(route: &str) -> serde_json::Value {
+        json!({ "trait": "Seer", "from": "idle", "delivery": { "at": 0 }, "mount": { "route": route } })
+    }
+
+    #[test]
+    fn a_mount_delivery_steps_with_the_routes_announcement_as_its_payload() {
+        let kernel = stepping(step_grant(), &[mount_delivery("/home")]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["delivered"], true, "{got}");
+        assert_eq!(got["emits"][0]["payload"], json!({ "page": "HomePage", "route": "/home" }), "{got}");
+    }
+
+    #[test]
+    fn edge_a_mount_of_a_route_that_resolves_to_no_page_delivers_nothing() {
+        let kernel = stepping(step_grant(), &[mount_delivery("/nowhere")]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool(), &got["emits"]), (Some(false), Some(false), &json!([])), "{got}");
+    }
+
+    #[test]
+    fn control_a_delivery_without_mount_steps_with_the_payload_it_was_given() {
+        let given = json!({ "trait": "Seer", "from": "idle", "delivery": { "at": 0 }, "payload": { "page": "Given", "route": "/given" } });
+        let kernel = stepping(step_grant(), &[given]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["emits"][0]["payload"], json!({ "page": "Given", "route": "/given" }), "{got}");
+    }
+
+    #[test]
+    fn edge_a_mount_without_a_delivery_is_refused() {
+        let plain = json!({ "trait": "Seer", "from": "idle", "event": "SEEN", "mount": { "route": "/home" } });
+        let kernel = stepping(step_grant(), &[plain]);
+        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
+        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        assert!(failure.contains("it needs `delivery`"), "{failure}");
+    }
+
+    #[test]
+    fn a_keyed_row_stepped_with_no_entity_is_made_with_its_key_as_id() {
+        let fresh = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": { "n": 5.0, "tag": "b" }, "entityId": "rb" });
+        let kernel = stepping(step_grant(), &[fresh]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["before"]["id"], "rb", "a keyed row's frame carries its id, as a native keyed delivery makes it: {got}");
+        assert_eq!(got["entity"]["id"], "rb", "{got}");
+    }
+
+    #[test]
+    fn control_an_unkeyed_step_with_no_entity_names_no_row_id() {
+        let kernel = stepping(step_grant(), &[json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4 } })]);
+        let got = step(&kernel, 0);
+        assert!(got["before"]["id"].is_null(), "{got}");
+    }
+
+    #[test]
+    fn a_keyed_step_that_leaves_its_row_initial_with_default_fields_answers_quiet() {
+        let idle = json!({ "trait": "Keyed", "from": "waiting", "event": "NOTHING", "payload": {}, "entityId": "rq" });
+        let kernel = stepping(step_grant(), &[idle]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["quiet"], true, "EXEC-STEP-1b: the row is quiet, so the caller drops it: {got}");
+    }
+
+    #[test]
+    fn control_a_keyed_step_that_moves_its_row_on_is_not_quiet() {
+        let kernel = stepping(step_grant(), &[keyed_delivery(json!({ "n": 5.0, "tag": "a" }), "ra")]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["quiet"], false, "{got}");
+    }
+
+    #[test]
+    fn edge_an_unkeyed_step_answers_no_quiet() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert!(got.get("quiet").is_none(), "{got}");
+    }
+
+    #[test]
+    fn a_tick_step_runs_the_tick_in_its_state_and_answers_its_row() {
+        let kernel = stepping(step_grant(), &[json!({ "trait": "Src", "from": "idle", "tick": "bump" })]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["fired"], true, "{got}");
+        assert_eq!(got["entity"]["n"], 7.0, "{got}");
+    }
+
+    #[test]
+    fn control_a_tick_step_outside_the_ticks_states_runs_nothing() {
+        let kernel = stepping(step_grant(), &[json!({ "trait": "Src", "from": "busy", "tick": "bump" })]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["fired"], false, "appliesTo: [idle]: {got}");
+    }
+
+    #[test]
+    fn edge_a_tick_named_with_a_delivery_is_refused() {
+        let both = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "tick": "bump", "payload": {} });
+        let kernel = stepping(step_grant(), &[both]);
+        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
+        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        assert!(failure.contains("a tick is not a delivery"), "{failure}");
+    }
+
+    #[test]
+    fn a_step_answers_what_it_painted_as_a_guest_answer_reports_it() {
+        let kernel = stepping(step_grant(), &[request("SHOW", json!({}))]);
+        let got = step(&kernel, 0);
+        let rendered = got["rendered"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rendered.len(), 1, "{got}");
+        assert_eq!((&rendered[0]["slot"], &rendered[0]["trait"], &rendered[0]["content"]["content"]), (&json!("main"), &json!("Src"), &json!("hi")), "{got}");
+    }
+
+    #[test]
+    fn control_a_step_that_paints_nothing_answers_no_paints() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["rendered"], json!([]), "{got}");
     }
 
     #[test]
@@ -2017,12 +2228,98 @@ mod kernel_step {
         assert_eq!(got["emits"], json!([]), "{got}");
     }
 
+    fn delivery(payload: serde_json::Value) -> serde_json::Value {
+        json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": payload, "entity": {} })
+    }
+
+    fn keyed_delivery(payload: serde_json::Value, row: &str) -> serde_json::Value {
+        json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": payload, "entity": {}, "entityId": row })
+    }
+
     #[test]
-    fn a_transition_whose_arms_ask_for_io_is_refused_before_it_runs() {
-        let kernel = stepping(step_grant(), &[request("SAVE", json!({}))]);
+    fn a_keyed_delivery_naming_no_row_answers_the_key_and_runs_nothing() {
+        let kernel = stepping(step_grant(), &[delivery(json!({ "n": 5, "tag": "a" }))]);
         let got = step(&kernel, 0);
-        assert_eq!((got["refused"].as_str(), &got["asks"]), (Some("io"), &json!(["persist"])), "{got}");
-        assert_eq!((got["fired"].as_bool(), got["to"].as_str()), (Some(false), Some("idle")), "nothing ran: {got}");
+        assert_eq!((got["keyRequired"].as_bool(), got["key"].as_str(), got["fired"].as_bool()), (Some(true), Some("ra"), Some(false)), "{got}");
+        assert_eq!(got["delivered"], false, "{got}");
+    }
+
+    #[test]
+    fn edge_a_keyed_delivery_naming_another_row_than_its_key_is_refused() {
+        let kernel = stepping(step_grant(), &[keyed_delivery(json!({ "n": 5, "tag": "a" }), "rb")]);
+        let failure = refusal(&kernel, "STEP_0");
+        assert!(failure.contains("ra") && failure.contains("rb"), "{failure}");
+    }
+
+    #[test]
+    fn a_delivery_runs_the_listens_guard_key_and_mapping_then_fires_its_trigger() {
+        let kernel = stepping(step_grant(), &[keyed_delivery(json!({ "n": 5, "tag": "a" }), "ra")]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool()), (Some(true), Some(true)), "{got}");
+        assert_eq!(got["key"], "ra", "the per key names the row: {got}");
+        assert_eq!(got["entity"]["n"], 50.0, "the with mapping fed the trigger: {got}");
+        assert_eq!(got["to"], "got", "{got}");
+    }
+
+    #[test]
+    fn control_a_delivery_whose_when_guard_fails_is_not_delivered_and_runs_nothing() {
+        let kernel = stepping(step_grant(), &[delivery(json!({ "n": 2, "tag": "a" }))]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool()), (Some(false), Some(false)), "{got}");
+        assert_eq!(got["to"], "waiting", "{got}");
+    }
+
+    #[test]
+    fn edge_a_delivery_whose_per_key_is_not_a_string_is_refused_with_the_reason() {
+        let kernel = stepping(step_grant(), &[delivery(json!({ "n": 5, "tag": ["x"] }))]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool()), (Some(false), Some(false)), "{got}");
+        assert!(got["keyRefused"].as_str().is_some_and(|reason| reason.contains("per")), "{got}");
+    }
+
+    #[test]
+    fn a_refused_key_whose_emitter_hears_no_delivery_rejected_refuses_the_dispatch_as_native_does() {
+        let refused = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": { "n": 5, "tag": ["x"] }, "emitter": "Src" });
+        let kernel = stepping(step_grant(), &[refused]);
+        let got = step(&kernel, 0);
+        let text = got["rejected"].as_str().unwrap_or_default();
+        assert!(text.starts_with("delivery of 'GOT' to Keyed refused (key-invalid, envelope ") && text.ends_with("no trait listens for DELIVERY_REJECTED"), "{got}");
+        assert_eq!(got["delivered"], false, "{got}");
+    }
+
+    #[test]
+    fn edge_an_emitter_on_a_step_that_is_not_a_delivery_is_refused() {
+        let plain = json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4 }, "emitter": "Src" });
+        let kernel = stepping(step_grant(), &[plain]);
+        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
+        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        assert!(failure.contains("it needs `delivery`"), "{failure}");
+    }
+
+    #[test]
+    fn control_a_plain_step_reports_no_delivery() {
+        let kernel = stepping(step_grant(), &[request("GO", json!({ "v": 4 }))]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["delivered"].as_bool(), got["key"].is_null()), (Some(true), true), "{got}");
+    }
+
+    #[test]
+    fn a_persist_runs_in_the_guests_own_rows_and_its_success_emit_is_answered() {
+        let kernel = stepping(step_grant(), &[request("SAVE", json!({})), request("LOAD", json!({}))]);
+        let saved = step(&kernel, 0);
+        assert_eq!((saved["fired"].as_bool(), saved["refused"].is_null()), (Some(true), true), "{saved}");
+        assert!(saved["emits"].as_array().unwrap().iter().any(|e| e["event"] == "SAVED" && e["completion"] == true), "a completion is marked, so the .lolo kernel never collapses it (EXEC-QUEUE-4): {saved}");
+        let loaded = step(&kernel, 1);
+        let rows = loaded["emits"].as_array().unwrap().iter().find(|e| e["event"] == "LOADED").cloned().unwrap_or_default();
+        assert!(rows.to_string().contains("\"hi\""), "the fetch reads the row the persist wrote: {loaded}");
+    }
+
+    #[test]
+    fn control_an_os_ask_on_a_guest_with_no_host_fails_in_place_as_a_native_dispatch_into_it_does() {
+        let kernel = stepping(step_grant(), &[request("CALL", json!({}))]);
+        let got = step(&kernel, 0);
+        assert_eq!((got["fired"].as_bool(), got["refused"].is_null()), (Some(true), true), "{got}");
+        assert!(got["emits"].as_array().unwrap().iter().any(|e| e["event"] == "UNREAD"), "the failure route fired: {got}");
     }
 
     #[test]
@@ -2038,5 +2335,238 @@ mod kernel_step {
         let kernel = stepping(step_grant(), &[]);
         let failure = refusal(&kernel, "STRAY");
         assert!(failure.contains("no-such-guest"), "{failure}");
+    }
+}
+
+// program/tick { guest } (owner ruling 2026-11-20): one tick pass of a guest with no host of its own, on the asking
+// step's clock, answered once.
+mod guest_tick {
+    use super::*;
+
+    fn ticking_guest() -> serde_json::Value {
+        json!({
+            "name": "Ticking",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
+                "traits": [{ "name": "Ticker", "linkedEntity": "Cell",
+                    "ticks": [{ "name": "bump", "interval": 0, "background": true, "effects": [["set", "@entity.n", ["+", "@entity.n", 1]]] }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] } }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Ticker" }] }]
+            }]
+        })
+    }
+
+    fn ticking(tick_options: serde_json::Value) -> RuntimeKernel {
+        let kernel = opener(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "TICK", "effects": [["program/tick", tick_options]] },
+        ]));
+        let program: Value = from_json_value(&json!({ "program": ticking_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
+        kernel
+    }
+
+    fn ran(kernel: &RuntimeKernel) -> serde_json::Value {
+        run(kernel, "TICK")["got"]["ran"].clone()
+    }
+
+    #[test]
+    fn a_tick_pass_of_a_guest_with_no_host_runs_its_due_ticks_and_answers_them() {
+        let kernel = ticking(json!({ "guest": "@entity.guest", "emit": emit() }));
+        let passes = [ran(&kernel), ran(&kernel)];
+        assert!(
+            passes.iter().any(|ran| ran == &json!([{ "trait": "Ticker", "tick": "bump" }])),
+            "a pass runs the guest's due tick: {passes:?}"
+        );
+        assert!(entity(&kernel)["refused"].is_null(), "{}", entity(&kernel));
+    }
+
+    #[test]
+    fn edge_a_tick_pass_of_a_guest_that_is_not_open_is_refused_by_name() {
+        let kernel = ticking(json!({ "guest": "no-such-guest", "emit": emit() }));
+        let refused = run(&kernel, "TICK")["refused"].to_string();
+        assert!(refused.contains("no-such-guest"), "{refused}");
+    }
+}
+
+// kernel/step on a hosted guest (owner ruling 2026-11-20): the guest's host runs the one step, its I/O answered as the
+// host answers a dispatch's, and kernel/step answers what that step did.
+mod hosted_step {
+    use super::*;
+    use orbital_core_runtime::kernel::guest_hosting::{GuestHost, GuestHosting, GuestIntegrations};
+    use orbital_core_runtime::resumable::{DispatchOutcomes, IoAnswer, IoReply, IoRequest, Progress};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct ReadingHost {
+        kernel: Arc<RuntimeKernel>,
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl GuestHost for ReadingHost {
+        fn kernel(&self) -> Arc<RuntimeKernel> {
+            Arc::clone(&self.kernel)
+        }
+        fn environment_of(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn credential_of(&self, _: &str) -> Option<String> {
+            None
+        }
+        fn deferred_denials(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+        fn register(&self, schema: OrbitalSchema) -> Result<(), String> {
+            self.kernel.register_schema(schema).map_err(|e| e.to_string())
+        }
+        fn mount(&self, _: Option<&str>, _: &[orbital_core_runtime::effects::response::MountSeed], _: Value) -> Result<DispatchOutcomes, String> {
+            Ok(Default::default())
+        }
+        fn dispatch(&self, _: &str, _: &str, _: Value) -> Result<DispatchOutcomes, String> {
+            Ok(Default::default())
+        }
+        fn request(&self, _: &Value, _: &orbital_core_base::value::ValueMap) -> Result<Value, orbital_core_runtime::effects::executor::SubstrateFailure> {
+            Ok(Value::Null)
+        }
+        fn tick_pass(&self) -> Result<DispatchOutcomes, String> {
+            Ok(Default::default())
+        }
+        fn step(&self, trait_name: &str, row: Option<&str>, event: &str, payload: Value, tick: Option<&str>, _leg: Option<&str>) -> Result<DispatchOutcomes, String> {
+            let mut progress = self.kernel.start_isolated_step(trait_name, row, event, payload, tick).map_err(|e| format!("{e:?}"))?;
+            loop {
+                match progress {
+                    Progress::Done(outcomes) => return Ok(outcomes),
+                    Progress::Await { continuation, requests } => {
+                        let replies = requests
+                            .iter()
+                            .map(|pending| IoReply {
+                                id: pending.id,
+                                answer: match &pending.request {
+                                    IoRequest::Os { .. } => {
+                                        self.reads.fetch_add(1, Ordering::SeqCst);
+                                        IoAnswer::Os(Ok(Value::object(orbital_core_base::value::ValueMap::from_iter([("data".into(), Value::bytes(b"hello".to_vec()))])).into()))
+                                    }
+                                    IoRequest::ReadRow { .. } => IoAnswer::Row(Ok(Value::Null)),
+                                    other => panic!("the guest asks for {other:?}"),
+                                },
+                            })
+                            .collect();
+                        progress = self.kernel.resume(continuation, replies).map_err(|e| format!("{e:?}"))?;
+                    }
+                }
+            }
+        }
+    }
+
+    struct ReadingHosting(Arc<ReadingHost>);
+
+    impl GuestHosting for ReadingHosting {
+        fn open(&self, _: GuestIntegrations, _: Option<&str>, _: &[(String, Option<String>)], _: bool) -> Arc<dyn GuestHost> {
+            Arc::clone(&self.0) as Arc<dyn GuestHost>
+        }
+    }
+
+    fn reading_guest() -> serde_json::Value {
+        json!({
+            "name": "Reading",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Reader", "linkedEntity": "Cell",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "READ", "effects": [["os/read-file", { "anchor": "cwd", "path": "x.txt" }, { "emit": { "success": "GOT", "failure": "MISS" } }]] },
+                            { "from": "idle", "to": "idle", "event": "GOT" },
+                            { "from": "idle", "to": "idle", "event": "MISS" }
+                        ] } }],
+                "osGrants": { "anchored": { "fs": [{ "anchor": "cwd", "glob": "x.txt", "modes": ["read"] }] } }
+            }]
+        })
+    }
+
+    fn stepped(hosted: bool) -> (RuntimeKernel, Arc<AtomicUsize>) {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let kernel = opener_granted(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", if hosted { json!({ "split": true }) } else { json!({}) }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] },
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [
+                ["set", "@entity.got", ["kernel/step", "@entity.guest", { "trait": "Reader", "from": "idle", "event": "READ", "payload": {} }]]
+            ] }
+        ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
+        if hosted {
+            let guest_kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default()));
+            kernel.set_guest_hosting(Arc::new(ReadingHosting(Arc::new(ReadingHost { kernel: guest_kernel, reads: Arc::clone(&reads) }))));
+        }
+        let program: Value = from_json_value(&json!({ "program": reading_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
+        (kernel, reads)
+    }
+
+    #[test]
+    fn a_hosted_guests_step_runs_on_its_host_with_its_io_answered_there() {
+        let (kernel, reads) = stepped(true);
+        let got = run(&kernel, "STEP")["got"].clone();
+        assert_eq!(reads.load(Ordering::SeqCst), 1, "the host answered the step's read once: {got}");
+        let emits = got["emits"].as_array().cloned().unwrap_or_default();
+        assert!(emits.iter().any(|e| e["event"] == "GOT" && e["completion"] == true), "the read's success route fired: {got}");
+        assert!(got["refused"].is_null(), "{got}");
+    }
+
+    #[test]
+    fn control_a_contained_guests_read_fails_in_place_and_no_host_is_asked() {
+        let (kernel, reads) = stepped(false);
+        let got = run(&kernel, "STEP")["got"].clone();
+        assert_eq!(reads.load(Ordering::SeqCst), 0, "{got}");
+        let emits = got["emits"].as_array().cloned().unwrap_or_default();
+        assert!(emits.iter().any(|e| e["event"] == "MISS"), "{got}");
+    }
+}
+
+// program/open { mount: false } (P-044, the launchpad's .lolo kernel): the guest opens without running its mount, and the
+// answer names the seeds it would have run, for a kernel that runs them itself.
+mod unmounted_open {
+    use super::*;
+
+    fn opened(options: serde_json::Value) -> serde_json::Value {
+        let kernel = opener(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] }
+        ]));
+        run(&kernel, "GO")["got"].clone()
+    }
+
+    #[test]
+    fn an_open_with_mount_false_runs_no_step_and_answers_its_seeds() {
+        let got = opened(json!({ "mount": false }));
+        assert_eq!(got["outcomes"], json!([]), "no seed ran: {got}");
+        assert_eq!(got["seeds"], json!([{ "trait": "DiaryList", "event": "INIT" }]), "{got}");
+        assert_eq!(got["route"], "/diary", "{got}");
+    }
+
+    #[test]
+    fn control_an_open_mounts_and_names_no_seeds() {
+        let got = opened(json!({}));
+        assert!(got["outcomes"].as_array().is_some_and(|o| !o.is_empty()), "the mount ran: {got}");
+        assert!(got.get("seeds").is_none(), "{got}");
+    }
+
+    #[test]
+    fn edge_a_mount_that_is_not_a_boolean_is_refused() {
+        let kernel = opener(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", { "mount": "no" }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] }
+        ]));
+        let refused = run(&kernel, "GO")["refused"].to_string();
+        assert!(refused.contains("`mount` is true or false"), "{refused}");
     }
 }

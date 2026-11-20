@@ -80,6 +80,34 @@ pub trait GuestHost: Send + Sync {
             "program/dispatch: this guest's host delivers no inbound hook",
         ))
     }
+    /// One step of `trait_name` on `row` and no cascade (`event` with `payload`, or the tick `tick`), run by this host
+    /// with its I/O answered as this host answers a dispatch's, under the guest's grants: what `kernel/step` hands a
+    /// hosted guest's step to (EXEC-METAL-7). A host that runs no single step refuses.
+    ///
+    /// With `leg` (a leg `begin_leg` opened), the step runs in that leg's session and commits: its outcome joins the
+    /// leg's, for `finish_leg` to answer.
+    fn step(&self, trait_name: &str, row: Option<&str>, event: &str, payload: Value, tick: Option<&str>, leg: Option<&str>) -> Result<DispatchOutcomes, String> {
+        let _ = (trait_name, row, event, payload, tick, leg);
+        Err("this guest's host runs no single step".to_string())
+    }
+    /// A split guest's server leg up to its dispatch, for a `.lolo` kernel to run the dispatch (`program/dispatch
+    /// { lolo: "begin" }`): answered `{ answered }` when the request is answered before any dispatch, else
+    /// `{ leg, run, states }`, the leg left open in its session.
+    fn begin_leg(&self, payload: &Value, options: &orbital_core_base::value::ValueMap) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+        let _ = (payload, options);
+        Err(crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Unsupported, "program/dispatch: this guest's host opens no .lolo leg"))
+    }
+    /// Run `run` in the open leg's session, origin and locale.
+    fn in_leg(&self, leg: &str, run: Box<dyn FnOnce() -> Result<Value, String> + '_>) -> Result<Value, String> {
+        let _ = (leg, run);
+        Err("this guest's host opens no .lolo leg".to_string())
+    }
+    /// The open leg's answer from the outcomes its steps made, as the host answers a leg it ran itself
+    /// (`program/dispatch { lolo: "finish", leg }`); the leg closes.
+    fn finish_leg(&self, leg: &str) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+        let _ = leg;
+        Err(crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Unsupported, "program/dispatch: this guest's host opens no .lolo leg"))
+    }
     /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
     /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
     fn tick_pass(&self) -> Result<DispatchOutcomes, String>;

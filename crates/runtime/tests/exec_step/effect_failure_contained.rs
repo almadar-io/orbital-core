@@ -327,3 +327,51 @@ fn control_a_null_into_a_nullable_field_and_a_value_into_a_non_nullable_one_run(
         assert_eq!(painted(&response, "Broken").len(), 1, "{effects:?}");
     }
 }
+
+// G-ORBITAL-CORE-224: a failed emit reaches no listener either; the cascade never delivers its unevaluated payload.
+fn heard_schema(payload: Json) -> OrbitalSchema {
+    from_json_value(&json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "PageOrbital",
+            "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Broken", "linkedEntity": "Item",
+                  "emits": [{ "event": "SAID", "payloadSchema": [{ "name": "key", "type": "string" }] }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "ready" }],
+                    "transitions": [{ "from": "idle", "to": "ready", "event": "GO", "effects": [["emit", "SAID", payload]] }] } },
+                { "name": "Header", "linkedEntity": "Item",
+                  "listens": [{ "event": "SAID", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Broken" }, "key": "@payload.key" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "heard" }],
+                    "transitions": [{ "from": "idle", "to": "heard", "event": "HEARD" }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn go(schema: OrbitalSchema) -> EventResponse {
+    let server = EmbeddedServer::new(schema).unwrap();
+    let request = EventRequest { event: "GO".to_string(), target_trait: Some("Broken".to_string()), ..Default::default() };
+    match server.start("PageOrbital", request).unwrap() {
+        ServerProgress::Done(response) => response,
+        _ => panic!("GO asks nothing"),
+    }
+}
+
+#[test]
+fn a_listener_never_hears_an_emit_whose_payload_failed_to_evaluate() {
+    let response = go(heard_schema(json!({ "key": ["as", "@entity.id", "CallKey"] })));
+    let refusal = serde_json::to_string(&response).unwrap();
+    assert!(!refusal.contains("key-invalid"), "the failed emit's unevaluated payload reached the keyed listener: {refusal}");
+    assert_eq!(response.states.get("Header").map(String::as_str), Some("idle"), "{:?}", response.states);
+    assert!(effect_failed(&response).is_some(), "the emit is the step's failure: {refusal}");
+}
+
+#[test]
+fn control_a_listener_hears_an_emit_whose_payload_evaluates() {
+    let response = go(heard_schema(json!({ "key": "k1" })));
+    assert_eq!(response.states.get("Header").map(String::as_str), Some("heard"), "{:?}", response.states);
+}

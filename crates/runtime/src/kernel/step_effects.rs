@@ -479,6 +479,11 @@ impl RuntimeKernel {
             {
                 self.exec_agent_port(&effect, emit, ctx, effect_results)
             }
+            Effect::Custom { name, args, emit, .. }
+                if name == "program/tick" && super::guests::guest_option(name, args).is_some() =>
+            {
+                self.exec_agent_port(&effect, emit, ctx, effect_results)
+            }
             Effect::Custom {
                 emit: Some(op_emit),
                 ..

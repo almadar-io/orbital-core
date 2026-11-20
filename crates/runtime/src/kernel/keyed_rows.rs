@@ -100,27 +100,34 @@ impl RuntimeKernel {
         reason: &str,
         out: &mut Vec<CascadeItem>,
     ) -> Result<(), KernelError> {
-        let refused = self.key_refusal(&item.trait_name, &item.event);
+        self.refuse_key_of(&item.trait_name, &item.event, &key.emitter, reason, out).map(|_| ())
+    }
+
+    /// [`Self::refuse_key`] by name: the `DELIVERY_REJECTED` payload queued for `emitter`'s listeners, or the refusal
+    /// when it declares none.
+    pub(super) fn refuse_key_of(
+        &self,
+        trait_name: &str,
+        event: &str,
+        emitter: &str,
+        reason: &str,
+        out: &mut Vec<CascadeItem>,
+    ) -> Result<Value, KernelError> {
+        let refused = self.key_refusal(trait_name, event);
         let before = out.len();
-        let source = self.emit_source(&key.emitter);
-        self.collect_listener_targets(
-            &source,
-            &key.emitter,
-            DELIVERY_REJECTED,
-            &refused.payload(),
-            &[],
-            out,
-        );
+        let source = self.emit_source(emitter);
+        let payload = refused.payload();
+        self.collect_listener_targets(&source, emitter, DELIVERY_REJECTED, &payload, &[], out);
         if out.len() == before {
             return Err(KernelError::PayloadInvalid(format!(
                 "delivery of '{}' to {} refused ({}, envelope {}): {reason}; no trait listens for {DELIVERY_REJECTED}",
                 refused.event,
-                item.trait_name,
+                trait_name,
                 refused.reason.as_str(),
                 refused.id,
             )));
         }
-        Ok(())
+        Ok(payload)
     }
 
     fn non_default_fields(entity: &SharedEntity) -> BTreeMap<String, Value> {
@@ -146,38 +153,26 @@ impl RuntimeKernel {
         else {
             return false;
         };
-        let initial =
-            orbital_core_eval::state_machine::core::StateMachineCore::get_trait_initial_state(&def);
-        if initial != Some(self.current_state_name(trait_name, Some(row)).as_str()) {
-            return false;
-        }
-        if self
-            .mount
-            .read()
-            .held
-            .get(trait_name)
-            .is_some_and(|held| held.iter().any(|i| i.row.as_deref() == Some(row)))
-        {
-            return false;
-        }
-        if self
-            .deferred_asks
-            .read()
-            .get(&(trait_name.to_string(), self.session_eid(row)))
-            .is_some_and(|asks| !asks.is_empty())
-        {
-            return false;
-        }
         let entity_type = self.entity_type_of(trait_name);
-        let defaults = self
-            .registry
-            .entity_defaults
-            .read()
-            .get(&entity_type)
-            .cloned()
-            .unwrap_or_default();
-        Self::non_default_fields(&self.read_trait_entity(trait_name, &entity_type, row))
-            == Self::non_default_fields(&defaults)
+        let entity = self.read_trait_entity(trait_name, &entity_type, row);
+        self.row_quiet(&def, &entity_type, row, &self.current_state_name(trait_name, Some(row)), &entity)
+    }
+
+    /// Whether keyed `row` in `state` holding `entity` is quiet (EXEC-STEP-1b): its trait in its initial state, nothing
+    /// held or deferred for it, and its fields the declared defaults.
+    pub(super) fn row_quiet(&self, def: &TraitDefinition, entity_type: &str, row: &str, state: &str, entity: &SharedEntity) -> bool {
+        let initial = orbital_core_eval::state_machine::core::StateMachineCore::get_trait_initial_state(def);
+        if initial != Some(state) {
+            return false;
+        }
+        if self.mount.read().held.get(&def.name).is_some_and(|held| held.iter().any(|i| i.row.as_deref() == Some(row))) {
+            return false;
+        }
+        if self.deferred_asks.read().get(&(def.name.clone(), self.session_eid(row))).is_some_and(|asks| !asks.is_empty()) {
+            return false;
+        }
+        let defaults = self.registry.entity_defaults.read().get(entity_type).cloned().unwrap_or_default();
+        Self::non_default_fields(entity) == Self::non_default_fields(&defaults)
     }
 
     /// The envelope `trait_name` stamps on the emits of its step on `row`: the trait's own, plus the row when it is keyed.

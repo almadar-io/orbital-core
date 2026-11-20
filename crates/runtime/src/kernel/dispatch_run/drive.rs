@@ -494,6 +494,7 @@ impl RuntimeKernel {
         ));
         driver.seeds = Some(Default::default());
         driver.run.program = true;
+        self.store_ask_frames.write().insert(ask.key.clone());
         Ok(driver)
     }
 
@@ -525,6 +526,7 @@ impl RuntimeKernel {
     /// The answer the driver's keyed reply gives `ask`: a driver that sent none, or a malformed one, failed it.
     pub(crate) fn store_reply(&self, ask: &StoreAsk, outcomes: &DispatchOutcomes) -> IoAnswer {
         use crate::store_driver::*;
+        self.store_ask_frames.write().remove(&ask.key);
         if ask.ensure.is_some() {
             return Self::ensure_reply(ask, outcomes);
         }

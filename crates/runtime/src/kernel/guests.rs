@@ -34,7 +34,7 @@ use std::sync::Arc;
 pub(super) fn guest_option<'a>(op: &str, args: &'a [Value]) -> Option<&'a Value> {
     let options = match op {
         "program/dispatch" => args.get(2),
-        "program/inputs" | "program/self" => args.first(),
+        "program/inputs" | "program/self" | "program/tick" => args.first(),
         _ => None,
     };
     match options {
@@ -63,6 +63,8 @@ pub struct GuestSession {
     route: Arc<RwLock<GuestRoute>>,
     /// When a viewer's stream last ticked the guest ([`guest_ticks_now_ms`]); its host ticks it while none has lately.
     viewer_ticked_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// The tick clock of a guest with no host of its own: `program/tick { guest }` passes it on the asking step's clock.
+    ticks: Arc<orbital_core_base::sync::Mutex<crate::tick_clock::TickClock>>,
 }
 
 /// How often a hosted split guest's host ticks it while no viewer streams it (G-CROSS-708, EXEC-CONC-7).
@@ -594,6 +596,19 @@ fn serve_leg(
             "program/dispatch: a wire leg's options are a record",
         ));
     };
+    match options.get("lolo").and_then(Value::as_str) {
+        Some("begin") => {
+            let mut options = options.clone();
+            options.remove("lolo");
+            return host.begin_leg(payload, &options).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
+        }
+        Some("finish") => {
+            let leg = options.get("leg").and_then(Value::as_str).ok_or_else(|| failure("program/dispatch: { lolo: \"finish\" } names the leg begin opened"))?;
+            return host.finish_leg(leg).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
+        }
+        Some(other) => return Err(failure(format!("program/dispatch: lolo is \"begin\" or \"finish\", not \"{other}\""))),
+        None => {}
+    }
     host.request(payload, options)
         .map_err(|refused| AgentPortFailure {
             error: refused.message,
@@ -607,7 +622,7 @@ fn json_value(json: serde_json::Value) -> Value {
 
 /// The orbital declaring each trait that painted in `outcomes`: a paint names its orbital, so a host scopes the paint's
 /// controls to the trait that drew them, as it scopes its own.
-fn painter_orbitals(
+pub(super) fn painter_orbitals(
     kernel: &RuntimeKernel,
     outcomes: &[(String, ProcessEventResult)],
 ) -> std::collections::HashMap<String, String> {
@@ -625,21 +640,13 @@ fn painter_orbitals(
 
 /// What a guest's run answers: each trait's state, what it painted (with its trait's orbital), what it emitted and every
 /// trait it moved.
-fn guest_answer(
-    kernel: &RuntimeKernel,
+/// The paints (`{ slot, trait, orbital, embedded, content }`) and navigations (`{ trait, path }`) a response's client
+/// effects carry, as a guest answer reports them.
+pub(super) fn paints_of(
+    response: &EventResponse,
     orbitals: &std::collections::HashMap<String, String>,
-    guest: Option<&str>,
-    page: Option<(&[String], Option<&str>)>,
     embedded: &std::collections::HashSet<String>,
-    outcomes: &[(String, ProcessEventResult)],
-    seed_trait: &str,
-    event: &str,
-    access: Option<&super::page_circuit::PageAccessVerdict>,
-    rerenders: &[super::Rerender],
-) -> Value {
-    let mut response = EventResponse::from_process_results(outcomes, seed_trait, event);
-    kernel.stamp_emitted_sources(&mut response);
-    response.fold_rerenders(rerenders);
+) -> (Vec<Value>, Vec<Value>) {
     let record = |pairs: Vec<(&str, Value)>| {
         let mut fields = ValueMap::default();
         for (key, value) in pairs {
@@ -682,6 +689,32 @@ fn guest_answer(
             _ => None,
         })
         .collect();
+    (rendered, navigations)
+}
+
+fn guest_answer(
+    kernel: &RuntimeKernel,
+    orbitals: &std::collections::HashMap<String, String>,
+    guest: Option<&str>,
+    page: Option<(&[String], Option<&str>)>,
+    embedded: &std::collections::HashSet<String>,
+    outcomes: &[(String, ProcessEventResult)],
+    seed_trait: &str,
+    event: &str,
+    access: Option<&super::page_circuit::PageAccessVerdict>,
+    rerenders: &[super::Rerender],
+) -> Value {
+    let mut response = EventResponse::from_process_results(outcomes, seed_trait, event);
+    kernel.stamp_emitted_sources(&mut response);
+    response.fold_rerenders(rerenders);
+    let record = |pairs: Vec<(&str, Value)>| {
+        let mut fields = ValueMap::default();
+        for (key, value) in pairs {
+            fields.insert(key.into(), value);
+        }
+        Value::object(fields)
+    };
+    let (rendered, navigations) = paints_of(&response, orbitals, embedded);
     let host_asks: Vec<Value> = response
         .client_effects_by_trait
         .iter()
@@ -1002,6 +1035,16 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let mount = match options.as_ref().and_then(|o| o.get("mount")) {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(mount)) => *mount,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `mount` is true or false",
+                ))
+            }
+        };
         let seed_writer = match options.as_ref().and_then(|o| o.get("seed")) {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if !name.as_str().is_empty() => Some(name.to_string()),
@@ -1317,13 +1360,11 @@ impl RuntimeKernel {
                     }
                 }
             }
-            let outcomes = mount_seeds(
-                &guest,
-                host.as_deref(),
-                resolved.as_deref(),
-                &seeds,
-                "program/open",
-            )?;
+            let outcomes = if mount {
+                mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?
+            } else {
+                Vec::new()
+            };
             if !split {
                 view_page(&guest, &page, &embedded);
             }
@@ -1345,6 +1386,7 @@ impl RuntimeKernel {
                     mounted,
                 })),
                 viewer_ticked_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                ticks: Arc::new(orbital_core_base::sync::Mutex::new(crate::tick_clock::TickClock::from_programs(&opened_kernel.registered_programs()))),
             };
             let ticker = match (&session.host, split) {
                 (Some(host), true) => Some((Arc::clone(host), Arc::clone(&session.viewer_ticked_ms))),
@@ -1369,6 +1411,19 @@ impl RuntimeKernel {
             );
             if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
                 fields.insert("client".into(), client);
+            }
+            if let (false, Value::Object(fields)) = (mount, &mut answer) {
+                let unmounted = seeds
+                    .iter()
+                    .map(|seed| {
+                        Value::object(ValueMap::from_iter([
+                            ("trait".to_string().into(), Value::string(seed.r#trait.clone())),
+                            ("event".to_string().into(), Value::string(seed.event.as_str())),
+                        ]))
+                    })
+                    .collect::<Vec<_>>();
+                fields.insert("seeds".into(), Value::array(unmounted));
+                fields.insert("route".into(), resolved.clone().map_or(Value::Null, Value::string));
             }
             if let Some(settle) = settler {
                 settle();
@@ -1852,6 +1907,50 @@ impl RuntimeKernel {
         ))
     }
 
+    /// `program/tick { guest }`: one tick pass of a guest with no host of its own, on the asking step's clock: each tick
+    /// its clock finds due and its kernel runs ([`RuntimeKernel::tick_runs`]) runs over its rows as a host's tick does,
+    /// its asks failing in place. The first pass only starts the clock, as a host's does. A hosted guest's ticks are
+    /// its host's (`program/live { kind: "guest" }`), so it is refused.
+    pub(super) fn tick_guest(&self, handle: &Value) -> Result<Value, AgentPortFailure> {
+        let session = self.guest(handle, "program/tick")?;
+        if session.host.is_some() {
+            return Err(failure(
+                "program/tick: a hosted guest is ticked by its host (program/live { kind: \"guest\" }); { guest } ticks a guest with no host of its own",
+            ));
+        }
+        let now_ms = (*self.step.dispatch_now.read()).unwrap_or_else(|| self.clock_now()).max(0.0) as u64;
+        let due = session.ticks.lock().due(now_ms, crate::tick_clock::Calendar::local_now);
+        let guest = &session.kernel;
+        let mut ran = Vec::new();
+        let mut outcomes: Vec<(String, ProcessEventResult)> = Vec::new();
+        for (trait_name, tick) in due {
+            if !guest.tick_runs(&trait_name, &tick) {
+                continue;
+            }
+            match guest.start_dispatch_tick(&trait_name, None, &tick) {
+                Ok(super::resumable::Progress::Done(done)) => outcomes.extend(done),
+                Ok(super::resumable::Progress::Await { .. }) => {
+                    return Err(failure(format!(
+                        "program/tick: tick {tick} of {trait_name} asked a host, and this guest has none"
+                    )))
+                }
+                Err(error) => return Err(failure(format!("program/tick: tick {tick} of {trait_name}: {error}"))),
+            }
+            ran.push(Value::object(ValueMap::from_iter([
+                ("trait".to_string().into(), Value::string(trait_name)),
+                ("tick".to_string().into(), Value::string(tick)),
+            ])));
+        }
+        let embedded = session.route.read().embedded.clone();
+        let orbitals = painter_orbitals(guest, &outcomes);
+        let seed_trait = outcomes.first().map(|(t, _)| t.clone()).unwrap_or_default();
+        let mut answer = guest_answer(guest, &orbitals, None, None, &embedded, &outcomes, &seed_trait, "", None, &[]);
+        if let Value::Object(fields) = &mut answer {
+            fields.insert("ran".into(), Value::array(ran));
+        }
+        Ok(answer)
+    }
+
     /// The registered traits whose current state handles `event`, in name order.
     fn traits_handling(&self, event: &str) -> Vec<String> {
         let definitions: Vec<(
@@ -2147,6 +2246,13 @@ fn masked_entry(name: &str, value: Option<String>) -> Value {
     ])
 }
 
+impl GuestSession {
+    /// The traits the guest's page embeds, as its answers report them (`embedded` on each paint).
+    pub(super) fn embedded_traits(&self) -> std::collections::HashSet<String> {
+        self.route.read().embedded.clone()
+    }
+}
+
 #[cfg(test)]
 impl GuestSession {
     /// A session over `kernel` and its rows `source`, answered under `grants`, with no arenas handed over.
@@ -2178,6 +2284,7 @@ impl GuestSession {
                 read: orbital_core_base::sync::Mutex::new(Default::default()),
             }),
             viewer_ticked_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            ticks: Arc::new(orbital_core_base::sync::Mutex::new(crate::tick_clock::TickClock::from_programs(&[]))),
         }
     }
 }

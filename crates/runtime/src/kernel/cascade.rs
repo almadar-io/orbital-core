@@ -37,6 +37,9 @@ impl RuntimeKernel {
             .iter()
             .enumerate()
         {
+            if er.is_failed() {
+                continue;
+            }
             if let Effect::Emit {
                 event: emitted,
                 payload: ep,

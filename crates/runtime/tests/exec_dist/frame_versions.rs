@@ -511,3 +511,59 @@ fn a_host_endpoint_orbitals_write_never_enters_the_clients_view_record() {
     assert!(!frames.contains_key("Binder"), "the host's frame is not the client's: {frames:?}");
     assert_eq!(held(&frames)["Writer"]["v"], json!("two"), "control: the client's own frame is in the snapshot");
 }
+
+fn set_fields(fields: serde_json::Value) -> FrameOp {
+    FrameOp::Set {
+        frames: vec![("Writer".into(), from_json_value(&fields).unwrap())],
+    }
+}
+
+/// EXEC-DIST-7: a page trait's frame is the one its own steps read, whatever `id` the row in it names; filed under that
+/// id, the browser's next step reads defaults and carries them back over what the host wrote.
+#[test]
+fn a_frame_whose_row_names_an_id_is_the_frame_the_traits_own_step_reads() {
+    let k = client();
+    k.apply_server_response(
+        &answer(versioned(0, 1, vec![set_fields(json!({ "id": "d1", "v": "one" }))])),
+        &HashSet::new(),
+    )
+    .unwrap();
+    assert_eq!(frame_of(&k)["v"], json!("one"));
+    assert_eq!(frame_of(&k)["id"], json!("d1"));
+}
+
+#[test]
+fn edge_a_frame_whose_row_has_an_empty_id_is_the_frame_the_traits_own_step_reads() {
+    let k = client();
+    k.apply_server_response(
+        &answer(versioned(0, 1, vec![set_fields(json!({ "id": "", "v": "one" }))])),
+        &HashSet::new(),
+    )
+    .unwrap();
+    assert_eq!(frame_of(&k)["v"], json!("one"));
+}
+
+#[test]
+fn edge_a_later_delta_without_the_id_lands_in_the_same_frame() {
+    let k = client();
+    k.apply_server_response(
+        &answer(versioned(0, 1, vec![set_fields(json!({ "id": "d1", "v": "one" }))])),
+        &HashSet::new(),
+    )
+    .unwrap();
+    k.apply_server_response(&answer(versioned(1, 2, vec![set("w", "two")])), &HashSet::new())
+        .unwrap();
+    assert_eq!(frame_of(&k)["v"], json!("one"));
+    assert_eq!(frame_of(&k)["w"], json!("two"));
+}
+
+#[test]
+fn control_a_frame_without_an_id_is_the_frame_the_traits_own_step_reads() {
+    let k = client();
+    k.apply_server_response(
+        &answer(versioned(0, 1, vec![set_fields(json!({ "v": "one" }))])),
+        &HashSet::new(),
+    )
+    .unwrap();
+    assert_eq!(frame_of(&k)["v"], json!("one"));
+}

@@ -587,7 +587,12 @@ impl RuntimeKernel {
             ))));
         }
         drop(defs);
-        let plan = SeedPlan {
+        let run = self.run_of(vec![Self::tick_plan(trait_name, entity_id, tick_name)]);
+        self.drive_entry(lane, Self::continuation_of(run))
+    }
+
+    fn tick_plan(trait_name: &str, entity_id: Option<&str>, tick_name: &str) -> SeedPlan {
+        SeedPlan {
             trait_name: trait_name.to_string(),
             entity_id: entity_id.map(str::to_string),
             event_name: orbital_core_base::bus_event::tick_event_key(tick_name),
@@ -602,8 +607,27 @@ impl RuntimeKernel {
                     .to_string(),
                 all_rows: entity_id.is_none(),
             }),
+        }
+    }
+
+    /// One step of `trait_name` on `row`, and no cascade: `event` with `payload`, or the tick `tick`. Its own effects run,
+    /// each ask parking and resuming as any dispatch's; nothing it emits, releases or drops is delivered. What a guest's
+    /// host runs for `kernel/step` (EXEC-METAL-7).
+    pub fn start_isolated_step(
+        &self,
+        trait_name: &str,
+        row: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        tick: Option<&str>,
+    ) -> Result<Progress<DispatchOutcomes>, DispatchError> {
+        let lane = self.lane.enter(None)?;
+        self.ensure_trait_loaded(trait_name)?;
+        let mut run = match tick {
+            Some(tick) => self.run_of(vec![Self::tick_plan(trait_name, Some(row.unwrap_or(crate::process_result::RUNTIME_SINGLETON)), tick)]),
+            None => self.run_of_dispatch(trait_name, row, event_name, payload, None, None),
         };
-        let run = self.run_of(vec![plan]);
+        run.isolated = true;
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
@@ -725,6 +749,7 @@ impl RuntimeKernel {
             provisional: None,
             program_deliveries: VecDeque::new(),
             program: false,
+            isolated: false,
             span,
         }
     }
