@@ -1275,3 +1275,48 @@ fn control_a_browser_run_seed_that_wrote_nothing_carries_no_row() {
     assert_eq!(mount.legs.len(), 1);
     assert_eq!(carried_focus(&mount.legs[0].leg.entity_by_trait), None);
 }
+
+fn host_kernel() -> orbital_core_runtime::kernel::RuntimeKernel {
+    use orbital_core_runtime::entity_source::{EntitySource, InMemoryEntityCache};
+    let k = orbital_core_runtime::kernel::RuntimeKernel::new(
+        orbital_core_base::effect_types::RuntimeEnvironment::Server,
+        std::sync::Arc::new(InMemoryEntityCache::new()) as std::sync::Arc<dyn EntitySource>,
+        orbital_core_runtime::config::KernelConfig {
+            environment: orbital_core_base::effect_types::RuntimeEnvironment::Server,
+            ..orbital_core_runtime::config::KernelConfig::default()
+        },
+    );
+    k.register_schema(focus_schema(json!([["set", "@entity.focus", "@payload.person"]]))).unwrap();
+    k
+}
+
+fn rows(trait_name: &str, focus: &str) -> ValueMap {
+    ValueMap::from_iter([(trait_name.into(), from_json_value::<Value>(&json!({ "focus": focus })).unwrap())])
+}
+
+fn host_focus(k: &orbital_core_runtime::kernel::RuntimeKernel, trait_name: &str) -> Option<String> {
+    k.snapshot_trait(trait_name, None).entity.get_path("focus").and_then(Value::as_str).map(str::to_string)
+}
+
+/// EXEC-DIST-10: a mount names the seeds the host runs; a browser-run trait the host's cascade reaches is no seed, so its
+/// carried row is folded too, or the cascade runs it over defaults.
+#[test]
+fn a_host_mount_folds_the_row_of_a_browser_run_trait_that_is_no_seed() {
+    let k = host_kernel();
+    k.prepare_mount(&Default::default(), &[seed("Data")], None, Some(&rows("Display", "Ana")), None);
+    assert_eq!(host_focus(&k, "Display").as_deref(), Some("Ana"));
+}
+
+#[test]
+fn control_a_host_mount_folds_no_rider_row_for_a_seed_it_runs_itself() {
+    let k = host_kernel();
+    k.prepare_mount(&Default::default(), &[seed("Display")], None, Some(&rows("Display", "Ana")), None);
+    assert_ne!(host_focus(&k, "Display").as_deref(), Some("Ana"));
+}
+
+#[test]
+fn edge_a_host_mount_folds_the_row_of_a_server_trait_the_browser_ran_and_did_not_post() {
+    let k = host_kernel();
+    k.prepare_mount(&Default::default(), &[seed("Display")], None, Some(&rows("Data", "Ana")), None);
+    assert_eq!(host_focus(&k, "Data").as_deref(), Some("Ana"));
+}

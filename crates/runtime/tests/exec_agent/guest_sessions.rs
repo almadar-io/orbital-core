@@ -142,6 +142,12 @@ fn opened() -> (RuntimeKernel, String, serde_json::Value) {
         ] },
         { "from": "idle", "to": "idle", "event": "STRAY_TREE", "effects": [
             ["program/self", { "mounted": true, "guest": "no-such-guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "READ_PROGRAM", "effects": [
+            ["program/self", { "guest": "@entity.guest", "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "STRAY_PROGRAM", "effects": [
+            ["program/self", { "guest": "no-such-guest", "emit": emit() }]
         ] }
     ]));
     let after = run(&kernel, "GO");
@@ -324,6 +330,22 @@ fn the_mounted_tree_of_a_guest_is_the_page_the_guest_opened_from_its_own_states(
     assert_eq!(list["trait"], "DiaryList", "{after}");
     assert_eq!(list["instances"][0]["state"], "ready", "the guest's own state, not the opener's: {after}");
     assert_eq!(list["observer"], false, "nothing in the guest asked: {after}");
+}
+
+#[test]
+fn a_guests_program_is_read_by_its_handle_not_the_openers() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "READ_PROGRAM");
+    assert_eq!(after["got"]["name"], guest()["name"], "{after}");
+    let orbitals: Vec<&str> = after["got"]["orbitals"].as_array().into_iter().flatten().filter_map(|o| o["name"].as_str()).collect();
+    assert_eq!(orbitals, vec!["Diary"], "{after}");
+}
+
+#[test]
+fn control_the_program_of_an_unknown_guest_is_refused_by_name() {
+    let (kernel, _, _) = opened();
+    let after = run(&kernel, "STRAY_PROGRAM");
+    assert!(after["refused"].to_string().contains("no-such-guest"), "{after}");
 }
 
 #[test]
@@ -2006,10 +2028,13 @@ mod kernel_step {
         run(kernel, &format!("STEP_{n}"))["got"].clone()
     }
 
-    /// The failure the opener's step reports for `event`, when `kernel/step` refused.
+    /// The reason `kernel/step` answered for `event` when it could not run: answered as data, nothing thrown (G-STD-446).
     fn refusal(kernel: &RuntimeKernel, event: &str) -> String {
         let outcomes = kernel.dispatch("Opener", None, event, Value::Null).unwrap();
-        outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default()
+        assert_eq!(outcomes.iter().find_map(|(_, hop)| hop.failure.clone()), None, "a refused step does not fail the asking step");
+        let got = entity(kernel)["got"].clone();
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool()), (Some(false), Some(false)), "{got}");
+        got["failure"].as_str().unwrap_or_default().to_string()
     }
 
     fn guest_states(kernel: &RuntimeKernel) -> serde_json::Value {
@@ -2087,8 +2112,7 @@ mod kernel_step {
     fn edge_a_delivery_named_as_an_entry_is_refused() {
         let as_entry = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": { "n": 5.0, "tag": "a" }, "entry": true });
         let kernel = stepping(step_grant(), &[as_entry]);
-        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
-        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        let failure = refusal(&kernel, "STEP_0");
         assert!(failure.contains("a delivery is not an entry"), "{failure}");
     }
 
@@ -2123,8 +2147,7 @@ mod kernel_step {
     fn edge_a_mount_without_a_delivery_is_refused() {
         let plain = json!({ "trait": "Seer", "from": "idle", "event": "SEEN", "mount": { "route": "/home" } });
         let kernel = stepping(step_grant(), &[plain]);
-        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
-        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        let failure = refusal(&kernel, "STEP_0");
         assert!(failure.contains("it needs `delivery`"), "{failure}");
     }
 
@@ -2185,8 +2208,7 @@ mod kernel_step {
     fn edge_a_tick_named_with_a_delivery_is_refused() {
         let both = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "tick": "bump", "payload": {} });
         let kernel = stepping(step_grant(), &[both]);
-        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
-        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        let failure = refusal(&kernel, "STEP_0");
         assert!(failure.contains("a tick is not a delivery"), "{failure}");
     }
 
@@ -2303,8 +2325,7 @@ mod kernel_step {
     fn edge_an_emitter_on_a_step_that_is_not_a_delivery_is_refused() {
         let plain = json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4 }, "emitter": "Src" });
         let kernel = stepping(step_grant(), &[plain]);
-        let outcomes = kernel.dispatch("Opener", None, "STEP_0", Value::Null).unwrap();
-        let failure = outcomes.iter().find_map(|(_, hop)| hop.failure.clone()).unwrap_or_default();
+        let failure = refusal(&kernel, "STEP_0");
         assert!(failure.contains("it needs `delivery`"), "{failure}");
     }
 
@@ -2339,7 +2360,6 @@ mod kernel_step {
         let kernel = stepping(json!({ "kernel": [{ "target": "guest", "kinds": ["spawn"] }] }), &[request("GO", json!({ "v": 4 }))]);
         let failure = refusal(&kernel, "STEP_0");
         assert!(failure.contains("kernel/step") && failure.contains("step"), "{failure}");
-        assert!(entity(&kernel)["got"]["fired"].is_null(), "{}", entity(&kernel));
     }
 
     #[test]
@@ -2347,6 +2367,22 @@ mod kernel_step {
         let kernel = stepping(step_grant(), &[]);
         let failure = refusal(&kernel, "STRAY");
         assert!(failure.contains("no-such-guest"), "{failure}");
+    }
+
+    #[test]
+    fn a_dry_step_never_commits_and_names_kernel_commit_when_asked_to() {
+        let mut committing = request("GO", json!({ "v": 4 }));
+        committing["commit"] = json!(true);
+        let mut in_a_leg = request("GO", json!({ "v": 4 }));
+        in_a_leg["leg"] = json!("leg-1");
+        let kernel = stepping(step_grant(), &[committing, in_a_leg, request("GO", json!({ "v": 4 }))]);
+        let failure = refusal(&kernel, "STEP_0");
+        assert!(failure.contains("kernel/commit"), "{failure}");
+        let failure = refusal(&kernel, "STEP_1");
+        assert!(failure.contains("kernel/commit"), "{failure}");
+        let got = step(&kernel, 2);
+        assert_eq!((got["delivered"].as_bool(), got["failure"].is_null()), (Some(true), true), "control: a plain dry step runs: {got}");
+        assert_eq!(guest_states(&kernel)["Src"], "idle", "the dry step left the guest as it was");
     }
 }
 
@@ -2541,15 +2577,20 @@ mod hosted_step {
         })
     }
 
-    /// A hosted guest's BUMP stepped with `request`; the guest kernel's Bump state after it.
-    fn bumped(request: serde_json::Value) -> (serde_json::Value, String) {
+    /// A hosted guest's BUMP stepped with `request`, kept (`kernel/commit`) or not (`kernel/step`); the guest kernel's
+    /// Bump state after it.
+    fn bumped(request: serde_json::Value, kept: bool) -> (serde_json::Value, String) {
+        let step = if kept {
+            json!(["kernel/commit", "@entity.guest", request, { "emit": { "success": "KEPT", "failure": "REFUSED" } }])
+        } else {
+            json!(["set", "@entity.got", ["kernel/step", "@entity.guest", request]])
+        };
         let kernel = opener_granted(json!([
             { "from": "idle", "to": "idle", "event": "GO", "effects": [
                 ["program/open", "@payload.program", { "split": true }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
             ] },
-            { "from": "idle", "to": "idle", "event": "STEP", "effects": [
-                ["set", "@entity.got", ["kernel/step", "@entity.guest", request]]
-            ] }
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [step] },
+            { "from": "idle", "to": "idle", "event": "KEPT", "effects": [["set", "@entity.got", "@payload.step"]] }
         ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
         let guest_kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default()));
         kernel.set_guest_hosting(Arc::new(ReadingHosting(Arc::new(ReadingHost { kernel: Arc::clone(&guest_kernel), reads: Arc::default() }))));
@@ -2641,14 +2682,14 @@ mod hosted_step {
 
     #[test]
     fn a_committed_hosted_step_keeps_what_it_moved() {
-        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {}, "commit": true }));
-        assert_eq!(got["got"]["to"], "done", "{got}");
+        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }), true);
+        assert_eq!(got["got"]["to"], "done", "the success route carries kernel/step's answer as step: {got}");
         assert_eq!(state, "done", "a committed step stays: {got}");
     }
 
     #[test]
     fn control_a_hosted_step_without_commit_is_restored() {
-        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }));
+        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }), false);
         assert_eq!(got["got"]["to"], "done", "{got}");
         assert_ne!(state, "done", "a step that does not commit leaves the guest as it was: {got}");
     }
@@ -2660,14 +2701,15 @@ mod hosted_step {
                 ["program/open", "@payload.program", {}, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
             ] },
             { "from": "idle", "to": "idle", "event": "STEP", "effects": [
-                ["set", "@entity.got", ["kernel/step", "@entity.guest", { "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {}, "commit": true }]]
+                ["kernel/commit", "@entity.guest", { "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }, { "emit": { "success": "ANSWERED", "failure": "REFUSED" } }]
             ] }
         ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
         let program: Value = from_json_value(&json!({ "program": bumping_guest() })).unwrap();
         kernel.dispatch("Opener", None, "GO", program).unwrap();
-        let refused = kernel.dispatch("Opener", None, "STEP", Value::Null);
-        let text = format!("{refused:?} {}", entity(&kernel));
-        assert!(text.contains("commit"), "{text}");
+        kernel.dispatch("Opener", None, "STEP", Value::Null).unwrap();
+        let refused = entity(&kernel)["refused"].clone();
+        assert!(refused["error"].as_str().is_some_and(|e| e.contains("kernel/commit") && e.contains("no host")), "the failure route carries the reason: {refused}");
+        assert_eq!(refused["kind"], "invalid", "{refused}");
     }
 
     #[test]

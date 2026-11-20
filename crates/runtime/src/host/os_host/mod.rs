@@ -342,6 +342,7 @@ mod tests {
         ("audio/decode", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("kernel/queue-front", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("kernel/queue-back", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
+        ("kernel/commit", "kernel-owned: answered by the kernel, never a host (EXEC-METAL-1)"),
         ("ffi/call", "needs a foreign library; answered by the native host's ffi feature, exercised in its own tests"),
         ("gpu/device-open", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
         ("gpu/device-close", "needs a GPU; answered by the installed answerer (orbital-canvas), its payloads exercised in canvas's own tests"),
@@ -901,7 +902,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 32, 5, 4, 13, 2, 1, 11]);
+        assert_eq!(counts, [32, 18, 12, 32, 5, 4, 13, 3, 1, 11]);
     }
 
     #[test]

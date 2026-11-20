@@ -979,6 +979,13 @@ impl RuntimeKernel {
                 if !self.host_report_continues(trait_name, now, response) {
                     continue;
                 }
+                // A step that owed the host nothing ran here; a host that did not run the trait reports its own copy.
+                if now.is_some()
+                    && response.transitions.is_some()
+                    && Self::host_ran_from(trait_name, response).is_none()
+                {
+                    continue;
+                }
                 if state_manager
                     .get_or_create_state(trait_name, entity_id.as_deref())
                     .is_ok()
@@ -1186,6 +1193,25 @@ impl RuntimeKernel {
                 .map(|(name, row)| (name.clone(), row.clone()))
                 .collect();
             self.seed_leg(&browser_seeds, Some(&rows), entity_id);
+        }
+        // A browser-run trait that is no seed of this mount still runs here when a seed's cascade reaches it
+        // (EXEC-DIST-10): the row its lifecycle step wrote in the browser is folded, or it runs over defaults.
+        let riders: ValueMap = {
+            let defs = self.registry.trait_definitions.read();
+            entity_by_trait
+                .iter()
+                .flat_map(|rows| rows.iter())
+                .filter(|(name, _)| {
+                    !carried.contains(name.as_str())
+                        && !seeds.iter().any(|seed| seed.r#trait == name.as_str())
+                        && !browser_seeds.iter().any(|t| t.r#trait == name.as_str())
+                        && defs.contains_key(name.as_str())
+                })
+                .map(|(name, row)| (name.clone(), row.clone()))
+                .collect()
+        };
+        if !riders.is_empty() {
+            self.seed_leg(&[], Some(&riders), entity_id);
         }
         // A restored trait still waiting on an ask the ended session deferred will never hear its answer: its stale
         // asks are dropped and it hears its lifecycle event from the restored state (owner 2026-11-12, G-CROSS-388).

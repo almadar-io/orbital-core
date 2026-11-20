@@ -75,6 +75,7 @@ impl RequestId {
 /// `program/dispatch { reply: { events, match, timeoutMs } }` into a guest (EXEC-CONC-7): the dispatch answers once the guest
 /// emits one of `events` whose payload's `field` equals `value`, the same field of the dispatched payload, or fails after
 /// `timeout_ms`. An outcome the guest reaches in a later completion (a sign-in after a key fetch) is waited for this way.
+#[cfg_attr(all(test, feature = "ts-export"), derive(ts_rs::TS))]
 #[derive(Clone, PartialEq, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuestReply {

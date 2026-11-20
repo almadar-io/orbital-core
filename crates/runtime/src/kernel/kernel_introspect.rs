@@ -130,23 +130,37 @@ impl KernelIntrospect for StepKernel {
     }
 
     fn step(&self, guest: &Value, request: &Value) -> Result<Value, String> {
-        const OP: &str = "kernel/step";
+        Ok(self.stepped(guest, request, false).unwrap_or_else(|failure| refused_step(request, failure)))
+    }
+}
+
+impl StepKernel {
+    /// `kernel/commit`: `kernel/step`'s request, the step kept.
+    pub(super) fn commit(&self, guest: &Value, request: &Value) -> Result<Value, String> {
+        self.stepped(guest, request, true)
+    }
+
+    fn stepped(&self, guest: &Value, request: &Value, committing: bool) -> Result<Value, String> {
+        let op = if committing { "kernel/commit" } else { "kernel/step" };
         let need = OsRequirement::Kernel { kind: KernelKind::Step, operator: None };
         if !(self.enabled() && self.grants.read().allows(self.position.read().orbital.as_deref(), &need)) {
-            return Err(format!("{OP}: denied: no `kernel: {{ \"guest\": [step] }}` grant covers it"));
+            return Err(format!("{op}: denied: no `kernel: {{ \"guest\": [step] }}` grant covers it"));
         }
         let Value::String(handle) = guest else {
-            return Err(format!("{OP}: guest must be the handle program/open answered"));
+            return Err(format!("{op}: guest must be the handle program/open answered"));
         };
         // "self" names the kernel the step runs on: a client kernel's .lolo kernel stepping its own traits inside the
         // client dispatch it runs, each step committed (EXEC-METAL-7).
         let stepping_self = handle.as_str() == "self";
+        if stepping_self && !committing {
+            return Err(format!("{op}: a step of \"self\" always commits; step it with kernel/commit"));
+        }
         let (step_kernel, step_host, embedded): (Arc<RuntimeKernel>, Option<Arc<dyn super::guest_hosting::GuestHost>>, _) = if stepping_self {
             let owner = self
                 .owner
                 .get()
                 .and_then(std::sync::Weak::upgrade)
-                .ok_or_else(|| format!("{OP}: \"self\" names the kernel the step runs on, and this one is not shared"))?;
+                .ok_or_else(|| format!("{op}: \"self\" names the kernel the step runs on, and this one is not shared"))?;
             let host: Arc<dyn super::guest_hosting::GuestHost> = Arc::new(SelfHost(Arc::downgrade(&owner)));
             (owner, Some(host), Default::default())
         } else {
@@ -154,7 +168,7 @@ impl KernelIntrospect for StepKernel {
                 .guests
                 .upgrade()
                 .and_then(|open| open.read().get(handle.as_str()).cloned())
-                .ok_or_else(|| format!("{OP}: no open guest '{}' (it was never opened or is closed)", handle.as_str()))?;
+                .ok_or_else(|| format!("{op}: no open guest '{}' (it was never opened or is closed)", handle.as_str()))?;
             (Arc::clone(&session.kernel), session.host.clone(), session.embedded_traits())
         };
         let text = |field: &str| {
@@ -162,7 +176,7 @@ impl KernelIntrospect for StepKernel {
                 .get(field)
                 .and_then(Value::as_str)
                 .map(str::to_string)
-                .ok_or_else(|| format!("{OP}: the request's `{field}` must be a string"))
+                .ok_or_else(|| format!("{op}: the request's `{field}` must be a string"))
         };
         let delivery = match request.get("delivery") {
             None | Some(Value::Null) => None,
@@ -172,23 +186,23 @@ impl KernelIntrospect for StepKernel {
                     .and_then(Value::as_number)
                     .filter(|at| *at >= 0.0 && at.fract() == 0.0)
                     .map(|at| at as usize)
-                    .ok_or_else(|| format!("{OP}: the request's `delivery.at` must be the listen's position, a whole number"))?,
+                    .ok_or_else(|| format!("{op}: the request's `delivery.at` must be the listen's position, a whole number"))?,
             ),
         };
         let leg = match request.get("leg") {
             None | Some(Value::Null) => None,
+            Some(Value::String(_)) if !committing => return Err(format!("{op}: a leg's steps commit; step it with kernel/commit")),
             Some(Value::String(leg)) if step_host.is_some() && !stepping_self => Some(leg.to_string()),
-            Some(Value::String(_)) => return Err(format!("{OP}: a leg is a hosted split guest's; this guest has no host")),
-            Some(_) => return Err(format!("{OP}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
+            Some(Value::String(_)) => return Err(format!("{op}: a leg is a hosted split guest's; this guest has no host")),
+            Some(_) => return Err(format!("{op}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
         };
-        let commit = match request.get("commit") {
-            None | Some(Value::Null) => leg.is_some() || stepping_self,
-            Some(Value::Bool(true)) if stepping_self => true,
-            Some(Value::Bool(false)) if stepping_self => return Err(format!("{OP}: a step of \"self\" always commits")),
-            Some(Value::Bool(commit)) if !*commit || step_host.is_some() => *commit || leg.is_some(),
-            Some(Value::Bool(_)) => return Err(format!("{OP}: commit keeps a hosted guest's step; this guest has no host")),
-            Some(_) => return Err(format!("{OP}: the request's `commit` must be a boolean")),
-        };
+        if !matches!(request.get("commit"), None | Some(Value::Null)) {
+            return Err(format!("{op}: a request names no `commit`: kernel/step never keeps a step and kernel/commit always does"));
+        }
+        if committing && step_host.is_none() {
+            return Err(format!("{op}: commit keeps a hosted guest's step; this guest has no host"));
+        }
+        let commit = committing;
         let trait_name = text("trait")?;
         let from = match (&leg, request.get("from")) {
             (Some(_), None | Some(Value::Null)) => None,
@@ -198,8 +212,8 @@ impl KernelIntrospect for StepKernel {
         let tick = match request.get("tick") {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if delivery.is_none() => Some(name.to_string()),
-            Some(Value::String(_)) => return Err(format!("{OP}: a tick is not a delivery; name `tick` or `delivery`, not both")),
-            Some(_) => return Err(format!("{OP}: the request's `tick` must be the tick's name")),
+            Some(Value::String(_)) => return Err(format!("{op}: a tick is not a delivery; name `tick` or `delivery`, not both")),
+            Some(_) => return Err(format!("{op}: the request's `tick` must be the tick's name")),
         };
         let event = match (delivery, &tick) {
             (Some(_), _) | (None, Some(_)) => request.get("event").and_then(Value::as_str).unwrap_or_default().to_string(),
@@ -208,35 +222,35 @@ impl KernelIntrospect for StepKernel {
         let entry = match request.get("entry") {
             None | Some(Value::Null) => false,
             Some(Value::Bool(flag)) if !*flag || delivery.is_none() => *flag,
-            Some(Value::Bool(_)) => return Err(format!("{OP}: a delivery is not an entry; `entry` names a dispatch's own event")),
-            Some(_) => return Err(format!("{OP}: the request's `entry` must be a boolean")),
+            Some(Value::Bool(_)) => return Err(format!("{op}: a delivery is not an entry; `entry` names a dispatch's own event")),
+            Some(_) => return Err(format!("{op}: the request's `entry` must be a boolean")),
         };
         let mount = match request.get("mount") {
             None | Some(Value::Null) => None,
-            Some(_) if delivery.is_none() => return Err(format!("{OP}: `mount` names the route a `$MOUNT` delivery announces; it needs `delivery`")),
+            Some(_) if delivery.is_none() => return Err(format!("{op}: `mount` names the route a `$MOUNT` delivery announces; it needs `delivery`")),
             Some(named) => Some((
-                named.get("route").and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("{OP}: the request's `mount.route` must be a string"))?,
+                named.get("route").and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("{op}: the request's `mount.route` must be a string"))?,
                 match named.get("crumb") {
                     None | Some(Value::Null) => None,
                     Some(Value::String(crumb)) => Some(crumb.to_string()),
-                    Some(_) => return Err(format!("{OP}: the request's `mount.crumb` must be a string")),
+                    Some(_) => return Err(format!("{op}: the request's `mount.crumb` must be a string")),
                 },
             )),
         };
         let emitter = match request.get("emitter") {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if delivery.is_some() => Some(name.to_string()),
-            Some(Value::String(_)) => return Err(format!("{OP}: `emitter` names the trait a delivery's emit came from; it needs `delivery`")),
-            Some(_) => return Err(format!("{OP}: the request's `emitter` must be a string")),
+            Some(Value::String(_)) => return Err(format!("{op}: `emitter` names the trait a delivery's emit came from; it needs `delivery`")),
+            Some(_) => return Err(format!("{op}: the request's `emitter` must be a string")),
         };
         let entity_id = match request.get("entityId") {
             None | Some(Value::Null) => None,
             Some(Value::String(id)) => Some(id.to_string()),
-            Some(_) => return Err(format!("{OP}: the request's `entityId` must be a string")),
+            Some(_) => return Err(format!("{op}: the request's `entityId` must be a string")),
         };
         let now = match request.get("now") {
             None | Some(Value::Null) => self.position.read().now,
-            Some(value) => value.as_number().ok_or_else(|| format!("{OP}: the request's `now` must be a number of ms"))?,
+            Some(value) => value.as_number().ok_or_else(|| format!("{op}: the request's `now` must be a number of ms"))?,
         };
         let payload = request.get("payload").cloned().unwrap_or(Value::Null);
         let entity = request.get("entity").cloned();
@@ -273,7 +287,7 @@ impl KernelIntrospect for StepKernel {
             (Some(host), Some(leg)) => host.in_leg(leg, Box::new(run)),
             _ => run(),
         }
-        .map_err(|error| format!("{OP}: {error}"))
+        .map_err(|error| format!("{op}: {error}"))
     }
 }
 
@@ -599,6 +613,29 @@ fn rejected(input: &IsolatedStep<'_>, message: String) -> Value {
     answer
 }
 
+/// The answer of a `kernel/step` that could not run (G-STD-446): nothing ran, and `failure` carries the reason.
+fn refused_step(request: &Value, failure: String) -> Value {
+    let from = request.get("from").and_then(Value::as_str).map_or(Value::Null, Value::string);
+    record([
+        ("fired", Value::Bool(false)),
+        ("delivered", Value::Bool(false)),
+        ("from", from.clone()),
+        ("to", from),
+        ("arm", Value::Null),
+        ("entity", request.get("entity").cloned().unwrap_or(Value::Null)),
+        ("emits", Value::array(Vec::<Value>::new())),
+        ("effects", Value::array(Vec::<Value>::new())),
+        ("guards", Value::array(Vec::<Value>::new())),
+        ("failure", Value::string(failure)),
+        ("refused", Value::Null),
+        ("asks", Value::array(Vec::<Value>::new())),
+        ("key", Value::Null),
+        ("keyRefused", Value::Null),
+        ("keyRequired", Value::Bool(false)),
+        ("rejected", Value::Null),
+    ])
+}
+
 fn key_required(input: &IsolatedStep<'_>, row: &str) -> Value {
     let mut answer = not_delivered(input, None);
     if let Value::Object(fields) = &mut answer {
@@ -769,6 +806,18 @@ impl RuntimeKernel {
         let front = match op {
             OsOp::QueueFront => true,
             OsOp::QueueBack => false,
+            OsOp::KernelCommit => {
+                let (Some(guest), Some(request)) = (args.first(), args.get(1)) else {
+                    return Some(Err(OsError::new(OsErrorKind::Invalid, "kernel/commit: takes the guest handle and the request")));
+                };
+                // The answer goes under `step`: its own `key` (a keyed delivery's row) is not the call's key.
+                return Some(
+                    self.introspect
+                        .commit(guest, request)
+                        .map(|step| record([("step", step)]))
+                        .map_err(|failure| OsError::new(OsErrorKind::Invalid, failure)),
+                );
+            }
             _ => return None,
         };
         let stage = || -> Result<Value, OsError> {

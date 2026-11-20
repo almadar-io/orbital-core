@@ -1,5 +1,5 @@
 //! A client program declaring `dispatchKernel`: each client dispatch runs through the named trait, which steps the
-//! kernel's own traits with `kernel/step "self"` (EXEC-METAL-7), and answers as the native cascade does.
+//! kernel's own traits with `kernel/commit "self"` (EXEC-METAL-7), and answers as the native cascade does.
 
 use orbital_core_base::json_value::from_json_value;
 use orbital_core_base::schema::types::OrbitalSchema;
@@ -8,7 +8,7 @@ use orbital_core_runtime::client::ClientKernel;
 use serde_json::json;
 
 /// A program whose Ui bumps a counter; with `kernel`, its dispatches go through K, a one-step kernel that hands the
-/// event to `kernel/step "self"` and keeps the answer.
+/// event to `kernel/commit "self"` and keeps the answer.
 fn program(kernel: bool) -> OrbitalSchema {
     let mut program = json!({
         "name": "App",
@@ -22,11 +22,12 @@ fn program(kernel: bool) -> OrbitalSchema {
                     "transitions": [{ "from": "idle", "to": "bumped", "event": "BUMP", "effects": [["set", "@entity.n", ["+", "@entity.n", 1]]] }] } },
                 { "name": "K", "linkedEntity": "Cell", "dispatch": "client", "stateMachine": {
                     "states": [{ "name": "ready", "isInitial": true }],
-                    "events": [{ "key": "INIT", "name": "Init" }, { "key": "KERNEL_DISPATCH", "name": "Kernel dispatch", "payloadSchema": [{ "name": "trait", "type": "string", "required": true }, { "name": "event", "type": "string", "required": true }, { "name": "payload", "type": "object" }] }],
+                    "events": [{ "key": "INIT", "name": "Init" }, { "key": "KERNEL_DISPATCH", "name": "Kernel dispatch", "payloadSchema": [{ "name": "trait", "type": "string", "required": true }, { "name": "event", "type": "string", "required": true }, { "name": "payload", "type": "object" }] }, { "key": "KEPT", "name": "Kept" }],
                     "transitions": [
                         { "from": "ready", "to": "ready", "event": "INIT" },
                         { "from": "ready", "to": "ready", "event": "KERNEL_DISPATCH", "effects": [
-                            ["set", "@entity.last", ["json/stringify", ["kernel/step", "self", { "trait": "@payload.trait", "event": "@payload.event", "payload": {} }]]]] }] } }],
+                            ["kernel/commit", "self", { "trait": "@payload.trait", "event": "@payload.event", "payload": {} }, { "emit": { "success": "KEPT" } }]] },
+                        { "from": "ready", "to": "ready", "event": "KEPT", "effects": [["set", "@entity.last", ["json/stringify", "@payload.step"]]] }] } }],
             "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Ui" }] }] }]
     });
     if kernel {

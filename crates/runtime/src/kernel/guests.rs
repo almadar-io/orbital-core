@@ -2169,6 +2169,19 @@ impl RuntimeKernel {
         guest.mounted_tree().map_err(AgentPortFailure::plain)
     }
 
+    /// `program/self { guest }`: the program the guest was opened from, as its kernel registered it, so an opener reads
+    /// it by handle instead of holding a copy.
+    pub(super) fn program_of_guest(&self, handle: &Value) -> Result<Value, AgentPortFailure> {
+        let programs = self.guest(handle, "program/self")?.kernel.registered_programs();
+        match programs.as_slice() {
+            [program] => serde_json::to_value(program.as_ref())
+                .map_err(|e| e.to_string())
+                .and_then(|v| from_json_value(&v).map_err(|e| e.to_string()))
+                .map_err(|e| AgentPortFailure::plain(format!("program/self: the guest's program does not serialize: {e}"))),
+            other => Err(AgentPortFailure::plain(format!("program/self: the guest holds {} programs, not one", other.len()))),
+        }
+    }
+
     /// `program/inputs { guest, … }`: the guest's own inputs and runtime reads.
     pub(super) fn inputs_of_guest(
         &self,

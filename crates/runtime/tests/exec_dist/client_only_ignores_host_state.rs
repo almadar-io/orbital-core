@@ -755,3 +755,48 @@ fn control_a_leg_answer_still_carries_the_asking_traits_own_frame() {
     let frames = leg_frames(true);
     assert!(frames.iter().any(|f| f.starts_with("Front") || f.starts_with("$shared::Run")), "{frames:?}");
 }
+
+/// An undeclared trait whose step owed the host nothing ran here (std-approval-request's pipeline mounts in the
+/// browser and posts no leg); a host that never ran it reports its never-run default, which must not undo the step.
+#[test]
+fn a_host_state_for_an_awaited_trait_the_client_stepped_and_the_host_did_not_run_is_ignored() {
+    let k = confirm_kernel();
+    let payload: Value = from_json_value(&json!({ "id": "c1" })).unwrap();
+    let d = k.dispatch_with_server_leg("crm", "Delete", None, "REQUEST", payload, None).unwrap();
+    assert!(d.server_legs.is_empty(), "REQUEST owes the host nothing");
+    let report = EventResponse {
+        success: true,
+        transitioned: true,
+        states: HashMap::from([("Delete".to_string(), "idle".to_string())]),
+        transitions: Some(vec![persistor_hop()]),
+        ..EventResponse::default()
+    };
+    k.apply_server_response(&report, &Default::default()).unwrap();
+    assert_eq!(k.get_state("Delete", None).map(|s| s.current_state).as_deref(), Some("confirming"));
+}
+
+#[test]
+fn control_a_host_state_for_an_awaited_trait_the_host_ran_from_the_clients_state_is_folded() {
+    let k = confirm_kernel();
+    let payload: Value = from_json_value(&json!({ "id": "c1" })).unwrap();
+    k.dispatch_with_server_leg("crm", "Delete", None, "REQUEST", payload, None).unwrap();
+    let host_ran_delete = orbital_core_runtime::effects::response::TransitionHop {
+        trait_name: "Delete".to_string(),
+        from: "confirming".to_string(),
+        to: "idle".to_string(),
+        event: "CONFIRM".to_string(),
+        fired_arm: None,
+        guard_result: None,
+        effects: Vec::new(),
+        observed: None,
+    };
+    let report = EventResponse {
+        success: true,
+        transitioned: true,
+        states: HashMap::from([("Delete".to_string(), "idle".to_string())]),
+        transitions: Some(vec![host_ran_delete]),
+        ..EventResponse::default()
+    };
+    k.apply_server_response(&report, &Default::default()).unwrap();
+    assert_eq!(k.get_state("Delete", None).map(|s| s.current_state).as_deref(), Some("idle"));
+}

@@ -51,7 +51,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
         ArenaNew | ArenaDrop | Alloc | Free | Borrow | Release | MemWrite | Freeze | AtomicLoad | AtomicStore
         | AtomicAdd | AtomicCas | AudioDecode => OsFamily::Mem,
-        QueueFront | QueueBack => OsFamily::Kernel,
+        QueueFront | QueueBack | KernelCommit => OsFamily::Kernel,
         FfiCall => OsFamily::Ffi,
         GpuDeviceOpen | GpuDeviceClose | GpuBufferCreate | GpuTextureCreate | GpuSamplerCreate | GpuQueryCreate
         | GpuShaderCreate | GpuPipelineCreate | GpuBindGroupCreate | GpuSubmit | GpuRelease => OsFamily::Gpu,
@@ -208,6 +208,7 @@ os_ops! {
     AudioDecode => ("audio/decode", Single),
     QueueFront => ("kernel/queue-front", Single),
     QueueBack => ("kernel/queue-back", Single),
+    KernelCommit => ("kernel/commit", Single),
     FfiCall => ("ffi/call", Single),
     GpuDeviceOpen => ("gpu/device-open", Single),
     GpuDeviceClose => ("gpu/device-close", Single),
@@ -729,9 +730,10 @@ mod tests {
     }
 
     #[test]
-    fn the_kernel_family_is_exactly_the_two_queue_ops() {
+    fn the_kernel_family_is_exactly_the_two_queue_ops_and_the_commit() {
         let kernel: Vec<&str> = OsOp::ALL.iter().filter(|op| family_of(**op) == OsFamily::Kernel).map(|op| op.name()).collect();
-        assert_eq!(kernel, vec!["kernel/queue-front", "kernel/queue-back"]);
+        assert_eq!(kernel, vec!["kernel/queue-front", "kernel/queue-back", "kernel/commit"]);
+        assert!(OsOp::KernelCommit.is_kernel_owned() && OsOp::KernelCommit.runs_on_any_host(), "kernel/commit steps the kernel it names wherever it runs");
         assert!(OsOp::QueueFront.is_kernel_owned() && OsOp::QueueBack.runs_on_any_host());
         assert!(!OsOp::Stat.runs_on_any_host(), "control: a host-answered op");
     }
