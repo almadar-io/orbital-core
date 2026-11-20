@@ -1315,7 +1315,7 @@ use values::*;
 use config_forward::*;
 use effect_bindings::*;
 use completion::*;
-pub use dispatch_scope::{LocaleGuard, SessionGuard};
+pub use dispatch_scope::{AskerGuard, LocaleGuard, SessionGuard};
 pub use values::already_delivered_from;
 pub(crate) use values::sexpr_to_value;
 

@@ -954,6 +954,9 @@ fn shop_opener() -> RuntimeKernel {
         ] },
         { "from": "idle", "to": "idle", "event": "REMOUNT", "effects": [
             ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route", "rows": "@payload.rows", "remount": true }, { "emit": emit() }]
+        ] },
+        { "from": "idle", "to": "idle", "event": "NAV_SEEDS", "effects": [
+            ["program/navigate", { "guest": "@entity.guest", "route": "@payload.route", "mount": false }, { "emit": emit() }]
         ] }
     ]))
 }
@@ -1004,6 +1007,15 @@ fn navigate_mounts_the_new_route_after_seeding_its_rows() {
     );
     assert_eq!(mounted(&after["got"]), ["ListT"], "only the new route's trait mounts: {after}");
     assert!(painted(&after["got"]).contains(&"Seeded item".to_string()), "the INIT fetch saw the seeded row: {after}");
+}
+
+#[test]
+fn navigate_with_mount_false_runs_nothing_and_answers_the_routes_seeds() {
+    let (kernel, _) = open_shop(shop(), json!({}));
+    let after = shop_event(&kernel, "NAV_SEEDS", json!({ "route": "/list" }));
+    assert_eq!(after["got"]["seeds"], json!([{ "trait": "ListT", "event": "INIT" }]), "{after}");
+    assert_eq!(after["got"]["outcomes"], json!([]), "no seed ran: {after}");
+    assert!(!painted(&after["got"]).contains(&"none listed".to_string()), "{after}");
 }
 
 #[test]
@@ -2510,6 +2522,105 @@ mod hosted_step {
         (kernel, reads)
     }
 
+    fn bumping_guest() -> serde_json::Value {
+        json!({
+            "name": "Bumping",
+            "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "B",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
+                "traits": [{ "name": "Bump", "linkedEntity": "Cell",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "done" }],
+                        "transitions": [{ "from": "idle", "to": "done", "event": "BUMP", "effects": [["set", "@entity.n", 1]] }]
+                    } }]
+            }]
+        })
+    }
+
+    /// A hosted guest's BUMP stepped with `request`; the guest kernel's Bump state after it.
+    fn bumped(request: serde_json::Value) -> (serde_json::Value, String) {
+        let kernel = opener_granted(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", { "split": true }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] },
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [
+                ["set", "@entity.got", ["kernel/step", "@entity.guest", request]]
+            ] }
+        ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
+        let guest_kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default()));
+        kernel.set_guest_hosting(Arc::new(ReadingHosting(Arc::new(ReadingHost { kernel: Arc::clone(&guest_kernel), reads: Arc::default() }))));
+        let program: Value = from_json_value(&json!({ "program": bumping_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let got = run(&kernel, "STEP");
+        (got, guest_kernel.snapshot_trait("Bump", None).state)
+    }
+
+    fn faced_guest() -> serde_json::Value {
+        let mut program = bumping_guest();
+        program["orbitals"][0]["traits"].as_array_mut().unwrap().push(json!({ "name": "Face", "linkedEntity": "Cell", "dispatch": "client",
+            "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "typography", "content": "face" }]] }] } }));
+        program["orbitals"][0]["pages"] = json!([{ "name": "Home", "path": "/", "traits": [{ "ref": "Face" }, { "ref": "Bump" }] }]);
+        program
+    }
+
+    /// The answer of opening the faced guest with `options` on a reading host.
+    fn opened_faced(options: serde_json::Value) -> serde_json::Value {
+        let kernel = opener_granted(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] }
+        ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
+        let guest_kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default()));
+        kernel.set_guest_hosting(Arc::new(ReadingHosting(Arc::new(ReadingHost { kernel: guest_kernel, reads: Arc::default() }))));
+        let program: Value = from_json_value(&json!({ "program": faced_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        entity(&kernel)["got"].clone()
+    }
+
+    #[test]
+    fn a_split_guests_open_names_the_traits_its_viewer_runs() {
+        let got = opened_faced(json!({ "split": true }));
+        assert_eq!(got["browserRuns"], json!(["Face"]), "{got}");
+    }
+
+    #[test]
+    fn control_a_guest_that_runs_its_client_traits_names_none() {
+        let got = opened_faced(json!({}));
+        assert!(got.get("browserRuns").is_none(), "{got}");
+    }
+
+    #[test]
+    fn a_committed_hosted_step_keeps_what_it_moved() {
+        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {}, "commit": true }));
+        assert_eq!(got["got"]["to"], "done", "{got}");
+        assert_eq!(state, "done", "a committed step stays: {got}");
+    }
+
+    #[test]
+    fn control_a_hosted_step_without_commit_is_restored() {
+        let (got, state) = bumped(json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }));
+        assert_eq!(got["got"]["to"], "done", "{got}");
+        assert_ne!(state, "done", "a step that does not commit leaves the guest as it was: {got}");
+    }
+
+    #[test]
+    fn edge_commit_on_a_guest_with_no_host_is_refused() {
+        let kernel = opener_granted(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", {}, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] },
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [
+                ["set", "@entity.got", ["kernel/step", "@entity.guest", { "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {}, "commit": true }]]
+            ] }
+        ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
+        let program: Value = from_json_value(&json!({ "program": bumping_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let refused = kernel.dispatch("Opener", None, "STEP", Value::Null);
+        let text = format!("{refused:?} {}", entity(&kernel));
+        assert!(text.contains("commit"), "{text}");
+    }
+
     #[test]
     fn a_hosted_guests_step_runs_on_its_host_with_its_io_answered_there() {
         let (kernel, reads) = stepped(true);
@@ -2568,5 +2679,31 @@ mod unmounted_open {
         ]));
         let refused = run(&kernel, "GO")["refused"].to_string();
         assert!(refused.contains("`mount` is true or false"), "{refused}");
+    }
+    fn refused(options: serde_json::Value) -> String {
+        let kernel = opener(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [
+                ["program/open", "@payload.program", options, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
+            ] }
+        ]));
+        run(&kernel, "GO")["refused"].to_string()
+    }
+
+    #[test]
+    fn a_lolo_kernel_guest_with_no_host_of_its_own_is_refused() {
+        let refused = refused(json!({ "kernel": "lolo" }));
+        assert!(refused.contains("needs a host of its own"), "{refused}");
+    }
+
+    #[test]
+    fn control_a_native_kernel_guest_opens() {
+        let got = opened(json!({ "kernel": "native" }));
+        assert!(got["outcomes"].as_array().is_some_and(|o| !o.is_empty()), "{got}");
+    }
+
+    #[test]
+    fn edge_a_kernel_that_is_neither_native_nor_lolo_is_refused() {
+        let refused = refused(json!({ "kernel": "rust" }));
+        assert!(refused.contains("`kernel` is") && refused.contains("lolo"), "{refused}");
     }
 }

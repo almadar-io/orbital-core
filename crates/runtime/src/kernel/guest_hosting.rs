@@ -97,6 +97,18 @@ pub trait GuestHost: Send + Sync {
         let _ = (payload, options);
         Err(crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Unsupported, "program/dispatch: this guest's host opens no .lolo leg"))
     }
+    /// A plain guest dispatch of `event` to each of `targets` (`program/dispatch ADDRESS payload { guest, lolo:
+    /// "begin", plain: true }`) opened as a leg for a `.lolo` kernel to run: `{ leg, run, states }`, the run being
+    /// `{ kind: "discover", traits, event, payload, entityId }`, each target its own seed in the guest's program session.
+    fn begin_plain(&self, targets: &[String], event: &str, payload: Value) -> Result<Value, String> {
+        let _ = (targets, event, payload);
+        Err("this guest's host opens no .lolo leg".to_string())
+    }
+    /// A plain leg's outcomes, its first target and its event, for the guest's answer; the leg closes.
+    fn finish_plain(&self, leg: &str) -> Result<(DispatchOutcomes, String, String), String> {
+        let _ = leg;
+        Err("this guest's host opens no .lolo leg".to_string())
+    }
     /// Run `run` in the open leg's session, origin and locale.
     fn in_leg(&self, leg: &str, run: Box<dyn FnOnce() -> Result<Value, String> + '_>) -> Result<Value, String> {
         let _ = (leg, run);
@@ -115,6 +127,16 @@ pub trait GuestHost: Send + Sync {
     /// viewer's session), each `{ clientId, orbitalName, request, response }` as the host's live stream carries it: a
     /// split guest's viewer folds them as it folds a served app's host-run dispatches (EXEC-DIST-8).
     fn take_host_dispatches(&self) -> Vec<Value> {
+        Vec::new()
+    }
+    /// Hold this guest's completions from now on for a `.lolo` kernel to run (`program/open { kernel: "lolo" }`)
+    /// instead of running them; a host that cannot refuses.
+    fn drive_by_lolo(&self) -> Result<(), String> {
+        Err("this guest's host cannot hand its completions to a .lolo kernel".to_string())
+    }
+    /// The completions held since the last call, each `{ run, trait, event, payload, entityId, failure, key }`: `run`
+    /// is the handle `program/dispatch { lolo: "begin", run }` opens a leg for.
+    fn take_parked_runs(&self) -> Vec<Value> {
         Vec::new()
     }
     #[cfg(all(feature = "std", not(target_arch = "wasm32")))]

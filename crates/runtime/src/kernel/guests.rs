@@ -599,7 +599,7 @@ fn serve_leg(
     match options.get("lolo").and_then(Value::as_str) {
         Some("begin") => {
             let mut options = options.clone();
-            options.remove("lolo");
+            options.shift_remove("lolo");
             return host.begin_leg(payload, &options).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
         }
         Some("finish") => {
@@ -1045,6 +1045,17 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let lolo = match options.as_ref().and_then(|o| o.get("kernel")) {
+            None | Some(Value::Null) => false,
+            Some(Value::String(kernel)) if kernel.as_str() == "native" => false,
+            Some(Value::String(kernel)) if kernel.as_str() == "lolo" => true,
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `kernel` is \"native\" or \"lolo\"",
+                ))
+            }
+        };
         let seed_writer = match options.as_ref().and_then(|o| o.get("seed")) {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if !name.as_str().is_empty() => Some(name.to_string()),
@@ -1262,6 +1273,15 @@ impl RuntimeKernel {
             let host = hosting
                 .as_ref()
                 .map(|hosting| hosting.open(integrations, cwd.as_deref(), &env, give_program));
+            if lolo {
+                let Some(host) = &host else {
+                    return Err(guest_refusal(
+                        orbital_core_base::os::OsErrorKind::Unsupported,
+                        "program/open: a guest the .lolo kernel runs needs a host of its own (kernel: \"lolo\")",
+                    ));
+                };
+                host.drive_by_lolo().map_err(|refused| guest_refusal(orbital_core_base::os::OsErrorKind::Unsupported, format!("program/open: {refused}")))?;
+            }
             let prepare = GuestPrepare {
                 mock: integrations == GuestIntegrations::Mock,
                 apply_grants: granted.is_some() || host.is_some(),
@@ -1412,6 +1432,11 @@ impl RuntimeKernel {
             if let (Some(client), Value::Object(fields)) = (client, &mut answer) {
                 fields.insert("client".into(), client);
             }
+            if let (true, Value::Object(fields)) = (split, &mut answer) {
+                let mut runs: Vec<String> = opened_kernel.browser_run_traits().into_iter().collect();
+                runs.sort();
+                fields.insert("browserRuns".into(), Value::array(runs.into_iter().map(Value::string).collect::<Vec<_>>()));
+            }
             if let (false, Value::Object(fields)) = (mount, &mut answer) {
                 let unmounted = seeds
                     .iter()
@@ -1520,6 +1545,11 @@ impl RuntimeKernel {
             seed_guest_rows(guest, rows, "program/navigate")?;
         }
         let remount = matches!(options.get("remount"), Some(Value::Bool(true)));
+        let mount = match options.get("mount") {
+            None | Some(Value::Null) => true,
+            Some(Value::Bool(mount)) => *mount,
+            Some(_) => return Err(failure("program/navigate: `mount` is true or false")),
+        };
         if remount {
             // A remount enters the page afresh: each of its mounted traits starts again from its initial state with no
             // frame, so its lifecycle event is the one it handles there.
@@ -1589,13 +1619,11 @@ impl RuntimeKernel {
                 .filter(|seed| remount || !held.mounted.contains(&seed.r#trait))
                 .collect()
         };
-        let outcomes = mount_seeds(
-            guest,
-            session.host.as_deref(),
-            resolved.as_deref(),
-            &fresh,
-            "program/navigate",
-        )?;
+        let outcomes = if mount {
+            mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?
+        } else {
+            Vec::new()
+        };
         view_page(guest, &page, &embedded);
         let orbitals = painter_orbitals(guest, &outcomes);
         {
@@ -1608,7 +1636,7 @@ impl RuntimeKernel {
             Value::String(name) => Some(name.as_str()),
             _ => None,
         };
-        Ok(guest_answer(
+        let mut answer = guest_answer(
             guest,
             &orbitals,
             name,
@@ -1619,7 +1647,20 @@ impl RuntimeKernel {
             "INIT",
             Some(&access),
             &[],
-        ))
+        );
+        if let (false, Value::Object(fields)) = (mount, &mut answer) {
+            let unmounted = fresh
+                .iter()
+                .map(|seed| {
+                    Value::object(ValueMap::from_iter([
+                        ("trait".to_string().into(), Value::string(seed.r#trait.clone())),
+                        ("event".to_string().into(), Value::string(seed.event.as_str())),
+                    ]))
+                })
+                .collect::<Vec<_>>();
+            fields.insert("seeds".into(), Value::array(unmounted));
+        }
+        Ok(answer)
     }
 
     /// `program/live { kind: "guest", guest }`, polled by the host's stream: one tick pass of the hosted guest `handle`,
@@ -1644,7 +1685,8 @@ impl RuntimeKernel {
         };
         let outcomes = host.tick_pass()?;
         let dispatches = host.take_host_dispatches();
-        if outcomes.is_empty() && dispatches.is_empty() {
+        let runs = host.take_parked_runs();
+        if outcomes.is_empty() && dispatches.is_empty() && runs.is_empty() {
             return Ok(GuestTicks::Idle);
         }
         let embedded = session.route.read().embedded.clone();
@@ -1667,6 +1709,9 @@ impl RuntimeKernel {
         );
         if let Value::Object(fields) = &mut answer {
             fields.insert("dispatches".into(), Value::Array(dispatches.into()));
+            if !runs.is_empty() {
+                fields.insert("runs".into(), Value::Array(runs.into()));
+            }
         }
         // The opener reacts to an item; a pass that painted and emitted nothing (a paused clock accumulating) is no item.
         let empty = |field: &str| {
@@ -1675,7 +1720,7 @@ impl RuntimeKernel {
                 .and_then(Value::as_array)
                 .is_none_or(|items| items.is_empty())
         };
-        if empty("rendered") && empty("emitted") && empty("hostAsks") && empty("dispatches") {
+        if empty("rendered") && empty("emitted") && empty("hostAsks") && empty("dispatches") && empty("runs") {
             return Ok(GuestTicks::Idle);
         }
         Ok(GuestTicks::Painted(answer))
@@ -1733,6 +1778,19 @@ impl RuntimeKernel {
                 );
             }
         }
+        // A `.lolo` leg's begin and finish name the leg or held completion they open or answer, not an address.
+        if let Some(Value::Object(options)) = args.get(2) {
+            if options.get("plain").and_then(Value::as_bool) == Some(true) && options.contains_key("lolo") {
+                return self.plain_leg(&session, args, options);
+            }
+            if options.contains_key("lolo") {
+                let mut leg = options.clone();
+                leg.shift_remove("guest");
+                let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
+                let payload = self.copy_into(&session, &given)?;
+                return serve_leg(&session, &payload, &Value::object(leg));
+            }
+        }
         let Some(Value::String(address)) = args.first() else {
             return Err(failure(
                 "program/dispatch: a guest address is `Orbital.Trait.EVENT` or `Trait.EVENT`",
@@ -1763,6 +1821,38 @@ impl RuntimeKernel {
             _ => None,
         };
         self.run_in_guest(&session, handle, targets, event, payload, leg, args)
+    }
+
+    /// A plain guest dispatch run by a `.lolo` kernel: `lolo: "begin"` opens it as a leg on the guest's host for the
+    /// address's targets, `lolo: "finish", leg` answers what its steps did as the plain dispatch answers.
+    fn plain_leg(&self, session: &GuestSession, args: &[Value], options: &ValueMap) -> Result<Value, AgentPortFailure> {
+        let Some(host) = &session.host else {
+            return Err(failure("program/dispatch: a plain .lolo leg runs on a guest with a host of its own"));
+        };
+        match options.get("lolo").and_then(Value::as_str) {
+            Some("begin") => {
+                let Some(Value::String(address)) = args.first() else {
+                    return Err(failure("program/dispatch: a guest address is `Orbital.Trait.EVENT` or `Trait.EVENT`"));
+                };
+                let parts: Vec<&str> = address.as_str().split('.').collect();
+                let (targets, event): (Vec<String>, &str) = match parts.as_slice() {
+                    [_, trait_name, event] | [trait_name, event] => (vec![trait_name.to_string()], *event),
+                    [event] => (session.kernel.traits_handling(event), *event),
+                    _ => return Err(failure(format!("program/dispatch: '{}' is not `Orbital.Trait.EVENT`, `Trait.EVENT` or `EVENT`", address.as_str()))),
+                };
+                let given = orbital_core_base::agent_ports::dispatch_arguments(args.get(1)).map_err(failure)?;
+                let payload = self.copy_into(session, &given)?;
+                host.begin_plain(&targets, event, payload).map_err(failure)
+            }
+            Some("finish") => {
+                let leg = options.get("leg").and_then(Value::as_str).ok_or_else(|| failure("program/dispatch: { lolo: \"finish\" } names the leg begin opened"))?;
+                let (outcomes, seed_trait, event) = host.finish_plain(leg).map_err(failure)?;
+                let embedded = session.route.read().embedded.clone();
+                let orbitals = painter_orbitals(&session.kernel, &outcomes);
+                Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, &event, None, &[]))
+            }
+            other => Err(failure(format!("program/dispatch: lolo is \"begin\" or \"finish\", not {other:?}"))),
+        }
     }
 
     /// `program/dispatch { ask, answer | refuse } { guest }`: return a host's answer to a client ask the guest made, as a

@@ -1173,3 +1173,55 @@ fn a_keyed_call_on_a_kernel_with_no_service_answerer_takes_its_failure_route() {
     .unwrap();
     assert_eq!(kernel.snapshot_trait("Panel", None).state, "ready");
 }
+
+fn bump_site() -> orbital_core_runtime::resumable::CallSite {
+    orbital_core_runtime::resumable::CallSite {
+        emit: orbital_core_runtime::resumable::CallRoutes { success: Some("BUMP".to_string()), ..Default::default() },
+        ..counter_site()
+    }
+}
+
+fn tally_n(kernel: &RuntimeKernel) -> serde_json::Value {
+    serde_json::to_value(&kernel.snapshot_trait("Counter", None).entity).unwrap()["n"].clone()
+}
+
+#[test]
+fn a_sink_parking_completions_holds_each_for_a_lolo_kernel_and_runs_nothing() {
+    use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    let gate = Gate::new();
+    let (kernel, store) = lane_kernel();
+    let (sink, seen) = completion_sink(&kernel, &store, &gate);
+    sink.park_completions();
+    sink.complete(&bump_site(), "k9", Ok(Value::Null));
+    assert!(seen.lock().unwrap().is_empty(), "a parked completion is told as done");
+    assert_eq!(tally_n(&kernel), serde_json::Value::Null, "a parked completion ran natively: the trait was touched");
+    let parked = sink.take_parked();
+    assert_eq!(parked.len(), 1);
+    assert_eq!((parked[0].event.as_str(), parked[0].key.as_str(), parked[0].site.trait_name.as_str()), ("BUMP", "k9", "Counter"));
+    assert!(sink.take_parked().is_empty(), "a parked completion is handed over once");
+}
+
+#[test]
+fn control_a_sink_not_parking_runs_the_completion_natively() {
+    use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    let gate = Gate::new();
+    let (kernel, store) = lane_kernel();
+    let (sink, seen) = completion_sink(&kernel, &store, &gate);
+    sink.complete(&bump_site(), "k9", Ok(Value::Null));
+    assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
+    assert!(sink.take_parked().is_empty());
+}
+
+#[test]
+fn a_parked_completion_finished_by_its_runner_is_told_as_a_dispatched_one() {
+    use orbital_core_runtime::os_host::completion::OsCompletionSink;
+    let gate = Gate::new();
+    let (kernel, store) = lane_kernel();
+    let (sink, seen) = completion_sink(&kernel, &store, &gate);
+    sink.park_completions();
+    sink.complete(&bump_site(), "k9", Ok(Value::Null));
+    let parked = sink.take_parked().remove(0);
+    let outcomes = kernel.dispatch("Counter", None, &parked.event, parked.payload.clone()).unwrap();
+    sink.finish_parked(&parked, Ok(outcomes));
+    assert_eq!(*seen.lock().unwrap(), vec![serde_json::json!(1.0)]);
+}

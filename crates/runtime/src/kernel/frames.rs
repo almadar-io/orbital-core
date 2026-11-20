@@ -106,7 +106,7 @@ impl RuntimeKernel {
     ) -> SharedEntity {
         let slot = self.frame_slot(trait_name, entity_type, entity_id);
         let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
-        let entity = self.unframed_trait_entity(trait_name, entity_type, entity_id).merged(&frame);
+        let entity = self.unframed_entity_at(&slot, entity_type, entity_id).merged(&frame);
         if self.shared_intrinsic_fields(entity_type).is_some() {
             let own = self
                 .frames
@@ -122,8 +122,10 @@ impl RuntimeKernel {
     /// `entity` as a step in the frame of store ask `entity_id` reads it: with the ask key as its `id` when it has none,
     /// in the step's view only (EXEC-STORE-4).
     pub(super) fn with_store_ask_id(&self, entity: SharedEntity, entity_id: &str) -> SharedEntity {
-        let has_id = entity.fields().is_some_and(|fields| fields.get("id").is_some_and(|id| !id.is_null()));
-        if has_id || !self.store_ask_frames.read().contains(entity_id) {
+        if !self.store_ask_frames.read().contains(entity_id) {
+            return entity;
+        }
+        if entity.fields().is_some_and(|fields| fields.get("id").is_some_and(|id| !id.is_null())) {
             return entity;
         }
         let mut id = SharedEntity::empty_object();
@@ -133,14 +135,18 @@ impl RuntimeKernel {
 
     /// A trait's `@entity` before any frame: declared field defaults, then its row.
     pub(super) fn unframed_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> SharedEntity {
+        self.unframed_entity_at(&self.frame_slot(trait_name, entity_type, entity_id), entity_type, entity_id)
+    }
+
+    /// [`Self::unframed_trait_entity`] for the frame slot already found.
+    fn unframed_entity_at(&self, slot: &(String, String), entity_type: &str, entity_id: &str) -> SharedEntity {
         let defaults = self
             .registry.entity_defaults
             .read()
             .get(entity_type)
             .cloned()
             .unwrap_or_default();
-        let slot = self.frame_slot(trait_name, entity_type, entity_id);
-        let row_id = self.carried_rows.read().get(&slot).cloned();
+        let row_id = self.carried_rows.read().get(slot).cloned();
         let row = self
             .entity_source
             .read(entity_type, row_id.as_deref().unwrap_or(store_row_id(entity_id)))

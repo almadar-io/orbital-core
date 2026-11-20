@@ -417,6 +417,27 @@ pub struct KernelCompletionSink {
     done: Arc<CompletionDone>,
     owners: Arc<Mutex<HashMap<String, Arc<Ended>>>>,
     requesters: Requesters,
+    /// Completions held for a `.lolo` kernel to run (`program/open { kernel: "lolo" }`) instead of this sink; `None`
+    /// while the sink runs them itself.
+    parked: Mutex<Option<Vec<ParkedCompletion>>>,
+}
+
+/// A completion's route event held for a `.lolo` kernel to run: what [`KernelCompletionSink`] would have dispatched,
+/// and who asked for it.
+#[derive(Debug, Clone)]
+pub struct ParkedCompletion {
+    pub site: CallSite,
+    pub key: String,
+    pub event: String,
+    pub payload: Value,
+    pub failed: bool,
+    pub requester: Arc<Requester>,
+}
+
+/// The session and asker a held completion's runner steps it in.
+pub struct ParkedScope {
+    _asker: Option<crate::kernel::AskerGuard>,
+    _session: Option<crate::kernel::SessionGuard>,
 }
 
 /// Who asked for a deferred key: the client and session of the dispatch that deferred it.
@@ -551,7 +572,34 @@ impl KernelCompletionSink {
             done,
             owners: Arc::default(),
             requesters: Arc::default(),
+            parked: Mutex::new(None),
         }
+    }
+
+    /// Hold every completion from now on for a `.lolo` kernel to run ([`Self::take_parked`]) instead of running it.
+    pub fn park_completions(&self) {
+        let mut parked = self.parked.lock();
+        if parked.is_none() {
+            *parked = Some(Vec::new());
+        }
+    }
+
+    /// The completions held since the last take, in arrival order.
+    pub fn take_parked(&self) -> Vec<ParkedCompletion> {
+        self.parked.lock().as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// The session and asker a held completion runs in (EXEC-QUEUE-10, EXEC-FIELD-3), held while its runner steps it.
+    pub fn enter_parked(&self, parked: &ParkedCompletion) -> Option<ParkedScope> {
+        let kernel = self.kernel.upgrade()?;
+        let session = parked.requester.session.as_ref().map(|session| kernel.enter_session(session));
+        let asker = parked.requester.asker.is_some().then(|| kernel.enter_asker(parked.requester.asker.clone()));
+        Some(ParkedScope { _asker: asker, _session: session })
+    }
+
+    /// A held completion's run, made by its runner: told as a completion this sink dispatched is told.
+    pub fn finish_parked(&self, parked: &ParkedCompletion, result: Result<DispatchOutcomes, DispatchError>) {
+        (self.done)(&parked.site, &parked.event, &parked.payload, parked.requester.client_id.as_deref(), result);
     }
 
     /// Start tracking one dispatch with no client. Hold the scope until the dispatch has committed.
@@ -719,6 +767,12 @@ impl KernelCompletionSink {
         let (requester, _ticket) = self.requester_of(key);
         let requester = program_wide_requester(&kernel, site, requester);
         tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, trait_name = %site.trait_name, key, session = ?requester.session, asker = ?requester.asker, "completion requester");
+        // A store leg's work is awaited in place by the dispatch that asked it, so it is never held for a runner.
+        let store_leg_work = requester.lineage.as_ref().is_some_and(|lineage| lineage.store_ask().is_some());
+        if let (false, Some(parked)) = (store_leg_work, self.parked.lock().as_mut()) {
+            parked.push(ParkedCompletion { site: site.clone(), key: key.to_string(), event, payload, failed, requester });
+            return;
+        }
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         // A completion stepping in the program session for a viewer's ask reads that viewer as who asked (EXEC-FIELD-3).

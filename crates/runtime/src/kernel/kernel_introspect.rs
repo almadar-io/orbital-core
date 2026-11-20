@@ -161,6 +161,12 @@ impl KernelIntrospect for StepKernel {
             Some(Value::String(_)) => return Err(format!("{OP}: a leg is a hosted split guest's; this guest has no host")),
             Some(_) => return Err(format!("{OP}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
         };
+        let commit = match request.get("commit") {
+            None | Some(Value::Null) => leg.is_some(),
+            Some(Value::Bool(commit)) if !*commit || session.host.is_some() => *commit || leg.is_some(),
+            Some(Value::Bool(_)) => return Err(format!("{OP}: commit keeps a hosted guest's step; this guest has no host")),
+            Some(_) => return Err(format!("{OP}: the request's `commit` must be a boolean")),
+        };
         let trait_name = text("trait")?;
         let from = match (&leg, request.get("from")) {
             (Some(_), None | Some(Value::Null)) => None,
@@ -229,6 +235,7 @@ impl KernelIntrospect for StepKernel {
                 tick: tick.as_deref(),
                 emitter: emitter.as_deref(),
                 leg: leg.as_deref(),
+                commit,
                 trait_name: &trait_name,
                 entity_id: entity_id.as_deref(),
                 from: &from,
@@ -271,6 +278,8 @@ pub(super) struct IsolatedStep<'a> {
     /// The open server leg this step commits into (`program/dispatch { lolo: "begin" }`): the step runs in the leg's
     /// session, its writes stay and its outcome joins the leg's.
     leg: Option<&'a str>,
+    /// The step's writes and moves stay (`commit: true`, or a `leg`): nothing is restored after it.
+    commit: bool,
     /// The trait whose emit this delivery carries: a refused `per` key is answered to it as `DELIVERY_REJECTED`, as a
     /// native delivery's is, or refuses the dispatch when it declares no listener for it.
     emitter: Option<&'a str>,
@@ -449,7 +458,7 @@ impl RuntimeKernel {
             ]));
         }
         let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
-        let commit = input.leg.is_some();
+        let commit = input.commit;
         let held = self.snapshot_trait(input.trait_name, entity_id);
         let held = if held.state.is_empty() {
             TraitSnapshot { state: self.get_initial_state(input.trait_name).unwrap_or_default(), entity: held.entity }

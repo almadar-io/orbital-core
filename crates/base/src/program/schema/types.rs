@@ -163,6 +163,22 @@ pub struct OrbitalSchema {
     /// V4 identity ledger slice (id → name history) — optional until the Phase-7 flip.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ledger: Option<crate::identity::IdentityLedger>,
+
+    /// The trait that runs this program's client dispatches, and the traits a client kernel mounts when it loads the
+    /// program (`program/open { kernel: "lolo", clientKernel }` stamps the client program it hands a viewer). Absent:
+    /// the client kernel runs each dispatch's cascade itself.
+    #[serde(rename = "dispatchKernel", default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_kernel: Option<DispatchKernel>,
+}
+
+/// The `.lolo` kernel a client program dispatches through: `trait` runs each client dispatch, and `mount` lists the traits
+/// mounted when the program loads, before any page.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DispatchKernel {
+    #[serde(rename = "trait")]
+    pub trait_name: String,
+    #[serde(default)]
+    pub mount: Vec<String>,
 }
 
 impl Serialize for OrbitalSchema {

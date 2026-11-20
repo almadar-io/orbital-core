@@ -10,6 +10,20 @@ pub struct MountPlan {
     pub restored_rows: ValueMap,
 }
 
+/// A client dispatch begun by [`RuntimeKernel::begin_client_dispatch`]: its lane held until it is finished.
+pub(crate) struct ClientDispatchBegun {
+    lane: super::lane::LaneGuard,
+    trait_name: String,
+    eid: String,
+    entity_id: Option<String>,
+    event: String,
+    payload: Value,
+    client_id: Option<String>,
+    mode: DispatchMode,
+    snapshot: Option<TraitSnapshot>,
+    seed_row: Value,
+}
+
 impl RuntimeKernel {
     /// Dispatch through the SEED trait's declared [`DispatchMode`], collecting
     /// whatever server-only effects (`persist`/`fetch`/`call-service`) the
@@ -41,9 +55,24 @@ impl RuntimeKernel {
         payload: Value,
         client_id: Option<&str>,
     ) -> Result<ClientDispatch, KernelError> {
+        let begun = self.begin_client_dispatch(orbital, trait_name, entity_id, event, payload, client_id)?;
+        let outcomes = self.run_client_dispatch(&begun)?;
+        Ok(self.finish_begun_client_dispatch(begun, &outcomes))
+    }
+
+    /// A client dispatch up to its cascade: the lane held, the dispatch mode read, the optimistic snapshot taken before
+    /// anything commits (DIST-3) and the pre-dispatch row its leg replays from (DIST-2).
+    pub(crate) fn begin_client_dispatch(
+        &self,
+        orbital: &str,
+        trait_name: &str,
+        entity_id: Option<&str>,
+        event: &str,
+        payload: Value,
+        client_id: Option<&str>,
+    ) -> Result<ClientDispatchBegun, KernelError> {
         let lane = self.lane.enter(None)?;
         let eid = entity_id.unwrap_or(RUNTIME_SINGLETON).to_string();
-
         let trait_def = self
             .registry
             .trait_definitions
@@ -52,43 +81,55 @@ impl RuntimeKernel {
             .cloned()
             .ok_or_else(|| KernelError::TraitNotFound(trait_name.to_string()))?;
         let mode = self.dispatch_mode_of(&trait_def);
-
-        // RuntimeOptimistic commits locally before any server round trip, so the
-        // snapshot must be taken BEFORE `dispatch` runs — it's what the caller
-        // rolls back to on a disagreeing/erroring server response.
         let snapshot = if matches!(mode, DispatchMode::RuntimeOptimistic) {
             Some(self.snapshot_trait(trait_name, Some(&eid)))
         } else {
             None
         };
-        // The leg replays the event from the pre-dispatch state, so it carries
-        // the pre-dispatch row too.
         let seed_row = self.snapshot_trait(trait_name, Some(&eid)).entity;
-
         debug!(
             target: "almadar::kernel",
             orbital = %orbital, trait_name = %trait_name, event = %event, mode = ?mode,
             "dispatch_with_server_leg",
         );
-
-        let outcomes =
-            self.dispatch_in_turn(lane.turn(), trait_name, Some(&eid), event, payload.clone())?;
-        let mut response = self.response_for(&outcomes, trait_name, event);
-        response.fold_rerenders(&self.rerender_stale());
-
-        Ok(self.finish_client_dispatch(LegSeed {
-            trait_name,
-            event,
+        Ok(ClientDispatchBegun {
+            lane,
+            trait_name: trait_name.to_string(),
+            eid,
+            entity_id: entity_id.map(str::to_string),
+            event: event.to_string(),
             payload,
-            entity_id,
-            client_id,
-            tick: None,
+            client_id: client_id.map(str::to_string),
             mode,
             snapshot,
-            seed_row: &seed_row,
-            outcomes: &outcomes,
+            seed_row,
+        })
+    }
+
+    /// A begun client dispatch's cascade, run natively under its lane turn.
+    pub(crate) fn run_client_dispatch(&self, begun: &ClientDispatchBegun) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        self.dispatch_in_turn(begun.lane.turn(), &begun.trait_name, Some(&begun.eid), &begun.event, begun.payload.clone())
+    }
+
+    /// A begun client dispatch settled from the outcomes its cascade made: the response, its rerenders and its legs.
+    pub(crate) fn finish_begun_client_dispatch(&self, begun: ClientDispatchBegun, outcomes: &[(String, ProcessEventResult)]) -> ClientDispatch {
+        let mut response = self.response_for(outcomes, &begun.trait_name, &begun.event);
+        response.fold_rerenders(&self.rerender_stale());
+        let dispatched = self.finish_client_dispatch(LegSeed {
+            trait_name: &begun.trait_name,
+            event: &begun.event,
+            payload: begun.payload,
+            entity_id: begun.entity_id.as_deref(),
+            client_id: begun.client_id.as_deref(),
+            tick: None,
+            mode: begun.mode,
+            snapshot: begun.snapshot,
+            seed_row: &begun.seed_row,
+            outcomes,
             response,
-        }))
+        });
+        drop(begun.lane);
+        dispatched
     }
 
     /// A browser kernel's own `$MOUNT` for `route` ([`Self::announce_browser_run_mount`]) as one client dispatch: the
