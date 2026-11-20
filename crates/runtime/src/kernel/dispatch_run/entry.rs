@@ -631,6 +631,33 @@ impl RuntimeKernel {
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
+    /// A step of this kernel's own `trait_name` that its `.lolo` kernel takes (`kernel/step "self"`) inside the client
+    /// dispatch it runs: one step and no cascade, committed, its outcome joining that dispatch's.
+    pub(crate) fn step_self_run(
+        &self,
+        trait_name: &str,
+        row: Option<&str>,
+        event_name: &str,
+        payload: Value,
+        tick: Option<&str>,
+    ) -> Result<DispatchOutcomes, String> {
+        if self.client_run.read().is_none() {
+            return Err("kernel/step \"self\" runs only inside a client dispatch the program's .lolo kernel runs".to_string());
+        }
+        let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
+        self.ensure_trait_loaded(trait_name).map_err(|e| e.to_string())?;
+        let mut run = match tick {
+            Some(tick) => self.run_of(vec![Self::tick_plan(trait_name, Some(row.unwrap_or(crate::process_result::RUNTIME_SINGLETON)), tick)]),
+            None => self.run_of_dispatch(trait_name, row, event_name, payload, None, None),
+        };
+        run.isolated = true;
+        let outcomes = self.run_straight_through(run).map_err(|e| e.to_string())?;
+        if let Some(ran) = self.client_run.write().as_mut() {
+            ran.extend(outcomes.iter().cloned());
+        }
+        Ok(outcomes)
+    }
+
     pub(super) fn run_of_each(
         &self,
         traits: &[String],

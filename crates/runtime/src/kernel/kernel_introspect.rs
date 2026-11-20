@@ -36,6 +36,8 @@ pub(super) struct StepKernel {
     grants: Arc<RwLock<OsGrantTable>>,
     /// The kernel's open guests, which `kernel/step` steps (EXEC-METAL-7).
     guests: std::sync::Weak<RwLock<HashMap<String, super::guests::GuestSession>>>,
+    /// The kernel this is the step reader of, which `kernel/step "self"` steps; set once the kernel is shared.
+    owner: std::sync::OnceLock<std::sync::Weak<RuntimeKernel>>,
 }
 
 impl std::fmt::Debug for StepKernel {
@@ -50,7 +52,11 @@ impl StepKernel {
         grants: Arc<RwLock<OsGrantTable>>,
         guests: std::sync::Weak<RwLock<HashMap<String, super::guests::GuestSession>>>,
     ) -> Self {
-        Self { enabled: AtomicBool::new(false), position: RwLock::new(Position::default()), io, grants, guests }
+        Self { enabled: AtomicBool::new(false), position: RwLock::new(Position::default()), io, grants, guests, owner: std::sync::OnceLock::new() }
+    }
+
+    pub(super) fn set_owner(&self, owner: std::sync::Weak<RuntimeKernel>) {
+        let _ = self.owner.set(owner);
     }
 
     pub(super) fn enable(&self) {
@@ -132,11 +138,25 @@ impl KernelIntrospect for StepKernel {
         let Value::String(handle) = guest else {
             return Err(format!("{OP}: guest must be the handle program/open answered"));
         };
-        let session = self
-            .guests
-            .upgrade()
-            .and_then(|open| open.read().get(handle.as_str()).cloned())
-            .ok_or_else(|| format!("{OP}: no open guest '{}' (it was never opened or is closed)", handle.as_str()))?;
+        // "self" names the kernel the step runs on: a client kernel's .lolo kernel stepping its own traits inside the
+        // client dispatch it runs, each step committed (EXEC-METAL-7).
+        let stepping_self = handle.as_str() == "self";
+        let (step_kernel, step_host, embedded): (Arc<RuntimeKernel>, Option<Arc<dyn super::guest_hosting::GuestHost>>, _) = if stepping_self {
+            let owner = self
+                .owner
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| format!("{OP}: \"self\" names the kernel the step runs on, and this one is not shared"))?;
+            let host: Arc<dyn super::guest_hosting::GuestHost> = Arc::new(SelfHost(Arc::downgrade(&owner)));
+            (owner, Some(host), Default::default())
+        } else {
+            let session = self
+                .guests
+                .upgrade()
+                .and_then(|open| open.read().get(handle.as_str()).cloned())
+                .ok_or_else(|| format!("{OP}: no open guest '{}' (it was never opened or is closed)", handle.as_str()))?;
+            (Arc::clone(&session.kernel), session.host.clone(), session.embedded_traits())
+        };
         let text = |field: &str| {
             request
                 .get(field)
@@ -157,19 +177,22 @@ impl KernelIntrospect for StepKernel {
         };
         let leg = match request.get("leg") {
             None | Some(Value::Null) => None,
-            Some(Value::String(leg)) if session.host.is_some() => Some(leg.to_string()),
+            Some(Value::String(leg)) if step_host.is_some() && !stepping_self => Some(leg.to_string()),
             Some(Value::String(_)) => return Err(format!("{OP}: a leg is a hosted split guest's; this guest has no host")),
             Some(_) => return Err(format!("{OP}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
         };
         let commit = match request.get("commit") {
-            None | Some(Value::Null) => leg.is_some(),
-            Some(Value::Bool(commit)) if !*commit || session.host.is_some() => *commit || leg.is_some(),
+            None | Some(Value::Null) => leg.is_some() || stepping_self,
+            Some(Value::Bool(true)) if stepping_self => true,
+            Some(Value::Bool(false)) if stepping_self => return Err(format!("{OP}: a step of \"self\" always commits")),
+            Some(Value::Bool(commit)) if !*commit || step_host.is_some() => *commit || leg.is_some(),
             Some(Value::Bool(_)) => return Err(format!("{OP}: commit keeps a hosted guest's step; this guest has no host")),
             Some(_) => return Err(format!("{OP}: the request's `commit` must be a boolean")),
         };
         let trait_name = text("trait")?;
         let from = match (&leg, request.get("from")) {
             (Some(_), None | Some(Value::Null)) => None,
+            (None, None | Some(Value::Null)) if stepping_self => None,
             _ => Some(text("from")?),
         };
         let tick = match request.get("tick") {
@@ -217,9 +240,9 @@ impl KernelIntrospect for StepKernel {
         };
         let payload = request.get("payload").cloned().unwrap_or(Value::Null);
         let entity = request.get("entity").cloned();
-        let embedded = session.embedded_traits();
-        let kernel = Arc::clone(&session.kernel);
-        let host = session.host.clone();
+        let kernel = step_kernel;
+        let host = step_host;
+        let in_leg_host = host.clone();
         let run = move || {
             let from = match from {
                 Some(from) => from,
@@ -246,11 +269,54 @@ impl KernelIntrospect for StepKernel {
             };
             kernel.step_isolated(input)
         };
-        match (&session.host, request.get("leg").and_then(Value::as_str)) {
+        match (in_leg_host, request.get("leg").and_then(Value::as_str)) {
             (Some(host), Some(leg)) => host.in_leg(leg, Box::new(run)),
             _ => run(),
         }
         .map_err(|error| format!("{OP}: {error}"))
+    }
+}
+
+/// The kernel a step runs on, as the host of its own `kernel/step "self"`: each step runs isolated on it, committed,
+/// and joins the client dispatch its `.lolo` kernel is running.
+struct SelfHost(std::sync::Weak<RuntimeKernel>);
+
+impl SelfHost {
+    fn owner(&self) -> Result<Arc<RuntimeKernel>, String> {
+        self.0.upgrade().ok_or_else(|| "the kernel has ended".to_string())
+    }
+}
+
+impl super::guest_hosting::GuestHost for SelfHost {
+    fn kernel(&self) -> Arc<RuntimeKernel> {
+        self.0.upgrade().expect("a step of \"self\" runs while its kernel lives")
+    }
+    fn environment_of(&self, _: &str) -> Option<String> {
+        None
+    }
+    fn credential_of(&self, _: &str) -> Option<String> {
+        None
+    }
+    fn deferred_denials(&self) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+    fn register(&self, _: OrbitalSchema) -> Result<(), String> {
+        Err("a kernel stepping itself registers nothing".to_string())
+    }
+    fn mount(&self, _: Option<&str>, _: &[crate::effects::MountSeed], _: Value) -> Result<crate::resumable::DispatchOutcomes, String> {
+        Err("a kernel stepping itself mounts nothing".to_string())
+    }
+    fn dispatch(&self, _: &str, _: &str, _: Value) -> Result<crate::resumable::DispatchOutcomes, String> {
+        Err("a kernel stepping itself runs no whole dispatch".to_string())
+    }
+    fn request(&self, _: &Value, _: &orbital_core_base::value::ValueMap) -> Result<Value, crate::effects::executor::SubstrateFailure> {
+        Err(crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Unsupported, "a kernel stepping itself takes no events request"))
+    }
+    fn tick_pass(&self) -> Result<crate::resumable::DispatchOutcomes, String> {
+        Ok(Vec::new())
+    }
+    fn step(&self, trait_name: &str, row: Option<&str>, event: &str, payload: Value, tick: Option<&str>, _leg: Option<&str>) -> Result<crate::resumable::DispatchOutcomes, String> {
+        self.owner()?.step_self_run(trait_name, row, event, payload, tick)
     }
 }
 

@@ -2587,10 +2587,37 @@ mod hosted_step {
         assert_eq!(got["browserRuns"], json!(["Face"]), "{got}");
     }
 
+    /// A resolved client-kernel program: one orbital whose two [client] traits run the browser's dispatches, on a boot
+    /// page, its grant at the app level.
+    fn client_kernel_program(trait_name: &str) -> serde_json::Value {
+        json!({
+            "name": "client-kernel", "typeContractVersion": 1,
+            "osGrants": { "kernel": [{ "target": "guest", "kinds": ["step"] }] },
+            "types": { "KThing": [{ "name": "a", "type": "string" }] },
+            "orbitals": [{ "name": "ClientKernelOrbital",
+                "entity": { "name": "ClientKernelRun", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": trait_name, "linkedEntity": "ClientKernelRun", "dispatch": "client",
+                    "stateMachine": { "states": [{ "name": "ready", "isInitial": true }], "transitions": [{ "from": "ready", "to": "ready", "event": "INIT" }] } }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": trait_name }] }] }]
+        })
+    }
+
     #[test]
-    fn a_lolo_split_guests_client_program_names_its_dispatch_kernel() {
-        let got = opened_faced(json!({ "split": true, "kernel": "lolo", "clientKernel": { "trait": "GuestKernel", "mount": ["GuestKernelMachine", "GuestKernel"] } }));
-        assert_eq!(got["client"]["dispatchKernel"], json!({ "trait": "GuestKernel", "mount": ["GuestKernelMachine", "GuestKernel"] }), "{got}");
+    fn a_lolo_split_guests_client_program_carries_its_client_kernel() {
+        let got = opened_faced(json!({ "split": true, "kernel": "lolo", "clientKernel": { "trait": "ClientKernel", "mount": ["ClientKernel"], "program": client_kernel_program("ClientKernel") } }));
+        let client = &got["client"];
+        assert_eq!(client["dispatchKernel"], json!({ "trait": "ClientKernel", "mount": ["ClientKernel"] }), "{got}");
+        let orbital = client["orbitals"].as_array().unwrap().iter().find(|o| o["name"] == "ClientKernelOrbital").cloned().expect("the client kernel's orbital joined the client program");
+        assert_eq!(orbital["traits"][0]["name"], "ClientKernel");
+        assert_eq!(orbital["osGrants"]["kernel"][0]["kinds"], json!(["step"]), "its app grant moved onto its orbital: {orbital}");
+        assert!(orbital["pages"].as_array().is_none_or(|pages| pages.is_empty()), "its boot page is not the browser's: {orbital}");
+        assert_eq!(client["types"]["KThing"][0]["name"], "a", "its named types joined");
+    }
+
+    #[test]
+    fn edge_a_client_kernel_whose_trait_the_program_already_has_is_refused() {
+        let got = opened_faced(json!({ "split": true, "kernel": "lolo", "clientKernel": { "trait": "Face", "mount": ["Face"], "program": client_kernel_program("Face") } }));
+        assert!(got["client"].is_null(), "the open is refused: {got}");
     }
 
     #[test]

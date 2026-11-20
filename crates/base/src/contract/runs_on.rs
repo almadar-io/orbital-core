@@ -199,6 +199,7 @@ pub fn effect_site(
     }
     if is_trace_subscription_sexpr(operator, args)
         || is_mounted_reflection_sexpr(operator, args)
+        || is_loaded_reflection_sexpr(operator, args)
         || is_local_guest_sexpr(operator, args)
         || operator == "cancel-call"
     {
@@ -253,6 +254,23 @@ pub fn is_mounted_reflection_sexpr(operator: &str, args: &[crate::schema::sexpr:
         && matches!(args.first(), Some(SExpression::Object(options))
             if options.iter().any(|(k, v)| k.as_str() == "mounted" && matches!(v, SExpression::Bool(true)))
                 && !options.iter().any(|(k, _)| k.as_str() == "guest"))
+}
+
+/// A `program/self` naming `loaded: true` and no `guest`: the program the kernel the step runs on loaded, answered by
+/// that kernel (a browser's client program in a browser), as `mounted` is.
+pub fn is_loaded_reflection_sexpr(operator: &str, args: &[crate::schema::sexpr::SExpression]) -> bool {
+    use crate::schema::sexpr::SExpression;
+    operator == "program/self"
+        && matches!(args.first(), Some(SExpression::Object(options))
+            if options.iter().any(|(k, v)| k.as_str() == "loaded" && matches!(v, SExpression::Bool(true)))
+                && !options.iter().any(|(k, _)| k.as_str() == "guest"))
+}
+
+/// [`is_loaded_reflection_sexpr`] for an effect whose arguments are evaluated.
+pub fn is_loaded_reflection(operator: &str, args: &[crate::value::Value]) -> bool {
+    operator == "program/self"
+        && args.first().and_then(|o| o.get_path("loaded")).and_then(crate::value::Value::as_bool) == Some(true)
+        && args.first().and_then(|o| o.get_path("guest")).is_none()
 }
 
 /// A `program/self` whose evaluated options name `mounted: true`, a guest's included.
@@ -1038,6 +1056,18 @@ mod tests {
         let guest_value: crate::value::Value = from_json_value(&(serde_json::json!({ "mounted": true, "guest": "g1" }))).expect("value");
         assert!(is_mounted_reflection("program/self", &[guest_value.clone()]));
         assert!(!is_local_mounted_reflection("program/self", &[guest_value]));
+    }
+
+    #[test]
+    fn a_loaded_reflection_is_answered_where_it_runs() {
+        use crate::schema::sexpr::SExpression;
+        let options = |v: serde_json::Value| -> SExpression { from_json_value(&v).expect("sexpr") };
+        assert_eq!(effect_site("program/self", &[options(serde_json::json!({ "loaded": true }))], &Residence::none()), RunsOn::Any);
+        assert_eq!(effect_site("program/self", &[options(serde_json::json!({ "loaded": false }))], &Residence::none()), RunsOn::Server, "control");
+        assert_eq!(effect_site("program/self", &[options(serde_json::json!({ "loaded": true, "guest": "@entity.g" }))], &Residence::none()), RunsOn::Server, "a guest's program is the server's");
+        let evaluated: crate::value::Value = from_json_value(&serde_json::json!({ "loaded": true })).expect("value");
+        assert!(is_loaded_reflection("program/self", &[evaluated.clone()]));
+        assert!(!is_loaded_reflection("program/inputs", &[evaluated]));
     }
 
     #[test]

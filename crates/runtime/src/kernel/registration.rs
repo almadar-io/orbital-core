@@ -229,6 +229,9 @@ impl RuntimeKernel {
         }
         self.registry.row_shapes.write().clear();
         schema.bind_unlinked_traits_to_host_entity();
+        if let Some(kernel) = &schema.dispatch_kernel {
+            *self.dispatch_kernel.write() = Some(kernel.clone());
+        }
         if let Some(declared) = &schema.egress {
             let mut egress = self.grants.egress.write();
             for origin in declared {

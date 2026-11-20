@@ -80,6 +80,9 @@ pub enum EntryError {
     ForkSession(#[source] KernelError),
     #[error("fork_program: {0}")]
     ForkProgram(#[source] KernelError),
+    /// A trait the program's `dispatchKernel` lists could not be mounted when the program loaded.
+    #[error("dispatchKernel mount: {0}")]
+    Mount(String),
 }
 
 /// Errors returned by the runtime kernel.
@@ -517,6 +520,11 @@ pub struct RuntimeKernel {
     /// The keys of the store asks a driver is answering now: each is the frame its driver steps in (EXEC-STORE-4), and
     /// a step there reads the key as `@entity.id`. Never persisted; a key leaves once its answer is read.
     store_ask_frames: RwLock<std::collections::HashSet<String>>,
+    /// The trait that runs this kernel's client dispatches and the traits mounted at load (`dispatchKernel`); `None`
+    /// runs each client dispatch's cascade natively.
+    dispatch_kernel: RwLock<Option<orbital_core_base::schema::DispatchKernel>>,
+    /// The outcomes of the steps a `.lolo` kernel took with `kernel/step "self"` in the client dispatch it runs now.
+    client_run: RwLock<Option<Vec<(String, ProcessEventResult)>>>,
     /// Keyed rows (trait, row) of this session whose last pending ask ended since the last step ended.
     settled_rows: RwLock<Vec<(String, String)>>,
     /// Keyed rows dropped and not yet reported to their session's client: (session, frame key).
@@ -889,6 +897,8 @@ impl RuntimeKernel {
             deferred_asks: RwLock::new(HashMap::new()),
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             store_ask_frames: RwLock::new(std::collections::HashSet::new()),
+            dispatch_kernel: RwLock::new(None),
+            client_run: RwLock::new(None),
             settled_rows: RwLock::new(Vec::new()),
             removed_rows: RwLock::new(Vec::new()),
             guests,
@@ -1017,6 +1027,16 @@ impl RuntimeKernel {
 
     /// Answer the `os/` asks this kernel makes with no journal in flight (a client role's) through `direct`
     /// ([`super::resumable::DirectOs`]); `None` leaves them unanswered.
+    /// Share this kernel with its own step reader, so a `.lolo` kernel running in it can step it (`kernel/step "self"`).
+    pub fn attach_self(self: &Arc<Self>) {
+        self.introspect.set_owner(Arc::downgrade(self));
+    }
+
+    /// The traits a client kernel mounts when it loads its program (`dispatchKernel.mount`).
+    pub fn dispatch_kernel_mounts(&self) -> Vec<String> {
+        self.dispatch_kernel.read().as_ref().map(|kernel| kernel.mount.clone()).unwrap_or_default()
+    }
+
     pub fn set_direct_os(&self, direct: Option<Arc<dyn super::resumable::DirectOs>>) {
         self.io.set_direct_os(direct);
     }

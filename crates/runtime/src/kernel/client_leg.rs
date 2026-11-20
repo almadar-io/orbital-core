@@ -56,8 +56,31 @@ impl RuntimeKernel {
         client_id: Option<&str>,
     ) -> Result<ClientDispatch, KernelError> {
         let begun = self.begin_client_dispatch(orbital, trait_name, entity_id, event, payload, client_id)?;
-        let outcomes = self.run_client_dispatch(&begun)?;
+        let through = self
+            .dispatch_kernel
+            .read()
+            .as_ref()
+            .filter(|kernel| kernel.trait_name != trait_name && !kernel.mount.iter().any(|name| name == trait_name))
+            .map(|kernel| kernel.trait_name.clone());
+        let outcomes = match through {
+            Some(kernel_trait) => self.run_client_dispatch_through(&begun, &kernel_trait)?,
+            None => self.run_client_dispatch(&begun)?,
+        };
         Ok(self.finish_begun_client_dispatch(begun, &outcomes))
+    }
+
+    /// A begun client dispatch run by the program's `.lolo` kernel (`dispatchKernel`): KERNEL_DISPATCH to `kernel_trait`
+    /// under the dispatch's lane turn, which steps this kernel's traits with `kernel/step "self"`. The dispatch's outcomes
+    /// are those steps', never the `.lolo` kernel's own.
+    pub(crate) fn run_client_dispatch_through(&self, begun: &ClientDispatchBegun, kernel_trait: &str) -> Result<Vec<(String, ProcessEventResult)>, KernelError> {
+        let mut request = ValueMap::default();
+        request.insert("trait".into(), Value::string(begun.trait_name.as_str()));
+        request.insert("event".into(), Value::string(begun.event.as_str()));
+        request.insert("payload".into(), begun.payload.clone());
+        *self.client_run.write() = Some(Vec::new());
+        let ran = self.dispatch_in_turn(begun.lane.turn(), kernel_trait, None, "KERNEL_DISPATCH", Value::object(request));
+        let outcomes = self.client_run.write().take().unwrap_or_default();
+        ran.map(|_| outcomes)
     }
 
     /// A client dispatch up to its cascade: the lane held, the dispatch mode read, the optimistic snapshot taken before

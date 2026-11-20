@@ -1212,3 +1212,66 @@ fn control_a_client_only_route_nobody_listens_to_posts_nothing() {
     let mount = landing_mount("/landing", &["Shell"], false);
     assert!(mount.legs.is_empty() && mount.stateful_legs.is_empty());
 }
+
+fn focus_schema(display_effects: serde_json::Value) -> OrbitalSchema {
+    from_json_value(&json!({
+        "name": "plan",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Plan",
+            "entity": { "name": "View", "persistence": "runtime",
+                "fields": [{ "name": "id", "type": "string" }, { "name": "focus", "type": "string" }] },
+            "traits": [
+                { "name": "Display", "linkedEntity": "View", "dispatch": "optimistic",
+                  "listens": [{ "event": "LOADED", "triggers": "ARRIVED", "source": { "kind": "trait", "trait": "Data" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "loading", "isInitial": true }, { "name": "ready" }],
+                    "transitions": [
+                        { "from": "loading", "to": "loading", "event": "INIT", "effects": display_effects },
+                        { "from": "loading", "to": "ready", "event": "ARRIVED", "effects": [] }] } },
+                { "name": "Data", "linkedEntity": "View",
+                  "emits": [{ "event": "LOADED", "scope": "external" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["persist", "create", "View", { "focus": "x" }], ["emit", "LOADED", {}]] }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+fn focus_mount(display_effects: serde_json::Value) -> orbital_core_runtime::embed::wire::MountWire {
+    let k = EmbeddedKernel::new(focus_schema(display_effects), "c1").unwrap();
+    k.dispatch_mount(
+        &[seed("Display"), seed("Data")],
+        None,
+        from_json_value(&json!({ "person": "Ana" })).unwrap(),
+    )
+    .unwrap()
+}
+
+fn carried_focus(rows: &Option<ValueMap>) -> Option<String> {
+    rows.as_ref()
+        .and_then(|rows| rows.get("Display"))
+        .and_then(|row| row.get_path("focus"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// EXEC-DIST-10: the host cascades the data seed's emit into Display, a seed the browser ran and posted nothing for; the
+/// mount leg carries the row Display's INIT wrote, or the host's report of Display folds its defaults over it.
+#[test]
+fn a_mount_leg_carries_the_row_a_browser_run_seed_wrote_for_the_host_cascade() {
+    let mount = focus_mount(json!([["set", "@entity.focus", "@payload.person"]]));
+    assert!(mount.failed.is_none(), "{:?}", mount.failed);
+    assert_eq!(mount.legs.len(), 1, "{:?}", mount.legs);
+    assert_eq!(carried_focus(&mount.legs[0].leg.entity_by_trait).as_deref(), Some("Ana"));
+    // A stateful host is posted the seed itself and runs its INIT with the mount payload.
+    assert!(mount.stateful_legs[0].seeds.iter().any(|s| s.trait_name == "Display"), "{:?}", mount.stateful_legs[0].seeds);
+}
+
+#[test]
+fn control_a_browser_run_seed_that_wrote_nothing_carries_no_row() {
+    let mount = focus_mount(json!([]));
+    assert_eq!(mount.legs.len(), 1);
+    assert_eq!(carried_focus(&mount.legs[0].leg.entity_by_trait), None);
+}

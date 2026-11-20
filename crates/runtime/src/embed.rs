@@ -26,6 +26,7 @@ pub use server::os_glob_matches;
 use crate::config::KernelConfig;
 use crate::effects::response::{EventRequest, EventResponse};
 use crate::effects::response::{MountSeed, TransitionHop};
+use crate::effects::FrameOp;
 use orbital_core_base::bus_event::EmittedEvent;
 use crate::entity_source::EntitySource;
 use crate::entity_source::InMemoryEntityCache;
@@ -187,7 +188,7 @@ pub fn mount_leg_request(
 
 /// A `Client`-environment kernel with its entity cache, trait index, client id and tick clock.
 pub struct EmbeddedKernel {
-    kernel: RuntimeKernel,
+    kernel: Arc<RuntimeKernel>,
     entities: Arc<InMemoryEntityCache>,
     trait_owners: Mutex<Arc<TraitOwners>>,
     client_id: String,
@@ -234,18 +235,19 @@ impl EmbeddedKernel {
             delegate: Some(collector as Arc<dyn crate::effects::executor::EffectDelegate>),
             ..KernelConfig::default()
         };
-        let kernel = RuntimeKernel::new(
+        let kernel = Arc::new(RuntimeKernel::new(
             RuntimeEnvironment::Client,
             Arc::clone(&entities) as Arc<dyn EntitySource>,
             config,
-        );
+        ));
+        kernel.attach_self();
         kernel
             .register_schema(schema)
             .map_err(EntryError::Register)?;
         let trait_owners = TraitOwners::from_kernel(&kernel);
         let gpu = std::sync::Arc::new(client_gpu::ClientGpu::default());
         kernel.set_direct_os(Some(gpu.clone() as std::sync::Arc<dyn crate::resumable::DirectOs>));
-        Ok(Self {
+        Self {
             kernel,
             entities,
             trait_owners: Mutex::new(Arc::new(trait_owners)),
@@ -258,7 +260,22 @@ impl EmbeddedKernel {
             mount_key: Mutex::new(None),
             departed: Mutex::new(None),
             gpu,
-        })
+        }
+        .mounted_at_load()
+    }
+
+    /// The traits the program's `dispatchKernel` lists, mounted before any page: each runs its lifecycle event.
+    fn mounted_at_load(self) -> Result<Self, EntryError> {
+        let seeds: Vec<MountSeed> = self
+            .kernel
+            .dispatch_kernel_mounts()
+            .into_iter()
+            .map(|name| MountSeed { r#trait: name, event: crate::effects::response::LifecycleEvent::Init })
+            .collect();
+        if !seeds.is_empty() {
+            self.dispatch_mount(&seeds, None, Value::Null).map_err(EntryError::Mount)?;
+        }
+        Ok(self)
     }
 
     /// [`RuntimeKernel::seed_cached_identity`]: the identity the browser kept, taken only while no server frame set one.
@@ -746,6 +763,31 @@ impl EmbeddedKernel {
                                     .get_or_insert_with(ValueMap::default)
                                     .entry(name.clone())
                                     .or_insert_with(|| row.clone());
+                            }
+                        }
+                        // A seed the browser ran and posted nothing for is still run by the host when another seed's cascade
+                        // reaches it (EXEC-DIST-10): the leg carries the row its lifecycle step wrote, or the host's report
+                        // of that trait folds its defaults over the browser's write.
+                        for (_, wire) in dispatched.iter().filter(|(_, wire)| {
+                            wire.orbital == orbital
+                                && !matches!(wire.mode, DispatchMode::HybridClientOnly)
+                                && !group.iter().any(|(_, posted)| posted.seed.trait_name == wire.seed.trait_name)
+                        }) {
+                            let trait_name = wire.seed.trait_name.as_str();
+                            let frame = self.kernel.trait_frame_key(trait_name);
+                            let wrote = wire.response.frames.iter().flat_map(|delta| delta.ops.iter()).any(|op| match op {
+                                FrameOp::Put { frame: written, fields } => *written == frame && !fields.is_empty(),
+                                FrameOp::Set { frames } => frames.iter().any(|(written, fields)| *written == frame && !fields.is_empty()),
+                                _ => false,
+                            });
+                            if !wrote {
+                                continue;
+                            }
+                            let row = self.kernel.snapshot_trait(trait_name, entity_id).entity;
+                            if row.as_object().is_some_and(|fields| !fields.is_empty()) {
+                                leg.entity_by_trait
+                                    .get_or_insert_with(ValueMap::default)
+                                    .insert(trait_name.into(), row);
                             }
                         }
                         // Every seed has run by now: what the host must still hold is what is left.

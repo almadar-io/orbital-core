@@ -306,6 +306,72 @@ fn client_program_of(program: &OrbitalSchema) -> Value {
     )
 }
 
+/// `client` with the orbitals of the resolved client-kernel `program` added (EXEC-ENDPOINT-3a): each keeps its program's
+/// app-level grants as its own, its protocol pages stay behind (the browser mounts its traits from `dispatchKernel`), and
+/// its named types join `client`'s. A trait or type name `client` already holds otherwise is refused.
+fn with_client_kernel(client: &mut Value, program: &Value) -> Result<(), String> {
+    let taken: std::collections::HashSet<String> = client
+        .get("orbitals")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .flat_map(|orbital| orbital.get("traits").and_then(Value::as_array).cloned().unwrap_or_default())
+        .filter_map(|t| t.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let app_grants = program.get("osGrants").filter(|g| !matches!(g, Value::Null)).cloned();
+    let mut joined = Vec::new();
+    for orbital in program.get("orbitals").and_then(Value::as_array).cloned().unwrap_or_default() {
+        let Value::Object(mut fields) = orbital else {
+            return Err("an orbital is not a record".to_string());
+        };
+        for t in fields.get("traits").and_then(Value::as_array).cloned().unwrap_or_default() {
+            if let Some(name) = t.get("name").and_then(Value::as_str) {
+                if taken.contains(name) {
+                    return Err(format!("trait {name} is already the program's"));
+                }
+            }
+        }
+        if let Some(app) = &app_grants {
+            let mut grants: orbital_core_base::os_grants::OsGrants = orbital_core_base::json_value::from_json_value(&orbital_core_base::json_value::value_to_json(app)).map_err(|e| e.to_string())?;
+            if let Some(own) = fields.get("osGrants").filter(|g| !matches!(g, Value::Null)) {
+                let own: orbital_core_base::os_grants::OsGrants = orbital_core_base::json_value::from_json_value(&orbital_core_base::json_value::value_to_json(own)).map_err(|e| e.to_string())?;
+                grants.union(&own);
+            }
+            fields.insert("osGrants".into(), orbital_core_base::value_serialize::to_canonical_value(&grants).map_err(|e| e.to_string())?);
+        }
+        if let Some(Value::Array(pages)) = fields.get("pages").cloned() {
+            let kept: Vec<Value> = pages.iter().filter(|page| page.get("protocol").is_none()).cloned().collect();
+            fields.insert("pages".into(), Value::array(kept));
+        }
+        joined.push(Value::object(fields));
+    }
+    let Value::Object(root) = client else {
+        return Err("the client program is not a record".to_string());
+    };
+    if let Some(Value::Object(types)) = program.get("types") {
+        let mut held = match root.get("types") {
+            Some(Value::Object(held)) => (**held).clone(),
+            _ => ValueMap::default(),
+        };
+        for (name, shape) in types.iter() {
+            match held.get(name.as_str()) {
+                Some(existing) if existing != shape => return Err(format!("type {name} is already the program's, with another shape")),
+                _ => {
+                    held.insert(name.clone(), shape.clone());
+                }
+            }
+        }
+        root.insert("types".into(), Value::object(held));
+    }
+    let mut orbitals = match root.get("orbitals") {
+        Some(Value::Array(orbitals)) => orbitals.to_vec(),
+        _ => Vec::new(),
+    };
+    orbitals.extend(joined);
+    root.insert("orbitals".into(), Value::array(orbitals));
+    Ok(())
+}
+
 fn failure(message: impl Into<String>) -> AgentPortFailure {
     AgentPortFailure {
         error: message.into(),
@@ -1058,10 +1124,11 @@ impl RuntimeKernel {
         };
         let client_kernel = match options.as_ref().and_then(|o| o.get("clientKernel")) {
             None | Some(Value::Null) => None,
-            Some(named) if lolo => Some(
+            Some(named) if lolo => Some((
                 orbital_core_base::json_value::from_json_value::<orbital_core_base::schema::DispatchKernel>(&orbital_core_base::json_value::value_to_json(named))
-                    .map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: `clientKernel` is {{ trait, mount }}: {e}")))?,
-            ),
+                    .map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: `clientKernel` is {{ trait, mount, program? }}: {e}")))?,
+                named.get("program").filter(|program| !matches!(program, Value::Null)).cloned(),
+            )),
             Some(_) => {
                 return Err(guest_refusal(
                     orbital_core_base::os::OsErrorKind::Invalid,
@@ -1342,13 +1409,21 @@ impl RuntimeKernel {
                 }
             };
             guest.set_runs_client_traits(!split);
-            let client = split.then(|| {
-                let mut client = client_program_of(&schema);
-                if let (Some(kernel), Value::Object(fields)) = (&client_kernel, &mut client) {
-                    fields.insert("dispatchKernel".into(), orbital_core_base::value_serialize::to_canonical_value(kernel).unwrap_or(Value::Null));
+            let client = match split {
+                false => None,
+                true => {
+                    let mut client = client_program_of(&schema);
+                    if let Some((kernel, program)) = &client_kernel {
+                        if let Some(program) = program {
+                            with_client_kernel(&mut client, program).map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: `clientKernel.program`: {e}")))?;
+                        }
+                        if let Value::Object(fields) = &mut client {
+                            fields.insert("dispatchKernel".into(), orbital_core_base::value_serialize::to_canonical_value(kernel).unwrap_or(Value::Null));
+                        }
+                    }
+                    Some(client)
                 }
-                client
-            });
+            };
             if has_lazy {
                 guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
             }
