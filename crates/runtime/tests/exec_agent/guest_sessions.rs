@@ -2447,6 +2447,9 @@ mod hosted_step {
         fn tick_pass(&self) -> Result<DispatchOutcomes, String> {
             Ok(Default::default())
         }
+        fn drive_by_lolo(&self) -> Result<(), String> {
+            Ok(())
+        }
         fn step(&self, trait_name: &str, row: Option<&str>, event: &str, payload: Value, tick: Option<&str>, _leg: Option<&str>) -> Result<DispatchOutcomes, String> {
             let mut progress = self.kernel.start_isolated_step(trait_name, row, event, payload, tick).map_err(|e| format!("{e:?}"))?;
             loop {
@@ -2582,6 +2585,25 @@ mod hosted_step {
     fn a_split_guests_open_names_the_traits_its_viewer_runs() {
         let got = opened_faced(json!({ "split": true }));
         assert_eq!(got["browserRuns"], json!(["Face"]), "{got}");
+    }
+
+    #[test]
+    fn a_lolo_split_guests_client_program_names_its_dispatch_kernel() {
+        let got = opened_faced(json!({ "split": true, "kernel": "lolo", "clientKernel": { "trait": "GuestKernel", "mount": ["GuestKernelMachine", "GuestKernel"] } }));
+        assert_eq!(got["client"]["dispatchKernel"], json!({ "trait": "GuestKernel", "mount": ["GuestKernelMachine", "GuestKernel"] }), "{got}");
+    }
+
+    #[test]
+    fn control_a_split_guests_client_program_names_no_dispatch_kernel_without_one() {
+        let got = opened_faced(json!({ "split": true, "kernel": "lolo" }));
+        assert!(got["client"].is_object(), "{got}");
+        assert!(got["client"].get("dispatchKernel").is_none(), "{got}");
+    }
+
+    #[test]
+    fn edge_a_client_kernel_on_a_native_guest_is_refused() {
+        let got = opened_faced(json!({ "split": true, "clientKernel": { "trait": "GuestKernel", "mount": [] } }));
+        assert!(got["client"].is_null(), "the open is refused: {got}");
     }
 
     #[test]

@@ -1056,6 +1056,19 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let client_kernel = match options.as_ref().and_then(|o| o.get("clientKernel")) {
+            None | Some(Value::Null) => None,
+            Some(named) if lolo => Some(
+                orbital_core_base::json_value::from_json_value::<orbital_core_base::schema::DispatchKernel>(&orbital_core_base::json_value::value_to_json(named))
+                    .map_err(|e| guest_refusal(orbital_core_base::os::OsErrorKind::Invalid, format!("program/open: `clientKernel` is {{ trait, mount }}: {e}")))?,
+            ),
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `clientKernel` names the .lolo kernel a client program dispatches through; it needs kernel: \"lolo\"",
+                ))
+            }
+        };
         let seed_writer = match options.as_ref().and_then(|o| o.get("seed")) {
             None | Some(Value::Null) => None,
             Some(Value::String(name)) if !name.as_str().is_empty() => Some(name.to_string()),
@@ -1329,7 +1342,13 @@ impl RuntimeKernel {
                 }
             };
             guest.set_runs_client_traits(!split);
-            let client = split.then(|| client_program_of(&schema));
+            let client = split.then(|| {
+                let mut client = client_program_of(&schema);
+                if let (Some(kernel), Value::Object(fields)) = (&client_kernel, &mut client) {
+                    fields.insert("dispatchKernel".into(), orbital_core_base::value_serialize::to_canonical_value(kernel).unwrap_or(Value::Null));
+                }
+                client
+            });
             if has_lazy {
                 guest.set_lazy_source(Arc::new(GuestLazySource(Arc::clone(&lazy))));
             }
