@@ -3491,6 +3491,36 @@ mod static_check {
         );
     }
 
+    // G-CROSS-764: a kv store named by a knob whose value is the empty string names no store (a grant cannot be
+    // written for "", ORB_OS_GRANT_ENTRY_INVALID), so the finished program needs no kv grant for it.
+    #[test]
+    fn a_config_fed_kv_store_that_is_empty_needs_no_grant_in_the_finished_program() {
+        let run = |pool: &str| {
+            findings(
+                &program(
+                    json!(null),
+                    vec![orbital(
+                        "Client",
+                        json!(null),
+                        None,
+                        json!([["kv/delete", "@config.pool", "k"]]),
+                        json!({ "pool": { "type": "string", "default": pool } }),
+                    )],
+                ),
+                OsGrantPass::Final,
+            )
+        };
+        let empty = run("");
+        assert!(empty.is_empty(), "an empty store name is no store: {empty:?}");
+        let named = run("sockets");
+        assert!(
+            named
+                .iter()
+                .any(|f| f.code == OsGrantFindingCode::Missing && f.via == Some(OsGrantVia::Config)),
+            "control: a named store the orbital does not grant is missing: {named:?}"
+        );
+    }
+
     #[test]
     fn a_knob_fed_exec_target_is_deferred_to_the_composer_in_the_written_pass() {
         let picked = |tail: serde_json::Value| {

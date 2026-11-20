@@ -734,6 +734,7 @@ pub fn resolve_anchored_args(op: OsOp, args: &[Value], anchors: &OsAnchors) -> R
 
 pub(super) fn kv_need(args: &[SExpression], store: usize, mode: KvMode, deferred: Deferred) -> Result<Vec<OsRequirement>, usize> {
     Ok(literal(args, store, deferred)?
+        .filter(|store| !store.is_empty())
         .map(|store| OsRequirement::Kv { store: store.to_string(), mode })
         .into_iter()
         .collect())
