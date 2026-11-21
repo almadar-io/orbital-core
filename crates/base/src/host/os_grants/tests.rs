@@ -2387,6 +2387,33 @@ fn a_listen_on_env_host_and_port_needs_the_anchored_net_grant() {
     assert_eq!(anchored_net_args(OsOp::ReadFile), None);
 }
 
+/// G-ORBITAL-CORE-228: an env host beside a plain grant on the same port is an optional override, as an fs env
+/// anchor beside a `~/` entry is: unset, it is no problem, and the plain grant still stands.
+#[test]
+fn an_unset_env_host_is_an_optional_override_when_a_plain_grant_gives_the_same_port_and_kinds() {
+    let with_default = |target: &str, plain: &[NetKind], anchored: &[NetKind], port: NetPart| OsGrants {
+        net: vec![NetGrant { target: target.into(), kinds: plain.to_vec() }],
+        ..anet(envp("LMSTUDIO_HOST"), port, anchored)
+    };
+    let lit = |p: &str| NetPart::Literal(p.into());
+    let g = with_default("127.0.0.1:1234", &[NetKind::Tcp], &[NetKind::Tcp], lit("1234"));
+    let (resolved, problems) = g.resolve_anchors(&boot(None, &[]));
+    assert!(problems.is_empty(), "{problems:?}");
+    assert!(resolved.net_allows("127.0.0.1", 1234, NetKind::Tcp), "the plain grant still stands");
+    let (set, problems) = g.resolve_anchors(&boot(None, &[("LMSTUDIO_HOST", "10.0.0.5")]));
+    assert!(problems.is_empty() && set.net_allows("10.0.0.5", 1234, NetKind::Tcp), "control: set, it grants its host");
+    let (_, problems) = g.resolve_anchors(&boot(None, &[("LMSTUDIO_HOST", "")]));
+    assert!(problems.is_empty(), "edge: an empty variable is unset");
+    let (_, problems) = with_default("127.0.0.1:1235", &[NetKind::Tcp], &[NetKind::Tcp], lit("1234")).resolve_anchors(&boot(None, &[]));
+    assert!(problems.len() == 1 && problems[0].message.contains("LMSTUDIO_HOST is unset"), "control: another port: {problems:?}");
+    let (_, problems) = with_default("127.0.0.1:1234", &[NetKind::Tcp], &[NetKind::Tcp, NetKind::Listen], lit("1234")).resolve_anchors(&boot(None, &[]));
+    assert_eq!(problems.len(), 1, "control: the plain grant gives fewer kinds");
+    let (_, problems) = with_default("127.0.0.1:1234", &[NetKind::Tcp], &[NetKind::Tcp], envp("PORT")).resolve_anchors(&boot(None, &[]));
+    assert_eq!(problems.len(), 1, "edge: an unset port anchor is no override");
+    let (_, problems) = anet(envp("LMSTUDIO_HOST"), lit("1234"), &[NetKind::Tcp]).resolve_anchors(&boot(None, &[]));
+    assert_eq!(problems.len(), 1, "control: no plain grant beside it");
+}
+
 #[test]
 fn an_anchored_net_grant_resolves_at_boot_and_an_unset_part_grants_nothing() {
     let g = anet(envp("HOST"), envp("PORT"), &[NetKind::Listen]);

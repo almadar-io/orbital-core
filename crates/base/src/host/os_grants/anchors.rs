@@ -281,6 +281,17 @@ impl OsGrants {
     }
 
     #[cfg(feature = "std")]
+    /// An env host whose variable is unset is an optional override, not a mistake, when the program also declares a plain
+    /// `net` grant on the same literal port giving at least the same kinds: that grant is the default the program wrote.
+    fn plain_net_stands_in(&self, g: &AnchoredNetGrant, anchors: &OsAnchors) -> bool {
+        let (NetPart::Anchor(GrantAnchor::Env(name)), NetPart::Literal(port)) = (&g.host, &g.port) else { return false };
+        matches!(anchors.env.get(name), None | Some(""))
+            && self.net.iter().any(|n| {
+                n.target.rsplit_once(':').is_some_and(|(_, p)| p == port) && g.kinds.iter().all(|k| n.kinds.contains(k))
+            })
+    }
+
+    #[cfg(feature = "std")]
     /// The plain grant set a host checks against: every anchored entry resolved through `anchors` into an absolute
     /// `fs` glob or `exec` command, with the anchored part emptied. An entry whose anchor this host cannot place, or
     /// whose shape is invalid, grants nothing and is returned as a problem for the host to report.
@@ -331,6 +342,7 @@ impl OsGrants {
                         message: format!("net {} grants nothing: the port {port:?} is not a port number", g.label()),
                     }),
                 },
+                (Err(_), Ok(_)) if self.plain_net_stands_in(g, anchors) => {}
                 (Err(why), _) | (_, Err(why)) => {
                     problems.push(EntryProblem { path, message: format!("net {} grants nothing: {why}", g.label()) })
                 }

@@ -1303,6 +1303,29 @@ pub fn os_completion_event_json(site_json: &str, key: &str, outcome_json: &str) 
     to_js_readable_json(&fired)
 }
 
+/// The event a deferred keyed `call-service` outcome fires on its call site (`call_completion_event`), as `{ event, payload }`
+/// JSON, or `null` when the site declares no route for it. `outcome_json` is `{ ok }`, `{ error }` (the message) or
+/// `{ cancelled: true }`; `key` is the host key the call was asked with, absent for a keyless call.
+pub fn call_completion_event_json(site_json: &str, key: Option<&str>, outcome_json: &str) -> Result<String, String> {
+    let site: CallSite = orbital_core_base::json_value::parse_deep_json::<CallSiteWire>(site_json, "site_json")?.into();
+    let outcome = match orbital_core_base::json_value::parse_deep_json::<CallOutcomeWire>(outcome_json, "outcome_json")? {
+        CallOutcomeWire::Cancelled { cancelled: true } => crate::resumable::CallOutcome::Cancelled,
+        CallOutcomeWire::Cancelled { cancelled: false } => return Err("outcome_json: `cancelled` is only ever true".into()),
+        CallOutcomeWire::Failed { error } => crate::resumable::CallOutcome::Failed(error),
+        CallOutcomeWire::Answered { ok } => crate::resumable::CallOutcome::Answered(ok),
+    };
+    let fired = crate::resumable::call_completion_event(&site, key, outcome).map(|(event, payload)| EventFired { event, payload });
+    to_js_readable_json(&fired)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum CallOutcomeWire {
+    Cancelled { cancelled: bool },
+    Failed { error: String },
+    Answered { ok: Value },
+}
+
 pub fn substrate_completion_event_json(site_json: &str, key: &str, op: &str, args_json: &str, outcome_json: &str) -> Result<String, String> {
     let site: CallSite = orbital_core_base::json_value::parse_deep_json::<CallSiteWire>(site_json, "site_json")?.into();
     let args: Vec<Value> = orbital_core_base::json_value::parse_deep_json(args_json, "args_json")?;

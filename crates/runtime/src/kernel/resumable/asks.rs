@@ -399,6 +399,36 @@ pub fn completion_event(
     }
 }
 
+/// How a deferred keyed `call-service` settled on its host.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CallOutcome {
+    Answered(Value),
+    Failed(String),
+    Cancelled,
+}
+
+/// The event a deferred keyed `call-service` outcome fires on its call site (EXEC-QUEUE-10), its payload carrying the
+/// program's key: the answer (a record gains `key`; any other value is passed as it stands), `{ error, key }`, or
+/// `{ key }`. `None` when the site declares no route for the outcome.
+pub fn call_completion_event(site: &CallSite, key: Option<&str>, outcome: CallOutcome) -> Option<(String, Value)> {
+    let key = key.map(|k| Value::string(program_call_key(k).to_string()));
+    let with_key = |payload: Value| match (payload, &key) {
+        (Value::Object(mut fields), Some(key)) => {
+            fields.insert("key".into(), key.clone());
+            Value::Object(fields)
+        }
+        (other, _) => other,
+    };
+    match outcome {
+        CallOutcome::Answered(value) => Some((site.emit.success.clone()?, with_key(value))),
+        CallOutcome::Failed(message) => Some((
+            site.emit.failure.clone()?,
+            with_key(Value::object(ValueMap::from_iter([("error".into(), Value::String(message.into()))]))),
+        )),
+        CallOutcome::Cancelled => Some((site.emit.cancelled.clone()?, with_key(Value::object(ValueMap::new())))).filter(|_| key.is_some()),
+    }
+}
+
 /// How a host settled a `call-service` other than by a result or an error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallVerdict {
@@ -580,5 +610,63 @@ impl IoAnswer {
                 | (IoRequest::CredentialModeWrite { .. }, IoAnswer::CredentialModeWrite(_))
                 | (IoRequest::Deliver { .. }, IoAnswer::Deliver(_))
         )
+    }
+}
+
+#[cfg(test)]
+mod call_completion_tests {
+    use super::*;
+
+    fn site(success: Option<&str>, failure: Option<&str>, cancelled: Option<&str>) -> CallSite {
+        CallSite {
+            orbital: None,
+            trait_name: "Keyed".into(),
+            follow_on: true,
+            entity_id: "r1".into(),
+            emit: CallRoutes {
+                success: success.map(Into::into),
+                failure: failure.map(Into::into),
+                cancelled: cancelled.map(Into::into),
+                on_message: None,
+            },
+        }
+    }
+
+    fn key_of(payload: &Value) -> Option<&str> {
+        payload.get("key").and_then(Value::as_str)
+    }
+
+    #[test]
+    fn each_outcome_fires_its_route_with_the_programs_key_not_the_hosts() {
+        let host_key = host_call_key(Some("tab-1"), "Keyed", "r1", "job");
+        let at = site(Some("DONE"), Some("FAILED"), Some("STOPPED"));
+        let answer = Value::object(ValueMap::from_iter([("answer".into(), Value::from(42.0))]));
+        let (event, payload) = call_completion_event(&at, Some(&host_key), CallOutcome::Answered(answer)).expect("success route");
+        assert_eq!((event.as_str(), key_of(&payload)), ("DONE", Some("job")));
+        assert_eq!(payload.get("answer").and_then(|v| v.number().ok()), Some(42.0));
+        let (event, payload) = call_completion_event(&at, Some(&host_key), CallOutcome::Failed("model down".into())).expect("failure route");
+        assert_eq!((event.as_str(), key_of(&payload)), ("FAILED", Some("job")));
+        assert_eq!(payload.get("error").and_then(Value::as_str), Some("model down"));
+        let (event, payload) = call_completion_event(&at, Some(&host_key), CallOutcome::Cancelled).expect("cancelled route");
+        assert_eq!((event.as_str(), key_of(&payload)), ("STOPPED", Some("job")));
+    }
+
+    #[test]
+    fn edge_an_answer_that_is_not_a_record_is_passed_as_it_stands_and_a_key_the_kernel_did_not_scope_is_kept() {
+        let at = site(Some("DONE"), None, None);
+        let (_, payload) = call_completion_event(&at, Some("plain"), CallOutcome::Answered(Value::from(7.0))).expect("success route");
+        assert_eq!(payload.number().ok(), Some(7.0));
+        let (_, payload) = call_completion_event(&at, Some("plain"), CallOutcome::Answered(Value::object(ValueMap::new()))).expect("success route");
+        assert_eq!(key_of(&payload), Some("plain"));
+        let (_, payload) = call_completion_event(&at, None, CallOutcome::Answered(Value::object(ValueMap::new()))).expect("success route");
+        assert_eq!(key_of(&payload), None, "edge: a keyless call adds no key");
+        assert!(call_completion_event(&site(None, None, Some("STOPPED")), None, CallOutcome::Cancelled).is_none(), "edge: only a keyed call is cancelled");
+    }
+
+    #[test]
+    fn control_an_outcome_whose_route_is_not_declared_fires_nothing() {
+        let at = site(Some("DONE"), None, None);
+        assert!(call_completion_event(&at, Some("k"), CallOutcome::Failed("x".into())).is_none());
+        assert!(call_completion_event(&at, Some("k"), CallOutcome::Cancelled).is_none());
     }
 }

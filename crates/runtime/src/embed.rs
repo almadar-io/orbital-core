@@ -17,7 +17,7 @@ pub mod wire;
 pub use crate::kernel::contract_query::contract_query_without_program;
 pub use fold_order::{FoldProgress, FoldedNext};
 pub use server::{
-    substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, tab_url_matches,
+    call_completion_event_json, substrate_completion_event_json, os_completion_event_json, os_deferring_ops_json, os_stream_ops_json, tab_url_matches,
     EmbeddedServer, HeldGpuAsk, HeldGpuCompletion, ServerProgress, ServerResolve,
 };
 #[cfg(feature = "std")]
