@@ -596,3 +596,60 @@ fn control_a_distinct_second_ask_is_not_reported_as_collapsed() {
     );
     assert!(collapsed_visits(&kernel, json!({ "remaining": 3 })).is_empty());
 }
+
+/// `Caller` emits one `PING` on `GO`; `leaves` traits hear it and run a step that enqueues nothing.
+fn wide_fan(leaves: usize, leaf_effects: Json) -> RuntimeKernel {
+    let mut traits = vec![json!({
+        "name": "Caller",
+        "stateMachine": {
+            "states": [{ "name": "idle", "isInitial": true }],
+            "transitions": [{ "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "PING", { "k": 1 }]] }]
+        }
+    })];
+    for i in 0..leaves {
+        traits.push(json!({
+            "name": format!("Leaf{i}"),
+            "listens": [{ "event": "PING", "triggers": "PING", "source": { "kind": "trait", "trait": "Caller" } }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "PING", "effects": leaf_effects.clone() }]
+            }
+        }));
+    }
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Item", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "seen", "type": "number" }] },
+            "traits": traits
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::server().register(schema)
+}
+
+fn wide_fan_run(kernel: &RuntimeKernel) -> (usize, EventResponse) {
+    let outcomes = kernel.dispatch("Caller", None, "GO", Value::Null).unwrap();
+    let leaves = outcomes.iter().filter(|(t, r)| t.starts_with("Leaf") && r.executed).count();
+    (leaves, EventResponse::from_process_results(&outcomes, "Caller", "GO"))
+}
+
+/// EXEC-QUEUE-4: the settle-pass cap bounds steps that extend the cascade. One emit heard by more listeners than the
+/// cap, each running a step that enqueues nothing, delivers to every listener.
+#[test]
+fn a_fan_out_of_leaf_steps_wider_than_the_cap_reaches_every_listener() {
+    let leaves = CROSS_TRAIT_CASCADE_CAP + 300;
+    let (ran, response) = wide_fan_run(&wide_fan(leaves, json!([])));
+    assert_eq!(ran, leaves);
+    assert_eq!(response.rejections, None);
+    assert_eq!(response.cascade_truncated, None);
+}
+
+/// A leaf that writes its own row still enqueues nothing: it is a leaf too.
+#[test]
+fn a_fan_out_of_writing_leaf_steps_wider_than_the_cap_reaches_every_listener() {
+    let leaves = CROSS_TRAIT_CASCADE_CAP + 300;
+    let (ran, response) = wide_fan_run(&wide_fan(leaves, json!([["set", "@entity.seen", 1]])));
+    assert_eq!(ran, leaves);
+    assert_eq!(response.rejections, None);
+}

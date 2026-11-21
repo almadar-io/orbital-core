@@ -23,6 +23,18 @@ pub(super) fn config_defaults_value<T: std::borrow::Borrow<TraitDefinition>>(
     Value::object(map)
 }
 
+impl RuntimeKernel {
+    /// [`config_defaults_value`] of a registered trait, built once per registered program.
+    pub(super) fn trait_config_defaults(&self, trait_def: &TraitDefinition) -> Value {
+        if let Some(built) = self.registry.config_defaults.read().get(&trait_def.name) {
+            return built.clone();
+        }
+        let built = config_defaults_value(trait_def, &self.registry.trait_definitions.read());
+        self.registry.config_defaults.write().insert(trait_def.name.clone(), built.clone());
+        built
+    }
+}
+
 /// A config value that is exactly a `@user.<path>` binding reads the viewer one hop; a field the viewer
 /// lacks, or one that is not a string, number or boolean, becomes `""`, never the sigil (twin of
 /// `buildConfigBinding`, `almadar-runtime/src/traits/config-defaults.ts`).
@@ -30,6 +42,9 @@ pub(super) fn bind_user_forwards(config: Value, user: &Value) -> Value {
     let Value::Object(mut map) = config else {
         return config;
     };
+    if !map.values().any(|v| matches!(v, Value::String(s) if s.starts_with("@user."))) {
+        return Value::Object(map);
+    }
     for value in map.values_mut() {
         let Value::String(s) = value else { continue };
         let Some(path) = s.strip_prefix("@user.") else {

@@ -83,3 +83,66 @@ fn self_forward_terminates() {
         Some(&Value::string("@config.x")),
     );
 }
+
+fn kernel_with(defs: Vec<TraitDefinition>) -> RuntimeKernel {
+    let kernel = RuntimeKernel::new(
+        RuntimeEnvironment::Server,
+        Arc::new(crate::entity_source::InMemoryEntityCache::new()),
+        KernelConfig::default(),
+    );
+    for def in defs {
+        kernel.register_trait(Arc::new(def)).expect("registers");
+    }
+    kernel
+}
+
+fn shared_map(v: &Value) -> &orbital_core_base::value::Shared<ValueMap> {
+    match v {
+        Value::Object(m) => m,
+        other => panic!("config is an object, got {other:?}"),
+    }
+}
+
+/// A trait's config is built once per registered program, not on every step.
+#[test]
+fn a_traits_config_read_twice_is_one_built_table() {
+    let t = trait_with_config("Theme", &[("preset", "naqsh"), ("style", "")]);
+    let kernel = kernel_with(vec![t.clone()]);
+    let first = kernel.trait_config_defaults(&t);
+    let second = kernel.trait_config_defaults(&t);
+    assert_eq!(first.as_object().unwrap().get("preset"), Some(&Value::string("naqsh")));
+    assert!(orbital_core_base::value::Shared::ptr_eq(shared_map(&first), shared_map(&second)));
+}
+
+/// Registering another trait drops the built tables: a forward to the new trait's knob now resolves.
+#[test]
+fn a_new_registration_rebuilds_a_forward_it_answers() {
+    let button = trait_with_config("Button1", &[("label", "@config.buttonLabel")]);
+    let kernel = kernel_with(vec![button.clone()]);
+    assert_eq!(
+        kernel.trait_config_defaults(&button).as_object().unwrap().get("label"),
+        Some(&Value::string("@config.buttonLabel")),
+    );
+    kernel
+        .register_trait(Arc::new(trait_with_config("ExportMenu", &[("buttonLabel", "Export")])))
+        .expect("registers");
+    assert_eq!(
+        kernel.trait_config_defaults(&button).as_object().unwrap().get("label"),
+        Some(&Value::string("Export")),
+    );
+}
+
+/// Control: the cached table never carries one viewer's `@user.` reads to the next.
+#[test]
+fn a_user_forward_binds_each_viewer_over_the_cached_table() {
+    let t = trait_with_config("Greeting", &[("who", "@user.name")]);
+    let kernel = kernel_with(vec![t.clone()]);
+    let ada = bind_user_forwards(kernel.trait_config_defaults(&t), &from_json_value::<Value>(&serde_json::json!({ "name": "Ada" })).unwrap());
+    let bo = bind_user_forwards(kernel.trait_config_defaults(&t), &from_json_value::<Value>(&serde_json::json!({ "name": "Bo" })).unwrap());
+    assert_eq!(ada.as_object().unwrap().get("who"), Some(&Value::string("Ada")));
+    assert_eq!(bo.as_object().unwrap().get("who"), Some(&Value::string("Bo")));
+    assert_eq!(
+        kernel.trait_config_defaults(&t).as_object().unwrap().get("who"),
+        Some(&Value::string("@user.name")),
+    );
+}

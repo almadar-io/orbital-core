@@ -879,6 +879,10 @@ pub struct ConfigField {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub nested_forwarded_from: Vec<String>,
+    /// The default as written, before the inline phase resolved its `@config` forwards: an outer extension that
+    /// overrides one of those knobs resolves the forward again from it. In memory only.
+    #[serde(skip)]
+    pub forward_source: Option<SExpression>,
     /// The definer knob name this field is a payload COMPANION of, when
     /// this field's declared type was `@payload(<knob>)` — set by
     /// `resolve_sigil_types` at the moment it rewrites `field_type` from

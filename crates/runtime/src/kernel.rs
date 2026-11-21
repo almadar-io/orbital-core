@@ -425,6 +425,8 @@ struct Registry {
     sealed_emit_fields: Arc<RwLock<HashMap<String, HashMap<String, Vec<(String, String)>>>>>,
     /// The fields the browser reads of each frame (EXEC-DIST-8), built on first use and dropped when a trait registers.
     browser_reads: RwLock<Option<Arc<HashMap<String, browser_reads::BrowserFields>>>>,
+    /// Each trait's `@config` root with its forwards resolved, built on first use and dropped when a trait registers.
+    config_defaults: RwLock<HashMap<String, Value>>,
     /// The listens of the orbitals a client program leaves out (`_metadata.serverListens`): a client step whose emit
     /// one of them hears owes the host a leg (EXEC-DIST-2). Empty on a server kernel, which registers those orbitals.
     server_listens: Arc<RwLock<Vec<orbital_core_base::schema::types::ServerListen>>>,
@@ -822,6 +824,7 @@ impl RuntimeKernel {
                 row_shapes: RwLock::new(HashMap::new()),
                 sealed_emit_fields: Arc::default(),
                 browser_reads: RwLock::new(None),
+                config_defaults: RwLock::new(HashMap::new()),
                 server_listens: Arc::default(),
             },
             dispatch_observer: RwLock::new(None),

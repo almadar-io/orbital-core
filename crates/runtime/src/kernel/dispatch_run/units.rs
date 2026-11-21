@@ -772,7 +772,6 @@ impl RuntimeKernel {
         if let Some(refusal) = self.emit_rejection(&item.trait_name, result.as_ref()) {
             return Err(Fault::Kernel(KernelError::PayloadInvalid(refusal)));
         }
-        cascade.steps += 1;
         memory.count_delivery();
         if let Some(v) = visit {
             visited.record(v);
@@ -804,11 +803,16 @@ impl RuntimeKernel {
                 memory.record_transition(&remembered, &result.previous_state, &result.new_state);
             }
         }
+        let mut extends = !own.is_empty() || !fanned.is_empty();
         if let Some(result) = result {
-            cascade
-                .queue
-                .extend(self.mount.write().release_after(&t, &ev));
+            let released = self.mount.write().release_after(&t, &ev);
+            extends |= !released.is_empty();
+            cascade.queue.extend(released);
             outcomes.push((t.clone(), result.released()));
+        }
+        // EXEC-QUEUE-4: the settle-pass cap bounds the steps that extend the cascade; a leaf step enqueues nothing.
+        if extends {
+            cascade.steps += 1;
         }
         for mut item in own.into_iter().rev() {
             // A same-trait cascade stays on the row that made it (EXEC-STEP-1a), a queued singleton row included.

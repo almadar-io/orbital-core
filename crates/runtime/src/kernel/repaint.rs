@@ -85,9 +85,9 @@ impl RuntimeKernel {
             |trait_name, flushed, user| {
                 let mut ctx = flushed.clone();
                 ctx.set_user(user.clone());
-                let defs = self.registry.trait_definitions.read();
-                if let Some(def) = defs.get(trait_name) {
-                    ctx.set_config(bind_user_forwards(config_defaults_value(def, &defs), user));
+                let def = self.registry.trait_definitions.read().get(trait_name).cloned();
+                if let Some(def) = def {
+                    ctx.set_config(bind_user_forwards(self.trait_config_defaults(&def), user));
                 }
                 ctx
             },

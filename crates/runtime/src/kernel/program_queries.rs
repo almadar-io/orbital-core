@@ -201,10 +201,7 @@ impl RuntimeKernel {
             return false;
         };
         let reads_payload = references_callsite_payload(&def)
-            || serde_json::to_value(config_defaults_value(
-                &def,
-                &self.registry.trait_definitions.read(),
-            ))
+            || serde_json::to_value(self.trait_config_defaults(&def))
             .ok()
             .is_some_and(|config| config_references_callsite_payload(&config));
         reads_payload
@@ -383,13 +380,10 @@ impl RuntimeKernel {
     /// forwards bound to the session's identity); `None` when no such trait is registered.
     pub fn trait_config(&self, trait_name: &str) -> Result<Option<Value>, KernelError> {
         let user = self.session_viewer()?;
-        let defs = self.registry.trait_definitions.read();
-        let Some(def) = defs.get(trait_name) else {
+        let def = self.registry.trait_definitions.read().get(trait_name).cloned();
+        let Some(def) = def else {
             return Ok(None);
         };
-        Ok(Some(bind_user_forwards(
-            config_defaults_value(def, &defs),
-            &user,
-        )))
+        Ok(Some(bind_user_forwards(self.trait_config_defaults(&def), &user)))
     }
 }

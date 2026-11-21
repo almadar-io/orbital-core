@@ -728,6 +728,7 @@ impl RuntimeKernel {
         self.registry.embedded_trait_refs.write().insert(trait_def.name.clone(), refs);
         self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
         *self.registry.browser_reads.write() = None;
+        self.registry.config_defaults.write().clear();
         Ok(())
     }
 

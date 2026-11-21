@@ -125,7 +125,7 @@ impl RuntimeKernel {
         ctx.set_kernel_introspect(self.kernel_introspect());
         self.note_frame(trait_name, &current_state.current_state, event_name, entity_id, stamp.now);
         ctx.set_config(bind_user_forwards(
-            config_defaults_value(&trait_def, &self.registry.trait_definitions.read()),
+            self.trait_config_defaults(&trait_def),
             &user,
         ));
         if let Some(view) = view {
