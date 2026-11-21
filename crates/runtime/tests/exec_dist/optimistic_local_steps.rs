@@ -298,3 +298,277 @@ fn edge_the_paint_of_a_step_before_the_clients_state_is_not_handed_to_the_painte
     let (_, _, paints) = chart_revisited(chart_answer("chart", true));
     assert!(!paints.iter().any(|p| p.contains("skeleton")), "the replayed lifecycle step would paint the skeleton over the client's own: {paints:?}");
 }
+
+// A pushed dispatch (a deferred completion the host ran on its own) whose optimistic listener sits on a route this tab
+// has not mounted: the host ran the listener and says so; the tab must not run it again (The Orb on a served host,
+// G-CROSS-768: the generator's catalog command was started twice).
+fn runner_schema() -> OrbitalSchema {
+    from_json_value(&json!({
+        "name": "runs",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Work",
+            "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "runs", "type": "number", "default": 0 }] },
+            "traits": [
+                { "name": "Planner", "linkedEntity": "Job", "dispatch": "optimistic",
+                  "emits": [{ "event": "PLAN_RUN", "scope": "external" }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "searching" }],
+                    "transitions": [
+                        { "from": "idle", "to": "searching", "event": "PLAN", "effects": [] },
+                        { "from": "searching", "to": "searching", "event": "FOUND", "effects": [["emit", "PLAN_RUN", {}]] }] } },
+                { "name": "Runner", "linkedEntity": "Run", "dispatch": "optimistic",
+                  "listens": [{ "event": "PLAN_RUN", "triggers": "RUN", "scope": "external", "source": { "kind": "trait", "trait": "Planner" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "running" }],
+                    "transitions": [
+                        { "from": "idle", "to": "running", "event": "RUN", "effects": [["set", "@entity.started", 1]] }] } }
+            ]
+        }, {
+            "name": "Runs",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "started", "type": "number", "default": 0 }] },
+            "traits": []
+        }]
+    }))
+    .unwrap()
+}
+
+fn runner_steps_after_a_push(runner_hop: bool, mounted: bool) -> Vec<String> {
+    let client = EmbeddedKernel::new(runner_schema(), "tab").unwrap();
+    client.set_host_fans_out(true);
+    if mounted {
+        client.dispatch_mount(&[seed("Planner"), seed("Runner")], None, Value::Null).unwrap();
+    }
+    let mut hops = vec![json!({ "trait": "Planner", "from": "searching", "to": "searching", "event": "FOUND", "effects": [] })];
+    if runner_hop {
+        hops.push(json!({ "trait": "Runner", "from": "idle", "to": "running", "event": "RUN", "effects": [] }));
+    }
+    let response: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+        "success": true, "states": { "Planner": "searching", "Runner": if runner_hop { "running" } else { "idle" } }, "transitions": hops,
+        "emittedEvents": [{ "event": "PLAN_RUN", "payload": {}, "source": { "orbital": "Work", "trait": "Planner", "dispatched": true } }]
+    })).unwrap();
+    let applied = client.apply_server_response(&response, &HashSet::new()).unwrap();
+    applied.applied.iter().map(|(t, s)| format!("{t}:{s}")).collect()
+}
+
+#[test]
+fn a_pushed_listener_on_an_unmounted_route_the_host_ran_is_not_run_again() {
+    let steps = runner_steps_after_a_push(true, false);
+    assert!(!steps.iter().any(|s| s.starts_with("Runner:")), "the tab ran the host's step a second time: {steps:?}");
+}
+
+#[test]
+fn control_a_pushed_listener_on_a_mounted_route_the_host_ran_is_not_run_again() {
+    let steps = runner_steps_after_a_push(true, true);
+    assert!(!steps.iter().any(|s| s.starts_with("Runner:")), "{steps:?}");
+}
+
+#[test]
+fn control_a_pushed_listener_the_host_did_not_run_runs_on_the_tab() {
+    let steps = runner_steps_after_a_push(false, true);
+    assert!(steps.iter().any(|s| s.starts_with("Runner:")), "{steps:?}");
+}
+
+// A host that lists no steps at all (an emit folded on its own) gives no evidence against its `dispatched` stamp.
+fn runner_steps_after_a_stamped_emit(dispatched: bool) -> Vec<String> {
+    let client = EmbeddedKernel::new(runner_schema(), "tab").unwrap();
+    client.set_host_fans_out(true);
+    let mut source = json!({ "orbital": "Work", "trait": "Planner" });
+    if dispatched {
+        source["dispatched"] = json!(true);
+    }
+    let response: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+        "success": true, "states": {}, "emittedEvents": [{ "event": "PLAN_RUN", "payload": {}, "source": source }]
+    })).unwrap();
+    let applied = client.apply_server_response(&response, &HashSet::new()).unwrap();
+    applied.applied.iter().map(|(t, s)| format!("{t}:{s}")).collect()
+}
+
+#[test]
+fn a_delivered_emit_folded_with_no_step_list_does_not_run_its_optimistic_listener_again() {
+    let steps = runner_steps_after_a_stamped_emit(true);
+    assert!(!steps.iter().any(|s| s.starts_with("Runner:")), "the tab ran a listener the host said it delivered: {steps:?}");
+}
+
+#[test]
+fn control_an_undelivered_emit_folded_with_no_step_list_runs_its_optimistic_listener() {
+    let steps = runner_steps_after_a_stamped_emit(false);
+    assert!(steps.iter().any(|s| s.starts_with("Runner:")), "{steps:?}");
+}
+
+// A snapshot answered to a frames-since request (the tab was pushed a delta past its version, G-ORBITAL-SHELL-RUST-052)
+// is the session's record as the host holds it and lists no steps: it replaces an optimistic trait's frame too, or the
+// rows of the steps the tab never saw never arrive (The Orb's document tool lost its request key, G-CROSS-767).
+fn machine_paints_after_frames(frames: serde_json::Value) -> Vec<String> {
+    let client = EmbeddedKernel::new(schema("optimistic"), "tab").unwrap();
+    client.dispatch_mount(&[seed("List"), seed("Machine")], None, Value::Null).unwrap();
+    let response: orbital_core_runtime::effects::response::EventResponse =
+        serde_json::from_value(json!({ "success": true, "emittedEvents": [], "states": {}, "frames": frames })).unwrap();
+    let applied = client.apply_server_response(&response, &HashSet::new()).unwrap();
+    applied.response.client_effects_by_trait.iter().flatten().filter(|p| p.trait_name == "Machine").map(|p| serde_json::to_string(&p.effect).unwrap()).collect()
+}
+
+#[test]
+fn a_resync_snapshot_replaces_an_optimistic_traits_frame() {
+    let paints = machine_paints_after_frames(json!({ "session": "tab-session", "from": 0, "to": 6, "ops": [["clear"], ["set", { "Machine": { "id": "singleton", "label": "from the host" } }]] }));
+    assert!(paints.iter().any(|p| p.contains("from the host")), "the snapshot's row never reached the optimistic trait: {paints:?}");
+}
+
+#[test]
+fn control_a_delta_that_lists_no_steps_does_not_overwrite_an_optimistic_traits_frame() {
+    let paints = machine_paints_after_frames(json!({ "session": "tab-session", "from": 0, "to": 1, "ops": [["set", { "Machine": { "id": "singleton", "label": "from the host" } }]] }));
+    assert!(paints.is_empty(), "{paints:?}");
+}
+
+// The Orb's document tool on a served host (G-CROSS-767): the host ran the tool's steps in two dispatches, the tab was
+// pushed the second first (a gap), resynced, and then hears the program-wide reader's answer as a live message. The
+// tab's own copy of the tool must be at the host's state with the host's row for its guard to pass.
+/// `loop_in_client`: the trait that hears the tool's result is in the client's copy of the program (a server-awaited
+/// page trait); otherwise only the host has it.
+fn tool_schema(loop_in_client: bool) -> OrbitalSchema {
+    let mut program = json!({
+        "name": "tools",
+        "_metadata": { "serverListens": [{ "orbital": "Work", "listen": { "event": "TOOL_DONE", "triggers": "DONE", "source": { "kind": "any" } } }] },
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Desk",
+            "entity": { "name": "Call", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "reqKey", "type": "string", "default": "" }, { "name": "path", "type": "string", "default": "" }] },
+            "traits": [
+                { "name": "Tool", "linkedEntity": "Call", "dispatch": "optimistic",
+                  "emits": [{ "event": "READ_ASKED", "scope": "external" }, { "event": "TOOL_DONE", "scope": "external" }],
+                  "listens": [{ "event": "TEXT", "triggers": "TEXT", "scope": "external", "source": { "kind": "any" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "ready", "isInitial": true }, { "name": "waiting" }],
+                    "transitions": [
+                        { "from": "ready", "to": "ready", "event": "INIT", "effects": [] },
+                        { "from": "ready", "to": "ready", "event": "PENDING", "effects": [["set", "@entity.reqKey", "@payload.key"]] },
+                        { "from": "ready", "to": "waiting", "event": "ADD", "effects": [["set", "@entity.path", "@payload.path"], ["emit", "READ_ASKED", { "key": "@entity.reqKey" }]] },
+                        { "from": "waiting", "to": "ready", "event": "TEXT", "guard": ["=", "@payload.key", "@entity.reqKey"], "effects": [["emit", "TOOL_DONE", {}]] }] } }
+            ],
+            "pages": [{ "name": "DeskPage", "path": "/", "traits": [{ "ref": "Tool" }] }]
+        }]
+    });
+    if loop_in_client {
+        program.as_object_mut().unwrap().remove("_metadata");
+        program["orbitals"][0]["traits"].as_array_mut().unwrap().push(json!({
+            "name": "Loop", "linkedEntity": "Call", "dispatch": "server",
+            "listens": [{ "event": "TOOL_DONE", "triggers": "DONE", "scope": "external", "source": { "kind": "trait", "trait": "Tool" } }],
+            "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [{ "from": "idle", "to": "idle", "event": "DONE", "effects": [] }] }
+        }));
+        program["orbitals"][0]["pages"][0]["traits"].as_array_mut().unwrap().push(json!({ "ref": "Loop" }));
+    }
+    from_json_value(&program).unwrap()
+}
+
+fn tool_steps_after_a_gap(resync: bool) -> Vec<String> {
+    tool_steps_after_a_gap_in(resync, false)
+}
+
+fn tool_steps_after_a_gap_in(resync: bool, loop_in_client: bool) -> Vec<String> {
+    let client = EmbeddedKernel::new(tool_schema(loop_in_client), "tab").unwrap();
+    client.set_host_fans_out(true);
+    client.dispatch_mount(&[seed("Tool")], None, Value::Null).unwrap();
+    let ahead: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+        "success": true, "emittedEvents": [], "states": { "Tool": "waiting" },
+        "transitions": [{ "trait": "Tool", "from": "ready", "to": "waiting", "event": "ADD", "effects": [] }],
+        "frames": { "session": "tab-session", "from": 5, "to": 6, "ops": [["set", { "Tool": { "path": "terms.txt" } }]] }
+    })).unwrap();
+    let folded = client.apply_server_response(&ahead, &HashSet::new()).unwrap();
+    assert!(folded.resync.is_some(), "a delta past the held version asks for a resync");
+    if resync {
+        let snapshot: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+            "success": true, "emittedEvents": [], "states": {},
+            "frames": { "session": "tab-session", "from": 0, "to": 6, "ops": [["clear"], ["put", "Tool", { "reqKey": "agent:c1", "path": "terms.txt" }]] }
+        })).unwrap();
+        client.apply_server_response(&snapshot, &HashSet::new()).unwrap();
+    }
+    let flight = client.open_flight();
+    let heard = client.deliver_emit_to_listeners(flight, serde_json::from_value(json!({
+        "event": "TEXT", "payload": { "key": "agent:c1" }, "source": { "orbital": "Reader", "trait": "Reader", "dispatched": true }
+    })).unwrap()).unwrap();
+    client.end_flight(flight);
+    match heard {
+        orbital_core_runtime::embed::FoldProgress::Applied(fold) => fold
+            .applied
+            .iter()
+            .map(|(t, s)| format!("{t}:{s}"))
+            .chain(fold.server_legs.iter().map(|l| format!("leg {}.{}", l.leg.target_trait.clone().unwrap_or_default(), l.leg.event)))
+            .collect(),
+        orbital_core_runtime::embed::FoldProgress::Queued { .. } => vec!["queued".to_string()],
+    }
+}
+
+#[test]
+fn after_a_gap_and_its_resync_the_tabs_tool_hears_the_live_answer() {
+    let steps = tool_steps_after_a_gap(true);
+    assert!(steps.iter().any(|s| s == "Tool:ready"), "the tool never heard the reader's answer: {steps:?}");
+}
+
+#[test]
+fn control_without_the_resync_the_tools_guard_fails_on_its_empty_key() {
+    let steps = tool_steps_after_a_gap(false);
+    assert!(!steps.iter().any(|s| s == "Tool:ready"), "{steps:?}");
+}
+
+// The host never ran that listener (the emit was made in the program session, the tool is the viewer's): the step the
+// tab ran on the live message is the only run of it, so the server work it reaches is the tab's to post.
+#[test]
+fn a_live_messages_optimistic_listener_posts_the_server_work_its_step_reaches() {
+    let steps = tool_steps_after_a_gap(true);
+    assert!(steps.iter().any(|s| s == "leg Tool.TEXT"), "the tool's result never left the tab: {steps:?}");
+}
+
+#[test]
+fn control_a_listener_whose_guard_refused_posts_nothing() {
+    let steps = tool_steps_after_a_gap(false);
+    assert!(!steps.iter().any(|s| s.starts_with("leg ")), "{steps:?}");
+}
+
+// The host keeps its own copy of an optimistic trait, so the step the tab ran on a live message is posted even when
+// everything it emits is heard in the tab: otherwise the host's copy never leaves the state it waited in (The Orb's
+// document tool refused the next lookup of the same turn).
+#[test]
+fn a_live_messages_optimistic_listener_posts_its_own_step_so_the_hosts_copy_follows() {
+    let steps = tool_steps_after_a_gap_in(true, true);
+    assert!(steps.iter().any(|s| s == "leg Tool.TEXT"), "the host's copy of the tool never heard the answer: {steps:?}");
+    assert!(!steps.iter().any(|s| s == "leg Loop.DONE"), "the host's cascade from the tool's step reaches the loop: {steps:?}");
+}
+
+// The reader's answer can come back inside the answer to the tab's own leg, when the host had it at once. The host
+// lists a step of the tool there (the leg's), which is not the step the answer triggers: the tab still runs that one,
+// and posts it.
+fn tool_steps_after_an_answer_carrying_the_emit(listed_event: &str) -> Vec<String> {
+    let client = EmbeddedKernel::new(tool_schema(true), "tab").unwrap();
+    client.set_host_fans_out(true);
+    client.dispatch_mount(&[seed("Tool")], None, Value::Null).unwrap();
+    let pending: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+        "success": true, "emittedEvents": [], "states": { "Tool": "waiting" },
+        "transitions": [{ "trait": "Tool", "from": "ready", "to": "waiting", "event": "ADD", "effects": [] }],
+        "frames": { "session": "tab-session", "from": 0, "to": 1, "ops": [["set", { "Tool": { "reqKey": "agent:c1", "path": "terms.txt" } }]] }
+    })).unwrap();
+    client.apply_server_response(&pending, &HashSet::new()).unwrap();
+    let answer: orbital_core_runtime::effects::response::EventResponse = serde_json::from_value(json!({
+        "success": true, "states": {},
+        "transitions": [{ "trait": "Tool", "from": "waiting", "to": "waiting", "event": listed_event, "effects": [] }],
+        "emittedEvents": [{ "event": "TEXT", "payload": { "key": "agent:c1" }, "source": { "orbital": "Reader", "trait": "Reader", "dispatched": true } }]
+    })).unwrap();
+    let fold = client.apply_server_response(&answer, &HashSet::new()).unwrap();
+    fold.applied
+        .iter()
+        .map(|(t, s)| format!("{t}:{s}"))
+        .chain(fold.server_legs.iter().map(|l| format!("leg {}.{}", l.leg.target_trait.clone().unwrap_or_default(), l.leg.event)))
+        .collect()
+}
+
+#[test]
+fn an_emit_in_a_leg_answer_runs_the_listener_step_the_host_did_not_list_and_posts_it() {
+    let steps = tool_steps_after_an_answer_carrying_the_emit("NOTED");
+    assert!(steps.iter().any(|s| s == "Tool:ready"), "the tool never heard the reader's answer: {steps:?}");
+    assert!(steps.iter().any(|s| s == "leg Tool.TEXT"), "the host's copy of the tool never heard the answer: {steps:?}");
+}
+
+#[test]
+fn control_an_emit_in_a_leg_answer_whose_listener_step_the_host_listed_is_not_run_again() {
+    let steps = tool_steps_after_an_answer_carrying_the_emit("TEXT");
+    assert!(!steps.iter().any(|s| s == "Tool:ready" || s.starts_with("leg ")), "{steps:?}");
+}

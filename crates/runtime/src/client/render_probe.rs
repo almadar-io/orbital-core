@@ -519,6 +519,24 @@ where
                 .flatten(),
         })
         .collect();
+    // An embedded trait's `main` render is held for its host to splice, not written to `main`: report it as its own.
+    if app.is_embedded(trait_name) && !slots.iter().any(|s| s.slot == "main") {
+        let held = app.trait_content.get(trait_name).and_then(|content| app.parse_pattern(content));
+        let overlay = held.as_ref().is_some_and(|held| {
+            app.ui_slots.values().flatten().any(|slot| slot.source_trait.as_deref() == Some(trait_name) && slot.props == held.props)
+        });
+        if let Some(mut held) = held.filter(|_| !overlay) {
+            held.source_trait = Some(trait_name.to_string());
+            slots.push(RenderedSlot {
+                slot: "main".to_string(),
+                source_trait: trait_name.to_string(),
+                owner_entity: facts.linked_entity.get(trait_name).cloned().unwrap_or_default(),
+                nodes: facts.slot_nodes(&cx, &held, &app.entities, true, &mut canvas),
+                props: with_props.then(|| orbital_core_base::json_value::value_to_json(&held.props)),
+                fault: None,
+            });
+        }
+    }
     slots.sort_by(|a, b| a.slot.cmp(&b.slot));
     Ok(slots)
 }
@@ -1234,6 +1252,104 @@ mod tests {
     fn edge_an_event_the_from_state_does_not_handle_paints_nothing_even_with_a_seed() {
         let slots = shown("idle", Some(serde_json::json!({ "title": "seeded" })));
         assert!(slots.is_empty(), "{slots:?}");
+    }
+
+    fn translated_program(with_catalog: bool) -> OrbitalSchema {
+        let mut schema: OrbitalSchema = from_json_value(&(serde_json::json!({
+            "name": "t",
+            "typeContractVersion": 1,
+            "locales": ["sl", "en"],
+            "orbitals": [{
+                "name": "Notes",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "NotesView", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                            ["render-ui", "main", { "type": "stack", "title": ["i18n/t", "t:greeting"] }]
+                        ] }]
+                    }
+                }],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "NotesView" }] }]
+            }]
+        })))
+        .unwrap();
+        if with_catalog {
+            schema.messages = Some(std::collections::BTreeMap::from([
+                ("sl".to_string(), std::collections::BTreeMap::from([("t:greeting".to_string(), "Pozdravljeni".to_string())])),
+                ("en".to_string(), std::collections::BTreeMap::from([("t:greeting".to_string(), "Hello".to_string())])),
+            ]));
+        }
+        schema
+    }
+
+    #[test]
+    fn render_props_hold_the_text_the_programs_catalog_gives_in_its_first_declared_locale() {
+        let target = Target { supported: &["stack"], stubs: &[] };
+        let title = |with_catalog: bool| {
+            let slots = played_render_facts(&translated_program(with_catalog), "NotesView", "idle", None, "INIT", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap();
+            slots[0].props.as_ref().unwrap()["title"].clone()
+        };
+        assert_eq!(title(true), serde_json::json!("Pozdravljeni"));
+        assert_eq!(title(false), serde_json::Value::Null, "control: a key no catalog holds is null");
+
+        let mut embedded = embedded_program(true);
+        embedded.locales = Some(vec!["sl".to_string(), "en".to_string()]);
+        embedded.messages = translated_program(true).messages;
+        let schema = serde_json::to_string(&embedded).unwrap().replace(r#""initialData":"@entity""#, r#""title":["i18n/t","t:greeting"]"#);
+        let embedded: OrbitalSchema = from_json_value(&serde_json::from_str::<serde_json::Value>(&schema).unwrap()).unwrap();
+        let slots = played_render_facts(&embedded, "NotesView", "idle", None, "SHOW", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap();
+        assert_eq!(slots[0].props.as_ref().unwrap()["title"], serde_json::json!("Pozdravljeni"), "an embedded trait's text too: {slots:?}");
+    }
+
+    fn embedded_program(embed: bool) -> OrbitalSchema {
+        let shell_children = if embed { serde_json::json!(["@trait.NotesView"]) } else { serde_json::json!([]) };
+        from_json_value(&(serde_json::json!({
+            "name": "t",
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Notes",
+                "entity": { "name": "Note", "persistence": "runtime", "fields": [
+                    { "name": "id", "type": "string" },
+                    { "name": "title", "type": "string", "default": "blank" }
+                ] },
+                "traits": [{
+                    "name": "Shell", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [
+                            ["render-ui", "main", { "type": "stack", "children": shell_children }]
+                        ] }]
+                    }
+                }, {
+                    "name": "NotesView", "linkedEntity": "Note",
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT", "effects": [] },
+                            { "from": "idle", "to": "idle", "event": "SHOW", "effects": [
+                                ["render-ui", "main", { "type": "stack", "initialData": "@entity" }]
+                            ] }
+                        ]
+                    }
+                }],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Shell" }, { "ref": "NotesView" }] }]
+            }]
+        })))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_embedded_traits_main_render_is_reported_as_its_own_main_slot() {
+        let target = Target { supported: &["stack"], stubs: &[] };
+        let seed = serde_json::json!({ "title": "seeded" }).as_object().cloned().unwrap();
+        let slots = played_render_facts(&embedded_program(true), "NotesView", "idle", Some(&seed), "SHOW", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap();
+        assert_eq!(slots.iter().map(|s| (s.slot.as_str(), s.source_trait.as_str())).collect::<Vec<_>>(), [("main", "NotesView")], "{slots:?}");
+        assert_eq!(slots[0].props.as_ref().unwrap()["initialData"]["title"], "seeded");
+
+        let plain = played_render_facts(&embedded_program(false), "NotesView", "idle", Some(&seed), "SHOW", Value::Null, &target, true, |s, _| probe_kernel(s)).unwrap();
+        assert_eq!(plain.len(), 1, "control: a trait that is not embedded writes main itself: {plain:?}");
+        assert_eq!(plain[0].props.as_ref().unwrap()["initialData"]["title"], "seeded");
     }
 
     fn effects_program(effects: serde_json::Value) -> OrbitalSchema {

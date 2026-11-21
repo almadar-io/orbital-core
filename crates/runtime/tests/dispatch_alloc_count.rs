@@ -342,7 +342,8 @@ fn resumable_replay_of_a_list_answer_allocation_count_is_pinned() {
 // 8975 -> 9003: +28, re-pinned 2026-11-16 on the owner ruling to clear every red pin (G-ORBITAL-CORE-191). Not attributed:
 // measured 9003 to 9023 between 2026-11-13 and 2026-11-16 across parallel kernel work, and backing out the suspected
 // changes one at a time moved nothing.
-const PINNED_REPLAY: usize = 9003;
+// 9003 -> 9004: +1, re-pinned 2026-11-21 on the owner ruling (all-tests checkpoint), not attributed (G-ORBITAL-CORE-225).
+const PINNED_REPLAY: usize = 9004;
 
 fn rows_answer(n: usize) -> orbital_core_runtime::resumable::IoAnswer {
     let rows: Vec<Arc<Value>> = (0..n)

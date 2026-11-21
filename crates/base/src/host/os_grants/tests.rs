@@ -2734,6 +2734,7 @@ mod static_check {
         one(json!(null), json!([["gpu/shader-create", "@entity.device", source]]))
     }
 
+    // EXEC-GPU-6: a literal WGSL source is checked statically.
     #[cfg(feature = "wgsl")]
     #[test]
     fn a_valid_literal_wgsl_has_no_shader_finding() {

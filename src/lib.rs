@@ -5,6 +5,7 @@ pub use orbital_core_base::behavior_index;
 pub use orbital_core_base::behavior_packages;
 pub use orbital_core_base::collections;
 pub use orbital_core_base::read_set;
+pub use orbital_core_base::value_key;
 pub use orbital_core_runtime::sidecar_store;
 pub use orbital_core_runtime::vector_store;
 pub mod codec {

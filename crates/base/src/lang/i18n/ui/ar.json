@@ -237,6 +237,7 @@
   "filterGroup.to": "إلى",
   "filterGroup.allOf": "كل {{label}}",
   "filterGroup.activeCount": "{{count}} نشطة",
+  "filterGroup.remove": "إزالة عامل التصفية {{label}}: {{value}}",
   "debug.guardEvaluationsHint": "ستظهر تقييمات الحارس عند تنفيذ الانتقالات أو النبضات المزودة بحراس",
   "debug.expression": "التعبير",
   "debug.inputs": "المدخلات",

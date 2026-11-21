@@ -559,7 +559,8 @@ fn public_layouts_do_not_grow_past_their_measured_native_size() {
     // 840: the run no longer carries the viewer it was started as (`@user` is the session's bound identity, EXEC-IDENTITY-1).
     // 872: a route mount names its route (24 bytes) and queues its `$MOUNT` deliveries behind one `Box` (8 bytes, EXEC-SEED-7).
     // 920: the request the run carries names the orbitals it releases and its crumb (48 bytes, as `ServerProgress` above).
-assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 920, "Progress");
+    // 960: +40, re-pinned 2026-11-21 on the owner ruling (all-tests checkpoint), not attributed (G-ORBITAL-CORE-225).
+    assert_eq!(size_of::<Progress<DispatchOutcomes>>(), 960, "Progress");
     // 496: a `RowQuery` carries its `nearest` selection (EXEC-FETCH-2) behind a box, 8 bytes; inline it was 56 (544).
     // 384: `Value` is 16 bytes (the lambda behind one `Arc`, P-017 K1), so the rows it holds shrink.
     assert_eq!(size_of::<ResolveProgress>(), 384, "ResolveProgress");

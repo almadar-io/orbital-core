@@ -184,71 +184,6 @@ impl OwningOperator for JsonNodesOp {
     }
 }
 
-/// Appends the structural key of `value` to `out`. Strings, keys and byte strings are length-prefixed and containers are
-/// bracketed, so the key is prefix-free: equal values (`Value`'s own equality, so `1` and `1.0` alike) give equal keys,
-/// unequal values give different keys, and a record's key order never matters (fields are written in sorted order).
-fn structural_key(value: &Value, out: &mut String) -> Result<(), OrbitalError> {
-    use std::fmt::Write;
-    match value {
-        Value::Null => out.push('n'),
-        Value::Bool(true) => out.push('t'),
-        Value::Bool(false) => out.push('f'),
-        Value::Int(i) => {
-            let _ = write!(out, "i{i};");
-        }
-        Value::Number(f) => {
-            if f.fract() == 0.0 && *f >= -9.223_372_036_854_775_808e18 && *f < 9.223_372_036_854_775_808e18 {
-                let _ = write!(out, "i{};", *f as i64);
-            } else {
-                let _ = write!(out, "d{f:?};");
-            }
-        }
-        Value::Bytes(bytes) => {
-            let _ = write!(out, "b{}:", bytes.len());
-            for byte in bytes.iter() {
-                let _ = write!(out, "{byte:02x}");
-            }
-        }
-        Value::String(text) => {
-            let _ = write!(out, "s{}:{}", text.len(), text.as_str());
-        }
-        Value::Array(items) => {
-            out.push('[');
-            for item in items.iter() {
-                structural_key(item, out)?;
-            }
-            out.push(']');
-        }
-        Value::Object(map) => structural_record_key(map, "{", out)?,
-        Value::Sealed(sealed) => {
-            let open = format!("S{}:{}{{", sealed.kind().len(), sealed.kind());
-            structural_record_key(sealed.fields(), &open, out)?
-        }
-        Value::Lambda(_) => {
-            return Err(OrbitalError::Eval(EvalError::InvalidArgument(
-                "value/key: a lambda has no structural key".to_string(),
-            )))
-        }
-        Value::Blob(blob) => {
-            let _ = write!(out, "B{};", blob.id());
-        }
-    }
-    Ok(())
-}
-
-fn structural_record_key(map: &ValueMap, open: &str, out: &mut String) -> Result<(), OrbitalError> {
-    use std::fmt::Write;
-    let mut fields: Vec<(&str, &Value)> = map.iter().map(|(key, item)| (key.as_str(), item)).collect();
-    fields.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    out.push_str(open);
-    for (key, item) in fields {
-        let _ = write!(out, "{}:{}", key.len(), key);
-        structural_key(item, out)?;
-    }
-    out.push('}');
-    Ok(())
-}
-
 /// `(value/key v)`: a deterministic string that is equal for equal values and different for unequal ones, in one walk of
 /// `v` (O(size)). A record's field order does not change it; a list and a record never share a key. A NaN has one key
 /// though it is unequal to itself; a lambda has none (an error).
@@ -256,10 +191,9 @@ pub struct ValueKeyOp;
 impl StrictOperator for ValueKeyOp {
     fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "value/key", == 1);
-        let value = args[0];
-        let mut key = String::new();
-        structural_key(value, &mut key)?;
-        Ok(Value::string(key))
+        orbital_core_base::value_key::structural_key(args[0])
+            .map(Value::string)
+            .map_err(|reason| OrbitalError::Eval(EvalError::InvalidArgument(reason)))
     }
 }
 

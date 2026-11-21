@@ -1376,6 +1376,12 @@ impl ClientCore {
     /// Parse a render-ui pattern into a [`SlotContent`] (registry provides a fallback). A bare `@trait.X` string
     /// (`(render-ui main "@trait.X")`) is a whole-slot embed: its content keeps the string as `props`, as the web's
     /// `SlotContent` does, and the host paints that trait's content there.
+    /// Whether `trait_name` is embedded (`@trait.X`) by another trait: its `main` render is kept in `trait_content` for
+    /// its host to splice, never written to the `main` slot.
+    pub fn is_embedded(&self, trait_name: &str) -> bool {
+        self.embedded.contains(trait_name)
+    }
+
     pub fn parse_pattern(&self, pattern: &Value) -> Option<SlotContent> {
         if let Some(reference) = pattern
             .as_str()

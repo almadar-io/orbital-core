@@ -286,6 +286,7 @@ mod tests {
         from_json_str(s).expect("json")
     }
 
+    // EXEC-DIST-16: a render value already handed to the host is named by reference.
     #[test]
     fn a_shared_render_value_is_sent_once_then_by_reference() {
         let row = program();

@@ -1,4 +1,4 @@
-//! EXEC-EVAL-9 in an effect's data: a binding that holds no value is null wherever it is written. It is never left
+//! EXEC-EVAL-9a in an effect's data: a binding that holds no value is null wherever it is written. It is never left
 //! out of its record and never passed on as its own text (G-ORBITAL-CORE-207, owner ruling 2026-11-16).
 
 use crate::support::TestKernel;

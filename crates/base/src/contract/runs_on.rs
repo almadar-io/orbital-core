@@ -187,7 +187,7 @@ pub fn entity_arg(operator: &str) -> Option<usize> {
 /// Where one call runs: its registry site, except a data effect whose target
 /// entity (a literal name, never a binding) lives in the client, a
 /// `call-service` to a browser-only service runs there.
-/// Twin of `@almadar/std` `effectSiteFor`.
+/// The one owner of placement: the lints read it through `effect_placements` (G-CROSS-755).
 pub fn effect_site(
     operator: &str,
     args: &[crate::schema::sexpr::SExpression],
@@ -228,6 +228,40 @@ pub fn effect_site(
         Some(entity) if !entity.starts_with('@') && residence.is_client(entity) => RunsOn::Client,
         _ => RunsOn::Server,
     }
+}
+
+/// Every call in `program` whose registry site is the server but which [`effect_site`] places elsewhere, keyed by the
+/// call's structural key (`value/key` of the whole call), so a reader of the same program value looks a call up by its
+/// own key: a call that is absent runs where its registry site says. One walk; a call's arguments are walked too.
+pub fn effect_placements(
+    program: &Value,
+    residence: &Residence,
+) -> Result<std::collections::BTreeMap<String, RunsOn>, String> {
+    use crate::schema::sexpr::SExpression;
+    let mut placed = std::collections::BTreeMap::new();
+    let mut stack = vec![program];
+    while let Some(node) = stack.pop() {
+        match node {
+            Value::Array(items) => {
+                if let Some(Value::String(head)) = items.first() {
+                    if runs_on(head.as_str()) == RunsOn::Server {
+                        let args = items[1..]
+                            .iter()
+                            .map(|arg| SExpression::try_from(arg.clone()).map_err(|e| format!("{}: {e}", head.as_str())))
+                            .collect::<Result<Vec<SExpression>, String>>()?;
+                        let site = effect_site(head.as_str(), &args, residence);
+                        if site != RunsOn::Server {
+                            placed.insert(crate::value_key::structural_key(node)?, site);
+                        }
+                    }
+                }
+                stack.extend(items.iter());
+            }
+            Value::Object(map) => stack.extend(map.values()),
+            _ => {}
+        }
+    }
+    Ok(placed)
 }
 
 /// A `program/live` whose options name `kind: "trace"`: a trace subscription, which runs on the site of the traits it
@@ -754,6 +788,29 @@ mod tests {
         let single = SExpression::Array(vec![SExpression::String("math/abs".into())].into());
         assert_eq!(expr_leg_touches(&empty, &residence).expect("table"), none);
         assert_eq!(expr_leg_touches(&single, &residence).expect("table"), none);
+    }
+
+    #[test]
+    fn a_server_call_the_kernel_places_elsewhere_is_listed_by_its_structural_key() {
+        let local = serde_json::json!(["fetch", "LocalNote", {}]);
+        let mounted = serde_json::json!(["program/self", { "mounted": true }]);
+        let program = v(serde_json::json!({ "orbitals": [{ "traits": [{ "stateMachine": { "transitions": [
+            { "event": "A", "effects": [local.clone(), ["when", true, mounted.clone()]] }] } }] }] }));
+        let entities: [crate::schema::types::EntityDefinition; 1] = [from_json_value(&serde_json::json!({ "name": "LocalNote", "persistence": "persistent", "browser": true, "fields": [] })).expect("an entity")];
+        let placed = effect_placements(&program, &Residence::of_entities(entities.iter())).expect("placements");
+        let key = |json: &serde_json::Value| crate::value_key::structural_key(&v(json.clone())).expect("a key");
+        assert_eq!(placed.get(&key(&local)), Some(&RunsOn::Client), "{placed:?}");
+        assert_eq!(placed.get(&key(&mounted)), Some(&RunsOn::Any), "a call nested in a when body is found: {placed:?}");
+        assert_eq!(placed.len(), 2, "{placed:?}");
+    }
+
+    #[test]
+    fn control_a_call_that_stays_on_the_server_or_runs_anywhere_by_registry_is_not_listed() {
+        let program = v(serde_json::json!({ "orbitals": [{ "traits": [{ "stateMachine": { "transitions": [
+            { "event": "A", "effects": [["fetch", "Note", {}], ["program/self", { "mounted": true, "guest": "g" }], ["set", "@entity.n", 1], ["fetch", "@config.entity", {}]] }] } }] }] }));
+        let entities: [crate::schema::types::EntityDefinition; 1] = [from_json_value(&serde_json::json!({ "name": "Note", "persistence": "persistent", "browser": false, "fields": [] })).expect("an entity")];
+        let placed = effect_placements(&program, &Residence::of_entities(entities.iter())).expect("placements");
+        assert!(placed.is_empty(), "{placed:?}");
     }
 
     fn v(json: serde_json::Value) -> Value {

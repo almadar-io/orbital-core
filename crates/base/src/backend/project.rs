@@ -182,6 +182,12 @@ where
     }
     write_orb_manifest(output_dir, &new_manifest)?;
 
+    let mut output = output;
+    if let Some(file) = shell.kernel_add_on() {
+        let shipped = crate::shell_protocol::ship_kernel_beside_program(file, output_dir).map_err(|failure| WriteError::Backend(failure.message))?;
+        output.warnings.extend(shipped);
+    }
+
     tracing::info!(target: ns::SHELL, files = output.files.len(), dir = %generated_dir.display(), "generated");
 
     Ok(output)

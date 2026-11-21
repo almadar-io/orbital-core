@@ -3847,6 +3847,7 @@ mod gpu_effects {
         assert!(granted.held("features").is_array(), "the rest of the answer is kept");
     }
 
+    // EXEC-GPU-1: the family is answered through the one installed answerer, or unsupported.
     #[test]
     fn a_host_with_no_answerer_answers_unsupported_and_one_with_an_answerer_is_asked() {
         struct Recording(Mutex<Vec<(OsOp, Vec<Value>)>>);
@@ -3886,6 +3887,7 @@ mod gpu_effects {
         assert_eq!(asked[0].0, OsOp::GpuDeviceOpen);
     }
 
+    // EXEC-GPU-2: handles are sealed values only the kernel mints.
     #[test]
     fn handles_reach_the_host_as_plain_ids_and_come_back_as_sealed_values() {
         let mut session = Session::new(1 << 20, &["open", "compute"]);
@@ -3977,6 +3979,7 @@ mod gpu_effects {
         session.fails_with("BUF", "closed");
     }
 
+    // EXEC-GPU-3: the kernel enforces the grant's byte budget.
     #[test]
     fn a_buffer_beyond_the_granted_max_bytes_is_invalid_without_asking_the_host_and_release_frees_the_bytes() {
         let mut session = Session::new(64, &["open"]);
@@ -4128,6 +4131,7 @@ mod gpu_effects {
         assert_eq!(args[1].as_array().unwrap()[0].get("write").and_then(|w| w.get("offset")).and_then(Value::as_int), Some(0));
     }
 
+    // EXEC-GPU-5: commands run in the order the list gives them.
     #[test]
     fn one_submit_carries_writes_a_dispatch_and_reads_in_order_and_needs_readback_only_for_reads() {
         let mut session = Session::new(1 << 20, &["open", "compute"]);

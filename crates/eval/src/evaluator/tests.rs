@@ -2849,6 +2849,7 @@ fn nums(values: &[f64]) -> Value {
     Value::Array(values.iter().map(|n| Value::Number(*n)).collect())
 }
 
+// EXEC-EVAL-9b: a lambda sees only the parameters it declares.
 #[test]
 fn a_map_lambda_reads_the_index_only_when_it_declares_it() {
     let undeclared = eval(r#"["array/map", [10, 20], ["fn", "m", {"v": "@m", "position": "@index"}]]"#);

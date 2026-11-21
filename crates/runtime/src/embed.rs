@@ -927,7 +927,7 @@ impl EmbeddedKernel {
             }
             merged.frames = Some(painted);
         }
-        self.applied_wire(outcomes, merged, host_paints, frames.resync)
+        self.applied_wire(outcomes, merged, host_paints, frames.resync, false, &frames.host_left)
     }
 
     /// The wire a fold answers with: its outcomes merged into `merged` (already sealed), the legs its arms owe the host.
@@ -937,13 +937,15 @@ impl EmbeddedKernel {
         mut merged: EventResponse,
         host_paints: Vec<crate::effects::response::ClientEffectByTrait>,
         resync: Option<crate::kernel::FramesResync>,
+        pushed: bool,
+        host_left: &[String],
     ) -> Result<AppliedWire, String> {
         merged.fold_rerenders(&self.kernel.rerender_stale());
         let hops = TransitionHop::of_outcomes(&outcomes);
         merged.transitions = (!hops.is_empty()).then_some(hops);
         let server_legs = self
             .kernel
-            .fold_follow_on_legs(&outcomes, Some(&self.client_id))
+            .fold_follow_on_legs(&outcomes, Some(&self.client_id), pushed, host_left)
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|leg| {
@@ -991,6 +993,7 @@ impl EmbeddedKernel {
                 self.apply_server_response_since(&response, &already_delivered, base.as_ref())
             }
             fold_order::Work::Emit(emitted, origin) => {
+                let pushed = matches!(origin, fold_order::EmitOrigin::Peer);
                 let outcomes = match origin {
                     fold_order::EmitOrigin::Peer => self.kernel.deliver_emit_to_listeners(&emitted),
                     fold_order::EmitOrigin::Own => self.kernel.deliver_origin_emit_to_listeners(&emitted),
@@ -998,7 +1001,7 @@ impl EmbeddedKernel {
                 .map_err(|e| e.to_string())?;
                 let mut merged = EventResponse::from_process_results(&outcomes, "", "");
                 self.kernel.seal_outcomes(&mut merged, &outcomes, None, false);
-                self.applied_wire(outcomes, merged, Vec::new(), None)
+                self.applied_wire(outcomes, merged, Vec::new(), None, pushed, &[])
             }
         }
     }

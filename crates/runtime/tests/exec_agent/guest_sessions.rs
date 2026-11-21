@@ -1569,6 +1569,7 @@ fn a_guest_holds_bytes_while_open_and_its_opener_holds_none_of_them_once_it_clos
     assert_eq!(kernel.held_bytes().guests, 0, "nothing of a closed guest is held");
 }
 
+// EXEC-COST-2: held memory is counted per table, not estimated.
 #[test]
 fn the_stats_read_answers_the_bytes_each_table_holds() {
     let kernel = opener(json!([

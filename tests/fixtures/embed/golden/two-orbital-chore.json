@@ -57,15 +57,18 @@
               "columns": [
                 {
                   "key": "title",
-                  "label": "Title"
+                  "label": "Title",
+                  "type": "string"
                 },
                 {
                   "key": "completed",
-                  "label": "Completed"
+                  "label": "Completed",
+                  "type": "boolean"
                 },
                 {
                   "key": "createdAt",
-                  "label": "Created"
+                  "label": "Created",
+                  "type": "timestamp"
                 }
               ],
               "entity": {
@@ -100,7 +103,12 @@
             {
               "type": "fetch",
               "args": [
-                "Chore"
+                "Chore",
+                {
+                  "emit": {
+                    "failure": "LOAD_FAILED"
+                  }
+                }
               ],
               "status": "executed"
             },
@@ -255,15 +263,18 @@
               "columns": [
                 {
                   "key": "title",
-                  "label": "Title"
+                  "label": "Title",
+                  "type": "string"
                 },
                 {
                   "key": "completed",
-                  "label": "Completed"
+                  "label": "Completed",
+                  "type": "boolean"
                 },
                 {
                   "key": "createdAt",
-                  "label": "Created"
+                  "label": "Created",
+                  "type": "timestamp"
                 }
               ],
               "entity": {
@@ -298,7 +309,12 @@
             {
               "type": "fetch",
               "args": [
-                "Task"
+                "Task",
+                {
+                  "emit": {
+                    "failure": "LOAD_FAILED"
+                  }
+                }
               ],
               "status": "executed"
             },
@@ -428,7 +444,7 @@
           "foreground": "#18181b",
           "info": "#2563eb",
           "info-foreground": "#ffffff",
-          "input": "#d4d4d8",
+          "input": "#8f8f99",
           "muted": "#f4f4f5",
           "muted-foreground": "#65656e",
           "primary": "#18181b",
@@ -530,6 +546,8 @@
           "bodyFamily": "\"Plus Jakarta Sans\", -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif",
           "monoFamily": "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
           "fontImport": "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap",
+          "displayFile": "https://raw.githubusercontent.com/google/fonts/main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
+          "bodyFile": "https://raw.githubusercontent.com/google/fonts/main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
           "headingWeight": "300",
           "headingTransform": "none",
           "headingTracking": "-0.03em",
@@ -798,7 +816,7 @@
         "foreground": "rgb(24, 24, 27)",
         "info": "rgb(37, 99, 235)",
         "info-foreground": "rgb(255, 255, 255)",
-        "input": "rgb(212, 212, 216)",
+        "input": "rgb(143, 143, 153)",
         "muted": "rgb(244, 244, 245)",
         "muted-foreground": "rgb(101, 101, 110)",
         "primary": "rgb(24, 24, 27)",
@@ -818,12 +836,12 @@
       "fonts": {
         "body": {
           "family": "Plus Jakarta Sans",
-          "file": "",
+          "file": "https://raw.githubusercontent.com/google/fonts/main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
           "generic": "sans-serif"
         },
         "display": {
           "family": "Plus Jakarta Sans",
-          "file": "",
+          "file": "https://raw.githubusercontent.com/google/fonts/main/ofl/plusjakartasans/PlusJakartaSans%5Bwght%5D.ttf",
           "generic": "sans-serif"
         },
         "mono": {

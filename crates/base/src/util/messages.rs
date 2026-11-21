@@ -169,6 +169,24 @@ fn each_trait_config_mut(
 /// or a call-site wiring the lowering typed from the atom) with `namespace`, as `i18n/t` literals are.
 pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, namespace: &str) -> Vec<MessageKeyIssue> {
     let mut issues = Vec::new();
+    each_config_key_slot_mut(schema, |at, slot| issues.extend(qualify_message_key_value(slot, namespace, at)));
+    issues
+}
+
+/// The inverse of [`qualify_config_message_keys`]: a `MessageKey` knob literal qualified with `namespace` is written
+/// back as the bare key its source spelled.
+pub fn unqualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, namespace: &str) {
+    let prefix = format!("{namespace}{NAMESPACE_SEPARATOR}");
+    each_config_key_slot_mut(schema, |_, slot| {
+        if let Value::String(key) = slot {
+            if let Some(bare) = key.strip_prefix(&prefix) {
+                *key = bare.to_string();
+            }
+        }
+    });
+}
+
+fn each_config_key_slot_mut(schema: &mut crate::schema::OrbitalSchema, mut each: impl FnMut(&str, &mut Value)) {
     each_trait_config_mut(schema, |path, field| {
         let paths = message_key_paths(field);
         let Some(default) = field.default.as_mut().filter(|_| !paths.is_empty()) else {
@@ -179,14 +197,13 @@ pub fn qualify_config_message_keys(schema: &mut crate::schema::OrbitalSchema, na
             let mut slots = Vec::new();
             at_path(&mut value, key_path, path.clone(), &mut slots);
             for (at, slot) in slots {
-                issues.extend(qualify_message_key_value(slot, namespace, &at));
+                each(&at, slot);
             }
         }
         if let Ok(qualified) = from_json_value(&value) {
             *default = qualified;
         }
     });
-    issues
 }
 
 /// The literal keys every `MessageKey` / `[MessageKey]` config knob holds: catalog keys the program uses through a
@@ -741,6 +758,20 @@ mod catalog_tests {
         assert!(json.contains(r#""default":"not a key""#), "control: a string knob is untouched: {json}");
         assert!(json.contains(r#""default":"@config.label""#), "control: a binding is untouched: {json}");
         assert!(json.contains(r#""id":{"type":"unknown","default":"begin"}"#), "control: an untyped wiring is untouched: {json}");
+    }
+
+    #[test]
+    fn unqualifying_config_knobs_restores_the_bare_keys_the_source_wrote() {
+        let original = serde_json::to_string(&knob_schema()).unwrap();
+        let mut schema = knob_schema();
+        assert!(qualify_config_message_keys(&mut schema, "panel").is_empty());
+        unqualify_config_message_keys(&mut schema, "panel");
+        assert_eq!(serde_json::to_string(&schema).unwrap(), original);
+
+        let mut other = knob_schema();
+        assert!(qualify_config_message_keys(&mut other, "panel").is_empty());
+        unqualify_config_message_keys(&mut other, "elsewhere");
+        assert!(config_message_keys(&other).iter().all(|k| k.starts_with("panel:")), "control: another namespace's keys stay qualified");
     }
 
     #[test]

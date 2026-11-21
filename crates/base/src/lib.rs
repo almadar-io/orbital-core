@@ -10,6 +10,8 @@ extern crate orbital_core_std as std;
 // program — what a program IS: value model + IR + structure
 #[path = "program/value.rs"]
 pub mod value;
+#[path = "program/value_key.rs"]
+pub mod value_key;
 #[path = "program/num_width.rs"]
 pub mod num_width;
 #[path = "program/intern.rs"]

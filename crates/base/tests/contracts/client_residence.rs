@@ -273,6 +273,38 @@ fn a_persist_batch_runs_where_its_ops_entities_live() {
 }
 
 #[test]
+fn a_persist_batch_built_from_browser_ops_runs_where_they_live() {
+    use orbital_core_base::persist_batch::{batch_placement, BatchPlacement};
+    let r = residence();
+    let built = [
+        json!(["array/concat", [["create", "LocalInvoice", {}]], ["array/map", "@payload.rows", ["fn", "x", ["update", "LocalInvoice", "@x.id", {}]]]]),
+        json!(["array/prepend", ["array/map", "@payload.rows", ["fn", "x", ["delete", "LocalInvoice", "@x.id"]]], ["delete", "LocalInvoice", "d"]]),
+        json!(["list", ["create", "LocalInvoice", {}], ["if", "@entity.keep", ["update", "LocalInvoice", "i", {}], ["delete", "LocalInvoice", "i"]]]),
+        json!(["array/concat", ["list", ["list", "create", "LocalInvoice", {}], ["list", "update", "LocalInvoice", "i", {}]], ["array/map", "@payload.rows", ["fn", ["row"], ["list", "delete", "LocalInvoice", "@row.id"]]]]),
+    ];
+    for ops in built {
+        assert_eq!(batch_placement(&sexpr(ops.clone()), &r), BatchPlacement::Client, "{ops}");
+        let call = sexpr(json!(["batch", ops]));
+        assert_eq!(effect_site("persist", call.as_array().unwrap(), &r), RunsOn::Client, "{ops}");
+    }
+}
+
+#[test]
+fn control_a_persist_batch_with_an_element_it_cannot_follow_is_undetermined() {
+    use orbital_core_base::persist_batch::{batch_placement, BatchPlacement};
+    let r = residence();
+    for ops in [
+        json!([["create", "LocalInvoice", {}], "@payload.op"]),
+        json!(["array/concat", [["create", "LocalInvoice", {}]], "@payload.more"]),
+        json!(["array/concat", [["create", "LocalInvoice", {}]], [["create", "Invoice", {}]]]),
+    ] {
+        assert_ne!(batch_placement(&sexpr(ops.clone()), &r), BatchPlacement::Client, "{ops}");
+        let call = sexpr(json!(["batch", ops]));
+        assert_eq!(effect_site("persist", call.as_array().unwrap(), &r), RunsOn::Server, "{ops}");
+    }
+}
+
+#[test]
 fn a_batch_of_browser_rows_is_not_server_work() {
     let r = residence();
     assert!(!sexpr_runs_server_effect(&sexpr(json!(["persist", "batch", [["create", "LocalInvoice", {}]]])), &r));

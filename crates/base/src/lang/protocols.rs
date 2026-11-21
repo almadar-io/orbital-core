@@ -152,7 +152,9 @@ mod tests {
                 json!([
                     { "name": "host", "type": "string", "required": true },
                     { "name": "port", "type": "number", "required": true },
-                    { "name": "path", "type": "string", "required": false }
+                    { "name": "path", "type": "string", "required": false },
+                    { "name": "origin", "type": "string", "required": false },
+                    { "name": "originFromEnv", "type": "string", "required": false }
                 ]),
                 false,
                 json!("net-listen"),
@@ -198,7 +200,9 @@ mod tests {
             [
                 ("host", "string", true),
                 ("port", "number", true),
-                ("path", "string", false)
+                ("path", "string", false),
+                ("origin", "string", false),
+                ("originFromEnv", "string", false)
             ]
         );
         assert_eq!(

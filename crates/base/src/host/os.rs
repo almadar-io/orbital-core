@@ -600,7 +600,7 @@ mod tests {
             );
             assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
-        assert_eq!(OsOp::ALL.len(), 130);
+        assert_eq!(OsOp::ALL.len(), 131);
         assert_eq!(OsOp::from_name("http"), None);
     }
 

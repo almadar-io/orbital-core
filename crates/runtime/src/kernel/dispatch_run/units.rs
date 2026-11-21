@@ -27,10 +27,14 @@ impl RuntimeKernel {
             }
             return match plans.pop_front() {
                 Some(plan) => {
+                    // EXEC-DIST-9: a committed step of a boot-only trait taken from a viewer's session steps its one
+                    // program-wide instance, as a native delivery to it does.
+                    let program_step = *isolated && self.thread_session().is_some() && self.program_wide(&plan.trait_name);
                     let mut begun = self.begin_seed(plan);
                     if *isolated {
                         begun.seed_scopes.truncate(1);
                     }
+                    begun.program |= program_step;
                     if let Some(deliveries) = preamble.take().map(|preamble| preamble.deliveries) {
                         begun.stage = match begun.stage {
                             Stage::Released(mut released) => {

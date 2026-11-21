@@ -237,6 +237,7 @@
   "filterGroup.to": "Do",
   "filterGroup.allOf": "Vse {{label}}",
   "filterGroup.activeCount": "{{count}} aktivnih",
+  "filterGroup.remove": "Odstrani filter {{label}}: {{value}}",
   "debug.guardEvaluationsHint": "Vrednotenja varovala se prikažejo, ko se izvedejo prehodi ali utripi z varovali",
   "debug.expression": "Izraz",
   "debug.inputs": "Vhodi",

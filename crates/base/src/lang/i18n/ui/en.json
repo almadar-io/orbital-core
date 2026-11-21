@@ -241,6 +241,7 @@
   "filterGroup.to": "To",
   "filterGroup.allOf": "All {{label}}",
   "filterGroup.activeCount": "{{count}} active",
+  "filterGroup.remove": "Remove filter {{label}}: {{value}}",
   "debug.guardEvaluationsHint": "Guard evaluations will appear when transitions or ticks with guards execute",
   "debug.expression": "Expression",
   "debug.inputs": "Inputs",

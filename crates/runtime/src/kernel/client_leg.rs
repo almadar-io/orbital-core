@@ -599,10 +599,15 @@ impl RuntimeKernel {
     /// listener whose emitter ran in this fold and posts no leg (EXEC-DIST-10). Any other listener's server
     /// work is the host's own cascade (it ran the emitter, or the emitter's own leg fans out there), so it is
     /// dropped. Drains the collector, so the fold's effects never ride a later dispatch.
+    /// `pushed`: the outcomes are the listeners of an emit pushed to this client as a live message. The host did not
+    /// run them in this client's session (that is why the message was pushed), so a listener of that emit posts the
+    /// server work its step reaches.
     pub fn fold_follow_on_legs(
         &self,
         outcomes: &[(String, ProcessEventResult)],
         client_id: Option<&str>,
+        pushed: bool,
+        host_left: &[String],
     ) -> Result<Vec<EventRequest>, KernelError> {
         let _lane = self.lane.enter(None)?;
         let _ = self.drain_server_leg_collector();
@@ -688,6 +693,11 @@ impl RuntimeKernel {
             } else if client_only(trait_name) {
                 // The host leaves a browser-run listener to the browser (EXEC-ENDPOINT-3a): its server work is the browser's to post.
                 owes_host(trait_name, result)
+            } else if (pushed || host_left.iter().any(|t| t == *trait_name))
+                && !emitter.is_some_and(|e| chain.iter().any(|(t, _)| *t == e))
+            {
+                // The host keeps its own copy of a trait that commits here first: the step is posted so that copy follows.
+                self.committed_here(trait_name) || owes_host(trait_name, result)
             } else {
                 false
             };
@@ -955,12 +965,15 @@ impl RuntimeKernel {
         let frames_applied = match &response.frames {
             Some(delta) => {
                 let key = self.state_key(Some(RUNTIME_SINGLETON));
+                // A snapshot that lists no steps is the session's record as the host holds it (a frames-since answer).
+                let record = delta.is_snapshot() && response.transitions.is_none();
                 let kept_here = |t: &str| {
                     let states = self.state_manager.read();
                     let now = states
                         .get_state(t, key.as_deref())
                         .map(|s| s.current_state.as_str());
-                    client_only.contains(t) || !self.host_report_continues(t, now, response)
+                    client_only.contains(t)
+                        || (!record && !self.host_report_continues(t, now, response))
                 };
                 self.apply_server_frames(delta, &kept_here, base)?
             }
@@ -1001,6 +1014,7 @@ impl RuntimeKernel {
 
         let mut visited = DispatchVisits::default();
         let mut fanned: Vec<CascadeItem> = Vec::new();
+        let mut host_left: Vec<String> = Vec::new();
         for ev in &response.emitted_events {
             let source = ev.source.clone().unwrap_or_default();
             let source_trait = source.r#trait.clone().unwrap_or_default();
@@ -1044,7 +1058,8 @@ impl RuntimeKernel {
             );
             // The host's own fan-out already ran this emit's listeners (their rows and renders are in
             // this response); a client-only listener is the exception, its host run being dropped, and so is a listener
-            // the client keeps its own copy of that the host did not run (its copy had no arm for it).
+            // the client keeps its own copy of that the host's step list shows it did not run (its copy had no arm
+            // for it); a response with no step list is no evidence against the stamp.
             if host_ran
                 && self
                     .host_fans_out
@@ -1052,9 +1067,19 @@ impl RuntimeKernel {
             {
                 let mut reached = fanned.split_off(before);
                 reached.retain(|item| {
-                    client_only.contains(&item.trait_name)
-                        || (self.committed_here(&item.trait_name)
-                            && Self::host_ran_from(&item.trait_name, response).is_none())
+                    if client_only.contains(&item.trait_name) {
+                        return true;
+                    }
+                    let unrun = self.committed_here(&item.trait_name)
+                        && response.transitions.as_ref().is_some_and(|hops| {
+                            !hops.iter().any(|hop| {
+                                hop.trait_name == item.trait_name && hop.event == item.event
+                            })
+                        });
+                    if unrun {
+                        host_left.push(item.trait_name.clone());
+                    }
+                    unrun
                 });
                 fanned.extend(reached);
             }
@@ -1071,6 +1096,8 @@ impl RuntimeKernel {
             &mut DispatchMemory::default(),
             &mut outcomes,
         )?;
+        let mut frames_applied = frames_applied;
+        frames_applied.host_left = host_left;
         Ok((outcomes, frames_applied))
     }
 

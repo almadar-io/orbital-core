@@ -65,6 +65,12 @@ pub trait Shell: Send + Sync {
     /// Run test command for this shell
     fn test_command(&self) -> &str;
 
+    /// The native kernel add-on a project of this shell runs on (`kernel.node`), which `write_project` ships into
+    /// the project's `kernel/` from beside the running program; none by default.
+    fn kernel_add_on(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Clean generated files
     fn clean_generated(&self, output_dir: &Path) -> ShellResult<()> {
         let gen_dir = output_dir.join(self.generated_dir());
@@ -99,6 +105,7 @@ pub struct BaseShell {
     build_cmd: &'static str,
     dev_cmd: &'static str,
     test_cmd: &'static str,
+    kernel_add_on: Option<&'static str>,
 }
 
 impl BaseShell {
@@ -123,11 +130,22 @@ impl BaseShell {
             build_cmd,
             dev_cmd,
             test_cmd,
+            kernel_add_on: None,
         }
+    }
+
+    /// This shell's projects run on the native kernel add-on `file`, shipped beside the program into `kernel/`.
+    pub fn with_kernel_add_on(mut self, file: &'static str) -> Self {
+        self.kernel_add_on = Some(file);
+        self
     }
 }
 
 impl Shell for BaseShell {
+    fn kernel_add_on(&self) -> Option<&'static str> {
+        self.kernel_add_on
+    }
+
     fn name(&self) -> &'static str {
         self.name
     }

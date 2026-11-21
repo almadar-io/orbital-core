@@ -247,9 +247,70 @@ pub enum BatchPlacement {
     Undetermined,
 }
 
+/// The installed operator table's declared result facts, the lookup of the value-source walk.
+fn installed_operator_return(name: &str) -> Option<crate::schema::OperatorReturn> {
+    let op = crate::language::registry::try_operators().ok()?.get(name)?;
+    Some(crate::schema::OperatorReturn {
+        semantics: op.return_semantics.as_deref(),
+        returns_function: op.return_type.kind_name() == "function",
+    })
+}
+
+/// Every entity a batch's `<ops>` can touch (create, update, upsert or delete), following its value sources through
+/// the installed operators' declared `returnSemantics` (a list builder, a branch, a map's op template): each source is
+/// an op tuple or a literal list whose every element's sources are op tuples naming a literal entity. `None` when some
+/// source is anything else (a binding, an undeclared call, an op whose entity is not a literal).
+pub fn batch_touched_entities(ops: &SExpression) -> Option<std::collections::BTreeSet<&str>> {
+    let walk = crate::schema::ValueWalk { lookup: &installed_operator_return, skip_dead_branches: false };
+    let mut out = std::collections::BTreeSet::new();
+    let mut sources = Vec::new();
+    value_sources(ops, &walk, &mut sources)?;
+    for source in sources {
+        let elements: Vec<&SExpression> = if is_op_tuple(source) {
+            vec![source]
+        } else {
+            let items = as_items(source)?;
+            if items.first().is_some_and(|head| matches!(head, SExpression::String(_))) {
+                return None;
+            }
+            items.iter().collect()
+        };
+        for element in elements {
+            let mut ops = Vec::new();
+            value_sources(element, &walk, &mut ops)?;
+            for op in ops {
+                out.insert(op_entity(op_tuple(op)?)?);
+            }
+        }
+    }
+    Some(out)
+}
+
+/// The value sources of `expr` through the declared value-source slots, stopping at an op tuple (a `(list …)` marked
+/// one included, which a declared walk would read through as a list). `None` for a lambda slot with no body.
+fn value_sources<'a>(expr: &'a SExpression, walk: &crate::schema::ValueWalk<'_>, out: &mut Vec<&'a SExpression>) -> Option<()> {
+    if is_op_tuple(expr) {
+        out.push(expr);
+        return Some(());
+    }
+    let (Some(slots), Some(args)) = (expr.value_source_slots(walk), expr.arguments()) else {
+        out.push(expr);
+        return Some(());
+    };
+    for slot in slots {
+        match slot {
+            crate::schema::ValueSlot::Arg(i) => value_sources(args.get(i)?, walk, out)?,
+            crate::schema::ValueSlot::LambdaBody(i) => value_sources(lambda_body(args.get(i)?)?, walk, out)?,
+        }
+    }
+    Some(())
+}
+
 /// Placement of a batch's `<ops>` argument under `residence`.
 pub fn batch_placement(ops: &SExpression, residence: &Residence) -> BatchPlacement {
-    let entities = batch_entities(ops);
+    let Some(entities) = batch_touched_entities(ops) else {
+        return BatchPlacement::Undetermined;
+    };
     let client = entities.iter().filter(|e| residence.is_client(e)).count();
     match (entities.len(), client) {
         (0, _) => BatchPlacement::Undetermined,

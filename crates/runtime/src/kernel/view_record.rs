@@ -407,6 +407,9 @@ pub struct FramesApplied {
     pub resync: Option<FramesResync>,
     /// The id each written frame is held under.
     pub ids: HashMap<String, String>,
+    /// The listeners of the answer's delivered emits the host's step list shows it did not run, which this fold ran:
+    /// their steps are this client's to post (EXEC-DIST-10).
+    pub host_left: Vec<String>,
 }
 
 impl RuntimeKernel {
@@ -609,6 +612,7 @@ impl RuntimeKernel {
             writes: applied,
             resync: None,
             ids,
+            host_left: Vec::new(),
         })
     }
 }
