@@ -391,6 +391,27 @@ fn load_memory_of_a_resolved_program() {
     let t = alloc_meter::totals();
     println!("text {:.1} MB; parse: live +{:.1} MB, peak +{:.1} MB", mb(after_text - base), mb(t.live - after_text), mb(t.peak - after_text));
     drop(text);
+    let before_value = alloc_meter::totals().live;
+    alloc_meter::reset_peak(before_value);
+    let as_value = orbital_core_base::value_serialize::to_value(&schema).expect("a program is a value");
+    let t = alloc_meter::totals();
+    println!("as a kernel Value: live +{:.1} MB, peak +{:.1} MB", mb(t.live - before_value), mb(t.peak - before_value));
+    let before_json = t.live;
+    alloc_meter::reset_peak(before_json);
+    let as_json = orbital_core_base::json_value::value_to_json(&as_value);
+    let t = alloc_meter::totals();
+    println!("Value to serde_json (program/open): live +{:.1} MB, peak +{:.1} MB", mb(t.live - before_json), mb(t.peak - before_json));
+    let through_json: OrbitalSchema = from_json_value(&as_json).expect("reads through json");
+    drop(as_json);
+    let before_direct = alloc_meter::totals().live;
+    alloc_meter::reset_peak(before_direct);
+    let direct: OrbitalSchema = orbital_core_base::value_deserialize::from_value(&as_value).expect("reads directly");
+    let t = alloc_meter::totals();
+    println!("Value read directly: live +{:.1} MB, peak +{:.1} MB", mb(t.live - before_direct), mb(t.peak - before_direct));
+    assert_eq!(serde_json::to_string(&direct).unwrap(), serde_json::to_string(&through_json).unwrap(), "the direct read is the json read");
+    println!("direct read equals the json read");
+    drop((direct, through_json));
+    drop(as_value);
     let before_kernel = alloc_meter::totals().live;
     alloc_meter::reset_peak(before_kernel);
     let kernel = EmbeddedKernel::new(schema, "load").expect("registers");
@@ -411,4 +432,45 @@ fn load_memory_of_a_resolved_program() {
     let t = alloc_meter::totals();
     println!("mount answer {:.1} MB as JSON; live after dropping it +{:.1} MB", answer_bytes as f64 / 1e6, mb(t.live - before_mount));
     drop(kernel);
+}
+
+/// Memory of opening a resolved program as a mounted guest of a server kernel (P-049), the way the launchpad's guest
+/// session does (`program/open … { mount: true, split: true }`). Diagnostic: the program comes from `ORB_LOAD_FILE`.
+#[test]
+#[ignore]
+fn guest_open_memory_of_a_resolved_program() {
+    use orbital_core_base::effect_types::RuntimeEnvironment;
+    use orbital_core_runtime::config::KernelConfig;
+    use orbital_core_runtime::entity_source::InMemoryEntityCache;
+    use orbital_core_runtime::kernel::RuntimeKernel;
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let path = std::env::var("ORB_LOAD_FILE").expect("ORB_LOAD_FILE names a resolved program");
+    let mb = |b: isize| b as f64 / 1e6;
+    let opener: OrbitalSchema = from_json_value(&json!({
+        "name": "opener", "typeContractVersion": 1, "osGrants": { "kernel": [{ "target": "guest", "kinds": ["spawn"] }] },
+        "orbitals": [{
+            "name": "Opening",
+            "entity": { "name": "Run", "persistence": "runtime", "fields": [{ "name": "id", "type": "string", "required": true }, { "name": "guest", "type": "string" }] },
+            "traits": [{ "name": "Opener", "linkedEntity": "Run", "stateMachine": {
+                "states": [{ "name": "idle", "isInitial": true }],
+                "transitions": [
+                    { "from": "idle", "to": "idle", "event": "GO", "effects": [["program/open", "@payload.program", { "mount": true }, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]] },
+                    { "from": "idle", "to": "idle", "event": "OPENED", "effects": [["set", "@entity.guest", "@payload.result.guest"]] },
+                    { "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.guest", "@payload"]] }
+                ] } }]
+        }]
+    }))
+    .unwrap();
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, std::sync::Arc::new(InMemoryEntityCache::new()), KernelConfig::default());
+    kernel.register_schema(opener).unwrap();
+    let text = std::fs::read_to_string(&path).expect("reads the program");
+    let program: orbital_core_base::value::Value = from_json_str(&format!("{{\"program\":{text}}}")).expect("the program parses");
+    drop(text);
+    let before = alloc_meter::totals().live;
+    alloc_meter::reset_peak(before);
+    kernel.dispatch("Opener", None, "GO", program).expect("dispatches");
+    let t = alloc_meter::totals();
+    println!("guest open+mount: live +{:.1} MB, peak +{:.1} MB", mb(t.live - before), mb(t.peak - before));
+    println!("held after open: {:?}", kernel.held_bytes());
+    println!("opener: {}", serde_json::to_string(&kernel.snapshot_trait("Opener", None).entity).unwrap_or_default().chars().take(300).collect::<String>());
 }

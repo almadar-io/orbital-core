@@ -7,7 +7,6 @@ use std::prelude::v1::*;
 
 use crate::resumable::{IoAnswer, IoRequest};
 use crate::row_query::{RowIdPage, RowPage, RowProjection, RowWriteBatch, RowWriteOutcome};
-use orbital_core_base::json_value::value_to_json;
 use orbital_core_base::row_set::RowQuery;
 use orbital_core_base::schema::types::EntityIndex;
 use orbital_core_base::value::Value;
@@ -216,7 +215,7 @@ pub fn reply_key(payload: &Value) -> Option<&str> {
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(event: &str, payload: &Value) -> Result<T, ReplyError> {
-    from_json_value(&value_to_json(payload)).map_err(|e| ReplyError::Malformed {
+    orbital_core_base::value_deserialize::from_value(payload).map_err(|e| ReplyError::Malformed {
         event: event.to_string(),
         message: e.to_string(),
     })
@@ -300,6 +299,7 @@ pub fn failed_answer(request: &IoRequest, message: String) -> Option<IoAnswer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use orbital_core_base::json_value::value_to_json;
     use crate::row_query::{RowWriteFailureMode, RowWriteOp};
 
     fn json(v: serde_json::Value) -> Value {

@@ -444,7 +444,7 @@ impl RuntimeKernel {
                             .iter()
                             .filter(|(t, r)| {
                                 delegating_traits.contains(t)
-                                    && (!client_only(t) || self.step_emits_off_client(t, r))
+                                    && (!client_only(t) || self.step_owes_host(t, r))
                                     && r.entry
                                         .as_ref()
                                         .filter(|_| r.executed)
@@ -492,9 +492,9 @@ impl RuntimeKernel {
                             covered.insert(t.as_str());
                             continue;
                         }
-                        // A client-only step is posted only for its own server work (an emit only a server-only
-                        // orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
-                        let own_server_work = !emitter_covered && self.step_emits_off_client(t, r);
+                        // A client-only step is posted only for its own server work (a delegated effect, or an emit
+                        // only a server-only orbital hears, EXEC-DIST-2); the host runs no copy of it otherwise.
+                        let own_server_work = !emitter_covered && self.step_owes_host(t, r);
                         if emitter.is_none()
                             && *t == trait_name
                             && !client_only(t)
@@ -621,10 +621,6 @@ impl RuntimeKernel {
                     .iter()
                     .any(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
         };
-        // A step's own emit that only the host hears is server work too (EXEC-DIST-2), like a delegated effect.
-        let owes_host = |trait_name: &str, result: &ProcessEventResult| {
-            delegates(result) || self.step_emits_off_client(trait_name, result)
-        };
         let ran_client_side: HashSet<&str> = outcomes
             .iter()
             .filter(|(_, result)| result.executed && !delegates(result))
@@ -685,19 +681,19 @@ impl RuntimeKernel {
                 covered.insert(trait_name.as_str());
                 false
             } else if emitter == Some(trait_name.as_str()) {
-                owes_host(trait_name, result)
+                self.step_owes_host(trait_name, result)
             } else if emitter.is_some_and(|e| ran_client_side.contains(e)) {
-                owes_host(trait_name, result)
+                self.step_owes_host(trait_name, result)
                     || (!client_only(trait_name)
-                        && chain_needs_server(&chain, i, |j| owes_host(steps[j].0, steps[j].1)))
+                        && chain_needs_server(&chain, i, |j| self.step_owes_host(steps[j].0, steps[j].1)))
             } else if client_only(trait_name) {
                 // The host leaves a browser-run listener to the browser (EXEC-ENDPOINT-3a): its server work is the browser's to post.
-                owes_host(trait_name, result)
+                self.step_owes_host(trait_name, result)
             } else if (pushed || host_left.iter().any(|t| t == *trait_name))
                 && !emitter.is_some_and(|e| chain.iter().any(|(t, _)| *t == e))
             {
                 // The host keeps its own copy of a trait that commits here first: the step is posted so that copy follows.
-                self.committed_here(trait_name) || owes_host(trait_name, result)
+                self.committed_here(trait_name) || self.step_owes_host(trait_name, result)
             } else {
                 false
             };

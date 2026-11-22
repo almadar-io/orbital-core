@@ -2,6 +2,11 @@
 
 use super::*;
 
+/// Each run's peak window, open from its start to its end, by kernel and dispatch (P-049): held beside the run so the
+/// run itself does not grow.
+static DISPATCH_PEAKS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(usize, u64), (orbital_core_base::alloc_meter::PeakWindow, std::thread::ThreadId)>>> =
+    std::sync::LazyLock::new(Default::default);
+
 impl RuntimeKernel {
     /// Dispatch an event with full cross-trait listener fan-out, mirroring the canonical
     /// runtime's EventBus. The target trait processes the event; then every trait whose
@@ -768,7 +773,7 @@ impl RuntimeKernel {
                 tracing::debug_span!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, "dispatch", targets = 0)
             }
         };
-        DispatchRun {
+        let run = DispatchRun {
             trace_seeds: plans
                 .iter()
                 .map(|p| crate::dispatch_trace::TraceSeed {
@@ -788,7 +793,11 @@ impl RuntimeKernel {
             program: false,
             isolated: false,
             span,
+        };
+        if orbital_core_base::alloc_meter::installed() {
+            DISPATCH_PEAKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert((self as *const Self as usize, run.dispatch_id()), (orbital_core_base::alloc_meter::PeakWindow::open(), std::thread::current().id()));
         }
+        run
     }
 
     /// A cost scope for a dispatch an enabled observer wants measured (EXEC-COST-1, EXEC-DIST-14).
@@ -799,6 +808,21 @@ impl RuntimeKernel {
 
     pub(super) fn observe_dispatch(&self, run: &DispatchRun, error: Option<String>) {
         self.end_dispatch_mem(run.dispatch_id());
+        let opened = orbital_core_base::alloc_meter::installed()
+            .then(|| DISPATCH_PEAKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&(self as *const Self as usize, run.dispatch_id())))
+            .flatten();
+        if let Some((window, opened_on)) = opened {
+            if opened_on == std::thread::current().id() {
+                let seed = run.trace_seeds.first();
+                tracing::debug!(
+                    target: "almadar:runtime:mem",
+                    trait_name = seed.map_or("", |s| s.trait_name.as_str()),
+                    event = seed.map_or("", |s| s.event.as_str()),
+                    peak_bytes = window.close(),
+                    "dispatch peak"
+                );
+            }
+        }
         self.offer_replies(&run.outcomes);
         let Some(observer) = self.dispatch_observer.read().clone() else {
             return;

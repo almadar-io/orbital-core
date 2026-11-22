@@ -246,3 +246,73 @@ fn control_a_browser_leaves_a_guest_without_local_to_the_host() {
     let opened = open_result(&d);
     assert!(opened.contains("Delegated(Server)"), "a server-site open is the host's: {opened}");
 }
+
+// A `[client]` list reloads when a `[client]` form saves (the Orb docs notes example, G-CROSS-789): the list's fetch of
+// browser-stored rows is its own server work, posted as its own leg wherever its emitter ran (EXEC-DIST-2, EXEC-DIST-10),
+// whether the form's own step delegates (a persist) or only emits. Twin: `OrbPreview.browser-store-sibling-reload`.
+fn sibling_reload_kernel(form_persists: bool, list_fetches: bool) -> RuntimeKernel {
+    let save = if form_persists {
+        json!([["persist", "create", "Note", {}], ["emit", "NOTE_SAVED", {}]])
+    } else {
+        json!([["emit", "NOTE_SAVED", {}]])
+    };
+    let reload = if list_fetches { json!([["fetch", "Note", {}]]) } else { json!([]) };
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "notes",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Notes",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "browser": true,
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "NoteList", "linkedEntity": "Note", "dispatch": "client",
+                  "listens": [{ "event": "NOTE_SAVED", "triggers": "RELOAD", "source": { "kind": "trait", "trait": "NoteForm" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "ready", "isInitial": true }, { "name": "loading" }],
+                    "transitions": [{ "from": "ready", "to": "loading", "event": "RELOAD", "effects": reload }] } },
+                { "name": "NoteForm", "linkedEntity": "Note", "dispatch": "client",
+                  "stateMachine": {
+                    "states": [{ "name": "editing", "isInitial": true }],
+                    "transitions": [{ "from": "editing", "to": "editing", "event": "SAVE", "effects": save }] } }
+            ]
+        }]
+    }))
+    .unwrap();
+    crate::support::TestKernel::client().register(schema)
+}
+
+fn save(k: &RuntimeKernel) -> Vec<(String, Option<String>, Option<String>)> {
+    k.mount_traits(["NoteList", "NoteForm"]);
+    k.dispatch_with_server_leg("Notes", "NoteForm", None, "SAVE", Value::Null, Some("c1"))
+        .unwrap()
+        .server_legs
+        .iter()
+        .map(|l| (l.event.clone(), l.target_trait.clone(), l.source_trait.clone()))
+        .collect()
+}
+
+fn leg(event: &str, target: &str, source: &str) -> (String, Option<String>, Option<String>) {
+    (event.to_string(), Some(target.to_string()), Some(source.to_string()))
+}
+
+#[test]
+fn a_client_list_reached_by_a_saving_client_form_posts_its_reload_after_the_save() {
+    assert_eq!(
+        save(&sibling_reload_kernel(true, true)),
+        vec![leg("SAVE", "NoteForm", "NoteForm"), leg("RELOAD", "NoteList", "NoteForm")]
+    );
+}
+
+#[test]
+fn control_a_client_list_whose_reload_owes_nothing_rides_no_leg_of_its_own() {
+    assert_eq!(save(&sibling_reload_kernel(true, false)), vec![leg("SAVE", "NoteForm", "NoteForm")]);
+}
+
+#[test]
+fn a_client_list_reached_by_a_client_form_that_only_emits_posts_its_reload() {
+    assert_eq!(save(&sibling_reload_kernel(false, true)), vec![leg("RELOAD", "NoteList", "NoteForm")]);
+}
+
+#[test]
+fn control_a_client_chain_with_no_data_effect_posts_nothing() {
+    assert!(save(&sibling_reload_kernel(false, false)).is_empty());
+}

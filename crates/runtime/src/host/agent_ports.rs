@@ -2,7 +2,6 @@
 //! dispatches the declared input the kernel asked for, as the dispatch's viewer, through its ordinary input
 //! channel, turns that response into the answer with [`dispatch_outcome`]. Twin of `dispatchOutcomeOf`
 //! (`@almadar/core`); the shared corpus pins both.
-use orbital_core_base::json_value::from_json_value;
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
@@ -96,7 +95,7 @@ pub fn program_answer(op: &str, args: &[Value], answer: Value) -> Result<Value, 
     if raw {
         return Ok(answer);
     }
-    let response: EventResponse = from_json_value(&orbital_core_base::json_value::value_to_json(&answer)).map_err(|e| {
+    let response: EventResponse = orbital_core_base::value_deserialize::from_value(&answer).map_err(|e| {
         crate::effects::executor::SubstrateFailure { message: format!("program/dispatch: the host answered no event response: {e}"), errors: Vec::new() }
     })?;
     Ok(dispatch_outcome(&response))
@@ -161,7 +160,7 @@ pub fn guest_failure_payload(failure: &crate::effects::executor::SubstrateFailur
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orbital_core_base::json_value::from_json_str;
+    use orbital_core_base::json_value::{from_json_str, from_json_value};
     use serde_json::Value as Json;
 
     const VECTORS: &str = include_str!("../../tests/fixtures/agent-ports/vectors.json");

@@ -479,6 +479,8 @@ pub struct RuntimeKernel {
     host_fans_out: std::sync::atomic::AtomicBool,
     /// Record each step's `@entity` after its effects ([`DeliveryEntry::entity_after`]); off unless a verifier asks.
     record_entity_after: std::sync::atomic::AtomicBool,
+    /// Carry each executed hop's effects on the answer's `transitions`; off unless a verifier or debugger asks (P-049).
+    hop_effects: std::sync::atomic::AtomicBool,
     /// The host's clock and allocation reading, used only inside a cost scope (EXEC-COST-1).
     cost_meter: RwLock<Option<Arc<dyn orbital_core_base::cost::CostMeter>>>,
     /// Whether this host holds the circuit state itself ([`RuntimeKernel::set_stateful`]).
@@ -859,6 +861,7 @@ impl RuntimeKernel {
             tls: Arc::default(),
             host_fans_out: std::sync::atomic::AtomicBool::new(false),
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
+            hop_effects: std::sync::atomic::AtomicBool::new(false),
             cost_meter: RwLock::new(None),
             stateful: std::sync::atomic::AtomicBool::new(false),
             runs_client_traits: std::sync::atomic::AtomicBool::new(false),
@@ -955,6 +958,16 @@ impl RuntimeKernel {
     pub fn set_record_entity_after(&self, record: bool) {
         self.record_entity_after
             .store(record, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Carry each executed hop's effects on an answer's `transitions`. Off by default: the client fold and a guest's
+    /// moves read only which trait ran which event from which state, and a boot's effects can run to tens of MB (P-049).
+    pub fn set_hop_effects(&self, carry: bool) {
+        self.hop_effects.store(carry, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn hop_effects(&self) -> bool {
+        self.hop_effects.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The host's cost meter (EXEC-COST-1); without one, a cost scope measures nothing.

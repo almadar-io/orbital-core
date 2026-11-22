@@ -117,40 +117,35 @@ type OpenedProgram = (
 /// A `program/open` program value: the resolved program, the lazy programs it carries (`lazyPrograms`) or the installed
 /// behavior it names for them (`lazySource`).
 fn parse_open_program(program: &Value) -> Result<OpenedProgram, AgentPortFailure> {
-    let mut program_json = value_to_json(program);
-    let carried = match program_json
-        .as_object_mut()
-        .and_then(|object| object.remove("lazyPrograms"))
-    {
-        None | Some(serde_json::Value::Null) => None,
-        Some(carried) => Some(
-            from_json_value::<std::collections::HashMap<String, OrbitalSchema>>(&carried).map_err(
-                |e| {
-                    failure(format!(
-                        "program/open: `lazyPrograms` is a map of file to resolved program: {e}"
-                    ))
-                },
-            )?,
-        ),
+    use orbital_core_base::value_deserialize::from_value;
+    let field = |name: &str| match program {
+        Value::Object(fields) => fields.get(name).filter(|v| !matches!(v, Value::Null)),
+        _ => None,
     };
-    let lazy_behavior = match program_json.as_object_mut().and_then(|object| object.remove("lazySource")) {
-            None | Some(serde_json::Value::Null) => None,
-            Some(source) => match source.get("behavior").and_then(serde_json::Value::as_str) {
-                Some(behavior) => Some(behavior.to_string()),
-                None => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
+    let carried = match field("lazyPrograms") {
+        None => None,
+        Some(carried) => Some(from_value::<std::collections::HashMap<String, OrbitalSchema>>(carried).map_err(|e| {
+            failure(format!("program/open: `lazyPrograms` is a map of file to resolved program: {e}"))
+        })?),
+    };
+    let lazy_behavior = match field("lazySource") {
+        None => None,
+        Some(source) => match source {
+            Value::Object(source) => match source.get("behavior") {
+                Some(Value::String(behavior)) => Some(behavior.to_string()),
+                _ => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
             },
-        };
+            _ => return Err(failure("program/open: `lazySource` names the installed behavior its lazy programs are read from: `{ behavior }`")),
+        },
+    };
     if carried.is_some() && lazy_behavior.is_some() {
         return Err(guest_refusal(
-                orbital_core_base::os::OsErrorKind::Invalid,
-                "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
-            ));
+            orbital_core_base::os::OsErrorKind::Invalid,
+            "program/open: a program carries its lazy programs (`lazyPrograms`) or names where they are read (`lazySource`), not both",
+        ));
     }
-    let schema: OrbitalSchema = from_json_value(&program_json).map_err(|e| {
-        failure(format!(
-            "program/open: the program is not a resolved program: {e}"
-        ))
-    })?;
+    // Read straight from the value: a `serde_json` copy of a resolved program is ~10x the value (P-049).
+    let schema: OrbitalSchema = from_value(program).map_err(|e| failure(format!("program/open: the program is not a resolved program: {e}")))?;
     if schema.orbitals.is_empty() {
         return Err(failure("program/open: the program has no orbitals"));
     }

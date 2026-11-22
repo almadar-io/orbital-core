@@ -38,6 +38,60 @@ static PEAK: AtomicIsize = AtomicIsize::new(0);
 
 std::thread_local! {
     static THREAD_COUNTS: Cell<AllocCounts> = const { Cell::new(AllocCounts { allocs: 0, bytes: 0 }) };
+    static THREAD_HELD: Cell<ThreadHeld> = const { Cell::new(ThreadHeld { live: 0, peak: 0 }) };
+}
+
+/// The bytes this thread has allocated and not freed (what another thread frees of its blocks is not seen), and the
+/// highest that has been since the last [`restart_thread_peak`] (P-049: a step's peak, EXEC-COST-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ThreadHeld {
+    pub live: isize,
+    pub peak: isize,
+}
+
+pub fn thread_held() -> ThreadHeld {
+    THREAD_HELD.try_with(Cell::get).unwrap_or_default()
+}
+
+/// Restart this thread's peak mark at `at`, so the next reading is the highest above it.
+pub fn restart_thread_peak(at: isize) {
+    let _ = THREAD_HELD.try_with(|h| h.set(ThreadHeld { live: h.get().live, peak: at }));
+}
+
+/// A span of this thread's work whose peak is read when it closes: the most the thread held above what it held when
+/// the span opened. Windows nest: closing one gives the enclosing window back the higher of the two marks (P-049).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeakWindow {
+    start: isize,
+    outer: isize,
+}
+
+impl PeakWindow {
+    pub fn open() -> Self {
+        let held = thread_held();
+        restart_thread_peak(held.live);
+        Self { start: held.live, outer: held.peak }
+    }
+
+    /// The bytes the window peaked above its start.
+    pub fn close(self) -> u64 {
+        let peak = thread_held().peak;
+        restart_thread_peak(self.outer.max(peak));
+        u64::try_from(peak - self.start).unwrap_or(0)
+    }
+}
+
+/// Whether this binary declared its counting allocator ([`declare_installed`]), so its readings are real.
+pub fn installed() -> bool {
+    INSTALLED.load(Ordering::SeqCst)
+}
+
+fn thread_grow(grow: isize) {
+    let _ = THREAD_HELD.try_with(|h| {
+        let was = h.get();
+        let live = was.live + grow;
+        h.set(ThreadHeld { live, peak: was.peak.max(live) });
+    });
 }
 
 /// Process-wide counts since start: allocations (a realloc counts as one), bytes requested, bytes live and the
@@ -111,6 +165,13 @@ impl crate::cost::CostMeter for NativeMeter {
         let counts = thread_counts();
         (counts.allocs as u64, counts.bytes as u64)
     }
+    fn held(&self) -> Option<(i64, i64)> {
+        let held = thread_held();
+        Some((held.live as i64, held.peak as i64))
+    }
+    fn restart_peak(&self, at: i64) {
+        restart_thread_peak(at as isize);
+    }
 }
 
 #[inline(always)]
@@ -121,6 +182,7 @@ fn count(totals: bool, requested: usize, grow: isize) {
         let live = LIVE.fetch_add(grow, Ordering::Relaxed) + grow;
         PEAK.fetch_max(live, Ordering::Relaxed);
     }
+    thread_grow(grow);
     let _ = THREAD_COUNTS.try_with(|c| {
         let was = c.get();
         c.set(AllocCounts {
@@ -139,6 +201,7 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for CountingAlloc<A> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        thread_grow(-(layout.size() as isize));
         if self.totals {
             LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
         }
@@ -191,6 +254,53 @@ mod tests {
                 bytes: 64
             }
         );
+    }
+
+    #[test]
+    fn a_threads_peak_sees_a_block_freed_inside_the_window() {
+        let _serial = SERIAL.lock().unwrap();
+        let meter = CountingAlloc::thread_only(System);
+        let start = thread_held().live;
+        restart_thread_peak(start);
+        let layout = Layout::from_size_align(4096, 8).unwrap();
+        unsafe { meter.dealloc(meter.alloc(layout), layout) };
+        let held = thread_held();
+        assert_eq!(held.live, start, "what was allocated was freed");
+        assert!(held.peak >= start + 4096, "the peak saw the block: {held:?} from {start}");
+    }
+
+    #[test]
+    fn a_peak_window_reports_a_block_freed_inside_it_and_an_inner_window_keeps_the_outer_peak() {
+        let _serial = SERIAL.lock().unwrap();
+        let meter = CountingAlloc::thread_only(System);
+        let outer = PeakWindow::open();
+        unsafe {
+            let big = Layout::from_size_align(8192, 8).unwrap();
+            meter.dealloc(meter.alloc(big), big);
+        }
+        let inner = PeakWindow::open();
+        unsafe {
+            let small = Layout::from_size_align(512, 8).unwrap();
+            meter.dealloc(meter.alloc(small), small);
+        }
+        let inner_peak = inner.close();
+        assert!((512..8192).contains(&inner_peak), "the inner window saw only its own block: {inner_peak}");
+        assert!(outer.close() >= 8192, "the outer window kept the block it saw before the inner one opened");
+    }
+
+    #[test]
+    fn control_another_threads_block_does_not_move_my_peak() {
+        let _serial = SERIAL.lock().unwrap();
+        let start = thread_held().live;
+        restart_thread_peak(start);
+        std::thread::spawn(|| {
+            let meter = CountingAlloc::thread_only(System);
+            let layout = Layout::from_size_align(1 << 20, 8).unwrap();
+            unsafe { meter.dealloc(meter.alloc(layout), layout) };
+        })
+        .join()
+        .unwrap();
+        assert!(thread_held().peak < start + (1 << 20));
     }
 
     #[test]

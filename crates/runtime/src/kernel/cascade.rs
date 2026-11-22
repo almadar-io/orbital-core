@@ -219,6 +219,14 @@ impl RuntimeKernel {
         }
     }
 
+    /// Whether this executed step of `trait_name` owes the host work of its own: a delegated effect, or an emit only the
+    /// host hears (EXEC-DIST-2). A `[client]` listener that owes it is posted as its own leg wherever its emitter ran (EXEC-DIST-10).
+    pub(super) fn step_owes_host(&self, trait_name: &str, result: &ProcessEventResult) -> bool {
+        result.executed
+            && (result.effect_results.iter().any(|r| matches!(r.outcome, EffectOutcome::Delegated(_)))
+                || self.step_emits_off_client(trait_name, result))
+    }
+
     /// Whether `trait_name` has an arm for `event` from `state`.
     pub(super) fn trait_handles(&self, trait_name: &str, state: &str, event: &str) -> bool {
         self.registry.trait_definitions

@@ -567,8 +567,13 @@ pub struct HopObservation {
 }
 
 impl TransitionHop {
-    /// The executed hops among `outcomes`, in order.
+    /// The executed hops among `outcomes`, in order, each with its effects.
     pub fn of_outcomes(outcomes: &[(String, crate::process_result::ProcessEventResult)]) -> Vec<Self> {
+        Self::of_outcomes_with(outcomes, true)
+    }
+
+    /// [`Self::of_outcomes`], each hop carrying its effects only `with_effects` (P-049).
+    pub fn of_outcomes_with(outcomes: &[(String, crate::process_result::ProcessEventResult)], with_effects: bool) -> Vec<Self> {
         outcomes
             .iter()
             .filter(|(_, result)| result.executed)
@@ -585,7 +590,7 @@ impl TransitionHop {
                     event,
                     fired_arm: result.fired_arm,
                     guard_result,
-                    effects: result.effect_runs.iter().map(HopEffect::of_run).collect(),
+                    effects: if with_effects { result.effect_runs.iter().map(HopEffect::of_run).collect() } else { Vec::new() },
                     observed: result.entry.as_ref().and_then(|entry| {
                         Some(HopObservation {
                             payload: Value::clone(&result.payload),

@@ -649,6 +649,10 @@ impl RuntimeKernel {
                 .load(std::sync::atomic::Ordering::SeqCst),
             std::sync::atomic::Ordering::SeqCst,
         );
+        fork.hop_effects.store(
+            self.hop_effects.load(std::sync::atomic::Ordering::SeqCst),
+            std::sync::atomic::Ordering::SeqCst,
+        );
         *fork.registry.schemas.write() = self.registry.schemas.read().clone();
         *fork.registry.trait_homes.write() = self.registry.trait_homes.read().clone();
         *fork.registry.endpoint_traits.write() = self.registry.endpoint_traits.read().clone();

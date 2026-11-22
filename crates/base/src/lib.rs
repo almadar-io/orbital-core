@@ -20,6 +20,8 @@ pub mod intern;
 pub mod def_refs;
 #[path = "program/value_serialize.rs"]
 pub mod value_serialize;
+#[path = "program/value_deserialize.rs"]
+pub mod value_deserialize;
 #[path = "program/shared_entity.rs"]
 pub mod shared_entity;
 #[cfg(feature = "std")]

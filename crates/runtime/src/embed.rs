@@ -334,7 +334,7 @@ impl EmbeddedKernel {
         let mut already_delivered: Vec<(String, String)> =
             already_delivered_from(&dispatch).into_iter().collect();
         already_delivered.sort();
-        let hops = TransitionHop::of_outcomes(&dispatch.outcomes);
+        let hops = TransitionHop::of_outcomes_with(&dispatch.outcomes, self.kernel.hop_effects());
         dispatch.response.transitions = (!hops.is_empty()).then_some(hops);
         let fold_seeded = if matches!(dispatch.mode, DispatchMode::HybridClientOnly) {
             vec![dispatch.seed.0.clone()]
@@ -941,7 +941,7 @@ impl EmbeddedKernel {
         host_left: &[String],
     ) -> Result<AppliedWire, String> {
         merged.fold_rerenders(&self.kernel.rerender_stale());
-        let hops = TransitionHop::of_outcomes(&outcomes);
+        let hops = TransitionHop::of_outcomes_with(&outcomes, self.kernel.hop_effects());
         merged.transitions = (!hops.is_empty()).then_some(hops);
         let server_legs = self
             .kernel
@@ -1341,6 +1341,11 @@ impl EmbeddedKernel {
     /// verifier judging `@ensures` ([`RuntimeKernel::set_record_entity_after`], EXEC-STEP-10).
     pub fn set_record_entity_after(&self, record: bool) {
         self.kernel.set_record_entity_after(record);
+    }
+
+    /// Carry each executed hop's effects on the answers' `transitions`, for a verifier or debugger (P-049).
+    pub fn set_hop_effects(&self, carry: bool) {
+        self.kernel.set_hop_effects(carry);
     }
 
     /// Carry each tick's `effectResults` on the frame response, for a host that verifies them (P-015).

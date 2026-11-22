@@ -25,6 +25,19 @@ pub fn release_freed_memory() -> Option<usize> {
     }
 }
 
+static SERVING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This process opened a listener, so it lives on as a server: a host runs its one-time whole-program work (a resolve,
+/// a compile) in a child process, so that work's heap does not stay fragmented in the server for its whole life (P-049).
+pub fn note_serving() {
+    SERVING.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process has opened a listener ([`note_serving`]).
+pub fn serving() -> bool {
+    SERVING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::release_freed_memory;
@@ -44,5 +57,16 @@ mod tests {
     fn control_releasing_twice_is_harmless() {
         release_freed_memory();
         release_freed_memory();
+    }
+}
+
+#[cfg(test)]
+mod serving_tests {
+    use super::{note_serving, serving};
+
+    #[test]
+    fn noting_a_server_is_read_back() {
+        note_serving();
+        assert!(serving());
     }
 }

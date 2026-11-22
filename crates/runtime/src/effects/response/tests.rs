@@ -264,6 +264,42 @@ fn a_hop_names_its_fired_arm_without_entity_recording() {
     assert_eq!(hops[0].observed, None);
 }
 
+fn fired_with_one_effect() -> ProcessEventResult {
+    let mut fired = empty_result("ready", true);
+    fired.event = Some("RASM_PLACE".to_string());
+    fired.effect_runs = vec![crate::process_result::EffectRun {
+        effect: orbital_core_base::schema::sexpr::SExpression::Array(
+            vec![
+                orbital_core_base::schema::sexpr::SExpression::string("emit"),
+                orbital_core_base::schema::sexpr::SExpression::string("RASM_PAINT"),
+            ]
+            .into(),
+        ),
+        status: crate::process_result::EffectRunStatus::Executed,
+        error: None,
+        code: None,
+        routed: false,
+        nested: None,
+        cost: None,
+    }];
+    fired
+}
+
+/// A hop names what ran (trait, from, to, event, arm) for the client fold; its effects are a verifier's (P-049).
+#[test]
+fn a_hop_without_effect_recording_carries_its_identity_and_no_effects() {
+    let hops = TransitionHop::of_outcomes_with(&[("Grid".to_string(), fired_with_one_effect())], false);
+    assert_eq!(hops.len(), 1);
+    assert_eq!((hops[0].trait_name.as_str(), hops[0].from.as_str(), hops[0].to.as_str(), hops[0].event.as_str()), ("Grid", "idle", "ready", "RASM_PLACE"));
+    assert!(hops[0].effects.is_empty());
+}
+
+#[test]
+fn control_a_hop_with_effect_recording_carries_its_effects() {
+    let hops = TransitionHop::of_outcomes_with(&[("Grid".to_string(), fired_with_one_effect())], true);
+    assert_eq!(hops[0].effects.len(), 1);
+}
+
 #[test]
 fn control_an_unfired_step_is_no_hop() {
     let mut blocked = empty_result("idle", false);

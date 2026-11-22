@@ -504,6 +504,7 @@ pub(super) fn listen(
     check_grant(host, op, &name, port, kind)?;
     let addrs = resolve(op, &name, port)?;
     let listener = TcpListener::bind(addrs.as_slice()).map_err(|e| io_error(op, &e))?;
+    crate::memory_release::note_serving();
     let local = listener.local_addr().map_err(|e| io_error(op, &e))?;
     listener.set_nonblocking(true).map_err(|e| io_error(op, &e))?;
     let Some(lease) = completions.begin_lease(key) else {

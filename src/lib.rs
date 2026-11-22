@@ -210,6 +210,7 @@ pub use orbital_core_base::time_util;
 pub use orbital_core_base::cost;
 pub use orbital_core_base::alloc_meter;
 pub use orbital_core_base::value_serialize;
+pub use orbital_core_base::value_deserialize;
 pub use orbital_core_eval::state_machine;
 pub mod type_compat {
     pub use orbital_core_base::type_compat::*;

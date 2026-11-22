@@ -73,11 +73,11 @@ fn cost_a_step_in_a_cost_scope_carries_its_cost_and_each_authored_effects() {
     assert_eq!(
         effects,
         vec![
-            Some(StepCost { start_ns: 1_250, ns: 250, allocs: 3, alloc_bytes: 24 }),
-            Some(StepCost { start_ns: 1_750, ns: 250, allocs: 3, alloc_bytes: 24 }),
+            Some(StepCost { start_ns: 1_250, ns: 250, allocs: 3, alloc_bytes: 24, peak_bytes: 0 }),
+            Some(StepCost { start_ns: 1_750, ns: 250, allocs: 3, alloc_bytes: 24, peak_bytes: 0 }),
         ]
     );
-    assert_eq!(result.cost, Some(StepCost { start_ns: 1_000, ns: 1_250, allocs: 15, alloc_bytes: 120 }));
+    assert_eq!(result.cost, Some(StepCost { start_ns: 1_000, ns: 1_250, allocs: 15, alloc_bytes: 120, peak_bytes: 0 }));
 }
 
 #[test]
