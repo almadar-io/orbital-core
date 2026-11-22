@@ -43,6 +43,20 @@ impl MountLineage {
         *self.open.lock()
     }
 
+    /// Wake every waiter to look again: work of the lineage changed without a ticket closing (a completion was held).
+    pub fn notify(&self) {
+        let _open = self.open.lock();
+        self.settled.notify_all();
+    }
+
+    /// Block until `done` holds for the open ticket count; it is looked at again on every ticket closed and every notify.
+    pub fn wait_until(&self, mut done: impl FnMut(usize) -> bool) {
+        let mut open = self.open.lock();
+        while !done(*open) {
+            self.settled.wait(&mut open);
+        }
+    }
+
     /// The lineage of one store ask's driver work.
     pub fn for_store_ask(key: &str) -> Arc<Self> {
         Arc::new(Self {

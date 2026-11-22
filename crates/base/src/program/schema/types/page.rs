@@ -102,6 +102,9 @@ pub struct PageDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub translation_of: Option<String>,
+    /// `image:` page modifier — the page's share image in a link preview (a path under the app's origin or an absolute URL).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// The head the compiler resolved for this route (`routes.json`); absent until a build stamps it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head: Option<PageHead>,
@@ -258,6 +261,9 @@ pub struct PageModifiers {
     /// The roles the page's nav entry shows for (a `pages {}` remap entry's `roles:`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
+    /// `image:` — the page's share image, declared on a `pages {}` remap entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// The sign-in route every host provides itself (the compiled shell's login form, the
@@ -289,6 +295,9 @@ pub struct PageHead {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternates: Vec<LocaleAlternate>,
+    /// The share image as an absolute URL: the page's own `image:`, else the app's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
 }
 
 /// App-level site modifiers from the `app … [ … ]` bracket.
@@ -303,6 +312,9 @@ pub struct SiteMeta {
     /// Site name (og:site_name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// `image:` — the share image of a page that declares none (og:image), a path under the origin or an absolute URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// Route an `access: authenticated` page sends a non-admitted viewer to.
     #[serde(rename = "signIn", default, skip_serializing_if = "Option::is_none")]
     pub sign_in: Option<String>,

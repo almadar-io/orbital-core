@@ -613,6 +613,8 @@ pub struct ColorTokens {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_foreground: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary_hover: Option<String>,

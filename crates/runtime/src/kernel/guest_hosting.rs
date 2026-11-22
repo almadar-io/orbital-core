@@ -114,11 +114,31 @@ pub trait GuestHost: Send + Sync {
         let _ = (leg, run);
         Err("this guest's host opens no .lolo leg".to_string())
     }
+    /// Run `step` inside the open leg as the held completion `run` that [`Self::settle_leg`] handed it: in that
+    /// completion's session and asker, in the leg's lineage.
+    fn in_leg_run(&self, leg: &str, run: &str, step: Box<dyn FnOnce() -> Result<Value, String> + '_>) -> Result<Value, String> {
+        let _ = (leg, run, step);
+        Err("this guest's host opens no .lolo leg".to_string())
+    }
+    /// The open leg's `$MOUNT` work settled (EXEC-SEED-7, `program/dispatch { lolo: "settle", leg }`): wait until every
+    /// ask the leg's steps deferred has completed and is held, then hand those completions to the leg as
+    /// `{ runs: [{ run, trait, event, payload, entityId }] }` for its kernel to step with [`Self::in_leg_run`]; `runs`
+    /// is empty once nothing the leg asked is still out.
+    fn settle_leg(&self, leg: &str) -> Result<Value, String> {
+        let _ = leg;
+        Err("this guest's host opens no .lolo leg".to_string())
+    }
     /// The open leg's answer from the outcomes its steps made, as the host answers a leg it ran itself
     /// (`program/dispatch { lolo: "finish", leg }`); the leg closes.
     fn finish_leg(&self, leg: &str) -> Result<Value, crate::effects::executor::SubstrateFailure> {
         let _ = leg;
         Err(crate::agent_ports::guest_failure(orbital_core_base::os::OsErrorKind::Unsupported, "program/dispatch: this guest's host opens no .lolo leg"))
+    }
+    /// Close an open leg its `.lolo` kernel failed (`program/dispatch { lolo: "abandon", leg, error }`), as the host
+    /// ends a run of its own that failed: a tick is logged and due again, a held completion fails with `error`.
+    fn abandon_leg(&self, leg: &str, error: &str) -> Result<(), String> {
+        let _ = (leg, error);
+        Err("this guest's host opens no .lolo leg".to_string())
     }
     /// One tick pass of the guest on its host's clock: every due tick of a trait the guest's page holds, `[client]` ones
     /// included since a guest has no browser (EXEC-ENDPOINT-3a), and every due `[background]` tick; what they moved.
@@ -134,8 +154,10 @@ pub trait GuestHost: Send + Sync {
     fn drive_by_lolo(&self) -> Result<(), String> {
         Err("this guest's host cannot hand its completions to a .lolo kernel".to_string())
     }
-    /// The completions held since the last call, each `{ run, trait, event, payload, entityId, failure, key }`: `run`
-    /// is the handle `program/dispatch { lolo: "begin", run }` opens a leg for.
+    /// Every held run no leg has begun yet, ticks first, each in the order it was held: a completion `{ run, trait,
+    /// event, payload, entityId, failure, key }` or a tick `{ run, kind: "tick", trait, tick }`. `run` is the handle
+    /// `program/dispatch { lolo: "begin", run }` opens a leg for; a run is offered on every pass until it is begun, so a
+    /// pass its opener refused loses nothing.
     fn take_parked_runs(&self) -> Vec<Value> {
         Vec::new()
     }

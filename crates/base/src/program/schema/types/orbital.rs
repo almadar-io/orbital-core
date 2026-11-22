@@ -440,6 +440,9 @@ pub struct PageRefObject {
         skip_serializing_if = "Option::is_none"
     )]
     pub translation_of: Option<String>,
+    /// `image:` — the page's share image on the reference form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// The page's nav entry (`@label`/`@icon`/`@roles` on the reference form).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,

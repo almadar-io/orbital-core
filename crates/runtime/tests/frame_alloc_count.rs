@@ -493,3 +493,18 @@ fn brotli_memory_of_an_answer_body() {
         println!("q{quality} w{window}: {:.1} MB -> {:.2} MB, peak +{:.1} MB", body.len() as f64 / 1e6, packed.len() as f64 / 1e6, (t.peak - before) as f64 / 1e6);
     }
 }
+
+/// The opened program's blob text plain and with `$def` (G-CROSS-637), as `program/open` builds it
+/// (`to_canonical_value`). Diagnostic: the program comes from `ORB_LOAD_FILE`.
+#[test]
+#[ignore]
+fn def_blob_size_of_a_resolved_program() {
+    let path = std::env::var("ORB_LOAD_FILE").expect("ORB_LOAD_FILE names a resolved program");
+    let schema: OrbitalSchema = serde_json::from_str(&std::fs::read_to_string(&path).expect("reads")).expect("parses");
+    let value = orbital_core_base::value_serialize::to_canonical_value(&schema).expect("a program is a value");
+    let plain = orbital_core_base::json_value::value_json_string(&value, false);
+    let with_defs = orbital_core_base::json_value::value_json_string_with_defs(&value);
+    println!("plain {:.2} MB, with $def {:.2} MB", plain.len() as f64 / 1e6, with_defs.len() as f64 / 1e6);
+    let back = orbital_core_base::blobs::blob_json(with_defs.as_bytes()).expect("reads back");
+    assert_eq!(back, serde_json::from_str::<serde_json::Value>(&plain).unwrap());
+}

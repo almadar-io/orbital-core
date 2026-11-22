@@ -54,11 +54,75 @@ pub fn js_json_string_pretty<T: serde::Serialize + ?Sized>(value: &T) -> String 
 /// `js_json_string` write.
 pub fn value_json_string(value: &Value, pretty: bool) -> String {
     let mut out = String::new();
-    write_value_json(value, pretty.then_some("  "), 0, &mut out);
+    write_value_json(value, pretty.then_some("  "), 0, &mut None, &mut out);
     out
 }
 
-fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut String) {
+/// [`value_json_string`] with every list or record the value holds more than once (the same shared node) written in
+/// full the first time as `{ "$def": n, "value": … }` and afterwards as `{ "$def": n }` (G-CROSS-637, EXEC-DIST-16b).
+/// [`crate::blobs::blob_json`] reads it back as the plain text; a value holding no node twice is written as the plain text.
+pub fn value_json_string_with_defs(value: &Value) -> String {
+    let mut seen = std::collections::HashMap::new();
+    count_nodes(value, &mut seen);
+    let repeated: std::collections::HashSet<usize> = seen.into_iter().filter(|(_, n)| *n > 1).map(|(at, _)| at).collect();
+    let mut defs = (!repeated.is_empty()).then(|| Defs { repeated, ids: std::collections::HashMap::new() });
+    let mut out = String::new();
+    write_value_json(value, None, 0, &mut defs, &mut out);
+    out
+}
+
+/// The non-empty lists and records written more than once, and the `$def` id each took when first written.
+struct Defs {
+    repeated: std::collections::HashSet<usize>,
+    ids: std::collections::HashMap<usize, usize>,
+}
+
+fn node_at(value: &Value) -> Option<usize> {
+    match value {
+        Value::Array(items) if !items.is_empty() => Some(crate::value::Shared::as_ptr(items) as usize),
+        Value::Object(map) if !map.is_empty() => Some(crate::value::Shared::as_ptr(map) as usize),
+        _ => None,
+    }
+}
+
+fn count_nodes(value: &Value, seen: &mut std::collections::HashMap<usize, u32>) {
+    if let Some(at) = node_at(value) {
+        let times = seen.entry(at).or_insert(0);
+        *times += 1;
+        if *times > 1 {
+            return;
+        }
+    }
+    match value {
+        Value::Array(items) => items.iter().for_each(|item| count_nodes(item, seen)),
+        Value::Object(map) => map.values().for_each(|item| count_nodes(item, seen)),
+        _ => {}
+    }
+}
+
+fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, defs: &mut Option<Defs>, out: &mut String) {
+    if let (Some(table), Some(at)) = (defs.as_mut(), node_at(value)) {
+        if table.repeated.contains(&at) {
+            if let Some(id) = table.ids.get(&at) {
+                out.push_str("{\"$def\":");
+                out.push_str(&id.to_string());
+                out.push('}');
+                return;
+            }
+            let id = table.ids.len();
+            table.ids.insert(at, id);
+            out.push_str("{\"$def\":");
+            out.push_str(&id.to_string());
+            out.push_str(",\"value\":");
+            write_node_json(value, indent, depth, defs, out);
+            out.push('}');
+            return;
+        }
+    }
+    write_node_json(value, indent, depth, defs, out);
+}
+
+fn write_node_json(value: &Value, indent: Option<&str>, depth: usize, defs: &mut Option<Defs>, out: &mut String) {
     let newline = |out: &mut String, depth: usize| {
         if let Some(unit) = indent {
             out.push('\n');
@@ -68,7 +132,7 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
         }
     };
     match value {
-        Value::Sealed(sealed) => write_value_json(&Value::object(sealed.fields().clone()), indent, depth, out),
+        Value::Sealed(sealed) => write_value_json(&Value::object(sealed.fields().clone()), indent, depth, &mut None, out),
         Value::Null | Value::Lambda(_) => out.push_str("null"),
         Value::Blob(blob) => {
             out.push_str("{\"");
@@ -97,7 +161,7 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
                     out.push(',');
                 }
                 newline(out, depth + 1);
-                write_value_json(item, indent, depth + 1, out);
+                write_value_json(item, indent, depth + 1, defs, out);
             }
             if !items.is_empty() {
                 newline(out, depth);
@@ -113,7 +177,7 @@ fn write_value_json(value: &Value, indent: Option<&str>, depth: usize, out: &mut
                 newline(out, depth + 1);
                 out.push_str(&serde_json::to_string(key.as_str()).expect("a string always writes"));
                 out.push_str(if indent.is_some() { ": " } else { ":" });
-                write_value_json(item, indent, depth + 1, out);
+                write_value_json(item, indent, depth + 1, defs, out);
             }
             if !map.is_empty() {
                 newline(out, depth);
@@ -488,6 +552,47 @@ mod json_entry_tests {
             serde_json::from_str::<Row>(bad).unwrap_err().to_string()
         );
         assert!(from_json_str::<Row>("{} trailing").is_err());
+    }
+
+    use crate::value::ValueMap;
+
+    fn with_a_repeated_part() -> Value {
+        let mut style = ValueMap::default();
+        style.insert("fill".to_owned().into(), Value::String("#0d0f1e".to_owned().into()));
+        style.insert("stroke".to_owned().into(), Value::array(vec![Value::Int(1), Value::Int(2)]));
+        let style = Value::object(style);
+        Value::array(vec![style.clone(), Value::array(vec![style.clone(), Value::Int(3)]), style])
+    }
+
+    #[test]
+    fn a_part_held_twice_is_written_once_and_reads_back_as_the_plain_text() {
+        let value = with_a_repeated_part();
+        let plain = value_json_string(&value, false);
+        let with_defs = value_json_string_with_defs(&value);
+        assert_eq!(with_defs.matches("#0d0f1e").count(), 1, "{with_defs}");
+        assert!(with_defs.len() < plain.len());
+        let back = crate::blobs::blob_json(with_defs.as_bytes()).unwrap();
+        assert_eq!(back, serde_json::from_str::<serde_json::Value>(&plain).unwrap());
+    }
+
+    #[test]
+    fn control_a_value_with_no_part_held_twice_is_written_as_the_plain_text() {
+        let mut fields = ValueMap::default();
+        fields.insert("a".to_owned().into(), Value::array(vec![Value::Int(1)]));
+        fields.insert("b".to_owned().into(), Value::array(vec![Value::Int(1)]));
+        fields.insert("empty".to_owned().into(), Value::array(vec![]));
+        let value = Value::object(fields);
+        assert_eq!(value_json_string_with_defs(&value), value_json_string(&value, false));
+    }
+
+    #[test]
+    fn control_a_part_held_outside_the_value_but_once_inside_it_is_written_plain() {
+        let value = with_a_repeated_part();
+        let outside = value.clone();
+        let Value::Array(items) = &value else { unreachable!() };
+        let once = items[1].clone();
+        assert_eq!(value_json_string_with_defs(&once), value_json_string(&once, false));
+        drop(outside);
     }
 }
 

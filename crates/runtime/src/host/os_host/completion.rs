@@ -432,6 +432,8 @@ pub struct ParkedCompletion {
     pub payload: Value,
     pub failed: bool,
     pub requester: Arc<Requester>,
+    /// The asking lineage's ticket, open until the held completion has run (EXEC-SEED-7).
+    pub ticket: Option<Arc<LineageTicket>>,
 }
 
 /// The session and asker a held completion's runner steps it in.
@@ -589,6 +591,20 @@ impl KernelCompletionSink {
         self.parked.lock().as_mut().map(std::mem::take).unwrap_or_default()
     }
 
+    /// How many held completions `lineage`'s work asked for.
+    pub fn parked_in(&self, lineage: &Arc<crate::kernel::mount_barrier::MountLineage>) -> usize {
+        self.parked.lock().as_ref().map_or(0, |parked| parked.iter().filter(|p| in_lineage(p, lineage)).count())
+    }
+
+    /// The held completions `lineage`'s work asked for, in arrival order; the rest stay held.
+    pub fn take_parked_in(&self, lineage: &Arc<crate::kernel::mount_barrier::MountLineage>) -> Vec<ParkedCompletion> {
+        let mut held = self.parked.lock();
+        let Some(parked) = held.as_mut() else { return Vec::new() };
+        let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(parked).into_iter().partition(|p| in_lineage(p, lineage));
+        *parked = kept;
+        taken
+    }
+
     /// The session and asker a held completion runs in (EXEC-QUEUE-10, EXEC-FIELD-3), held while its runner steps it.
     pub fn enter_parked(&self, parked: &ParkedCompletion) -> Option<ParkedScope> {
         let kernel = self.kernel.upgrade()?;
@@ -714,6 +730,10 @@ impl OsCompletionSink for KernelCompletionSink {
 
 /// Whether an open ask of `requester` keeps `session` alive: one made in that session, or one a program-session step made
 /// for that session's viewer (EXEC-FIELD-3), whose completion reads that session's identity as `@user`.
+fn in_lineage(parked: &ParkedCompletion, lineage: &Arc<crate::kernel::mount_barrier::MountLineage>) -> bool {
+    parked.requester.lineage.as_ref().is_some_and(|own| Arc::ptr_eq(own, lineage))
+}
+
 fn holds_session(requester: &Requester, session: &str) -> bool {
     requester.session.as_deref() == Some(session) || requester.asker.as_deref() == Some(session)
 }
@@ -764,15 +784,27 @@ impl KernelCompletionSink {
         // A completion that outlives its kernel has nothing to dispatch into.
         let Some(kernel) = self.kernel.upgrade() else { return };
         self.wait_for_owner(&kernel, key);
-        let (requester, _ticket) = self.requester_of(key);
+        let (requester, ticket) = self.requester_of(key);
         let requester = program_wide_requester(&kernel, site, requester);
         tracing::debug!(target: orbital_core_base::logging::ns::RUNTIME_KERNEL, trait_name = %site.trait_name, key, session = ?requester.session, asker = ?requester.asker, "completion requester");
         // A store leg's work is awaited in place by the dispatch that asked it, so it is never held for a runner.
         let store_leg_work = requester.lineage.as_ref().is_some_and(|lineage| lineage.store_ask().is_some());
-        if let (false, Some(parked)) = (store_leg_work, self.parked.lock().as_mut()) {
-            parked.push(ParkedCompletion { site: site.clone(), key: key.to_string(), event, payload, failed, requester });
-            return;
-        }
+        let ticket = {
+            let mut held = self.parked.lock();
+            match (store_leg_work, held.as_mut()) {
+                (false, Some(parked)) => {
+                    let lineage = requester.lineage.clone();
+                    parked.push(ParkedCompletion { site: site.clone(), key: key.to_string(), event, payload, failed, requester, ticket: ticket.map(Arc::new) });
+                    drop(held);
+                    if let Some(lineage) = lineage {
+                        lineage.notify();
+                    }
+                    return;
+                }
+                _ => ticket,
+            }
+        };
+        let _ticket = ticket;
         let _lineage = crate::kernel::mount_barrier::enter_lineage(requester.lineage.clone());
         let _session = requester.session.as_ref().map(|session| kernel.enter_session(session));
         // A completion stepping in the program session for a viewer's ask reads that viewer as who asked (EXEC-FIELD-3).

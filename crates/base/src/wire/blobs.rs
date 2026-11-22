@@ -111,6 +111,67 @@ pub(crate) fn handle(id: u64) -> Result<Arc<Blob>, String> {
     })
 }
 
+/// A blob's JSON text read back as the plain value: each `{ "$def": n, "value": … }` is its value, and each
+/// `{ "$def": n }` the value defined as `n` anywhere in the text (`json_value::value_json_string_with_defs`).
+pub fn blob_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    use serde_json::Value as Json;
+    use std::collections::HashMap;
+    const DEF: &str = crate::def_refs::DEF_MARKER;
+    fn def_of(fields: &serde_json::Map<String, Json>) -> Option<(u64, Option<&Json>)> {
+        let id = fields.get(DEF)?.as_u64()?;
+        match fields.len() {
+            1 => Some((id, None)),
+            2 => fields.get("value").map(|value| (id, Some(value))),
+            _ => None,
+        }
+    }
+    fn collect<'a>(node: &'a Json, defined: &mut HashMap<u64, &'a Json>) -> Result<(), String> {
+        match node {
+            Json::Object(fields) => {
+                if let Some((id, Some(value))) = def_of(fields) {
+                    if defined.insert(id, value).is_some() {
+                        return Err(format!("{DEF} {id} is defined twice"));
+                    }
+                }
+                fields.values().try_for_each(|v| collect(v, defined))
+            }
+            Json::Array(items) => items.iter().try_for_each(|v| collect(v, defined)),
+            _ => Ok(()),
+        }
+    }
+    fn expand(node: &Json, defined: &HashMap<u64, &Json>, done: &mut HashMap<u64, Json>, open: &mut Vec<u64>) -> Result<Json, String> {
+        match node {
+            Json::Object(fields) => match def_of(fields) {
+                Some((id, _)) => {
+                    if let Some(value) = done.get(&id) {
+                        return Ok(value.clone());
+                    }
+                    if open.contains(&id) {
+                        return Err(format!("{DEF} {id} holds itself"));
+                    }
+                    let raw = defined.get(&id).ok_or_else(|| format!("{DEF} {id} is never defined"))?;
+                    open.push(id);
+                    let value = expand(raw, defined, done, open)?;
+                    open.pop();
+                    done.insert(id, value.clone());
+                    Ok(value)
+                }
+                None => fields
+                    .iter()
+                    .map(|(k, v)| expand(v, defined, done, open).map(|v| (k.clone(), v)))
+                    .collect::<Result<serde_json::Map<_, _>, _>>()
+                    .map(Json::Object),
+            },
+            Json::Array(items) => items.iter().map(|v| expand(v, defined, done, open)).collect::<Result<Vec<_>, _>>().map(Json::Array),
+            other => Ok(other.clone()),
+        }
+    }
+    let text: Json = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    let mut defined = HashMap::new();
+    collect(&text, &mut defined)?;
+    expand(&text, &defined, &mut HashMap::new(), &mut Vec::new())
+}
+
 /// A framed body: `head` (JSON text naming each blob by its index) and `blobs` in index order.
 pub fn frame(head: &[u8], blobs: &[Vec<u8>]) -> Result<Vec<u8>, String> {
     let length = |len: usize| {

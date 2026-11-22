@@ -667,7 +667,12 @@ fn serve_leg(
             let leg = options.get("leg").and_then(Value::as_str).ok_or_else(|| failure("program/dispatch: { lolo: \"finish\" } names the leg begin opened"))?;
             return host.finish_leg(leg).map_err(|refused| AgentPortFailure { error: refused.message, errors: refused.errors });
         }
-        Some(other) => return Err(failure(format!("program/dispatch: lolo is \"begin\" or \"finish\", not \"{other}\""))),
+        Some("abandon") => return abandon_leg(host.as_ref(), options),
+        Some("settle") => {
+            let leg = options.get("leg").and_then(Value::as_str).ok_or_else(|| failure("program/dispatch: { lolo: \"settle\" } names the leg begin opened"))?;
+            return host.settle_leg(leg).map_err(|e| failure(format!("program/dispatch: {e}")));
+        }
+        Some(other) => return Err(failure(format!("program/dispatch: lolo is \"begin\", \"finish\", \"settle\" or \"abandon\", not \"{other}\""))),
         None => {}
     }
     host.request(payload, options)
@@ -675,6 +680,14 @@ fn serve_leg(
             error: refused.message,
             errors: refused.errors,
         })
+}
+
+/// `{ lolo: "abandon", leg, error }`: close a leg its `.lolo` kernel failed; answers `{ abandoned: true }`.
+fn abandon_leg(host: &dyn crate::kernel::guest_hosting::GuestHost, options: &ValueMap) -> Result<Value, AgentPortFailure> {
+    let leg = options.get("leg").and_then(Value::as_str).ok_or_else(|| failure("program/dispatch: { lolo: \"abandon\" } names the leg begin opened"))?;
+    let error = options.get("error").and_then(Value::as_str).unwrap_or_default();
+    host.abandon_leg(leg, error).map_err(|e| failure(format!("program/dispatch: {e}")))?;
+    Ok(Value::object(ValueMap::from_iter([("abandoned".into(), Value::Bool(true))])))
 }
 
 fn json_value(json: serde_json::Value) -> Value {
@@ -1940,7 +1953,8 @@ impl RuntimeKernel {
                 let orbitals = painter_orbitals(&session.kernel, &outcomes);
                 Ok(guest_answer(&session.kernel, &orbitals, None, None, &embedded, &outcomes, &seed_trait, &event, None, &[]))
             }
-            other => Err(failure(format!("program/dispatch: lolo is \"begin\" or \"finish\", not {other:?}"))),
+            Some("abandon") => abandon_leg(host.as_ref(), options),
+            other => Err(failure(format!("program/dispatch: a plain leg's lolo is \"begin\", \"finish\" or \"abandon\", not {other:?}"))),
         }
     }
 

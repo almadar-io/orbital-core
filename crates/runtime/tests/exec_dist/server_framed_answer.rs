@@ -1,7 +1,7 @@
 // EXEC-DIST-16b: a browser-bound answer carries each SExpr-typed emit payload value as a framed blob, and decodes to the
 // plain answer exactly.
 
-use orbital_core_base::blobs::{unframe, BLOB_MARKER};
+use orbital_core_base::blobs::{blob_json, unframe, BLOB_MARKER};
 use orbital_core_base::json_value::{from_json_value, js_json_string};
 use orbital_core_runtime::effects::response::{EventRequest, EventResponse};
 use orbital_core_runtime::embed::{EmbeddedServer, ServerProgress};
@@ -53,7 +53,7 @@ fn decoded(body: &[u8]) -> (Json, usize) {
         match value {
             Json::Object(fields) if fields.len() == 1 && fields.contains_key(BLOB_MARKER) => {
                 let index = fields[BLOB_MARKER].as_u64().unwrap() as usize;
-                *value = serde_json::from_slice(blobs[index]).unwrap();
+                *value = blob_json(blobs[index]).unwrap();
             }
             Json::Object(fields) => fields.values_mut().for_each(|v| put_back(v, blobs)),
             Json::Array(items) => items.iter_mut().for_each(|v| put_back(v, blobs)),
@@ -89,6 +89,30 @@ fn an_sexpr_typed_emit_payload_value_rides_as_a_blob() {
         "control: an object-typed field stays inline"
     );
     assert_eq!(client["payload"]["guest"], "g");
+}
+
+#[test]
+fn a_part_the_program_holds_twice_rides_once_and_decodes_to_the_plain_answer() {
+    use orbital_core_base::value::{Value, ValueMap};
+    let server = server();
+    let mut response = go(&server);
+    let mut style = ValueMap::default();
+    style.insert("fill".to_owned().into(), Value::String("#0d0f1e".to_owned().into()));
+    let style = Value::object(style);
+    let program = response
+        .emitted_events
+        .iter_mut()
+        .find(|e| e.event == "CLIENT")
+        .and_then(|e| e.payload.as_mut())
+        .and_then(Value::as_object_mut)
+        .unwrap();
+    program.insert("program".to_owned().into(), Value::array(vec![style.clone(), Value::array(vec![style])]));
+    let plain: Json = serde_json::from_str(&js_json_string(&response)).unwrap();
+    let body = server.kernel().framed_answer(&response).unwrap().1;
+    let (_, blobs) = unframe(&body).unwrap();
+    assert_eq!(String::from_utf8_lossy(blobs[0]).matches("#0d0f1e").count(), 1, "the part is written once");
+    let (decoded, _) = decoded(&body);
+    assert_eq!(decoded, plain);
 }
 
 #[test]

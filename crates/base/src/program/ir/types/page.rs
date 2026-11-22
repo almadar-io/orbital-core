@@ -33,6 +33,9 @@ pub struct OirPage {
     /// `translationOf:` page modifier; groups alternates ahead of `source_page`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub translation_of: Option<String>,
+    /// `image:` page modifier — the page's share image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
     /// The page declared `[initial]`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_initial: bool,
@@ -67,6 +70,7 @@ impl OirPage {
             indexing: None,
             source_page: None,
             translation_of: None,
+            image: None,
             is_initial: false,
             is_not_found: false,
             layout: None,

@@ -196,6 +196,12 @@ impl StepKernel {
             Some(Value::String(_)) => return Err(format!("{op}: a leg is a hosted split guest's; this guest has no host")),
             Some(_) => return Err(format!("{op}: the request's `leg` must be the handle program/dispatch {{ lolo: \"begin\" }} answered")),
         };
+        let held_run = match request.get("run") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(run)) if leg.is_some() => Some(run.to_string()),
+            Some(Value::String(_)) => return Err(format!("{op}: a held completion's `run` is stepped inside the leg settle handed it to; name `leg`")),
+            Some(_) => return Err(format!("{op}: the request's `run` must be the handle program/dispatch {{ lolo: \"settle\" }} answered")),
+        };
         if !matches!(request.get("commit"), None | Some(Value::Null)) {
             return Err(format!("{op}: a request names no `commit`: kernel/step never keeps a step and kernel/commit always does"));
         }
@@ -283,8 +289,9 @@ impl StepKernel {
             };
             kernel.step_isolated(input)
         };
-        match (in_leg_host, request.get("leg").and_then(Value::as_str)) {
-            (Some(host), Some(leg)) => host.in_leg(leg, Box::new(run)),
+        match (in_leg_host, request.get("leg").and_then(Value::as_str), held_run.as_deref()) {
+            (Some(host), Some(leg), Some(held)) => host.in_leg_run(leg, held, Box::new(run)),
+            (Some(host), Some(leg), None) => host.in_leg(leg, Box::new(run)),
             _ => run(),
         }
         .map_err(|error| format!("{op}: {error}"))

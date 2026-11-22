@@ -1008,6 +1008,7 @@ fn color_and_illustration_tokens_round_trip() {
             primary: Some("#14b8a6".to_string()),
             primary_hover: None,
             primary_foreground: Some("#ffffff".to_string()),
+            primary_text: None,
             secondary: None,
             secondary_hover: None,
             secondary_foreground: None,

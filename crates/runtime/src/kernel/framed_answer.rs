@@ -3,7 +3,7 @@
 use super::RuntimeKernel;
 use crate::effects::response::EventResponse;
 use orbital_core_base::blobs::{frame, BLOB_MARKER};
-use orbital_core_base::json_value::{js_json_string, value_json_string};
+use orbital_core_base::json_value::{js_json_string, value_json_string_with_defs};
 use orbital_core_base::value::{Value, ValueMap};
 
 impl RuntimeKernel {
@@ -39,7 +39,7 @@ impl RuntimeKernel {
                 else {
                     continue;
                 };
-                blobs.push(value_json_string(value, false).into_bytes());
+                blobs.push(value_json_string_with_defs(value).into_bytes());
                 let mut marker = ValueMap::default();
                 marker.insert(BLOB_MARKER.into(), Value::Int(blobs.len() as i64 - 1));
                 *value = Value::object(marker);

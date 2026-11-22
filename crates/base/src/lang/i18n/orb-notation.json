@@ -129,6 +129,7 @@
     "primary",
     "primaryForeground",
     "primaryHover",
+    "primaryText",
     "radiusContainer",
     "radiusInteractive",
     "radiusPill",
