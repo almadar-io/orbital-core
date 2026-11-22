@@ -348,8 +348,8 @@ pub use orbital::{
 };
 pub use page::{
     nav_entries, NavEntry,
-    is_host_sign_in_route, DesignHints, DomainContext, I18nHead, PageAccess, PageDefinition,
-    PageIndexing, PageMessage, PageMeta, PageModifiers, PatternDefinition, SectionDefinition,
+    is_host_sign_in_route, DesignHints, DomainContext, I18nHead, LocaleAlternate, PageAccess, PageDefinition,
+    PageHead, PageIndexing, PageMessage, PageMeta, PageModifiers, PatternDefinition, SectionDefinition,
     SiteMeta, HOST_SIGN_IN_ROUTE,
 };
 pub use services::{

@@ -2180,9 +2180,8 @@ impl RuntimeKernel {
     pub(super) fn program_of_guest(&self, handle: &Value) -> Result<Value, AgentPortFailure> {
         let programs = self.guest(handle, "program/self")?.kernel.registered_programs();
         match programs.as_slice() {
-            [program] => serde_json::to_value(program.as_ref())
+            [program] => orbital_core_base::value_serialize::to_value(program.as_ref())
                 .map_err(|e| e.to_string())
-                .and_then(|v| from_json_value(&v).map_err(|e| e.to_string()))
                 .map_err(|e| AgentPortFailure::plain(format!("program/self: the guest's program does not serialize: {e}"))),
             other => Err(AgentPortFailure::plain(format!("program/self: the guest holds {} programs, not one", other.len()))),
         }

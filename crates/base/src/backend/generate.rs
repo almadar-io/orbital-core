@@ -87,14 +87,14 @@ pub trait Backend: Send + Sync {
 
 /// The indexable public routes of `page`'s translation group (its
 /// `translationOf`, else its upstream `sourcePage`) across the app's locales,
-/// in locale order, as `[{ locale, path }]` — its hreflang alternates. `None`
+/// in locale order — its hreflang alternates. `None`
 /// when `page` is not itself indexable and public, has no group, appears in fewer than two locales, or one locale holds it
 /// twice (no single alternate per language).
 pub fn locale_alternates(
     oir: &crate::ir::types::OirModule,
     page: &crate::ir::types::OirPage,
-) -> Option<serde_json::Value> {
-    use crate::schema::types::{PageAccess, PageIndexing};
+) -> Option<Vec<crate::schema::types::LocaleAlternate>> {
+    use crate::schema::types::{LocaleAlternate, PageAccess, PageIndexing};
     let indexable = |p: &crate::ir::types::OirPage| {
         p.access == Some(PageAccess::Public) && p.indexing != Some(PageIndexing::Noindex)
     };
@@ -124,7 +124,7 @@ pub fn locale_alternates(
     Some(
         by_locale
             .into_iter()
-            .map(|(locale, path)| serde_json::json!({ "locale": locale, "path": path }))
+            .map(|(locale, path)| LocaleAlternate { locale: locale.to_string(), path: path.to_string() })
             .collect(),
     )
 }

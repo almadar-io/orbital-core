@@ -102,6 +102,9 @@ pub struct PageDefinition {
         skip_serializing_if = "Option::is_none"
     )]
     pub translation_of: Option<String>,
+    /// The head the compiler resolved for this route (`routes.json`); absent until a build stamps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<PageHead>,
 }
 
 /// One `@pages` nav entry: a root route page that declares its nav `@label`.
@@ -265,6 +268,27 @@ pub const HOST_SIGN_IN_ROUTE: &str = "/login";
 /// Whether `path` is [`HOST_SIGN_IN_ROUTE`], ignoring a trailing slash.
 pub fn is_host_sign_in_route(path: &str) -> bool {
     path.trim_end_matches('/') == HOST_SIGN_IN_ROUTE
+}
+
+/// One language version of a page: its locale and route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocaleAlternate {
+    pub locale: String,
+    pub path: String,
+}
+
+/// The document head the compiler resolved for one route: its title and description in the route's locale and its
+/// indexable translations. Stamped on the page so every client applies it as written in `routes.json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PageHead {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternates: Vec<LocaleAlternate>,
 }
 
 /// App-level site modifiers from the `app … [ … ]` bracket.

@@ -319,6 +319,29 @@ mod tests {
         assert_eq!(serde_json::to_value(&direct).unwrap(), serde_json::to_value(&through_json).unwrap());
     }
 
+    /// The other direction: a program written straight into a `Value` is the value its `serde_json` copy reads back as
+    /// (P-049: `program/self` answered through the copy).
+    #[test]
+    fn a_program_written_straight_to_a_value_equals_its_json_round_trip() {
+        let program: crate::schema::types::OrbitalSchema = from_json_value(&serde_json::json!({
+            "name": "p", "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "O",
+                "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "n", "type": "number", "default": 0 }] },
+                "traits": [{ "name": "T", "linkedEntity": "E", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["set", "@entity.n", ["+", "@entity.n", 1.5]], ["set", "@entity.n", 3]] }]
+                } }],
+                "pages": [{ "name": "P", "path": "/", "traits": [{ "ref": "T" }] }]
+            }]
+        }))
+        .expect("a program");
+        let direct = crate::value_serialize::to_value(&program).expect("writes directly");
+        let through_json: Value = from_json_value(&serde_json::to_value(&program).unwrap()).expect("reads the copy");
+        assert_eq!(value_to_json(&direct), value_to_json(&through_json));
+        assert_eq!(direct, through_json);
+    }
+
     #[test]
     fn control_a_shape_mismatch_is_refused_like_the_round_trip() {
         let value = value_of(serde_json::json!({ "name": 3 }));

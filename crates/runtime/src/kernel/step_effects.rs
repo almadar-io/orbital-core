@@ -33,6 +33,7 @@ impl RuntimeKernel {
         let mut run_results: HashMap<usize, EffectResult> = HashMap::new();
         for (index, effect_expr) in effects.iter().enumerate() {
             let _effect = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "effect", op = ?effect_expr.operator()).entered();
+            let _peak = EffectPeak::open(effect_expr, || self.step.step_site.read().clone().unwrap_or_default().0);
             if failure.is_some() {
                 runs.push(EffectRun {
                     cost: None,
@@ -950,4 +951,23 @@ pub(super) fn push_with_completion(
 /// The events that end a keyed ask declared with `emit`: success, failure and cancelled routes.
 fn routes_of(emit: &FetchEmit) -> Vec<String> {
     [&emit.success, &emit.failure, &emit.cancelled].into_iter().flatten().cloned().collect()
+}
+
+/// The bytes one effect peaks at, logged as it ends where the binary counts allocations (P-049).
+struct EffectPeak(Option<(orbital_core_base::alloc_meter::PeakWindow, String, String)>);
+
+impl EffectPeak {
+    fn open(effect: &orbital_core_base::schema::sexpr::SExpression, trait_name: impl FnOnce() -> String) -> Self {
+        Self(orbital_core_base::alloc_meter::installed().then(|| {
+            (orbital_core_base::alloc_meter::PeakWindow::open(), effect.operator().unwrap_or_default().to_string(), trait_name())
+        }))
+    }
+}
+
+impl Drop for EffectPeak {
+    fn drop(&mut self) {
+        if let Some((window, op, trait_name)) = self.0.take() {
+            tracing::debug!(target: "almadar:runtime:mem", trait_name = %trait_name, op = %op, peak_bytes = window.close(), "effect peak");
+        }
+    }
 }

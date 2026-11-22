@@ -410,6 +410,9 @@ fn load_memory_of_a_resolved_program() {
     println!("Value read directly: live +{:.1} MB, peak +{:.1} MB", mb(t.live - before_direct), mb(t.peak - before_direct));
     assert_eq!(serde_json::to_string(&direct).unwrap(), serde_json::to_string(&through_json).unwrap(), "the direct read is the json read");
     println!("direct read equals the json read");
+    let through_json_value: orbital_core_base::value::Value = from_json_value(&serde_json::to_value(&direct).unwrap()).expect("reads the copy");
+    assert!(orbital_core_base::value_serialize::to_value(&direct).expect("writes") == through_json_value, "a program written straight to a value is its json round trip");
+    println!("direct write equals the json round trip");
     drop((direct, through_json));
     drop(as_value);
     let before_kernel = alloc_meter::totals().live;
@@ -473,4 +476,20 @@ fn guest_open_memory_of_a_resolved_program() {
     println!("guest open+mount: live +{:.1} MB, peak +{:.1} MB", mb(t.live - before), mb(t.peak - before));
     println!("held after open: {:?}", kernel.held_bytes());
     println!("opener: {}", serde_json::to_string(&kernel.snapshot_trait("Opener", None).entity).unwrap_or_default().chars().take(300).collect::<String>());
+}
+
+/// Memory of brotli-compressing one answer body the way std-http-server does (quality 4, window 22), P-049. Diagnostic:
+/// the body comes from `ORB_BROTLI_FILE`.
+#[test]
+#[ignore]
+fn brotli_memory_of_an_answer_body() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let body = std::fs::read(std::env::var("ORB_BROTLI_FILE").expect("ORB_BROTLI_FILE names a body")).expect("reads");
+    for (quality, window) in [(4, 22), (4, 18), (1, 22), (5, 22)] {
+        let before = alloc_meter::totals().live;
+        alloc_meter::reset_peak(before);
+        let packed = orbital_core_base::codec::brotli_compress_options(&body, quality, window);
+        let t = alloc_meter::totals();
+        println!("q{quality} w{window}: {:.1} MB -> {:.2} MB, peak +{:.1} MB", body.len() as f64 / 1e6, packed.len() as f64 / 1e6, (t.peak - before) as f64 / 1e6);
+    }
 }

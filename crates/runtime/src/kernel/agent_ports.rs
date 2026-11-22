@@ -14,7 +14,6 @@
 #[cfg(not(feature = "std"))]
 use std::prelude::v1::*;
 
-use orbital_core_base::json_value::from_json_value;
 use super::RuntimeKernel;
 use crate::effects::executor::SubstrateHandler;
 use orbital_core_base::agent_ports::{
@@ -316,8 +315,7 @@ impl RuntimeKernel {
             .values()
             .find(|schema| schema.orbitals.iter().any(|o| o.name == orbital))
             .ok_or_else(|| format!("program/self: '{orbital}' belongs to no registered program"))?;
-        serde_json::to_value(schema.as_ref())
-            .and_then(|v| from_json_value(&v))
+        orbital_core_base::value_serialize::to_value(schema.as_ref())
             .map_err(|e| format!("program/self: the program does not serialize: {e}"))
     }
 
