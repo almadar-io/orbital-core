@@ -141,7 +141,7 @@ pub use orbital_core_base::entity_vocabulary::{identity_field, user_field_of, vo
 pub use entity_source::{EntitySource, InMemoryEntityCache, QueryAnswer};
 pub use kernel::{
     already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
-    StatefulLeg, TickDispatch, TickEmit, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP,
+    StatefulLeg, TickDispatch, TickEmit, TickRow, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP,
 };
 pub use kernel::lazy::{LazyObserver, LazyProgram, LazySource};
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};

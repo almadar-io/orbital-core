@@ -2393,28 +2393,37 @@ mod guest_tick {
     use super::*;
 
     fn ticking_guest() -> serde_json::Value {
+        ticking_guest_over("runtime", json!([]))
+    }
+
+    /// Ticker over a `persistence` Cell, its boot INIT running `init`.
+    fn ticking_guest_over(persistence: &str, init: serde_json::Value) -> serde_json::Value {
         json!({
             "name": "Ticking",
             "typeContractVersion": 1,
             "orbitals": [{
                 "name": "G",
-                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
+                "entity": { "name": "Cell", "persistence": persistence, "collection": "cells", "fields": [{ "name": "id", "type": "string" }, { "name": "n", "type": "number", "default": 0 }] },
                 "traits": [{ "name": "Ticker", "linkedEntity": "Cell",
                     "ticks": [{ "name": "bump", "interval": 0, "background": true, "effects": [["set", "@entity.n", ["+", "@entity.n", 1]]] }],
                     "stateMachine": {
                         "states": [{ "name": "idle", "isInitial": true }],
-                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }] } }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": init }] } }],
                 "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Ticker" }] }]
             }]
         })
     }
 
     fn ticking(tick_options: serde_json::Value) -> RuntimeKernel {
+        ticking_with(tick_options, ticking_guest())
+    }
+
+    fn ticking_with(tick_options: serde_json::Value, guest: serde_json::Value) -> RuntimeKernel {
         let kernel = opener(json!([
             open_transition(),
             { "from": "idle", "to": "idle", "event": "TICK", "effects": [["program/tick", tick_options]] },
         ]));
-        let program: Value = from_json_value(&json!({ "program": ticking_guest() })).unwrap();
+        let program: Value = from_json_value(&json!({ "program": guest })).unwrap();
         kernel.dispatch("Opener", None, "GO", program).unwrap();
         assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
         kernel
@@ -2429,10 +2438,20 @@ mod guest_tick {
         let kernel = ticking(json!({ "guest": "@entity.guest", "emit": emit() }));
         let passes = [ran(&kernel), ran(&kernel)];
         assert!(
-            passes.iter().any(|ran| ran == &json!([{ "trait": "Ticker", "tick": "bump" }])),
+            passes.iter().any(|ran| ran == &json!([{ "trait": "Ticker", "tick": "bump", "rows": [""] }])),
             "a pass runs the guest's due tick: {passes:?}"
         );
         assert!(entity(&kernel)["refused"].is_null(), "{}", entity(&kernel));
+    }
+
+    #[test]
+    fn a_tick_pass_of_a_guest_names_the_rows_each_tick_covered() {
+        let guest = ticking_guest_over("runtime", json!([["persist", "create", "Cell", { "n": 1 }], ["persist", "create", "Cell", { "n": 2 }]]));
+        let kernel = ticking_with(json!({ "guest": "@entity.guest", "emit": emit() }), guest);
+        let passes = [ran(&kernel), ran(&kernel)];
+        let covered = passes.iter().find_map(|ran| ran[0]["rows"].as_array().cloned()).unwrap_or_else(|| panic!("a pass ran the tick: {passes:?} {}", entity(&kernel)));
+        assert_eq!(covered.len(), 2, "one row per Cell: {passes:?}");
+        assert!(covered.iter().all(|row| row.as_str().is_some_and(|id| !id.is_empty())), "each row is named by its id: {covered:?}");
     }
 
     #[test]

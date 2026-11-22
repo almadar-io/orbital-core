@@ -128,22 +128,7 @@ impl RuntimeKernel {
         let Some(front) = plans.front() else {
             return Ok(());
         };
-        let entity_type = self
-            .registry.trait_definitions
-            .read()
-            .get(&front.trait_name)
-            .and_then(|def| def.linked_entity.clone())
-            .unwrap_or_else(|| front.trait_name.clone());
-        let singleton_entity = self
-            .registry.entity_definitions
-            .read()
-            .get(&entity_type)
-            .is_some_and(|def| {
-                matches!(
-                    def.persistence,
-                    Some(orbital_core_base::schema::Persistence::Runtime)
-                )
-            });
+        let entity_type = self.tick_entity_type(&front.trait_name);
         let listed = self.entity_source.list(&entity_type);
         if self.io.suspended() {
             return Err(Fault::Suspended);
@@ -152,29 +137,12 @@ impl RuntimeKernel {
         let Some(plan) = plans.pop_front() else {
             return Ok(());
         };
-        let ids: Vec<String> = rows
-            .iter()
-            .filter_map(|row| {
-                row.get_path("id")
-                    .and_then(|id| id.as_str().map(str::to_string))
-            })
-            .collect();
-        let keyed = self.listener_manager.is_keyed(&plan.trait_name);
-        if ids.is_empty() && keyed {
-            return Ok(());
-        }
-        // A non-keyed `[runtime]` entity with no rows ticks once on the `singleton` frame (EXEC-TICK-5).
-        if ids.is_empty() && singleton_entity {
-            plans.push_front(SeedPlan {
-                tick: plan.tick.clone().map(|tick| TickSeed {
-                    all_rows: false,
-                    ..tick
-                }),
-                ..plan
-            });
-            return Ok(());
-        }
-        for id in ids.into_iter().rev() {
+        let held = plan
+            .tick
+            .as_ref()
+            .map_or(crate::process_result::RUNTIME_SINGLETON, |tick| tick.state_entity.as_str())
+            .to_string();
+        for row in self.tick_rows(&plan.trait_name, &held, &rows).into_iter().rev() {
             plans.push_front(SeedPlan {
                 trait_name: plan.trait_name.clone(),
                 event_name: plan.event_name.clone(),
@@ -184,10 +152,10 @@ impl RuntimeKernel {
                 lifecycle_targets: plan.lifecycle_targets.clone(),
                 tick: plan.tick.clone().map(|tick| TickSeed {
                     all_rows: false,
-                    state_entity: if keyed { id.clone() } else { tick.state_entity },
+                    state_entity: row.state_entity,
                     ..tick
                 }),
-                entity_id: Some(id),
+                entity_id: row.entity_id,
             });
         }
         Ok(())

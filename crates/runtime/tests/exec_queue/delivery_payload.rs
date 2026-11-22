@@ -258,3 +258,4 @@ fn control_a_completion_whose_step_effects_run_stays_on_its_success_route() {
     let snapshot = k.snapshot_trait("Asker", Some(orbital_core_runtime::process_result::RUNTIME_SINGLETON));
     assert_eq!(snapshot.state, "done");
 }
+

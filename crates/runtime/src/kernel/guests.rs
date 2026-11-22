@@ -2111,6 +2111,16 @@ impl RuntimeKernel {
             if !guest.tick_runs(&trait_name, &tick) {
                 continue;
             }
+            // The rows this firing covers, listed before it runs as its run lists them, so a `.lolo` kernel fans out over the same rows.
+            let listed = guest
+                .entity_source
+                .list(&guest.tick_entity_type(&trait_name))
+                .map_err(|error| failure(format!("program/tick: listing the rows tick {tick} of {trait_name} covers: {error}")))?;
+            let rows = guest
+                .tick_rows(&trait_name, super::RUNTIME_SINGLETON, &listed)
+                .into_iter()
+                .map(|row| Value::string(row.entity_id.unwrap_or_default()))
+                .collect::<Vec<_>>();
             match guest.start_dispatch_tick(&trait_name, None, &tick) {
                 Ok(super::resumable::Progress::Done(done)) => outcomes.extend(done),
                 Ok(super::resumable::Progress::Await { .. }) => {
@@ -2123,6 +2133,7 @@ impl RuntimeKernel {
             ran.push(Value::object(ValueMap::from_iter([
                 ("trait".to_string().into(), Value::string(trait_name)),
                 ("tick".to_string().into(), Value::string(tick)),
+                ("rows".to_string().into(), Value::array(rows)),
             ])));
         }
         let embedded = session.route.read().embedded.clone();

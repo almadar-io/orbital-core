@@ -183,11 +183,16 @@ impl RuntimeKernel {
     /// The `@config` root a listener's guard reads: the listening trait's own resolved config defaults.
     pub(super) fn listener_config(&self, trait_name: &str) -> Result<Value, Fault> {
         let user = self.session_user()?;
+        if let Some(built) = self.registry.config_defaults.read().get(trait_name) {
+            return Ok(bind_user_forwards(built.clone(), &user));
+        }
         let defs = self.registry.trait_definitions.read();
-        Ok(match defs.get(trait_name) {
-            Some(def) => bind_user_forwards(config_defaults_value(def, &defs), &user),
-            None => Value::Null,
-        })
+        let Some(def) = defs.get(trait_name) else {
+            return Ok(Value::Null);
+        };
+        let built = config_defaults_value(def, &defs);
+        self.registry.config_defaults.write().insert(trait_name.to_string(), built.clone());
+        Ok(bind_user_forwards(built, &user))
     }
 
     /// Whether an orbital the client program leaves out listens for `event` from `source` (`_metadata.serverListens`,

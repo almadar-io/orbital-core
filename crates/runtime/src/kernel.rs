@@ -1295,6 +1295,7 @@ pub mod lazy;
 pub mod mount_barrier;
 mod dispatch;
 mod ticks;
+pub use ticks::TickRow;
 mod client_leg;
 mod frames;
 mod cascade;

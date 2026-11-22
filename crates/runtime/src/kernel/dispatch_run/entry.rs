@@ -591,6 +591,16 @@ impl RuntimeKernel {
         self.drive_entry(lane, Self::continuation_of(run))
     }
 
+    /// One step's firing of `tick_name` on `row` (the singleton for none): its state on the row for a keyed trait and
+    /// on the singleton otherwise, as the row it covers in a tick's run (EXEC-TICK-5, [`RuntimeKernel::tick_rows`]).
+    fn step_tick_plan(&self, trait_name: &str, row: Option<&str>, tick_name: &str) -> SeedPlan {
+        let mut plan = Self::tick_plan(trait_name, Some(row.unwrap_or(crate::process_result::RUNTIME_SINGLETON)), tick_name);
+        if let (false, Some(seed)) = (self.listener_manager.is_keyed(trait_name), plan.tick.as_mut()) {
+            seed.state_entity = crate::process_result::RUNTIME_SINGLETON.to_string();
+        }
+        plan
+    }
+
     fn tick_plan(trait_name: &str, entity_id: Option<&str>, tick_name: &str) -> SeedPlan {
         SeedPlan {
             trait_name: trait_name.to_string(),
@@ -624,7 +634,7 @@ impl RuntimeKernel {
         let lane = self.lane.enter(None)?;
         self.ensure_trait_loaded(trait_name)?;
         let mut run = match tick {
-            Some(tick) => self.run_of(vec![Self::tick_plan(trait_name, Some(row.unwrap_or(crate::process_result::RUNTIME_SINGLETON)), tick)]),
+            Some(tick) => self.run_of(vec![self.step_tick_plan(trait_name, row, tick)]),
             None => self.run_of_dispatch(trait_name, row, event_name, payload, None, None),
         };
         run.isolated = true;
@@ -647,7 +657,7 @@ impl RuntimeKernel {
         let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
         self.ensure_trait_loaded(trait_name).map_err(|e| e.to_string())?;
         let mut run = match tick {
-            Some(tick) => self.run_of(vec![Self::tick_plan(trait_name, Some(row.unwrap_or(crate::process_result::RUNTIME_SINGLETON)), tick)]),
+            Some(tick) => self.run_of(vec![self.step_tick_plan(trait_name, row, tick)]),
             None => self.run_of_dispatch(trait_name, row, event_name, payload, None, None),
         };
         run.isolated = true;

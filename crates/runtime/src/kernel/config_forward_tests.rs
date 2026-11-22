@@ -146,3 +146,21 @@ fn a_user_forward_binds_each_viewer_over_the_cached_table() {
         Some(&Value::string("@user.name")),
     );
 }
+
+/// A listener guard's `@config` is the same built table a step reads, not a rebuild per delivery.
+#[test]
+fn a_listener_guard_reads_the_built_config_table() {
+    let t = trait_with_config("Theme", &[("preset", "naqsh")]);
+    let kernel = kernel_with(vec![t.clone()]);
+    let step = kernel.trait_config_defaults(&t);
+    let Ok(guard) = kernel.listener_config("Theme") else { panic!("reads") };
+    assert_eq!(guard.as_object().unwrap().get("preset"), Some(&Value::string("naqsh")));
+    assert!(orbital_core_base::value::Shared::ptr_eq(shared_map(&step), shared_map(&guard)));
+}
+
+/// Control: a listener no registered trait names reads no config.
+#[test]
+fn a_listener_guard_of_an_unknown_trait_reads_null() {
+    let kernel = kernel_with(vec![trait_with_config("Theme", &[("preset", "naqsh")])]);
+    assert!(matches!(kernel.listener_config("Missing"), Ok(Value::Null)));
+}

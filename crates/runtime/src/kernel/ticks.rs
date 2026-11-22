@@ -2,6 +2,14 @@
 
 use super::*;
 
+/// One row a firing of a tick covers: the row it frames (none for a `[runtime]` entity with no rows) and the entity id
+/// its trait's state is held under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TickRow {
+    pub entity_id: Option<String>,
+    pub state_entity: String,
+}
+
 impl RuntimeKernel {
     /// The declared tick `tick_name` of `trait_name`.
     pub fn tick_of(
@@ -17,6 +25,45 @@ impl RuntimeKernel {
             .iter()
             .find(|tick| tick.name == tick_name)
             .cloned()
+    }
+
+    /// The entity a firing of a tick of `trait_name` runs over: its linked entity, else one named after the trait.
+    pub fn tick_entity_type(&self, trait_name: &str) -> String {
+        self.registry
+            .trait_definitions
+            .read()
+            .get(trait_name)
+            .and_then(|def| def.linked_entity.clone())
+            .unwrap_or_else(|| trait_name.to_string())
+    }
+
+    /// The rows one firing of a tick of `trait_name` covers, given its entity's `rows` (EXEC-TICK-5): one per row,
+    /// its state held under the row for a keyed trait and under `held` otherwise; none for a keyed trait with no
+    /// rows; once on no row for a non-keyed `[runtime]` entity with none. What a tick's run fans out to, and what a
+    /// `.lolo` kernel's tick leg is handed to fan out itself.
+    pub fn tick_rows(&self, trait_name: &str, held: &str, rows: &[Arc<Value>]) -> Vec<TickRow> {
+        let ids = rows
+            .iter()
+            .filter_map(|row| row.get_path("id").and_then(|id| id.as_str().map(str::to_string)));
+        let keyed = self.listener_manager.is_keyed(trait_name);
+        let mut covered: Vec<TickRow> = ids
+            .map(|id| TickRow {
+                state_entity: if keyed { id.clone() } else { held.to_string() },
+                entity_id: Some(id),
+            })
+            .collect();
+        let singleton_entity = self
+            .registry
+            .entity_definitions
+            .read()
+            .get(&self.tick_entity_type(trait_name))
+            .is_some_and(|def| {
+                matches!(def.persistence, Some(orbital_core_base::schema::Persistence::Runtime))
+            });
+        if covered.is_empty() && !keyed && singleton_entity {
+            covered.push(TickRow { entity_id: None, state_entity: held.to_string() });
+        }
+        covered
     }
 
     /// The `(trait, tick)` pairs a `[background]` tick that names its states (`appliesTo`) is waiting on: the

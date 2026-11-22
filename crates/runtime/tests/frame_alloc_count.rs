@@ -373,3 +373,42 @@ fn tick_alloc_sites() {
 fn fired_count(f: &orbital_core_runtime::embed::wire::FrameWire) -> usize {
     f.fired.values().map(Vec::len).sum()
 }
+
+/// Load memory of a resolved program (P-049): live and peak bytes while the text is parsed the way the wasm kernel's
+/// `register_lazy` parses it, then while the kernel registers it. Diagnostic: the program path comes from
+/// `ORB_LOAD_FILE`, so it runs only by name with `--ignored`.
+#[test]
+#[ignore]
+fn load_memory_of_a_resolved_program() {
+    let _guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let path = std::env::var("ORB_LOAD_FILE").expect("ORB_LOAD_FILE names a resolved program");
+    let mb = |b: isize| b as f64 / 1e6;
+    let base = alloc_meter::totals().live;
+    let text = std::fs::read_to_string(&path).expect("reads the program");
+    let after_text = alloc_meter::totals().live;
+    alloc_meter::reset_peak(after_text);
+    let schema: OrbitalSchema = serde_json::from_str(&text).expect("parses");
+    let t = alloc_meter::totals();
+    println!("text {:.1} MB; parse: live +{:.1} MB, peak +{:.1} MB", mb(after_text - base), mb(t.live - after_text), mb(t.peak - after_text));
+    drop(text);
+    let before_kernel = alloc_meter::totals().live;
+    alloc_meter::reset_peak(before_kernel);
+    let kernel = EmbeddedKernel::new(schema, "load").expect("registers");
+    let t = alloc_meter::totals();
+    println!("register: live +{:.1} MB, peak +{:.1} MB; total live {:.1} MB", mb(t.live - before_kernel), mb(t.peak - before_kernel), mb(t.live - base));
+    let before_mount = t.live;
+    alloc_meter::reset_peak(before_mount);
+    let seeds = kernel.route_mounts("/");
+    let mounted = kernel.dispatch_route_mount(Some("/"), &seeds, None, orbital_core_base::value::Value::Null);
+    let t = alloc_meter::totals();
+    println!("mount of {} seeds ({}): live +{:.1} MB, peak +{:.1} MB", seeds.len(), if mounted.is_ok() { "ok" } else { "failed" }, mb(t.live - before_mount), mb(t.peak - before_mount));
+    println!("held after mount: {:?}", kernel.kernel().held_bytes());
+    let answer_bytes = mounted.as_ref().map(|m| serde_json::to_string(m).map(|t| t.len()).unwrap_or(0)).unwrap_or(0);
+    if let (Ok(out), Ok(m)) = (std::env::var("ORB_LOAD_OUT"), mounted.as_ref()) {
+        std::fs::write(out, serde_json::to_string(m).expect("answer")).expect("writes the answer");
+    }
+    drop(mounted);
+    let t = alloc_meter::totals();
+    println!("mount answer {:.1} MB as JSON; live after dropping it +{:.1} MB", answer_bytes as f64 / 1e6, mb(t.live - before_mount));
+    drop(kernel);
+}

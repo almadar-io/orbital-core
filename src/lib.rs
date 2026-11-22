@@ -165,6 +165,7 @@ pub mod runtime {
     pub use orbital_core_runtime::kernel::StatefulLeg;
     pub use orbital_core_runtime::kernel::TickDispatch;
     pub use orbital_core_runtime::kernel::TickEmit;
+    pub use orbital_core_runtime::kernel::TickRow;
     pub use orbital_core_runtime::kernel::TraitSnapshot;
     pub use orbital_core_runtime::kernel::CROSS_TRAIT_CASCADE_CAP;
     pub use orbital_core_runtime::kernel::CROSS_TRAIT_DISPATCH_CAP;
