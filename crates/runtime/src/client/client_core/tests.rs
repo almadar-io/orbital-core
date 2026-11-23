@@ -786,6 +786,26 @@ fn navigate_back_returns_to_the_previous_page() {
     assert!(!core.page_entered);
 }
 
+/// A navigate to the page already open with the same params is no new mount, as the web's page mount key
+/// (page and params) holds it; new params or another page are a new mount.
+#[test]
+fn a_navigate_to_the_open_page_with_the_same_params_mounts_nothing() {
+    let schema = routed_schema();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.navigate_to("/notes/42", None);
+    core.mount_page_blocking();
+    core.page_entered = false;
+    core.navigate_to("/notes/42", None);
+    assert!(!core.page_entered, "the same page and params continue the mount");
+    core.navigate_to("/notes/43", None);
+    assert!(core.page_entered, "control: new params are a new mount");
+    core.mount_page_blocking();
+    core.page_entered = false;
+    core.navigate_to("/notes", None);
+    assert!(core.page_entered, "control: another page is a new mount");
+}
+
 /// A `navigate` effect mounts the page it lands on, in the same blocking dispatch.
 #[test]
 fn a_navigate_effect_mounts_the_page_it_lands_on() {

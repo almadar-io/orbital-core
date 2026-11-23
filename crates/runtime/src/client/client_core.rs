@@ -879,6 +879,10 @@ impl ClientCore {
         if let Some(Value::Object(explicit)) = params {
             route.extend(explicit.iter().map(|(k, v)| (k.clone(), v.clone())));
         }
+        // The web's page mount key: the same page with the same params continues the mount.
+        if idx == self.current_orbital_idx && Some(&page) == self.current_page.as_ref() && route == self.route_params {
+            return;
+        }
         self.page_history.push(PageVisit {
             orbital_idx: self.current_orbital_idx,
             page: self.current_page.clone(),
