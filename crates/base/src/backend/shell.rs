@@ -243,6 +243,7 @@ fn is_excluded_scaffold_entry(name: &std::ffi::OsStr) -> bool {
                 | ".vscode"
                 | ".idea"
                 | ".npmignore"
+                | "pnpm-lock.yaml"
         )
     )
 }
@@ -378,4 +379,39 @@ fn replace_placeholders(
         result = result.replace(placeholder, value);
     }
     result
+}
+
+#[cfg(test)]
+mod scaffold_tests {
+    use super::copy_dir_recursive;
+
+    fn template() -> tempfile::TempDir {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("package.json"), "{}").unwrap();
+        std::fs::write(t.path().join("pnpm-workspace.yaml"), "packages: []").unwrap();
+        std::fs::write(t.path().join("pnpm-lock.yaml"), "lockfileVersion: '9.0'").unwrap();
+        std::fs::create_dir_all(t.path().join("packages/client")).unwrap();
+        std::fs::write(t.path().join("packages/client/package.json"), "{}").unwrap();
+        std::fs::write(t.path().join("packages/client/pnpm-lock.yaml"), "").unwrap();
+        t
+    }
+
+    #[test]
+    fn a_scaffold_does_not_carry_the_template_lockfile() {
+        let src = template();
+        let out = tempfile::tempdir().unwrap();
+        copy_dir_recursive(src.path(), out.path()).unwrap();
+        assert!(!out.path().join("pnpm-lock.yaml").exists());
+        assert!(!out.path().join("packages/client/pnpm-lock.yaml").exists());
+    }
+
+    #[test]
+    fn control_a_scaffold_carries_the_manifests_and_the_workspace_file() {
+        let src = template();
+        let out = tempfile::tempdir().unwrap();
+        copy_dir_recursive(src.path(), out.path()).unwrap();
+        assert!(out.path().join("package.json").exists());
+        assert!(out.path().join("pnpm-workspace.yaml").exists());
+        assert!(out.path().join("packages/client/package.json").exists());
+    }
 }
