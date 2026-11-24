@@ -323,26 +323,52 @@ pub fn resolve_row_set_markers(
         &orbital_core_base::row_set::RowSetRef,
     ) -> Result<crate::row_query::RowPage, String>,
 ) -> Value {
+    resolved_markers(props, resolve).unwrap_or_else(|| props.clone())
+}
+
+/// [`resolve_row_set_markers`]'s walk: `None` when `props` holds no marker, so an unchanged subtree keeps its
+/// allocation and a renderer can tell its content did not change.
+fn resolved_markers(
+    props: &Value,
+    resolve: &dyn Fn(&orbital_core_base::row_set::RowSetRef) -> Result<crate::row_query::RowPage, String>,
+) -> Option<Value> {
     if let Some(reference) = crate::row_query::as_row_set_marker(props) {
-        return Value::array(
-            resolve(&reference)
-                .map(|page| page.rows)
-                .unwrap_or_default(),
-        );
+        return Some(Value::array(resolve(&reference).map(|page| page.rows).unwrap_or_default()));
     }
     match props {
-        Value::Array(items) => Value::Array(
-            items
+        Value::Array(items) => {
+            let changed: Vec<(usize, Value)> = items
                 .iter()
-                .map(|item| resolve_row_set_markers(item, resolve))
-                .collect(),
-        ),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(k, v)| (k.clone(), resolve_row_set_markers(v, resolve)))
-                .collect(),
-        ),
-        other => other.clone(),
+                .enumerate()
+                .filter_map(|(i, item)| resolved_markers(item, resolve).map(|v| (i, v)))
+                .collect();
+            if changed.is_empty() {
+                return None;
+            }
+            let mut out: Vec<Value> = items.iter().cloned().collect();
+            for (i, v) in changed {
+                out[i] = v;
+            }
+            Some(Value::array(out))
+        }
+        Value::Object(map) => {
+            let changed: Vec<(usize, Value)> = map
+                .values()
+                .enumerate()
+                .filter_map(|(i, v)| resolved_markers(v, resolve).map(|v| (i, v)))
+                .collect();
+            if changed.is_empty() {
+                return None;
+            }
+            let mut out = (**map).clone();
+            for (i, v) in changed {
+                if let Some((_, slot)) = out.get_index_mut(i) {
+                    *slot = v;
+                }
+            }
+            Some(Value::Object(out.into()))
+        }
+        _ => None,
     }
 }
 
@@ -1284,6 +1310,24 @@ mod tests {
             resolve_row_set_markers(&plain, &|_| Err("unused".into())),
             plain
         );
+    }
+
+    #[test]
+    fn props_with_no_marker_come_back_as_the_same_allocation() {
+        let same = |a: &Value, b: &Value| match (a, b) {
+            (Value::Object(a), Value::Object(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+            (Value::Array(a), Value::Array(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+            _ => false,
+        };
+        let plain = json_value(r#"{"entity":[{"id":"a"}],"x":{"y":[1,2]}}"#);
+        assert!(same(&resolve_row_set_markers(&plain, &|_| Err("unused".into())), &plain), "nothing to resolve: the props a renderer painted last time, so it can tell nothing changed");
+        let marked = marker_props();
+        let resolved = resolve_row_set_markers(&marked, &|_| Err("host down".into()));
+        assert!(!same(&resolved, &marked), "control: a resolved marker is new content");
+        let mut nested = plain.clone();
+        nested.as_object_mut().unwrap().insert("rows".into(), marked.as_object().unwrap().get("entity").cloned().unwrap());
+        let out = resolve_row_set_markers(&nested, &|_| Err("host down".into()));
+        assert!(same(out.as_object().unwrap().get("x").unwrap(), plain.as_object().unwrap().get("x").unwrap()), "a sibling with no marker keeps its allocation");
     }
 
     #[test]

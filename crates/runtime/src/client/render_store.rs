@@ -35,6 +35,110 @@ struct RenderedSlot {
     row_sets: Vec<RowSetRef>,
     /// A kernel write touched an entity type one of `row_sets` points at since the slot last painted.
     rows_dirty: bool,
+    /// The `@entity` fields the slot's marker leaves read: a change to any other field leaves it as it is.
+    reads: Reads,
+}
+
+/// The `@entity` fields a slot's marker leaves read.
+#[derive(Debug, Clone, PartialEq)]
+enum Reads {
+    /// A leaf reads the whole entity.
+    All,
+    Fields(BTreeSet<String>),
+}
+
+impl Reads {
+    fn none() -> Self {
+        Reads::Fields(BTreeSet::new())
+    }
+
+    fn union(self, other: Reads) -> Reads {
+        match (self, other) {
+            (Reads::Fields(mut a), Reads::Fields(b)) => {
+                a.extend(b);
+                Reads::Fields(a)
+            }
+            _ => Reads::All,
+        }
+    }
+
+    /// Whether a field read differs between `before` and `now`.
+    fn changed(&self, before: &Value, now: &Value) -> bool {
+        match self {
+            Reads::All => before != now,
+            Reads::Fields(fields) => {
+                let field = |v: &Value, f: &str| v.as_object().and_then(|o| o.get(f)).cloned();
+                fields.iter().any(|f| field(before, f) != field(now, f))
+            }
+        }
+    }
+}
+
+/// The `@entity` fields `source` reads against the live entity, walked as [`resolve_deferred`] walks it.
+fn entity_reads(source: &Value, flushed: &BindingContext, hops: u8) -> Reads {
+    match source {
+        Value::String(s) => {
+            if is_marker(source) {
+                return fields_named(source);
+            }
+            if let Some(key) = s.strip_prefix("@config.") {
+                if !s.contains(' ') && hops < CONFIG_HOPS {
+                    let forwarded = flushed.config.as_object().and_then(|o| o.get(key));
+                    if let Some(next) = forwarded.filter(|next| *next != source) {
+                        return entity_reads(next, flushed, hops + 1);
+                    }
+                }
+            }
+            Reads::none()
+        }
+        Value::Array(items) => {
+            let operator = items.first().and_then(|head| match head {
+                Value::String(op) => Some(op.as_str()),
+                _ => None,
+            });
+            match operator {
+                Some("fn") => Reads::none(),
+                Some(op) if get_operator(op).is_some() => {
+                    if is_marker(source) {
+                        fields_named(source)
+                    } else {
+                        Reads::none()
+                    }
+                }
+                _ => items.iter().fold(Reads::none(), |acc, item| acc.union(entity_reads(item, flushed, hops))),
+            }
+        }
+        Value::Object(map) => map.values().fold(Reads::none(), |acc, v| acc.union(entity_reads(v, flushed, hops))),
+        _ => Reads::none(),
+    }
+}
+
+/// Every `@entity.<field>` a value names; a bare `@entity` names them all.
+fn fields_named(value: &Value) -> Reads {
+    match value {
+        Value::String(s) => {
+            let mut fields = BTreeSet::new();
+            for (at, _) in s.match_indices("@entity") {
+                let rest = &s[at + "@entity".len()..];
+                match rest.chars().next() {
+                    Some('.') => {
+                        let name: String = rest[1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+                        if name.is_empty() {
+                            return Reads::All;
+                        }
+                        fields.insert(name);
+                    }
+                    None | Some('[') | Some(']') => return Reads::All,
+                    Some(c) if !(c.is_alphanumeric() || c == '_') => return Reads::All,
+                    Some(_) => {}
+                }
+            }
+            Reads::Fields(fields)
+        }
+        Value::Array(items) => items.iter().fold(Reads::none(), |acc, v| acc.union(fields_named(v))),
+        Value::Object(map) => map.values().fold(Reads::none(), |acc, v| acc.union(fields_named(v))),
+        _ => Reads::none(),
+    }
 }
 
 /// A trait instance's `(trait name, entity id)`.
@@ -67,6 +171,8 @@ pub(crate) struct RenderStore {
     host_paints: BTreeMap<(String, String), Value>,
     /// The traits whose shown content holds a `guest-view` node, kept at paint time.
     guest_view_traits: BTreeSet<String>,
+    /// The entity types whose rows were written since the last repaint: an instance of one reads a new `@entity`.
+    rows_written: BTreeSet<String>,
 }
 
 fn holds_guest_view(value: &Value) -> bool {
@@ -111,14 +217,16 @@ impl RenderStore {
             if source.is_null() {
                 continue;
             }
+            let flushed = match &scope {
+                Some(scope) => Arc::new(flushed.with_local_scope(scope)),
+                None => flushed.clone(),
+            };
             slots.push(RenderedSlot {
                 slot,
+                reads: entity_reads(&source, &flushed, 0),
                 source,
-                flushed: match &scope {
-                    Some(scope) => Arc::new(flushed.with_local_scope(scope)),
-                    None => flushed.clone(),
-                },
                 entity: flushed.entity.clone(),
+                flushed,
                 row_sets: row_sets_in(&resolved),
                 resolved,
                 rows_dirty: false,
@@ -222,6 +330,7 @@ impl RenderStore {
     /// A kernel write to each of `entity_types`: the slots holding a row-set reference to one of them repaint
     /// on the next [`Self::stale`], though the reference itself is unchanged, so a renderer re-resolves it.
     pub(crate) fn mark_rows_changed(&mut self, entity_types: &BTreeSet<String>) {
+        self.rows_written.extend(entity_types.iter().cloned());
         for slot in self.instances.values_mut().flatten() {
             if slot
                 .row_sets
@@ -233,8 +342,14 @@ impl RenderStore {
         }
     }
 
+    /// The entity types whose rows were written since the last call.
+    pub(crate) fn take_rows_written(&mut self) -> BTreeSet<String> {
+        std::mem::take(&mut self.rows_written)
+    }
+
     /// Every instance with a slot whose marker leaves resolve differently now, as
-    /// `(trait, entity id, repaints)`. `entity_now` reads an instance's current `@entity`;
+    /// `(trait, entity id, repaints)`. `entity_now` reads an instance's current `@entity`, or answers `None` when
+    /// nothing wrote its frame or row since the last call, so the instance is not read or compared;
     /// `reads_live` says whether the client owns that instance's entity bindings (the web's
     /// `clientResolvesRenderBindings`). `user_now` is the session's `@user`: a slot resolved against another
     /// `@user` (the identity a server frame mirrored after the first paint, EXEC-IDENTITY-4) resolves again with
@@ -243,35 +358,38 @@ impl RenderStore {
     pub(crate) fn stale(
         &mut self,
         reads_live: impl Fn(&str) -> bool,
-        entity_now: impl Fn(&str, &str) -> Value,
+        entity_now: impl Fn(&str, &str) -> Option<Value>,
         user_now: Option<&Value>,
         rebind_user: impl Fn(&str, &BindingContext, &Value) -> BindingContext,
     ) -> Vec<Stale> {
         let mut out = Vec::new();
         for ((trait_name, entity_id), slots) in &mut self.instances {
             let live_entity = reads_live(trait_name);
-            let now = Arc::new(if live_entity { entity_now(trait_name, entity_id) } else { Value::Null });
+            let now: Option<Arc<Value>> = if live_entity { entity_now(trait_name, entity_id).map(Arc::new) } else { None };
             let mut repaints = Vec::new();
             let mut faults = Vec::new();
             for slot in slots.iter_mut().filter(|s| {
-                user_now.is_some_and(|u| *s.flushed.user != *u) || (live_entity && (s.rows_dirty || s.entity.as_value() != &*now))
+                user_now.is_some_and(|u| *s.flushed.user != *u)
+                    || (live_entity && (s.rows_dirty || now.as_ref().is_some_and(|n| s.reads.changed(s.entity.as_value(), n))))
             }) {
                 let user_changed = user_now.filter(|u| *slot.flushed.user != **u);
                 if let Some(user) = user_changed {
                     slot.flushed = Arc::new(rebind_user(trait_name, &slot.flushed, user));
+                    slot.reads = entity_reads(&slot.source, &slot.flushed, 0);
                 }
-                let entity_changed = live_entity && slot.entity.as_value() != &*now;
+                let entity_changed = now.as_ref().filter(|n| slot.reads.changed(slot.entity.as_value(), n));
                 let rows_changed = live_entity && std::mem::take(&mut slot.rows_dirty);
-                let resolved = if entity_changed || user_changed.is_some() {
+                let resolved = if entity_changed.is_some() || user_changed.is_some() {
                     let mut live = (*slot.flushed).clone();
-                    if entity_changed {
-                        live.entity = SharedEntity::from_arc(Arc::clone(&now));
-                    }
+                    live.entity = match entity_changed {
+                        Some(now) => SharedEntity::from_arc(Arc::clone(now)),
+                        None => slot.entity.clone(),
+                    };
                     match resolve_deferred(&slot.source, &slot.flushed, &live, 0) {
                         Ok(resolved) => resolved,
                         Err(fault) => {
-                            if entity_changed {
-                                slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                            if let Some(now) = entity_changed {
+                                slot.entity = SharedEntity::from_arc(Arc::clone(now));
                             }
                             slot.rows_dirty = rows_changed;
                             faults.push(RepaintFault {
@@ -284,8 +402,8 @@ impl RenderStore {
                 } else {
                     slot.resolved.clone()
                 };
-                if entity_changed {
-                    slot.entity = SharedEntity::from_arc(Arc::clone(&now));
+                if let Some(now) = entity_changed {
+                    slot.entity = SharedEntity::from_arc(Arc::clone(now));
                 }
                 if rows_changed || resolved != slot.resolved {
                     slot.resolved = resolved.clone();
@@ -535,7 +653,7 @@ mod tests {
             &flushed,
         );
         let now = val(json!({ "n": 2 }));
-        let first = store.stale(|_| true, |_, _| now.clone(), None, |_, c, _| c.clone());
+        let first = store.stale(|_| true, |_, _| Some(now.clone()), None, |_, c, _| c.clone());
         assert_eq!(first.len(), 1);
         assert_eq!(
             first[0].2,
@@ -545,7 +663,71 @@ mod tests {
                 rows_changed: false
             }]
         );
-        assert!(store.stale(|_| true, |_, _| now.clone(), None, |_, c, _| c.clone()).is_empty());
+        assert!(store.stale(|_| true, |_, _| Some(now.clone()), None, |_, c, _| c.clone()).is_empty());
+    }
+
+    #[test]
+    fn a_slot_reads_the_entity_fields_its_marker_leaves_name() {
+        let flushed = ctx(json!({}), json!({}));
+        let reads = |source: serde_json::Value| entity_reads(&val(source), &flushed, 0);
+        let fields = |names: &[&str]| Reads::Fields(names.iter().map(|n| n.to_string()).collect());
+        assert_eq!(reads(json!({ "a": "@entity.n", "b": ["+", "@entity.m.x", 1] })), fields(&["m", "n"]));
+        assert_eq!(reads(json!({ "a": "@entity" })), Reads::All, "the whole entity read is every field");
+        assert_eq!(reads(json!(["object/get", "@entity", "n"])), Reads::All, "an operator handed the whole entity reads every field");
+        assert_eq!(reads(json!({ "a": "static", "b": ["+", "@payload.n", "@entity.n"] })), fields(&[]), "control: a leaf that reads the payload is resolved at flush, not against the live entity");
+        assert_eq!(reads(json!(["fn", "x", "@entity.n"])), fields(&[]), "control: a render lambda is the renderer's");
+    }
+
+    #[test]
+    fn a_config_knob_that_forwards_to_an_entity_leaf_reads_that_field() {
+        let mut flushed = ctx(json!({}), json!({}));
+        flushed.set_config(val(json!({ "label": "@entity.title" })));
+        assert_eq!(entity_reads(&val(json!({ "a": "@config.label" })), &flushed, 0), Reads::Fields(["title".to_string()].into_iter().collect()));
+    }
+
+    #[test]
+    fn a_change_to_a_field_no_leaf_reads_does_not_resolve_the_slot_again() {
+        let flushed = ctx(json!({ "n": 1, "scroll": 0 }), json!({}));
+        let mut store = RenderStore::default();
+        store.record("Hud", "e", vec![("hud".into(), val(json!({ "content": "@entity.n" })), val(json!({ "content": 1 })), None)], &flushed);
+        assert!(
+            store.stale(|_| true, |_, _| Some(val(json!({ "n": 1, "scroll": 5 }))), None, |_, c, _| c.clone()).is_empty(),
+            "only a field the slot does not read changed"
+        );
+        let out = store.stale(|_| true, |_, _| Some(val(json!({ "n": 2, "scroll": 5 }))), None, |_, c, _| c.clone());
+        assert_eq!(out.len(), 1, "control: the field the slot reads changed, so it repaints");
+        assert_eq!(out[0].2[0].content, val(json!({ "content": 2 })));
+    }
+
+    #[test]
+    fn an_instance_the_kernel_reports_unwritten_is_not_read_and_a_new_user_still_repaints_it() {
+        let flushed = ctx(json!({ "n": 1 }), json!({}));
+        let mut store = RenderStore::default();
+        store.record(
+            "Hud",
+            "e",
+            vec![(
+                "hud".into(),
+                val(json!({ "content": "@entity.n", "who": "@user.name" })),
+                val(json!({ "content": 1, "who": null })),
+                None,
+            )],
+            &flushed,
+        );
+        assert!(
+            store.stale(|_| true, |_, _| None, None, |_, c, _| c.clone()).is_empty(),
+            "an instance nothing wrote since its paint is not read again"
+        );
+        let user = val(json!({ "name": "ann" }));
+        let rebind = |_: &str, c: &BindingContext, u: &Value| {
+            let mut c = c.clone();
+            c.set_user(u.clone());
+            c
+        };
+        let out = store.stale(|_| true, |_, _| None, Some(&user), rebind);
+        assert_eq!(out.len(), 1, "a changed @user repaints an instance nothing wrote");
+        let out = store.stale(|_| true, |_, _| Some(val(json!({ "n": 2 }))), Some(&user), rebind);
+        assert_eq!(out.len(), 1, "control: a written instance whose entity changed repaints");
     }
 
     #[test]
@@ -559,7 +741,7 @@ mod tests {
             &flushed,
         );
         assert!(store
-            .stale(|_| false, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone())
+            .stale(|_| false, |_, _| Some(val(json!({ "n": 2 }))), None, |_, c, _| c.clone())
             .is_empty());
     }
 
@@ -580,7 +762,7 @@ mod tests {
             &flushed,
         );
         assert!(store
-            .stale(|_| true, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone())
+            .stale(|_| true, |_, _| Some(val(json!({ "n": 2 }))), None, |_, c, _| c.clone())
             .is_empty());
     }
 
@@ -597,7 +779,7 @@ mod tests {
             );
         }
         store.forget_traits(["A"]);
-        let out = store.stale(|_| true, |_, _| val(json!({ "n": 2 })), None, |_, c, _| c.clone());
+        let out = store.stale(|_| true, |_, _| Some(val(json!({ "n": 2 }))), None, |_, c, _| c.clone());
         assert_eq!(
             out.iter()
                 .map(|(t, _, _, _)| t.as_str())

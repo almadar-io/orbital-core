@@ -56,7 +56,7 @@ pub struct SessionGuard {
     pub(super) thread: orbital_core_base::sync::ThreadKey,
     pub(super) outer: Option<Arc<str>>,
     pub(super) scratch: Option<(
-        Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
+        Arc<RwLock<super::frame_table::FrameTable>>,
         Arc<RwLock<HashMap<(String, String), String>>>,
         Arc<RwLock<StateMachineManager>>,
         Arc<view_record::ViewRecords>,
@@ -97,7 +97,7 @@ impl Drop for AskerGuard {
 }
 
 pub(super) fn drop_session_instances(
-    frames: &RwLock<HashMap<(String, String), SharedEntity>>,
+    frames: &RwLock<super::frame_table::FrameTable>,
     carried: &RwLock<HashMap<(String, String), String>>,
     states: &RwLock<StateMachineManager>,
     session: &str,

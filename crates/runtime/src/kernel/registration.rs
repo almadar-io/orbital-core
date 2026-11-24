@@ -344,6 +344,7 @@ impl RuntimeKernel {
                 }
             }
         }
+        self.frames.write().mark_all();
         {
             let defs = self.registry.entity_definitions.read();
             let mut defaults = self.registry.entity_defaults.write();

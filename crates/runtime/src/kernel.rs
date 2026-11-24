@@ -503,7 +503,10 @@ pub struct RuntimeKernel {
     /// Trait frames (`(set @entity.X)` writes), keyed `(frame key, entity id)`: a `[shared]`
     /// entity's frame is `$shared::<Entity>` for every trait bound to it, any other trait's is
     /// its own name (Runtime Spec Clause 2.3). `@entity` is the row with the frame over it.
-    frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>>,
+    frames: Arc<RwLock<frame_table::FrameTable>>,
+    /// What each rendered instance's `@entity` was read from at the last repaint check: its frame versions, its store
+    /// row (a write by the kernel or by anything else holding the store replaces it) and the frame epoch.
+    repaint_seen: RwLock<HashMap<String, HashMap<String, repaint::Seen>>>,
     /// The state a step committed as it suspended on I/O (G-CROSS-259), for the resumable run to carry.
     pub(crate) suspended_commit: Arc<RwLock<Option<ProvisionalCommit>>>,
     /// A store-bound entity's declared `instances`, written through its driver by the next resumable dispatch
@@ -781,7 +784,7 @@ impl RuntimeKernel {
 
         let listener_manager = ListenerManager::new(event_bus.clone());
 
-        let frames: Arc<RwLock<HashMap<(String, String), SharedEntity>>> = Arc::new(RwLock::new(HashMap::new()));
+        let frames: Arc<RwLock<frame_table::FrameTable>> = Arc::default();
         let carried_rows: Arc<RwLock<HashMap<(String, String), String>>> = Arc::new(RwLock::new(HashMap::new()));
         let ended_sessions: Arc<RwLock<HashMap<String, session_life::EndedSession>>> = Arc::default();
         let themes: Arc<RwLock<HashMap<String, Arc<str>>>> = Arc::default();
@@ -903,6 +906,7 @@ impl RuntimeKernel {
             deferred_asks: RwLock::new(HashMap::new()),
             deferred_seq: std::sync::atomic::AtomicU64::new(0),
             store_ask_frames: RwLock::new(std::collections::HashSet::new()),
+            repaint_seen: RwLock::new(HashMap::new()),
             dispatch_kernel: RwLock::new(None),
             client_run: RwLock::new(None),
             settled_rows: RwLock::new(Vec::new()),
@@ -1311,6 +1315,7 @@ mod ticks;
 pub use ticks::TickRow;
 mod client_leg;
 mod frames;
+pub(crate) mod frame_table;
 mod cascade;
 mod framed_answer;
 mod keyed_rows;

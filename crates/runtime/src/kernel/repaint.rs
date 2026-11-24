@@ -66,6 +66,7 @@ impl RuntimeKernel {
             return Vec::new();
         }
         self.flush_row_writes();
+        let rows_written = self.renders.write().take_rows_written();
         let user = self.session_user().ok();
         let stale = self.renders.write().stale(
             |trait_name| {
@@ -80,7 +81,41 @@ impl RuntimeKernel {
                     .get(&entity_type)
                     .is_none_or(|d| d.shared || d.is_client_resident())
             },
-            |trait_name, entity_id| self.step_entity_view(trait_name, entity_id),
+            |trait_name, entity_id| {
+                let entity_type = self
+                    .registry.trait_definitions
+                    .read()
+                    .get(trait_name)
+                    .and_then(|d| d.linked_entity.clone())
+                    .unwrap_or_else(|| trait_name.to_string());
+                let slot = self.frame_slot(trait_name, &entity_type, entity_id);
+                let own = self.shared_intrinsic_fields(&entity_type).map(|_| self.own_frame_slot(trait_name, entity_id));
+                let now = {
+                    let frames = self.frames.read();
+                    Seen {
+                        frame: frames.version(&slot),
+                        own: own.as_ref().and_then(|own| frames.version(own)),
+                        epoch: frames.epoch(),
+                        row: self.instance_row_at(&slot, &entity_type, entity_id),
+                    }
+                };
+                let mut seen = self.repaint_seen.write();
+                let last = seen.get_mut(trait_name).and_then(|by_id| by_id.get_mut(entity_id));
+                let moved = match last {
+                    Some(last) => {
+                        let moved = !last.same(&now);
+                        *last = now;
+                        moved
+                    }
+                    None => {
+                        seen.entry(trait_name.to_string()).or_default().insert(entity_id.to_string(), now);
+                        true
+                    }
+                };
+                drop(seen);
+                (moved || rows_written.contains(&entity_type))
+                    .then(|| self.read_trait_entity_at(&slot, trait_name, &entity_type, entity_id).to_value())
+            },
             user.as_ref(),
             |trait_name, flushed, user| {
                 let mut ctx = flushed.clone();
@@ -113,5 +148,24 @@ impl RuntimeKernel {
                 trait_name,
             })
             .collect()
+    }
+}
+
+/// What one rendered instance's `@entity` was read from at a repaint check.
+pub(crate) struct Seen {
+    frame: Option<u64>,
+    own: Option<u64>,
+    epoch: u64,
+    row: Option<Arc<Value>>,
+}
+
+impl Seen {
+    fn same(&self, now: &Seen) -> bool {
+        let row = match (&self.row, &now.row) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        row && self.frame == now.frame && self.own == now.own && self.epoch == now.epoch
     }
 }

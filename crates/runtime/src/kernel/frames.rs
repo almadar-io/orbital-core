@@ -104,9 +104,19 @@ impl RuntimeKernel {
         entity_type: &str,
         entity_id: &str,
     ) -> SharedEntity {
-        let slot = self.frame_slot(trait_name, entity_type, entity_id);
-        let frame = self.frames.read().get(&slot).cloned().unwrap_or_default();
-        let entity = self.unframed_entity_at(&slot, entity_type, entity_id).merged(&frame);
+        self.read_trait_entity_at(&self.frame_slot(trait_name, entity_type, entity_id), trait_name, entity_type, entity_id)
+    }
+
+    /// [`Self::read_trait_entity`] for the frame slot already found.
+    pub(super) fn read_trait_entity_at(
+        &self,
+        slot: &(String, String),
+        trait_name: &str,
+        entity_type: &str,
+        entity_id: &str,
+    ) -> SharedEntity {
+        let frame = self.frames.read().get(slot).cloned().unwrap_or_default();
+        let entity = self.unframed_entity_at(slot, entity_type, entity_id).merged(&frame);
         if self.shared_intrinsic_fields(entity_type).is_some() {
             let own = self
                 .frames
@@ -136,6 +146,13 @@ impl RuntimeKernel {
     /// A trait's `@entity` before any frame: declared field defaults, then its row.
     pub(super) fn unframed_trait_entity(&self, trait_name: &str, entity_type: &str, entity_id: &str) -> SharedEntity {
         self.unframed_entity_at(&self.frame_slot(trait_name, entity_type, entity_id), entity_type, entity_id)
+    }
+
+    /// The store row the instance at frame `slot` reads under its frame, as the store holds it.
+    pub(super) fn instance_row_at(&self, slot: &(String, String), entity_type: &str, entity_id: &str) -> Option<Arc<Value>> {
+        let carried = self.carried_rows.read();
+        let row_id = carried.get(slot).map(String::as_str).unwrap_or(store_row_id(entity_id));
+        self.entity_source.read(entity_type, row_id).ok()
     }
 
     /// [`Self::unframed_trait_entity`] for the frame slot already found.
