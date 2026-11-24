@@ -54,15 +54,9 @@ pub struct PendingHostAsk {
     pub completion: Option<HostAskCompletion>,
 }
 
-pub fn host_ask_failure_payload(completion: &HostAskCompletion, error: &str, kind: &str) -> Value {
-    let mut payload = ValueMap::new();
-    payload.insert("error".into(), Value::string(error));
-    payload.insert("kind".into(), Value::string(kind));
-    if let Some(key) = &completion.key {
-        payload.insert("key".into(), Value::string(key.as_str()));
-    }
-    Value::object(payload)
-}
+/// How a client host turns its answer to one of its kernel's asks into the asking trait's route event and payload
+/// (EXEC-DIST-13): base's one implementation, the same a guest relay returns through.
+pub use orbital_core_base::host_ask::{return_route as host_ask_route, RelayedAnswer as HostAskOutcome};
 
 /// A page mount whose trait failed to start (the web paints it as the `error-state` named by `TRAIT_MOUNT_ERROR_TESTID`).
 #[derive(Debug, Clone, PartialEq)]
@@ -149,6 +143,8 @@ pub struct ClientCore {
     next_await_token: u64,
     awaiting_motion: Option<std::time::Duration>,
     ticks_started: web_time::Instant,
+    /// Where the program's lazy pages are read from (EXEC-LOAD-2); `None` opens no lazy page.
+    lazy_source: Option<Arc<dyn crate::LazySource>>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,7 +232,64 @@ impl ClientCore {
             next_await_token: 0,
             awaiting_motion: None,
             ticks_started: web_time::Instant::now(),
+            lazy_source: None,
         }
+    }
+
+    /// Declare where this client reads its program's lazy pages from (EXEC-LOAD-2), as the web preview's lazy loader.
+    pub fn set_lazy_source(&mut self, source: Arc<dyn crate::LazySource>) {
+        self.lazy_source = Some(source);
+    }
+
+    /// When a lazy page not loaded yet is the best match for `path` among the route pages and the lazy pages (the web's
+    /// one ranking), load its program into the client kernel and add its orbitals to this client's program. `false` when
+    /// it could not be loaded; the status says why.
+    fn load_lazy_route(&mut self, path: &str) -> bool {
+        let loaded = |schema: &OrbitalSchema, orbital: &str| schema.orbitals.iter().any(|o| o.name == orbital);
+        let pending: Vec<orbital_core_base::schema::types::LazyPage> = self
+            .schema
+            .lazy_pages
+            .iter()
+            .flatten()
+            .filter(|page| page.protocol.is_none() && !loaded(&self.schema, &page.orbital))
+            .cloned()
+            .collect();
+        if pending.is_empty() {
+            return true;
+        }
+        let routes: Vec<String> = (0..self.schema.orbitals.len())
+            .flat_map(|idx| route_pages_of(&self.schema, idx).map(|p| p.path.clone()))
+            .chain(pending.iter().map(|page| page.path.clone()))
+            .collect();
+        let Some(best) = orbital_core_base::route::best_path_match(path, routes.iter().map(String::as_str)) else {
+            return true;
+        };
+        let Some(page) = pending.iter().find(|page| page.path == best) else {
+            return true;
+        };
+        let failed = |reason: String| (format!("Could not open {} ({}): {reason}", page.path, page.orb_ref), true);
+        let Some(source) = self.lazy_source.clone() else {
+            tracing::warn!(target: "almadar::client", path = %path, file = %page.orb_ref, "navigate: no lazy source for a lazy page");
+            self.status_message = Some(failed("this host loads no lazy pages".into()));
+            return false;
+        };
+        let program = match source.read(&page.orb_ref) {
+            Ok(program) => program.schema,
+            Err(reason) => {
+                tracing::warn!(target: "almadar::client", path = %path, file = %page.orb_ref, %reason, "navigate: lazy page not read");
+                self.status_message = Some(failed(reason));
+                return false;
+            }
+        };
+        if let Some(kernel) = &self.client_kernel {
+            if let Err(error) = kernel.register_lazy(program.clone()) {
+                self.status_message = Some(failed(error.to_string()));
+                return false;
+            }
+        }
+        let added: Vec<_> = program.orbitals.into_iter().filter(|o| !loaded(&self.schema, &o.name)).collect();
+        self.schema.orbitals.extend(added);
+        true
     }
 
     /// A row-set reference resolved for the viewer it is signed in as, by the store's location: the client-role
@@ -771,19 +824,30 @@ impl ClientCore {
         }
     }
 
-    /// Fold every dispatch the host ran on its own since the last call (`ClientKernel::fold_host_dispatch`) and paint each
-    /// answer, in arrival order; `true` when any arrived, so the host repaints.
+    /// Fold everything the live stream carried since the last call and paint each answer, in arrival order: a dispatch the
+    /// host ran on its own (`ClientKernel::fold_host_dispatch`), and another client's persist, delivered to the listeners
+    /// declared here (`ClientKernel::fold_peer_emit`). `true` when anything arrived, so the host repaints.
     pub fn drain_host_feed(&mut self) -> bool {
+        use crate::client::http::FeedItem;
         let Some(kernel) = self.client_kernel.clone() else { return false };
-        let pushed = kernel.drain_feed();
-        for dispatch in pushed.iter().filter(|dispatch| dispatch.response.success) {
-            let target = dispatch.request.target_trait.clone();
-            match kernel.fold_host_dispatch(dispatch) {
-                Ok(response) => self.process_response(&dispatch.request.event, target, response),
-                Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+        let items = kernel.drain_feed();
+        for item in &items {
+            match item {
+                FeedItem::Dispatch(dispatch) if dispatch.response.success => {
+                    let target = dispatch.request.target_trait.clone();
+                    match kernel.fold_host_dispatch(dispatch) {
+                        Ok(response) => self.process_response(&dispatch.request.event, target, response),
+                        Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+                    }
+                }
+                FeedItem::Dispatch(_) => {}
+                FeedItem::Peer(emitted) => match kernel.fold_peer_emit(emitted) {
+                    Ok(response) => self.process_response(&emitted.event, None, response),
+                    Err(error) => self.status_message = Some((format!("Error: {error}"), true)),
+                },
             }
         }
-        !pushed.is_empty()
+        !items.is_empty()
     }
 
     /// Drive and display `trait_name` (its orbital and page), clearing what was shown.
@@ -865,6 +929,9 @@ impl ClientCore {
     /// orbital first, then any other, with its route params merged under `params` (explicit wins,
     /// as the web router merges them); an unknown path keeps the page and says so.
     pub fn navigate_to(&mut self, path: &str, params: Option<&Value>) {
+        if !self.load_lazy_route(path) {
+            return;
+        }
         let most_specific = |idx: usize| {
             let paths: Vec<String> = route_pages_of(&self.schema, idx).map(|p| p.path.clone()).collect();
             let best = orbital_core_base::route::best_path_match(path, paths.iter().map(String::as_str))?.to_string();

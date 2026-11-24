@@ -100,6 +100,12 @@ fn batch_steps(outcomes: &[(String, ProcessEventResult)]) -> Vec<BatchStep> {
         .collect()
 }
 
+/// Whether a mount seed's dispatch hands the host nothing: no leg, and on a stateful host no stateful leg either.
+fn posts_nothing(wire: &DispatchWire, stateful: bool) -> bool {
+    matches!(wire.mode, DispatchMode::HybridClientOnly)
+        || (wire.server_legs.is_empty() && !(stateful && wire.stateful_leg.is_some()))
+}
+
 /// Whether `leg`, owed by the dispatch of `seed` that ran `steps`, is a hop to another trait that a step delivered
 /// through a browser-run trait ([`EmbeddedKernel::mount_hops`]).
 fn is_unreachable_hop(seed: (&str, &str), steps: &[BatchStep], leg: &EventRequest, browser_run: &HashSet<String>, seeds: &HashSet<(&str, &str)>) -> bool {
@@ -657,6 +663,14 @@ impl EmbeddedKernel {
         // nothing, while the work that needs the host is a later seed's held step deeper in that cascade. The host
         // only runs that cascade from the client-only seed, so it is replayed with the mount (EXEC-DIST-10).
         let mut held_emitters = held_emitters;
+        // A seed that posts nothing (a client-only one, or a server-aware one whose own step needed no server) is the
+        // leg when its held emit reaches server work (EXEC-DIST-2: the first server trait of the cascade that reaches
+        // a trait that needs the server, the seed included).
+        let quiet_seeds: BTreeSet<&str> = dispatched
+            .iter()
+            .filter(|(_, wire)| posts_nothing(wire, stateful))
+            .map(|(_, wire)| wire.seed.trait_name.as_str())
+            .collect();
         let client_only_seeds: BTreeSet<&str> = dispatched
             .iter()
             .filter(|(_, wire)| matches!(wire.mode, DispatchMode::HybridClientOnly))
@@ -673,7 +687,7 @@ impl EmbeddedKernel {
             let Some(emitter) = step.emitter.as_deref() else { continue };
             if emitter != step.trait_name
                 && !client_only_seeds.contains(step.trait_name.as_str())
-                && client_only_seeds.contains(emitter)
+                && quiet_seeds.contains(emitter)
                 && crate::kernel::chain_needs_server(&chain, i, |j| steps[j].delegated)
                 && !delivered_through_browser(&steps, i, &browser_run, &seeds)
             {
@@ -685,8 +699,7 @@ impl EmbeddedKernel {
             let wire = &item.1;
             let posts = !wire.server_legs.is_empty()
                 || (stateful && wire.stateful_leg.is_some())
-                || (matches!(wire.mode, DispatchMode::HybridClientOnly)
-                    && held_emitters.contains(wire.seed.trait_name.as_str()));
+                || (posts_nothing(wire, stateful) && held_emitters.contains(wire.seed.trait_name.as_str()));
             if !posts {
                 continue;
             }
@@ -817,6 +830,14 @@ impl EmbeddedKernel {
         already_delivered: &HashSet<(String, String)>,
     ) -> Result<AppliedWire, String> {
         let applied = self.apply_server_response_since(response, already_delivered, None);
+        self.fold_order.end_all();
+        applied
+    }
+
+    /// [`Self::deliver_emit_to_listeners`] for a host that folds as it goes (the native client), as
+    /// [`Self::apply_server_response`] is for an answer: another client's persist reaches its declared listeners here.
+    pub fn apply_peer_emit(&self, emitted: EmittedEvent) -> Result<AppliedWire, String> {
+        let applied = self.fold_ready(fold_order::Work::Emit(emitted, fold_order::EmitOrigin::Peer));
         self.fold_order.end_all();
         applied
     }

@@ -61,12 +61,27 @@ pub struct PushedDispatch {
     pub response: EventResponse,
 }
 
+/// One item of a client's live stream: a dispatch the host ran on its own, or a persist another client made, which
+/// reaches this client's declared listeners (Orbital_Core §6; the web twin: `EventTransport.subscribe`).
+#[derive(Debug, Clone)]
+pub enum FeedItem {
+    Dispatch(PushedDispatch),
+    Peer(orbital_core_base::bus_event::EmittedEvent),
+}
+
 #[cfg(feature = "client-http")]
 #[derive(serde::Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum FeedFrame {
     #[serde(rename_all = "camelCase")]
     Dispatch { orbital_name: String, request: EventRequest, response: EventResponse },
+    Bus {
+        event: String,
+        #[serde(default)]
+        payload: Option<Value>,
+        #[serde(default)]
+        source: Option<orbital_core_base::bus_event::BusEventSource>,
+    },
     #[serde(other)]
     Other,
 }
@@ -94,26 +109,26 @@ const FEED_REOPEN: std::time::Duration = std::time::Duration::from_secs(1);
 /// wait here until the window drains them. Dropping the feed ends the thread at its next frame or reopen.
 #[cfg(feature = "client-http")]
 pub struct LiveFeed {
-    frames: std::sync::mpsc::Receiver<PushedDispatch>,
+    frames: std::sync::mpsc::Receiver<FeedItem>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[cfg(feature = "client-http")]
 impl LiveFeed {
-    /// The dispatches that arrived since the last call, in arrival order.
-    pub fn drain(&self) -> Vec<PushedDispatch> {
+    /// The items that arrived since the last call, in arrival order.
+    pub fn drain(&self) -> Vec<FeedItem> {
         self.frames.try_iter().collect()
     }
 }
 
 /// A client's live stream as a window drains it, whatever transport carries it.
 pub trait HostFeed: Send {
-    fn drain(&self) -> Vec<PushedDispatch>;
+    fn drain(&self) -> Vec<FeedItem>;
 }
 
 #[cfg(feature = "client-http")]
 impl HostFeed for LiveFeed {
-    fn drain(&self) -> Vec<PushedDispatch> {
+    fn drain(&self) -> Vec<FeedItem> {
         LiveFeed::drain(self)
     }
 }
@@ -125,14 +140,14 @@ impl Drop for LiveFeed {
     }
 }
 
-/// Read SSE `data:` events from `stream` and hand each dispatch frame to `deliver`; other frames (`bus`) are not
-/// dispatches and are skipped. A numbered frame (`id:`) of the boot `seen` holds that is not past it is a replay and is
+/// Read SSE `data:` events from `stream` and hand each dispatch frame and each `bus` frame (a peer's persist) to
+/// `deliver`; any other frame is skipped. A numbered frame (`id:`) of the boot `seen` holds that is not past it is a replay and is
 /// dropped; `seen` moves to the last numbered frame read. Returns when the stream ends or `deliver` refuses.
 #[cfg(feature = "client-http")]
 fn read_frames(
     stream: impl std::io::BufRead,
     seen: &mut Option<FrameNumber>,
-    mut deliver: impl FnMut(PushedDispatch) -> bool,
+    mut deliver: impl FnMut(FeedItem) -> bool,
 ) {
     let mut data = String::new();
     let mut id: Option<FrameNumber> = None;
@@ -165,7 +180,12 @@ fn read_frames(
         }
         match from_json_str::<FeedFrame>(&text) {
             Ok(FeedFrame::Dispatch { orbital_name, request, response }) => {
-                if !deliver(PushedDispatch { orbital_name, request, response }) {
+                if !deliver(FeedItem::Dispatch(PushedDispatch { orbital_name, request, response })) {
+                    return;
+                }
+            }
+            Ok(FeedFrame::Bus { event, payload, source }) => {
+                if !deliver(FeedItem::Peer(orbital_core_base::bus_event::EmittedEvent { event, payload, source })) {
                     return;
                 }
             }
@@ -183,6 +203,21 @@ fn read_frames(
 #[derive(Clone)]
 pub struct SyncServerBridge {
     base_url: String,
+    bearer: Bearer,
+}
+
+/// The bearer the native host holds for its viewer, shared by every clone of a bridge and read at each request, so a
+/// sign-in, a refresh or a sign-out takes hold on the next leg, ticket or stream reconnect. Core knows no provider: the
+/// host puts the token here (EXEC-IDENTITY-4).
+#[cfg(feature = "client-http")]
+type Bearer = std::sync::Arc<std::sync::RwLock<Option<String>>>;
+
+#[cfg(feature = "client-http")]
+fn authorized(request: ureq::Request, bearer: &Bearer) -> ureq::Request {
+    match bearer.read().ok().and_then(|held| held.clone()) {
+        Some(token) => request.set("authorization", &format!("Bearer {token}")),
+        None => request,
+    }
 }
 
 #[cfg(feature = "client-http")]
@@ -192,7 +227,14 @@ impl SyncServerBridge {
         let base_url = base_url.into();
         info!(url = %base_url, "Creating SyncServerBridge");
 
-        Self { base_url }
+        Self { base_url, bearer: Bearer::default() }
+    }
+
+    /// Hold `bearer` for every later request of this bridge and its clones; `None` sends none (signed out).
+    pub fn set_bearer(&self, bearer: Option<String>) {
+        if let Ok(mut held) = self.bearer.write() {
+            *held = bearer;
+        }
     }
 
     /// Get the server base URL
@@ -206,11 +248,11 @@ impl SyncServerBridge {
     pub fn open_feed(&self, client_id: &str) -> LiveFeed {
         let (tx, frames) = std::sync::mpsc::channel();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (base, client_id, halted) = (self.base_url.clone(), client_id.to_string(), stop.clone());
+        let (base, client_id, halted, bearer) = (self.base_url.clone(), client_id.to_string(), stop.clone(), self.bearer.clone());
         std::thread::spawn(move || {
             let mut seen = None;
             while !halted.load(std::sync::atomic::Ordering::SeqCst) {
-                match stream_once(&base, &client_id, &mut seen, &halted, &tx) {
+                match stream_once(&base, &client_id, &bearer, &mut seen, &halted, &tx) {
                     Ok(()) => {}
                     Err(e) => warn!(error = %e, "live feed: the stream could not be opened"),
                 }
@@ -273,7 +315,7 @@ impl SyncServerBridge {
 
         let request = build_event_request(event, entity_id, trait_name, payload);
 
-        let response = ureq::post(&url)
+        let response = authorized(ureq::post(&url), &self.bearer)
             .send_json(&request)
             .map_err(|e| BridgeError::Network(e.to_string()))?;
 
@@ -303,7 +345,7 @@ impl SyncServerBridge {
     ) -> Result<crate::row_query::RowPage, BridgeError> {
         let url = format!("{}/api/orbitals/resolve-rows", self.base_url);
         let request = crate::row_query::ResolveRowsRequest { reference: reference.clone() };
-        let response = ureq::post(&url)
+        let response = authorized(ureq::post(&url), &self.bearer)
             .send_json(&request)
             .map_err(|e| BridgeError::Network(e.to_string()))?;
         if response.status() != 200 {
@@ -323,7 +365,7 @@ impl SyncServerBridge {
 
         debug!(url = %url, event = %request.event, "Sending server leg (sync)");
 
-        let response = ureq::post(&url)
+        let response = authorized(ureq::post(&url), &self.bearer)
             .send_json(request)
             .map_err(|e| BridgeError::Network(e.to_string()))?;
 
@@ -352,21 +394,22 @@ impl SyncServerBridge {
 fn stream_once(
     base: &str,
     client_id: &str,
+    bearer: &Bearer,
     seen: &mut Option<FrameNumber>,
     halted: &std::sync::atomic::AtomicBool,
-    tx: &std::sync::mpsc::Sender<PushedDispatch>,
+    tx: &std::sync::mpsc::Sender<FeedItem>,
 ) -> Result<(), BridgeError> {
     #[derive(serde::Deserialize)]
     struct Ticket {
         ticket: String,
     }
-    let minted: Ticket = ureq::post(&format!("{base}/api/events/ticket"))
+    let minted: Ticket = authorized(ureq::post(&format!("{base}/api/events/ticket")), bearer)
         .query("clientId", client_id)
         .call()
         .map_err(|e| BridgeError::Network(e.to_string()))?
         .into_json()
         .map_err(|e| BridgeError::Parse(e.to_string()))?;
-    let mut request = ureq::get(&format!("{base}/api/events"))
+    let mut request = authorized(ureq::get(&format!("{base}/api/events")), bearer)
         .query("clientId", client_id)
         .query("ticket", &minted.ticket);
     if let Some(last) = seen.as_ref() {
@@ -404,7 +447,7 @@ impl ServerBridgeBuilder {
             .base_url
             .ok_or_else(|| BridgeError::InvalidRequest("Server URL is required".to_string()))?;
 
-        Ok(SyncServerBridge { base_url })
+        Ok(SyncServerBridge { base_url, bearer: Bearer::default() })
     }
 }
 
@@ -421,6 +464,103 @@ mod tests {
     #[test]
     fn control_the_builder_without_a_url_is_refused() {
         assert!(matches!(ServerBridgeBuilder::new().build_sync(), Err(BridgeError::InvalidRequest(_))));
+    }
+
+    /// The native transport carries the bearer its host holds on every request, as the web transport does
+    /// (G-ORBITAL-CORE-234): a leg, the events ticket and the stream.
+    #[cfg(feature = "client-http")]
+    mod bearer {
+        use super::*;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        /// A host that records each request's first line with its `authorization` header (or `-`).
+        fn recording_host() -> (String, Arc<Mutex<Vec<String>>>) {
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let log = seen.clone();
+            std::thread::spawn(move || {
+                for connection in listener.incoming() {
+                    let Ok(mut connection) = connection else { return };
+                    let log = log.clone();
+                    std::thread::spawn(move || {
+                        let mut reader = BufReader::new(connection.try_clone().unwrap());
+                        let mut request = String::new();
+                        reader.read_line(&mut request).unwrap();
+                        let mut authorization = "-".to_string();
+                        let mut length = 0usize;
+                        loop {
+                            let mut line = String::new();
+                            reader.read_line(&mut line).unwrap();
+                            if line == "\r\n" || line.is_empty() {
+                                break;
+                            }
+                            let lower = line.to_ascii_lowercase();
+                            if let Some(value) = lower.strip_prefix("authorization:") {
+                                authorization = line[line.len() - value.len()..].trim().to_string();
+                            }
+                            if let Some(value) = lower.strip_prefix("content-length:") {
+                                length = value.trim().parse().unwrap_or(0);
+                            }
+                        }
+                        let mut body = vec![0u8; length];
+                        let _ = std::io::Read::read_exact(&mut reader, &mut body);
+                        log.lock().unwrap().push(format!("{} {authorization}", request.split_whitespace().take(2).collect::<Vec<_>>().join(" ")));
+                        let (kind, body) = if request.starts_with("POST /api/events/ticket") {
+                            ("application/json", r#"{"ticket":"t1"}"#.to_string())
+                        } else if request.starts_with("GET /api/events") {
+                            ("text/event-stream", String::new())
+                        } else {
+                            ("application/json", r#"{"success":true,"transitioned":false}"#.to_string())
+                        };
+                        let _ = write!(connection, "HTTP/1.1 200 OK\r\ncontent-type: {kind}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    });
+                }
+            });
+            (url, seen)
+        }
+
+        fn wait_for(seen: &Arc<Mutex<Vec<String>>>, prefix: &str) -> Option<String> {
+            for _ in 0..50 {
+                if let Some(line) = seen.lock().unwrap().iter().find(|l| l.starts_with(prefix)) {
+                    return Some(line.clone());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            None
+        }
+
+        #[test]
+        fn a_held_bearer_rides_every_leg_the_ticket_and_the_stream() {
+            let (url, seen) = recording_host();
+            let bridge = SyncServerBridge::new(url);
+            bridge.set_bearer(Some("device-token".to_string()));
+            bridge.send_request("Main", &EventRequest { event: "PING".into(), ..Default::default() }).unwrap();
+            let _feed = bridge.open_feed("tab-1");
+            assert_eq!(wait_for(&seen, "POST /api/orbitals/Main/events").as_deref(), Some("POST /api/orbitals/Main/events Bearer device-token"));
+            assert_eq!(wait_for(&seen, "POST /api/events/ticket").map(|l| l.ends_with("Bearer device-token")), Some(true));
+            assert_eq!(wait_for(&seen, "GET /api/events").map(|l| l.ends_with("Bearer device-token")), Some(true));
+        }
+
+        #[test]
+        fn control_with_no_bearer_held_no_request_carries_one() {
+            let (url, seen) = recording_host();
+            let bridge = SyncServerBridge::new(url);
+            bridge.send_request("Main", &EventRequest { event: "PING".into(), ..Default::default() }).unwrap();
+            assert_eq!(wait_for(&seen, "POST /api/orbitals/Main/events").as_deref(), Some("POST /api/orbitals/Main/events -"));
+        }
+
+        #[test]
+        fn control_a_cleared_bearer_stops_riding_later_requests() {
+            let (url, seen) = recording_host();
+            let bridge = SyncServerBridge::new(url);
+            bridge.set_bearer(Some("device-token".to_string()));
+            bridge.clone().set_bearer(None);
+            bridge.send_request("Main", &EventRequest { event: "PING".into(), ..Default::default() }).unwrap();
+            assert_eq!(wait_for(&seen, "POST /api/orbitals/Main/events").as_deref(), Some("POST /api/orbitals/Main/events -"), "edge: a clone shares the one slot");
+        }
     }
 
     #[cfg(feature = "client-http")]
@@ -465,7 +605,7 @@ mod tests {
             url
         }
 
-        fn wait_for(feed: &LiveFeed, at_least: usize) -> Vec<PushedDispatch> {
+        fn wait_for(feed: &LiveFeed, at_least: usize) -> Vec<FeedItem> {
             let mut got = Vec::new();
             for _ in 0..50 {
                 got.extend(feed.drain());
@@ -481,12 +621,14 @@ mod tests {
         fn a_dispatch_frame_pushed_to_this_client_reaches_its_feed() {
             let bridge = SyncServerBridge::new(host("tab-1"));
             let feed = bridge.open_feed("tab-1");
-            let got = wait_for(&feed, 1);
-            assert_eq!(got.len(), 1, "the bus frame is skipped and the dispatch frame arrives once");
-            assert_eq!(got[0].orbital_name, "Files");
-            assert_eq!(got[0].request.event, "OF_ROOT");
-            assert_eq!(got[0].request.target_trait.as_deref(), Some("Reader"));
-            assert!(got[0].response.success);
+            let got = wait_for(&feed, 2);
+            assert_eq!(got.len(), 2, "the bus frame and the dispatch frame each arrive once, in order");
+            assert!(matches!(&got[0], FeedItem::Peer(emitted) if emitted.event == "X"));
+            let FeedItem::Dispatch(pushed) = &got[1] else { panic!("the second item is the dispatch: {:?}", got[1]) };
+            assert_eq!(pushed.orbital_name, "Files");
+            assert_eq!(pushed.request.event, "OF_ROOT");
+            assert_eq!(pushed.request.target_trait.as_deref(), Some("Reader"));
+            assert!(pushed.response.success);
         }
 
         #[test]
@@ -497,10 +639,26 @@ mod tests {
         }
 
         #[test]
-        fn control_a_frame_that_is_not_a_dispatch_is_skipped() {
+        fn a_bus_frame_is_handed_on_as_a_peer_emit_with_its_payload_and_source() {
             let mut seen = Vec::new();
-            read_frames(std::io::Cursor::new("data: {\"type\":\"bus\",\"event\":\"X\"}\n\n"), &mut None, |frame| {
-                seen.push(frame);
+            let frame = "data: {\"type\":\"bus\",\"event\":\"SAVED\",\"payload\":{\"title\":\"t\"},\"source\":{\"orbital\":\"Main\",\"trait\":\"Writer\"},\"timestamp\":1}\n\n";
+            read_frames(std::io::Cursor::new(frame), &mut None, |item| {
+                seen.push(item);
+                true
+            });
+            assert_eq!(seen.len(), 1);
+            let FeedItem::Peer(emitted) = &seen[0] else { panic!("a bus frame is a peer emit: {:?}", seen[0]) };
+            assert_eq!(emitted.event, "SAVED");
+            assert_eq!(emitted.source.as_ref().and_then(|s| s.r#trait.as_deref()), Some("Writer"));
+            assert_eq!(emitted.source.as_ref().and_then(|s| s.orbital.as_deref()), Some("Main"));
+            assert!(emitted.payload.is_some());
+        }
+
+        #[test]
+        fn control_a_frame_that_is_neither_a_dispatch_nor_a_bus_emit_is_skipped() {
+            let mut seen = Vec::new();
+            read_frames(std::io::Cursor::new("data: {\"type\":\"trace\",\"event\":\"X\"}\n\n"), &mut None, |item| {
+                seen.push(item);
                 true
             });
             assert!(seen.is_empty());

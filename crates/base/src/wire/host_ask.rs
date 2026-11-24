@@ -59,7 +59,12 @@ pub fn answer(text: &str) -> Result<RelayedAnswer, String> {
 /// success route with the answer's fields and `key`, or the failure route with `{ error, kind, key }`. `None` when the
 /// ask declared no route for that outcome, so nothing fires.
 pub fn route(ask: &RelayedAsk, outcome: &RelayedAnswer) -> Option<(String, Value)> {
-    let completion = ask.completion.as_ref()?;
+    return_route(ask.completion.as_ref()?, outcome)
+}
+
+/// [`route`] for a host that holds the ask's return address itself (a native or terminal host answering its own
+/// kernel's ask): the one place a host-ask outcome becomes its route event and payload.
+pub fn return_route(completion: &HostAskCompletion, outcome: &RelayedAnswer) -> Option<(String, Value)> {
     let mut payload = ValueMap::default();
     let event = match outcome {
         RelayedAnswer::Ok { ok } => {

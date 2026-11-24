@@ -1289,5 +1289,7 @@
   "agentActivity.toolDone": "{{tool}} — done",
   "agentActivity.toolFailed": "{{tool}} — failed",
   "aria.annotatedMedia": "Media to review",
-  "aria.annotatedTimeline": "Comment timeline"
+  "aria.annotatedTimeline": "Comment timeline",
+  "dataList.replyOne": "1 reply",
+  "dataList.replyOther": "{{count}} replies"
 }

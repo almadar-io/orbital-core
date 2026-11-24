@@ -285,6 +285,11 @@ impl ClientKernel {
         })
     }
 
+    /// Load a lazy page's program into this kernel (EXEC-LOAD-2), as the web's `registerLazy`.
+    pub fn register_lazy(&self, schema: OrbitalSchema) -> Result<(), crate::kernel::EntryError> {
+        self.embedded.register_lazy(schema)
+    }
+
     /// Seed entity rows so a subsequent INIT `fetch`/`list` on `entity_type` returns
     /// them (mirrors `KernelBridge::seed`, sharing the same [`seed_into`] body).
     /// A row-set reference resolved by the kernel's one resolver ([`crate::runtime::RuntimeKernel::resolve_rows`]).
@@ -331,9 +336,34 @@ impl ClientKernel {
         true
     }
 
-    /// The dispatches the host ran on its own since the last call, in arrival order (empty when no stream is open).
-    pub fn drain_feed(&self) -> Vec<crate::client::http::PushedDispatch> {
+    /// Hold the bearer the host obtained for its viewer on the bridge, for every later leg, ticket and stream reconnect.
+    pub fn set_bearer(&self, bearer: Option<String>) {
+        if let Some(bridge) = &self.bridge {
+            bridge.set_bearer(bearer);
+        }
+    }
+
+    /// What the live stream carried since the last call, in arrival order (empty when no stream is open): dispatches the
+    /// host ran on its own, and persists other clients made.
+    pub fn drain_feed(&self) -> Vec<crate::client::http::FeedItem> {
         self.feed.lock().as_ref().map(|feed| feed.drain()).unwrap_or_default()
+    }
+
+    /// Deliver another client's persist to the listeners declared here (Orbital_Core §6, the web's `deliverToListeners`):
+    /// the kernel's one peer fold, then the legs it owes the host are posted, as a host dispatch's fold posts its own.
+    pub fn fold_peer_emit(
+        &self,
+        emitted: &orbital_core_base::bus_event::EmittedEvent,
+    ) -> Result<EventResponse, BridgeError> {
+        let Some(bridge) = &self.bridge else {
+            return Err(BridgeError::InvalidRequest("a peer's emit needs the bridge it came through".into()));
+        };
+        let applied = self.embedded.apply_peer_emit(emitted.clone()).map_err(BridgeError::Server)?;
+        let mut settled = EventResponse { success: true, ..Default::default() };
+        settled.append_fold(applied.response);
+        let mut settled = self.post_owed(bridge.as_ref(), applied.server_legs.into(), settled)?;
+        settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
+        Ok(settled)
     }
 
     /// Show a dispatch the host ran on its own (the web's `foldHostDispatch`): nothing runs and nothing is posted for it, so
@@ -906,14 +936,22 @@ impl ClientKernel {
         already: &std::collections::HashSet<(String, String)>,
         mut settled: EventResponse,
     ) -> Result<EventResponse, BridgeError> {
-        let mut owed = std::collections::VecDeque::new();
         let applied = self
             .embedded
             .apply_server_response(answer, already)
             .map_err(BridgeError::Server)?;
-        owed.extend(applied.server_legs);
         settled.append_fold(server_own(answer, already));
         settled.append_fold(applied.response);
+        self.post_owed(bridge, applied.server_legs.into(), settled)
+    }
+
+    /// Post each leg a fold owed the host, folding every answer (and the legs it owes in turn) into `settled`.
+    fn post_owed(
+        &self,
+        bridge: &dyn ServerBridge,
+        mut owed: std::collections::VecDeque<crate::embed::wire::RoutedLeg>,
+        mut settled: EventResponse,
+    ) -> Result<EventResponse, BridgeError> {
         while let Some(routed) = owed.pop_front() {
             let next = bridge.send_request(&routed.orbital, &routed.leg)?;
             let none = std::collections::HashSet::new();

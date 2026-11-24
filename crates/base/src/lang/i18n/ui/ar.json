@@ -1289,5 +1289,7 @@
   "agentActivity.toolDone": "{{tool}} — تم",
   "agentActivity.toolFailed": "{{tool}} — تعذّر",
   "aria.annotatedMedia": "وسائط للمراجعة",
-  "aria.annotatedTimeline": "الخط الزمني للتعليقات"
+  "aria.annotatedTimeline": "الخط الزمني للتعليقات",
+  "dataList.replyOne": "رد واحد",
+  "dataList.replyOther": "{{count}} ردود"
 }

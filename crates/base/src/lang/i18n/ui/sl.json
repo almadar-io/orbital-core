@@ -1289,5 +1289,7 @@
   "agentActivity.toolDone": "{{tool}} — končano",
   "agentActivity.toolFailed": "{{tool}} — ni uspelo",
   "aria.annotatedMedia": "Gradivo za pregled",
-  "aria.annotatedTimeline": "Časovnica komentarjev"
+  "aria.annotatedTimeline": "Časovnica komentarjev",
+  "dataList.replyOne": "1 odgovor",
+  "dataList.replyOther": "{{count}} odgovorov"
 }

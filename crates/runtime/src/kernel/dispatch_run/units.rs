@@ -651,7 +651,7 @@ impl RuntimeKernel {
         let visit = (!item.completion)
             .then(|| visited.visit_digested(&item.trait_name, &item.event, &from, item.payload_digest(), &VisitFrame::of(&frame)));
         if visit.as_ref().is_some_and(|v| visited.seen(v)) {
-            info!(trait_name = %item.trait_name, event = %item.event, from = %from, "EXEC-QUEUE-4: delivery skipped, an identical (trait, event, from-state, payload, frame) was already processed in this dispatch");
+            tracing::debug!(trait_name = %item.trait_name, event = %item.event, from = %from, "EXEC-QUEUE-4: delivery skipped, an identical (trait, event, from-state, payload, frame) was already processed in this dispatch");
             if let Some((_, last)) = outcomes.last_mut() {
                 last.collapsed.push(crate::process_result::CollapsedVisit {
                     trait_name: item.trait_name.clone(),

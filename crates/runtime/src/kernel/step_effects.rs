@@ -353,8 +353,9 @@ impl RuntimeKernel {
         }
         match &effect {
             Effect::Set { path, value } => {
+                let source = effect_expr.arguments().and_then(|args| args.get(1));
                 let Some(evaluated_value) =
-                    set_value(&effect, path, value, ctx, evaluator, effect_results, || self.effect_site())
+                    set_value(&effect, path, value, source, ctx, evaluator, effect_results, || self.effect_site())
                 else {
                     return Ok(());
                 };
@@ -908,17 +909,25 @@ fn condition_holds(
 
 /// The value a `set` stores: a list or map literal is evaluated, a whole binding resolves (to null when it resolves to
 /// nothing; its text is never stored), and a value that fails to evaluate fails the effect.
+#[allow(clippy::too_many_arguments)]
 fn set_value(
     effect: &Effect,
     path: &str,
     value: &Value,
+    source: Option<&SExpression>,
     ctx: &BindingContext,
     evaluator: &Evaluator,
     effect_results: &mut Vec<EffectResult>,
     site: impl FnOnce() -> EffectSite,
 ) -> Option<Value> {
     if value.as_array().is_some() || value.as_object().is_some() {
-        match value_to_sexpr(value).map_err(Into::into).and_then(|expr| evaluator.evaluate(&expr, ctx)) {
+        // The effect's own expression when the caller has it: turning the parsed value back into an expression cost
+        // a layout event more than evaluating it.
+        let evaluated = match source {
+            Some(expr) => evaluator.evaluate(expr, ctx),
+            None => value_to_sexpr(value).map_err(Into::into).and_then(|expr| evaluator.evaluate(&expr, ctx)),
+        };
+        match evaluated {
             Ok(v) => Some(v),
             Err(err) => {
                 tracing::error!(site = %site(), path = %path, error = %err, "kernel: set value failed to evaluate");

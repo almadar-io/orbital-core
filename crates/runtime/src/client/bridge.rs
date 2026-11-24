@@ -75,6 +75,10 @@ pub trait ServerBridge: Send + Sync {
         None
     }
 
+    /// Hold the bearer the host obtained for its viewer for every later request (EXEC-IDENTITY-4); `None` signs out.
+    /// A bridge whose requests carry no credential (an in-process kernel) ignores it.
+    fn set_bearer(&self, _bearer: Option<String>) {}
+
     /// Run one scheduled tick of `trait_name` (effects + guard) against the in-memory
     /// entity and return the resulting client effects, so a game's per-frame/interval
     /// `set` effects advance the entity locally. Only the in-process [`KernelBridge`]
@@ -123,6 +127,10 @@ impl ServerBridge for crate::client::http::SyncServerBridge {
 
     fn open_feed(&self, client_id: &str) -> Option<Box<dyn crate::client::http::HostFeed>> {
         Some(Box::new(crate::client::http::SyncServerBridge::open_feed(self, client_id)))
+    }
+
+    fn set_bearer(&self, bearer: Option<String>) {
+        crate::client::http::SyncServerBridge::set_bearer(self, bearer)
     }
 }
 

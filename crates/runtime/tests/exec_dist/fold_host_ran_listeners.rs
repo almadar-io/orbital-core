@@ -116,6 +116,26 @@ fn an_emit_delivered_to_its_listeners_reaches_every_listener_whatever_the_host_r
     assert_eq!(state(&k, "HostBacked"), "shown", "the delivery is independent of the dispatched stamp and host_fans_out");
 }
 
+/// Native twin of the test above (G-ORBITAL-CORE-233): the native client folds a peer's persist through
+/// `apply_peer_emit`, the same fold the web's flight path runs, so every listener hears it the same way.
+#[test]
+fn a_peer_emit_the_native_client_folds_reaches_every_listener_as_the_flight_path_does() {
+    let k = kernel();
+    k.kernel().set_host_fans_out(true);
+    let source = loaded(Some(true)).emitted_events.remove(0);
+    let applied = k.apply_peer_emit(source).unwrap();
+    assert!(applied.applied.iter().any(|(t, s)| t == "HostBacked" && s == "shown"));
+    assert_eq!(state(&k, "ClientOnly"), "shown");
+    assert_eq!(state(&k, "HostBacked"), "shown");
+}
+
+#[test]
+fn control_a_peer_emit_the_native_client_folds_does_not_run_the_emitters_own_arm() {
+    let k = kernel();
+    k.apply_peer_emit(loaded(None).emitted_events.remove(0)).unwrap();
+    assert_eq!(state(&k, "Loader"), "");
+}
+
 #[test]
 fn control_a_delivered_emit_does_not_run_the_emitters_own_arm() {
     let k = kernel();

@@ -1320,3 +1320,77 @@ fn edge_a_host_mount_folds_the_row_of_a_server_trait_the_browser_ran_and_did_not
     k.prepare_mount(&Default::default(), &[seed("Display")], None, Some(&rows("Data", "Ana")), None);
     assert_eq!(host_focus(&k, "Data").as_deref(), Some("Ana"));
 }
+
+/// The search page shape (Project Friday `/search/:q`): `Route`, `Search` and `Responder` are server-aware (no
+/// `dispatch`). `Route` INIT emits Q (no server work of its own); `Search` INIT fetches, and on Q emits ASK;
+/// `Responder` answers ASK with a fetch. With `route_q` off, Route's INIT emits nothing.
+fn route_query_schema(route_q: bool) -> OrbitalSchema {
+    let emits: Vec<serde_json::Value> = if route_q { vec![json!(["emit", "Q", { "q": "aria" }])] } else { vec![] };
+    from_json_value(&json!({
+        "name": "search",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "People",
+            "entity": { "name": "Person", "persistence": "persistent", "collection": "people",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Route",
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": emits }] } },
+                { "name": "Search", "linkedEntity": "Person",
+                  "listens": [{ "event": "Q", "triggers": "GOT_Q", "source": { "kind": "trait", "trait": "Route" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["fetch", "Person", {}]] },
+                        { "from": "idle", "to": "idle", "event": "GOT_Q", "effects": [["emit", "ASK", { "queryText": "@payload.q" }]] }] } },
+                { "name": "Responder", "linkedEntity": "Person",
+                  "listens": [{ "event": "ASK", "triggers": "ASKED", "source": { "kind": "trait", "trait": "Search" } }],
+                  "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }, { "name": "answering" }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "answering", "event": "ASKED", "effects": [["fetch", "Person", {}]] }] } }
+            ]
+        }]
+    }))
+    .unwrap()
+}
+
+/// What the host is handed for a mount of `order`: the seeds of every posted leg, and whether a posted leg targets
+/// Responder carrying ASK's payload.
+fn route_query_posted(route_q: bool, order: &[&str], stateful: bool) -> (Vec<String>, bool) {
+    let k = EmbeddedKernel::new(route_query_schema(route_q), "c1").unwrap();
+    k.mount(order.iter().map(|t| t.to_string()).collect());
+    let seeds: Vec<MountSeed> = order.iter().map(|t| seed(t)).collect();
+    let mount = k.dispatch_mount(&seeds, None, Value::Null).unwrap();
+    let legs = if stateful { &mount.stateful_legs } else { &mount.legs };
+    let seeded: Vec<String> = legs.iter().flat_map(|l| l.seeds.iter().map(|s| s.trait_name.clone())).collect();
+    let responder_leg = legs.iter().any(|l| {
+        l.leg.target_trait.as_deref() == Some("Responder") && l.leg.payload.as_ref().and_then(|p| p.get_path("queryText")).is_some()
+    });
+    (seeded, responder_leg)
+}
+
+/// EXEC-DIST-2 + EXEC-DIST-10: a mount seed whose own step needs no server but whose cascade reaches server work the
+/// host's replay of the other seeds does not reach is posted (its replay is the leg), or that work leaves as its own
+/// leg with its payload; otherwise the host never asks Responder and the page shows nothing.
+#[test]
+fn a_mount_posts_the_route_seed_whose_emit_reaches_a_server_responder() {
+    for stateful in [true, false] {
+        for order in [&["Route", "Search", "Responder"][..], &["Search", "Responder", "Route"][..], &["Route", "Responder", "Search"][..]] {
+            let (seeded, responder_leg) = route_query_posted(true, order, stateful);
+            assert!(
+                seeded.contains(&"Route".to_string()) || responder_leg,
+                "stateful={stateful} {order:?}: the host gets no way to ask Responder (seeds {seeded:?})"
+            );
+        }
+    }
+}
+
+#[test]
+fn control_a_route_seed_that_emits_nothing_is_not_posted() {
+    let (seeded, responder_leg) = route_query_posted(false, &["Route", "Search", "Responder"], false);
+    assert!(!seeded.contains(&"Route".to_string()), "{seeded:?}");
+    assert!(!responder_leg);
+}

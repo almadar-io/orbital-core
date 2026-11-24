@@ -942,6 +942,40 @@ fn the_mount_scopes_the_tick_clock_of_a_client_kernel_core() {
     assert!(core.drive_ticks_blocking(), "mounting T starts its ticks");
 }
 
+fn picked_completion(key: Option<&str>) -> HostAskCompletion {
+    HostAskCompletion {
+        trait_name: "RenderTrait".into(),
+        entity_id: None,
+        key: key.map(Into::into),
+        success: Some("PICKED".into()),
+        failure: Some("FAILED".into()),
+        on_message: None,
+    }
+}
+
+/// EXEC-DIST-13: a client host's answer reaches the success route with the op's fields plus `key`
+/// (G-ORBITAL-SHELL-RUST-062), through base's one `return_route`.
+#[test]
+fn a_client_hosts_answer_fires_the_success_route_with_the_ops_fields_and_the_key() {
+    let answer = from_json_value::<Value>(&serde_json::json!({ "files": [{ "name": "a.png", "size": 3 }] })).unwrap();
+    let (event, payload) = host_ask_route(&picked_completion(Some("pick")), &HostAskOutcome::Ok { ok: answer }).unwrap();
+    assert_eq!(event, "PICKED");
+    let fields = payload.as_object().expect("an object payload");
+    assert_eq!(fields.get("key"), Some(&Value::string("pick")));
+    assert!(fields.get("files").and_then(Value::as_array).is_some_and(|files| files.len() == 1));
+}
+
+#[test]
+fn control_a_client_hosts_refusal_fires_the_failure_route_with_error_kind_and_key() {
+    let refused = HostAskOutcome::Refused { error: "no action".into(), kind: "unavailable".into() };
+    let (event, payload) = host_ask_route(&picked_completion(Some("pick")), &refused).unwrap();
+    assert_eq!(event, "FAILED");
+    let fields = payload.as_object().expect("an object payload");
+    assert_eq!(fields.get("error"), Some(&Value::string("no action")));
+    assert_eq!(fields.get("kind"), Some(&Value::string("unavailable")));
+    assert_eq!(fields.get("key"), Some(&Value::string("pick")));
+}
+
 #[test]
 fn host_asks_preserve_order_args_and_kernel_completion_for_the_client_host() {
     let mut core = ClientCore::new(render_ui_schema(), None);
@@ -1306,6 +1340,7 @@ mod host_feed {
 
     const KEYED_COMPLETION: &str = r#"{"type":"dispatch","orbitalName":"Main","request":{"event":"SHOW","targetTrait":"RenderTrait","entityId":"singleton"},"response":{"success":true,"transitioned":true,"states":{"RenderTrait":"shown"},"clientEffectsByTrait":[{"traitName":"RenderTrait","effect":["render-ui","main",{"type":"page-header","title":"from the host"}]}]},"timestamp":1}"#;
     const BUS: &str = r#"{"type":"bus","event":"SHOW"}"#;
+    const PEER_SAVED: &str = r#"{"type":"bus","event":"SAVED","payload":{"title":"from a peer"},"source":{"orbital":"Main","trait":"Writer"},"timestamp":3}"#;
     const FAILED: &str = r#"{"type":"dispatch","orbitalName":"Main","request":{"event":"SHOW","targetTrait":"RenderTrait"},"response":{"success":false,"error":"refused","states":{"RenderTrait":"shown"}},"timestamp":2}"#;
 
     fn host(frame: &'static str) -> String {
@@ -1340,7 +1375,43 @@ mod host_feed {
     }
 
     fn window(frame: &'static str) -> ClientCore {
-        let schema = render_ui_schema();
+        window_of(render_ui_schema(), frame)
+    }
+
+    /// `render_ui_schema` plus a `Writer` whose `SAVED` the render trait listens to as `SHOW`.
+    fn listening_schema() -> OrbitalSchema {
+        from_json_value(&(serde_json::json!({
+            "name": "App",
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "Note", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{
+                    "name": "Writer",
+                    "emits": [{ "event": "SAVED", "scope": "external" }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [{ "from": "idle", "to": "idle", "event": "INIT" }]
+                    }
+                }, {
+                    "name": "RenderTrait",
+                    "listens": [{ "event": "SAVED", "triggers": "SHOW", "source": { "kind": "trait", "trait": "Writer" } }],
+                    "stateMachine": {
+                        "states": [{ "name": "idle", "isInitial": true }, { "name": "shown" }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT" },
+                            {
+                                "from": "idle", "to": "shown", "event": "SHOW",
+                                "effects": [["render-ui", "main", { "type": "page-header", "title": "@payload.title" }]]
+                            }
+                        ]
+                    }
+                }]
+            }]
+        })))
+        .unwrap()
+    }
+
+    fn window_of(schema: OrbitalSchema, frame: &'static str) -> ClientCore {
         let bridge: Arc<dyn crate::client::bridge::ServerBridge> = Arc::new(SyncServerBridge::new(host(frame)));
         let kernel = Arc::new(ClientKernel::new(schema.clone(), Some(bridge)).unwrap());
         assert!(kernel.open_feed());
@@ -1367,10 +1438,23 @@ mod host_feed {
         assert_eq!(title, Some(Value::string("from the host")));
     }
 
+    /// Orbital_Core §6: a persist another client made reaches this client's listeners, as the web host hands it to
+    /// `deliverToListeners` (G-ORBITAL-CORE-233).
     #[test]
-    fn control_a_bus_frame_changes_nothing() {
+    fn a_peer_persist_pushed_to_the_window_runs_its_listener() {
+        let mut core = window_of(listening_schema(), PEER_SAVED);
+        core.set_active_trait("RenderTrait");
+        assert_ne!(core.current_state, "shown");
+        assert!(heard(&mut core), "the bus frame reached the window");
+        assert_eq!(core.current_state, "shown");
+        let title = core.ui_slots.get("main").and_then(|slot| slot.first()).and_then(|content| content.props.as_object()?.get("title").cloned());
+        assert_eq!(title, Some(Value::string("from a peer")));
+    }
+
+    #[test]
+    fn control_a_bus_frame_no_trait_listens_to_changes_nothing() {
         let mut core = window(BUS);
-        assert!(!heard(&mut core));
+        assert!(heard(&mut core), "the bus frame reached the window");
         assert_ne!(core.current_state, "shown");
         assert!(core.ui_slots.get("main").is_none());
     }
@@ -1382,4 +1466,70 @@ mod host_feed {
         assert_ne!(core.current_state, "shown");
         assert!(core.status_message.is_none());
     }
+}
+
+struct BlogFile(std::sync::atomic::AtomicUsize);
+
+impl crate::LazySource for BlogFile {
+    fn read(&self, file: &str) -> Result<crate::LazyProgram, String> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if file != "lazy/Blog.orb" {
+            return Err(format!("no file {file}"));
+        }
+        let schema = from_json_value(&(serde_json::json!({
+            "name": "App",
+            "typeContractVersion": 1, "orbitals": [{
+                "name": "Blog",
+                "entity": { "name": "Post", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "BlogTrait", "dispatch": "client", "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "INIT", "effects": [["render-ui", "main", { "type": "page-header", "title": "blog" }]] }]
+                } }],
+                "pages": [{ "name": "BlogPage", "path": "/blog", "traits": [{ "ref": "BlogTrait" }] }]
+            }]
+        })))
+        .map_err(|e| e.to_string())?;
+        Ok(crate::LazyProgram { schema })
+    }
+}
+
+fn schema_with_a_lazy_blog() -> OrbitalSchema {
+    let mut schema = two_page_schema();
+    schema.lazy_pages = Some(vec![from_json_value(&(serde_json::json!(
+        { "path": "/blog", "orbital": "Blog", "orbRef": "lazy/Blog.orb" }
+    )))
+    .unwrap()]);
+    schema
+}
+
+/// EXEC-LOAD-2, as the web's preview opens a lazy page: a path a lazy page matches loads that page's program into the
+/// client kernel once, and the client enters its page.
+#[test]
+fn navigating_to_a_lazy_page_loads_its_program_once_and_enters_its_page() {
+    let schema = schema_with_a_lazy_blog();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    let source = Arc::new(BlogFile(std::sync::atomic::AtomicUsize::new(0)));
+    core.set_lazy_source(source.clone());
+    core.navigate_to("/blog", None);
+    assert_eq!(core.current_page.as_deref(), Some("BlogPage"), "{:?}", core.status_message);
+    assert!(core.page_entered, "the host mounts the lazy page");
+    core.navigate_to("/notes", None);
+    assert_eq!(core.current_page.as_deref(), Some("ListPage"));
+    core.navigate_to("/blog", None);
+    assert_eq!(core.current_page.as_deref(), Some("BlogPage"), "a lazy page opened again");
+    assert_eq!(source.0.load(std::sync::atomic::Ordering::SeqCst), 1, "its program is read once");
+    core.navigate_to("/nowhere", None);
+    assert_eq!(core.current_page.as_deref(), Some("BlogPage"), "control: an unknown path keeps the page");
+}
+
+#[test]
+fn control_a_lazy_page_with_no_lazy_source_keeps_the_page_and_says_why() {
+    let schema = schema_with_a_lazy_blog();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel);
+    core.navigate_to("/blog", None);
+    assert_eq!(core.current_page.as_deref(), Some("ListPage"));
+    let (message, error) = core.status_message.clone().expect("a status");
+    assert!(error && message.contains("lazy/Blog.orb"), "{message}");
 }

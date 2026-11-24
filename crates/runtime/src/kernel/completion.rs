@@ -7,6 +7,11 @@ use super::*;
 pub(super) fn persist_run(effects: &[SExpression], start: usize) -> Result<Vec<Effect>, orbital_core_base::language_data::LanguageDataError> {
     let mut run = Vec::new();
     for expr in &effects[start..] {
+        // Only a `persist` joins a run: an effect named otherwise ends it without being parsed (a `render-ui` tree
+        // parsed whole to find it is not a persist cost a layout event more than its own work).
+        if expr.operator() != Some("persist") {
+            break;
+        }
         match orbital_core_base::effect_types::parse_effect(expr)? {
             Some(effect @ Effect::Persist { .. }) => run.push(effect),
             _ => break,
@@ -383,5 +388,39 @@ mod absent_not_null_tests {
             assert_eq!(fields.get("error"), Some(&Value::string(String::new())));
             assert!(fields.get("code").is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod persist_run_tests {
+    use super::*;
+    use orbital_core_base::json_value::from_json_value;
+
+    fn effects(json: serde_json::Value) -> Vec<SExpression> {
+        from_json_value(&json).unwrap()
+    }
+
+    #[test]
+    fn a_run_is_the_consecutive_persists_from_start_and_stops_at_the_first_other_effect() {
+        let list = effects(serde_json::json!([
+            ["persist", "create", "Note", { "id": "a" }],
+            ["persist", "create", "Note", { "id": "b" }],
+            ["render-ui", "main", { "type": "stack", "children": [] }],
+            ["persist", "create", "Note", { "id": "c" }]
+        ]));
+        let run = persist_run(&list, 0).unwrap();
+        assert_eq!(run.len(), 2, "{run:?}");
+        assert!(run.iter().all(|e| matches!(e, Effect::Persist { .. })));
+        assert_eq!(persist_run(&list, 3).unwrap().len(), 1, "edge: a run at the end");
+    }
+
+    #[test]
+    fn control_a_run_starting_at_another_effect_is_empty() {
+        let list = effects(serde_json::json!([
+            ["set", "@entity.n", 1],
+            ["persist", "create", "Note", { "id": "a" }]
+        ]));
+        assert!(persist_run(&list, 0).unwrap().is_empty());
+        assert!(persist_run(&effects(serde_json::json!([["render-ui", "main", null]])), 0).unwrap().is_empty());
     }
 }
