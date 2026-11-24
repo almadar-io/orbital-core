@@ -216,6 +216,14 @@ pub struct SlotContent {
     pub source_trait: Option<String>,
 }
 
+impl SlotContent {
+    /// The entry's identity in `slot`: the slot and the trait that rendered it, so a renderer keyed by it reconciles
+    /// the same trait's repaint and gives another trait a fresh subtree (web twin: `useUISlots` `slot-content-{slot}-{source}`).
+    pub fn key(&self, slot: &str) -> String {
+        format!("slot-content-{slot}-{}", self.source_trait.as_deref().unwrap_or("__default__"))
+    }
+}
+
 /// A shared empty per-trait content map for contexts without `@trait` support.
 pub fn empty_trait_content() -> &'static ValueMap {
     use orbital_core_base::sync::OnceLock;
@@ -1200,6 +1208,29 @@ mod tests {
     fn json_value(s: &str) -> Value {
         let json: serde_json::Value = from_json_str(s).unwrap();
         from_json(json)
+    }
+
+    fn slot_content(source: Option<&str>, props: &str) -> SlotContent {
+        SlotContent { pattern: "canvas".into(), props: json_value(props), entity: None, source_trait: source.map(str::to_string) }
+    }
+
+    /// G-ORBITAL-SHELL-RUST-069: a slot entry's identity is its slot and the trait that rendered it (the web's
+    /// `slot-content-{slot}-{source}`), so a renderer keyed by it gives another page's trait a fresh subtree.
+    #[test]
+    fn a_slot_entry_from_another_trait_has_another_key() {
+        let library = slot_content(Some("LibraryPageSurface"), r#"{"drawables":[]}"#);
+        let prep = slot_content(Some("PrepPageSurface"), r#"{"drawables":[]}"#);
+        assert_eq!(library.key("main"), "slot-content-main-LibraryPageSurface");
+        assert_ne!(library.key("main"), prep.key("main"));
+        assert_ne!(library.key("main"), library.key("floating"));
+        assert_eq!(slot_content(None, "{}").key("main"), "slot-content-main-__default__");
+    }
+
+    #[test]
+    fn control_the_same_trait_repainting_keeps_its_key() {
+        let before = slot_content(Some("LibraryPageSurface"), r#"{"drawables":[]}"#);
+        let after = slot_content(Some("LibraryPageSurface"), r#"{"drawables":[{"id":"x"}]}"#);
+        assert_eq!(before.key("main"), after.key("main"));
     }
 
     #[test]
