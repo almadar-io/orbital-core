@@ -638,7 +638,8 @@ fn held_kinds<K: Copy + PartialEq>(held: impl Iterator<Item = K>, asked: &[K]) -
 
 /// `guest` narrowed to what `asker` holds (EXEC-CONC-7 `declared`): each guest grant keeps only the kinds the asker
 /// holds over its target, by the same containment [`covers`] checks, and a grant left with none is dropped, so
-/// `covers(asker, &narrow(asker, guest))` always holds.
+/// `covers(asker, &narrow(asker, guest))` holds for every grant but the guest's own worklist (`kernel: queue`), which it
+/// keeps whatever the asker holds.
 pub fn narrow(asker: &OsGrants, guest: &OsGrants) -> OsGrants {
     let mut out = OsGrants::default();
     for grant in &guest.fs {
@@ -672,6 +673,11 @@ pub fn narrow(asker: &OsGrants, guest: &OsGrants) -> OsGrants {
         }
     }
     for grant in &guest.kernel {
+        // The worklist grant reorders only the guest's own worklist, so the guest keeps it (owner 2026-11-24).
+        if kernel_target(&grant.target) == Some(KernelTarget::Queue) {
+            out.kernel.push(grant.clone());
+            continue;
+        }
         let kinds = held_kinds(asker.kernel.iter().filter(|g| kernel_target_within(&g.target, &grant.target)).flat_map(|g| g.kinds.iter().copied()), &grant.kinds);
         if !kinds.is_empty() {
             out.kernel.push(KernelGrant { target: grant.target.clone(), kinds });

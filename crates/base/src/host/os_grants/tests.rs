@@ -4081,6 +4081,31 @@ fn control_narrow_of_what_the_asker_fully_holds_is_unchanged_and_of_nothing_is_n
     assert_eq!(narrow(&OsGrants::default(), &declared), OsGrants::default());
 }
 
+/// Owner ruling 2026-11-24 (a composed atom's grant carries): a guest keeps the worklist grant its program declares,
+/// since `kernel/queue-back` reorders only that guest's own worklist. std-rasm-stack declares it, so every Rasm page a
+/// launchpad opens with `declared` failed to start when the opener did not hold it.
+#[test]
+fn narrow_keeps_the_guests_own_worklist_grant() {
+    let asker = grants_of(json!({ "kernel": [{ "target": "guest", "kinds": ["spawn", "declared"] }] }));
+    let declared = grants_of(json!({ "kernel": [{ "target": "queue", "kinds": ["reorder"] }] }));
+    assert_eq!(narrow(&asker, &declared), declared);
+    assert_eq!(narrow(&OsGrants::default(), &declared), declared);
+}
+
+#[test]
+fn control_narrow_still_drops_the_kernel_grants_that_reach_past_the_guest() {
+    let declared = grants_of(json!({ "kernel": [
+        { "target": "queue", "kinds": ["reorder"] },
+        { "target": "guest", "kinds": ["spawn"] },
+        { "target": "introspect", "kinds": ["read"] },
+        { "target": "apply:os/*", "kinds": ["call"] }
+    ] }));
+    assert_eq!(
+        narrow(&OsGrants::default(), &declared),
+        grants_of(json!({ "kernel": [{ "target": "queue", "kinds": ["reorder"] }] }))
+    );
+}
+
 #[test]
 fn union_adds_the_passed_set_to_the_narrowed_one_without_duplicates() {
     let a = grants_of(json!({ "env": ["HOME"] }));

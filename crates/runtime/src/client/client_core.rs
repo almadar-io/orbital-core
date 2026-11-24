@@ -1357,23 +1357,14 @@ impl ClientCore {
         // `emittedEvents`, each carrying its own producing trait via `source.trait`, so
         // a cascade's follow-up re-dispatches to the trait that actually emitted it
         // (falling back to this response's trait only when unattributed).
-        for emitted in response.emitted_events {
+        // A core on the client kernel queues none: the kernel delivered every emit its response carries (the emitter's
+        // own arm and its listeners, a server answer's emits included), so a second dispatch would run them twice.
+        let delivered = self.client_kernel.is_some();
+        for emitted in response.emitted_events.into_iter().filter(|_| !delivered) {
             let origin = emitted
                 .source
                 .and_then(|s| s.r#trait)
                 .unwrap_or_else(|| effective_trait.clone());
-            if self
-                .client_kernel
-                .as_ref()
-                .is_some_and(|kernel| !kernel.declares_trait(&origin))
-            {
-                debug!(
-                    target: "almadar::client",
-                    event = %emitted.event, origin = %origin,
-                    "emit from a trait this client's program leaves to the server: its continuation ran there"
-                );
-                continue;
-            }
             self.pending_events.push((
                 emitted.event,
                 Some(origin),

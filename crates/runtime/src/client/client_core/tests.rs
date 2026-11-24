@@ -1259,10 +1259,10 @@ fn a_clean_init_and_a_failed_later_event_keep_no_mount_error() {
     assert!(core.mount_fault.is_none());
 }
 
-/// A server answer's emit from a trait the client program leaves to the server is not re-dispatched to that trait
-/// (the client kernel does not own it); the same emit from a trait the client declares is queued.
+/// A server answer's emit is never re-dispatched by a core on the client kernel, whether the client program leaves its
+/// emitter to the server or declares it: the kernel's fold delivered it (G-ORBITAL-SHELL-RUST-071).
 #[test]
-fn a_server_only_emitters_continuation_is_not_requeued_for_the_client() {
+fn a_server_answers_emit_is_not_requeued_for_the_client() {
     let schema = peer_buttons_schema();
     let kernel = Arc::new(ClientKernel::new(schema.clone(), None).unwrap());
     let mut core = ClientCore::with_client_kernel(schema, kernel);
@@ -1277,12 +1277,7 @@ fn a_server_only_emitters_continuation_is_not_requeued_for_the_client() {
     assert!(core.pending_events.is_empty());
     assert!(core.status_message.is_none());
     core.process_response("INIT", None, answer("First"));
-    assert_eq!(
-        core.pending_events.len(),
-        1,
-        "control: a declared emitter queues"
-    );
-    assert_eq!(core.pending_events[0].1.as_deref(), Some("First"));
+    assert!(core.pending_events.is_empty(), "a declared emitter's emit was delivered by the fold too");
 }
 
 /// A refused mount round trip names the entering traits and keeps the message.
@@ -1542,4 +1537,58 @@ fn control_a_lazy_page_with_no_lazy_source_keeps_the_page_and_says_why() {
     assert_eq!(core.current_page.as_deref(), Some("ListPage"));
     let (message, error) = core.status_message.clone().expect("a status");
     assert!(error && message.contains("lazy/Blog.orb"), "{message}");
+}
+
+/// G-ORBITAL-SHELL-RUST-071: a mount whose seed emits on INIT, to a listener and to its own arm. The kernel delivers both
+/// in the mount's cascade, so the settled mount queues nothing for the host to dispatch again (the web replays none):
+/// a second run reset dj-set's `Live` load, so its first track never loaded.
+fn emit_on_init_schema() -> OrbitalSchema {
+    from_json_value(&(serde_json::json!({
+        "name": "App", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Note", "persistence": "persistent", "collection": "notes", "fields": [
+                { "name": "id", "type": "string" }, { "name": "count", "type": "number" }] },
+            "traits": [
+                { "name": "Emitter", "linkedEntity": "Note",
+                  "emits": [{ "event": "X", "scope": "external" }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT", "effects": [["fetch", "Note", { "emit": { "success": "GOT" } }]] },
+                        { "from": "idle", "to": "idle", "event": "GOT", "effects": [["emit", "X", {}]] }] } },
+                { "name": "Listener", "dispatch": "client",
+                  "listens": [{ "event": "X", "triggers": "HEARD", "source": { "kind": "trait", "trait": "Emitter" } }],
+                  "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "INIT" },
+                        { "from": "idle", "to": "idle", "event": "HEARD",
+                          "effects": [["set", "@entity.count", ["+", ["default", "@entity.count", 0], 1]]] }] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Emitter" }, { "ref": "Listener" }] }]
+        }]
+    })))
+    .unwrap()
+}
+
+fn count_of(kernel: &ClientKernel, trait_name: &str) -> Option<f64> {
+    serde_json::to_value(kernel.snapshot_trait(trait_name, None).entity).unwrap().get("count").and_then(|v| v.as_f64())
+}
+
+#[test]
+fn a_settled_mount_never_queues_the_emits_its_cascade_delivered() {
+    let schema = emit_on_init_schema();
+    let server = crate::client::bridge::KernelBridge::new(schema.clone()).unwrap();
+    let kernel = Arc::new(ClientKernel::new(schema.clone(), Some(Arc::new(server) as Arc<dyn crate::client::bridge::ServerBridge>)).unwrap());
+    let mut core = ClientCore::with_client_kernel(schema, kernel.clone());
+    let seeds = [
+        crate::effects::response::MountSeed { r#trait: "Listener".into(), event: crate::effects::response::LifecycleEvent::Init },
+        crate::effects::response::MountSeed { r#trait: "Emitter".into(), event: crate::effects::response::LifecycleEvent::Init },
+    ];
+    let begun = kernel.begin_mount(&seeds, Value::Null).unwrap();
+    for (trait_name, local) in begun.locals() {
+        core.process_response("INIT", Some(trait_name.to_string()), local.clone());
+    }
+    core.process_response("INIT", None, kernel.settle_mount(&begun).unwrap());
+    assert!(core.pending_events.is_empty(), "queued replay: {:?}", core.pending_events);
+    core.settle(8);
+    assert_eq!(count_of(&kernel, "Listener"), Some(1.0), "the listener ran once");
 }

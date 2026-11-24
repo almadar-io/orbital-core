@@ -158,6 +158,18 @@ pub struct ClientKernel {
     begin_order: Mutex<()>,
     flights: Arc<FlightOrder>,
     feed: Mutex<Option<Box<dyn crate::client::http::HostFeed>>>,
+    /// Per orbital, the seeds this client mounted there and the request they were mounted with: a leg the host refuses
+    /// because the session ended is resent after a mount of them (EXEC-DIST-9; the web's `mountedSeeds`/`mountedBase`).
+    mounted: Mutex<Vec<MountedOrbital>>,
+}
+
+/// What a client mounted on one orbital, for the mount that revives its ended session.
+struct MountedOrbital {
+    orbital: String,
+    seeds: Vec<crate::effects::response::MountSeed>,
+    payload: Value,
+    route: Option<String>,
+    crumb: Option<String>,
 }
 
 /// A dispatch whose local cascade ran ([`ClientKernel::begin`]) and whose server legs, if any,
@@ -206,6 +218,8 @@ pub struct BegunMount {
     route: Option<String>,
     /// The crumb of the navigate that opened `route`, carried on the first posted leg beside it.
     crumb: Option<String>,
+    /// The lifecycle payload every seed ran with, carried again by a mount that revives the session.
+    payload: Value,
 }
 
 /// A frame's local tick and emit results, before any server leg is posted.
@@ -282,6 +296,7 @@ impl ClientKernel {
             begin_order: Mutex::new(()),
             flights: Arc::new(FlightOrder::default()),
             feed: Mutex::new(None),
+            mounted: Mutex::new(Vec::new()),
         })
     }
 
@@ -329,6 +344,10 @@ impl ClientKernel {
     /// Open this client's live stream on the bridge, under the client id its legs are posted with. `false` when there is no
     /// bridge or the bridge has no stream.
     pub fn open_feed(&self) -> bool {
+        // One stream per client, kept across page mounts: replacing it drops the session's only stream (EXEC-DIST-9).
+        if self.feed.lock().is_some() {
+            return true;
+        }
         let Some(feed) = self.bridge.as_ref().and_then(|bridge| bridge.open_feed(self.embedded.client_id())) else {
             return false;
         };
@@ -806,7 +825,7 @@ impl ClientKernel {
             .iter()
             .any(|(_, begun)| begun.has_legs())
             .then(|| self.flights.open());
-        Ok(BegunMount { announced, seeds, flight, route: route.map(str::to_string), crumb: crumb.map(str::to_string) })
+        Ok(BegunMount { announced, seeds, flight, route: route.map(str::to_string), crumb: crumb.map(str::to_string), payload })
     }
 
     fn begin_announce(&self, route: &str, crumb: Option<&str>) -> Result<Option<BegunDispatch>, BridgeError> {
@@ -846,6 +865,7 @@ impl ClientKernel {
             settled = self.settle_with_base(announced, settled)?;
         }
         let _flight = begun.flight.as_ref().map(Flight::claim).transpose()?;
+        self.record_mounted(begun)?;
         // The one mount planner the web posts from, so the hosts cannot differ (EXEC-SEED-2, EXEC-DIST-10).
         let dispatched: Vec<(crate::effects::response::MountSeed, ClientDispatch)> =
             begun.seeds.iter().map(|(seed, b)| (seed.clone(), b.dispatch.clone())).collect();
@@ -873,7 +893,7 @@ impl ClientKernel {
                     }
                 }
             };
-            let response = match bridge.send_request(&group.orbital, &group.leg) {
+            let response = match self.send_reseeding(bridge.as_ref(), &group.orbital, &group.leg) {
                 Ok(response) => response,
                 Err(e) => {
                     rollback();
@@ -892,11 +912,87 @@ impl ClientKernel {
         }
         // The hops the host's replay of the mount cannot reach leave after it, each folded as a dispatch's leg (EXEC-DIST-10).
         for hop in &plan.hops {
-            let response = bridge.send_request(&hop.orbital, &hop.leg)?;
+            let response = self.send_reseeding(bridge.as_ref(), &hop.orbital, &hop.leg)?;
             settled = self.fold_answer(bridge.as_ref(), &response, &std::collections::HashSet::new(), settled)?;
             settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
         Ok(settled)
+    }
+
+    /// Keep what `begun` mounts on each orbital, so a mount can revive the session if the host ends it.
+    fn record_mounted(&self, begun: &BegunMount) -> Result<(), BridgeError> {
+        let mut mounted = self.mounted.lock();
+        for (seed, _) in &begun.seeds {
+            let orbital = self.owning_orbital(&seed.r#trait)?;
+            let at = match mounted.iter().position(|m| m.orbital == orbital) {
+                Some(at) => at,
+                None => {
+                    mounted.push(MountedOrbital { orbital, seeds: Vec::new(), payload: Value::Null, route: None, crumb: None });
+                    mounted.len() - 1
+                }
+            };
+            let entry = &mut mounted[at];
+            if !entry.seeds.iter().any(|kept| kept.r#trait == seed.r#trait) {
+                entry.seeds.push(seed.clone());
+            }
+            entry.payload = begun.payload.clone();
+            entry.route = begun.route.clone();
+            entry.crumb = begun.crumb.clone();
+        }
+        Ok(())
+    }
+
+    /// Post `leg`; when the host ended this client's session, mount again with the frames this client holds and post it
+    /// once more (EXEC-DIST-9; the web's `sendReseeding`). An orbital this client never mounted is sent again as is, and
+    /// if the session is still ended every orbital it did mount is mounted again first.
+    fn send_reseeding(
+        &self,
+        bridge: &dyn ServerBridge,
+        orbital: &str,
+        leg: &crate::effects::response::EventRequest,
+    ) -> Result<EventResponse, BridgeError> {
+        match bridge.send_request(orbital, leg) {
+            Err(BridgeError::SessionEnded(reason)) => {
+                tracing::info!(target: orbital_core_base::logging::ns::BRIDGE, %orbital, %reason, "session ended: mounting again");
+                if self.revive_session(bridge, Some(orbital))? {
+                    return bridge.send_request(orbital, leg);
+                }
+                match bridge.send_request(orbital, leg) {
+                    Err(BridgeError::SessionEnded(again)) => {
+                        if !self.revive_session(bridge, None)? {
+                            return Err(BridgeError::SessionEnded(again));
+                        }
+                        bridge.send_request(orbital, leg)
+                    }
+                    other => other,
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Mount again what this client mounted on `orbital` (every orbital when `None`), folding each answer; whether any
+    /// mount was posted.
+    fn revive_session(&self, bridge: &dyn ServerBridge, orbital: Option<&str>) -> Result<bool, BridgeError> {
+        let held: Vec<(String, crate::effects::response::EventRequest)> = self
+            .mounted
+            .lock()
+            .iter()
+            .filter(|m| !m.seeds.is_empty() && orbital.is_none_or(|o| o == m.orbital))
+            .map(|m| {
+                let mut leg = self.embedded.reseed_leg(&m.seeds, None);
+                leg.payload = Some(m.payload.clone());
+                leg.route = m.route.clone();
+                leg.crumb = m.crumb.clone();
+                (m.orbital.clone(), leg)
+            })
+            .collect();
+        for (orbital, leg) in &held {
+            let answer = bridge.send_request(orbital, leg)?;
+            let none = std::collections::HashSet::new();
+            self.embedded.apply_server_response(&answer, &none).map_err(BridgeError::Server)?;
+        }
+        Ok(!held.is_empty())
     }
 
     /// Fold a posted answer, then post and fold each leg the fold itself owes the host (an own continuation such as
@@ -925,7 +1021,7 @@ impl ClientKernel {
         mut settled: EventResponse,
     ) -> Result<EventResponse, BridgeError> {
         while let Some(routed) = owed.pop_front() {
-            let next = bridge.send_request(&routed.orbital, &routed.leg)?;
+            let next = self.send_reseeding(bridge, &routed.orbital, &routed.leg)?;
             let none = std::collections::HashSet::new();
             let applied = self
                 .embedded
@@ -973,7 +1069,7 @@ impl ClientKernel {
         for leg in &dispatch.server_legs {
             let leg_orbital =
                 self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
-            let posted = bridge.send_request(&leg_orbital, leg);
+            let posted = self.send_reseeding(bridge.as_ref(), &leg_orbital, leg);
             match dispatch.mode {
                 DispatchMode::RuntimeOptimistic => match posted {
                     Ok(server_response) if server_response.success => {

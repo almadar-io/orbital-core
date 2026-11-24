@@ -1531,3 +1531,218 @@ fn control_a_client_seed_that_emits_nothing_leaves_its_page_waiting() {
     assert_eq!(kernel.snapshot_trait("Library", None).state, "waiting");
     assert!(server.sent.lock().iter().all(|r| r.mount.as_ref().is_none_or(|m| m.iter().all(|s| s.r#trait != "Library"))));
 }
+
+/// The in-process server behind a bridge that ends the client's session once: the first request that is not a mount,
+/// after `end_after` requests, is refused `SESSION_ENDED` (EXEC-DIST-9), as `orb serve` answers 409 once a session's streams
+/// dropped. A mount is always admitted, since it revives the session.
+struct EndingServer {
+    server: crate::client::bridge::KernelBridge,
+    sent: Mutex<Vec<crate::effects::response::EventRequest>>,
+    end_after: Option<usize>,
+}
+impl ServerBridge for EndingServer {
+    fn send_event_with_options(&self, _: &str, _: &str, _: Option<&str>, _: Option<&str>, _: Value) -> Result<EventResponse, BridgeError> {
+        panic!("EndingServer only answers send_request");
+    }
+    fn send_request(&self, orbital: &str, request: &crate::effects::response::EventRequest) -> Result<EventResponse, BridgeError> {
+        let mut sent = self.sent.lock();
+        let ended = self.end_after == Some(sent.len()) && request.mount.is_none();
+        sent.push(request.clone());
+        drop(sent);
+        if ended {
+            return Err(BridgeError::SessionEnded("the client session ended: mount again with the frames the client holds".into()));
+        }
+        self.server.send_request(orbital, request)
+    }
+}
+
+fn ending_kernel(end_after: Option<usize>) -> (ClientKernel, Arc<EndingServer>) {
+    let server = Arc::new(EndingServer {
+        server: crate::client::bridge::KernelBridge::new(mount_schema()).unwrap(),
+        sent: Mutex::new(Vec::new()),
+        end_after,
+    });
+    let kernel = ClientKernel::new(mount_schema(), Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    let begun = kernel.begin_mount(&[seed("List", "INIT"), seed("Stats", "LOAD")], Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    (kernel, server)
+}
+
+fn posted(server: &EndingServer) -> Vec<String> {
+    server
+        .sent
+        .lock()
+        .iter()
+        .map(|r| match &r.mount {
+            Some(seeds) => format!("mount {}", seeds.iter().map(|s| s.r#trait.as_str()).collect::<Vec<_>>().join(",")),
+            None => r.event.clone(),
+        })
+        .collect()
+}
+
+/// G-ORBITAL-SHELL-RUST-070: a leg the host refuses because the client's session ended is posted again after a mount
+/// that carries the seeds this client mounted there (the web's `sendReseeding`), so the dispatch still lands.
+#[test]
+fn a_leg_refused_for_an_ended_session_mounts_again_and_is_resent() {
+    let (kernel, server) = ending_kernel(Some(1));
+    let begun = kernel.begin("Stats", None, "LOAD", Value::Null).unwrap();
+    let settled = kernel.settle(&begun).expect("the dispatch lands after the session is revived");
+    assert!(settled.success, "{settled:?}");
+    assert_eq!(posted(&server), ["mount List,Stats", "LOAD", "mount List,Stats", "LOAD"]);
+}
+
+#[test]
+fn control_a_live_session_posts_the_leg_once() {
+    let (kernel, server) = ending_kernel(None);
+    let begun = kernel.begin("Stats", None, "LOAD", Value::Null).unwrap();
+    kernel.settle(&begun).unwrap();
+    assert_eq!(posted(&server), ["mount List,Stats", "LOAD"]);
+}
+
+/// A bridge that counts the live streams it opens and how many are still held.
+struct FeedCounter {
+    opened: Arc<std::sync::atomic::AtomicUsize>,
+    live: Arc<std::sync::atomic::AtomicUsize>,
+}
+struct CountedFeed(Arc<std::sync::atomic::AtomicUsize>);
+impl crate::client::http::HostFeed for CountedFeed {
+    fn drain(&self) -> Vec<crate::client::http::FeedItem> {
+        Vec::new()
+    }
+}
+impl Drop for CountedFeed {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl ServerBridge for FeedCounter {
+    fn send_event_with_options(&self, _: &str, _: &str, _: Option<&str>, _: Option<&str>, _: Value) -> Result<EventResponse, BridgeError> {
+        Ok(EventResponse::success(""))
+    }
+    fn send_request(&self, _: &str, _: &crate::effects::response::EventRequest) -> Result<EventResponse, BridgeError> {
+        Ok(EventResponse::success(""))
+    }
+    fn open_feed(&self, _: &str) -> Option<Box<dyn crate::client::http::HostFeed>> {
+        self.opened.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.live.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(Box::new(CountedFeed(Arc::clone(&self.live))))
+    }
+}
+
+/// G-ORBITAL-SHELL-RUST-070: every page mount asks for the live stream, and the client keeps the one it opened (the web
+/// opens one per client): replacing it dropped the session's only stream, so the host freed the session (EXEC-DIST-9).
+#[test]
+fn a_second_page_mount_keeps_the_live_stream_it_opened() {
+    let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let live = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bridge = Arc::new(FeedCounter { opened: Arc::clone(&opened), live: Arc::clone(&live) });
+    let kernel = ClientKernel::new(mount_schema(), Some(bridge as Arc<dyn ServerBridge>)).unwrap();
+    assert!(kernel.open_feed());
+    assert!(kernel.open_feed());
+    assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 1, "one stream per client");
+    assert_eq!(live.load(std::sync::atomic::Ordering::SeqCst), 1, "the stream stays held");
+}
+
+#[test]
+fn control_a_bridge_with_no_stream_opens_none() {
+    let kernel = ClientKernel::new(mount_schema(), None).unwrap();
+    assert!(!kernel.open_feed());
+    assert!(!kernel.open_feed());
+}
+
+/// G-ORBITAL-SHELL-RUST-071: `Reader` (`[client]`) asks `Vault` (server) for a part with LOAD; the vault's read finishes
+/// on the host and reaches this client on its live stream as a dispatch of READ that emitted PART. `Reader` hears PART as
+/// GOT and asks for the next part until `parts` arrived.
+fn vault_chain_kernel() -> (ClientKernel, Arc<RecordingServer>) {
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
+        "name": "vault", "typeContractVersion": 1, "orbitals": [{
+            "name": "LivePage",
+            "entity": { "name": "Track", "persistence": "persistent", "collection": "tracks",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Reader", "dispatch": "client",
+                  "emits": [{ "event": "LOAD", "scope": "external", "payloadSchema": [{ "name": "offset", "type": "number", "required": true }] }],
+                  "listens": [{ "event": "PART", "triggers": "GOT", "source": { "kind": "trait", "trait": "Vault" } }],
+                  "stateMachine": { "states": [{ "name": "loading", "isInitial": true }, { "name": "loaded" }],
+                    "transitions": [
+                        { "from": "loading", "to": "loading", "event": "INIT", "effects": [["emit", "LOAD", { "offset": 0 }]] },
+                        { "from": "loading", "to": "loading", "event": "GOT", "guard": ["<", "@payload.offset", 2], "effects": [["emit", "LOAD", { "offset": ["+", "@payload.offset", 1] }]] },
+                        { "from": "loading", "to": "loaded", "event": "GOT", "guard": [">=", "@payload.offset", 2] }] } },
+                { "name": "Vault", "linkedEntity": "Track",
+                  "emits": [{ "event": "PART", "scope": "external", "payloadSchema": [{ "name": "offset", "type": "number", "required": true }] }],
+                  "listens": [{ "event": "LOAD", "triggers": "LOAD", "source": { "kind": "trait", "trait": "Reader" } }],
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [
+                        { "from": "ready", "to": "ready", "event": "INIT" },
+                        { "from": "ready", "to": "ready", "event": "LOAD", "effects": [["fetch", "Track", {}]] },
+                        { "from": "ready", "to": "ready", "event": "READ", "effects": [["emit", "PART", { "offset": "@payload.offset" }]] }] } }
+            ],
+            "pages": [{ "name": "Live", "path": "/live", "traits": [{ "ref": "Reader" }, { "ref": "Vault" }] }]
+        }]
+    })))
+    .unwrap();
+    let server = Arc::new(RecordingServer {
+        server: crate::client::bridge::KernelBridge::new(schema.clone()).unwrap(),
+        sent: Mutex::new(Vec::new()),
+        fail: false,
+    });
+    let kernel = ClientKernel::new(schema, Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    kernel.remount(["Reader", "Vault"]);
+    let begun = kernel.begin_route_mount(Some("/live"), &[seed("Reader", "INIT"), seed("Vault", "INIT")], Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    (kernel, server)
+}
+
+fn pushed_part(offset: f64) -> crate::client::http::PushedDispatch {
+    let payload: Value = from_json_value(&serde_json::json!({ "offset": offset })).unwrap();
+    crate::client::http::PushedDispatch {
+        orbital_name: "LivePage".into(),
+        request: crate::effects::response::EventRequest {
+            event: "READ".into(),
+            target_trait: Some("Vault".into()),
+            payload: Some(payload.clone()),
+            ..Default::default()
+        },
+        response: EventResponse {
+            success: true,
+            emitted_events: vec![EmittedEvent {
+                event: "PART".into(),
+                payload: Some(payload),
+                source: Some(BusEventSource { orbital: Some("LivePage".into()), r#trait: Some("Vault".into()), dispatched: Some(true), ..Default::default() }),
+            }],
+            ..Default::default()
+        },
+    }
+}
+
+fn loads_posted(server: &RecordingServer) -> Vec<String> {
+    server
+        .sent
+        .lock()
+        .iter()
+        .filter(|r| r.event == "LOAD" && r.mount.is_none())
+        .map(|r| format!("{:?}", r.payload.as_ref().and_then(|p| p.as_object()).and_then(|o| o.get("offset")).cloned()))
+        .collect()
+}
+
+#[test]
+fn g_orbital_shell_rust_071_a_pushed_part_reaches_the_client_listener_which_asks_for_the_next() {
+    let (kernel, server) = vault_chain_kernel();
+    let before = loads_posted(&server).len();
+    kernel.fold_host_dispatch(&pushed_part(0.0)).unwrap();
+    assert_eq!(loads_posted(&server).len(), before + 1, "the next LOAD is posted: {:?}", server.sent.lock());
+    kernel.fold_host_dispatch(&pushed_part(1.0)).unwrap();
+    kernel.fold_host_dispatch(&pushed_part(2.0)).unwrap();
+    assert_eq!(kernel.snapshot_trait("Reader", None).state, "loaded");
+}
+
+#[test]
+fn control_a_pushed_dispatch_nobody_here_listens_to_posts_nothing() {
+    let (kernel, server) = vault_chain_kernel();
+    let before = server.sent.lock().len();
+    let mut pushed = pushed_part(0.0);
+    pushed.response.emitted_events[0].event = "UNHEARD".into();
+    kernel.fold_host_dispatch(&pushed).unwrap();
+    assert_eq!(server.sent.lock().len(), before);
+    assert_eq!(kernel.snapshot_trait("Reader", None).state, "loading");
+}

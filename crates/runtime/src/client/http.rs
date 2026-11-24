@@ -34,6 +34,11 @@ pub enum BridgeError {
     /// Request was invalid
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
+
+    /// The host freed this client's session (EXEC-DIST-9, `409 SESSION_ENDED`): a mount with the frames the client holds
+    /// revives it (the web transport's `SessionEndedError`).
+    #[error("Session ended: {0}")]
+    SessionEnded(String),
 }
 
 /// Build the canonical `EventRequest` (`@almadar/core`'s `OrbitalEventRequest` mirror)
@@ -212,6 +217,27 @@ pub struct SyncServerBridge {
 #[cfg(feature = "client-http")]
 type Bearer = std::sync::Arc<std::sync::RwLock<Option<String>>>;
 
+/// A posted event's answer, with the host's `409 { code: "SESSION_ENDED" }` read as [`BridgeError::SessionEnded`] (the web
+/// transport's rule) and any other refusal's body kept.
+#[cfg(feature = "client-http")]
+fn refused(sent: Result<ureq::Response, ureq::Error>) -> Result<ureq::Response, BridgeError> {
+    match sent {
+        Ok(response) => Ok(response),
+        Err(ureq::Error::Status(status, response)) => {
+            let body = response.into_string().unwrap_or_default();
+            let refusal: Option<serde_json::Value> = orbital_core_base::json_value::from_json_str(&body).ok();
+            let code = refusal.as_ref().and_then(|r| r.get("code")).and_then(serde_json::Value::as_str);
+            if status == 409 && code == Some("SESSION_ENDED") {
+                let error = refusal.as_ref().and_then(|r| r.get("error")).and_then(serde_json::Value::as_str).unwrap_or("the session ended");
+                return Err(BridgeError::SessionEnded(error.to_string()));
+            }
+            error!(status, body = %body, "Server refused the event");
+            Err(BridgeError::Server(format!("status {status}: {body}")))
+        }
+        Err(other) => Err(BridgeError::Network(other.to_string())),
+    }
+}
+
 #[cfg(feature = "client-http")]
 fn authorized(request: ureq::Request, bearer: &Bearer) -> ureq::Request {
     match bearer.read().ok().and_then(|held| held.clone()) {
@@ -315,9 +341,7 @@ impl SyncServerBridge {
 
         let request = build_event_request(event, entity_id, trait_name, payload);
 
-        let response = authorized(ureq::post(&url), &self.bearer)
-            .send_json(&request)
-            .map_err(|e| BridgeError::Network(e.to_string()))?;
+        let response = refused(authorized(ureq::post(&url), &self.bearer).send_json(&request))?;
 
         if response.status() != 200 {
             let body = response.into_string().unwrap_or_default();
@@ -365,9 +389,7 @@ impl SyncServerBridge {
 
         debug!(url = %url, event = %request.event, "Sending server leg (sync)");
 
-        let response = authorized(ureq::post(&url), &self.bearer)
-            .send_json(request)
-            .map_err(|e| BridgeError::Network(e.to_string()))?;
+        let response = refused(authorized(ureq::post(&url), &self.bearer).send_json(request))?;
 
         if response.status() != 200 {
             let body = response.into_string().unwrap_or_default();
