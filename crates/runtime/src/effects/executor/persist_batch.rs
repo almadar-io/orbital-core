@@ -23,7 +23,7 @@ impl EffectExecutor {
             return PersistPrep::Legacy;
         }
         let scope = self.persist_scope(entity_type, operation);
-        let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
+        let data = Self::with_declared_defaults(Self::without_intrinsic(resolved_data, &scope.intrinsic), &scope.defaults);
         let refuse = |effect: Effect, e: String, code: Option<ServerEffectCode>| {
             let failed = EffectResult::failed(effect, &e);
             PersistPrep::Refused(Box::new(match code {

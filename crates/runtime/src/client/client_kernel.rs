@@ -846,28 +846,14 @@ impl ClientKernel {
             settled = self.settle_with_base(announced, settled)?;
         }
         let _flight = begun.flight.as_ref().map(Flight::claim).transpose()?;
-        let mut groups: Vec<(
-            String,
-            Option<crate::effects::response::LegResidence>,
-            Vec<&(crate::effects::response::MountSeed, BegunDispatch)>,
-        )> = Vec::new();
-        for posted in begun.seeds.iter().filter(|(_, b)| b.has_legs()) {
-            let orbital = self.owning_orbital(&posted.0.r#trait)?;
-            let residence = posted
-                .1
-                .dispatch
-                .server_legs
-                .first()
-                .and_then(|leg| leg.residence);
-            match groups
-                .iter_mut()
-                .find(|(o, r, _)| *o == orbital && *r == residence)
-            {
-                Some((_, _, group)) => group.push(posted),
-                None => groups.push((orbital, residence, vec![posted])),
-            }
-        }
-        if groups.is_empty() {
+        // The one mount planner the web posts from, so the hosts cannot differ (EXEC-SEED-2, EXEC-DIST-10).
+        let dispatched: Vec<(crate::effects::response::MountSeed, ClientDispatch)> =
+            begun.seeds.iter().map(|(seed, b)| (seed.clone(), b.dispatch.clone())).collect();
+        let plan = self
+            .embedded
+            .plan_dispatched_mount(&dispatched, begun.route.as_deref(), begun.crumb.as_deref())
+            .map_err(BridgeError::Server)?;
+        if plan.legs.is_empty() && plan.hops.is_empty() {
             return Ok(settled);
         }
         let Some(bridge) = &self.bridge else {
@@ -878,22 +864,16 @@ impl ClientKernel {
             );
             return Ok(settled);
         };
-        for (index, (orbital, _, group)) in groups.into_iter().enumerate() {
-            let mut request = mount_request(&group, self.embedded.client_id());
-            if index == 0 {
-                request.route = begun.route.clone();
-                request.crumb = begun.crumb.clone();
-            }
+        for group in &plan.legs {
             let rollback = || {
-                for (seed, b) in &group {
+                for seed in &group.seeds {
+                    let Some((_, b)) = begun.seeds.iter().find(|(s, _)| s.r#trait == seed.trait_name) else { continue };
                     if let Some(snapshot) = b.dispatch.snapshot.clone() {
-                        self.embedded
-                            .kernel()
-                            .restore_trait(&seed.r#trait, None, snapshot);
+                        self.embedded.kernel().restore_trait(&seed.trait_name, None, snapshot);
                     }
                 }
             };
-            let response = match bridge.send_request(&orbital, &request) {
+            let response = match bridge.send_request(&group.orbital, &group.leg) {
                 Ok(response) => response,
                 Err(e) => {
                     rollback();
@@ -906,23 +886,15 @@ impl ClientKernel {
                 rejected.fold_rerenders(&self.embedded.kernel().rerender_stale());
                 return Ok(rejected);
             }
-            let already = group
-                .iter()
-                .flat_map(|(_, b)| already_delivered_from(&b.dispatch))
-                .collect();
+            let already = group.already_delivered.iter().cloned().collect();
             settled = self.fold_answer(bridge.as_ref(), &response, &already, settled)?;
             settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
         // The hops the host's replay of the mount cannot reach leave after it, each folded as a dispatch's leg (EXEC-DIST-10).
-        let seeds: Vec<crate::effects::response::MountSeed> = begun.seeds.iter().map(|(seed, _)| seed.clone()).collect();
-        for (_, b) in &begun.seeds {
-            for position in self.embedded.mount_hop_positions(&b.dispatch, &seeds) {
-                let leg = &b.dispatch.server_legs[position];
-                let orbital = self.owning_orbital(leg.target_trait.as_deref().unwrap_or_default())?;
-                let response = bridge.send_request(&orbital, leg)?;
-                settled = self.fold_answer(bridge.as_ref(), &response, &std::collections::HashSet::new(), settled)?;
-                settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
-            }
+        for hop in &plan.hops {
+            let response = bridge.send_request(&hop.orbital, &hop.leg)?;
+            settled = self.fold_answer(bridge.as_ref(), &response, &std::collections::HashSet::new(), settled)?;
+            settled.fold_rerenders(&self.embedded.kernel().rerender_stale());
         }
         Ok(settled)
     }
@@ -1061,25 +1033,6 @@ fn server_own(answer: &EventResponse, already: &std::collections::HashSet<(Strin
             .collect(),
         ..Default::default()
     }
-}
-
-/// One `mount` leg for `group`: the seeds in order, and the union of their legs' stateless
-/// addressing (`traits`, `entityByTrait`), each trait at its first occurrence.
-fn mount_request(
-    group: &[&(crate::effects::response::MountSeed, BegunDispatch)],
-    client_id: &str,
-) -> crate::effects::response::EventRequest {
-    let legs: Vec<&crate::effects::response::EventRequest> = group
-        .iter()
-        .flat_map(|(_, b)| b.dispatch.server_legs.iter())
-        .collect();
-    crate::embed::mount_leg_request(
-        group.iter().map(|(seed, _)| seed.clone()).collect(),
-        &legs,
-        legs.first().copied(),
-        legs.first().and_then(|leg| leg.entity_id.clone()),
-        client_id,
-    )
 }
 
 #[cfg(test)]

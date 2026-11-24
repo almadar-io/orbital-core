@@ -312,6 +312,12 @@ impl RuntimeKernel {
                                 derived_fields: crate::entity_access::derived_field_exprs(def),
                                 field_updates: crate::entity_access::field_update_rules(def),
                                 create_server: def.access_waivers.as_ref().and_then(|w| w.create_server.clone()),
+                                declared_defaults: def
+                                    .fields
+                                    .iter()
+                                    .filter(|f| f.intrinsic != Some(true) && f.derived.is_none())
+                                    .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
+                                    .collect(),
                             },
                         );
                     }

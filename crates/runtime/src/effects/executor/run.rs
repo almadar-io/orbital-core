@@ -250,6 +250,24 @@ impl EffectExecutor {
                     _ => EffectResult::failed(effect, "program/live trace streams to its onMessage route: give it a key and an onMessage route"),
                 };
             }
+            let declares_events = orbital_core_base::language::registry::lookup_operator(name)
+                .ok()
+                .flatten()
+                .and_then(|op| op.effect.as_ref())
+                .is_some_and(|e| e.events.is_some());
+            if declares_events && emit.as_ref().is_some_and(|e| e.on_message.is_some()) {
+                let key = key.as_ref().and_then(Value::as_str).filter(|k| !k.is_empty());
+                return match key {
+                    Some(_) if emit.as_ref().is_some_and(|e| e.cancelled.is_some()) => {
+                        EffectResult::failed(effect.clone(), &format!("{name} streams from the client host, which ends a stream by cancel-call on its key: declare no emit.cancelled"))
+                    }
+                    Some(key) => {
+                        self.host_streams.lock().insert(key.to_string());
+                        EffectResult::host_asked(effect)
+                    }
+                    None => EffectResult::failed(effect.clone(), &format!("{name} streams to its onMessage route from the client host: give it a key, which cancel-call ends it by")),
+                };
+            }
             let routed = emit.as_ref().is_some_and(|e| e.success.is_some() || e.failure.is_some());
             let reason = if emit.as_ref().is_some_and(|e| e.cancelled.is_some() || e.on_message.is_some()) {
                 Some(format!("{name} runs on the client host, which answers a host ask once and cannot cancel or stream it: declare only emit.success and emit.failure"))

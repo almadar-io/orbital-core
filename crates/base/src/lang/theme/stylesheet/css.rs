@@ -79,6 +79,28 @@ pub fn theme_font_imports(themes: &[ThemeDefinition]) -> Vec<String> {
     urls
 }
 
+/// Every distinct font file (`displayFile`, `bodyFile`, `monoFile`) across `themes` (base tokens and every
+/// variant), sorted: the files a canvas draws theme text from, which a native app bundles instead of downloading.
+pub fn theme_font_files(themes: &[ThemeDefinition]) -> Vec<String> {
+    let mut urls: Vec<String> = Vec::new();
+    for theme in themes {
+        let variant_scales = theme
+            .variants
+            .iter()
+            .flat_map(|v| v.values())
+            .filter_map(|v| v.type_scale.as_ref());
+        for ts in theme.tokens.type_scale.iter().chain(variant_scales) {
+            for url in [&ts.display_file, &ts.body_file, &ts.mono_file].into_iter().flatten() {
+                if !urls.contains(url) {
+                    urls.push(url.clone());
+                }
+            }
+        }
+    }
+    urls.sort();
+    urls
+}
+
 /// The themes a program paints: the declared ones, or the installed default preset when it declares none.
 /// Its `themes.css` and the client's theme list are both these, so the client applies a theme the sheet defines.
 pub fn program_themes(declared: &[ThemeDefinition]) -> Vec<ThemeDefinition> {

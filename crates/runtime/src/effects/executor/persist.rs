@@ -123,6 +123,25 @@ impl EffectExecutor {
                 PersistOperation::Create | PersistOperation::Upsert if !SeedWriteScope::active() => policies.create_server.clone(),
                 _ => None,
             },
+            defaults: match operation {
+                PersistOperation::Create => policies.declared_defaults.clone(),
+                _ => Vec::new(),
+            },
+        }
+    }
+
+    /// `data` with each of `defaults` it does not carry (absent or `null`) set to its declared value.
+    pub(super) fn with_declared_defaults(data: Value, defaults: &[(String, Value)]) -> Value {
+        match data {
+            Value::Object(mut fields) if !defaults.is_empty() => {
+                for (name, value) in defaults {
+                    if fields.get(name.as_str()).is_none_or(Value::is_null) {
+                        fields.insert(name.clone().into(), value.clone());
+                    }
+                }
+                Value::Object(fields)
+            }
+            other => other,
         }
     }
 
@@ -525,7 +544,7 @@ impl EffectExecutor {
     ) -> EffectResult {
         if let Some(persistence) = &self.persistence {
             let scope = self.persist_scope(entity_type, operation);
-            let data = Self::without_intrinsic(resolved_data, &scope.intrinsic);
+            let data = Self::with_declared_defaults(Self::without_intrinsic(resolved_data, &scope.intrinsic), &scope.defaults);
             let data = match self.with_derived(
                 persistence.as_ref(),
                 operation,

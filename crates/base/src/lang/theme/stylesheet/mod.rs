@@ -21,7 +21,7 @@ mod emitters;
 mod tokens;
 
 pub use config::{client_themes, ClientTheme};
-pub use css::{generate_theme_css, program_themes, program_themes_css, theme_font_imports};
+pub use css::{generate_theme_css, program_themes, program_themes_css, theme_font_files, theme_font_imports};
 
 #[cfg(test)]
 mod tests {
@@ -441,6 +441,25 @@ mod tests {
         );
         assert!(!generate_theme_css(&theme).contains("@import"));
         assert!(theme_font_imports(&[create_test_theme()]).is_empty());
+    }
+
+    #[test]
+    fn range_axes_font_files_are_collected_across_variants_deduplicated_and_sorted() {
+        let mut theme = create_test_theme();
+        theme.tokens = range_fixture();
+        let dark = theme.variants.as_mut().unwrap().get_mut("dark").unwrap();
+        let mut dark_scale = theme.tokens.type_scale.clone().unwrap();
+        dark_scale.mono_file = Some("https://fonts.test/Mono.ttf".into());
+        dark.type_scale = Some(dark_scale);
+        assert_eq!(
+            theme_font_files(std::slice::from_ref(&theme)),
+            [
+                "https://fonts.test/JosefinSans.ttf",
+                "https://fonts.test/Limelight-Regular.ttf",
+                "https://fonts.test/Mono.ttf",
+            ]
+        );
+        assert!(theme_font_files(&[create_test_theme()]).is_empty(), "control: a theme naming no file bundles none");
     }
 
     #[test]

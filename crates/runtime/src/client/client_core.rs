@@ -745,21 +745,17 @@ impl ClientCore {
         }
     }
 
-    /// Report to the kernel which traits have rendered output on screen: those with `main` content or a slot
-    /// they authored. A `[visible]` tick of any other trait does not fire. Call before each frame.
+    /// Report every trait as on screen. EXEC-TICK-4: a presence group with no rendered output is not off screen, and
+    /// this host reads no viewport, so neither what it shows nor a trait that paints nothing is off screen (the web
+    /// host's `on-screen` and `absent`). Call before each frame.
     pub fn report_presence(&self) {
         let Some(kernel) = &self.client_kernel else {
             return;
         };
-        let mut shown: std::collections::HashSet<&str> =
-            self.trait_content.keys().map(|k| k.as_str()).collect();
-        for contents in self.ui_slots.values() {
-            shown.extend(contents.iter().filter_map(|c| c.source_trait.as_deref()));
-        }
         for orbital in &self.schema.orbitals {
             for reference in &orbital.traits {
                 if let Some(name) = reference.trait_name() {
-                    kernel.set_trait_on_screen(name, shown.contains(name));
+                    kernel.set_trait_on_screen(name, true);
                 }
             }
         }

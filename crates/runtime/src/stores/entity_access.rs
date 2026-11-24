@@ -188,6 +188,9 @@ pub struct EntityAccessPolicies {
     pub field_updates: Vec<(String, FieldUpdate)>,
     /// `@create server`: the reason only a program-session step creates the entity's rows.
     pub create_server: Option<String>,
+    /// This entity's stored fields that declare a default, with that default's value: a `persist create` that
+    /// passes no value (or `null`) for one stores the default. Never `@intrinsic` or `@derived` fields.
+    pub declared_defaults: Vec<(String, Value)>,
 }
 
 impl EntityAccessPolicies {
@@ -576,7 +579,7 @@ pub fn intrinsic_field_names(entity: &EntityDefinition) -> Vec<String> {
 
 /// Names of `entity`'s `persist create`-required columns: a field declaring
 /// `required: true`, excluding [`crate::schema::FRAMEWORK_STAMPED_FIELDS`],
-/// any `@intrinsic` field, any field declaring a `default` (the store fills
+/// any `@intrinsic` field, any field declaring a `default` (a create stores
 /// it in), and any field carrying `merged_from` (a field the inline phase's
 /// rebind merge added from an imported atom's entity, never authored by this
 /// entity's own writer — the atom's own effects satisfy its own `!`, and

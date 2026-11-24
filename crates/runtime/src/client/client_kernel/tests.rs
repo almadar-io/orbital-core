@@ -1462,3 +1462,72 @@ fn control_a_native_client_mount_naming_no_route_announces_nothing() {
     kernel.settle_mount(&begun).unwrap();
     assert!(server.calls.lock().iter().all(|c| c.event != "LOAD"), "no $MOUNT ran, so nothing asked Data to load");
 }
+
+/// G-ORBITAL-SHELL-RUST-068: `Library` (`[client]`) INIT emits READ; `LibraryRows` (server) hears it, fetches and answers
+/// ROWS, which moves `Library` to ready. With `emits_read` false, `Library` INIT emits nothing.
+fn library_kernel(emits_read: bool) -> (ClientKernel, Arc<RecordingServer>, OrbitalSchema) {
+    let init_effects = if emits_read { serde_json::json!([["emit", "READ", {}]]) } else { serde_json::json!([]) };
+    let schema: OrbitalSchema = from_json_value(&(serde_json::json!({
+        "name": "library", "typeContractVersion": 1, "orbitals": [{
+            "name": "LibraryPage",
+            "entity": { "name": "Playlist", "persistence": "persistent", "collection": "playlists",
+                "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [
+                { "name": "Library", "dispatch": "client",
+                  "emits": [{ "event": "READ", "scope": "external" }],
+                  "listens": [{ "event": "ROWS", "triggers": "LOADED", "source": { "kind": "trait", "trait": "LibraryRows" } }],
+                  "stateMachine": { "states": [{ "name": "waiting", "isInitial": true }, { "name": "ready" }],
+                    "transitions": [
+                        { "from": "waiting", "to": "waiting", "event": "INIT", "effects": init_effects },
+                        { "from": "waiting", "to": "ready", "event": "LOADED" }] } },
+                { "name": "LibraryRows", "linkedEntity": "Playlist",
+                  "emits": [{ "event": "ROWS", "scope": "external" }],
+                  "listens": [{ "event": "READ", "triggers": "READ", "source": { "kind": "trait", "trait": "Library" } }],
+                  "stateMachine": { "states": [{ "name": "ready", "isInitial": true }],
+                    "transitions": [
+                        { "from": "ready", "to": "ready", "event": "INIT" },
+                        { "from": "ready", "to": "ready", "event": "READ", "effects": [["fetch", "Playlist", { "emit": { "success": "GOT" } }]] },
+                        { "from": "ready", "to": "ready", "event": "GOT", "effects": [["emit", "ROWS", { "data": "@payload.data" }]] }] } }
+            ],
+            "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Library" }, { "ref": "LibraryRows" }] }]
+        }]
+    })))
+    .unwrap();
+    let server = Arc::new(RecordingServer {
+        server: crate::client::bridge::KernelBridge::new(schema.clone()).unwrap(),
+        sent: Mutex::new(Vec::new()),
+        fail: false,
+    });
+    let kernel = ClientKernel::new(schema.clone(), Some(Arc::clone(&server) as Arc<dyn ServerBridge>)).unwrap();
+    (kernel, server, schema)
+}
+
+fn library_seeds() -> Vec<crate::effects::response::MountSeed> {
+    vec![seed("Library", "INIT"), seed("LibraryRows", "INIT")]
+}
+
+#[test]
+fn g_orbital_shell_rust_068_a_client_seeds_emit_to_a_server_trait_is_answered_at_mount() {
+    let (kernel, server, schema) = library_kernel(true);
+    kernel.remount(["Library", "LibraryRows"]);
+    let begun = kernel.begin_route_mount(Some("/"), &library_seeds(), Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    let web = crate::embed::EmbeddedKernel::new(schema, kernel.embedded.client_id()).unwrap();
+    web.remount(vec!["Library".into(), "LibraryRows".into()]);
+    let planned = web.dispatch_route_mount(Some("/"), &library_seeds(), None, Value::Null).unwrap();
+    let posted: Vec<Option<Vec<crate::effects::response::MountSeed>>> = server.sent.lock().iter().map(|r| r.mount.clone()).collect();
+    let web_posted: Vec<Option<Vec<crate::effects::response::MountSeed>>> =
+        planned.legs.iter().map(|l| l.leg.mount.clone()).chain(planned.hops.iter().map(|h| h.leg.mount.clone())).collect();
+    assert_eq!(posted, web_posted, "the native client posts the mount the web plans");
+    assert_eq!(kernel.snapshot_trait("Library", None).state, "ready", "{:?}", server.sent.lock());
+}
+
+#[test]
+fn control_a_client_seed_that_emits_nothing_leaves_its_page_waiting() {
+    let (kernel, server, _) = library_kernel(false);
+    kernel.remount(["Library", "LibraryRows"]);
+    let begun = kernel.begin_route_mount(Some("/"), &library_seeds(), Value::Null).unwrap();
+    kernel.settle_mount(&begun).unwrap();
+    assert_eq!(kernel.snapshot_trait("Library", None).state, "waiting");
+    assert!(server.sent.lock().iter().all(|r| r.mount.as_ref().is_none_or(|m| m.iter().all(|s| s.r#trait != "Library"))));
+}

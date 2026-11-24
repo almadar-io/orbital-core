@@ -100,6 +100,14 @@ fn batch_steps(outcomes: &[(String, ProcessEventResult)]) -> Vec<BatchStep> {
         .collect()
 }
 
+/// What a mount batch posts: `legs` for a host that carries the circuit state, `stateful_legs` for one that holds it, then
+/// `hops` on every topology ([`MountWire`]).
+pub(crate) struct MountPlan {
+    pub(crate) legs: Vec<MountLegWire>,
+    pub(crate) stateful_legs: Vec<MountLegWire>,
+    pub(crate) hops: Vec<RoutedLeg>,
+}
+
 /// Whether a mount seed's dispatch hands the host nothing: no leg, and on a stateful host no stateful leg either.
 fn posts_nothing(wire: &DispatchWire, stateful: bool) -> bool {
     matches!(wire.mode, DispatchMode::HybridClientOnly)
@@ -332,7 +340,13 @@ impl EmbeddedKernel {
         Ok(())
     }
 
-    fn dispatch_wire(
+    fn dispatch_wire(&self, orbital: &str, dispatch: ClientDispatch) -> Result<DispatchWire, String> {
+        let mut wire = self.unflown_wire(orbital, dispatch)?;
+        wire.flight = (!wire.server_legs.is_empty() || wire.stateful_leg.is_some()).then(|| self.fold_order.open());
+        Ok(wire)
+    }
+
+    fn unflown_wire(
         &self,
         orbital: &str,
         mut dispatch: ClientDispatch,
@@ -368,10 +382,9 @@ impl EmbeddedKernel {
             })
             .collect::<Result<Vec<_>, String>>()?;
         let steps = batch_steps(&dispatch.outcomes);
-        let flight = (!server_legs.is_empty() || stateful_leg.is_some()).then(|| self.fold_order.open());
         Ok(DispatchWire {
             orbital: orbital.to_string(),
-            flight,
+            flight: None,
             seed: SeedWire {
                 trait_name: dispatch.seed.0,
                 event: dispatch.seed.1,
@@ -534,29 +547,10 @@ impl EmbeddedKernel {
                 }
             }
         }
-        let (legs, stateful_legs, hops) = if failed.is_some() {
-            (Vec::new(), Vec::new(), Vec::new())
+        let MountPlan { legs, stateful_legs, hops } = if failed.is_some() {
+            MountPlan { legs: Vec::new(), stateful_legs: Vec::new(), hops: Vec::new() }
         } else {
-            let mut legs = self.mount_legs(&dispatched, entity_id, false);
-            let mut stateful_legs = self.mount_legs(&dispatched, entity_id, true);
-            for posted in [legs.first_mut(), stateful_legs.first_mut()].into_iter().flatten() {
-                posted.leg.route = route.map(str::to_string);
-                posted.leg.crumb = route.and(crumb).map(str::to_string);
-            }
-            if let Some(route) = route {
-                if legs.is_empty() || stateful_legs.is_empty() {
-                    if let Some(listener) = self.kernel.route_server_mount_listener(route).map_err(|e| e.to_string())? {
-                        let orbital = self.owning_orbital(&listener)?.to_string();
-                        for posted in [(&mut legs), (&mut stateful_legs)] {
-                            if posted.is_empty() {
-                                posted.push(self.route_only_leg(&orbital, route, crumb, entity_id));
-                            }
-                        }
-                    }
-                }
-            }
-            let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire)).into_iter().cloned().collect();
-            (legs, stateful_legs, hops)
+            self.plan_mount(&dispatched, route, crumb, entity_id)?
         };
         Ok(MountWire {
             announced,
@@ -566,6 +560,53 @@ impl EmbeddedKernel {
             hops,
             failed,
         })
+    }
+
+    /// The legs and hops a mount batch's dispatched seeds owe the host, for every host (EXEC-SEED-2, EXEC-SEED-7, EXEC-DIST-10).
+    fn plan_mount(
+        &self,
+        dispatched: &[(&MountSeed, DispatchWire)],
+        route: Option<&str>,
+        crumb: Option<&str>,
+        entity_id: Option<&str>,
+    ) -> Result<MountPlan, String> {
+        let mut legs = self.mount_legs(dispatched, entity_id, false);
+        let mut stateful_legs = self.mount_legs(dispatched, entity_id, true);
+        for posted in [legs.first_mut(), stateful_legs.first_mut()].into_iter().flatten() {
+            posted.leg.route = route.map(str::to_string);
+            posted.leg.crumb = route.and(crumb).map(str::to_string);
+        }
+        if let Some(route) = route {
+            if legs.is_empty() || stateful_legs.is_empty() {
+                if let Some(listener) = self.kernel.route_server_mount_listener(route).map_err(|e| e.to_string())? {
+                    let orbital = self.owning_orbital(&listener)?.to_string();
+                    for posted in [(&mut legs), (&mut stateful_legs)] {
+                        if posted.is_empty() {
+                            posted.push(self.route_only_leg(&orbital, route, crumb, entity_id));
+                        }
+                    }
+                }
+            }
+        }
+        let hops = self.mount_hops(dispatched.iter().map(|(_, wire)| wire)).into_iter().cloned().collect();
+        Ok(MountPlan { legs, stateful_legs, hops })
+    }
+
+    /// [`Self::plan_mount`] for a host that ran the seeds itself (the native client kernel): the same plan the web posts.
+    pub(crate) fn plan_dispatched_mount(
+        &self,
+        seeds: &[(MountSeed, ClientDispatch)],
+        route: Option<&str>,
+        crumb: Option<&str>,
+    ) -> Result<MountPlan, String> {
+        let wires = seeds
+            .iter()
+            .map(|(seed, dispatch)| {
+                let orbital = self.owning_orbital(&seed.r#trait)?.to_string();
+                self.unflown_wire(&orbital, dispatch.clone()).map(|wire| (seed, wire))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.plan_mount(&wires, route, crumb, None)
     }
 
     /// The browser's own `$MOUNT` for `route` (EXEC-SEED-7): every `[client]` route trait that listens folds against its
@@ -608,17 +649,6 @@ impl EmbeddedKernel {
             }
         }
         hops
-    }
-
-    /// [`Self::mount_hops`] for one seed's [`ClientDispatch`] in a batch of `seeds`: the positions in its `server_legs`
-    /// of the hops the host's replay of the mount cannot reach.
-    pub fn mount_hop_positions(&self, dispatch: &ClientDispatch, seeds: &[MountSeed]) -> Vec<usize> {
-        let browser_run = self.kernel.browser_run_traits();
-        let seeds: HashSet<(&str, &str)> = seeds.iter().map(|s| (s.r#trait.as_str(), s.event.as_str())).collect();
-        let steps = batch_steps(&dispatch.outcomes);
-        (0..dispatch.server_legs.len())
-            .filter(|i| is_unreachable_hop((&dispatch.seed.0, &dispatch.seed.1), &steps, &dispatch.server_legs[*i], &browser_run, &seeds))
-            .collect()
     }
 
     /// The leg a route posts when its page mounts no trait the server runs but a server trait listens for its `$MOUNT`

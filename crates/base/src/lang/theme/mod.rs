@@ -183,6 +183,40 @@ pub fn declared_themes(schema: &OrbitalSchema) -> impl Iterator<Item = &ThemeRef
         .chain(schema.themes.iter().flatten())
 }
 
+/// Every theme a program declares, deduped by name in [`declared_themes`] order (its app theme, each orbital's, then
+/// the ones it switches to): an inline theme as written, a preset key as that preset's definition in `presets`.
+pub fn program_theme_definitions(schema: &OrbitalSchema, presets: &ThemePresets) -> Vec<ThemeDefinition> {
+    let mut themes: Vec<ThemeDefinition> = Vec::new();
+    for theme_ref in declared_themes(schema) {
+        let definition = match theme_ref {
+            ThemeRef::Inline(theme) => Some(theme),
+            ThemeRef::Reference(key) if key.is_empty() => None,
+            ThemeRef::Reference(key) => presets.get(&split_theme_key(key).0),
+        };
+        if let Some(theme) = definition {
+            if !themes.iter().any(|t| t.name == theme.name) {
+                themes.push(theme.clone());
+            }
+        }
+    }
+    themes
+}
+
+/// The themes a resolved program paints on a host with no installed presets: [`program_theme_definitions`] over the
+/// presets it carries (`themeDefinitions`), or the default preset it carries when it declares none ([`program_themes`]).
+pub fn painted_themes(schema: &OrbitalSchema) -> Vec<ThemeDefinition> {
+    let carried = schema.theme_definitions.as_deref().unwrap_or_default();
+    let declared = program_theme_definitions(schema, &ThemePresets::from_definitions(carried));
+    if declared.is_empty() {
+        return carried
+            .iter()
+            .find(|t| t.name == DEFAULT_THEME_BASE)
+            .cloned()
+            .map_or_else(|| program_themes(&[]), |t| vec![t]);
+    }
+    declared
+}
+
 /// The `[data-theme]` keys a program ships a stylesheet for, which are the keys
 /// `theme/set` may bind: a registry key as written, and each mode a theme the
 /// program defines inline has ([`theme_keys`]).
@@ -418,7 +452,7 @@ fn empty_tokens() -> ThemeTokens {
 }
 
 pub mod stylesheet;
-pub use stylesheet::{client_themes, generate_theme_css, program_themes, program_themes_css, theme_font_imports, ClientTheme};
+pub use stylesheet::{client_themes, generate_theme_css, program_themes, program_themes_css, theme_font_files, theme_font_imports, ClientTheme};
 
 mod css;
 pub use css::{css_vars, CssVars};

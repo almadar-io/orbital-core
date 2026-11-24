@@ -143,7 +143,7 @@ pub use kernel::{
     already_delivered_from, AwaitingTrait, ClientDispatch, KernelError, Rerender, RuntimeKernel,
     StatefulLeg, TickDispatch, TickEmit, TickRow, TraitSnapshot, CROSS_TRAIT_CASCADE_CAP, CROSS_TRAIT_DISPATCH_CAP,
 };
-pub use kernel::lazy::{LazyObserver, LazyProgram, LazySource};
+pub use kernel::lazy::{FileLazySource, LazyObserver, LazyProgram, LazySource};
 pub use listener::{ListenerInfo, ListenerManager, TriggerCallback};
 pub use process_result::{
     CascadeCut, DeliveryEntry, EffectRun, EffectRunStatus, EntitySummary, OrbitalDetail, OrbitalInfo, ProcessEventResult,

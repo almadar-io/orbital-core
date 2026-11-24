@@ -109,6 +109,11 @@ pub struct OrbitalSchema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub locales: Option<Vec<String>>,
 
+    /// `formatLocale: "sl-SI"` — the BCP 47 language-region tag whose rules the app's dates, times and numbers
+    /// follow (a 24-hour clock for sl-SI); absent, they follow the UI locale. Independent of `locales`.
+    #[serde(default, rename = "formatLocale", skip_serializing_if = "Option::is_none")]
+    pub format_locale: Option<String>,
+
     /// Locale → qualified key (`<behavior>:<key>`) → message: every catalog of the behaviors this program holds,
     /// written by resolution and never authored, so the program carries its own text wherever it is opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]

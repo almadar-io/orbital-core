@@ -2104,3 +2104,94 @@ mod field_updates {
         assert!(pushed.execute(&other, &viewer("u1", "member")).is_executed(), "control: a batch op that names no ruled field is pushed as before");
     }
 }
+
+/// A create stores the entity's declared defaults for the fields it does not pass (owner ruling 2026-11-24):
+/// std-hr-portal's time-off create named no status, so the request was stored with none and showed none.
+mod declared_defaults {
+    use super::*;
+    use crate::entity_access::EntityAccessPolicies;
+    use serde_json::json;
+
+    fn v(j: serde_json::Value) -> Value {
+        from_json_value(&j).unwrap()
+    }
+
+    fn executor(persistence: Arc<dyn PersistenceHandler>) -> EffectExecutor {
+        let mut table = EntityAccessTable::new();
+        table.insert(
+            "Leave".to_string(),
+            EntityAccessPolicies {
+                declared_defaults: vec![("status".to_string(), v(json!("pending"))), ("days".to_string(), v(json!(1)))],
+                ..Default::default()
+            },
+        );
+        EffectExecutor::server().with_persistence(persistence).with_entity_policies(Arc::new(RwLock::new(table)))
+    }
+
+    fn persist(operation: PersistOperation, entity: &str, id: Option<&str>, data: serde_json::Value) -> Effect {
+        Effect::Persist { operation, entity_type: entity.to_string(), data: v(data), id: id.map(str::to_string), emit: None, guard: None }
+    }
+
+    fn stored(persistence: &InMemoryPersistence, entity: &str, id: &str) -> serde_json::Value {
+        serde_json::to_value(persistence.read(entity, id).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_create_that_omits_a_field_stores_its_declared_default() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let made = executor(store.clone()).execute(&persist(PersistOperation::Create, "Leave", None, json!({ "id": "l1", "reason": "trip" })), &BindingContext::new());
+        assert!(made.is_executed(), "{made:?}");
+        let row = stored(&store, "Leave", "l1");
+        assert_eq!((row["status"].clone(), row["days"].clone()), (json!("pending"), json!(1)));
+    }
+
+    #[test]
+    fn the_pushed_path_stores_the_same_defaults() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let made = executor(Arc::new(super::derived_fields::Pushing(store.clone())))
+            .execute(&persist(PersistOperation::Create, "Leave", None, json!({ "id": "l1" })), &BindingContext::new());
+        assert!(made.is_executed(), "{made:?}");
+        assert_eq!(stored(&store, "Leave", "l1")["status"], json!("pending"));
+    }
+
+    #[test]
+    fn every_create_of_a_batch_stores_the_defaults() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let batch = Effect::PersistBatch { ops: v(json!([["create", "Leave", { "id": "b1" }], ["create", "Leave", { "id": "b2", "status": "approved" }]])), emit: None };
+        let result = executor(store.clone()).execute(&batch, &BindingContext::new());
+        assert!(result.is_executed(), "{result:?}");
+        assert_eq!((stored(&store, "Leave", "b1")["status"].clone(), stored(&store, "Leave", "b2")["status"].clone()), (json!("pending"), json!("approved")));
+    }
+
+    #[test]
+    fn control_a_value_the_create_passes_is_kept() {
+        let store = Arc::new(InMemoryPersistence::new());
+        assert!(executor(store.clone()).execute(&persist(PersistOperation::Create, "Leave", None, json!({ "id": "l1", "status": "approved", "days": 3 })), &BindingContext::new()).is_executed());
+        let row = stored(&store, "Leave", "l1");
+        assert_eq!((row["status"].clone(), row["days"].clone()), (json!("approved"), json!(3.0)));
+    }
+
+    #[test]
+    fn edge_a_null_the_create_passes_is_filled_like_an_omitted_field() {
+        let store = Arc::new(InMemoryPersistence::new());
+        assert!(executor(store.clone()).execute(&persist(PersistOperation::Create, "Leave", None, json!({ "id": "l1", "status": null })), &BindingContext::new()).is_executed());
+        assert_eq!(stored(&store, "Leave", "l1")["status"], json!("pending"));
+    }
+
+    #[test]
+    fn control_an_update_never_fills_a_default() {
+        let store = Arc::new(InMemoryPersistence::new());
+        let exec = executor(store.clone());
+        let ctx = BindingContext::new();
+        assert!(exec.execute(&persist(PersistOperation::Create, "Leave", None, json!({ "id": "l1", "status": "approved" })), &ctx).is_executed());
+        assert!(exec.execute(&persist(PersistOperation::Update, "Leave", Some("l1"), json!({ "reason": "moved" })), &ctx).is_executed());
+        assert_eq!(stored(&store, "Leave", "l1")["status"], json!("approved"));
+    }
+
+    #[test]
+    fn control_an_entity_that_declares_no_defaults_stores_only_what_it_was_given() {
+        let store = Arc::new(InMemoryPersistence::new());
+        assert!(executor(store.clone()).execute(&persist(PersistOperation::Create, "Other", None, json!({ "id": "o1" })), &BindingContext::new()).is_executed());
+        assert!(stored(&store, "Other", "o1").get("status").is_none());
+    }
+}

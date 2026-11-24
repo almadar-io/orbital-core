@@ -15,6 +15,26 @@ pub trait LazySource: Send + Sync {
     fn read(&self, file: &str) -> Result<LazyProgram, String>;
 }
 
+/// A resolved program's lazy orbitals read from the files `orb resolve` (or a shell) wrote beside it (EXEC-LOAD-1).
+pub struct FileLazySource {
+    dir: std::path::PathBuf,
+}
+
+impl FileLazySource {
+    /// The lazy files in the folder holding `program`.
+    pub fn beside(program: &std::path::Path) -> Self {
+        Self { dir: program.parent().unwrap_or(std::path::Path::new("")).to_path_buf() }
+    }
+}
+
+impl LazySource for FileLazySource {
+    fn read(&self, file: &str) -> Result<LazyProgram, String> {
+        let path = self.dir.join(file);
+        let schema = orbital_core_base::schema::parse_schema_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(LazyProgram { schema })
+    }
+}
+
 #[derive(Clone)]
 struct Stub {
     schema: String,
@@ -727,5 +747,21 @@ mod tests {
     fn a_nested_lazy_file_sits_beside_the_file_that_lists_it() {
         assert_eq!(joined("", "lazy/A.orb"), "lazy/A.orb");
         assert_eq!(joined("lazy/A.orb", "lazy/B.orb"), "lazy/lazy/B.orb");
+    }
+
+    #[test]
+    fn a_file_lazy_source_reads_the_lazy_program_beside_the_booted_one() {
+        let dir = std::env::temp_dir().join(format!("orbital-file-lazy-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("lazy")).unwrap();
+        std::fs::write(
+            dir.join("lazy/BlogEN.orb"),
+            r#"{"name":"App","typeContractVersion":1,"orbitals":[{"name":"Blog","entity":{"name":"Post","fields":[{"name":"id","type":"string"}]},"traits":[],"pages":[{"name":"BlogPage","path":"/blog","traits":[]}]}]}"#,
+        )
+        .unwrap();
+        let source = FileLazySource::beside(&dir.join("program.orb"));
+        let read = source.read("lazy/BlogEN.orb").unwrap();
+        assert_eq!(read.schema.orbitals.len(), 1);
+        assert!(source.read("lazy/Missing.orb").is_err(), "control: a file that is not there is an error, never an empty program");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

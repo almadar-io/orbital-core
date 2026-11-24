@@ -42,6 +42,36 @@ pub enum NativeBundleError {
     Library { path: PathBuf, message: String },
 }
 
+/// The file a generated native app lists the remote files it carries in: [`BundledFiles`], beside its program.
+pub const BUNDLED_FILES: &str = "bundle-files.json";
+
+/// The remote files a generated native app carries instead of downloading: `orb` fetches each `url` to `path`
+/// (relative to [`BUNDLED_FILES`]) when it compiles the app, and the app registers the bytes under `url` at boot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundledFiles {
+    pub files: Vec<BundledFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BundledFile {
+    pub url: String,
+    pub path: String,
+}
+
+impl BundledFiles {
+    /// The font files of the themes `program` paints ([`crate::theme::painted_themes`]), at `fonts/<n>`.
+    pub fn theme_fonts(program: &crate::schema::OrbitalSchema) -> Self {
+        let files = crate::theme::theme_font_files(&crate::theme::painted_themes(program))
+            .into_iter()
+            .enumerate()
+            .map(|(index, url)| BundledFile { url, path: format!("fonts/{index}") })
+            .collect();
+        Self { files }
+    }
+}
+
 /// The SHA-256 of `path`'s bytes, lowercase hex.
 pub fn file_sha256(path: &Path) -> Result<String, NativeBundleError> {
     let io = |source| NativeBundleError::Io { path: path.to_path_buf(), source };
@@ -122,6 +152,37 @@ pub fn verified_libraries(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_programs_theme_fonts_are_listed_once_each_at_their_own_path() {
+        let program = |theme: serde_json::Value| -> crate::schema::OrbitalSchema {
+            crate::json_value::from_json_value(&serde_json::json!({
+                "name": "App", "typeContractVersion": 1, "theme": theme,
+                "orbitals": [{"name": "Home", "entity": {"name": "Row", "fields": [{"name": "id", "type": "string"}]}, "traits": [], "pages": []}]
+            }))
+            .unwrap()
+        };
+        let inline = program(serde_json::json!({
+            "name": "bundle-test",
+            "tokens": { "typeScale": {
+                "displayFile": "https://fonts.test/Display.ttf",
+                "bodyFile": "https://fonts.test/Body.ttf",
+                "monoFile": "https://fonts.test/Body.ttf"
+            } }
+        }));
+        let bundled = BundledFiles::theme_fonts(&inline);
+        assert_eq!(
+            bundled.files,
+            [
+                BundledFile { url: "https://fonts.test/Body.ttf".into(), path: "fonts/0".into() },
+                BundledFile { url: "https://fonts.test/Display.ttf".into(), path: "fonts/1".into() },
+            ]
+        );
+        let text = serde_json::to_string(&bundled).unwrap();
+        assert_eq!(crate::json_value::from_json_str::<BundledFiles>(&text).unwrap(), bundled);
+        let plain = program(serde_json::json!({ "name": "bundle-plain", "tokens": {} }));
+        assert!(BundledFiles::theme_fonts(&plain).files.is_empty(), "control: a theme naming no file bundles none");
+    }
 
     fn bundle(root: &Path, feature_set: &str, body: &[u8]) -> PathBuf {
         let dir = root.join("bundle");

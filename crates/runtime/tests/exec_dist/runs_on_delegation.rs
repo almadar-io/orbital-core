@@ -306,6 +306,52 @@ fn a_host_ask_cannot_declare_a_cancelled_or_streaming_route() {
     assert!(exec.execute(&empty_key, &BindingContext::new()).error.as_deref().is_some_and(|e| e.contains("non-empty")));
 }
 
+fn mic_kernel(effects: serde_json::Value) -> orbital_core_runtime::kernel::RuntimeKernel {
+    let schema = serde_json::json!({
+        "name": "App",
+        "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Shell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+            "traits": [{ "name": "Chrome", "linkedEntity": "Shell",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [{ "from": "idle", "to": "idle", "event": "SIGN_OUT", "effects": effects }] } }]
+        }]
+    });
+    crate::support::TestKernel::client().build(schema)
+}
+
+// EXEC-DIST-13: an ask whose operator declares stream events streams to its onMessage route.
+#[test]
+fn a_client_ask_whose_operator_declares_stream_events_streams_from_its_host_and_its_cancel_reaches_the_host() {
+    use orbital_core_base::client_effect::ClientEffect;
+    let listen = serde_json::json!(["os/audio-in", { "sampleRate": 16000, "channels": 1 }, { "key": "mic", "emit": { "success": "MIC_OPEN", "failure": "MIC_FAILED", "onMessage": "PCM" } }]);
+    let (asks, statuses) = host_asks(&mic_kernel(serde_json::json!([listen, ["cancel-call", "mic"]])), Value::Null);
+    assert_eq!(statuses, vec![orbital_core_runtime::EffectRunStatus::Executed, orbital_core_runtime::EffectRunStatus::Executed], "{asks:?}");
+    let ClientEffect::HostAsk { op, completion: Some(completion), .. } = &asks[0] else { panic!("a streamed host ask: {asks:?}") };
+    assert_eq!(op, "os/audio-in");
+    assert_eq!(
+        (completion.key.as_deref(), completion.success.as_deref(), completion.failure.as_deref(), completion.on_message.as_deref()),
+        (Some("mic"), Some("MIC_OPEN"), Some("MIC_FAILED"), Some("PCM"))
+    );
+    let ClientEffect::HostAsk { op, args, completion: None } = &asks[1] else { panic!("a host-asked cancel: {asks:?}") };
+    assert_eq!((op.as_str(), args.clone()), ("cancel-call", vec![Value::String("mic".to_string().into())]));
+}
+
+#[test]
+fn control_a_streamed_client_ask_without_a_key_or_with_a_cancelled_route_is_refused_by_name() {
+    for emit in [
+        serde_json::json!({ "emit": { "onMessage": "PCM", "failure": "MIC_FAILED" } }),
+        serde_json::json!({ "key": "mic", "emit": { "onMessage": "PCM", "cancelled": "STOPPED" } }),
+    ] {
+        let listen = serde_json::json!(["os/audio-in", {}, emit]);
+        let kernel = mic_kernel(serde_json::json!([listen]));
+        let outcomes = kernel.dispatch("Chrome", None, "SIGN_OUT", Value::Null).unwrap();
+        let errors: Vec<String> = outcomes.iter().flat_map(|(_, r)| r.effect_runs.iter().filter_map(|run| run.error.clone())).collect();
+        assert!(errors.iter().any(|e| e.contains("os/audio-in")), "{errors:?}");
+    }
+}
+
 #[test]
 fn control_a_server_kernel_lists_no_host_ask_for_a_routed_sign_in() {
     let routes = serde_json::json!({ "emit": { "success": "SIGNED_IN", "failure": "SIGN_IN_FAILED" } });

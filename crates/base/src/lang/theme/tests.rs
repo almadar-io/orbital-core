@@ -96,6 +96,7 @@ fn minimal_schema(app_theme: Option<ThemeRef>, orbitals: Vec<Orbital>) -> Orbita
         site: None,
         public_dir: None,
         locales: None,
+        format_locale: None,
         messages: None,
         lazy_pages: None,
         name: "TestApp".to_string(),
@@ -366,6 +367,28 @@ fn a_program_paints_its_declared_themes_or_the_default_preset() {
         vec!["clay"],
         "a declared theme replaces the default"
     );
+}
+
+#[test]
+fn a_resolved_program_paints_its_inline_theme_and_the_presets_it_carries_never_only_the_carried_default() {
+    let program = |extra: serde_json::Value| -> OrbitalSchema {
+        let mut json = serde_json::json!({
+            "name": "App", "typeContractVersion": 1,
+            "orbitals": [{"name": "Home", "entity": {"name": "Row", "fields": [{"name": "id", "type": "string"}]}, "traits": [], "pages": []}]
+        });
+        json.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mut schema: OrbitalSchema = from_json_value(&json).unwrap();
+        carry_theme_definitions(&mut schema, &presets());
+        schema
+    };
+    let names = |themes: Vec<ThemeDefinition>| themes.into_iter().map(|t| t.name).collect::<Vec<_>>();
+    let inline = program(serde_json::json!({
+        "theme": {"name": "taif", "tokens": {"colors": {"primary": "#2b4aa0"}}},
+        "themes": ["clay-dark"]
+    }));
+    assert_eq!(names(painted_themes(&inline)), ["taif", "clay"], "the inline theme first, then the preset it switches to");
+    let none = program(serde_json::json!({}));
+    assert_eq!(names(painted_themes(&none)), [DEFAULT_THEME_BASE], "control: a program declaring none paints the carried default");
 }
 
 fn key(k: &str) -> ThemeRef {

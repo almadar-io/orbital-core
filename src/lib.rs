@@ -154,6 +154,7 @@ pub mod runtime {
     pub use orbital_core_runtime::instances::instance_rows;
     pub use orbital_core_runtime::instances::mock_row_id;
     pub use orbital_core_runtime::kernel::already_delivered_from;
+    pub use orbital_core_runtime::kernel::lazy::FileLazySource;
     pub use orbital_core_runtime::kernel::lazy::LazyObserver;
     pub use orbital_core_runtime::kernel::lazy::LazyProgram;
     pub use orbital_core_runtime::kernel::lazy::LazySource;
@@ -199,6 +200,7 @@ pub mod credential_admin {
     };
 }
 pub use orbital_core_base::json_value;
+pub use orbital_core_base::native_bundle;
 pub use orbital_core_base::sandbox_manifest;
 pub use orbital_core_base::shell;
 pub use orbital_core_base::shell_protocol;

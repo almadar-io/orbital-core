@@ -206,7 +206,7 @@ pub enum AssetAspect {
 
 impl EntityDefinition {
     /// Names of this entity's `persist create`-required columns: a field declaring `required: true`, excluding
-    /// [`FRAMEWORK_STAMPED_FIELDS`], any `@intrinsic` field, any field declaring a `default` (the store fills it in),
+    /// [`FRAMEWORK_STAMPED_FIELDS`], any `@intrinsic` field, any field declaring a `default` (a create stores it),
     /// and any field carrying `merged_from` (added by the inline phase's rebind merge from an imported atom's entity,
     /// never authored by this entity's own writer). The one definition; the kernel and the validator both read it.
     pub fn required_create_field_names(&self) -> Vec<String> {

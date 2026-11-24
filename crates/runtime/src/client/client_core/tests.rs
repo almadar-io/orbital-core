@@ -875,6 +875,16 @@ fn a_frame_tick_runs_through_the_kernel_frame_on_every_host_frame() {
 }
 
 #[test]
+fn exec_tick_4_control_a_host_that_reports_the_trait_off_screen_pauses_its_visible_tick() {
+    let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "whileVisible": true, "effects": [] }]);
+    let schema = ticking_schema(ticks);
+    let name = schema.orbitals[0].traits[0].trait_name().expect("the fixture's trait").to_string();
+    let kernel = Arc::new(ClientKernel::new(schema, None).unwrap());
+    kernel.set_trait_on_screen(&name, false);
+    assert!(kernel.frame(0).unwrap().is_empty(), "the kernel skips a [visible] tick of a trait reported off screen");
+}
+
+#[test]
 fn split_frame_processes_the_local_tick_before_settlement() {
     let ticks = serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]);
     let mut core = kernel_core(ticks);
@@ -908,12 +918,12 @@ fn control_an_interval_tick_waits_out_its_interval_a_tickless_orbital_runs_nothi
 }
 
 #[test]
-fn a_visible_tick_runs_only_while_its_trait_has_rendered_output_on_screen() {
+fn exec_tick_4_a_visible_tick_runs_whether_or_not_its_trait_has_rendered_output_on_a_host_with_no_viewport() {
     let ticks = serde_json::json!([{ "name": "v", "interval": "frame", "whileVisible": true, "effects": [] }]);
     let mut core = kernel_core(ticks.clone());
     assert!(
-        !core.drive_ticks_blocking(),
-        "nothing is rendered, so the [visible] tick is dropped"
+        core.drive_ticks_blocking(),
+        "a presence group with no rendered output is not off screen"
     );
     core.trait_content.insert("T".into(), Value::Null);
     assert!(
@@ -921,7 +931,7 @@ fn a_visible_tick_runs_only_while_its_trait_has_rendered_output_on_screen() {
         "the trait's output is on screen"
     );
     core.trait_content.remove("T");
-    assert!(!core.drive_ticks_blocking(), "off screen again");
+    assert!(core.drive_ticks_blocking(), "no output again: still not off screen");
     let mut always =
         kernel_core(serde_json::json!([{ "name": "f", "interval": "frame", "effects": [] }]));
     assert!(
