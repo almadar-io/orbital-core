@@ -370,17 +370,17 @@ impl RuntimeKernel {
             let mut registered = Vec::new();
             for trait_ref in &orbital.traits {
                 if let Some(trait_def) = self.resolve_trait_definition(trait_ref, &schema) {
-                    self.register_trait(Arc::clone(&trait_def))?;
+                    let scan = self.register_trait(Arc::clone(&trait_def))?;
                     if !self.lazy.holds_listeners_of(&trait_def.name) {
                         self.register_trait_listeners(&trait_def, &orbital.name)?;
                     }
-                    registered.push(trait_def);
+                    registered.push((trait_def, scan));
                 }
             }
             self.capture_children
                 .write()
-                .extend(super::callsite_capture::capture_children(
-                    &registered.iter().map(|t| &**t).collect::<Vec<_>>(),
+                .extend(super::callsite_capture::capture_children_scanned(
+                    &registered.iter().map(|(def, scan)| (def.name.as_str(), scan)).collect::<Vec<_>>(),
                 ));
             self.register_stub_listeners(&schema.name, Some(&orbital.name))?;
         }
@@ -422,7 +422,15 @@ impl RuntimeKernel {
         // Additive rebuild over the FULL accumulated trait set, not just this
         // schema's — an embed spanning two registrations must still resolve
         // (mirrors the entity-policy table's additive re-run above).
-        *self.registry.embed_index.write() = EmbedIndex::build(&self.registry.trait_definitions.read());
+        {
+            let refs = self.registry.embedded_trait_refs.read();
+            *self.registry.embed_index.write() = EmbedIndex::build_with(&self.registry.trait_definitions.read(), |def| {
+                match refs.get(&def.name) {
+                    Some(kept) => std::borrow::Cow::Owned(kept.to_vec()),
+                    None => std::borrow::Cow::Owned(super::callsite_capture::embedded_trait_refs(def)),
+                }
+            });
+        }
 
         info!(schema = %schema_name, "Schema registered successfully");
         boot_lazy
@@ -725,16 +733,16 @@ impl RuntimeKernel {
     }
 
     /// One definition per trait, shared by the state manager and the registry.
-    pub(super) fn register_trait(&self, trait_def: Arc<TraitDefinition>) -> Result<(), KernelError> {
+    pub(super) fn register_trait(&self, trait_def: Arc<TraitDefinition>) -> Result<super::callsite_capture::TraitScan, KernelError> {
         debug!(trait_name = %trait_def.name, "Registering trait");
         self.state_manager.write().register_shared_trait(Arc::clone(&trait_def));
         self.register_sealed_emit_fields(&trait_def);
-        let refs = Arc::new(super::callsite_capture::embedded_trait_refs(&trait_def));
-        self.registry.embedded_trait_refs.write().insert(trait_def.name.clone(), refs);
+        let scan = super::callsite_capture::scan(&trait_def);
+        self.registry.embedded_trait_refs.write().insert(trait_def.name.clone(), Arc::new(scan.refs.clone()));
         self.registry.trait_definitions.write().insert(trait_def.name.clone(), trait_def);
         *self.registry.browser_reads.write() = None;
         self.registry.config_defaults.write().clear();
-        Ok(())
+        Ok(scan)
     }
 
     /// Register listeners declared on a trait.

@@ -277,7 +277,7 @@ impl RuntimeKernel {
                 "Event processed successfully"
             );
 
-            self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
+            self.record_renders(trait_name, entity_id, sources, &mut effect_results, &ctx);
 
             Ok(ProcessEventResult {
                 cost: None,
@@ -339,7 +339,7 @@ impl RuntimeKernel {
                 &entity_data,
             )?;
             if held.is_empty() {
-                self.record_renders(trait_name, entity_id, sources, &state_effects, &ctx);
+                self.record_renders(trait_name, entity_id, sources, &mut state_effects, &ctx);
             } else {
                 let mut slots: Vec<String> = Vec::new();
                 for er in &state_effects {

@@ -32,6 +32,16 @@ impl EmbedIndex {
     pub fn build<T: std::borrow::Borrow<TraitDefinition>>(
         trait_definitions: &HashMap<String, T>,
     ) -> Self {
+        Self::build_with(trait_definitions, |def| {
+            std::borrow::Cow::Owned(crate::callsite_capture::embedded_trait_refs(def))
+        })
+    }
+
+    /// [`Self::build`] reading each trait's embedded refs from `refs` (registration keeps them), not its body again.
+    pub fn build_with<'a, T: std::borrow::Borrow<TraitDefinition>>(
+        trait_definitions: &HashMap<String, T>,
+        refs: impl Fn(&TraitDefinition) -> std::borrow::Cow<'a, [String]>,
+    ) -> Self {
         let mut id_to_name: HashMap<&str, &str> = HashMap::new();
         for def in trait_definitions.values().map(std::borrow::Borrow::borrow) {
             if let Some(id) = &def.id {
@@ -68,10 +78,12 @@ impl EmbedIndex {
         sorted_hosts.sort_unstable();
         for host_name in sorted_hosts {
             let Some(host) = trait_definitions.get(host_name) else { continue };
-            let mut children = crate::callsite_capture::embedded_trait_refs(host.borrow());
+            let mut children: Vec<&String> = Vec::new();
+            let named = refs(host.borrow());
+            children.extend(named.iter());
             children.sort_unstable();
-            for child in children.into_iter().filter(|child| trait_definitions.contains_key(child)) {
-                direct_host.entry(child).or_insert_with(|| host_name.to_string());
+            for child in children.into_iter().filter(|child| trait_definitions.contains_key(*child)) {
+                direct_host.entry(child.clone()).or_insert_with(|| host_name.to_string());
             }
         }
 

@@ -89,13 +89,30 @@ pub fn references_callsite_payload(def: &TraitDefinition) -> bool {
 
 /// Every `@trait.X` a trait names in its config or state machine, in the order first met, itself excluded.
 pub(crate) fn embedded_trait_refs(def: &TraitDefinition) -> Names {
+    scan(def).refs
+}
+
+/// What registration reads from a trait's body, from one JSON reading of its config and state machine.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct TraitScan {
+    /// [`embedded_trait_refs`].
+    pub(crate) refs: Names,
+    /// [`references_callsite_payload`].
+    pub(crate) callsite_payload: bool,
+}
+
+pub(crate) fn scan(def: &TraitDefinition) -> TraitScan {
+    let config = def.config.as_ref().map(as_json);
+    let machine = as_json(&def.state_machine);
     let mut refs = Names::new();
-    if let Some(config) = &def.config {
-        trait_refs(&as_json(config), &mut refs);
+    if let Some(config) = &config {
+        trait_refs(config, &mut refs);
     }
-    trait_refs(&as_json(&def.state_machine), &mut refs);
+    trait_refs(&machine, &mut refs);
     refs.retain(|name| name != &def.name);
-    refs
+    let callsite_payload = config.as_ref().is_some_and(|c| contains_prefixed(c, CALLSITE_PAYLOAD_PREFIX))
+        || contains_prefixed(&machine, CALLSITE_PAYLOAD_PREFIX);
+    TraitScan { refs, callsite_payload }
 }
 
 /// The states `def` shows `child` in: the target of each transition whose effects embed it (`@trait.<child>`, or
@@ -142,43 +159,37 @@ pub(super) fn renders(def: &TraitDefinition) -> bool {
 /// pass-through to a descendant that does. One orbital's traits, so same-named traits of sibling
 /// orbitals never alias.
 pub fn capture_children(traits: &[&TraitDefinition]) -> HashMap<String, Names> {
-    let by_name: HashMap<&str, &TraitDefinition> =
-        traits.iter().map(|t| (t.name.as_str(), *t)).collect();
-    let mut adjacency: HashMap<&str, Names> = HashMap::new();
-    for def in traits {
-        let refs = embedded_trait_refs(def);
-        if !refs.is_empty() {
-            adjacency.insert(def.name.as_str(), refs);
-        }
-    }
+    let scans: Vec<(&str, TraitScan)> = traits.iter().map(|t| (t.name.as_str(), scan(t))).collect();
+    capture_children_scanned(&scans.iter().map(|(name, scan)| (*name, scan)).collect::<Vec<_>>())
+}
+
+/// [`capture_children`] of traits already [`scan`]ned.
+pub(crate) fn capture_children_scanned(traits: &[(&str, &TraitScan)]) -> HashMap<String, Names> {
+    let by_name: HashMap<&str, &TraitScan> = traits.iter().copied().collect();
 
     fn reaches_capture(
         name: &str,
-        by_name: &HashMap<&str, &TraitDefinition>,
-        adjacency: &HashMap<&str, Names>,
+        by_name: &HashMap<&str, &TraitScan>,
         seen: &mut HashSet<String>,
     ) -> bool {
         if !seen.insert(name.to_string()) {
             return false;
         }
-        if by_name
-            .get(name)
-            .is_some_and(|def| references_callsite_payload(def))
-        {
-            return true;
-        }
-        adjacency.get(name).is_some_and(|children| {
-            children
-                .iter()
-                .any(|c| reaches_capture(c, by_name, adjacency, seen))
-        })
+        let Some(scan) = by_name.get(name) else {
+            return false;
+        };
+        scan.callsite_payload || scan.refs.iter().any(|c| reaches_capture(c, by_name, seen))
     }
 
     let mut out = HashMap::new();
-    for (referrer, children) in &adjacency {
-        let keep: Names = children
+    for (referrer, scan) in traits {
+        if scan.refs.is_empty() {
+            continue;
+        }
+        let keep: Names = scan
+            .refs
             .iter()
-            .filter(|child| reaches_capture(child, &by_name, &adjacency, &mut HashSet::new()))
+            .filter(|child| reaches_capture(child, &by_name, &mut HashSet::new()))
             .cloned()
             .collect();
         if !keep.is_empty() {

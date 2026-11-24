@@ -270,6 +270,91 @@ pub enum Value {
     Blob(Arc<crate::blobs::Blob>),
 }
 
+/// `new` sharing `old`'s allocations where they are equal, and whether the result is `old` itself.
+fn share_unchanged(new: Value, old: &Value) -> (Value, bool) {
+    match (new, old) {
+        (Value::Object(fields), Value::Object(before)) => {
+            if Shared::ptr_eq(&fields, before) {
+                return (old.clone(), true);
+            }
+            let mut fields = fields.into_inner();
+            let mut whole = fields.len() == before.len();
+            for (index, (key, value)) in fields.iter_mut().enumerate() {
+                let Some((before_key, was)) = before.get_key_value(key) else {
+                    whole = false;
+                    continue;
+                };
+                let (shared, same) = share_unchanged(std::mem::take(value), was);
+                *value = shared;
+                whole &= same && before.get_index_of(before_key) == Some(index);
+            }
+            if whole {
+                (old.clone(), true)
+            } else {
+                (Value::Object(Shared::new(fields)), false)
+            }
+        }
+        (Value::Array(items), Value::Array(before)) => {
+            if Shared::ptr_eq(&items, before) {
+                return (old.clone(), true);
+            }
+            let by_id: crate::collections::IndexMap<&str, &Value> = before
+                .iter()
+                .filter_map(|item| Some((element_id(item)?, item)))
+                .collect();
+            let mut items = items.into_inner();
+            let mut whole = items.len() == before.len();
+            for (index, item) in items.iter_mut().enumerate() {
+                let was = match element_id(item) {
+                    Some(id) => by_id.get(id).copied(),
+                    None => before.get(index),
+                };
+                let Some(was) = was else {
+                    whole = false;
+                    continue;
+                };
+                let (shared, same) = share_unchanged(std::mem::take(item), was);
+                *item = shared;
+                whole &= same && before.get(index).is_some_and(|at| std::ptr::eq(at, was));
+            }
+            if whole {
+                (old.clone(), true)
+            } else {
+                (Value::Array(Shared::new(items)), false)
+            }
+        }
+        (Value::String(text), Value::String(before)) => {
+            if text == *before {
+                (old.clone(), true)
+            } else {
+                (Value::String(text), false)
+            }
+        }
+        (new @ (Value::Null | Value::Bool(_)), _)
+        | (new @ (Value::Number(_) | Value::Int(_)), _) => {
+            let same = match (&new, old) {
+                (Value::Null, Value::Null) => true,
+                (Value::Bool(a), Value::Bool(b)) => a == b,
+                (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits(),
+                (Value::Int(a), Value::Int(b)) => a == b,
+                _ => false,
+            };
+            (new, same)
+        }
+        (new, _) => (new, false),
+    }
+}
+
+fn element_id(item: &Value) -> Option<&str> {
+    match item {
+        Value::Object(fields) => match fields.get("id") {
+            Some(Value::String(id)) => Some(id.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// The largest magnitude below which every integer is exactly a float.
 pub const MAX_EXACT_INT: i64 = 1 << 53;
 
@@ -534,6 +619,13 @@ impl Value {
 
     pub fn bytes(data: impl Into<Shared<Vec<u8>>>) -> Value {
         Value::Bytes(data.into())
+    }
+
+    /// This value with every subtree that equals its counterpart in `previous` replaced by `previous`'s allocation,
+    /// so a re-render that changed one leaf leaves every unchanged sibling's identity intact. Record fields pair by
+    /// key; list elements pair by their string `id` field when they have one, else by position.
+    pub fn shared_with(self, previous: &Value) -> Value {
+        share_unchanged(self, previous).0
     }
 
     /// A sealed record of the type `kind`. Only a kernel operator calls this; no wire form, parse or cast reaches it.
@@ -1115,6 +1207,65 @@ mod tests {
             Value::Array(items) => items,
             other => panic!("a list, not {other:?}"),
         }
+    }
+
+    fn same(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Object(a), Value::Object(b)) => Shared::ptr_eq(a, b),
+            (Value::Array(a), Value::Array(b)) => Shared::ptr_eq(a, b),
+            (Value::String(a), Value::String(b)) => Shared::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn a_value_shared_with_its_previous_paint_reuses_every_unchanged_subtree() {
+        let old = parsed(
+            r#"{"type": "canvas", "drawables": [{"id": "a", "x": 1}, {"id": "b", "x": 2}, {"id": "c", "x": 3}]}"#,
+        );
+        let new = parsed(
+            r#"{"type": "canvas", "drawables": [{"id": "a", "x": 1}, {"id": "b", "x": 20}, {"id": "c", "x": 3}]}"#,
+        );
+        let shared = new.clone().shared_with(&old);
+        assert_eq!(shared, new, "sharing never changes the value");
+        let (o, s) = (
+            items(old.get("drawables").unwrap()),
+            items(shared.get("drawables").unwrap()),
+        );
+        assert!(
+            same(&o[0], &s[0]) && same(&o[2], &s[2]),
+            "unchanged drawables are the previous allocations"
+        );
+        assert!(!same(&o[1], &s[1]), "control: the changed drawable is new");
+        assert!(
+            !same(&old, &shared),
+            "control: a container holding a change is new"
+        );
+        let again = parsed(
+            r#"{"type": "canvas", "drawables": [{"id": "a", "x": 1}, {"id": "b", "x": 2}, {"id": "c", "x": 3}]}"#,
+        );
+        assert!(
+            same(&old, &again.shared_with(&old)),
+            "an equal value is the previous allocation whole"
+        );
+    }
+
+    #[test]
+    fn a_drawable_keeps_its_allocation_when_one_is_inserted_before_it() {
+        let old = parsed(r#"[{"id": "a", "x": 1}, {"id": "b", "x": 2}]"#);
+        let new = parsed(r#"[{"id": "z", "x": 0}, {"id": "a", "x": 1}, {"id": "b", "x": 2}]"#);
+        let shared = new.shared_with(&old);
+        let (o, s) = (items(&old), items(&shared));
+        assert!(
+            same(&o[0], &s[1]) && same(&o[1], &s[2]),
+            "elements with an id are matched by id, not position"
+        );
+        let plain_old = parsed(r#"[[1, 2], [3, 4]]"#);
+        let plain = parsed(r#"[[0], [1, 2], [3, 4]]"#).shared_with(&plain_old);
+        assert!(
+            !same(&items(&plain_old)[0], &items(&plain)[1]),
+            "control: without ids elements are matched by position"
+        );
     }
 
     #[test]

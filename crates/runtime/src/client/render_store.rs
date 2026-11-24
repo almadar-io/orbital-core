@@ -239,6 +239,19 @@ impl RenderStore {
         self.refresh_guest_views(trait_name);
     }
 
+    /// `content` with every subtree equal to what `slot` of this instance last resolved handed back as that
+    /// allocation, so a downstream stage can skip an unchanged part by identity.
+    pub(crate) fn share_with_previous(&self, trait_name: &str, entity_id: &str, slot: &str, content: Value) -> Value {
+        let previous = self
+            .instances
+            .get(&(trait_name.to_string(), entity_id.to_string()))
+            .and_then(|slots| slots.iter().find(|s| s.slot == slot));
+        match previous {
+            Some(previous) => content.shared_with(&previous.resolved),
+            None => content,
+        }
+    }
+
     /// Whether `trait_name` shows a `guest-view` on any slot, without allocating.
     pub(crate) fn shows_guest_view(&self, trait_name: &str) -> bool {
         self.guest_view_traits.contains(trait_name)
@@ -405,7 +418,8 @@ impl RenderStore {
                 if let Some(now) = entity_changed {
                     slot.entity = SharedEntity::from_arc(Arc::clone(now));
                 }
-                if rows_changed || resolved != slot.resolved {
+                let resolved = resolved.shared_with(&slot.resolved);
+                if rows_changed || !same_allocation(&resolved, &slot.resolved) {
                     slot.resolved = resolved.clone();
                     slot.row_sets = row_sets_in(&resolved);
                     repaints.push(Repaint {
@@ -420,6 +434,16 @@ impl RenderStore {
             }
         }
         out
+    }
+}
+
+/// Whether `a` is `b`'s allocation, which after `shared_with` is exactly whether they are equal.
+fn same_allocation(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(a), Value::Object(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+        (Value::Array(a), Value::Array(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+        (Value::String(a), Value::String(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+        _ => a == b,
     }
 }
 
@@ -627,6 +651,28 @@ mod tests {
             resolve_deferred(&source, &flushed, &live, 0).unwrap(),
             flushed.resolve_value(&source).into_owned()
         );
+    }
+
+    #[test]
+    fn a_repaint_keeps_the_allocation_of_every_part_the_change_did_not_touch() {
+        let flushed = ctx(json!({ "n": 1 }), json!({}));
+        let mut store = RenderStore::default();
+        let source = val(json!({ "children": [{ "id": "hud", "content": "@entity.n" }, { "id": "logo", "content": "static" }] }));
+        let first = val(json!({ "children": [{ "id": "hud", "content": 1 }, { "id": "logo", "content": "static" }] }));
+        store.record("Hud", "e", vec![("main".into(), source, first.clone(), None)], &flushed);
+        let now = val(json!({ "n": 2 }));
+        let out = store.stale(|_| true, |_, _| Some(now.clone()), None, |_, c, _| c.clone());
+        let content = &out[0].2[0].content;
+        let kids = |v: &Value| match v.get("children") {
+            Some(Value::Array(items)) => items.clone(),
+            other => panic!("children, not {other:?}"),
+        };
+        assert!(same_allocation(&kids(content)[1], &kids(&first)[1]), "the untouched sibling is the previous allocation");
+        assert!(!same_allocation(&kids(content)[0], &kids(&first)[0]), "control: the changed leaf's parent is new");
+        let shared = store.share_with_previous("Hud", "e", "main", content.clone().shared_with(&Value::Null));
+        assert!(same_allocation(&shared, content), "a recorded render equal to the shown one is that allocation");
+        let fresh = val(json!({ "children": [] }));
+        assert!(!same_allocation(&store.share_with_previous("Hud", "e", "other", fresh.clone()), content), "control: another slot shares nothing");
     }
 
     #[test]

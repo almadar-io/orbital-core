@@ -104,16 +104,18 @@ impl RuntimeKernel {
     pub(super) fn trait_refs_from(&self, roots: &[String]) -> Vec<String> {
         let refs = self.registry.embedded_trait_refs.read();
         let mut walked: Vec<String> = roots.to_vec();
+        let mut seen: std::collections::HashSet<String> = walked.iter().cloned().collect();
         let mut referenced: Vec<String> = Vec::new();
+        let mut named: std::collections::HashSet<String> = std::collections::HashSet::new();
         let mut at = 0;
         while at < walked.len() {
             if let Some(children) = refs.get(walked[at].as_str()).map(Arc::clone) {
-                for child in children.iter().cloned() {
-                    if !referenced.contains(&child) {
+                for child in children.iter() {
+                    if named.insert(child.clone()) {
                         referenced.push(child.clone());
                     }
-                    if !walked.contains(&child) {
-                        walked.push(child);
+                    if seen.insert(child.clone()) {
+                        walked.push(child.clone());
                     }
                 }
             }

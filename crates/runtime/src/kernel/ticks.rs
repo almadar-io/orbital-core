@@ -306,7 +306,7 @@ impl RuntimeKernel {
             self.write_trait_frame(trait_name, entity_type, entity_id, &captured_entity_data);
         }
 
-        self.record_renders(trait_name, entity_id, sources, &effect_results, &ctx);
+        self.record_renders(trait_name, entity_id, sources, &mut effect_results, &ctx);
 
         Ok(ProcessEventResult {
             cost: None,

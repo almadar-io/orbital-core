@@ -32,13 +32,21 @@ impl RuntimeKernel {
         trait_name: &str,
         entity_id: &str,
         sources: Vec<RenderSource>,
-        resolved: &[EffectResult],
+        resolved: &mut [EffectResult],
         ctx: &BindingContext,
     ) {
         if sources.is_empty() {
             return;
         }
         self.flush_row_writes();
+        {
+            let store = self.renders.read();
+            for er in resolved.iter_mut() {
+                if let Effect::RenderUi { slot, content } = &mut er.effect {
+                    *content = store.share_with_previous(trait_name, entity_id, slot, std::mem::take(content));
+                }
+            }
+        }
         let resolved = resolved.iter().filter_map(|er| match &er.effect {
             Effect::RenderUi { slot, content } => Some((slot.clone(), content.clone())),
             _ => None,
