@@ -117,4 +117,39 @@ mod tests {
         let back: crate::schema::OrbitalSchema = from_json_slice(&with_defs).unwrap();
         assert_eq!(serde_json::to_vec(&back).unwrap(), plain);
     }
+
+    #[test]
+    #[ignore]
+    fn measure_written_size_with_defs() {
+        let path = std::env::var("ORB_MEASURE_FILE").expect("ORB_MEASURE_FILE");
+        let bytes = std::fs::read(&path).unwrap();
+        let t = std::time::Instant::now();
+        let program: crate::schema::OrbitalSchema = from_json_slice(&bytes).unwrap();
+        let read_plain = t.elapsed();
+        let plain = serde_json::to_vec(&program).unwrap();
+        let with_defs = to_vec_with_defs(&program).unwrap();
+        let t = std::time::Instant::now();
+        let back: crate::schema::OrbitalSchema = from_json_slice(&with_defs).unwrap();
+        let read_defs = t.elapsed();
+        let equal = serde_json::to_vec(&back).unwrap() == plain;
+        let mut strings: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let text: serde_json::Value = serde_json::from_slice(&with_defs).unwrap();
+        fn walk(v: &serde_json::Value, out: &mut std::collections::HashMap<String, usize>) {
+            match v {
+                serde_json::Value::String(s) if s.len() >= 64 => *out.entry(s.clone()).or_default() += 1,
+                serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
+                _ => {}
+            }
+        }
+        walk(&text, &mut strings);
+        let value = crate::value_serialize::to_value(&program).unwrap();
+        let value_defs = crate::json_value::value_json_string_with_defs(&value);
+        println!("MEASURE value path (typed records shared too): {:.2} MB", value_defs.len() as f64 / 1e6);
+        let repeated: usize = strings.iter().filter(|(_, n)| **n > 1).map(|(s, n)| (s.len() + 2) * (n - 1)).sum();
+        println!(
+            "MEASURE {path}: file {:.2} MB, plain {:.2} MB, with $def {:.2} MB, equal {equal}, read plain {read_plain:?}, read $def {read_defs:?}, long strings still repeated {:.2} MB",
+            bytes.len() as f64 / 1e6, plain.len() as f64 / 1e6, with_defs.len() as f64 / 1e6, repeated as f64 / 1e6
+        );
+    }
 }

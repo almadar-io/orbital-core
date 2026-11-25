@@ -116,13 +116,15 @@ pub fn reflect_input(input: &ExternalInput, payload: Option<&[PayloadField]>) ->
     Value::object(map)
 }
 
-const INPUTS_OPTIONS: [&str; 4] = ["select", "state", "stats", "trace"];
+const INPUTS_OPTIONS: [&str; 5] = ["select", "state", "frames", "stats", "trace"];
 
 /// The runtime reads a `program/inputs` also asks for: the running trait states of one orbital with their entity
-/// (`state`), the dispatch counters (`stats`) and the host's last `trace` dispatch steps.
+/// (`state`; with `frames`, each entity is the frame that trait's next step reads), the dispatch counters (`stats`)
+/// and the host's last `trace` dispatch steps.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct InputsReads {
     pub state: Option<String>,
+    pub frames: bool,
     pub stats: bool,
     pub trace: Option<usize>,
 }
@@ -137,6 +139,14 @@ pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
         Some(Value::String(orbital)) if !orbital.is_empty() => Some(orbital.clone()),
         Some(_) => return Err("program/inputs: state must name an orbital".to_string()),
     };
+    let frames = match options.get("frames") {
+        None => false,
+        Some(Value::Bool(on)) => *on,
+        Some(_) => return Err("program/inputs: frames must be true or false".to_string()),
+    };
+    if frames && state.is_none() {
+        return Err("program/inputs: frames reads the frames of the orbital state names".to_string());
+    }
     let stats = match options.get("stats") {
         None => false,
         Some(Value::Bool(on)) => *on,
@@ -149,7 +159,7 @@ pub fn inputs_reads(args: &[Value]) -> Result<InputsReads, String> {
             None => return Err("program/inputs: trace must be a whole number of steps".to_string()),
         },
     };
-    Ok(InputsReads { state: state.map(|v| v.into_inner()), stats, trace })
+    Ok(InputsReads { state: state.map(|v| v.into_inner()), frames, stats, trace })
 }
 
 const SELECT_SHAPE: &str = "program/inputs: select must be a list of { event, payload? }";
@@ -950,7 +960,10 @@ mod tests {
     #[test]
     fn program_inputs_reads_its_state_stats_and_trace_options() {
         let reads = inputs_reads(&[value(serde_json::json!({ "state": "Desk", "stats": true, "trace": 3 }))]).unwrap();
-        assert_eq!(reads, InputsReads { state: Some("Desk".into()), stats: true, trace: Some(3) });
+        assert_eq!(reads, InputsReads { state: Some("Desk".into()), frames: false, stats: true, trace: Some(3) });
+        let framed = inputs_reads(&[value(serde_json::json!({ "state": "Desk", "frames": true }))]).unwrap();
+        assert_eq!(framed, InputsReads { state: Some("Desk".into()), frames: true, stats: false, trace: None });
+        assert!(inputs_reads(&[value(serde_json::json!({ "frames": true }))]).is_err(), "frames with no state names no orbital");
         assert_eq!(inputs_reads(&[]).unwrap(), InputsReads::default(), "control: no options read nothing");
         let f = fixture();
         let inputs = external_inputs_of(&schema_of(&f));

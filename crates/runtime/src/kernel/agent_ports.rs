@@ -253,6 +253,10 @@ impl RuntimeKernel {
                     .collect();
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
+                    let entity = match (reads.frames, &entity_id) {
+                        (true, id) => self.step_frame(trait_name, id.as_deref().unwrap_or(crate::process_result::RUNTIME_SINGLETON)).to_value(),
+                        (false, _) => snapshot.entity,
+                    };
                     let mut row = ValueMap::default();
                     row.insert("trait".into(), Value::string(trait_name.clone()));
                     row.insert(
@@ -263,7 +267,7 @@ impl RuntimeKernel {
                         )),
                     );
                     row.insert("state".into(), Value::string(state));
-                    row.insert("entity".into(), snapshot.entity);
+                    row.insert("entity".into(), entity);
                     traits.push(Value::object(row));
                 }
             }

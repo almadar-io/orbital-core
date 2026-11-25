@@ -64,6 +64,10 @@ fn opener(transitions: serde_json::Value) -> RuntimeKernel {
 
 /// [`opener`] whose program declares `os_grants` (null: none).
 fn opener_granted(transitions: serde_json::Value, os_grants: serde_json::Value) -> RuntimeKernel {
+    opener_configured(transitions, os_grants, KernelConfig::default())
+}
+
+fn opener_configured(transitions: serde_json::Value, os_grants: serde_json::Value, config: KernelConfig) -> RuntimeKernel {
     let mut all = vec![
         json!({ "from": "idle", "to": "idle", "event": "OPENED", "effects": [["set", "@entity.guest", "@payload.result.guest"], ["set", "@entity.got", "@payload.result"]] }),
         json!({ "from": "idle", "to": "idle", "event": "ANSWERED", "effects": [["set", "@entity.got", "@payload.result"]] }),
@@ -90,7 +94,7 @@ fn opener_granted(transitions: serde_json::Value, os_grants: serde_json::Value) 
     let kernel = RuntimeKernel::new(
         RuntimeEnvironment::Server,
         Arc::new(InMemoryEntityCache::new()),
-        KernelConfig::default(),
+        config,
     );
     kernel.register_schema(schema).unwrap();
     kernel
@@ -1937,6 +1941,71 @@ mod host_ticks_unwatched_guests {
 
 /// EXEC-METAL-7 `kernel/step`: one transition of an open guest, fired from the state and row the call names, answered as
 /// data. Nothing cascades, no I/O runs, and the guest is left as it was.
+// EXEC-CONC-7, EXEC-SEED-1: a guest with no host of its own has no clock of its own; its open and each dispatch into it
+// run on the asking step's stamp, as program/tick { guest } does (G-ORBITAL-CORE-222).
+mod guest_clock {
+    use super::*;
+
+    const PINNED: f64 = 1_700_000_000_000.0;
+    const PINNED_ISO: &str = "2023-11-14T22:13:20.000Z";
+
+    fn stamping_guest() -> serde_json::Value {
+        let stamp = json!([["emit", "AT", { "t": "@now" }]]);
+        json!({
+            "name": "Stamping", "typeContractVersion": 1,
+            "orbitals": [{ "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Clock", "linkedEntity": "Cell",
+                    "emits": [{ "event": "AT", "payloadSchema": [{ "name": "t", "type": "instant" }] }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT", "effects": stamp.clone() },
+                            { "from": "idle", "to": "idle", "event": "STAMP", "effects": stamp }] } }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Clock" }] }] }]
+        })
+    }
+
+    fn opened(config: KernelConfig) -> RuntimeKernel {
+        let kernel = opener_configured(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "STAMP", "effects": [["program/dispatch", "G.Clock.STAMP", {}, { "guest": "@entity.guest", "emit": emit() }]] }
+        ]), serde_json::Value::Null, config);
+        let program: Value = from_json_value(&json!({ "program": stamping_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
+        kernel
+    }
+
+    fn pinned() -> KernelConfig {
+        KernelConfig { clock: Some(Arc::new(|| PINNED) as orbital_core_runtime::config::DispatchClock), ..KernelConfig::default() }
+    }
+
+    fn stamps(got: &serde_json::Value) -> Vec<String> {
+        got["emitted"].as_array().map(|all| all.iter().filter_map(|e| e["payload"]["t"].as_str().map(str::to_string)).collect()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_guests_open_runs_on_the_asking_steps_stamp() {
+        let kernel = opened(pinned());
+        assert_eq!(stamps(&entity(&kernel)["got"]), vec![PINNED_ISO.to_string()], "{}", entity(&kernel));
+    }
+
+    #[test]
+    fn a_dispatch_into_a_guest_runs_on_the_asking_steps_stamp() {
+        let kernel = opened(pinned());
+        kernel.dispatch("Opener", None, "STAMP", Value::Null).unwrap();
+        assert_eq!(stamps(&entity(&kernel)["got"]), vec![PINNED_ISO.to_string()], "{}", entity(&kernel));
+    }
+
+    #[test]
+    fn control_an_opener_on_the_wall_clock_gives_its_guest_the_wall_clock() {
+        let kernel = opened(KernelConfig::default());
+        kernel.dispatch("Opener", None, "STAMP", Value::Null).unwrap();
+        let got = stamps(&entity(&kernel)["got"]);
+        assert!(got.len() == 1 && got[0].as_str() > PINNED_ISO, "{}", entity(&kernel));
+    }
+}
+
 mod kernel_step {
     use super::*;
 
@@ -2015,6 +2084,10 @@ mod kernel_step {
 
     /// A kernel with the guest open, whose `STEP_<n>` runs `kernel/step` with `requests[n]` and keeps the answer in `got`.
     fn stepping(grants: serde_json::Value, requests: &[serde_json::Value]) -> RuntimeKernel {
+        stepping_over(stepped_guest(), grants, requests)
+    }
+
+    fn stepping_over(guest: serde_json::Value, grants: serde_json::Value, requests: &[serde_json::Value]) -> RuntimeKernel {
         let mut transitions = vec![
             open_transition(),
             json!({ "from": "idle", "to": "idle", "event": "NATIVE_GO", "effects": [
@@ -2033,10 +2106,76 @@ mod kernel_step {
             ] }));
         }
         let kernel = opener_granted(serde_json::Value::Array(transitions), grants);
-        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        let program: Value = from_json_value(&json!({ "program": guest })).unwrap();
         kernel.dispatch("Opener", None, "GO", program).unwrap();
         assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
         kernel
+    }
+
+    /// The guest's Src and its keyed row after a native GO, as `program/inputs { state, guest }` reflects them.
+    fn reflected(frames: bool) -> (serde_json::Value, serde_json::Value) {
+        let mut options = json!({ "state": "G", "guest": "@entity.guest", "emit": emit() });
+        if frames {
+            options["frames"] = json!(true);
+        }
+        let kernel = opener_granted(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "NATIVE_GO", "effects": [["program/dispatch", "G.Src.GO", { "v": 4, "who": "a" }, { "guest": "@entity.guest", "emit": emit() }]] },
+            { "from": "idle", "to": "idle", "event": "REFLECT", "effects": [["program/inputs", options]] }
+        ]), step_grant());
+        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        kernel.dispatch("Opener", None, "NATIVE_GO", Value::Null).unwrap();
+        let traits = run(&kernel, "REFLECT")["got"]["state"]["traits"].clone();
+        let of = |name: &str, row: &str| traits.as_array().and_then(|all| all.iter().find(|t| t["trait"] == name && t["entityId"] == row)).map(|t| t["entity"].clone()).unwrap_or_else(|| panic!("no {name} on {row}: {traits}"));
+        (of("Src", "singleton"), of("Keyed", "rt"))
+    }
+
+    // A parity check compares the row a .lolo kernel holds with the frame the native kernel's next step of that trait
+    // would read, which is what kernel/step answers as `before` (G-CROSS-835).
+    #[test]
+    fn a_guests_state_read_with_frames_answers_the_frame_each_traits_next_step_reads() {
+        let (src, keyed) = reflected(true);
+        assert_eq!(src["n"], json!(5.0), "Src's frame after GO: {src}");
+        assert_eq!((keyed["id"].clone(), keyed["n"].clone()), (json!("rt"), json!(50.0)), "the keyed row's frame carries its id: {keyed}");
+    }
+
+    #[test]
+    fn control_a_guests_state_read_without_frames_keeps_the_reflected_entity() {
+        let (src, keyed) = reflected(false);
+        assert_eq!(src["n"], json!(5.0), "{src}");
+        assert!(keyed.get("id").is_none() && keyed["n"] == json!(50.0), "the keyed row reflects without its id: {keyed}");
+    }
+
+    /// The stepped guest holding the queue reorder grant, its Src reordering the worklist on REORDER and not on PING.
+    fn reordering_guest() -> serde_json::Value {
+        let mut guest = stepped_guest();
+        guest["osGrants"] = json!({ "kernel": [{ "target": "queue", "kinds": ["reorder"] }] });
+        guest["orbitals"][0]["traits"][0]["stateMachine"]["transitions"].as_array_mut().unwrap().push(json!(
+            { "from": "idle", "to": "idle", "event": "REORDER", "effects": [["kernel/queue-back", "X"], ["kernel/queue-front", "GOT"]] }
+        ));
+        guest
+    }
+
+    // EXEC-METAL-5: a reorder is a directive applied after the step, where the worklist is. A `.lolo` kernel holds
+    // the worklist, so the step answers the directives for it to apply (G-CROSS-833).
+    #[test]
+    fn a_step_that_reorders_the_worklist_answers_its_directives_in_written_order() {
+        let reorder = json!({ "trait": "Src", "from": "idle", "event": "REORDER", "payload": {}, "entity": {} });
+        let kernel = stepping_over(reordering_guest(), step_grant(), &[reorder]);
+        let got = step(&kernel, 0);
+        assert_eq!(got["fired"], json!(true), "{got}");
+        assert_eq!(got["queue"], json!([{ "event": "X", "front": false }, { "event": "GOT", "front": true }]), "{got}");
+    }
+
+    #[test]
+    fn control_a_step_that_reorders_nothing_answers_no_directive_even_after_one_that_did() {
+        let reorder = json!({ "trait": "Src", "from": "idle", "event": "REORDER", "payload": {}, "entity": {} });
+        let ping = json!({ "trait": "Src", "from": "idle", "event": "PING", "payload": {}, "entity": {} });
+        let kernel = stepping_over(reordering_guest(), step_grant(), &[reorder, ping]);
+        assert_eq!(step(&kernel, 0)["queue"].as_array().map(Vec::len), Some(2), "control: the first step reordered");
+        let got = step(&kernel, 1);
+        assert_eq!((got["fired"].clone(), got["queue"].clone()), (json!(true), json!([])), "{got}");
     }
 
     fn step(kernel: &RuntimeKernel, n: usize) -> serde_json::Value {

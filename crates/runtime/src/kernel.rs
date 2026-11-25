@@ -356,6 +356,8 @@ struct StepScope {
     /// The `kernel/queue-front|back` directives the running step staged (event, to the front): applied to the worklist
     /// after the step, dropped when it does not commit.
     queue_directives: RwLock<Vec<(String, bool)>>,
+    /// What an isolated step asked of the worklist, kept for `kernel/step`'s answer: its caller holds the worklist.
+    isolated_directives: RwLock<Vec<(String, bool)>>,
     /// Deliveries a viewer's dispatch made to a trait of an orbital whose every page is a protocol endpoint: taken into
     /// the run after each unit and stepped in the program session once the viewer's own work is done (EXEC-DIST-9).
     program_inbox: RwLock<VecDeque<CascadeItem>>,
@@ -886,6 +888,7 @@ impl RuntimeKernel {
                 theme_change: RwLock::new(None),
                 mem_change,
                 queue_directives: RwLock::new(Vec::new()),
+                isolated_directives: RwLock::new(Vec::new()),
                 program_inbox: RwLock::new(VecDeque::new()),
                 asker_inbox: RwLock::new(VecDeque::new()),
             },

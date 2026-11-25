@@ -569,6 +569,8 @@ impl RuntimeKernel {
             self.renders.write().forget_traits([input.trait_name]);
         }
         *self.step.dispatch_now.write() = Some(input.now);
+        self.step.queue_directives.write().clear();
+        self.step.isolated_directives.write().clear();
         let row = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
         let ran = match (&input.host, input.tick) {
             (Some(host), tick) => host
@@ -585,6 +587,8 @@ impl RuntimeKernel {
             (None, None) => self.process_event_in_dispatch(input.trait_name, entity_id, event, Arc::new(input.payload), None, false),
         };
         *self.step.dispatch_now.write() = None;
+        let mut directed = self.take_queue_directives();
+        directed.extend(std::mem::take(&mut *self.step.isolated_directives.write()));
         if !commit {
             self.restore_trait(input.trait_name, entity_id, held);
             self.renders.write().forget_traits([input.trait_name]);
@@ -595,6 +599,8 @@ impl RuntimeKernel {
         let response = crate::effects::response::EventResponse::from_process_results(&ran, input.trait_name, event);
         let (rendered, navigations) = super::guests::paints_of(&response, &super::guests::painter_orbitals(self, &ran), &input.embedded);
         if let Value::Object(fields) = &mut answer {
+            let queue = directed.into_iter().map(|(event, front)| record([("event", Value::string(event)), ("front", Value::Bool(front))]));
+            fields.insert("queue".into(), Value::array(queue.collect::<Vec<Value>>()));
             fields.insert("rendered".into(), Value::array(rendered));
             fields.insert("navigations".into(), Value::array(navigations));
         }

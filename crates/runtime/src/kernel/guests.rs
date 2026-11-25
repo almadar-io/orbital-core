@@ -1075,7 +1075,17 @@ impl RuntimeKernel {
 
     /// `program/open program options`: register the program in a guest kernel, mount its boot traits and its routed page and answer
     /// `{ guest, states, rendered, emitted, outcomes }`.
+    /// A guest with no host of its own has no clock of its own: its work runs on the asking step's stamp (EXEC-CONC-7).
+    fn stamp_guest(&self, guest: &RuntimeKernel, hosted: bool) -> Option<super::dispatch_scope::DispatchStamp> {
+        if hosted {
+            return None;
+        }
+        let now = (*self.step.dispatch_now.read())?;
+        Some(guest.hold_stamp(now))
+    }
+
     pub(super) fn open_guest(&self, args: &[Value]) -> Result<Value, AgentPortFailure> {
+        let asker_now = *self.step.dispatch_now.read();
         let program = args
             .first()
             .ok_or_else(|| failure("program/open: name the program to open"))?;
@@ -1503,6 +1513,10 @@ impl RuntimeKernel {
                     }
                 }
             }
+            let _stamp = match (host.is_none(), asker_now) {
+                (true, Some(now)) => Some(guest.hold_stamp(now)),
+                _ => None,
+            };
             let outcomes = if mount {
                 mount_seeds(&guest, host.as_deref(), resolved.as_deref(), &seeds, "program/open")?
             } else {
@@ -1743,6 +1757,7 @@ impl RuntimeKernel {
                 .filter(|seed| remount || !held.mounted.contains(&seed.r#trait))
                 .collect()
         };
+        let _stamp = self.stamp_guest(guest, session.host.is_some());
         let outcomes = if mount {
             mount_seeds(guest, session.host.as_deref(), resolved.as_deref(), &fresh, "program/navigate")?
         } else {
@@ -1877,6 +1892,7 @@ impl RuntimeKernel {
         handle: &Value,
     ) -> Result<Value, AgentPortFailure> {
         let session = self.guest(handle, "program/dispatch")?;
+        let _stamp = self.stamp_guest(&session.kernel, session.host.is_some());
         if let Some(Value::Object(options)) = args.get(2) {
             if options.contains_key("grants") {
                 return Err(guest_refusal(
@@ -2506,6 +2522,7 @@ impl GuestSession {
             source: Some(source),
             host: None,
             grants,
+            log_tags: None,
             opener_session: None,
             split: false,
             arenas: Vec::new(),

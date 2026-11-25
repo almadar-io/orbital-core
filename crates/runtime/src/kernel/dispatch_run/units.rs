@@ -109,7 +109,7 @@ impl RuntimeKernel {
     }
 
     /// The dispatch's one `now`: the outer stamp when one is held, else the clock.
-    pub(super) fn hold_stamp(&self, now: f64) -> DispatchStamp {
+    pub(in crate::kernel) fn hold_stamp(&self, now: f64) -> DispatchStamp {
         let mut slot = self.step.dispatch_now.write();
         match *slot {
             Some(held) => DispatchStamp {
@@ -391,7 +391,9 @@ impl RuntimeKernel {
                     tick.is_none(),
                 );
                 let directed = self.take_queue_directives();
-                if !*isolated {
+                if *isolated {
+                    self.step.isolated_directives.write().extend(directed);
+                } else {
                     own.extend(followups.own);
                     fanned.extend(followups.fanned);
                     directives.extend(directed);
