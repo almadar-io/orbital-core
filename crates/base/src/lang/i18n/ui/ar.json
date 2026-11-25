@@ -1195,6 +1195,8 @@
   "aria.mainNavigation": "التنقل الرئيسي",
   "aria.carouselSlides": "الشرائح",
   "aria.minimap": "الخريطة المصغرة",
+  "aria.table": "جدول",
+  "aria.diagram": "مخطط",
   "aria.canvasScene": "مشهد اللعبة",
   "aria.learningCanvas": "رسم تفاعلي",
   "aria.scene3d": "مشهد ثلاثي الأبعاد",

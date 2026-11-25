@@ -58,6 +58,29 @@ pub fn now_millis() -> i64 {
     HOST_CLOCK.get().expect("the host installs its clock (time_util::install_clock) before the kernel reads time")()
 }
 
+/// The host's own UTC offset in minutes east at instant `ms`, daylight saving included: the zone the device runs in,
+/// read from the browser or the OS, never a zone database. A bare-metal host has no zone: UTC.
+#[cfg(target_arch = "wasm32")]
+pub fn local_offset_minutes(ms: i64) -> i32 {
+    let at = js_sys::Date::new_0();
+    at.set_time(ms as f64);
+    -(at.get_timezone_offset() as i32)
+}
+
+#[cfg(all(feature = "std", not(target_arch = "wasm32")))]
+pub fn local_offset_minutes(ms: i64) -> i32 {
+    use chrono::{Offset, TimeZone};
+    chrono::Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map_or(0, |at| at.offset().fix().local_minus_utc() / 60)
+}
+
+#[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
+pub fn local_offset_minutes(_ms: i64) -> i32 {
+    0
+}
+
 /// Milliseconds since the Unix epoch, as `f64` (the shape the time operators want).
 pub fn now_millis_f64() -> f64 {
     now_millis() as f64

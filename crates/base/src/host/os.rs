@@ -48,7 +48,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
         | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
         KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
-        MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
+        MmioRead | MmioWrite | IrqWait | IrqAck | AudioIn | VideoDecode | VideoFeed => OsFamily::Dev,
         ArenaNew | ArenaDrop | Alloc | Free | Borrow | Release | MemWrite | Freeze | AtomicLoad | AtomicStore
         | AtomicAdd | AtomicCas | AudioDecode => OsFamily::Mem,
         QueueFront | QueueBack | KernelCommit => OsFamily::Kernel,
@@ -188,6 +188,9 @@ os_ops! {
     MmioWrite => ("os/mmio-write", Single),
     IrqWait => ("os/irq-wait", Single),
     IrqAck => ("os/irq-ack", Single),
+    AudioIn => ("os/audio-in", Stream),
+    VideoDecode => ("os/video-decode", Stream),
+    VideoFeed => ("os/video-feed", Single),
     KvGet => ("kv/get", Single),
     KvPut => ("kv/put", Single),
     KvDelete => ("kv/delete", Single),
@@ -600,7 +603,7 @@ mod tests {
             );
             assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
-        assert_eq!(OsOp::ALL.len(), 131);
+        assert_eq!(OsOp::ALL.len(), 134);
         assert_eq!(OsOp::from_name("http"), None);
     }
 

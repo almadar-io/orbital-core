@@ -1195,6 +1195,8 @@
   "aria.mainNavigation": "Glavna navigacija",
   "aria.carouselSlides": "Diapozitivi",
   "aria.minimap": "Pomanjšani zemljevid",
+  "aria.table": "Tabela",
+  "aria.diagram": "Diagram",
   "aria.canvasScene": "Prizor igre",
   "aria.learningCanvas": "Interaktivni diagram",
   "aria.scene3d": "3D prizor",

@@ -1195,6 +1195,8 @@
   "aria.mainNavigation": "Main navigation",
   "aria.carouselSlides": "Slides",
   "aria.minimap": "Minimap",
+  "aria.table": "Table",
+  "aria.diagram": "Diagram",
   "aria.canvasScene": "Game scene",
   "aria.learningCanvas": "Interactive diagram",
   "aria.scene3d": "3D scene",

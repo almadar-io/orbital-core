@@ -1780,6 +1780,40 @@ fn test_time_format_two_arg_token_form() {
     );
 }
 
+// G-CROSS-828: `"local"` formats in the zone of the host that runs it, offset at that instant (daylight saving included).
+#[test]
+fn time_format_local_shows_the_instant_in_the_hosts_zone() {
+    for (instant, ms) in [("2026-01-15T12:30:00Z", 1_768_480_200_000_i64), ("2026-07-15T12:30:00Z", 1_784_118_600_000_i64)] {
+        let offset = orbital_core_base::time_util::local_offset_minutes(ms);
+        assert!((-14 * 60..=14 * 60).contains(&offset), "a real zone offset, got {offset}");
+        let shifted = chrono::DateTime::from_timestamp_millis(ms + i64::from(offset) * 60_000).expect("in range");
+        assert_eq!(
+            eval(&format!(r#"["time/format", "{instant}", "YYYY-MM-DD HH:mm", "local"]"#)),
+            Value::string(shifted.format("%Y-%m-%d %H:%M").to_string())
+        );
+    }
+}
+
+#[test]
+fn control_time_format_utc_zone_is_the_two_argument_form() {
+    assert_eq!(
+        eval(r#"["time/format", "2026-07-15T12:30:00Z", "HH:mm", "UTC"]"#),
+        eval(r#"["time/format", "2026-07-15T12:30:00Z", "HH:mm"]"#)
+    );
+    assert_eq!(eval(r#"["time/format", "2026-07-15T12:30:00Z", "HH:mm", "UTC"]"#), Value::string("12:30"));
+}
+
+#[test]
+fn edge_time_format_local_leaves_a_bare_date_on_its_day() {
+    assert_eq!(eval(r#"["time/format", "2026-07-15", "YYYY-MM-DD", "local"]"#), Value::string("2026-07-15"));
+}
+
+#[test]
+fn edge_time_format_refuses_a_zone_it_cannot_read() {
+    let err = eval_err(r#"["time/format", "2026-07-15T12:30:00Z", "HH:mm", "Europe/Ljubljana"]"#);
+    assert!(err.contains("\"UTC\" or \"local\""), "{err}");
+}
+
 // ========================================================================
 // Phase 2.6: Validation Operations Tests
 // ========================================================================

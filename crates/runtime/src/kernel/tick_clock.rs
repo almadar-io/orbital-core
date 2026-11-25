@@ -35,12 +35,15 @@ pub struct Calendar {
 }
 
 impl Calendar {
-    /// A bare-metal host carries no time-zone database: its calendar is UTC, read from the host clock.
-    #[cfg(all(not(feature = "std"), not(target_arch = "wasm32")))]
+    /// The host's wall clock in its own zone (`time_util::local_offset_minutes`: the browser's or the OS zone, UTC on a
+    /// bare-metal host), the same zone `time/format` reads for `"local"`.
     pub fn local_now() -> Self {
         use chrono::{Datelike, Timelike};
-        let now = chrono::DateTime::from_timestamp_millis(orbital_core_base::time_util::now_millis())
-            .expect("the host clock answers a representable instant");
+        let ms = orbital_core_base::time_util::now_millis();
+        let shifted = ms + i64::from(orbital_core_base::time_util::local_offset_minutes(ms)) * 60_000;
+        let now = chrono::DateTime::from_timestamp_millis(shifted)
+            .expect("the host clock answers a representable instant")
+            .naive_utc();
         Self {
             minute: now.minute(),
             hour: now.hour(),
@@ -52,47 +55,6 @@ impl Calendar {
                 + i64::from(now.day()) * 10_000
                 + i64::from(now.hour()) * 100
                 + i64::from(now.minute()),
-        }
-    }
-
-    #[cfg(all(feature = "std", not(target_arch = "wasm32")))]
-    pub fn local_now() -> Self {
-        use chrono::{Datelike, Local, Timelike};
-        let now = Local::now();
-        Self {
-            minute: now.minute(),
-            hour: now.hour(),
-            day: now.day(),
-            month: now.month(),
-            weekday: now.weekday().num_days_from_sunday(),
-            minute_key: i64::from(now.year()) * 100_000_000
-                + i64::from(now.month0()) * 1_000_000
-                + i64::from(now.day()) * 10_000
-                + i64::from(now.hour()) * 100
-                + i64::from(now.minute()),
-        }
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    pub fn local_now() -> Self {
-        let now = js_sys::Date::new_0();
-        let (year, month0, day) = (
-            i64::from(now.get_full_year()),
-            i64::from(now.get_month()),
-            i64::from(now.get_date()),
-        );
-        let (hour, minute) = (i64::from(now.get_hours()), i64::from(now.get_minutes()));
-        Self {
-            minute: now.get_minutes(),
-            hour: now.get_hours(),
-            day: now.get_date(),
-            month: now.get_month() + 1,
-            weekday: now.get_day(),
-            minute_key: year * 100_000_000
-                + month0 * 1_000_000
-                + day * 10_000
-                + hour * 100
-                + minute,
         }
     }
 }

@@ -474,14 +474,31 @@ impl StrictOperator for TimeValidOp {
     }
 }
 
-/// time/format - format a date or datetime with moment-style tokens, in UTC
+/// time/format - format a date or datetime with moment-style tokens, in UTC, or with a third argument `"local"` in the
+/// zone of the host that runs it (a bare date is a calendar day and never shifts)
 pub struct TimeFormatOp;
 impl StrictOperator for TimeFormatOp {
     fn apply(&self, args: &[&Value], _ctx: &BindingContext) -> EvalResult {
         require_arity!(args, "time/format", >= 2);
         let m = Moment::of(args[0])?;
         let format = args[1];
-        Ok(Value::string(format_moment_tokens(m, format.text()?)?))
+        let shown = match args.get(2) {
+            None => m,
+            Some(zone) => match zone.text()? {
+                "UTC" => m,
+                "local" if m.shape == Shape::Date => m,
+                "local" => Moment {
+                    ms: m.ms + f64::from(orbital_core_base::time_util::local_offset_minutes(m.ms as i64)) * 60_000.0,
+                    shape: m.shape,
+                },
+                other => {
+                    return Err(OrbitalError::Eval(EvalError::InvalidArgument(format!(
+                        "time/format zone is \"UTC\" or \"local\" (the zone of the host that runs it), got {other:?}"
+                    ))))
+                }
+            },
+        };
+        Ok(Value::string(format_moment_tokens(shown, format.text()?)?))
     }
 }
 
