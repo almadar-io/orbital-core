@@ -781,7 +781,7 @@ mod tests {
     }
 
     #[test]
-    fn the_device_family_is_exactly_the_four_device_ops() {
+    fn the_device_family_is_exactly_the_device_ops() {
         let dev: Vec<&str> = OsOp::ALL
             .iter()
             .filter(|op| family_of(**op) == OsFamily::Dev)
@@ -789,7 +789,7 @@ mod tests {
             .collect();
         assert_eq!(
             dev,
-            vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]
+            vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack", "os/audio-in", "os/video-decode", "os/video-feed"]
         );
         assert_eq!(
             (OsOp::MmioRead.min_args().expect("table"), OsOp::MmioRead.max_args().expect("table")),
@@ -800,9 +800,10 @@ mod tests {
             (4, 4)
         );
         assert_eq!((OsOp::IrqWait.min_args().expect("table"), OsOp::IrqAck.max_args().expect("table")), (1, 1));
-        assert!(dev
+        assert!(["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack", "os/video-feed"]
             .iter()
             .all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
+        assert!(OsOp::AudioIn.is_stream() && OsOp::VideoDecode.is_stream(), "the microphone and the decoder stream frames");
         assert!(OsOp::IrqWait.defers_completion());
         assert!(
             !OsOp::MmioRead.defers_completion() && !OsOp::IrqAck.defers_completion(),
@@ -851,6 +852,8 @@ mod tests {
                 "os/tcp-listen",
                 "os/watch-port",
                 "os/watch-cron",
+                "os/audio-in",
+                "os/video-decode",
             ]
         );
         assert!(!OsOp::ReadFile.is_stream());

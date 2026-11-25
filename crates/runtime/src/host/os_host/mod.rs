@@ -374,6 +374,9 @@ mod tests {
         ("os/mmio-write", "no devices on this host"),
         ("os/irq-wait", "no devices on this host"),
         ("os/irq-ack", "no devices on this host"),
+        ("os/audio-in", "a client port: the browser or the device answers it"),
+        ("os/video-decode", "a client port: the browser or the device answers it"),
+        ("os/video-feed", "a client port: the browser or the device answers it"),
     ];
 
     fn fits(declared: &str, value: &Value) -> bool {
@@ -902,7 +905,7 @@ mod tests {
             counts[slot] += 1;
         }
         assert_eq!(counts.iter().sum::<usize>(), OsOp::ALL.len());
-        assert_eq!(counts, [32, 18, 12, 32, 5, 4, 13, 3, 1, 11]);
+        assert_eq!(counts, [32, 18, 12, 32, 5, 7, 13, 3, 1, 11]);
     }
 
     #[test]
