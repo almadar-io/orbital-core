@@ -18,6 +18,8 @@
 //!   own floor: an exact namespace beats every `prefix:*`, and the longest prefix wins.
 //! - `ALMADAR_LOG_FORMAT=json` writes one [`StructuredLogEntry`] per line (the
 //!   `@almadar/core` observability shape) instead of console lines.
+//! - `ALMADAR_LOG_DIR=<dir>` also keeps every line the floors let through as JSON in
+//!   `<dir>/<level>/<YYYY-MM-DD>.jsonl` (UTC day); deleting old days is the operator's (std-log-retention).
 //! - **Timing** is spans: a closed span's wall time is its duration. [`Timings`] records every
 //!   closed span for a timing tree and a Chrome trace; in json format a closed span the filter
 //!   admits is a `[PROFILE] <name>` entry carrying `elapsedMs`, as `profile()` writes in TS.
@@ -369,6 +371,126 @@ where
     }
 }
 
+std::thread_local! {
+    static LOG_TAGS: std::cell::RefCell<Vec<serde_json::Map<String, serde_json::Value>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// While held, every JSON log line this thread writes carries `tags` in its `data` (a field of the line's own wins).
+/// A guest kernel's work runs under its `app` and `release` this way (`program/open { log }`).
+pub struct LogTagsGuard {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+/// Tag the JSON log lines this thread writes until the guard drops; the innermost tags apply.
+pub fn log_tags(tags: serde_json::Map<String, serde_json::Value>) -> LogTagsGuard {
+    LOG_TAGS.with(|stack| stack.borrow_mut().push(tags));
+    LogTagsGuard { _not_send: std::marker::PhantomData }
+}
+
+impl Drop for LogTagsGuard {
+    fn drop(&mut self) {
+        LOG_TAGS.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
+}
+
+fn tagged(mut data: serde_json::Map<String, serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    LOG_TAGS.with(|stack| {
+        if let Some(tags) = stack.borrow().last() {
+            for (key, value) in tags {
+                data.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    });
+    data
+}
+
+/// The env var naming the folder the log files are kept in.
+pub const LOG_DIR_VAR: &str = "ALMADAR_LOG_DIR";
+
+/// Appends each line to `<dir>/<level>/<YYYY-MM-DD>.jsonl` (UTC day, level error, warn, info or debug).
+#[derive(Clone)]
+pub struct DailyLevelFiles {
+    dir: std::path::PathBuf,
+    open: Arc<Mutex<std::collections::HashMap<(&'static str, String), std::fs::File>>>,
+}
+
+impl DailyLevelFiles {
+    pub fn new(dir: std::path::PathBuf) -> Self {
+        DailyLevelFiles { dir, open: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+    }
+
+    fn level_dir(level: Level) -> &'static str {
+        match level {
+            Level::ERROR => "error",
+            Level::WARN => "warn",
+            Level::INFO => "info",
+            _ => "debug",
+        }
+    }
+}
+
+/// One line's writer into its level's file for the current day.
+pub struct DailyLevelLine {
+    files: DailyLevelFiles,
+    level: &'static str,
+}
+
+impl Write for DailyLevelLine {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let mut open = self.files.open.lock();
+        open.retain(|(_, d), _| *d == day);
+        let key = (self.level, day);
+        if !open.contains_key(&key) {
+            let folder = self.files.dir.join(self.level);
+            std::fs::create_dir_all(&folder)?;
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(folder.join(format!("{}.jsonl", key.1)))?;
+            open.insert(key.clone(), file);
+        }
+        match open.get_mut(&key) {
+            Some(file) => file.write_all(buf).map(|()| buf.len()),
+            None => Ok(0),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'w> MakeWriter<'w> for DailyLevelFiles {
+    type Writer = DailyLevelLine;
+    fn make_writer(&'w self) -> DailyLevelLine {
+        DailyLevelLine { files: self.clone(), level: "info" }
+    }
+    fn make_writer_for(&'w self, meta: &Metadata<'_>) -> DailyLevelLine {
+        DailyLevelLine { files: self.clone(), level: Self::level_dir(*meta.level()) }
+    }
+}
+
+/// The layer that keeps JSON log lines in `dir`, one file per level per day, filtered by `config`.
+pub fn file_layer<S>(dir: std::path::PathBuf, config: LogConfig) -> Box<dyn Layer<S> + Send + Sync>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    let console = ConsoleOptions { ansi: false, uptime: false, spans: true };
+    event_layer(LogFormat::Json, config, console, DailyLevelFiles::new(dir))
+}
+
+/// [`file_layer`] in the folder `ALMADAR_LOG_DIR` names; none when it is unset or empty.
+pub fn file_layer_from_env<S>(config: LogConfig) -> Option<Box<dyn Layer<S> + Send + Sync>>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    let dir = std::env::var(LOG_DIR_VAR).ok().filter(|d| !d.trim().is_empty())?;
+    Some(file_layer(std::path::PathBuf::from(dir), config))
+}
+
 /// Report the env entries `config` skipped, once a subscriber is installed.
 pub fn report_skipped(config: &LogConfig) {
     for message in config.skipped() {
@@ -391,7 +513,8 @@ pub fn init() {
             ConsoleOptions::for_stderr(),
             std::io::stderr,
         );
-        if tracing_subscriber::registry().with(layer).try_init().is_ok() {
+        let files = file_layer_from_env(config.clone());
+        if tracing_subscriber::registry().with(layer).with(files).try_init().is_ok() {
             report_skipped(&config);
         }
     });
@@ -502,14 +625,14 @@ impl<W> JsonLines<W>
 where
     W: for<'w> MakeWriter<'w>,
 {
-    fn write(&self, entry: &StructuredLogEntry) {
+    fn write(&self, meta: &Metadata<'_>, entry: &StructuredLogEntry) {
         let mut line = match serde_json::to_vec(entry) {
             Ok(line) => line,
             Err(_) => return,
         };
         line.push(b'\n');
         // A failed write to the log channel has nowhere else to be reported.
-        let _ = self.writer.make_writer().write_all(&line);
+        let _ = self.writer.make_writer_for(meta).write_all(&line);
     }
 }
 
@@ -545,22 +668,22 @@ where
         let mut fields = JsonFields::default();
         event.record(&mut fields);
         let meta = event.metadata();
-        self.write(&StructuredLogEntry {
+        self.write(meta, &StructuredLogEntry {
             severity: LogSeverity::of(*meta.level()),
             time: now_iso(),
             namespace: meta.target().to_string(),
             message: fields.message.unwrap_or_default(),
-            data: (!fields.data.is_empty()).then_some(fields.data),
+            data: Some(tagged(fields.data)).filter(|data| !data.is_empty()),
         });
     }
 
     fn on_close(&self, id: Id, ctx: Context<'_, S>) {
         let Some(span) = ctx.span(&id) else { return };
         let Some(start) = span.extensions_mut().remove::<SpanStart>() else { return };
-        let mut data = start.fields;
+        let mut data = tagged(start.fields);
         data.insert("elapsedMs".to_string(), serde_json::json!(elapsed_ms(start.at.elapsed())));
         let meta = span.metadata();
-        self.write(&StructuredLogEntry {
+        self.write(meta, &StructuredLogEntry {
             severity: LogSeverity::of(*meta.level()),
             time: now_iso(),
             namespace: meta.target().to_string(),
@@ -1054,6 +1177,60 @@ mod tests {
         assert_eq!(lines[1]["message"], "[PROFILE] lower");
         assert_eq!(lines[1]["data"]["file"], "app.lolo");
         assert!(lines[1]["data"]["elapsedMs"].is_number());
+    }
+
+    #[test]
+    fn the_log_dir_keeps_one_json_lines_file_per_level_per_day() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = LogConfig::parse(Some("info"), None, None);
+        let layer = file_layer(dir.path().to_path_buf(), config);
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+            tracing::error!(target: "almadar:cli", "first error");
+            tracing::error!(target: "almadar:cli", "second error");
+            tracing::warn!(target: "almadar:cli", "a warning");
+            tracing::info!(target: "almadar:cli", "some info");
+            tracing::debug!(target: "almadar:cli", "below the floor");
+        });
+        let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let read = |level: &str| {
+            std::fs::read_to_string(dir.path().join(level).join(format!("{day}.jsonl"))).unwrap_or_default()
+        };
+        let errors: Vec<serde_json::Value> = read("error").lines().map(|l| from_json_str(l).expect("json line")).collect();
+        assert_eq!(errors.len(), 2);
+        assert_eq!(errors[0]["severity"], "ERROR");
+        assert_eq!(errors[1]["message"], "second error");
+        assert_eq!(read("warn").lines().count(), 1);
+        assert_eq!(read("info").lines().count(), 1);
+        assert!(!dir.path().join("debug").exists(), "a level below the floor writes no file");
+    }
+
+    #[test]
+    fn a_line_written_under_log_tags_carries_them_and_its_own_field_wins() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let config = LogConfig::parse(Some("info"), None, None);
+        let layer = file_layer(dir.path().to_path_buf(), config);
+        let tags: serde_json::Map<String, serde_json::Value> = [
+            ("app".to_string(), serde_json::json!("tukaj-lej")),
+            ("release".to_string(), serde_json::json!("releases/41")),
+        ]
+        .into_iter()
+        .collect();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(layer), || {
+            {
+                let _tags = log_tags(tags.clone());
+                tracing::warn!(target: "almadar:cli", "inside");
+                tracing::warn!(target: "almadar:cli", app = "own", "own field");
+            }
+            tracing::warn!(target: "almadar:cli", "outside");
+        });
+        let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        let text = std::fs::read_to_string(dir.path().join("warn").join(format!("{day}.jsonl"))).unwrap_or_default();
+        let lines: Vec<serde_json::Value> = text.lines().map(|l| from_json_str(l).expect("json line")).collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert_eq!(lines[0]["data"]["app"], "tukaj-lej");
+        assert_eq!(lines[0]["data"]["release"], "releases/41");
+        assert_eq!(lines[1]["data"]["app"], "own");
+        assert!(lines[2].get("data").is_none() || lines[2]["data"].get("app").is_none(), "{}", lines[2]);
     }
 }
 }

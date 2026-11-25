@@ -1322,6 +1322,13 @@ impl EmbeddedKernel {
             .ok_or_else(|| format!("dispatch mode: '{trait_name}' is not a registered trait"))
     }
 
+    /// The mode of a dispatch the host ran that this browser folds: the trait's own mode when this program holds it, else
+    /// server-awaited, since a trait the browser does not hold (a boot-only trait whose completion stepped this tab's page
+    /// trait) is the host's (EXEC-DIST-1, G-ORBITAL-CORE-240).
+    pub fn host_dispatch_mode(&self, trait_name: &str) -> DispatchMode {
+        self.kernel.trait_dispatch_mode(trait_name).unwrap_or(DispatchMode::PersistedAwaited)
+    }
+
     /// The config the kernel binds as `@config` for a registered trait (render markers resolve against it).
     pub fn trait_config(&self, trait_name: &str) -> Result<Value, String> {
         self.kernel

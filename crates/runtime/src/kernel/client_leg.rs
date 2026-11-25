@@ -308,15 +308,21 @@ impl RuntimeKernel {
                 );
                 Vec::new()
             } else {
-                let traits: Vec<TraitFrom> = outcomes
+                // A trait the browser stepped more than once is carried from its first step: the host replays the
+                // cascade from the pre-dispatch state (EXEC-DIST-2), not from where a later step left it.
+                let mut traits: Vec<TraitFrom> = Vec::new();
+                for (t, r) in outcomes
                     .iter()
                     .filter(|(t, r)| r.executed || t == trait_name)
-                    .map(|(t, r)| TraitFrom {
-                        r#trait: t.clone(),
-                        from: r.previous_state.clone(),
-                        event: r.event.clone(),
-                    })
-                    .collect();
+                {
+                    if !traits.iter().any(|c| &c.r#trait == t) {
+                        traits.push(TraitFrom {
+                            r#trait: t.clone(),
+                            from: r.previous_state.clone(),
+                            event: r.event.clone(),
+                        });
+                    }
+                }
                 let traits = (!traits.is_empty()).then_some(traits);
                 let client_only = |name: &str| {
                     self.registry
@@ -348,16 +354,22 @@ impl RuntimeKernel {
                 // The rows the steps riding `target`'s leg start from: the host runs them over what the browser holds.
                 let rider_rows = |target: &str| -> ValueMap {
                     let rides = rides_leg_of(target);
-                    outcomes
-                        .iter()
-                        .filter(|(name, ran)| name != target && ran.executed && rides.contains(name))
-                        .filter_map(|(name, ran)| {
-                            ran.entry
-                                .as_ref()
-                                .filter(|entry| !entry.entity_before.is_null())
-                                .map(|entry| (name.clone().into(), entry.entity_before.to_value()))
-                        })
-                        .collect()
+                    let mut rows = ValueMap::new();
+                    for (name, ran) in outcomes.iter().filter(|(name, ran)| {
+                        name != target && ran.executed && rides.contains(name)
+                    }) {
+                        if rows.contains_key(name.as_str()) {
+                            continue;
+                        }
+                        if let Some(entry) = ran
+                            .entry
+                            .as_ref()
+                            .filter(|entry| !entry.entity_before.is_null())
+                        {
+                            rows.insert(name.clone().into(), entry.entity_before.to_value());
+                        }
+                    }
+                    rows
                 };
                 let delivery_leg = |t: &String, r: &ProcessEventResult| -> Option<EventRequest> {
                     let entry = r.entry.as_ref().filter(|_| r.executed)?;
@@ -1683,6 +1695,22 @@ impl RuntimeKernel {
             }
         }
         stale
+    }
+
+    /// The response a host sends the tab that asked for a deferred completion (EXEC-QUEUE-10, EXEC-DIST-9): `None` when no
+    /// browser runs the completing trait or any trait the completion stepped; else the response, less the program-wide
+    /// emits the host already sends to every browser on their own, so a browser hears each once.
+    pub fn completion_push(&self, completing: &str, mut response: EventResponse) -> Option<EventResponse> {
+        if self.browser_runs(completing) {
+            return Some(response);
+        }
+        let stepped_for_browser = response.transitions.iter().flatten().any(|hop| self.browser_runs(&hop.trait_name));
+        if !stepped_for_browser {
+            return None;
+        }
+        let program_wide = self.program_wide_emits(&response);
+        response.emitted_events.retain(|emitted| !program_wide.contains(emitted));
+        Some(response)
     }
 
     pub fn browser_runs(&self, trait_name: &str) -> bool {

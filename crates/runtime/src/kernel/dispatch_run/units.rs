@@ -13,6 +13,7 @@ impl RuntimeKernel {
             locale,
             origin,
             program_deliveries,
+            asker_deliveries,
             program,
             isolated,
             ..
@@ -59,6 +60,13 @@ impl RuntimeKernel {
                         *seed = Some(self.begin_program_deliveries(std::mem::take(program_deliveries)));
                         Ok(Flow::More)
                     }
+                    None if asker_deliveries.as_ref().is_some_and(|held| !held.items.is_empty()) => {
+                        let items = asker_deliveries.as_mut().map(|held| std::mem::take(&mut held.items)).unwrap_or_default();
+                        let mut begun = self.begin_announce(None, items);
+                        begun.for_asker = true;
+                        *seed = Some(begun);
+                        Ok(Flow::More)
+                    }
                     None => Ok(Flow::Done),
                 },
             };
@@ -74,8 +82,17 @@ impl RuntimeKernel {
         let _asker = (in_flight.program || *program || viewerless_tick).then(|| self.enter_asker(asker));
         let _seam = (*program || viewerless_tick).then(|| self.enter_store_seam());
         let _program_step = (in_flight.program || *program || viewerless_tick).then(crate::effects::executor::ProgramStepScope::enter);
+        let _for_asker = in_flight
+            .for_asker
+            .then(|| asker_deliveries.as_ref().map(|held| self.enter_session(&held.asker)))
+            .flatten();
+        let worked_for = self.thread_asker();
         let stepped = self.step_seed(in_flight, outcomes, *isolated);
         program_deliveries.extend(std::mem::take(&mut *self.step.program_inbox.write()));
+        let for_viewer = std::mem::take(&mut *self.step.asker_inbox.write());
+        if let (Some(asker), false) = (worked_for, for_viewer.is_empty()) {
+            asker_deliveries.get_or_insert_with(|| Box::new(AskerDeliveries { asker, items: VecDeque::new() })).items.extend(for_viewer);
+        }
         self.settle_identity(stepped.is_ok());
         self.settle_theme(stepped.is_ok());
         self.settle_mem(stepped.is_ok());
@@ -185,6 +202,7 @@ impl RuntimeKernel {
             stage: Stage::Released(Cascade::new(deliveries)),
             tick: None,
             program: false,
+            for_asker: false,
             span,
         }
     }
@@ -272,6 +290,7 @@ impl RuntimeKernel {
             stage,
             tick,
             program: false,
+            for_asker: false,
             span,
         }
     }
@@ -551,6 +570,13 @@ impl RuntimeKernel {
         if self.thread_session().is_some() && self.registry.boot_traits.read().contains(&item.trait_name) {
             debug!(trait_name = %item.trait_name, event = %item.event, "fanout:program-session");
             self.step.program_inbox.write().push_back(item);
+            return Ok(true);
+        }
+        // EXEC-DIST-9 (owner ruling 2026-11-25): the program-session step worked for a viewer, so a delivery to a trait
+        // with one instance per session steps that viewer's instance.
+        if self.thread_session().is_none() && self.thread_asker().is_some() && self.browser_runs(&item.trait_name) {
+            debug!(trait_name = %item.trait_name, event = %item.event, "fanout:asker-session");
+            self.step.asker_inbox.write().push_back(item);
             return Ok(true);
         }
         cascade.settle_pass();

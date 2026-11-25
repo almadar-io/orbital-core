@@ -115,8 +115,17 @@ struct SeedRun {
     tick: Option<TickSeed>,
     /// Whether this seed steps in the program session: the deliveries a viewer's dispatch made to the server's traits.
     program: bool,
+    /// Whether this seed steps in the run's asker's session: the deliveries a program-session step made for that viewer
+    /// to its per-session traits ([`AskerDeliveries`]).
+    for_asker: bool,
     /// One event's delivery to one trait, open until its step is done.
     span: tracing::Span,
+}
+
+/// The viewer a program-session step worked for and the deliveries it made to that viewer's per-session traits.
+struct AskerDeliveries {
+    asker: Arc<str>,
+    items: VecDeque<CascadeItem>,
 }
 
 /// A route mount's `$MOUNT` deliveries and the row they step (EXEC-SEED-7). Boxed in [`DispatchRun`]: the layout pins
@@ -140,6 +149,10 @@ pub(crate) struct DispatchRun {
     /// The deliveries this run made from a viewer's session to traits of the server's orbitals: stepped as one more
     /// seed, in the program session, when everything else is done (EXEC-DIST-9).
     program_deliveries: VecDeque<CascadeItem>,
+    /// The deliveries this run's program-session steps made for a viewer to that viewer's per-session traits: stepped as
+    /// one more seed, in the viewer's session, when everything else is done (EXEC-DIST-9). Boxed: the layout pins hold
+    /// the run's size.
+    asker_deliveries: Option<Box<AskerDeliveries>>,
     /// Whether the whole run steps in the program session: a store driver answering an ask (EXEC-STORE-4), whichever
     /// session asked. The driver is the store seam, with no viewer of its own: in the asking session its steps would read
     /// that session's `@user`, a store ask of its own when the identity is store-bound.

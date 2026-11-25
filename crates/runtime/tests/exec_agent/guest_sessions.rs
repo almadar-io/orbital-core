@@ -437,6 +437,20 @@ fn edge_a_guest_keeping_its_declared_grants_needs_the_openers_kernel_spawn_grant
 }
 
 #[test]
+fn a_guest_opened_with_log_tags_opens() {
+    let after = opened_with(json!({ "log": { "app": "tukaj-lej", "release": "releases/41" } }));
+    assert!(after.get("refused").is_none_or(|r| r.is_null()), "{after}");
+}
+
+#[test]
+fn edge_log_is_a_record_of_text() {
+    for bad in [json!("tukaj-lej"), json!({ "app": 5 }), json!(["app"])] {
+        let after = opened_with(json!({ "log": bad }));
+        assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("`log` is a record of text values")), "{after}");
+    }
+}
+
+#[test]
 fn edge_declared_is_a_boolean() {
     let after = opened_with(json!({ "declared": "yes" }));
     assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("`declared` is true or false")), "{after}");

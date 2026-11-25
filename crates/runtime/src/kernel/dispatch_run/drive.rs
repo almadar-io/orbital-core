@@ -38,6 +38,14 @@ impl RuntimeKernel {
             let _seam = c.run.program.then(|| self.enter_store_seam());
             let _program_step = (c.run.program || c.run.seed.as_ref().is_some_and(|seed| seed.program))
                 .then(crate::effects::executor::ProgramStepScope::enter);
+            // A store ask the asker's seed made is answered in that viewer's session (EXEC-DIST-9).
+            let _for_asker = c
+                .run
+                .seed
+                .as_ref()
+                .is_some_and(|seed| seed.for_asker)
+                .then(|| c.run.asker_deliveries.as_ref().map(|held| self.enter_session(&held.asker)))
+                .flatten();
             let seeds = c.seeds.get_or_insert_with(|| self.pending_store_seeds());
             if c.store.is_none() {
                 if let Some((origin, ask)) = seeds.pop_front() {

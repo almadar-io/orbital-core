@@ -74,6 +74,7 @@ impl RuntimeKernel {
         let entity_id = entity_id.unwrap_or(RUNTIME_SINGLETON);
         let stamp = self.begin_dispatch();
         let _transition = tracing::trace_span!(target: orbital_core_base::logging::ns::RUNTIME_EFFECTS, "transition", trait_name = %trait_name, event = %event_name).entered();
+        let _log_tags = self.log_tags.read().clone().map(orbital_core_base::logging::log_tags);
 
         debug!(
             trait_name = %trait_name,

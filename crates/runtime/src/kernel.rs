@@ -359,6 +359,9 @@ struct StepScope {
     /// Deliveries a viewer's dispatch made to a trait of an orbital whose every page is a protocol endpoint: taken into
     /// the run after each unit and stepped in the program session once the viewer's own work is done (EXEC-DIST-9).
     program_inbox: RwLock<VecDeque<CascadeItem>>,
+    /// Deliveries a program-session step made for a viewer (its asker) to a trait that has one instance per session: taken
+    /// into the run after each unit and stepped in the asker's session (EXEC-DIST-9, owner ruling 2026-11-25).
+    asker_inbox: RwLock<VecDeque<CascadeItem>>,
 }
 
 /// What the registered programs present with: their theme presets, the viewer's light/dark mode, and the root nav
@@ -483,6 +486,8 @@ pub struct RuntimeKernel {
     hop_effects: std::sync::atomic::AtomicBool,
     /// The host's clock and allocation reading, used only inside a cost scope (EXEC-COST-1).
     cost_meter: RwLock<Option<Arc<dyn orbital_core_base::cost::CostMeter>>>,
+    /// The tags every JSON log line of this kernel's event steps carries (a guest's app and release, `program/open { log }`).
+    log_tags: RwLock<Option<serde_json::Map<String, serde_json::Value>>>,
     /// Whether this host holds the circuit state itself ([`RuntimeKernel::set_stateful`]).
     stateful: std::sync::atomic::AtomicBool,
     /// No browser runs this kernel's `[client]` traits, so it runs them itself ([`RuntimeKernel::set_runs_client_traits`]).
@@ -866,6 +871,7 @@ impl RuntimeKernel {
             record_entity_after: std::sync::atomic::AtomicBool::new(false),
             hop_effects: std::sync::atomic::AtomicBool::new(false),
             cost_meter: RwLock::new(None),
+            log_tags: RwLock::new(None),
             stateful: std::sync::atomic::AtomicBool::new(false),
             runs_client_traits: std::sync::atomic::AtomicBool::new(false),
             seed_writer: orbital_core_base::sync::Mutex::new(None),
@@ -881,6 +887,7 @@ impl RuntimeKernel {
                 mem_change,
                 queue_directives: RwLock::new(Vec::new()),
                 program_inbox: RwLock::new(VecDeque::new()),
+                asker_inbox: RwLock::new(VecDeque::new()),
             },
             grants: Grants {
                 egress: Arc::new(RwLock::new(Vec::new())),
@@ -977,6 +984,11 @@ impl RuntimeKernel {
     /// The host's cost meter (EXEC-COST-1); without one, a cost scope measures nothing.
     pub fn set_cost_meter(&self, meter: Option<Arc<dyn orbital_core_base::cost::CostMeter>>) {
         *self.cost_meter.write() = meter;
+    }
+
+    /// Tag the JSON log lines this kernel's event steps write, on whatever thread runs them.
+    pub fn set_log_tags(&self, tags: Option<serde_json::Map<String, serde_json::Value>>) {
+        *self.log_tags.write() = tags;
     }
 
     pub fn cost_meter(&self) -> Option<Arc<dyn orbital_core_base::cost::CostMeter>> {

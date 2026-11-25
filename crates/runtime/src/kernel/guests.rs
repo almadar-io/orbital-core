@@ -65,6 +65,8 @@ pub struct GuestSession {
     viewer_ticked_ms: Arc<std::sync::atomic::AtomicU64>,
     /// The tick clock of a guest with no host of its own: `program/tick { guest }` passes it on the asking step's clock.
     ticks: Arc<orbital_core_base::sync::Mutex<crate::tick_clock::TickClock>>,
+    /// The tags (`program/open { log }`, e.g. app and release) every JSON log line of the guest's work carries.
+    log_tags: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// How often a hosted split guest's host ticks it while no viewer streams it (G-CROSS-708, EXEC-CONC-7).
@@ -1119,6 +1121,24 @@ impl RuntimeKernel {
                 ))
             }
         };
+        let log_tags = match options.as_ref().and_then(|o| o.get("log")) {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(tags)) if tags.values().all(|v| matches!(v, Value::String(_))) => Some(
+                tags.iter()
+                    .filter_map(|(key, value)| match value {
+                        Value::String(text) => Some((key.to_string(), serde_json::Value::String(text.to_string()))),
+                        _ => None,
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            ),
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `log` is a record of text values",
+                ))
+            }
+        };
+        let _log_tags = log_tags.clone().map(orbital_core_base::logging::log_tags);
         let lolo = match options.as_ref().and_then(|o| o.get("kernel")) {
             None | Some(Value::Null) => false,
             Some(Value::String(kernel)) if kernel.as_str() == "native" => false,
@@ -1417,6 +1437,7 @@ impl RuntimeKernel {
                 }
             };
             guest.set_runs_client_traits(!split);
+            guest.set_log_tags(log_tags.clone());
             let client = match split {
                 false => None,
                 true => {
@@ -1509,6 +1530,7 @@ impl RuntimeKernel {
                 })),
                 viewer_ticked_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
                 ticks: Arc::new(orbital_core_base::sync::Mutex::new(crate::tick_clock::TickClock::from_programs(&opened_kernel.registered_programs()))),
+                log_tags: log_tags.clone(),
             };
             let ticker = match (&session.host, split) {
                 (Some(host), true) => Some((Arc::clone(host), Arc::clone(&session.viewer_ticked_ms))),
@@ -1771,6 +1793,7 @@ impl RuntimeKernel {
         let Some(session) = self.guests.read().get(handle).cloned() else {
             return Ok(GuestTicks::Closed);
         };
+        let _log_tags = session.log_tags.clone().map(orbital_core_base::logging::log_tags);
         session.viewer_ticked_ms.store(guest_ticks_now_ms(), std::sync::atomic::Ordering::Relaxed);
         // A stream keeps its session alive, so the guest's own must end for a closed tab's session to be freed.
         if session
@@ -2028,6 +2051,7 @@ impl RuntimeKernel {
         leg: Option<Value>,
         args: &[Value],
     ) -> Result<Value, AgentPortFailure> {
+        let _log_tags = session.log_tags.clone().map(orbital_core_base::logging::log_tags);
         let guest = &session.kernel;
         let keyed = self.io.keyed_call();
         let reply = guest_reply(args, &payload, keyed)?;

@@ -800,3 +800,24 @@ fn control_a_host_state_for_an_awaited_trait_the_host_ran_from_the_clients_state
     k.apply_server_response(&report, &Default::default()).unwrap();
     assert_eq!(k.get_state("Delete", None).map(|s| s.current_state).as_deref(), Some("idle"));
 }
+
+// G-ORBITAL-CORE-240, EXEC-DIST-1: a host-run dispatch the browser folds may name a trait the browser's program does not
+// hold (a boot-only trait's completion that stepped this tab's page trait); such a trait is the host's, so it awaits the server.
+#[test]
+fn a_host_dispatch_of_a_trait_the_browser_does_not_hold_folds_as_server_work() {
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(front_schema(), "c1").unwrap();
+    assert_eq!(
+        browser.host_dispatch_mode("MediaStorageHttp"),
+        orbital_core_base::dispatch_mode::DispatchMode::PersistedAwaited
+    );
+}
+
+#[test]
+fn control_a_host_dispatch_of_a_trait_the_browser_holds_keeps_that_traits_mode() {
+    let browser = orbital_core_runtime::embed::EmbeddedKernel::new(front_schema(), "c1").unwrap();
+    assert_eq!(
+        browser.host_dispatch_mode("Front"),
+        orbital_core_base::dispatch_mode::DispatchMode::HybridClientOnly
+    );
+    assert!(browser.dispatch_mode("MediaStorageHttp").is_err(), "control: dispatch_mode still refuses an unknown trait");
+}

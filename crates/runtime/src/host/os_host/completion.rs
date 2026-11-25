@@ -1216,6 +1216,120 @@ mod tests {
         assert_eq!(ran_as, Some(viewer("ada")), "the asking session's identity, not the program session's");
     }
 
+    /// A page trait `Panel` (routed, one instance per session) sends `GO` to the program-wide `Bg`, which parks on a keyed
+    /// gate ask; when the key completes `Bg` emits `UPLOADED`, and `Panel` copies its own `kind` into `seen`, so the
+    /// completion's outcome shows which session's `Panel` stepped.
+    fn boot_emits_to_a_page_trait() -> orbital_core_base::schema::types::OrbitalSchema {
+        from_json_value(&(serde_json::json!({
+            "name": "App", "typeContractVersion": 1,
+            "orbitals": [{
+                "name": "Main",
+                "entity": { "name": "View", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }, { "name": "kind", "type": "string", "default": "" }, { "name": "seen", "type": "string", "default": "" }] },
+                "traits": [{ "name": "Panel", "linkedEntity": "View",
+                    "listens": [{ "event": "UPLOADED", "triggers": "GOT", "source": { "kind": "orbital", "orbital": "Jobs", "trait": "Bg" } }],
+                    "emits": [{ "event": "FWD", "scope": "external" }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                        { "from": "idle", "to": "idle", "event": "SET", "effects": [["set", "@entity.kind", "@payload.kind"]] },
+                        { "from": "idle", "to": "idle", "event": "GO", "effects": [["emit", "FWD", {}]] },
+                        { "from": "idle", "to": "idle", "event": "GOT", "effects": [["set", "@entity.seen", "@entity.kind"]] }] } }],
+                "pages": [{ "name": "Home", "path": "/", "traits": [{ "ref": "Panel" }] }]
+            }, {
+                "name": "Jobs",
+                "entity": { "name": "Job", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Bg", "linkedEntity": "Job",
+                    "listens": [{ "event": "FWD", "triggers": "WORK", "source": { "kind": "orbital", "orbital": "Main", "trait": "Panel" } }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                        { "from": "idle", "to": "idle", "event": "WORK", "effects": [["os/wait", 7, { "key": "up-1", "emit": { "success": "DONE" } }]] },
+                        { "from": "idle", "to": "idle", "event": "DONE", "effects": [["emit", "UPLOADED", {}]] }] },
+                    "emits": [{ "event": "UPLOADED", "scope": "external" }] }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Bg" }] }]
+            }]
+        })))
+        .expect("a program")
+    }
+
+    /// A kernel serving that program whose sink reports, per completion, the `seen` each `Panel` step wrote.
+    fn panel_seen_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<Vec<Value>>) {
+        use crate::config::KernelConfig;
+        use orbital_core_base::effect_types::RuntimeEnvironment;
+        let config = KernelConfig {
+            service_handler: Some(Arc::new(crate::resumable::HostAnswered) as Arc<dyn crate::effects::ServiceHandler>),
+            ..KernelConfig::default()
+        };
+        let store = Arc::new(crate::entity_source::InMemoryEntityCache::new()) as Arc<dyn crate::entity_source::EntitySource>;
+        let kernel = Arc::new(RuntimeKernel::new(RuntimeEnvironment::Server, store.clone(), config));
+        kernel.register_schema(boot_emits_to_a_page_trait()).expect("registered");
+        let answer: Arc<CompletionAnswerer> = Arc::new(move |request: &IoRequest| match request {
+            IoRequest::Os { key: Some(_), .. } => IoAnswer::ServiceDeferred,
+            other => crate::resumable::BlockingHost { source: store.as_ref(), service: None, substrate: None }.answer(other),
+        });
+        let (told, ran) = std::sync::mpsc::channel();
+        let told = Mutex::new(told);
+        let done: Arc<CompletionDone> = Arc::new(move |_, _, _, _, result| {
+            let seen = result
+                .map(|outcomes| {
+                    outcomes
+                        .iter()
+                        .filter(|(name, result)| name == "Panel" && result.executed)
+                        .filter_map(|(_, result)| result.entity_data.get("seen").cloned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let _ = told.lock().send(seen);
+        });
+        (Arc::new(KernelCompletionSink::new(kernel.clone(), answer, done)), kernel, ran)
+    }
+
+    /// `kind` set on the viewer's `Panel`, then `GO` sent from `client` (its asks deferred), parking `Bg` on its keyed ask;
+    /// the deferred key.
+    fn upload_asked_by(sink: &KernelCompletionSink, kernel: &RuntimeKernel, client: Option<&str>) -> String {
+        let _session = kernel.enter_session("tab-1");
+        kernel.bind_test_identity(viewer("ada"));
+        let kind = Value::object(ValueMap::from_iter([("kind".into(), Value::string("image".to_string()))]));
+        kernel.dispatch("Panel", None, "SET", kind).expect("the viewer set its kind");
+        let keys = Mutex::new(Vec::new());
+        let scope = sink.begin_dispatch_for(client);
+        let answer = |request: &IoRequest| {
+            if let IoRequest::Os { key: Some(key), .. } = request {
+                keys.lock().push(key.clone());
+            }
+            scope.answer(&*sink.answer, request)
+        };
+        let started = kernel.start_dispatch("Panel", None, "GO", Value::Null, None, None).expect("GO started");
+        crate::resumable::drive_blocking(kernel, started, &answer).expect("GO ran to its end");
+        let key = keys.lock().first().cloned().expect("Bg deferred its keyed ask");
+        key
+    }
+
+    fn complete_bg(sink: &Arc<KernelCompletionSink>, key: String) {
+        let mut at = site(Some("DONE"), None);
+        at.trait_name = "Bg".to_string();
+        let completing = sink.clone();
+        std::thread::spawn(move || completing.complete(&at, &key, Ok(exited(0.0)))).join().expect("completed");
+    }
+
+    // EXEC-DIST-9 (owner ruling 2026-11-25, G-ORBITAL-CORE-240): a program-wide trait's completion that a viewer asked for
+    // steps that viewer's instance of a per-session trait it reaches, not the program session's.
+    #[test]
+    fn a_program_wide_completion_steps_the_askers_instance_of_a_page_trait() {
+        let (sink, kernel, ran) = panel_seen_sink();
+        let key = upload_asked_by(&sink, &kernel, Some("tab-1"));
+        complete_bg(&sink, key);
+        let seen = ran.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        assert_eq!(seen, vec![Value::string("image".to_string())], "the asker's Panel stepped, reading its own kind");
+    }
+
+    #[test]
+    fn control_the_program_sessions_page_trait_keeps_its_own_state() {
+        let (sink, kernel, ran) = panel_seen_sink();
+        let key = upload_asked_by(&sink, &kernel, Some("tab-1"));
+        complete_bg(&sink, key);
+        ran.recv_timeout(std::time::Duration::from_secs(5)).expect("dispatched");
+        let program_panel = kernel.snapshot_trait("Panel", None);
+        let entity = serde_json::to_value(&program_panel.entity).expect("an entity");
+        assert_ne!(entity["seen"], serde_json::json!("image"), "the program session's Panel was not the one stepped: {entity}");
+    }
+
     /// A sink whose completions report the event, the client they were delivered for and the session they ran in.
     fn session_sink() -> (Arc<KernelCompletionSink>, Arc<RuntimeKernel>, std::sync::mpsc::Receiver<(String, Option<String>, Option<String>)>) {
         use crate::config::KernelConfig;

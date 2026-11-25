@@ -547,9 +547,11 @@ impl RuntimeKernel {
             .into_iter()
             .collect();
         // EXEC-FIELD-1: the signed-out program session's own dispatch to one of its `boot` traits is the program acting; a
-        // viewer session's dispatch, or a signed-in program session's, stays a viewer step (EXEC-FIELD-3).
+        // viewer session's dispatch, a signed-in program session's, or a program-session step a viewer asked for (a
+        // completion, EXEC-DIST-9) stays a viewer step (EXEC-FIELD-3).
         let program_acting = !self.effect_executor.environment().is_client()
             && self.thread_session().is_none()
+            && self.thread_asker().is_none()
             && self.session_identity().is_none()
             && self.program_wide(trait_name);
         let mut run = self.run_of(vec![SeedPlan {
@@ -790,6 +792,7 @@ impl RuntimeKernel {
             origin: self.next_dispatch_origin(),
             provisional: None,
             program_deliveries: VecDeque::new(),
+            asker_deliveries: None,
             program: false,
             isolated: false,
             span,

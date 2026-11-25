@@ -43,6 +43,11 @@ impl RuntimeKernel {
         self.thread_session().or_else(|| self.sessions.asker_by_thread.read().get(&orbital_core_base::sync::current_thread()).cloned())
     }
 
+    /// The viewer the program-session step this thread runs works for, when one asked for it.
+    pub(super) fn thread_asker(&self) -> Option<Arc<str>> {
+        self.sessions.asker_by_thread.read().get(&orbital_core_base::sync::current_thread()).cloned()
+    }
+
     /// Who asked for the program-session step this thread runs until the guard drops: `Some` for a delivery a viewer's
     /// dispatch made to a program-wide trait, `None` for work no viewer asked for (a store driver's run, a tick).
     pub(crate) fn enter_asker(&self, asker: Option<Arc<str>>) -> AskerGuard {

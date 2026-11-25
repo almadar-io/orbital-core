@@ -48,7 +48,7 @@ pub fn family_of(op: OsOp) -> OsFamily {
         | ThermalZones | Notify | Speak | BrightnessGet | BrightnessSet | VolumeGet | VolumeSet
         | VolumeMute | Suspend | Hibernate => OsFamily::Sys,
         KvGet | KvPut | KvDelete | KvScan | KvBatch => OsFamily::Kv,
-        MmioRead | MmioWrite | IrqWait | IrqAck | AudioIn | VideoDecode | VideoFeed => OsFamily::Dev,
+        MmioRead | MmioWrite | IrqWait | IrqAck => OsFamily::Dev,
         ArenaNew | ArenaDrop | Alloc | Free | Borrow | Release | MemWrite | Freeze | AtomicLoad | AtomicStore
         | AtomicAdd | AtomicCas | AudioDecode => OsFamily::Mem,
         QueueFront | QueueBack | KernelCommit => OsFamily::Kernel,
@@ -188,9 +188,6 @@ os_ops! {
     MmioWrite => ("os/mmio-write", Single),
     IrqWait => ("os/irq-wait", Single),
     IrqAck => ("os/irq-ack", Single),
-    AudioIn => ("os/audio-in", Stream),
-    VideoDecode => ("os/video-decode", Stream),
-    VideoFeed => ("os/video-feed", Single),
     KvGet => ("kv/get", Single),
     KvPut => ("kv/put", Single),
     KvDelete => ("kv/delete", Single),
@@ -603,7 +600,7 @@ mod tests {
             );
             assert!(op.min_args().expect("table") <= op.max_args().expect("table"));
         }
-        assert_eq!(OsOp::ALL.len(), 134);
+        assert_eq!(OsOp::ALL.len(), 131);
         assert_eq!(OsOp::from_name("http"), None);
     }
 
@@ -781,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn the_device_family_is_exactly_the_device_ops() {
+    fn the_device_family_is_exactly_the_four_device_ops() {
         let dev: Vec<&str> = OsOp::ALL
             .iter()
             .filter(|op| family_of(**op) == OsFamily::Dev)
@@ -789,7 +786,7 @@ mod tests {
             .collect();
         assert_eq!(
             dev,
-            vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack", "os/audio-in", "os/video-decode", "os/video-feed"]
+            vec!["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack"]
         );
         assert_eq!(
             (OsOp::MmioRead.min_args().expect("table"), OsOp::MmioRead.max_args().expect("table")),
@@ -800,10 +797,9 @@ mod tests {
             (4, 4)
         );
         assert_eq!((OsOp::IrqWait.min_args().expect("table"), OsOp::IrqAck.max_args().expect("table")), (1, 1));
-        assert!(["os/mmio-read", "os/mmio-write", "os/irq-wait", "os/irq-ack", "os/video-feed"]
+        assert!(dev
             .iter()
             .all(|name| !OsOp::from_name(name).is_some_and(OsOp::is_stream)));
-        assert!(OsOp::AudioIn.is_stream() && OsOp::VideoDecode.is_stream(), "the microphone and the decoder stream frames");
         assert!(OsOp::IrqWait.defers_completion());
         assert!(
             !OsOp::MmioRead.defers_completion() && !OsOp::IrqAck.defers_completion(),
@@ -852,8 +848,6 @@ mod tests {
                 "os/tcp-listen",
                 "os/watch-port",
                 "os/watch-cron",
-                "os/audio-in",
-                "os/video-decode",
             ]
         );
         assert!(!OsOp::ReadFile.is_stream());
