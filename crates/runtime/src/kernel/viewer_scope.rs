@@ -138,9 +138,7 @@ impl RuntimeKernel {
             }
         }
         for (locale, messages) in schema.messages.iter().flatten() {
-            Arc::make_mut(&mut i18n.catalogs)
-                .entry(locale.clone())
-                .or_default()
+            Arc::make_mut(Arc::make_mut(&mut i18n.catalogs).entry(locale.clone()).or_default())
                 .extend(messages.iter().map(|(key, text)| (key.clone(), text.clone())));
         }
     }
@@ -251,7 +249,7 @@ impl RuntimeKernel {
                 let messages = i18n.catalogs.get(&locale).cloned().unwrap_or_default();
                 builder
                     .locale(Value::string(locale))
-                    .messages(messages)
+                    .messages_shared(messages)
                     .catalogs(Arc::clone(&i18n.catalogs))
             }
             None => builder,

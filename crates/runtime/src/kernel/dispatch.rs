@@ -217,7 +217,7 @@ impl RuntimeKernel {
             let mut effect_results = effect_results
                 .into_iter()
                 .enumerate()
-                .map(|(index, er)| resolve_effect_result(er, &scoped(&ctx, scope_at(&scopes, index))))
+                .map(|(index, er)| self.resolve_render_result(trait_name, entity_id, er, &scoped(&ctx, scope_at(&scopes, index))))
                 .collect::<Vec<_>>();
             let mut failure = failure;
             if failure.is_none() {

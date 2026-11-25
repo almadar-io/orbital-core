@@ -17,6 +17,9 @@ pub trait DirectOs: Send + Sync {
 }
 
 /// The one door the kernel's I/O goes through.
+/// The sealed operators a `drawSeed` reaches: the draws a program makes for its own values, never a cryptographic one.
+const SEEDED_DRAWS: [&str; 3] = ["math/random", "math/randomInt", "array/shuffle"];
+
 pub(crate) struct IoPort {
     pub(super) source: Arc<dyn EntitySource>,
     pub(super) service: Option<Arc<dyn ServiceHandler>>,
@@ -39,6 +42,9 @@ pub(crate) struct IoPort {
     pub(super) noticed: Mutex<HashSet<String>>,
     /// The kernel's configured clock: when set, the time a driver reads (TLS) is this clock's, not a host ask.
     pub(super) clock: Option<crate::config::DispatchClock>,
+    /// The stream a guest opened with `drawSeed` draws from (EXEC-CONC-7): `math/random`, `math/randomInt` and
+    /// `array/shuffle` take their 32 bytes from it. Every other sealed operator still draws fresh entropy.
+    pub(super) draws: Mutex<Option<rand_chacha::ChaCha20Rng>>,
     /// `[runtime]` entities live in `memory` and are never a host ask, when the kernel is configured to own them.
     pub(super) runtime_in_kernel: bool,
     /// Entity -> why its driver could not ensure its declared indexes (EXEC-STORE-6).
@@ -99,6 +105,7 @@ impl IoPort {
             write_capabilities: RwLock::new(HashMap::new()),
             noticed: Mutex::new(HashSet::new()),
             clock: None,
+            draws: Mutex::new(None),
             runtime_in_kernel: false,
             index_failures: RwLock::new(HashMap::new()),
             runtime_types: RwLock::new(HashSet::new()),
@@ -143,6 +150,11 @@ impl IoPort {
         self
     }
 
+    /// From here on the draw operators of this port's kernel take their bytes from the stream `seed` starts.
+    pub(crate) fn seed_draws(&self, seed: [u8; 32]) {
+        *self.draws.lock() = Some(rand_chacha::rand_core::SeedableRng::from_seed(seed));
+    }
+
     /// Run the sealed operator `op` over `args`: `compute` gets fresh entropy that is never journaled, and the journal
     /// records the output it returns. A replay answers from the recorded output without running `compute`, and the same
     /// step run twice outside a replay draws different entropy.
@@ -179,7 +191,18 @@ impl IoPort {
                 }
             }
         };
-        let entropy = (self.entropy)()?;
+        let seeded = match (SEEDED_DRAWS.contains(&op), self.draws.lock().as_mut()) {
+            (true, Some(stream)) => {
+                let mut bytes = [0u8; 32];
+                rand_chacha::rand_core::RngCore::fill_bytes(stream, &mut bytes);
+                Some(bytes)
+            }
+            _ => None,
+        };
+        let entropy = match seeded {
+            Some(bytes) => bytes,
+            None => (self.entropy)()?,
+        };
         let output = compute(entropy);
         if in_step {
             if let Some(ledger) = self.ledger.lock().as_mut() {

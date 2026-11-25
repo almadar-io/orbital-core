@@ -115,6 +115,23 @@ impl BindingContext {
         self.resolve(root).is_some_and(|v| !v.is_null())
     }
 
+    /// The operator call `value` (the list `source`) read into an expression: the one this slot read it into before
+    /// when a map memo is held, so a callback in it is the same allocation from one render to the next.
+    fn call_expression(
+        &self,
+        source: &orbital_core_base::value::Shared<Vec<Value>>,
+        value: &Value,
+    ) -> Result<Arc<orbital_core_base::schema::sexpr::SExpression>, EvalError> {
+        if let Some(kept) = self.map_memo().and_then(|memo| memo.lock().expression(source)) {
+            return Ok(kept);
+        }
+        let expression = Arc::new(orbital_core_base::schema::sexpr::SExpression::try_from(value.clone())?);
+        if let Some(memo) = self.map_memo() {
+            memo.lock().keep_expression(source, Arc::clone(&expression));
+        }
+        Ok(expression)
+    }
+
     /// Resolve a binding reference string (starting with @)
     ///
     /// E.g., "@payload.data.email" -> resolve("payload.data.email")
@@ -424,7 +441,7 @@ impl BindingContext {
                     if super::operators::get_operator(op).is_some() {
                         // An operator-headed array is a call: its failure is a fault the checked
                         // resolution reports (G-ORBITAL-CORE-033); the unchecked one keeps the value.
-                        let call = orbital_core_base::schema::sexpr::SExpression::try_from(value.clone())
+                        let call = self.call_expression(arr, value)
                             .map_err(OrbitalError::Eval)
                             .and_then(|sexpr| super::operators::eval_expr(&sexpr, self));
                         match call {

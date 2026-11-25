@@ -408,6 +408,50 @@ pub fn from_deep_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T,
     })
 }
 
+/// Whether `bytes` holds an object key `$def` (`def_refs`), read by the same scan as the depth: a value that only
+/// spells the marker is text.
+pub fn holds_def_key(bytes: &[u8]) -> bool {
+    let marker = crate::def_refs::DEF_MARKER.as_bytes();
+    let (mut in_string, mut escaped, mut start, mut pending) = (false, false, 0usize, false);
+    for (at, &b) in bytes.iter().enumerate() {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => {
+                    in_string = false;
+                    pending = &bytes[start..at] == marker;
+                }
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => {
+                in_string = true;
+                start = at + 1;
+            }
+            b':' if pending => return true,
+            b' ' | b'\n' | b'\r' | b'\t' => {}
+            _ => pending = false,
+        }
+    }
+    false
+}
+
+/// A program document (a resolved or written `.orb`): text that holds `$def` records (`json_value::value_json_string_with_defs`,
+/// `def_refs`) is read as one shared [`Value`] with every record resolved, whatever position it sits in, then as `T`;
+/// any other text is read by [`from_json_slice`] as before.
+pub fn program_from_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {
+    if !holds_def_key(bytes) {
+        return from_json_slice(bytes);
+    }
+    crate::intern::scope(|| {
+        let value: Value = crate::def_refs::reading_program(|| from_json_slice(bytes))?;
+        crate::value_deserialize::from_value(&value)
+    })
+}
+
 /// The kernel's one JSON text entry: [`from_deep_json`] with `serde_json`'s error type. Nesting past
 /// [`MAX_JSON_DEPTH`] is a custom error.
 pub fn from_json_slice<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, serde_json::Error> {

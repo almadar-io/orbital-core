@@ -33,6 +33,29 @@ pub fn to_vec_with_defs<T: serde::Serialize + ?Sized>(value: &T) -> serde_json::
     serde_json::to_vec(value)
 }
 
+thread_local! {
+    static READING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct EndRead(bool);
+
+impl Drop for EndRead {
+    fn drop(&mut self) {
+        READING.with(|r| r.set(self.0));
+    }
+}
+
+/// Runs `read` with `$def` reserved: inside, a [`crate::value::Value`] read resolves `$def` records at any position.
+pub(crate) fn reading_program<R>(read: impl FnOnce() -> R) -> R {
+    let _end = EndRead(READING.with(|r| r.replace(true)));
+    read()
+}
+
+/// Whether a program document is being read, so `$def` is a reference rather than an ordinary key.
+pub(crate) fn reading() -> bool {
+    READING.with(std::cell::Cell::get)
+}
+
 pub(crate) enum DefWrite {
     Plain,
     First(u64),
@@ -118,38 +141,82 @@ mod tests {
         assert_eq!(serde_json::to_vec(&back).unwrap(), plain);
     }
 
+    fn two_equal_transitions() -> crate::schema::OrbitalSchema {
+        from_json_value(&(serde_json::json!({
+            "name": "app", "orbitals": [{ "name": "A", "entity": { "name": "E", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] }, "traits": [{ "name": "T", "linkedEntity": "E", "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                { "from": "idle", "to": "idle", "event": "X", "effects": [["set", "@entity.v", { "big": [1, 2, 3, 4, 5, 6, 7, 8] }]] },
+                { "from": "idle", "to": "idle", "event": "X", "effects": [["set", "@entity.v", { "big": [1, 2, 3, 4, 5, 6, 7, 8] }]] }
+            ] } }] }]
+        })))
+        .unwrap()
+    }
+
+    fn typed_defs_text(program: &crate::schema::OrbitalSchema) -> String {
+        let value = crate::value_serialize::to_canonical_value(program).unwrap();
+        crate::json_value::value_json_string_with_defs(&value)
+    }
+
+    fn plain_text(program: &crate::schema::OrbitalSchema) -> Vec<u8> {
+        serde_json::to_vec(&crate::json_value::value_to_json(&crate::value_serialize::to_canonical_value(program).unwrap())).unwrap()
+    }
+
     #[test]
-    #[ignore]
-    fn measure_written_size_with_defs() {
-        let path = std::env::var("ORB_MEASURE_FILE").expect("ORB_MEASURE_FILE");
-        let bytes = std::fs::read(&path).unwrap();
-        let t = std::time::Instant::now();
-        let program: crate::schema::OrbitalSchema = from_json_slice(&bytes).unwrap();
-        let read_plain = t.elapsed();
-        let plain = serde_json::to_vec(&program).unwrap();
-        let with_defs = to_vec_with_defs(&program).unwrap();
-        let t = std::time::Instant::now();
-        let back: crate::schema::OrbitalSchema = from_json_slice(&with_defs).unwrap();
-        let read_defs = t.elapsed();
-        let equal = serde_json::to_vec(&back).unwrap() == plain;
-        let mut strings: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        let text: serde_json::Value = serde_json::from_slice(&with_defs).unwrap();
-        fn walk(v: &serde_json::Value, out: &mut std::collections::HashMap<String, usize>) {
-            match v {
-                serde_json::Value::String(s) if s.len() >= 64 => *out.entry(s.clone()).or_default() += 1,
-                serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
-                serde_json::Value::Object(o) => o.values().for_each(|x| walk(x, out)),
-                _ => {}
-            }
-        }
-        walk(&text, &mut strings);
-        let value = crate::value_serialize::to_value(&program).unwrap();
-        let value_defs = crate::json_value::value_json_string_with_defs(&value);
-        println!("MEASURE value path (typed records shared too): {:.2} MB", value_defs.len() as f64 / 1e6);
-        let repeated: usize = strings.iter().filter(|(_, n)| **n > 1).map(|(s, n)| (s.len() + 2) * (n - 1)).sum();
-        println!(
-            "MEASURE {path}: file {:.2} MB, plain {:.2} MB, with $def {:.2} MB, equal {equal}, read plain {read_plain:?}, read $def {read_defs:?}, long strings still repeated {:.2} MB",
-            bytes.len() as f64 / 1e6, plain.len() as f64 / 1e6, with_defs.len() as f64 / 1e6, repeated as f64 / 1e6
-        );
+    fn a_program_whose_typed_records_repeat_reads_back_through_the_program_entry() {
+        let program = two_equal_transitions();
+        let text = typed_defs_text(&program);
+        let transition_by_reference = serde_json::from_str::<serde_json::Value>(&text).unwrap()["orbitals"][0]["traits"][0]["stateMachine"]["transitions"][1]
+            .get(DEF_MARKER)
+            .is_some();
+        assert!(transition_by_reference, "the repeated transition is written by reference: {text}");
+        let back: crate::schema::OrbitalSchema = crate::json_value::program_from_json(text.as_bytes()).unwrap();
+        assert_eq!(plain_text(&back), plain_text(&program));
+    }
+
+    #[test]
+    fn a_program_whose_typed_records_repeat_reads_back_through_parse_schema() {
+        let program = two_equal_transitions();
+        let back = crate::schema::parse_schema(&typed_defs_text(&program)).unwrap();
+        assert_eq!(plain_text(&back), plain_text(&program));
+    }
+
+    #[test]
+    fn a_value_read_from_a_text_with_typed_defs_is_the_plain_value() {
+        let program = two_equal_transitions();
+        let back: crate::value::Value = crate::json_value::program_from_json(typed_defs_text(&program).as_bytes()).unwrap();
+        let plain: serde_json::Value = serde_json::from_slice(&plain_text(&program)).unwrap();
+        assert_eq!(crate::json_value::value_to_json(&back), plain);
+    }
+
+    #[test]
+    fn control_a_text_with_no_repeat_is_written_plain_and_reads_as_before() {
+        let program: crate::schema::OrbitalSchema = from_json_value(&(serde_json::json!({ "name": "app", "orbitals": [] }))).unwrap();
+        let text = typed_defs_text(&program);
+        assert!(!text.contains(DEF_MARKER), "{text}");
+        assert_eq!(text.as_bytes(), plain_text(&program).as_slice());
+    }
+
+    #[test]
+    fn control_the_marker_as_a_string_value_is_text_not_a_reference() {
+        let back: serde_json::Value = crate::json_value::program_from_json(br#"{"name":"$def","items":["$def",{"note":"{\"$def\":1}"}]}"#).unwrap();
+        assert_eq!(back, serde_json::json!({ "name": "$def", "items": ["$def", { "note": "{\"$def\":1}" }] }));
+    }
+
+    #[test]
+    fn edge_a_typed_reference_never_defined_is_refused() {
+        let bad = r#"{"name":"app","orbitals":[{"$def":3}]}"#;
+        assert!(crate::json_value::program_from_json::<crate::schema::OrbitalSchema>(bad.as_bytes()).is_err());
+        assert!(crate::schema::parse_schema(bad).is_err());
+    }
+
+    #[test]
+    fn edge_a_definition_with_another_key_is_refused() {
+        let bad = r#"{"name":"app","orbitals":[],"locales":{"$def":0,"value":["en"],"extra":1}}"#;
+        assert!(crate::json_value::program_from_json::<crate::value::Value>(bad.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn control_outside_a_program_document_the_marker_is_an_ordinary_key() {
+        let body: crate::value::Value = from_json_str(r#"{"$def":3}"#).unwrap();
+        assert_eq!(crate::json_value::value_to_json(&body), serde_json::json!({ "$def": 3 }));
     }
 }

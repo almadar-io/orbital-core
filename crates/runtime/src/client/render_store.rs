@@ -16,6 +16,7 @@ use orbital_core_base::row_set::RowSetRef;
 use orbital_core_base::shared_entity::SharedEntity;
 use orbital_core_base::value::Value;
 use orbital_core_eval::evaluator::context::BindingContext;
+use orbital_core_eval::evaluator::map_memo::SharedMapMemo;
 use orbital_core_eval::evaluator::operators::get_operator;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -65,10 +66,16 @@ impl Reads {
     /// Whether a field read differs between `before` and `now`.
     fn changed(&self, before: &Value, now: &Value) -> bool {
         match self {
-            Reads::All => before != now,
+            Reads::All => !before.equals_sharing(now),
             Reads::Fields(fields) => {
-                let field = |v: &Value, f: &str| v.as_object().and_then(|o| o.get(f)).cloned();
-                fields.iter().any(|f| field(before, f) != field(now, f))
+                fn field<'v>(v: &'v Value, f: &str) -> Option<&'v Value> {
+                    v.as_object().and_then(|o| o.get(f))
+                }
+                fields.iter().any(|f| match (field(before, f), field(now, f)) {
+                    (Some(before), Some(now)) => !before.equals_sharing(now),
+                    (None, None) => false,
+                    _ => true,
+                })
             }
         }
     }
@@ -173,6 +180,8 @@ pub(crate) struct RenderStore {
     guest_view_traits: BTreeSet<String>,
     /// The entity types whose rows were written since the last repaint: an instance of one reads a new `@entity`.
     rows_written: BTreeSet<String>,
+    /// What each slot kept from its last render's maps (EXEC-RENDER-9), dropped with the slot.
+    maps: BTreeMap<(Instance, String), SharedMapMemo>,
 }
 
 fn holds_guest_view(value: &Value) -> bool {
@@ -213,8 +222,13 @@ impl RenderStore {
         for (slot, source, resolved, scope) in renders {
             self.host_paints
                 .remove(&(trait_name.to_string(), slot.clone()));
+            let source = match slots.iter().find(|s| s.slot == slot) {
+                Some(previous) => source.shared_with(&previous.source),
+                None => source,
+            };
             slots.retain(|s| s.slot != slot);
             if source.is_null() {
+                self.maps.remove(&((trait_name.to_string(), entity_id.to_string()), slot));
                 continue;
             }
             let flushed = match &scope {
@@ -250,6 +264,32 @@ impl RenderStore {
             Some(previous) => content.shared_with(&previous.resolved),
             None => content,
         }
+    }
+
+    /// `source` with every part equal to the source `slot` of this instance last rendered handed back as that
+    /// allocation: a step reads its `render-ui` out of the program anew, and what the slot kept is found by
+    /// allocation (EXEC-RENDER-9).
+    pub(crate) fn share_source_with_previous(&self, trait_name: &str, entity_id: &str, slot: &str, source: Value) -> Value {
+        let previous = self
+            .instances
+            .get(&(trait_name.to_string(), entity_id.to_string()))
+            .and_then(|slots| slots.iter().find(|s| s.slot == slot));
+        match previous {
+            Some(previous) => source.shared_with(&previous.source),
+            None => source,
+        }
+    }
+
+    /// What `slot` of this instance kept from its last render's maps, with a render of it begun: the memo the
+    /// slot's content resolves under.
+    pub(crate) fn map_memo(&mut self, trait_name: &str, entity_id: &str, slot: &str) -> SharedMapMemo {
+        let memo = self
+            .maps
+            .entry(((trait_name.to_string(), entity_id.to_string()), slot.to_string()))
+            .or_default()
+            .clone();
+        memo.lock().begin();
+        memo
     }
 
     /// Whether `trait_name` shows a `guest-view` on any slot, without allocating.
@@ -322,6 +362,7 @@ impl RenderStore {
             }
         }
         self.instances.retain(|_, slots| !slots.is_empty());
+        self.maps.retain(|((t, _), s), _| !(t == trait_name && s == slot));
     }
 
     pub(crate) fn forget_traits<'a>(&mut self, traits: impl IntoIterator<Item = &'a str>) {
@@ -332,12 +373,14 @@ impl RenderStore {
             .retain(|(t, _), _| !gone.contains(&t.as_str()));
         self.guest_view_traits
             .retain(|t| !gone.contains(&t.as_str()));
+        self.maps.retain(|((t, _), _), _| !gone.contains(&t.as_str()));
     }
 
     pub(crate) fn clear(&mut self) {
         self.instances.clear();
         self.host_paints.clear();
         self.guest_view_traits.clear();
+        self.maps.clear();
     }
 
     /// A kernel write to each of `entity_types`: the slots holding a row-set reference to one of them repaint
@@ -398,6 +441,12 @@ impl RenderStore {
                         Some(now) => SharedEntity::from_arc(Arc::clone(now)),
                         None => slot.entity.clone(),
                     };
+                    let memo = self
+                        .maps
+                        .entry(((trait_name.clone(), entity_id.clone()), slot.slot.clone()))
+                        .or_default();
+                    memo.lock().begin();
+                    live.set_map_memo(memo.clone());
                     match resolve_deferred(&slot.source, &slot.flushed, &live, 0) {
                         Ok(resolved) => resolved,
                         Err(fault) => {
@@ -440,8 +489,7 @@ impl RenderStore {
 /// Whether `a` is `b`'s allocation, which after `shared_with` is exactly whether they are equal.
 fn same_allocation(a: &Value, b: &Value) -> bool {
     match (a, b) {
-        (Value::Object(a), Value::Object(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
-        (Value::Array(a), Value::Array(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
+        (Value::Object(_), Value::Object(_)) | (Value::Array(_), Value::Array(_)) => a.shares_allocation(b),
         (Value::String(a), Value::String(b)) => orbital_core_base::value::Shared::ptr_eq(a, b),
         _ => a == b,
     }
@@ -710,6 +758,56 @@ mod tests {
             }]
         );
         assert!(store.stale(|_| true, |_, _| Some(now.clone()), None, |_, c, _| c.clone()).is_empty());
+    }
+
+    #[test]
+    fn a_repaint_computes_only_the_mapped_rows_that_changed_and_a_cleared_slot_keeps_nothing() {
+        let rows = |second: Value| {
+            let mut fields = orbital_core_base::value::value_map_with_capacity(1);
+            fields.insert("rows".to_string().into(), Value::array(vec![val(json!({ "name": "a" })), second]));
+            Value::object(fields)
+        };
+        let kept = val(json!({ "name": "b" }));
+        let source = val(json!({ "items": ["array/map", "@entity.rows", ["fn", "r", { "label": ["str/concat", "@r.name", "!"] }]] }));
+        let mut flushed = BindingContext::new();
+        let first = rows(kept.clone());
+        let a = first.as_object().unwrap().get("rows").unwrap().as_array().unwrap()[0].clone();
+        flushed.set_entity(first);
+        let mut store = RenderStore::default();
+        let memo = store.map_memo("List", "e", "main");
+        let mut under = flushed.clone();
+        under.set_map_memo(memo.clone());
+        let resolved = under.resolve_value_checked(&source).unwrap().into_owned();
+        assert_eq!(memo.lock().counts(), (0, 2), "control: the first render computes both rows");
+        store.record("List", "e", vec![("main".into(), source.clone(), resolved, None)], &flushed);
+
+        let mut fields = orbital_core_base::value::value_map_with_capacity(1);
+        fields.insert("rows".to_string().into(), Value::array(vec![a, val(json!({ "name": "c" }))]));
+        let now = Value::object(fields);
+        let repaints = store.stale(|_| true, |_, _| Some(now.clone()), None, |_, c, _| c.clone());
+        assert_eq!(repaints[0].2[0].content, val(json!({ "items": [{ "label": "a!" }, { "label": "c!" }] })));
+        assert_eq!(memo.lock().counts(), (1, 3), "the repaint answers row a from the first render and computes only the new row");
+
+        let read = || val(json!({ "items": ["array/map", "@entity.rows", ["fn", "r", { "label": ["str/concat", "@r.name", "!"] }]] }));
+        let mut live = flushed.clone();
+        live.set_entity(now.clone());
+        let step = |store: &mut RenderStore, source: &Value| {
+            let mut under = live.clone();
+            under.set_map_memo(store.map_memo("List", "e", "main"));
+            under.resolve_value_checked(source).unwrap().into_owned()
+        };
+        let shared = store.share_source_with_previous("List", "e", "main", read());
+        let resolved = step(&mut store, &shared);
+        assert_eq!(memo.lock().counts(), (3, 3), "a step reads its source anew: shared with the slot's last source, both rows are answered from what was kept");
+        store.record("List", "e", vec![("main".into(), read(), resolved, None)], &live);
+        let again = store.share_source_with_previous("List", "e", "main", read());
+        step(&mut store, &again);
+        assert_eq!(memo.lock().counts(), (5, 3), "a recorded source keeps the allocations of the one before it, so the next step still finds what was kept");
+        step(&mut store, &read());
+        assert_eq!(memo.lock().counts(), (5, 5), "control: the source as read, in its own allocations, is another callback and computes both rows");
+
+        store.record("List", "e", vec![("main".into(), Value::Null, Value::Null, None)], &flushed);
+        assert_eq!(store.map_memo("List", "e", "main").lock().counts(), (0, 0), "a cleared slot starts with nothing kept");
     }
 
     #[test]

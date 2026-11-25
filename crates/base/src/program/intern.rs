@@ -14,6 +14,7 @@ struct Table {
     values: HashMap<u64, Value>,
     collided: HashMap<u64, Vec<Value>>,
     defs: HashMap<u64, SExpression>,
+    value_defs: HashMap<u64, Value>,
     node_requests: usize,
     node_distinct: usize,
     requests: usize,
@@ -57,6 +58,7 @@ pub fn scope<R>(read: impl FnOnce() -> R) -> R {
                 held: HashSet::new(),
                 nodes: HashMap::new(),
                 defs: HashMap::new(),
+                value_defs: HashMap::new(),
                 values: HashMap::new(),
                 collided: HashMap::new(),
                 node_requests: 0,
@@ -389,6 +391,28 @@ pub fn defined(id: u64) -> Result<SExpression, String> {
             .borrow()
             .as_ref()
             .and_then(|table| table.defs.get(&id).cloned())
+            .ok_or_else(|| format!("`$def` {id} was never written before this reference"))
+    })
+}
+
+/// [`define`] for a document read as a [`Value`]: any list or record, typed position or expression, may be one.
+pub fn define_value(id: u64, node: Value) -> Result<(), String> {
+    TABLE.with(|table| match table.borrow_mut().as_mut() {
+        Some(table) => {
+            table.value_defs.insert(id, node);
+            Ok(())
+        }
+        None => Err(format!("`$def` {id} read outside a document's interning scope")),
+    })
+}
+
+/// [`defined`] for a document read as a [`Value`].
+pub fn defined_value(id: u64) -> Result<Value, String> {
+    TABLE.with(|table| {
+        table
+            .borrow()
+            .as_ref()
+            .and_then(|table| table.value_defs.get(&id).cloned())
             .ok_or_else(|| format!("`$def` {id} was never written before this reference"))
     })
 }

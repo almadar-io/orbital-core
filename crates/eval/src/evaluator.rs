@@ -30,6 +30,7 @@
 //! ```
 
 pub mod context;
+pub mod map_memo;
 pub mod operators;
 pub mod trace;
 

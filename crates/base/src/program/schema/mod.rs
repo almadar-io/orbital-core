@@ -32,6 +32,9 @@ use std::sync::Arc;
 /// instead of a bare line/column. Combined with `TraitReference`'s tag-dispatched
 /// deserialize, the message names both the path AND the offending field.
 pub fn parse_schema(json: &str) -> Result<OrbitalSchema> {
+    if crate::json_value::holds_def_key(json.as_bytes()) {
+        return Ok(crate::json_value::program_from_json(json.as_bytes())?);
+    }
     let mut de = serde_json::Deserializer::from_str(json);
     let schema: OrbitalSchema = serde_path_to_error::deserialize(&mut de)?;
     Ok(schema)

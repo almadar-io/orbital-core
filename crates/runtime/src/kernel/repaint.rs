@@ -24,6 +24,29 @@ impl RuntimeKernel {
             .collect())
     }
 
+    /// `result` with its bindings resolved; a `render-ui` resolves under what its slot kept from its last render's
+    /// maps (EXEC-RENDER-9).
+    pub(super) fn resolve_render_result(
+        &self,
+        trait_name: &str,
+        entity_id: &str,
+        mut result: EffectResult,
+        ctx: &BindingContext,
+    ) -> EffectResult {
+        if let Effect::RenderUi { slot, content } = &mut result.effect {
+            if let Ok(slot) = resolve_render_slot(slot.clone(), ctx) {
+                let mut kept = ctx.clone();
+                {
+                    let mut store = self.renders.write();
+                    *content = store.share_source_with_previous(trait_name, entity_id, &slot, std::mem::take(content));
+                    kept.set_map_memo(store.map_memo(trait_name, entity_id, &slot));
+                }
+                return resolve_effect_result(result, &kept);
+            }
+        }
+        resolve_effect_result(result, ctx)
+    }
+
     /// Keep a trait's just-run `render-ui` effects (`sources`: unresolved, in run order;
     /// `resolved`: the same effects after binding resolution) so [`Self::rerender_stale`] can
     /// repaint them when the entity they read changes.

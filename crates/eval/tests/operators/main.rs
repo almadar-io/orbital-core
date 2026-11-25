@@ -27,6 +27,7 @@ mod object_get_default;
 mod operator_types;
 mod quasiquote;
 mod quote_eval;
+mod render_map_memo;
 mod step_runner;
 mod time_parse_operator;
 mod time_unit_parity;

@@ -280,13 +280,20 @@ fn share_unchanged(new: Value, old: &Value) -> (Value, bool) {
             let mut fields = fields.into_inner();
             let mut whole = fields.len() == before.len();
             for (index, (key, value)) in fields.iter_mut().enumerate() {
-                let Some((before_key, was)) = before.get_key_value(key) else {
-                    whole = false;
-                    continue;
+                // The same key at the same place is the common case: found without hashing the key.
+                let (was, placed) = match before.get_index(index).filter(|(at, _)| *at == key) {
+                    Some((_, was)) => (was, true),
+                    None => match before.get_full(key) {
+                        Some((at, _, was)) => (was, at == index),
+                        None => {
+                            whole = false;
+                            continue;
+                        }
+                    },
                 };
                 let (shared, same) = share_unchanged(std::mem::take(value), was);
                 *value = shared;
-                whole &= same && before.get_index_of(before_key) == Some(index);
+                whole &= same && placed;
             }
             if whole {
                 (old.clone(), true)
@@ -298,16 +305,19 @@ fn share_unchanged(new: Value, old: &Value) -> (Value, bool) {
             if Shared::ptr_eq(&items, before) {
                 return (old.clone(), true);
             }
-            let by_id: crate::collections::IndexMap<&str, &Value> = before
-                .iter()
-                .filter_map(|item| Some((element_id(item)?, item)))
-                .collect();
+            let mut by_id: Option<crate::collections::IndexMap<&str, &Value>> = None;
             let mut items = items.into_inner();
             let mut whole = items.len() == before.len();
             for (index, item) in items.iter_mut().enumerate() {
-                let was = match element_id(item) {
-                    Some(id) => by_id.get(id).copied(),
-                    None => before.get(index),
+                // An element that is the allocation held at its place needs no id index.
+                let held = before.get(index).filter(|at| at.shares_allocation(item));
+                let was = match (held, element_id(item)) {
+                    (Some(at), _) => Some(at),
+                    (None, Some(id)) => by_id
+                        .get_or_insert_with(|| before.iter().filter_map(|item| Some((element_id(item)?, item))).collect())
+                        .get(id)
+                        .copied(),
+                    (None, None) => before.get(index),
                 };
                 let Some(was) = was else {
                     whole = false;
@@ -547,6 +557,21 @@ impl<'de> serde::de::Visitor<'de> for ValueVisitor {
             }
             return crate::blobs::handle(id).map(Value::Blob).map_err(serde::de::Error::custom);
         }
+        if first == crate::def_refs::DEF_MARKER && crate::def_refs::reading() {
+            let id: u64 = map.next_value()?;
+            return match map.next_key::<String>()? {
+                None => crate::intern::defined_value(id).map_err(serde::de::Error::custom),
+                Some(key) if key == "value" => {
+                    let node: Value = map.next_value()?;
+                    if map.next_key::<serde::de::IgnoredAny>()?.is_some() {
+                        return Err(serde::de::Error::custom(format!("`$def` {id} carries a key besides `value`")));
+                    }
+                    crate::intern::define_value(id, node.clone()).map_err(serde::de::Error::custom)?;
+                    Ok(node)
+                }
+                Some(key) => Err(serde::de::Error::custom(format!("`$def` {id} carries `{key}`, not `value`"))),
+            };
+        }
         object.insert(crate::intern::shared_owned(first), map.next_value::<Value>()?);
         while let Some((key, value)) = map.next_entry::<String, Value>()? {
             object.insert(crate::intern::shared_owned(key), value);
@@ -626,6 +651,36 @@ impl Value {
     /// key; list elements pair by their string `id` field when they have one, else by position.
     pub fn shared_with(self, previous: &Value) -> Value {
         share_unchanged(self, previous).0
+    }
+
+    /// Whether this list or record is `other`'s allocation.
+    pub fn shares_allocation(&self, other: &Value) -> bool {
+        match (self, other) {
+            (Value::Object(a), Value::Object(b)) => Shared::ptr_eq(a, b),
+            (Value::Array(a), Value::Array(b)) => Shared::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+
+    /// Equality that takes a shared allocation as equal without reading it: what a held value compared with its
+    /// next version costs is then the part that changed.
+    pub fn equals_sharing(&self, other: &Value) -> bool {
+        if self.shares_allocation(other) {
+            return true;
+        }
+        match (self, other) {
+            (Value::Array(a), Value::Array(b)) => a.len() == b.len() && a.iter().zip(b.iter()).all(|(a, b)| a.equals_sharing(b)),
+            (Value::Object(a), Value::Object(b)) => {
+                a.len() == b.len()
+                    && a.iter().enumerate().all(|(index, (key, value))| {
+                        match b.get_index(index).filter(|(at, _)| *at == key) {
+                            Some((_, held)) => value.equals_sharing(held),
+                            None => b.get(key).is_some_and(|held| value.equals_sharing(held)),
+                        }
+                    })
+            }
+            _ => self == other,
+        }
     }
 
     /// A sealed record of the type `kind`. Only a kernel operator calls this; no wire form, parse or cast reaches it.
@@ -1266,6 +1321,47 @@ mod tests {
             !same(&items(&plain_old)[0], &items(&plain)[1]),
             "control: without ids elements are matched by position"
         );
+    }
+
+    #[test]
+    fn elements_already_the_previous_allocations_stay_them_beside_a_changed_one_and_a_moved_key() {
+        let old = parsed(r#"{"k": 1, "list": [{"id": "a", "x": 1}, {"id": "b", "x": 2}, [7]]}"#);
+        let kept = items(old.get("list").unwrap());
+        let mut fields = value_map_with_capacity(2);
+        fields.insert("list".to_string().into(), Value::array(vec![kept[0].clone(), parsed(r#"{"id": "b", "x": 3}"#), kept[2].clone()]));
+        fields.insert("k".to_string().into(), parsed("1"));
+        let new = Value::object(fields);
+        let shared = new.clone().shared_with(&old);
+        assert_eq!(shared, new, "sharing never changes the value");
+        let s = items(shared.get("list").unwrap());
+        assert!(same(&kept[0], &s[0]) && same(&kept[2], &s[2]), "an element held at its place stays that allocation");
+        assert!(!same(&kept[1], &s[1]), "control: the changed element is new");
+        assert!(!same(&old, &shared), "control: keys in another order are another record");
+        let mut again = value_map_with_capacity(2);
+        again.insert("k".to_string().into(), parsed("1"));
+        again.insert("list".to_string().into(), Value::array(kept.to_vec()));
+        assert!(same(&old, &Value::object(again).shared_with(&old)), "the same elements under the same keys are the previous record whole");
+    }
+
+    #[test]
+    fn equality_by_sharing_answers_as_equality_does() {
+        let a = parsed(r#"{"k": 1, "list": [{"id": "a", "x": 1}, [7], "t"]}"#);
+        let cases = [
+            (r#"{"k": 1, "list": [{"id": "a", "x": 1}, [7], "t"]}"#, true),
+            (r#"{"list": [{"id": "a", "x": 1}, [7], "t"], "k": 1}"#, true),
+            (r#"{"k": 1, "list": [{"id": "a", "x": 2}, [7], "t"]}"#, false),
+            (r#"{"k": 1, "list": [{"id": "a", "x": 1}, [7]]}"#, false),
+            (r#"{"k": 1, "list": [{"id": "a", "x": 1}, [7], "t"], "more": null}"#, false),
+            (r#"{"k": 1, "other": [{"id": "a", "x": 1}, [7], "t"]}"#, false),
+            (r#"{"k": 1.0, "list": [{"x": 1, "id": "a"}, [7], "t"]}"#, true),
+        ];
+        for (text, equal) in cases {
+            let b = parsed(text);
+            assert_eq!(a == b, equal, "control: {text}");
+            assert_eq!(a.equals_sharing(&b), equal, "{text}");
+            assert_eq!(b.equals_sharing(&a), equal, "{text}, the other way");
+        }
+        assert!(a.equals_sharing(&a.clone()), "a shared allocation is equal");
     }
 
     #[test]

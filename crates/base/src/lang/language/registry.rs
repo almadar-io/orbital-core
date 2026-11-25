@@ -300,6 +300,12 @@ pub struct EmbeddedOperator {
     pub description: String,
     #[serde(rename = "hasSideEffects", default)]
     pub has_side_effects: bool,
+    /// The answer follows from the operands alone (EXEC-PERF-2): no clock, entropy, locale, memory, host or kernel state.
+    #[serde(default)]
+    pub pure: bool,
+    /// The answer also follows from the viewer's locale and the program's message catalogs.
+    #[serde(rename = "readsLocale", default)]
+    pub reads_locale: bool,
     /// Input-dependent return-type tag (e.g. `union-of-args`); `None` for
     /// fixed-return operators.
     #[serde(rename = "returnSemantics", default)]

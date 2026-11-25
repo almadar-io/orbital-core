@@ -125,10 +125,12 @@ impl RuntimeKernel {
     }
 
     /// The INIT payload a page mount of `route` carries: the route params of the page it resolves to (EXEC-ENDPOINT-3),
-    /// as a client's `page_mount_payload`; `null` when the page has none or no page matches.
+    /// as a client's `page_mount_payload`; `null` when the page has none or no page matches. A mount that names no
+    /// route opens the page on its own path: the path gives no values, its parameter names are never values.
     pub fn route_mount_payload(&self, route: &str) -> Value {
         let pages = self.route_pages();
         orbital_core_base::route::best_path_match(route, pages.iter().map(|p| p.path.as_str()))
+            .filter(|pattern| *pattern != route)
             .and_then(|pattern| orbital_core_base::route::route_params(pattern, route))
             .filter(|params| !params.is_empty())
             .map_or(Value::Null, Value::object)

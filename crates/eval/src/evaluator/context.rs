@@ -189,7 +189,7 @@ pub struct BindingContext {
     /// The active locale's merged catalog (qualified key → message) for `i18n/t`.
     messages: Arc<HashMap<String, String>>,
     /// Every declared locale's catalog, for `i18n/t` and `i18n/direction` given a `locale`.
-    catalogs: Arc<HashMap<String, HashMap<String, String>>>,
+    catalogs: Arc<HashMap<String, Arc<HashMap<String, String>>>>,
     /// `@event`: the delivery being processed (`delivery_record_value`, Runtime Spec Clause 5.5).
     pub event: Arc<Value>,
     /// `@prevEvents`: deliveries this trait already received this dispatch.
@@ -221,6 +221,24 @@ pub struct BindingContext {
     /// A local the scope reads at most once (a reduce accumulator its body reads once): the read moves it out,
     /// so a write to it (`array/append @acc …`) is in place instead of a copy of the whole accumulator.
     linear: Option<Arc<LinearLocal>>,
+    /// What the render slot being resolved kept from its last render's maps (EXEC-RENDER-9); `None` elsewhere.
+    map_memo: Option<super::map_memo::SharedMapMemo>,
+}
+
+/// The locale an `i18n/*` read answers under, and the catalogs it reads.
+#[derive(Debug, Clone)]
+pub(crate) struct LocaleStamp {
+    locale: Arc<Value>,
+    messages: Arc<HashMap<String, String>>,
+    catalogs: Arc<HashMap<String, Arc<HashMap<String, String>>>>,
+}
+
+impl PartialEq for LocaleStamp {
+    fn eq(&self, other: &Self) -> bool {
+        *self.locale == *other.locale
+            && (Arc::ptr_eq(&self.messages, &other.messages) || *self.messages == *other.messages)
+            && Arc::ptr_eq(&self.catalogs, &other.catalogs)
+    }
 }
 
 #[derive(Debug)]
@@ -587,7 +605,30 @@ impl BindingContext {
             kernel_mem: self.kernel_mem.clone(),
             kernel_introspect: self.kernel_introspect.clone(),
             linear: self.linear.clone(),
+            map_memo: self.map_memo.clone(),
         }
+    }
+
+    /// Resolve under `memo`: an `array/map` keeps what it makes per element there and answers from it.
+    pub fn set_map_memo(&mut self, memo: super::map_memo::SharedMapMemo) -> &mut Self {
+        self.map_memo = Some(memo);
+        self
+    }
+
+    pub(crate) fn map_memo(&self) -> Option<&super::map_memo::SharedMapMemo> {
+        self.map_memo.as_ref()
+    }
+
+    pub(crate) fn locale_stamp(&self) -> LocaleStamp {
+        LocaleStamp {
+            locale: Arc::clone(&self.locale),
+            messages: Arc::clone(&self.messages),
+            catalogs: Arc::clone(&self.catalogs),
+        }
+    }
+
+    pub(crate) fn holds_linear_local(&self) -> bool {
+        self.linear.is_some()
     }
 
     /// Bind `name` to `value` for a single read: the read takes it. Only for a local the scope reads once

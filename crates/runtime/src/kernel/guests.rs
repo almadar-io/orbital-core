@@ -1149,6 +1149,16 @@ impl RuntimeKernel {
             }
         };
         let _log_tags = log_tags.clone().map(orbital_core_base::logging::log_tags);
+        let draw_seed = match options.as_ref().and_then(|o| o.get("drawSeed")) {
+            None | Some(Value::Null) => None,
+            Some(Value::String(text)) if !text.is_empty() => Some(text.to_string()),
+            Some(_) => {
+                return Err(guest_refusal(
+                    orbital_core_base::os::OsErrorKind::Invalid,
+                    "program/open: `drawSeed` is non-empty text",
+                ))
+            }
+        };
         let lolo = match options.as_ref().and_then(|o| o.get("kernel")) {
             None | Some(Value::Null) => false,
             Some(Value::String(kernel)) if kernel.as_str() == "native" => false,
@@ -1448,6 +1458,9 @@ impl RuntimeKernel {
             };
             guest.set_runs_client_traits(!split);
             guest.set_log_tags(log_tags.clone());
+            if let Some(seed) = &draw_seed {
+                guest.seed_draws(seed);
+            }
             let client = match split {
                 false => None,
                 true => {

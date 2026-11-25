@@ -63,7 +63,13 @@ impl BindingContextBuilder {
         self
     }
 
-    pub fn catalogs(mut self, catalogs: Arc<HashMap<String, HashMap<String, String>>>) -> Self {
+    /// The active locale's catalog as the kernel holds it: shared, never copied into the step.
+    pub fn messages_shared(mut self, messages: Arc<HashMap<String, String>>) -> Self {
+        self.context.messages = messages;
+        self
+    }
+
+    pub fn catalogs(mut self, catalogs: Arc<HashMap<String, Arc<HashMap<String, String>>>>) -> Self {
         self.context.catalogs = catalogs;
         self
     }

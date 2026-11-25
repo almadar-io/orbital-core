@@ -205,9 +205,6 @@ impl StepKernel {
         if !matches!(request.get("commit"), None | Some(Value::Null)) {
             return Err(format!("{op}: a request names no `commit`: kernel/step never keeps a step and kernel/commit always does"));
         }
-        if committing && step_host.is_none() {
-            return Err(format!("{op}: commit keeps a hosted guest's step; this guest has no host"));
-        }
         let commit = committing;
         let trait_name = text("trait")?;
         let from = match (&leg, request.get("from")) {
@@ -485,7 +482,16 @@ impl RuntimeKernel {
             }
             if let Some(guard) = &listen.guard {
                 if !passes(guard)? {
-                    return Ok(not_delivered(&input, None));
+                    let mut answer = not_delivered(&input, None);
+                    if let (Some(row), Value::Object(fields)) = (keyed.as_deref(), &mut answer) {
+                        let entity_type = trait_def.linked_entity.as_deref().unwrap_or(input.trait_name);
+                        let held = match &input.entity {
+                            Some(entity) => SharedEntity::from_value(entity.clone()),
+                            None => self.unframed_trait_entity(input.trait_name, entity_type, row),
+                        };
+                        fields.insert("quiet".into(), Value::Bool(self.row_quiet(&trait_def, entity_type, row, input.from, &held)));
+                    }
+                    return Ok(answer);
                 }
             }
             if let Some(mapping) = listen.payload_mapping.as_ref() {
@@ -547,6 +553,7 @@ impl RuntimeKernel {
         let _lane = self.lane.enter(None).map_err(|e| e.to_string())?;
         let commit = input.commit;
         let held = self.snapshot_trait(input.trait_name, entity_id);
+        let unmounted = held.state.is_empty();
         let held = if held.state.is_empty() {
             TraitSnapshot { state: self.get_initial_state(input.trait_name).unwrap_or_default(), entity: held.entity }
         } else {
@@ -554,7 +561,14 @@ impl RuntimeKernel {
         };
         let before = match input.entity {
             Some(entity) => entity,
-            None if commit => self.step_frame(input.trait_name, entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON)).to_value(),
+            None if commit => {
+                let row = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
+                // A guest with no host keeps the step in this kernel: its keyed row is made on first use, as a native delivery makes it.
+                if input.host.is_none() && self.is_keyed_row(input.trait_name, row) && self.keyed_instance_missing(input.trait_name, row) {
+                    self.create_keyed_row(input.trait_name, row).map_err(|fault| fault.into_kernel().to_string())?;
+                }
+                self.step_frame(input.trait_name, row).to_value()
+            }
             None => {
                 let row = entity_id.unwrap_or(crate::process_result::RUNTIME_SINGLETON);
                 if row != crate::process_result::RUNTIME_SINGLETON {
@@ -591,6 +605,10 @@ impl RuntimeKernel {
         directed.extend(std::mem::take(&mut *self.step.isolated_directives.write()));
         if !commit {
             self.restore_trait(input.trait_name, entity_id, held);
+            if unmounted {
+                let state_key = self.state_key(Some(row));
+                self.state_manager.write().remove_trait_instance(input.trait_name, state_key.as_deref());
+            }
             self.renders.write().forget_traits([input.trait_name]);
         }
         let result = ran.map_err(|fault| fault.into_kernel().to_string())?;
@@ -599,6 +617,20 @@ impl RuntimeKernel {
         let response = crate::effects::response::EventResponse::from_process_results(&ran, input.trait_name, event);
         let (rendered, navigations) = super::guests::paints_of(&response, &super::guests::painter_orbitals(self, &ran), &input.embedded);
         if let Value::Object(fields) = &mut answer {
+            let seen = |emit: &Value| -> Value {
+                let Value::Object(emit) = emit else { return emit.clone() };
+                let mut shown = emit.get("payload").cloned();
+                if let Some(Value::String(event)) = emit.get("event") {
+                    self.redact_sealed_payload(input.trait_name, event.as_str(), &mut shown);
+                }
+                let mut emit = (**emit).clone();
+                emit.insert("seen".into(), shown.unwrap_or(Value::Null));
+                Value::object(emit)
+            };
+            if let Some(Value::Array(emits)) = fields.get("emits") {
+                let emits = emits.iter().map(seen).collect::<Vec<Value>>();
+                fields.insert("emits".into(), Value::array(emits));
+            }
             let queue = directed.into_iter().map(|(event, front)| record([("event", Value::string(event)), ("front", Value::Bool(front))]));
             fields.insert("queue".into(), Value::array(queue.collect::<Vec<Value>>()));
             fields.insert("rendered".into(), Value::array(rendered));

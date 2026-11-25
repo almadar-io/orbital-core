@@ -91,14 +91,14 @@ mod tests {
     }
 
     fn ctx_all(locale: &str, catalogs: &[(&str, &[(&str, &str)])]) -> crate::evaluator::context::BindingContext {
-        let all: HashMap<String, HashMap<String, String>> = catalogs
+        let all: HashMap<String, std::sync::Arc<HashMap<String, String>>> = catalogs
             .iter()
-            .map(|(l, m)| (l.to_string(), m.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()))
+            .map(|(l, m)| (l.to_string(), std::sync::Arc::new(m.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())))
             .collect();
         let active = all.get(locale).cloned().unwrap_or_default();
         BindingContextBuilder::new()
             .locale(Value::string(locale))
-            .messages(active)
+            .messages_shared(active)
             .catalogs(std::sync::Arc::new(all))
             .build()
     }

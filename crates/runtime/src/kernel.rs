@@ -994,6 +994,12 @@ impl RuntimeKernel {
         *self.log_tags.write() = tags;
     }
 
+    /// The draws this kernel's steps make come from the stream `seed` names (`program/open { drawSeed }`, EXEC-CONC-7).
+    pub fn seed_draws(&self, seed: &str) {
+        use sha2::Digest;
+        self.io.seed_draws(sha2::Sha256::digest(seed.as_bytes()).into());
+    }
+
     pub fn cost_meter(&self) -> Option<Arc<dyn orbital_core_base::cost::CostMeter>> {
         self.cost_meter.read().clone()
     }

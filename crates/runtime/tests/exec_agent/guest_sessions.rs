@@ -1359,6 +1359,15 @@ fn a_guest_route_mount_carries_the_route_params_as_a_client_page_mount_does() {
     assert!(painted(&after["got"]).contains(&"item i-7".to_string()), "{after}");
 }
 
+// G-CROSS-839 (owner 2026-11-25): an open that names no route gives its page no route values; the path's
+// parameter names are never values.
+#[test]
+fn a_guest_opened_on_no_route_gives_a_parameterised_page_no_route_values() {
+    let (_, after) = open_shop(shop_with_item_page(), json!({}));
+    assert_eq!(mounted(&after["got"]), ["ItemT"], "the first route page mounts: {after}");
+    assert!(painted(&after["got"]).contains(&"item none".to_string()), "{after}");
+}
+
 #[test]
 fn control_a_literal_guest_route_opens_its_own_page_not_the_param_sibling() {
     let (_, after) = open_shop(shop_with_item_page(), json!({ "route": "/items/tree" }));
@@ -2006,6 +2015,65 @@ mod guest_clock {
     }
 }
 
+// EXEC-CONC-7 (owner 2026-11-25, G-CROSS-838): two guests opened with the same `drawSeed` draw the same values, so a
+// kernel that runs one program twice (the parity check) compares what it drew; without it every guest draws its own.
+mod guest_draws {
+    use super::*;
+
+    fn drawing_guest() -> serde_json::Value {
+        let draw = json!([["emit", "DREW", { "n": ["math/randomInt", 0, 1_000_000_000] }]]);
+        json!({
+            "name": "Drawing", "typeContractVersion": 1,
+            "orbitals": [{ "name": "G",
+                "entity": { "name": "Cell", "persistence": "runtime", "fields": [{ "name": "id", "type": "string" }] },
+                "traits": [{ "name": "Dice", "linkedEntity": "Cell",
+                    "emits": [{ "event": "DREW", "payloadSchema": [{ "name": "n", "type": "number" }] }],
+                    "stateMachine": { "states": [{ "name": "idle", "isInitial": true }],
+                        "transitions": [
+                            { "from": "idle", "to": "idle", "event": "INIT", "effects": draw.clone() },
+                            { "from": "idle", "to": "idle", "event": "ROLL", "effects": draw }] } }],
+                "pages": [{ "name": "Boot", "path": "", "protocol": "boot", "traits": [{ "ref": "Dice" }] }] }]
+        })
+    }
+
+    /// What a guest opened with `options` drew at its mount and at one later ROLL.
+    fn drawn(options: serde_json::Value) -> Vec<serde_json::Value> {
+        let kernel = opener(json!([
+            { "from": "idle", "to": "idle", "event": "GO", "effects": [["program/open", "@payload.program", "@payload.options", { "emit": { "success": "OPENED", "failure": "REFUSED" } }]] },
+            { "from": "idle", "to": "idle", "event": "ROLL", "effects": [["program/dispatch", "G.Dice.ROLL", {}, { "guest": "@entity.guest", "emit": emit() }]] }
+        ]));
+        let program: Value = from_json_value(&json!({ "program": drawing_guest(), "options": options })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let of = |kernel: &RuntimeKernel| entity(kernel)["got"]["emitted"][0]["payload"]["n"].clone();
+        assert!(entity(&kernel)["guest"].is_string(), "the guest opened: {}", entity(&kernel));
+        let first = of(&kernel);
+        kernel.dispatch("Opener", None, "ROLL", Value::Null).unwrap();
+        vec![first, of(&kernel)]
+    }
+
+    #[test]
+    fn two_guests_opened_with_one_draw_seed_draw_the_same_values() {
+        let (a, b) = (drawn(json!({ "drawSeed": "parity" })), drawn(json!({ "drawSeed": "parity" })));
+        assert!(a.iter().all(serde_json::Value::is_number), "{a:?}");
+        assert_eq!(a, b);
+        assert_ne!(a[0], a[1], "one guest's draws still differ from each other");
+    }
+
+    #[test]
+    fn control_guests_opened_with_different_seeds_or_none_draw_their_own() {
+        assert_ne!(drawn(json!({ "drawSeed": "one" })), drawn(json!({ "drawSeed": "two" })));
+        assert_ne!(drawn(json!({})), drawn(json!({})));
+    }
+
+    #[test]
+    fn edge_a_draw_seed_is_non_empty_text() {
+        for bad in [json!(7), json!(""), json!(["x"])] {
+            let after = opened_with(json!({ "drawSeed": bad }));
+            assert!(after["refused"]["error"].as_str().is_some_and(|e| e.contains("`drawSeed` is non-empty text")), "{after}");
+        }
+    }
+}
+
 mod kernel_step {
     use super::*;
 
@@ -2202,8 +2270,122 @@ mod kernel_step {
         assert_eq!(got["fired"], true, "{got}");
         assert_eq!((got["from"].as_str(), got["to"].as_str()), (Some("idle"), Some("busy")), "{got}");
         assert_eq!(got["entity"]["n"], 5.0, "{got}");
-        assert_eq!(got["emits"], json!([{ "event": "X", "payload": { "n": 5.0, "tag": "t" }, "completion": false }]), "{got}");
+        assert_eq!(got["emits"], json!([{ "event": "X", "payload": { "n": 5.0, "tag": "t" }, "completion": false, "seen": { "n": 5.0, "tag": "t" } }]), "{got}");
         assert_eq!((got["refused"].is_null(), &got["asks"]), (true, &json!([])), "control: a step with no ask is not refused: {got}");
+    }
+
+    fn sealing_step(event: &str) -> serde_json::Value {
+        let req = json!({ "trait": "Bearer", "from": "idle", "event": event, "payload": { "token": "@payload.token", "keys": "@payload.keys" }, "entity": {} });
+        let kernel = stepping_over(sealing_guest(), step_grant(), &[req]);
+        let fixture: serde_json::Value = from_json_str(JWS_FIXTURE).unwrap();
+        let credential = json!({ "token": fixture["tokens"]["rs256_valid"].clone(), "keys": fixture["keys"].clone() });
+        kernel.dispatch("Opener", None, "STEP_0", from_json_value(&credential).unwrap()).unwrap();
+        entity(&kernel)["got"]["emits"][0].clone()
+    }
+
+    // G-CROSS-840: the program driving a guest publishes each emit; `seen` is what a host may see of it.
+    #[test]
+    fn a_steps_emit_answers_what_a_host_may_see_with_a_sealed_field_as_its_stub() {
+        let emit = sealing_step("RELAY");
+        assert_eq!(emit["event"], "VERIFIED", "{emit}");
+        assert_eq!(emit["seen"], json!({ "verified": { "sealed": "Verified" }, "note": "kept" }), "{emit}");
+        assert!(emit["payload"]["verified"]["subject"].is_string(), "control: the payload the next step reads still carries the value: {emit}");
+    }
+
+    #[test]
+    fn control_a_steps_emit_with_no_sealed_field_is_seen_as_it_is() {
+        let emit = sealing_step("PLAIN");
+        assert_eq!((&emit["seen"], &emit["payload"]), (&json!({ "note": "plain" }), &json!({ "note": "plain" })), "{emit}");
+    }
+
+    /// The guest's instance count and held frame bytes before and after one lone step of `request`.
+    fn counted_around(request: serde_json::Value) -> (serde_json::Value, serde_json::Value) {
+        let kernel = opener_granted(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "STATS", "effects": [["program/inputs", { "stats": true, "guest": "@entity.guest", "emit": emit() }]] },
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [["set", "@entity.stepped", ["kernel/step", "@entity.guest", request]]] }
+        ]), step_grant());
+        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let counted = |kernel: &RuntimeKernel| {
+            let stats = run(kernel, "STATS")["got"]["stats"].clone();
+            json!([stats["activeInstances"], stats["heldBytes"]["frames"]])
+        };
+        let before = counted(&kernel);
+        let stepped = run(&kernel, "STEP")["stepped"].clone();
+        assert_eq!(stepped["fired"], true, "the step ran: {stepped}");
+        (before, counted(&kernel))
+    }
+
+    // G-CROSS-836: a lone step restores the guest, so a trait the guest never mounted is not left as an instance.
+    #[test]
+    fn a_lone_step_of_a_trait_the_guest_never_mounted_leaves_no_instance_and_no_frame() {
+        let (before, after) = counted_around(json!({ "trait": "Sink", "from": "waiting", "event": "PING", "payload": {}, "entity": {} }));
+        assert_eq!(before, after, "the guest's counters");
+    }
+
+    #[test]
+    fn edge_a_lone_step_naming_no_entity_leaves_no_instance_and_no_frame_either() {
+        let (before, after) = counted_around(json!({ "trait": "Sink", "from": "waiting", "event": "PING", "payload": {} }));
+        assert_eq!(before, after, "the guest's counters");
+    }
+
+    #[test]
+    fn a_lone_step_that_writes_its_row_leaves_the_guest_holding_no_more_frame_bytes() {
+        let (before, after) = counted_around(json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4, "who": "a" }, "entity": { "id": "x", "n": 3 } }));
+        assert_eq!(before, after, "the guest's counters");
+    }
+
+    #[test]
+    fn edge_a_lone_step_that_writes_a_row_it_was_not_given_leaves_no_more_frame_bytes_either() {
+        let (before, after) = counted_around(json!({ "trait": "Src", "from": "idle", "event": "GO", "payload": { "v": 4, "who": "a" } }));
+        assert_eq!(before, after, "the guest's counters");
+    }
+
+    #[test]
+    fn control_a_lone_step_of_a_mounted_trait_keeps_its_instance() {
+        let (before, after) = counted_around(json!({ "trait": "Src", "from": "idle", "event": "PING", "payload": {}, "entity": {} }));
+        assert_eq!(before, after, "the guest's counters");
+        assert!(before[0].as_f64().is_some_and(|n| n >= 1.0), "the mounted trait is counted: {before}");
+    }
+
+    fn blocked_on_row(from: &str) -> serde_json::Value {
+        let req = json!({ "trait": "Keyed", "from": from, "delivery": { "at": 0 }, "payload": { "n": 1.0, "tag": "b" }, "entityId": "rb" });
+        let got = step(&stepping(step_grant(), &[req]), 0);
+        assert_eq!((got["delivered"].as_bool(), got["fired"].as_bool()), (Some(false), Some(false)), "the listen guard blocks it: {got}");
+        got
+    }
+
+    // G-CROSS-834: a native dispatch checks a keyed row for quiet after a delivery its listen guard blocked (EXEC-STEP-1b).
+    #[test]
+    fn a_delivery_its_guard_blocks_on_a_keyed_row_answers_whether_the_row_is_quiet() {
+        assert_eq!(blocked_on_row("waiting")["quiet"], true);
+    }
+
+    #[test]
+    fn control_a_blocked_delivery_on_a_row_out_of_its_initial_state_is_not_quiet() {
+        assert_eq!(blocked_on_row("got")["quiet"], false);
+    }
+
+    // G-CROSS-836: a committed step on a guest with no host answers the row as the guest's next step of it reads it,
+    // which is what program/inputs { state, frames } answers, so the kernel stepping the guest mirrors the same row.
+    #[test]
+    fn a_committed_step_on_a_keyed_row_answers_the_row_its_next_step_reads() {
+        let request = json!({ "trait": "Keyed", "from": "waiting", "delivery": { "at": 0 }, "payload": { "n": 5.0, "tag": "b" }, "entityId": "rb" });
+        let kernel = opener_granted(json!([
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [["kernel/commit", "@entity.guest", request, { "emit": { "success": "KEPT", "failure": "REFUSED" } }]] },
+            { "from": "idle", "to": "idle", "event": "KEPT", "effects": [["set", "@entity.stepped", "@payload.step"]] },
+            { "from": "idle", "to": "idle", "event": "READ", "effects": [["program/inputs", { "state": "G", "frames": true, "guest": "@entity.guest", "emit": emit() }]] }
+        ]), step_grant());
+        let program: Value = from_json_value(&json!({ "program": stepped_guest() })).unwrap();
+        kernel.dispatch("Opener", None, "GO", program).unwrap();
+        let stepped = run(&kernel, "STEP")["stepped"].clone();
+        assert_eq!(stepped["fired"], true, "{stepped}");
+        let read = run(&kernel, "READ")["got"]["state"]["traits"].clone();
+        let row = read.as_array().and_then(|all| all.iter().find(|t| t["trait"] == "Keyed" && t["entityId"] == "rb")).map(|t| t["entity"].clone());
+        assert_eq!(Some(stepped["entity"].clone()), row, "the answered row is the row the guest holds: {stepped} against {read}");
+        assert_eq!(stepped["entity"]["id"], "rb", "{stepped}");
     }
 
     #[test]
@@ -2867,22 +3049,44 @@ mod hosted_step {
         assert_ne!(state, "done", "a step that does not commit leaves the guest as it was: {got}");
     }
 
-    #[test]
-    fn edge_commit_on_a_guest_with_no_host_is_refused() {
+    /// A guest with no host stepped once, kept (`kernel/commit`) or not (`kernel/step`): the step's answer and the
+    /// guest's Bump state as `program/inputs { state, guest }` reads it after.
+    fn bumped_in_place(kept: bool) -> (serde_json::Value, serde_json::Value) {
+        let request = json!({ "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} });
+        let step = if kept {
+            json!(["kernel/commit", "@entity.guest", request, { "emit": { "success": "KEPT", "failure": "REFUSED" } }])
+        } else {
+            json!(["set", "@entity.stepped", ["kernel/step", "@entity.guest", request]])
+        };
         let kernel = opener_granted(json!([
-            { "from": "idle", "to": "idle", "event": "GO", "effects": [
-                ["program/open", "@payload.program", {}, { "emit": { "success": "OPENED", "failure": "REFUSED" } }]
-            ] },
-            { "from": "idle", "to": "idle", "event": "STEP", "effects": [
-                ["kernel/commit", "@entity.guest", { "trait": "Bump", "from": "idle", "event": "BUMP", "payload": {} }, { "emit": { "success": "ANSWERED", "failure": "REFUSED" } }]
-            ] }
+            open_transition(),
+            { "from": "idle", "to": "idle", "event": "STEP", "effects": [step] },
+            { "from": "idle", "to": "idle", "event": "KEPT", "effects": [["set", "@entity.stepped", "@payload.step"]] },
+            { "from": "idle", "to": "idle", "event": "READ", "effects": [["program/inputs", { "state": "B", "guest": "@entity.guest", "emit": emit() }]] }
         ]), json!({ "kernel": [{ "target": "guest", "kinds": ["step"] }] }));
         let program: Value = from_json_value(&json!({ "program": bumping_guest() })).unwrap();
         kernel.dispatch("Opener", None, "GO", program).unwrap();
         kernel.dispatch("Opener", None, "STEP", Value::Null).unwrap();
-        let refused = entity(&kernel)["refused"].clone();
-        assert!(refused["error"].as_str().is_some_and(|e| e.contains("kernel/commit") && e.contains("no host")), "the failure route carries the reason: {refused}");
-        assert_eq!(refused["kind"], "invalid", "{refused}");
+        let stepped = entity(&kernel);
+        assert!(stepped.get("refused").is_none_or(serde_json::Value::is_null), "{stepped}");
+        let read = run(&kernel, "READ")["got"]["state"]["traits"].clone();
+        (stepped["stepped"].clone(), read)
+    }
+
+    // Owner 2026-11-25 (G-CROSS-836): a guest with no host keeps a committed step in its own kernel, so a kernel that
+    // steps it (the parity check's .lolo kernel) leaves the guest holding what it ran.
+    #[test]
+    fn a_commit_on_a_guest_with_no_host_keeps_the_step_in_the_guest() {
+        let (stepped, read) = bumped_in_place(true);
+        assert_eq!(stepped["to"], "done", "{stepped}");
+        assert_eq!(read, json!([{ "trait": "Bump", "entityId": "singleton", "state": "done", "entity": { "n": 1.0 } }]), "{read}");
+    }
+
+    #[test]
+    fn control_a_lone_step_on_a_guest_with_no_host_is_still_restored() {
+        let (stepped, read) = bumped_in_place(false);
+        assert_eq!(stepped["to"], "done", "{stepped}");
+        assert_eq!(read, json!([]), "the guest holds no Bump instance: {read}");
     }
 
     #[test]

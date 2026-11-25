@@ -89,7 +89,12 @@ impl<'a> Callback<'a> {
             }
         }
         match eval_expr(callable, ctx)? {
-            Value::Lambda(l) => Ok(Callback::Lambda { params: l.params.clone(), body: l.body.clone() }),
+            Value::Lambda(l) => {
+                if let Some(memo) = ctx.map_memo() {
+                    memo.lock().applied_a_lambda_value();
+                }
+                Ok(Callback::Lambda { params: l.params.clone(), body: l.body.clone() })
+            }
             other => Err(other.kind_error("function").into()),
         }
     }
@@ -294,7 +299,16 @@ fn listed(value: Value) -> Result<Shared<Vec<Value>>, OrbitalError> {
     Ok(require_array!(value))
 }
 
+/// What the render slot being resolved kept for `callback` (EXEC-RENDER-9), when it keeps this callback's results.
+fn kept<'a>(callback: &Callback, ctx: &'a BindingContext) -> Option<crate::evaluator::map_memo::Kept<'a>> {
+    crate::evaluator::map_memo::Kept::open(ctx.map_memo()?, callback, ctx)
+}
+
 fn map_each(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext) -> EvalResult {
+    if let Some(mut kept) = kept(callback, ctx) {
+        let results: Result<Vec<Value>, _> = array.iter().enumerate().map(|(i, item)| kept.answer(i, item, callback, ctx)).collect();
+        return Ok(Value::array(results?));
+    }
     let results: Result<Vec<Value>, _> = array
         .into_iter()
         .enumerate()
@@ -306,8 +320,13 @@ fn map_each(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext
 /// The first element the predicate accepts with its position, or every element it accepts.
 fn accepted(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext, all: bool) -> Result<Vec<Value>, OrbitalError> {
     let mut kept = Vec::new();
+    let mut held = self::kept(callback, ctx);
     for (i, item) in array.into_iter().enumerate() {
-        if callback.apply(vec![item.clone(), super::util::int_of(i)], ctx)?.boolean()? {
+        let answer = match &mut held {
+            Some(held) => held.answer(i, &item, callback, ctx)?,
+            None => callback.apply(vec![item.clone(), super::util::int_of(i)], ctx)?,
+        };
+        if answer.boolean()? {
             kept.push(item);
             if !all {
                 break;
@@ -319,8 +338,13 @@ fn accepted(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext
 
 /// Whether the predicate answers `wanted` for some element: `some` looks for a `true`, `every` for a `false`.
 fn any_answers(array: Shared<Vec<Value>>, callback: &Callback, ctx: &BindingContext, wanted: bool) -> Result<bool, OrbitalError> {
+    let mut held = kept(callback, ctx);
     for (i, item) in array.into_iter().enumerate() {
-        if callback.apply(vec![item, super::util::int_of(i)], ctx)?.boolean()? == wanted {
+        let answer = match &mut held {
+            Some(held) => held.answer(i, &item, callback, ctx)?,
+            None => callback.apply(vec![item, super::util::int_of(i)], ctx)?,
+        };
+        if answer.boolean()? == wanted {
             return Ok(true);
         }
     }

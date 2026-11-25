@@ -239,7 +239,8 @@ impl RuntimeKernel {
             })?;
             let mut traits = Vec::new();
             for trait_name in &detail.traits {
-                let instances: Vec<(Option<String>, String)> = self
+                // The instance table is a hash map: a trait's rows are answered in the order of their ids, never in table order.
+                let mut instances: Vec<(Option<String>, String)> = self
                     .state_manager
                     .read()
                     .get_instances_for_trait(trait_name)
@@ -251,6 +252,7 @@ impl RuntimeKernel {
                         ))
                     })
                     .collect();
+                instances.sort();
                 for (entity_id, state) in instances {
                     let snapshot = self.snapshot_trait(trait_name, entity_id.as_deref());
                     let entity = match (reads.frames, &entity_id) {
