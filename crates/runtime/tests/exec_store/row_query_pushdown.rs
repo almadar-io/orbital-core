@@ -833,10 +833,10 @@ fn a_host_with_capabilities_gets_one_query_and_only_the_page_crosses() {
     assert_eq!(listed(&out.unwrap()), vec!["t2", "t3"]);
 }
 
-/// EXEC-FETCH-1: an unordered fetch is pushed down like an ordered one, with no `order` on the query (the store
-/// applies `createdAt` then `id`).
+/// EXEC-FETCH-1: an unordered fetch is pushed down like an ordered one. Ticket declares no `createdAt`, so no row is
+/// stamped and its default order is `id`, carried on the query.
 #[test]
-fn an_unordered_fetch_is_pushed_down_without_an_order() {
+fn an_unordered_fetch_is_pushed_down_in_its_default_order() {
     let answer = |r: &IoRequest| match r {
         IoRequest::QueryRows {
             entity_type,
@@ -858,7 +858,8 @@ fn an_unordered_fetch_is_pushed_down_without_an_order() {
         })
         .collect();
     assert_eq!(queries.len(), 1, "{log:?}");
-    assert!(queries[0].order.is_none() && queries[0].limit == Some(2));
+    assert_eq!(queries[0].order.as_ref().map(|o| o.field.as_str()), Some("id"), "{log:?}");
+    assert_eq!(queries[0].limit, Some(2));
     // control: an ordered fetch carries its order
     let k = host_kernel();
     k.set_query_capabilities("Ticket", QueryCapabilities::full());

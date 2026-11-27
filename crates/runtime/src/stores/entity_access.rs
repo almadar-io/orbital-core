@@ -191,6 +191,9 @@ pub struct EntityAccessPolicies {
     /// This entity's stored fields that declare a default, with that default's value: a `persist create` that
     /// passes no value (or `null`) for one stores the default. Never `@intrinsic` or `@derived` fields.
     pub declared_defaults: Vec<(String, Value)>,
+    /// Whether the entity declares a `createdAt` field: only then does a row carry the stamp an unordered fetch
+    /// orders by (EXEC-FETCH-1); otherwise every row lacks it and the default order is `id`.
+    pub declares_created_at: bool,
 }
 
 impl EntityAccessPolicies {

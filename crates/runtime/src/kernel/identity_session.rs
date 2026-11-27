@@ -283,9 +283,6 @@ impl RuntimeKernel {
         if self.thread_session().is_some() {
             return Err(refused("not-program-session", "only a program-session step names the session it signs in or out"));
         }
-        if self.session_ended(&session) {
-            return Err(refused("session-ended", format!("session {session} has ended")));
-        }
         Ok(session)
     }
 

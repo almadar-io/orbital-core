@@ -656,14 +656,26 @@ fn exec_identity_3_a_viewers_own_step_naming_a_session_is_refused() {
 }
 
 #[test]
-fn edge_an_ended_session_is_refused_and_bound_to_nothing() {
+fn exec_identity_3_a_sign_in_naming_an_ended_session_binds_the_session_its_reviving_mount_runs_in() {
     let kernel = boot_signer();
+    ask_in(&kernel, "tab-2", "ASK", "tab-2");
     kernel.free_session("tab-2");
     ask_in(&kernel, "tab-1", "ASK", "tab-2");
-    assert_eq!(refusal(&kernel, "Signer", None), json!("session-ended"));
-    let entity = { serde_json::to_value(&kernel.snapshot_trait("Signer", None).entity).unwrap() };
-    assert_eq!(entity["failedFor"], json!("tab-2"), "the failure names the session it was for");
-    assert!(kernel.session_ended("tab-2"), "the ended session stays ended");
+    assert_eq!(refusal(&kernel, "Signer", None), serde_json::Value::Null, "nothing is refused");
+    assert!(kernel.session_ended("tab-2"), "a sign-in revives nothing: the session stays ended until a mount");
+    kernel.revive_session("tab-2");
+    assert_eq!(who(&kernel, Some("tab-2")), json!("ada"), "the revived session runs as the credential that request carried");
+}
+
+#[test]
+fn edge_a_sign_out_naming_an_ended_session_leaves_its_revival_anonymous() {
+    let kernel = boot_signer();
+    ask_in(&kernel, "tab-2", "ASK", "tab-2");
+    kernel.free_session("tab-2");
+    ask_in(&kernel, "tab-1", "OUT", "tab-2");
+    assert!(kernel.session_ended("tab-2"));
+    kernel.revive_session("tab-2");
+    assert_eq!(who(&kernel, Some("tab-2")), json!("anonymous"));
 }
 
 #[test]

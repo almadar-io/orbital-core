@@ -38,6 +38,7 @@ fn declared(collection: &str, read: &str) -> EntityAccessPolicies {
         field_updates: Vec::new(),
         create_server: None,
         declared_defaults: Vec::new(),
+        declares_created_at: false,
     }
 }
 
@@ -56,6 +57,7 @@ fn undeclared(collection: Option<&str>) -> EntityAccessPolicies {
         field_updates: Vec::new(),
         create_server: None,
         declared_defaults: Vec::new(),
+        declares_created_at: false,
     }
 }
 

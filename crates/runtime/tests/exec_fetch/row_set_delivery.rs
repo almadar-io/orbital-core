@@ -522,3 +522,68 @@ fn total_none_on_a_deliver_ids_fetch_carries_the_window_and_resolve_rows_skips_t
     assert_eq!(ids, vec!["t5"]);
     assert_eq!(page.total, 1, "no re-count: the total is the resolved window");
 }
+
+// --- EXEC-FETCH-1: the default order of an entity that declares no `createdAt` is `id` ---
+
+fn unordered_queries(declares_created_at: bool) -> Vec<(Option<orbital_core_runtime::row_query::RowOrder>, Option<usize>)> {
+    let mut fields = vec![json!({ "name": "id", "type": "string" }), json!({ "name": "status", "type": "string" })];
+    if declares_created_at {
+        fields.push(json!({ "name": "createdAt", "type": "datetime" }));
+    }
+    let schema: OrbitalSchema = from_json_value(&json!({
+        "name": "unordered", "typeContractVersion": 1, "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Ticket", "persistence": "persistent", "fields": fields },
+            "traits": [{ "name": "Tickets", "linkedEntity": "Ticket",
+                "stateMachine": { "states": [{ "name": "idle", "isInitial": true }], "transitions": [
+                    { "from": "idle", "to": "idle", "event": "LIST", "effects": [["fetch", "Ticket", {
+                        "filter": ["=", ["object/get", "@entity", "status"], "open"], "limit": 2,
+                        "emit": { "success": "LISTED", "failure": "LIST_FAILED" } }]] }] } }]
+        }]
+    }))
+    .unwrap();
+    let k = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(HostAnswered), KernelConfig::default());
+    k.register_schema(schema).unwrap();
+    let mut capabilities = QueryCapabilities::full();
+    capabilities.orderable_fields = orbital_core_runtime::row_query::RowOrderableFields::Listed { fields: vec!["id".to_string()] };
+    k.set_query_capabilities("Ticket", capabilities);
+    let store = Arc::new(InMemoryEntityCache::new());
+    for (id, status) in [("t1", "open"), ("t2", "done"), ("t3", "open"), ("t4", "open")] {
+        store.write("Ticket", id, &v(&json!({ "id": id, "status": status }))).unwrap();
+    }
+    let mut log = Vec::new();
+    let mut progress = k.start_dispatch("Tickets", None, "LIST", Value::Null, None, None).unwrap();
+    loop {
+        match progress {
+            Progress::Done(_) => break,
+            Progress::Await { continuation, requests } => {
+                let replies = requests
+                    .iter()
+                    .map(|p| {
+                        log.push(p.request.clone());
+                        IoReply { id: p.id, answer: BlockingHost { source: &*store, service: None, substrate: None }.answer(&p.request) }
+                    })
+                    .collect();
+                progress = k.resume(continuation, replies).unwrap();
+            }
+        }
+    }
+    log.iter()
+        .filter_map(|r| match r {
+            IoRequest::QueryRows { query, .. } => Some((query.order.clone(), query.limit)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn exec_fetch_1_an_unordered_fetch_of_an_entity_without_created_at_is_pushed_in_id_order_with_its_window() {
+    let id_asc = orbital_core_runtime::row_query::RowOrder { field: "id".to_string(), direction: orbital_core_runtime::row_query::RowDirection::Asc };
+    assert_eq!(unordered_queries(false), vec![(Some(id_asc), Some(2))]);
+}
+
+#[test]
+fn control_an_entity_declaring_created_at_keeps_the_stamp_order_a_store_that_cannot_order_by_it_declines() {
+    let queries = unordered_queries(true);
+    assert!(queries.iter().all(|(_, limit)| limit.is_none()), "the window stays in the kernel: {queries:?}");
+}

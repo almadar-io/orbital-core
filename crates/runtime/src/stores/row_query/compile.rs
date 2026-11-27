@@ -410,7 +410,15 @@ pub(super) fn compile_expr(
                             Term::Field(_) => Err(shape("two row fields")),
                         }
                     } else {
-                        Err(shape("array/includes names no row field"))
+                        // Reads no row: both sides are constants for this dispatch (a role list tested against
+                        // `@user.role`), so it is decided here like a comparison of two constants.
+                        let list = list_of(&args[0], ctx)?;
+                        match term(&args[1], ctx)? {
+                            Term::Const(needle) => Ok(RowPredicate::Const {
+                                value: list.iter().any(|item| same_value(item, &needle)),
+                            }),
+                            Term::Field(_) => Err(shape("array/includes names no row field")),
+                        }
                     }
                 }
                 "str/includes" if args.len() == 2 => {

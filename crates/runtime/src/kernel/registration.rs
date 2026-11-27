@@ -318,6 +318,7 @@ impl RuntimeKernel {
                                     .filter(|f| f.intrinsic != Some(true) && f.derived.is_none())
                                     .filter_map(|f| Some((f.name.clone()?, sexpr_to_value(f.default.as_ref()?))))
                                     .collect(),
+                                declares_created_at: def.fields.iter().any(|f| f.name.as_deref() == Some("createdAt")),
                             },
                         );
                     }

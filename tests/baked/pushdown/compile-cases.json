@@ -2092,6 +2092,147 @@
           }
         }
       }
+    },
+    {
+      "name": "const-member-role-list-admits-the-viewer",
+      "why": "a role list tested against @user.role reads no row: it folds to a constant, so a viewer whose role is listed sees every row",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "owner"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "member"
+            ],
+            "@user.id"
+          ],
+          [
+            "array/includes",
+            [
+              "head_of_department",
+              "project_manager"
+            ],
+            "@user.role"
+          ],
+          [
+            "array/includes",
+            [
+              "owner",
+              "operations_director"
+            ],
+            "@user.role"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "const",
+            "value": true
+          }
+        }
+      }
+    },
+    {
+      "name": "control-const-member-role-list-leaves-the-row-predicate",
+      "why": "a role list that does not name the viewer's role is a false constant, dropped from the or",
+      "bindings": {
+        "user": {
+          "id": "u1",
+          "role": "employee"
+        }
+      },
+      "sexpr": {
+        "readPolicy": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "member"
+            ],
+            "@user.id"
+          ],
+          [
+            "array/includes",
+            [
+              "head_of_department",
+              "project_manager"
+            ],
+            "@user.role"
+          ],
+          [
+            "array/includes",
+            [
+              "owner",
+              "operations_director"
+            ],
+            "@user.role"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "compare",
+            "field": "member",
+            "op": "==",
+            "value": "u1"
+          }
+        }
+      }
+    },
+    {
+      "name": "edge-const-member-without-viewer-hides-every-row",
+      "why": "with no viewer the policy cannot be specialised and hides every row, as any policy reading @user",
+      "bindings": {},
+      "sexpr": {
+        "readPolicy": [
+          "or",
+          [
+            "=",
+            [
+              "object/get",
+              "@entity",
+              "member"
+            ],
+            "@user.id"
+          ],
+          [
+            "array/includes",
+            [
+              "head_of_department",
+              "project_manager"
+            ],
+            "@user.role"
+          ],
+          [
+            "array/includes",
+            [
+              "owner",
+              "operations_director"
+            ],
+            "@user.role"
+          ]
+        ]
+      },
+      "expect": {
+        "compiled": {
+          "policy": {
+            "kind": "const",
+            "value": false
+          }
+        }
+      }
     }
   ]
 }

@@ -259,8 +259,18 @@ impl EntitySourceHandler {
         };
         let mut tier = "interpreted";
         let mut compiled: Option<FetchPage> = None;
-        // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`.
-        let default_order = default_row_order();
+        // EXEC-FETCH-1: a collection fetch with no authored order is ordered by `createdAt`, then `id`. An entity that
+        // declares no `createdAt` has no stamped row, so that order is `id`, which every store can apply with its window.
+        let stamped = self.entity_policies.read().get(entity_type).is_none_or(|p| p.declares_created_at);
+        let default_order = if stamped {
+            default_row_order()
+        } else {
+            RowOrder { field: "id".to_string(), direction: crate::row_query::RowDirection::Asc }
+        };
+        let order = match order {
+            None if !stamped && id.is_none() && nearest.is_none() => Some(&default_order),
+            other => other,
+        };
         let plain_order = match order {
             None if id.is_none() && nearest.is_none() => Some(&default_order),
             other => other,
@@ -310,6 +320,8 @@ impl EntitySourceHandler {
                         entity = %entity_type,
                         reason = why.reason(),
                         detail = %why,
+                        policy = %policy.as_ref().map_or_else(String::new, ToString::to_string),
+                        filter = %filter.map_or_else(String::new, ToString::to_string),
                         "kernel.fetch.pushdown-fallback",
                     );
                 }
