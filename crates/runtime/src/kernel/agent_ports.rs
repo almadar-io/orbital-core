@@ -361,13 +361,23 @@ impl RuntimeKernel {
     fn running_program(&self) -> Result<Value, String> {
         let (caller_orbital, _) = self.caller_position();
         let orbital = caller_orbital.ok_or("program/self: no orbital is running")?;
-        let schemas = self.registry.schemas.read();
-        let schema = schemas
-            .values()
-            .find(|schema| schema.orbitals.iter().any(|o| o.name == orbital))
-            .ok_or_else(|| format!("program/self: '{orbital}' belongs to no registered program"))?;
-        orbital_core_base::value_serialize::to_value(schema.as_ref())
-            .map_err(|e| format!("program/self: the program does not serialize: {e}"))
+        let (key, schema) = {
+            let schemas = self.registry.schemas.read();
+            schemas
+                .iter()
+                .find(|(_, schema)| schema.orbitals.iter().any(|o| o.name == orbital))
+                .map(|(key, schema)| (key.clone(), std::sync::Arc::clone(schema)))
+                .ok_or_else(|| format!("program/self: '{orbital}' belongs to no registered program"))?
+        };
+        if let Some((held, value)) = self.registry.program_values.read().get(&key) {
+            if std::sync::Arc::ptr_eq(held, &schema) {
+                return Ok(value.clone());
+            }
+        }
+        let value = orbital_core_base::value_serialize::to_value(schema.as_ref())
+            .map_err(|e| format!("program/self: the program does not serialize: {e}"))?;
+        self.registry.program_values.write().insert(key, (schema, value.clone()));
+        Ok(value)
     }
 
     fn run_read_named(

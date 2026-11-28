@@ -3196,3 +3196,66 @@ mod unmounted_open {
         assert!(refused.contains("`kernel` is") && refused.contains("lolo"), "{refused}");
     }
 }
+
+fn self_program(fields: &[&str]) -> OrbitalSchema {
+    let fields: Vec<serde_json::Value> = fields.iter().map(|name| json!({ "name": name, "type": "string" })).collect();
+    from_json_value(&json!({
+        "name": "Playground",
+        "typeContractVersion": 1,
+        "orbitals": [{
+            "name": "Main",
+            "entity": { "name": "Run", "fields": fields },
+            "traits": [{
+                "name": "Opener",
+                "linkedEntity": "Run",
+                "stateMachine": {
+                    "states": [{ "name": "idle", "isInitial": true }],
+                    "transitions": [
+                        { "from": "idle", "to": "idle", "event": "ANSWERED", "effects": [["set", "@entity.got", "@payload.result"]] },
+                        { "from": "idle", "to": "idle", "event": "REFUSED", "effects": [["set", "@entity.refused", "@payload"]] },
+                        { "from": "idle", "to": "idle", "event": "READ_SELF", "effects": [["program/self", { "emit": emit() }]] }
+                    ]
+                }
+            }]
+        }]
+    }))
+    .unwrap()
+}
+
+fn self_kernel(schema: OrbitalSchema) -> RuntimeKernel {
+    let kernel = RuntimeKernel::new(RuntimeEnvironment::Server, Arc::new(InMemoryEntityCache::new()), KernelConfig::default());
+    kernel.register_schema(schema).unwrap();
+    kernel
+}
+
+fn read_self(kernel: &RuntimeKernel) -> Value {
+    kernel.dispatch("Opener", None, "READ_SELF", Value::Null).unwrap();
+    kernel.snapshot_trait("Opener", None).entity.get("got").cloned().expect("program/self answered")
+}
+
+#[test]
+fn a_second_program_self_of_the_same_registered_program_shares_the_first_answer() {
+    let kernel = self_kernel(self_program(&["id"]));
+    let first = read_self(&kernel);
+    let second = read_self(&kernel);
+    assert_eq!(first, second);
+    match (&first, &second) {
+        (Value::Object(a), Value::Object(b)) => assert!(
+            orbital_core_base::value::Shared::ptr_eq(a, b),
+            "the second answer is a clone of the first, not a new serialization"
+        ),
+        other => panic!("program/self answers an object: {other:?}"),
+    }
+}
+
+#[test]
+fn control_program_self_after_the_program_is_registered_again_answers_the_new_program() {
+    let kernel = self_kernel(self_program(&["id"]));
+    let before = read_self(&kernel);
+    kernel.register_schema(self_program(&["id", "label"])).unwrap();
+    let after = read_self(&kernel);
+    let fields = |program: &Value| {
+        serde_json::to_value(program).unwrap()["orbitals"][0]["entity"]["fields"].as_array().map(Vec::len)
+    };
+    assert_eq!((fields(&before), fields(&after)), (Some(1), Some(2)));
+}

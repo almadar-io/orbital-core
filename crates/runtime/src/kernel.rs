@@ -391,6 +391,9 @@ struct Presentation {
 struct Registry {
     /// Shared with every fork (EXEC-DIST-5): a registration replaces the entry, never mutates it.
     schemas: Arc<RwLock<HashMap<String, Arc<OrbitalSchema>>>>,
+    /// `program/self`'s value per registered program, held with the schema it was made from: a registration that
+    /// replaces the schema makes the entry stale, and the next read rebuilds it.
+    program_values: Arc<RwLock<HashMap<String, (Arc<OrbitalSchema>, Value)>>>,
     /// Trait name to the schema and orbital index that declare it, rebuilt on every registration.
     trait_homes: Arc<RwLock<HashMap<String, (String, usize)>>>,
     /// The traits of orbitals whose every page is a protocol endpoint (EXEC-ENDPOINT-5): the server's, so a client
@@ -826,6 +829,7 @@ impl RuntimeKernel {
             listener_manager,
             registry: Registry {
                 schemas: Arc::new(RwLock::new(HashMap::new())),
+                program_values: Arc::new(RwLock::new(HashMap::new())),
                 trait_homes: Arc::new(RwLock::new(HashMap::new())),
                 endpoint_traits: Arc::new(RwLock::new(HashSet::new())),
                 boot_traits: Arc::new(RwLock::new(HashSet::new())),
